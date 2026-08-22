@@ -9,8 +9,9 @@ while read -r _lref lsha _rref rsha; do
   if [ "$rsha" = "$zero" ]; then range="$lsha"; else range="$rsha..$lsha"; fi
   tracked=$(git ls-tree -r --name-only "$lsha" | grep -E '(^|/)\.env(\.|$)|(^|/)\.envrc$|^local/' | grep -vE '\.example$|^local/README\.md$' || true)
   if [ -n "$tracked" ]; then echo "pre-push: secret-bearing paths are tracked in $lsha:" >&2; echo "$tracked" >&2; exit 1; fi
-  if git log -p --format= "$range" -- . ':!pnpm-lock.yaml' | grep -E '^\+' | grep -qE 'svc_(console|auth|topic|match)_(dev|prod)|yyt_svc_(dev|prod)'; then
-    echo "pre-push: stateful account identifiers found in $range" >&2; exit 1
+  if git ls-tree -r --name-only "$lsha" | grep -qE '^todo/'; then echo "pre-push: todo/ must stay untracked" >&2; exit 1; fi
+  if [ -s local/identifiers.txt ] && git log -p --format= "$range" -- . ':!pnpm-lock.yaml' | grep -E '^\+' | grep -qE -f local/identifiers.txt; then
+    echo "pre-push: stateful host / DB / account identifiers found in $range" >&2; exit 1
   fi
   gitleaks detect --redact --no-banner --config .gitleaks.toml --log-opts="$range"
 done

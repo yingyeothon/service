@@ -18,3 +18,5 @@ apps/console-web/dist/
 !.claude/settings.json
 .codex/
 .DS_Store
+# Work tracker is machine-local (contains infra notes); never tracked.
+todo/
