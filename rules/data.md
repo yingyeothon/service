@@ -1,5 +1,15 @@
 # Data
 
+> 2026-08-22: storage moved to self-hosted MariaDB + Redis (`<stateful-host>`, ops repo `~/git/yyt.life/yyt-stateful`). The sqlite-on-S3 sections below describe the previous design and stay only until the migration in `todo/index.md` "다음 작업 0" lands; do not build new code on them.
+
+## Accounts and environments
+
+- One MySQL database per stage (`yyt_svc_{stage}`), owned by console (only writer, owns migrations). auth/topic/match use `SELECT`-only accounts.
+- Account name is `svc_{service}_{stage}` for both MySQL and Redis. Redis ACL users are restricted to keys/channels `{service}:{stage}:*` (`resetkeys ~… resetchannels &…`, `+@all -@dangerous`), so a wrong prefix fails with NOPERM instead of leaking — keep the `{service}:{stage}:` prefix rule anyway for readability.
+- Credentials live in `services/{service}/.env.{stage}` (gitignored; layout in `services/.env.example`) and are pushed to SSM for Lambda. Never commit or log them. Rotate via `yyt-stateful` scripts (`ALTER USER` / `ACL SETUSER … >pw` + `ACL SAVE`) and update the `.env` in the same step.
+- Redis 6.2 quirk: a new ACL user starts with `allchannels`; adding `&pattern` errors unless `resetchannels` precedes it.
+- Host limits: Redis `maxmemory 256mb allkeys-lru` (every runtime key still needs a TTL; eviction is a safety net, not a design), MariaDB `max_connections=60` — keep Lambda pools tiny (1 connection per container) and prefer short-lived connections.
+
 ## sqlite on S3
 
 - One file per service (`db/console.db`); the owning service is the only writer.
