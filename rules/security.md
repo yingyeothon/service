@@ -16,3 +16,9 @@
 - Redirect allowlists compare parsed origin + path prefix at a `/` boundary, never raw `startsWith`; return the normalized `url.href`, and reject control characters (WHATWG `URL` silently strips `\t\n\r`).
 - Client-supplied strings that go into outbound headers (bearer tokens) must be restricted to printable ASCII at validation time, or undici throws a TypeError that echoes the value into logs.
 - Compare shared keys (debug key, API tokens) with `timingSafeEqual` over fixed-length hashes.
+
+## Public repository
+
+- This repo is **public** on GitHub. Secrets stay local only (`services/*/.env.{stage}`, gitignored) and reach Lambda via SSM; CI gets them via GitHub environment secrets, never via files in the repo. If `.env` files need version control, use a separate private repo — do not make this repo private (Actions/Release limits).
+- Do not write infra identifiers (hostnames, DB names, account names) of the self-hosted MySQL/Redis into docs, rules, or examples; refer to the private `yyt-stateful` ops repo instead.
+- Before every `git push`, grep the commit range for values from `services/*/.env.*` and confirm with the user.
