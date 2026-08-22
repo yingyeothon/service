@@ -7,18 +7,20 @@ import {
   ulid,
   type Clock,
 } from "@yyt/core";
-import { insertChannel, upsertMember } from "@yyt/console-db";
+import type { ConsoleDb } from "@yyt/console-db";
 import { defineRoute, type AnyRoute } from "@yyt/http";
 import { signChannelToken } from "@yyt/jwt";
-import type { SqliteS3 } from "@yyt/sqlite-s3";
 import { z } from "zod";
 import type { ChannelStore } from "./channels.js";
 
 export interface DebugRouteOptions {
   /** Callers must send `x-debug-key: <debugKey>`. */
   debugKey: string;
-  /** Writer handle on the console DB — dev only; the console service is the real owner. */
-  consoleDb: SqliteS3;
+  /**
+   * Writer handle on the console DB opened with the dev-only console
+   * credentials (`DEBUG_MYSQL_*`); the console service is the real owner.
+   */
+  consoleDb: ConsoleDb;
   channels: ChannelStore;
   clock: Clock;
 }
@@ -89,50 +91,48 @@ export function createDebugRoutes({
         const id = b.id ?? `dbg_${ulid().toLowerCase()}`;
         const secret = randomHex(32);
         const now = nowSec(clock);
-        await consoleDb.write((db) => {
-          upsertMember(db, {
-            id: "debug",
-            githubId: 0,
-            githubLogin: "debug",
-            role: "admin",
-            createdAt: now,
-          });
-          insertChannel(db, {
-            id,
-            kind: "auth",
-            ownerId: "debug",
-            name: `debug ${id}`,
-            config: {
-              audience: b.audience,
-              tokenTtlSec: b.tokenTtlSec,
-              redirectAllowlist: b.redirectAllowlist,
-              providers: {
-                ...(b.providers.github
-                  ? { github: { clientId: b.providers.github.clientId } }
-                  : {}),
-                ...(b.providers.google
-                  ? { google: { clientId: b.providers.google.clientId } }
-                  : {}),
-              },
+        const ownerId = await consoleDb.upsertMember({
+          id: "debug",
+          githubId: 0,
+          githubLogin: "debug",
+          role: "admin",
+          createdAt: now,
+        });
+        await consoleDb.insertChannel({
+          id,
+          kind: "auth",
+          ownerId,
+          name: `debug ${id}`,
+          config: {
+            audience: b.audience,
+            tokenTtlSec: b.tokenTtlSec,
+            redirectAllowlist: b.redirectAllowlist,
+            providers: {
+              ...(b.providers.github
+                ? { github: { clientId: b.providers.github.clientId } }
+                : {}),
+              ...(b.providers.google
+                ? { google: { clientId: b.providers.google.clientId } }
+                : {}),
             },
-            secret: {
-              secret,
-              providers: {
-                ...(b.providers.github
-                  ? {
-                      github: { clientSecret: b.providers.github.clientSecret },
-                    }
-                  : {}),
-                ...(b.providers.google
-                  ? {
-                      google: { clientSecret: b.providers.google.clientSecret },
-                    }
-                  : {}),
-              },
+          },
+          secret: {
+            secret,
+            providers: {
+              ...(b.providers.github
+                ? {
+                    github: { clientSecret: b.providers.github.clientSecret },
+                  }
+                : {}),
+              ...(b.providers.google
+                ? {
+                    google: { clientSecret: b.providers.google.clientSecret },
+                  }
+                : {}),
             },
-            createdAt: now,
-            expiresAt: now + b.ttlSec,
-          });
+          },
+          createdAt: now,
+          expiresAt: now + b.ttlSec,
         });
         return {
           channelId: id,

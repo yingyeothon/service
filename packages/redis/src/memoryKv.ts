@@ -25,7 +25,7 @@ const COMPARE_AND_DELETE =
   /redis\.call\(["']get["'],\s*KEYS\[1\]\)\s*==\s*ARGV\[1\][\s\S]*redis\.call\(["']del["'],\s*KEYS\[1\]\)/;
 
 /**
- * In-memory `Kv` mirroring the Upstash semantics used in this repo (NX/EX,
+ * In-memory `Kv` mirroring the Redis semantics used in this repo (NX/EX,
  * TTL expiry driven by an injected clock, set/list/hash ops, compare-and-delete
  * via `eval`).
  */

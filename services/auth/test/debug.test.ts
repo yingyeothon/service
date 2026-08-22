@@ -1,71 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  GetObjectCommand,
-  HeadObjectCommand,
-  NoSuchKey,
-  PutObjectCommand,
-  S3Client,
-} from "@aws-sdk/client-s3";
-import { mockClient } from "aws-sdk-client-mock";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrateConsoleDb } from "@yyt/console-db";
-import { createSqliteS3 } from "@yyt/sqlite-s3";
-import { createMemoryKv } from "@yyt/upstash";
-import { createSqliteChannelStore } from "../src/channels.js";
+import { describe, expect, it } from "vitest";
+import { createMemoryConsoleDb } from "@yyt/console-db";
+import { createChannelStore } from "../src/channels.js";
 import { createDebugRoutes } from "../src/debug.js";
 import { ev, fakeClock, harness, parse } from "./helpers.js";
 
-const s3Mock = mockClient(S3Client);
-let dir: string;
-
-function fakeBucket() {
-  const objects = new Map<string, { body: Uint8Array; etag: string }>();
-  let v = 0;
-  const missing = () =>
-    new NoSuchKey({ message: "missing", $metadata: { httpStatusCode: 404 } });
-  s3Mock.on(HeadObjectCommand).callsFake((i: { Key: string }) => {
-    const o = objects.get(i.Key);
-    if (!o) throw missing();
-    return { ETag: o.etag };
-  });
-  s3Mock.on(GetObjectCommand).callsFake((i: { Key: string }) => {
-    const o = objects.get(i.Key);
-    if (!o) throw missing();
-    return { ETag: o.etag, Body: { transformToByteArray: async () => o.body } };
-  });
-  s3Mock
-    .on(PutObjectCommand)
-    .callsFake((i: { Key: string; Body: Uint8Array }) => {
-      const etag = `"v${++v}"`;
-      objects.set(i.Key, { body: new Uint8Array(i.Body), etag });
-      return { ETag: etag };
-    });
-}
-
-beforeEach(() => {
-  s3Mock.reset();
-  fakeBucket();
-  dir = mkdtempSync(join(tmpdir(), "auth-debug-"));
-});
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
-describe("debug routes + sqlite channel store", () => {
+describe("debug routes + channel store", () => {
   it("seeds a channel through the console DB and mints a token for it", async () => {
     const clock = fakeClock();
-    const kv = createMemoryKv({ clock });
-    const consoleDb = createSqliteS3({
-      bucket: "b",
-      key: "db/console.db",
-      localDir: dir,
-      kv,
-      lockKey: "lock:db",
-      migrate: migrateConsoleDb,
-      s3: new S3Client({}),
-      clock,
-    });
-    const channels = createSqliteChannelStore(consoleDb);
+    const consoleDb = createMemoryConsoleDb();
+    const channels = createChannelStore(consoleDb);
     const h = await harness(
       {
         channels,
@@ -141,7 +84,7 @@ describe("debug routes + sqlite channel store", () => {
           }),
         )
       ).statusCode,
-    ).toBe(500);
+    ).toBe(409);
   });
 
   it("refuses weak debug keys", () => {

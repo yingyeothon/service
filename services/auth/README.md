@@ -20,12 +20,12 @@
 
 ## 데이터
 
-- 채널: 콘솔 DB(`s3://yyt-service-{stage}/db/console.db`)를 `@yyt/sqlite-s3` 로 **읽기 전용** 열람(ETag 캐시). Redis 캐시 없음 — secret 을 Redis 에 두지 않기 위해.
-- Redis(`auth:{stage}:`): `state:{state}` TTL 600s, `issued:{channelId}:{yyyymmdd}` 카운터(40일).
+- 채널: 콘솔 MySQL DB 를 auth 의 **SELECT 전용 계정**으로 `@yyt/console-db` 를 통해 읽는다(요청당 1 SELECT). Redis 캐시 없음 — secret 을 Redis 에 두지 않기 위해.
+- Redis(`auth:{stage}:`, `@yyt/redis` 로 컨테이너당 연결 1개): `state:{state}` TTL 600s, `issued:{channelId}:{yyyymmdd}` 카운터(40일).
 
 ## 환경변수 (`serverless.yml`)
 
-`STAGE`, `PUBLIC_BASE_URL`, `DB_BUCKET`, `UPSTASH_REDIS_REST_URL`/`_TOKEN`(SSM `/yyt-service/{stage}/upstash-url|token`), `DEBUG_HOOKS`(`--param debugHooks=1`, dev 전용), `DEBUG_KEY`(SSM `debug-key`).
+`STAGE`, `PUBLIC_BASE_URL`, `MYSQL_*`/`REDIS_*`(SSM `/yyt-service/{stage}/auth/*`, `scripts/bootstrap-ssm.sh` 가 `local/env/auth.{stage}.env` 에서 업로드), `DEBUG_HOOKS`(`--param debugHooks=1`, dev 전용), `DEBUG_KEY`(SSM `debug-key`), `DEBUG_MYSQL_*`(dev 전용 콘솔 쓰기 계정, SSM `auth/debug-mysql-user|password`; 없으면 훅 비활성).
 
 ## 디버그 훅 (dev + `DEBUG_HOOKS=1` 일 때만 등록)
 
@@ -35,7 +35,7 @@
 ## 배포/검증
 
 ```bash
-UPSTASH_REDIS_REST_URL=... UPSTASH_REDIS_REST_TOKEN=... scripts/bootstrap-ssm.sh dev   # 최초 1회
+scripts/bootstrap-ssm.sh dev   # local/env/*.dev.env → SSM (최초 1회, 로테이션 때 재실행)
 scripts/deploy.sh auth dev --param debugHooks=1
-scripts/smoke/auth.mjs https://auth-dev.yyt.life <debug-key>
+scripts/smoke/auth.mjs https://auth-dev.yyt.life "$(cat local/deploy/debug-key.dev)"
 ```

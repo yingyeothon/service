@@ -19,7 +19,7 @@ import {
   type RouteResult,
 } from "@yyt/http";
 import { deriveUserId, signChannelToken, verifyChannelToken } from "@yyt/jwt";
-import type { Kv } from "@yyt/upstash";
+import type { Kv } from "@yyt/redis";
 import { z } from "zod";
 import {
   requireActiveChannel,

@@ -1,12 +1,16 @@
 # @yyt/console-db
 
-콘솔 sqlite(`db/console.db`) 스키마와 리포지토리. 쓰기는 console 서비스만, auth/topic/match 는 읽기 전용으로 같은 파일을 연다.
+콘솔이 소유하는 MySQL(MariaDB) 스키마와 리포지토리. console 은 쓰기 계정으로 마이그레이션·쓰기를, auth/topic/match 는 `SELECT` 전용 계정으로 같은 리포지토리를 읽기만 한다. 호스트·계정 정보는 private `yyt-stateful` 레포와 `local/env/*.env` 에만 있다.
 
 ## Public API
 
-- `CONSOLE_MIGRATIONS`, `migrateConsoleDb(db)` — `user_version` 마이그레이션. `createSqliteS3({ migrate: migrateConsoleDb })` 로 넘긴다.
-- `findChannelRow(db, id)` — 소프트 삭제 제외 원본 행.
-- `findAuthChannel(db, id)` → `{ id, name, ownerId, config, secret, expiresAt, disabledAt }` — `config = {audience, tokenTtlSec, redirectAllowlist[], providers:{github?:{clientId}, google?:{clientId}}}`, `secret = {secret, providers:{github?:{clientSecret}, google?:{clientSecret}}}`. 만료 판단은 호출자가 한다(410 을 404 와 구분하기 위해).
-- `insertChannel(db, input)`, `upsertMember(db, member)` — 쓰기 헬퍼(console, dev 디버그 시드).
+- `createMysqlDb({host, port, database, user, password, pool?})` → `Db` (`query/execute/transaction/close`). 커넥션 1개짜리 풀 — Lambda 컨테이너당 1개를 만들어 재사용한다. 드라이버 오류는 `AppError("conflict")`(중복 키) / `AppError("unavailable")` 로 바뀌고 SQL·값은 메시지에 실리지 않는다.
+- `mysqlOptionsFromEnv(env?, prefix = "MYSQL_")` — `MYSQL_HOST/PORT/DATABASE/USER/PASSWORD` 를 읽는다. prefix 를 바꾸면 다른 계정(예: dev 디버그 시드용 `DEBUG_MYSQL_`)을 읽을 수 있다.
+- `migrateConsoleDb(db, steps?)` — `schema_migrations` 테이블 + `GET_LOCK` 으로 직렬화. **console 만** 호출한다.
+- `createConsoleDb(db)` → `ConsoleDb` (`findChannelRow/findAuthChannel/insertChannel/upsertMember`).
+- `createMemoryConsoleDb()` — 테스트용 fake(같은 계약 + `patchChannel` 헬퍼).
 
-02-console 에서 멤버/토큰/채널 CRUD 리포지토리가 추가된다.
+## 테스트
+
+- 단위: fake `Db` 로 SQL/파라미터 매핑 확인, `createMemoryConsoleDb` 계약.
+- 통합(opt-in): `YYT_IT=1 pnpm test` 이고 `local/env/console.dev.env` 가 있으면 dev DB 에 마이그레이션을 적용하고 고유 id 로 round-trip 뒤 정리한다.

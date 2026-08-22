@@ -16,11 +16,16 @@ custom:
     dev: "-dev"
     prod: ""
   domain: auth${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
-  dbBucket: yyt-service-${self:custom.stage}
-  # auth only writes the console DB through the dev-only debug seeding hook.
-  dbActions:
-    dev: [s3:GetObject, s3:PutObject]
-    prod: [s3:GetObject]
+  # Per-service credentials uploaded by scripts/bootstrap-ssm.sh from local/env/*.env.
+  ssm: /yyt-service/${self:custom.stage}/auth
+  # Console's dev writer account reaches the function only when the debug hooks are
+  # deployed (`--param debugHooks=1`); otherwise the variables are empty.
+  debugMysqlUser:
+    "1": ${ssm:${self:custom.ssm}/debug-mysql-user, ""}
+    "0": ""
+  debugMysqlPassword:
+    "1": ${ssm:${self:custom.ssm}/debug-mysql-password, ""}
+    "0": ""
   esbuild:
     bundle: true
     minify: false
@@ -29,12 +34,11 @@ custom:
     platform: node
     format: esm
     outputFileExtension: .mjs
-    # Provided by the arm64 layer (layers/better-sqlite3); AWS SDK v3 is already in the runtime.
+    # AWS SDK v3 is already in the runtime; ioredis/mysql2 are bundled (pure JS).
     exclude:
-      - better-sqlite3
       - "@aws-sdk/*"
     banner:
-      # ESM bundles lose `require`; `jose`/`@upstash/redis` are fine but keep the shim for transitive CJS.
+      # ESM bundles lose `require`; mysql2/ioredis are CJS, so the shim is required.
       js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
   customDomain:
     domainName: ${self:custom.domain}
@@ -65,37 +69,32 @@ provider:
     STAGE: ${self:custom.stage}
     NODE_OPTIONS: --enable-source-maps
     PUBLIC_BASE_URL: https://${self:custom.domain}
-    DB_BUCKET: ${self:custom.dbBucket}
-    UPSTASH_REDIS_REST_URL: ${ssm:/yyt-service/${self:custom.stage}/upstash-url}
-    UPSTASH_REDIS_REST_TOKEN: ${ssm:/yyt-service/${self:custom.stage}/upstash-token}
+    MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
+    MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}
+    MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
+    MYSQL_USER: ${ssm:${self:custom.ssm}/mysql-user}
+    MYSQL_PASSWORD: ${ssm:${self:custom.ssm}/mysql-password}
+    REDIS_HOST: ${ssm:${self:custom.ssm}/redis-host}
+    REDIS_PORT: ${ssm:${self:custom.ssm}/redis-port}
+    REDIS_USER: ${ssm:${self:custom.ssm}/redis-user}
+    REDIS_PASSWORD: ${ssm:${self:custom.ssm}/redis-password}
+    REDIS_KEY_PREFIX: ${ssm:${self:custom.ssm}/redis-key-prefix}
     DEBUG_HOOKS: ${param:debugHooks, "0"}
     DEBUG_KEY: ${ssm:/yyt-service/${self:custom.stage}/debug-key, ""}
-  iam:
-    role:
-      statements:
-        - Effect: Allow
-          Action: ${self:custom.dbActions.${self:custom.stage}}
-          Resource: arn:aws:s3:::${self:custom.dbBucket}/db/*
-        - Effect: Allow
-          Action: [s3:ListBucket]
-          Resource: arn:aws:s3:::${self:custom.dbBucket}
-
-layers:
-  betterSqlite3:
-    # Built by layers/better-sqlite3/build.sh (git-ignored); never use `path:` here.
-    package:
-      artifact: ../../layers/better-sqlite3/better-sqlite3-arm64.zip
-    name: yyt-better-sqlite3-${self:custom.stage}
-    description: better-sqlite3 prebuilt for nodejs22.x arm64
-    compatibleRuntimes: [nodejs22.x]
-    compatibleArchitectures: [arm64]
-    retain: false
+    # dev only: console's writer account for the debug seeding hook (absent on prod → hooks disabled).
+    DEBUG_MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
+    DEBUG_MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}
+    DEBUG_MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
+    DEBUG_MYSQL_USER: ${self:custom.debugMysqlUser.${param:debugHooks, "0"}}
+    DEBUG_MYSQL_PASSWORD: ${self:custom.debugMysqlPassword.${param:debugHooks, "0"}}
 
 functions:
   api:
     handler: src/handler.handler
-    layers:
-      - { Ref: BetterSqlite3LambdaLayer }
+    # Each container holds one MySQL + one Redis connection (two MySQL on dev
+    # with debug hooks); the stateful host allows ~60 MySQL connections across
+    # all four stacks, so cap containers per stack (rules/data.md).
+    reservedConcurrency: 10
     events:
       - httpApi: "*"
 

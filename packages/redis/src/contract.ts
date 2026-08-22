@@ -9,7 +9,7 @@ interface TestApi {
 }
 
 /**
- * Contract cases shared by the memory fake and (env-gated) a real Upstash
+ * Contract cases shared by the memory fake and (env-gated) a real Redis
  * instance, so the fake cannot drift from the semantics the code relies on.
  * `tick(ms)` advances time: the fake's clock, or a real sleep.
  */

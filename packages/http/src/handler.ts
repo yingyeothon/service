@@ -239,6 +239,9 @@ export function createHttpHandler({
             requestId,
             code: e.code,
             message: e.message,
+            // Operators need the underlying reason; `cause` messages are
+            // driver/network errors and never carry request data.
+            cause: e.cause instanceof Error ? e.cause.message : undefined,
           });
         else
           logger.debug("request rejected", {

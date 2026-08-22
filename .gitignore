@@ -12,13 +12,9 @@ local/*
 !local/env.example
 .envrc
 !.envrc.example
-layers/*/nodejs/
-layers/*/*.zip
 cli/dist/
 apps/console-web/dist/
 .claude/*
 !.claude/settings.json
 .codex/
 .DS_Store
-*.db
-*.db-journal

@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createMemoryKv, kvContractTests } from "../src/index.js";
+import { createRedisKv, redisOptionsFromEnv, type Kv } from "../src/index.js";
+import { loadItEnv } from "./itEnv.js";
 
 describe("createMemoryKv contract", () => {
   let now = 0;
@@ -41,22 +43,24 @@ describe("createMemoryKv contract", () => {
   });
 });
 
-const url = process.env.UPSTASH_TEST_URL;
-const token = process.env.UPSTASH_TEST_TOKEN;
-describe.skipIf(!url || !token)(
-  "createUpstashKv contract (real Upstash)",
+const it_ = loadItEnv("auth", "dev");
+describe.skipIf(!it_)(
+  "createRedisKv contract (real dev Redis, YYT_IT=1)",
   () => {
+    // One connection for the whole block (the host allows few); the contract
+    // cases use disjoint key names.
+    let kv: (Kv & { close(): Promise<void> }) | undefined;
+    afterAll(async () => {
+      await kv?.del("a", "nx", "ex", "n", "s", "l", "h", "z", "cad");
+      await kv?.close();
+    });
     kvContractTests(
       { it, expect },
-      async () => {
-        const { createUpstashKv } = await import("../src/index.js");
-        const kv = createUpstashKv({
-          url: url!,
-          token: token!,
-          prefix: `contract:${Date.now()}:`,
-        });
-        return kv;
-      },
+      () =>
+        (kv ??= createRedisKv({
+          ...redisOptionsFromEnv(it_),
+          prefix: `${it_!.REDIS_KEY_PREFIX}it:${process.pid}:`,
+        })),
       (ms) => new Promise((r) => setTimeout(r, ms)),
     );
   },

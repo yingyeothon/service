@@ -1,5 +1,5 @@
 import { AppError, randomHex } from "@yyt/core";
-import type { Kv } from "@yyt/upstash";
+import type { Kv } from "@yyt/redis";
 import type { ProviderName } from "./providers/types.js";
 
 export interface OAuthState {

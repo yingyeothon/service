@@ -10,6 +10,6 @@
 ## Conventions
 
 - Region `ap-northeast-2`, `AWS_PROFILE=yyt`, stages `dev`/`prod`, domains `{auth,console,topic,match}.yyt.life` (dev: `-dev` suffix) via `serverless-domain-manager`.
-- Secrets come from SSM `/yyt-service/{stage}/*` (per-service MySQL/Redis values uploaded from `local/env/*.env` by `scripts/bootstrap-ssm.sh` — see `todo/09-storage-migration.md`); legacy `.envrc` ↔ SSM via `scripts/{get,put}-envrc.sh`. Never commit `.env*` or anything under `local/`.
-- Lambda: `nodejs22.x`, arm64, `serverless-esbuild` with `better-sqlite3` external + layer, `serverless-prune-plugin` keep 5, log retention 14 days.
+- Secrets come from SSM `/yyt-service/{stage}/*` (per-service MySQL/Redis values uploaded from `local/env/*.env` by `scripts/bootstrap-ssm.sh` — see `todo/09-storage-migration.md`). `scripts/get-env.sh <stage>` rebuilds `local/env/` from SSM on a new machine. Rotation order: update `local/env` via `yyt-stateful` → `bootstrap-ssm.sh <stage>` → redeploy every stack of that stage (SSM values are baked into Lambda env at deploy time) → revoke the old credentials. `bootstrap-ssm.sh dev` keeps the existing `debug-key` unless `DEBUG_KEY` is exported. Never commit `.env*` or anything under `local/`.
+- Lambda: `nodejs22.x`, arm64, `serverless-esbuild` (no layers), built-in prune keep 5, log retention 14 days.
 - Infra changes (ACM, Route53, CloudFront, buckets) are listed in `todo/07-infra.md`; record what was created manually there.

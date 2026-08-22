@@ -1,6 +1,5 @@
 import { AppError, nowSec, type Clock, systemClock } from "@yyt/core";
-import { findAuthChannel, type AuthChannel } from "@yyt/console-db";
-import type { SqliteS3 } from "@yyt/sqlite-s3";
+import type { AuthChannel, ConsoleDb } from "@yyt/console-db";
 
 export type { AuthChannel };
 
@@ -9,11 +8,9 @@ export interface ChannelStore {
   get(channelId: string): Promise<AuthChannel | undefined>;
 }
 
-/** Reads the console sqlite file (ETag-cached by `@yyt/sqlite-s3`); never writes. */
-export function createSqliteChannelStore(db: SqliteS3): ChannelStore {
-  return {
-    get: (channelId) => db.read((conn) => findAuthChannel(conn, channelId)),
-  };
+/** Reads the console DB with auth's SELECT-only account; never writes. No Redis cache: rows carry secrets. */
+export function createChannelStore(db: ConsoleDb): ChannelStore {
+  return { get: (channelId) => db.findAuthChannel(channelId) };
 }
 
 export function isChannelActive(ch: AuthChannel, clock: Clock): boolean {

@@ -1,8 +1,8 @@
 {
-  "name": "@yyt/sqlite-s3",
+  "name": "@yyt/redis",
   "version": "0.0.0",
   "private": true,
-  "description": "sqlite database stored on S3 with locked writes and ETag-cached reads",
+  "description": "Kv interface over self-hosted Redis (ioredis, TCP), in-memory fake, distributed lock",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -24,12 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.864.0",
-    "better-sqlite3": "^12.2.0",
     "@yyt/core": "workspace:*",
-    "@yyt/upstash": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
+    "ioredis": "^6.0.0"
   }
 }

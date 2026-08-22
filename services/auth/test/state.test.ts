@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMemoryKv } from "@yyt/upstash";
+import { createMemoryKv } from "@yyt/redis";
 import { createStateStore } from "../src/state.js";
 
 describe("state store", () => {

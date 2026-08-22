@@ -1,11 +1,14 @@
-import { S3Client } from "@aws-sdk/client-s3";
-import { migrateConsoleDb } from "@yyt/console-db";
+import {
+  createConsoleDb,
+  createMysqlDb,
+  mysqlOptionsFromEnv,
+  type ConsoleDb,
+} from "@yyt/console-db";
 import { systemClock, type Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
-import { createSqliteS3 } from "@yyt/sqlite-s3";
-import { createUpstashKv } from "@yyt/upstash";
+import { createRedisKv, redisOptionsFromEnv } from "@yyt/redis";
 import { createAuthApp } from "./app.js";
-import { createSqliteChannelStore } from "./channels.js";
+import { createChannelStore } from "./channels.js";
 import { createDebugRoutes } from "./debug.js";
 import {
   createGithubProvider,
@@ -33,37 +36,30 @@ const logger: Logger = {
 
 function build(): (event: HttpEvent) => Promise<HttpResult> {
   const stage = env("STAGE");
-  const upstash = {
-    url: env("UPSTASH_REDIS_REST_URL"),
-    token: env("UPSTASH_REDIS_REST_TOKEN"),
-  };
-  const kv = createUpstashKv({ ...upstash, prefix: `auth:${stage}:` });
-  // The console DB's lock lives in the console namespace so every writer shares it.
-  const consoleKv = createUpstashKv({
-    ...upstash,
-    prefix: `console:${stage}:`,
-  });
-  const consoleDb = createSqliteS3({
-    bucket: env("DB_BUCKET"),
-    key: "db/console.db",
-    kv: consoleKv,
-    lockKey: "lock:db",
-    migrate: migrateConsoleDb,
-    s3: new S3Client({}),
-    logger,
-  });
-  const channels = createSqliteChannelStore(consoleDb);
+  const redis = redisOptionsFromEnv();
+  if (redis.prefix !== `auth:${stage}:`)
+    throw new Error("REDIS_KEY_PREFIX must be auth:<stage>:");
+  // One connection per container, reused across invocations (rules/data.md).
+  const kv = createRedisKv(redis);
+  // auth's MySQL account is SELECT-only; the repository is shared with the writer.
+  const consoleDb = createConsoleDb(createMysqlDb(mysqlOptionsFromEnv()));
+  const channels = createChannelStore(consoleDb);
   const clock = systemClock;
 
-  // Debug hooks exist only on dev; a bad DEBUG_KEY disables them instead of
-  // taking the real endpoints down with a 500.
+  // Debug hooks exist only on dev; a bad DEBUG_KEY or missing DEBUG_MYSQL_*
+  // disables them instead of taking the real endpoints down with a 500.
   const debugEnabled = stage === "dev" && process.env.DEBUG_HOOKS === "1";
   let extraRoutes: ReturnType<typeof createDebugRoutes> = [];
   if (debugEnabled) {
     try {
+      // Seeding writes the console DB, so it needs the dev console account
+      // published as /yyt-service/dev/auth/debug-mysql-* (docs/decisions.md).
+      const writer: ConsoleDb = createConsoleDb(
+        createMysqlDb(mysqlOptionsFromEnv(process.env, "DEBUG_MYSQL_")),
+      );
       extraRoutes = createDebugRoutes({
         debugKey: process.env.DEBUG_KEY ?? "",
-        consoleDb,
+        consoleDb: writer,
         channels,
         clock,
       });

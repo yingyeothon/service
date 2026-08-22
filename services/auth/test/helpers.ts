@@ -1,6 +1,6 @@
 import { MockAgent, fetch as undiciFetch } from "undici";
 import type { HttpEvent, HttpResult } from "@yyt/http";
-import { createMemoryKv } from "@yyt/upstash";
+import { createMemoryKv } from "@yyt/redis";
 import { exportJWK, generateKeyPair, SignJWT, createLocalJWKSet } from "jose";
 import { createAuthApp, type AuthAppOptions } from "../src/app.js";
 import type { AuthChannel, ChannelStore } from "../src/channels.js";
