@@ -79,7 +79,7 @@ describe("channels", () => {
     );
     expect(t.apiKey).toMatch(/^[0-9a-f]{64}$/);
     expect(t).toMatchObject({
-      wsUrl: "wss://topic-dev.yyt.life/",
+      wsUrl: "wss://topic-ws-dev.yyt.life/",
       apiBase: URLS.topic,
     });
     const m = parse(

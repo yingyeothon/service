@@ -83,6 +83,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     urls: {
       auth: env("AUTH_BASE_URL"),
       topic: env("TOPIC_BASE_URL"),
+      topicWs: env("TOPIC_WS_URL"),
       match: env("MATCH_BASE_URL"),
     },
     github: createGithubLogin({

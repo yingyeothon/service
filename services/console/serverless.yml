@@ -61,6 +61,7 @@ provider:
     WEB_URL: ${param:webUrl, "https://${self:custom.domain}"}
     AUTH_BASE_URL: https://auth${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     TOPIC_BASE_URL: https://topic${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+    TOPIC_WS_URL: wss://topic-ws${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     MATCH_BASE_URL: https://match${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
     MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}

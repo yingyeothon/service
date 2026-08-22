@@ -11,6 +11,7 @@ export const BASE = "https://console-dev.yyt.life";
 export const URLS = {
   auth: "https://auth-dev.yyt.life",
   topic: "https://topic-dev.yyt.life",
+  topicWs: "wss://topic-ws-dev.yyt.life",
   match: "https://match-dev.yyt.life",
 };
 export const NOW_MS = 1_700_000_000_000;

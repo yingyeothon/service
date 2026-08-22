@@ -2,6 +2,7 @@ import { AppError } from "@yyt/core";
 import {
   toAuthChannel,
   toMatchChannel,
+  toTopicChannel,
   type ApiTokenRow,
   type AuditInput,
   type ChannelRow,
@@ -44,6 +45,10 @@ export function createMemoryConsoleDb(): ConsoleDb & {
     findMatchChannel: async (id) => {
       const row = await findChannelRow(id);
       return row && toMatchChannel(row);
+    },
+    findTopicChannel: async (id) => {
+      const row = await findChannelRow(id);
+      return row && toTopicChannel(row);
     },
     insertChannel: async (c) => {
       if (channels.has(c.id)) throw new AppError("conflict", "duplicate key");

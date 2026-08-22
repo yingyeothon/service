@@ -10,6 +10,8 @@ import { z } from "zod";
 export interface ServiceUrls {
   auth: string;
   topic: string;
+  /** WebSocket host of the topic stack (`wss://topic-ws…`); API Gateway cannot share one domain between HTTP and WebSocket APIs. */
+  topicWs: string;
   match: string;
 }
 
@@ -283,8 +285,11 @@ export function channelView(
     };
   }
   if (row.kind === "topic") {
-    const ws = trim(urls.topic).replace(/^http/, "ws");
-    return { ...base, apiBase: trim(urls.topic), wsUrl: `${ws}/` };
+    return {
+      ...base,
+      apiBase: trim(urls.topic),
+      wsUrl: `${trim(urls.topicWs)}/`,
+    };
   }
   const ws = trim(urls.match).replace(/^http/, "ws");
   return { ...base, wsUrl: `${ws}/?channel=${id}` };

@@ -15,6 +15,7 @@ export {
   createConsoleDb,
   toAuthChannel,
   toMatchChannel,
+  toTopicChannel,
   type ApiKeySecret,
   type ApiTokenInput,
   type ApiTokenRow,
@@ -33,5 +34,7 @@ export {
   type MemberRow,
   type OAuthAppPublic,
   type OAuthAppSecret,
+  type TopicChannel,
+  type TopicChannelConfig,
 } from "./channels.js";
 export { createMemoryConsoleDb } from "./memory.js";

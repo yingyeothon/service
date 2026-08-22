@@ -201,3 +201,47 @@ describe("findMatchChannel", () => {
     expect(m?.expiresAt).toBe(2);
   });
 });
+
+describe("findTopicChannel", () => {
+  const topicRow = {
+    ...channel,
+    id: "t1",
+    kind: "topic" as const,
+    config: { authChannelId: "ch_a" },
+    secret: { apiKey: "k".repeat(64) },
+  };
+
+  it("memory fake parses topic rows and rejects other kinds", async () => {
+    const db = createMemoryConsoleDb();
+    await db.upsertMember(member);
+    await db.insertChannel(topicRow);
+    await db.insertChannel(channel);
+    const t = await db.findTopicChannel("t1");
+    expect(t?.config.authChannelId).toBe("ch_a");
+    expect(t?.secret.apiKey).toHaveLength(64);
+    expect(await db.findTopicChannel("ch_a")).toBeUndefined();
+    expect(await db.findTopicChannel("nope")).toBeUndefined();
+  });
+
+  it("mysql repository maps the row", async () => {
+    const db = fakeDb();
+    const repo = createConsoleDb(db);
+    db.next([
+      {
+        id: "t1",
+        kind: "topic",
+        owner_id: "m",
+        name: "n",
+        config_json: JSON.stringify(topicRow.config),
+        secret_json: JSON.stringify(topicRow.secret),
+        created_at: "1",
+        expires_at: "2",
+        disabled_at: null,
+        deleted_at: null,
+      },
+    ]);
+    const t = await repo.findTopicChannel("t1");
+    expect(t?.config.authChannelId).toBe("ch_a");
+    expect(t?.disabledAt).toBeNull();
+  });
+});

@@ -38,6 +38,21 @@ export interface ApiKeySecret {
   apiKey: string;
 }
 
+/** `config_json` of a topic channel (console validates and writes it). */
+export interface TopicChannelConfig {
+  authChannelId: string;
+}
+
+export interface TopicChannel {
+  id: string;
+  name: string;
+  ownerId: string;
+  config: TopicChannelConfig;
+  secret: ApiKeySecret;
+  expiresAt: number;
+  disabledAt: number | null;
+}
+
 export interface MatchChannel {
   id: string;
   name: string;
@@ -147,6 +162,8 @@ export interface ConsoleDb {
   findAuthChannel(id: string): Promise<AuthChannel | undefined>;
   /** Same contract as `findAuthChannel` for match channels. */
   findMatchChannel(id: string): Promise<MatchChannel | undefined>;
+  /** Same contract as `findAuthChannel` for topic channels. */
+  findTopicChannel(id: string): Promise<TopicChannel | undefined>;
   /** Writer-side (console, and dev-only debug seeding). `AppError("conflict")` on a duplicate id. */
   insertChannel(c: InsertChannelInput): Promise<void>;
   /**
@@ -257,6 +274,19 @@ export function toMatchChannel(row: ChannelRow): MatchChannel | undefined {
     name: row.name,
     ownerId: row.ownerId,
     config: JSON.parse(row.configJson) as MatchChannelConfig,
+    secret: JSON.parse(row.secretJson) as ApiKeySecret,
+    expiresAt: row.expiresAt,
+    disabledAt: row.disabledAt,
+  };
+}
+
+export function toTopicChannel(row: ChannelRow): TopicChannel | undefined {
+  if (row.kind !== "topic") return undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    ownerId: row.ownerId,
+    config: JSON.parse(row.configJson) as TopicChannelConfig,
     secret: JSON.parse(row.secretJson) as ApiKeySecret,
     expiresAt: row.expiresAt,
     disabledAt: row.disabledAt,
@@ -459,6 +489,10 @@ export function createConsoleDb(db: Db): ConsoleDb {
     findMatchChannel: async (id) => {
       const row = await findChannelRow(id);
       return row && toMatchChannel(row);
+    },
+    findTopicChannel: async (id) => {
+      const row = await findChannelRow(id);
+      return row && toTopicChannel(row);
     },
     insertChannel: async (c) => {
       await db.execute(
