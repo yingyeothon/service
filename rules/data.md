@@ -6,7 +6,7 @@
 
 - One MySQL database per stage (name in `yyt-stateful`), owned by console (only writer, owns migrations). auth/topic/match use `SELECT`-only accounts.
 - One MySQL account and one Redis ACL user per service×stage. Redis ACL users are restricted to keys/channels `{service}:{stage}:*` (`resetkeys ~… resetchannels &…`, `+@all -@dangerous`), so a wrong prefix fails with NOPERM instead of leaking — keep the `{service}:{stage}:` prefix rule anyway for readability.
-- Credentials live in `services/{service}/.env.{stage}` (gitignored; layout in `services/.env.example`) and are pushed to SSM for Lambda. Never commit or log them. Rotate via `yyt-stateful` scripts (`ALTER USER` / `ACL SETUSER … >pw` + `ACL SAVE`) and update the `.env` in the same step.
+- Credentials live in `local/env/{service}.{stage}.env` (gitignored; layout in `local/env.example`, see `local/README.md`) and are pushed to SSM for Lambda. Never commit or log them. Rotate via `yyt-stateful` scripts (`ALTER USER` / `ACL SETUSER … >pw` + `ACL SAVE`) and update the `.env` in the same step.
 - Redis 6.2 quirk: a new ACL user starts with `allchannels`; adding `&pattern` errors unless `resetchannels` precedes it.
 - Host limits (see `yyt-stateful`): Redis `maxmemory 256mb allkeys-lru` (every runtime key still needs a TTL; eviction is a safety net, not a design), MariaDB `max_connections=60` — keep Lambda pools tiny (1 connection per container) and prefer short-lived connections.
 

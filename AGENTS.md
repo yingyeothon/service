@@ -6,6 +6,7 @@
 - Source of truth, in order: `docs/decisions.md` (confirmed product/tech decisions) → `todo/index.md` (progress + next work) → `todo/NN-*.md` (per-area checklists) → `docs/auth-game-contract.md` (JWT contract shared with tslib games).
 - Sibling repo `~/git/yyt.life/tslib` (`@yingyeothon/*`) owns game-loop libraries; this repo must stay compatible with its JWT/WebSocket contracts but never duplicates its code.
 - Write user-facing docs in Korean; write `rules/` and code comments in English.
+- **This repo is PUBLIC.** Secrets and infra identifiers (stateful host, DB/account names) never go into source, docs, examples, or commits. Machine-local config lives in gitignored `local/` (`local/README.md`); see `rules/security.md` "Public repository".
 
 ## Required Rule Lookup
 
@@ -24,9 +25,9 @@
 ## Non-Negotiables
 
 - Decisions in `docs/decisions.md` are settled; change the doc first, then the code.
-- Runtime state lives in Upstash Redis (REST) with a `{service}:{stage}:` prefix; durable data lives in the per-service sqlite file on S3 behind the write lock — `rules/data.md`.
+- Runtime state lives in self-hosted Redis (TCP, per-service ACL user) with a `{service}:{stage}:` prefix; durable data lives in the self-hosted MySQL database owned by console (others read-only) — `rules/data.md`. (Migration from the old Upstash/sqlite-on-S3 design: `todo/09-storage-migration.md`.)
 - Identity comes only from verified JWT claims / sessions; never log tokens, OAuth codes, or secrets — `rules/security.md`.
-- Every task: tests → manual verification on `dev` → three adversarial review subagents → update rules/todo → commit to `main` and push — `rules/workflow.md`.
+- Every task: tests → manual verification on `dev` → three adversarial review subagents → update rules/todo → commit to `main` and push — `rules/workflow.md`. Git hooks (`scripts/git-hooks/`, enabled by `pnpm install` via `prepare`) run gitleaks on commit and push; never bypass them with `--no-verify`.
 
 ## Session Start (IMPORTANT)
 

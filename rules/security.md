@@ -19,6 +19,9 @@
 
 ## Public repository
 
-- This repo is **public** on GitHub. Secrets stay local only (`services/*/.env.{stage}`, gitignored) and reach Lambda via SSM; CI gets them via GitHub environment secrets, never via files in the repo. If `.env` files need version control, use a separate private repo — do not make this repo private (Actions/Release limits).
-- Do not write infra identifiers (hostnames, DB names, account names) of the self-hosted MySQL/Redis into docs, rules, or examples; refer to the private `yyt-stateful` ops repo instead.
-- Before every `git push`, grep the commit range for values from `services/*/.env.*` and confirm with the user.
+- This repo is **public** on GitHub and stays public (Actions/Release allowances). Treat every commit as world-readable.
+- Secrets exist only in gitignored `local/` (`local/env/<service>.<stage>.env`, `local/deploy/`), reach Lambda through SSM `/yyt-service/{stage}/{service}/*`, and reach CI (when needed) through GitHub environment secrets. Versioning of secret files, if ever needed, goes to a separate private repo.
+- Never write infra identifiers into source, docs, examples, tests, or commit messages: stateful hostnames, database names, MySQL/Redis account names, bucket-internal keys that embed them. Say "see the private `yyt-stateful` ops repo" instead. Test fixtures use the obvious `0123456789abcdef…` value only.
+- Defenses (all required, none optional): `.gitignore` (`local/*`, `.env*`, `.envrc`), `scripts/git-hooks/pre-commit` (path block + identifier grep + `gitleaks protect --staged`), `scripts/git-hooks/pre-push` (tracked-path check + identifier grep + `gitleaks detect` over the pushed range), CI `secrets-scan` job (full history). `pnpm install` sets `core.hooksPath`; `gitleaks` must be installed locally. Never use `--no-verify`.
+- When adding a new kind of secret, extend the `yyt-env-credential` rule / identifier grep in `.gitleaks.toml` and the hooks in the same commit, and prove the hook blocks it with a throwaway staged file before relying on it.
+- If something leaks anyway: rotate the credential first (via `yyt-stateful`), then rewrite history; rotation is the only real fix.

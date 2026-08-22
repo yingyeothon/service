@@ -10,6 +10,6 @@
 ## Conventions
 
 - Region `ap-northeast-2`, `AWS_PROFILE=yyt`, stages `dev`/`prod`, domains `{auth,console,topic,match}.yyt.life` (dev: `-dev` suffix) via `serverless-domain-manager`.
-- Secrets come from SSM `/yyt-service/{stage}/*`; local `.envrc` is stored in SSM via `scripts/put-envrc.sh`. Never commit `.env*`.
+- Secrets come from SSM `/yyt-service/{stage}/*` (per-service MySQL/Redis values uploaded from `local/env/*.env` by `scripts/bootstrap-ssm.sh` — see `todo/09-storage-migration.md`); legacy `.envrc` ↔ SSM via `scripts/{get,put}-envrc.sh`. Never commit `.env*` or anything under `local/`.
 - Lambda: `nodejs22.x`, arm64, `serverless-esbuild` with `better-sqlite3` external + layer, `serverless-prune-plugin` keep 5, log retention 14 days.
 - Infra changes (ACM, Route53, CloudFront, buckets) are listed in `todo/07-infra.md`; record what was created manually there.

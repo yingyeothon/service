@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Defense in depth for a PUBLIC repo (rules/security.md):
+#  1. refuse .env*/.envrc files and anything under local/ (except README/env.example), even when force-added;
+#  2. refuse lines that look like our stateful host / service account identifiers;
+#  3. gitleaks on the staged diff.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+bad=$(echo "$staged" | grep -E '(^|/)\.env(\.|$)|(^|/)\.envrc$|^local/' | grep -vE '\.example$|^local/README\.md$' || true)
+if [ -n "$bad" ]; then echo "pre-commit: refusing secret-bearing paths:" >&2; echo "$bad" >&2; exit 1; fi
+if [ -n "$staged" ]; then
+  if git diff --cached -U0 -- $staged | grep -E '^\+' | grep -vE '^\+\+\+' | grep -nE 'REDACTED-IDENTIFIER' ; then
+    echo "pre-commit: stateful host / account identifiers must not be committed (refer to the private yyt-stateful repo instead)" >&2; exit 1
+  fi
+fi
+command -v gitleaks >/dev/null || { echo "pre-commit: gitleaks is required (apt install gitleaks / brew install gitleaks)" >&2; exit 1; }
+gitleaks protect --staged --redact --no-banner --config .gitleaks.toml

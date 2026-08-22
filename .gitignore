@@ -6,7 +6,10 @@ coverage/
 *.tsbuildinfo
 .env
 .env.*
-!.env.example
+# Everything under local/ is machine-local (credentials, deploy params); only the README and example are tracked.
+local/*
+!local/README.md
+!local/env.example
 .envrc
 !.envrc.example
 layers/*/nodejs/

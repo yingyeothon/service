@@ -1,0 +1,21 @@
+# gitleaks config (v8.16 syntax): default rules plus a rule for KEY=value credentials of the kind kept in local/env/*.env.
+title = "yyt service"
+[extend]
+useDefault = true
+
+[[rules]]
+id = "yyt-env-credential"
+description = "Credential-looking assignment (PASSWORD/SECRET/TOKEN/KEY = long literal on the same line)"
+regex = '''(?i)(?:password|secret|token|api[_-]?key|debug[_-]?key)[ \t]*[=:][ \t]*["']?([A-Za-z0-9+/=_\-]{16,})["']?'''
+secretGroup = 1
+entropy = 3.0
+[rules.allowlist]
+regexes = [
+  '''(?i)(placeholder|example|changeme|xxx+|\$\{|<[a-z-]+>)''',
+  '''[=:][ \t]*[A-Z][A-Za-z]*(Secret|Token|Key|Password)\b''', # TypeScript type annotations
+]
+
+[allowlist]
+description = "Lockfile, this config, and the one shared non-secret test fixture value"
+paths = ['''pnpm-lock\.yaml$''', '''\.gitleaks\.toml$''']
+regexes = ['''(0123456789abcdef){1,4}''']
