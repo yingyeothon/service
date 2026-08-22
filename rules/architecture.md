@@ -7,3 +7,5 @@
 - Keep the JWT claim contract (`iss=yyt-auth/{channelId}`, `aud`, `sub=userId`, `exp`) identical to `docs/auth-game-contract.md` so tslib's `createJwtRequestAuthorizer` verifies our tokens unchanged.
 - Never add new persistence technologies (DynamoDB, RDS) — the decision is sqlite-on-S3 + Upstash. Reopen `docs/decisions.md` if that proves insufficient.
 - Do not port legacy repos' build layers (node8–14, webpack); only port algorithms (`lobby-api/src/match`) with fresh tests.
+- Packages are built with `tsc -p tsconfig.build.json` into `dist/` (ESM only, `exports["."]`), and services bundle them with esbuild; `pnpm -r build` must run before a service bundle or typecheck. `package.json` `main/types` point to `dist` — no `src` fallback.
+- Handlers return plain objects (→ 200 JSON), `undefined` (→ 204) or an `HttpResult`; throw `AppError` for every client-visible failure so the router maps status/code uniformly.

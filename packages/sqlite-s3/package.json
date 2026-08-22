@@ -1,0 +1,35 @@
+{
+  "name": "@yyt/sqlite-s3",
+  "version": "0.0.0",
+  "private": true,
+  "description": "sqlite database stored on S3 with locked writes and ETag-cached reads",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.864.0",
+    "better-sqlite3": "^12.2.0",
+    "@yyt/core": "workspace:*",
+    "@yyt/upstash": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  }
+}

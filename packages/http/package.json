@@ -1,0 +1,30 @@
+{
+  "name": "@yyt/http",
+  "version": "0.0.0",
+  "private": true,
+  "description": "API Gateway httpApi router: routes, zod validation, AppError mapping, auth parsing",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.1.5",
+    "@yyt/core": "workspace:*"
+  }
+}

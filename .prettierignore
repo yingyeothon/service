@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+.serverless
+.esbuild
+pnpm-lock.yaml
+cli
+layers/*/nodejs

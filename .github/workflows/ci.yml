@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm coverage
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cli
+        run: echo "present=$([ -f cli/go.mod ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.cli.outputs.present == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+      - if: steps.cli.outputs.present == 'true'
+        run: cd cli && go test ./... && go build ./...

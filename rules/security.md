@@ -9,3 +9,5 @@
 - Console roles: `pending` can only read public data, propose, and vote; channel mutation requires `member`; member management requires `admin`. Enforce in one middleware, test the matrix.
 - S3 buckets private (SSE-KMS); poster images served only via CloudFront.
 - Debug hooks must be registered only on `dev` (see `manual-verification.md`).
+- `@yyt/jwt` refuses HS256 secrets under 32 bytes on sign _and_ verify; generate channel secrets with `randomHex(32)` (64 hex chars). `@yyt/http` refuses `cors: {origins:["*"], credentials:true}`.
+- Never let `decodeURIComponent` throw out of a handler: malformed percent-encoding in paths/cookies must become a 4xx (router treats it as no-match) instead of an unhandled Lambda error.
