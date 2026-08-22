@@ -126,6 +126,34 @@ importers:
         specifier: ^1.55.0
         version: 1.57.2(esbuild@0.25.12)
 
+  services/console:
+    dependencies:
+      '@yyt/console-db':
+        specifier: workspace:*
+        version: link:../../packages/console-db
+      '@yyt/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@yyt/http':
+        specifier: workspace:*
+        version: link:../../packages/http
+      '@yyt/redis':
+        specifier: workspace:*
+        version: link:../../packages/redis
+      zod:
+        specifier: ^4.1.5
+        version: 4.4.3
+    devDependencies:
+      esbuild:
+        specifier: ^0.25.9
+        version: 0.25.12
+      serverless-domain-manager:
+        specifier: ^8.0.0
+        version: 8.0.0(serverless@4.41.0)(supports-color@7.2.0)
+      serverless-esbuild:
+        specifier: ^1.55.0
+        version: 1.57.2(esbuild@0.25.12)
+
 packages:
 
   '@ampproject/remapping@2.3.0':

@@ -1,0 +1,147 @@
+# console.yyt.life — operator console API (copied from services/auth/serverless.yml).
+service: yyt-console
+frameworkVersion: "4"
+
+build:
+  esbuild: false
+
+plugins:
+  - serverless-esbuild
+  - serverless-domain-manager
+
+custom:
+  stage: ${opt:stage, "dev"}
+  domainSuffix:
+    dev: "-dev"
+    prod: ""
+  domain: console${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  ssm: /yyt-service/${self:custom.stage}/console
+  stageSsm: /yyt-service/${self:custom.stage}
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    target: node22
+    platform: node
+    format: esm
+    outputFileExtension: .mjs
+    exclude:
+      - "@aws-sdk/*"
+    banner:
+      js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
+  customDomain:
+    domainName: ${self:custom.domain}
+    apiType: http
+    endpointType: regional
+    certificateName: yyt.life
+    createRoute53Record: true
+    autoDomain: true
+  prune:
+    automatic: true
+    number: 5
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  architecture: arm64
+  region: ap-northeast-2
+  stage: ${self:custom.stage}
+  memorySize: 256
+  timeout: 10
+  logRetentionInDays: 14
+  deploymentMethod: direct
+  httpApi:
+    disableDefaultEndpoint: false
+    metrics: true
+  environment:
+    STAGE: ${self:custom.stage}
+    NODE_OPTIONS: --enable-source-maps
+    PUBLIC_BASE_URL: https://${self:custom.domain}
+    # SPA host; until 07 wires CloudFront the API host doubles as the landing page.
+    WEB_URL: ${param:webUrl, "https://${self:custom.domain}"}
+    AUTH_BASE_URL: https://auth${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+    TOPIC_BASE_URL: https://topic${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+    MATCH_BASE_URL: https://match${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+    MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
+    MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}
+    MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
+    MYSQL_USER: ${ssm:${self:custom.ssm}/mysql-user}
+    MYSQL_PASSWORD: ${ssm:${self:custom.ssm}/mysql-password}
+    REDIS_HOST: ${ssm:${self:custom.ssm}/redis-host}
+    REDIS_PORT: ${ssm:${self:custom.ssm}/redis-port}
+    REDIS_USER: ${ssm:${self:custom.ssm}/redis-user}
+    REDIS_PASSWORD: ${ssm:${self:custom.ssm}/redis-password}
+    REDIS_KEY_PREFIX: ${ssm:${self:custom.ssm}/redis-key-prefix}
+    # Operator-wide GitHub OAuth app (stage-wide SSM keys, uploaded by bootstrap-ssm.sh).
+    GITHUB_CLIENT_ID: ${ssm:${self:custom.stageSsm}/github-client-id}
+    GITHUB_CLIENT_SECRET: ${ssm:${self:custom.stageSsm}/github-client-secret}
+    ADMIN_GITHUB_LOGINS: ${ssm:${self:custom.stageSsm}/admin-github-logins, ""}
+    DEBUG_HOOKS: ${param:debugHooks, "0"}
+    DEBUG_KEY: ${ssm:${self:custom.stageSsm}/debug-key, ""}
+
+functions:
+  api:
+    handler: src/handler.handler
+    # One MySQL + one Redis connection per container; console's share of the
+    # host budget is 10 (api) + 1 (expire) — rules/data.md.
+    reservedConcurrency: 10
+    events:
+      - httpApi: "*"
+  expire:
+    handler: src/handler.expire
+    reservedConcurrency: 1
+    timeout: 30
+    events:
+      # 03:00 KST daily; a fixed time so operators can predict when channels flip.
+      - schedule: cron(0 18 * * ? *)
+
+package:
+  individually: true
+
+resources:
+  Resources:
+    ApiErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-lambda-errors
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-api
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 5
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    ExpireErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-expire-errors
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-expire
+        Statistic: Sum
+        Period: 86400
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    Api5xxAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-5xx
+        Namespace: AWS/ApiGateway
+        MetricName: 5xx
+        Dimensions:
+          - Name: ApiId
+            Value: !Ref HttpApi
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 5
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching

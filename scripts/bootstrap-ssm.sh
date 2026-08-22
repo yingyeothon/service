@@ -68,6 +68,9 @@ if [ "${STAGE}" = "dev" ]; then
     put "auth/debug-mysql-$(echo "$var" | tr 'A-Z_' 'a-z-')" "$v"
   done
 fi
+if [ "${STAGE}" = "prod" ] && [ -z "${ADMIN_GITHUB_LOGINS:-}" ] && ! aws ssm get-parameter --name "/yyt-service/prod/admin-github-logins" >/dev/null 2>&1; then
+  echo "prod needs ADMIN_GITHUB_LOGINS (otherwise nobody can approve console members)" >&2; exit 1
+fi
 put github-client-id "${GITHUB_CLIENT_ID:-}"
 put github-client-secret "${GITHUB_CLIENT_SECRET:-}"
 put admin-github-logins "${ADMIN_GITHUB_LOGINS:-}"

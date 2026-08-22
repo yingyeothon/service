@@ -34,3 +34,6 @@
 
 - Readers of auth channels do **not** add a Redis cache (rows contain secrets); one SELECT per request is cheap. The 60s cache rule applies to topic/match config without secrets.
 - Channels: `expires_at` default +7d, extend +7d (cap now+28d); disabled on expiry; deleted (secrets wiped) 30d later by the console `expire` cron.
+- `ConsoleDb` lifecycle writes (`updateChannel`, `expireChannels`) are `update … where deleted_at is null`; soft-delete wipes `secret_json` to `{}` immediately, so auth/topic/match readers must treat a missing `secret`/`apiKey` as "no channel" (they already get `undefined` via `deleted_at`).
+- Console runs `migrateConsoleDb` inside a memoized `getDeps()` promise; a rejected cold start clears the memo so the next invocation retries instead of serving a poisoned container.
+- Connection budget per stack (`reservedConcurrency`): auth 10, console 10 (`api`) + 1 (`expire`). Update this line when adding a function.

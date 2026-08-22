@@ -27,9 +27,9 @@ Single source of truth for settled product/technical decisions. Change this file
 
 - Login: **GitHub OAuth only**. Session = httpOnly cookie (SPA) or Bearer API token (CLI).
 - Roles `admin` / `member` / `pending`. New sign-ups are `pending` until an admin approves.
-- Bootstrap admins: GitHub logins listed in `ADMIN_GITHUB_LOGINS` (comma-separated) become `admin` on login.
-- Channels (auth/topic/match) belong to their creator (`member`+). Admins can view/extend/delete any channel.
-- Channel expiry: 7 days, extendable by 7 (cap now+28). Expired → disabled (401/410); deleted 30 days later.
+- Bootstrap admins: GitHub logins listed in `ADMIN_GITHUB_LOGINS` (comma-separated) become `admin` on their **first** login only (GitHub logins can be re-registered; later changes go through `/members/{id}/promote`).
+- Channels (auth/topic/match) belong to their creator (`member`+). Admins can view/extend/delete any channel but never read or change its secrets/config (PATCH, rotate-secret are owner-only). topic/match channels must reference an auth channel the caller owns.
+- Channel expiry: 7 days, extendable by 7 (cap now+28). Expired → disabled (401/410) by the daily sweep; extending a disabled channel revives it; deleted (secrets wiped) 30 days after being disabled.
 - Secrets are shown once on creation and can be rotated.
 
 ## auth service

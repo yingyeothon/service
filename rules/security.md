@@ -29,3 +29,5 @@
 - Console's writer credentials enter the auth Lambda only on dev and only when deployed with `--param debugHooks=1` (`custom.debugMysql*` maps); a prod deploy resolves them to `""` and the hooks are never registered.
 - Logs may contain the stateful host:port inside driver error messages (`redis error`, `mysql <code>`), never passwords or request data; responses never include driver messages.
 - If something leaks anyway: rotate the credential first (via `yyt-stateful`), then rewrite history; rotation is the only real fix.
+- Console sessions: the cookie value is a 32-byte random id and Redis stores it under `sess:{sha256(id)}`, so a Redis read never yields a usable cookie. `next` after login must match a relative path (`/…`, not `//host` or `/\host`); everything else falls back to `/`.
+- Console bootstrap admins are keyed by GitHub login (`ADMIN_GITHUB_LOGINS`) and re-checked on every login; member rows are keyed by the immutable `github_id`. Treat the list as a bootstrap aid, not as the permission store — promote real admins in the DB and keep the list short.
