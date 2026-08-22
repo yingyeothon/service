@@ -53,9 +53,10 @@ Single source of truth for settled product/technical decisions. Change this file
 
 - Channel = `{ channelId, apiKey, authChannelId, partySize (2–16), waitTimeoutSec (60), onTimeout: "partial"|"fail", callbackUrl, wsUrl }`.
 - Connecting = submitting a ticket: `wss://match.yyt.life/?channel={channelId}` + `bearer, <auth JWT>`. Invalid JWT → rejected. Reconnecting with the same userId replaces the ticket; disconnect removes it.
-- Algorithm: FIFO only. Try on every connect/disconnect plus an EventBridge 1-minute schedule for timeouts (documented as "handled within ~2 min").
-- Match → `POST callbackUrl` `{ matchId, channelId, members:[{userId}], partial }` with `X-Yyt-Signature: hmac-sha256(channel.apiKey, body)`. The 2xx JSON response is forwarded verbatim to each client as `{type:"matched", matchId, result}` and the sockets close. Callback failure → `{type:"failed", reason}`.
-- Timeout: `partial` → match with whoever is present (`partial:true`); `fail` → `{type:"failed", reason:"timeout"}`.
+- Algorithm: FIFO only. Every connect triggers a match attempt (run by an async worker invocation, because a socket cannot be posted to from inside its own `$connect`); disconnect only removes the ticket. An EventBridge 1-minute schedule handles timeouts and acts as the backstop (documented as "handled within ~2 min").
+- Match → `POST callbackUrl` `{ matchId, channelId, members:[{userId}], partial }` with `X-Yyt-Signature: hmac-sha256(channel.apiKey, body)`. The 2xx JSON response (≤8 KB, empty body → `null`) is forwarded verbatim to each client as `{type:"matched", matchId, partial, result}`. Callback failure (network, non-2xx, non-JSON; one retry on 5xx/network) → `{type:"failed", reason:"callback"}`. The server never closes the socket after a terminal message (closing right after `PostToConnection` loses the frame); clients close, idle sockets expire.
+- Reconnect with the same userId: the old socket receives `{type:"replaced"}`. `{type:"ping"}` → `{type:"pong", position, waited}`.
+- Timeout: `partial` → match with whoever is present, possibly a single player (`partial:true`); `fail` → `{type:"failed", reason:"timeout"}`. A disabled/expired channel (seen within the 60s config cache) or a ping from a socket without a ticket → `{type:"failed", reason:"closed"}`.
 - Callback target may be the topic service (`POST /t`) or a tslib dungeon server (creates `GameActorStartEvent`, returns `{wsUrl, gameId, token}`).
 
 ## Hackathon workflow (console)

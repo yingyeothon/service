@@ -1,6 +1,7 @@
 import {
   ApiGatewayManagementApiClient,
   DeleteConnectionCommand,
+  GetConnectionCommand,
   GoneException,
   PostToConnectionCommand,
 } from "@aws-sdk/client-apigatewaymanagementapi";
@@ -10,6 +11,8 @@ import { nullLogger, type Logger } from "@yyt/core";
 export interface PosterTransport {
   post(connectionId: string, data: Uint8Array): Promise<void>;
   disconnect(connectionId: string): Promise<void>;
+  /** `GetConnection`; resolves `false` on 410. */
+  probe(connectionId: string): Promise<boolean>;
 }
 
 export interface PosterOptions {
@@ -32,6 +35,12 @@ export interface Poster {
     message: unknown,
   ): Promise<string[]>;
   disconnect(connectionId: string): Promise<void>;
+  /**
+   * `true` once API Gateway has finished `$connect` for the id. A connection
+   * cannot be posted to from inside its own `$connect` handler, so work that
+   * was deferred from `$connect` polls this before sending.
+   */
+  isConnected(connectionId: string): Promise<boolean>;
 }
 
 export function createAwsTransport(endpoint: string): PosterTransport {
@@ -42,6 +51,15 @@ export function createAwsTransport(endpoint: string): PosterTransport {
     },
     disconnect: async (ConnectionId) => {
       await client.send(new DeleteConnectionCommand({ ConnectionId }));
+    },
+    probe: async (ConnectionId) => {
+      try {
+        await client.send(new GetConnectionCommand({ ConnectionId }));
+        return true;
+      } catch (e) {
+        if (isGone(e)) return false;
+        throw e;
+      }
     },
   };
 }
@@ -122,5 +140,6 @@ export function createPoster({
         if (!isGone(e)) throw e;
       }
     },
+    isConnected: (id) => t.probe(id),
   };
 }

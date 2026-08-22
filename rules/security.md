@@ -5,7 +5,8 @@
 - Never log tokens, OAuth codes, `state`, secrets, or full request events. Log ids and outcomes only.
 - Secrets are shown once on create/rotate; list/get responses must omit them. API tokens are stored hashed (sha256).
 - OAuth `redirect` must match the channel's allowlist; `state` is single-use with a 10-minute TTL.
-- Matchmaker callbacks carry `X-Yyt-Signature: hmac-sha256(apiKey, body)`; provide the verify helper in `packages/jwt` and use it in `examples/sample-dungeon`.
+- Matchmaker callbacks carry `X-Yyt-Signature: hmac-sha256(apiKey, body)` (`hmacSign`/`hmacVerify` in `@yyt/jwt`; verify over the raw body bytes, see `services/match/src/debug.ts`). `callbackUrl` is user-supplied: only `http(s):`, 5s timeout, one retry, result capped at 8 KB; Lambda has no VPC so there is no internal network to reach.
+- The match authorizer denies on every failure (never throws) and logs only the error code; JWT verification uses the linked auth channel's secret read from MySQL on each connect (no cache for rows with secrets).
 - Console roles: `pending` can only read public data, propose, and vote; channel mutation requires `member`; member management requires `admin`. Enforce in one middleware, test the matrix.
 - S3 buckets private (SSE-KMS); poster images served only via CloudFront.
 - Debug hooks must be registered only on `dev` (see `manual-verification.md`).

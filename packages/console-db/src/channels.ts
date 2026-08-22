@@ -24,6 +24,30 @@ export interface AuthChannelSecret {
   providers: { github?: OAuthAppSecret; google?: OAuthAppSecret };
 }
 
+/** `config_json` of a match channel (console validates and writes it). */
+export interface MatchChannelConfig {
+  authChannelId: string;
+  partySize: number;
+  waitTimeoutSec: number;
+  onTimeout: "partial" | "fail";
+  callbackUrl: string;
+}
+
+/** `secret_json` of topic/match channels. */
+export interface ApiKeySecret {
+  apiKey: string;
+}
+
+export interface MatchChannel {
+  id: string;
+  name: string;
+  ownerId: string;
+  config: MatchChannelConfig;
+  secret: ApiKeySecret;
+  expiresAt: number;
+  disabledAt: number | null;
+}
+
 export interface ChannelRow {
   id: string;
   kind: ChannelKind;
@@ -121,6 +145,8 @@ export interface ConsoleDb {
    * answer 410 instead of 404.
    */
   findAuthChannel(id: string): Promise<AuthChannel | undefined>;
+  /** Same contract as `findAuthChannel` for match channels. */
+  findMatchChannel(id: string): Promise<MatchChannel | undefined>;
   /** Writer-side (console, and dev-only debug seeding). `AppError("conflict")` on a duplicate id. */
   insertChannel(c: InsertChannelInput): Promise<void>;
   /**
@@ -219,6 +245,19 @@ export function toAuthChannel(row: ChannelRow): AuthChannel | undefined {
     ownerId: row.ownerId,
     config: JSON.parse(row.configJson) as AuthChannelConfig,
     secret: JSON.parse(row.secretJson) as AuthChannelSecret,
+    expiresAt: row.expiresAt,
+    disabledAt: row.disabledAt,
+  };
+}
+
+export function toMatchChannel(row: ChannelRow): MatchChannel | undefined {
+  if (row.kind !== "match") return undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    ownerId: row.ownerId,
+    config: JSON.parse(row.configJson) as MatchChannelConfig,
+    secret: JSON.parse(row.secretJson) as ApiKeySecret,
     expiresAt: row.expiresAt,
     disabledAt: row.disabledAt,
   };
@@ -416,6 +455,10 @@ export function createConsoleDb(db: Db): ConsoleDb {
     findAuthChannel: async (id) => {
       const row = await findChannelRow(id);
       return row && toAuthChannel(row);
+    },
+    findMatchChannel: async (id) => {
+      const row = await findChannelRow(id);
+      return row && toMatchChannel(row);
     },
     insertChannel: async (c) => {
       await db.execute(

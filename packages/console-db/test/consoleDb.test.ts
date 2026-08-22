@@ -151,3 +151,53 @@ describe("createConsoleDb (MySQL repository over a fake Db)", () => {
     });
   });
 });
+
+describe("findMatchChannel", () => {
+  const matchRow = {
+    ...channel,
+    id: "m1",
+    kind: "match" as const,
+    config: {
+      authChannelId: "ch_a",
+      partySize: 2,
+      waitTimeoutSec: 60,
+      onTimeout: "fail",
+      callbackUrl: "https://game.example/cb",
+    },
+    secret: { apiKey: "k".repeat(64) },
+  };
+
+  it("memory fake parses match rows and rejects other kinds", async () => {
+    const db = createMemoryConsoleDb();
+    await db.upsertMember(member);
+    await db.insertChannel(matchRow);
+    await db.insertChannel(channel);
+    const m = await db.findMatchChannel("m1");
+    expect(m?.config.partySize).toBe(2);
+    expect(m?.secret.apiKey).toHaveLength(64);
+    expect(await db.findMatchChannel("ch_a")).toBeUndefined();
+    expect(await db.findMatchChannel("nope")).toBeUndefined();
+  });
+
+  it("mysql repository maps the row", async () => {
+    const db = fakeDb();
+    const repo = createConsoleDb(db);
+    db.next([
+      {
+        id: "m1",
+        kind: "match",
+        owner_id: "m",
+        name: "n",
+        config_json: JSON.stringify(matchRow.config),
+        secret_json: JSON.stringify(matchRow.secret),
+        created_at: "1",
+        expires_at: "2",
+        disabled_at: null,
+        deleted_at: null,
+      },
+    ]);
+    const m = await repo.findMatchChannel("m1");
+    expect(m?.config.onTimeout).toBe("fail");
+    expect(m?.expiresAt).toBe(2);
+  });
+});

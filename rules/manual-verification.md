@@ -1,6 +1,6 @@
 # Manual Verification
 
-- After tests pass, deploy the touched stack to `dev` (`scripts/deploy.sh <service> dev`) and exercise the real path: curl for httpApi, `wscat -c <wss> -s bearer -s <jwt>` for WebSocket, `scripts/smoke/callback-echo.mjs` as a matchmaker callback sink.
+- After tests pass, deploy the touched stack to `dev` (`scripts/deploy.sh <service> dev`) and exercise the real path: curl for httpApi, `wscat -c <wss> -s bearer -s <jwt>` for WebSocket, the match stack's dev-only `POST /debug/callback` as the matchmaker callback sink (`scripts/smoke/match.mjs`).
 - `serverless-offline` is not used (poor WebSocket fidelity); `dev` on AWS is the controllable target. Cost is negligible at this traffic.
 - Debug-only hooks (active only when `STAGE=dev` and `DEBUG_HOOKS=1`): seed a channel with a known secret, mint a test JWT (`POST /debug/token`), force-expire a topic, trigger `tryMatch`/`expire` on demand. They must be absent from `prod` deployments (guard at handler registration, not just at runtime).
 - Record the exact commands used in the task's todo doc so the next session can repeat them.
@@ -8,4 +8,5 @@
 - Opt-in integration tests hit the real dev instances: `YYT_IT=1 pnpm test` (skipped when `local/env/*.dev.env` is absent). Run them before deploying a storage change.
 - auth smoke: `scripts/deploy.sh auth dev --param debugHooks=1` then `scripts/smoke/auth.mjs https://auth-dev.yyt.life "$(cat local/deploy/debug-key.dev)"`.
 - console smoke: `scripts/deploy.sh console dev --param debugHooks=1` then `scripts/smoke/console.mjs https://console-dev.yyt.life "$(cat local/deploy/debug-key.dev)" https://auth-dev.yyt.life`. `POST /debug/login` (dev only) mints a session for a synthetic member (`dbg_*`, negative `github_id`) so the API is testable without a GitHub OAuth app; the script cleans up its channels/tokens and demotes the synthetic member back to `pending`.
+- match smoke: deploy auth, console and match on dev with `--param debugHooks=1`, then `scripts/smoke/match.mjs wss://match-dev.yyt.life "$(cat local/deploy/match-debug-http.dev)" "$(cat local/deploy/debug-key.dev)" https://auth-dev.yyt.life https://console-dev.yyt.life [--slow]` (`--slow` waits for the 1-minute tick to prove the partial timeout). The debug HTTP URL is the stack output `HttpApiUrl` (`aws cloudformation describe-stacks --stack-name yyt-match-dev`); keep it in `local/deploy/`. The script uses Node's global `WebSocket`, no `wscat` needed.
 - Stage-wide SSM keys `github-client-id|secret` are required by the console stack; on dev they are placeholders until the operator registers the GitHub OAuth app (`todo/02-console.md`).

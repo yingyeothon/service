@@ -6,5 +6,10 @@ export {
   type RedisKvOptions,
   type RedisCommands,
 } from "./redisKv.js";
-export { withLock, LockTimeoutError, type LockOptions } from "./lock.js";
+export {
+  withLock,
+  LockTimeoutError,
+  RELEASE_SCRIPT,
+  type LockOptions,
+} from "./lock.js";
 export { kvContractTests } from "./contract.js";

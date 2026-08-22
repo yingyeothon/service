@@ -14,6 +14,8 @@ export {
 export {
   createConsoleDb,
   toAuthChannel,
+  toMatchChannel,
+  type ApiKeySecret,
   type ApiTokenInput,
   type ApiTokenRow,
   type AuditInput,
@@ -25,6 +27,8 @@ export {
   type ChannelRow,
   type ConsoleDb,
   type InsertChannelInput,
+  type MatchChannel,
+  type MatchChannelConfig,
   type MemberInput,
   type MemberRow,
   type OAuthAppPublic,

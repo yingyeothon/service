@@ -29,7 +29,7 @@ export class LockTimeoutError extends Error {
   }
 }
 
-/** Release only if we still own the lock (compare-and-delete). */
+/** Compare-and-delete: `del KEYS[1]` only when its value equals `ARGV[1]`. Used for lock release and for unbinding user→connection keys. */
 export const RELEASE_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
 else

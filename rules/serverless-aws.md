@@ -1,8 +1,13 @@
 # Serverless / AWS
 
 - WebSocket APIs: REQUEST authorizer on `$connect` only, identity source `route.request.header.Sec-WebSocket-Protocol`, cache TTL 0. `$connect` must echo the chosen subprotocol (`Sec-WebSocket-Protocol: bearer`) or browsers drop the connection.
-- Lambda cannot fire-and-forget; awaiting `tryMatch` inside `$connect` is fine (10s timeout). Long/periodic work goes to EventBridge schedules (`rate(1 minute)` for match timeouts, daily for expiry/backup).
+- A WebSocket connection cannot be posted to from inside its own `$connect` handler (410 until the handshake completes). Work that must reach the new socket is handed to a second function via `lambda:InvokeFunction` `InvocationType: Event` (match `worker`), which polls `GetConnection` (≤3s) before posting. Periodic work goes to EventBridge schedules (`rate(1 minute)` for match timeouts, daily for expiry/backup).
+- Do not `DeleteConnection` right after `PostToConnection`: on dev the close overtook the buffered frame and clients never saw `matched`. Send the terminal message and let the client close (10-minute idle timeout cleans up).
+- The custom WebSocket domain answers `400 Bad Request` (`server: awselb/2.0`) for a minute or two after the first deploy while the mapping propagates; retry before debugging.
+- Bound every loop by the Lambda deadline: handlers pass `context.getRemainingTimeInMillis()` down and the matcher stops starting new dispatches when less than one dispatch's worth of time remains, logging `deadline reached`/`tick incomplete`. Lock TTLs must exceed the longest holder path. Async-invoked functions set `maximumRetryAttempts: 0` unless a retry is genuinely idempotent.
+- The authorizer must never throw (API Gateway turns that into 500s); since every failure becomes a Deny, alarm on a log metric filter (`"m":"authorize error"`) instead of Lambda Errors.
 - `postToConnection` 410 `GoneException` → remove the connection from Redis and continue; never let one dead socket fail a broadcast.
+- Dev-only HTTP routes on a WebSocket stack: give the function `events: ${self:custom.debugEvents.${param:debugHooks, "0"}}` with `"1": [{httpApi: "*"}]` / `"0": []`, so prod has no HTTP API at all. The HttpApi URL is a stack output (`HttpApiUrl`).
 - Message cap 16KB; API Gateway WebSocket frame limit is 128KB, keep well under it.
 - Cost guards: CloudWatch alarms on WebSocket message count and Lambda errors; (Redis/MariaDB limits are the host's problem — see `yyt-stateful`.) Traffic is near-zero except contest day, so prefer pay-per-use everything and no provisioned concurrency.
 - No native modules: `mysql2` and `ioredis` are pure JS and bundle into the function, so no layers are needed. If a native dependency ever returns, it needs an arm64 prebuilt layer + esbuild `exclude` (the old `layers/better-sqlite3` recipe is in git history, commit `d7c34c0` and earlier).

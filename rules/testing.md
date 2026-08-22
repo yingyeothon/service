@@ -10,4 +10,5 @@
 - `createMemoryKv` does not run Lua: `eval` pattern-matches the scripts this repo ships (currently only compare-and-delete). Adding a new script means adding a matcher in `memoryKv.ts` and a case in `kvContractTests` so the real-Redis run (`YYT_IT=1`) keeps the fake honest.
 - Inject `clock` _and_ `sleep` into `withLock` in tests; advancing the fake clock inside `sleep` makes timeout tests deterministic without timers.
 - Provider HTTP via undici `MockAgent`: wrap `undici.fetch` with `{ dispatcher: agent }` and inject it as the provider's `fetch`; serve Google's JWKS through the same mock so `createRemoteJWKSet` (jose `customFetch`) runs the real path. Mint test id_tokens with `generateKeyPair("RS256")`.
+- WebSocket services: `test/helpers.ts` `join()` replays what API Gateway does (`$connect` with the socket still pending → worker event → probe succeeds) so matcher tests exercise the real ordering; the fake transport's `pending`/`gone` sets drive `probe`/410.
 - Assert on distinctive sentinel strings (e.g. `c0de-secret-zz`) when checking that a secret never appears in a response — short words collide with legitimate error text.

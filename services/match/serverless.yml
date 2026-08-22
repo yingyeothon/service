@@ -1,0 +1,223 @@
+# match.yyt.life — FIFO party matchmaker (API Gateway WebSocket).
+service: yyt-match
+frameworkVersion: "4"
+
+build:
+  esbuild: false
+
+plugins:
+  - serverless-esbuild
+  - serverless-domain-manager
+
+custom:
+  stage: ${opt:stage, "dev"}
+  domainSuffix:
+    dev: "-dev"
+    prod: ""
+  domain: match${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  ssm: /yyt-service/${self:custom.stage}/match
+  # The debug HTTP API (callback sink, manual tick) only exists when deployed
+  # with `--param debugHooks=1`; prod never gets the routes.
+  debugEvents:
+    "1":
+      - httpApi: "*"
+    "0": []
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    target: node22
+    platform: node
+    format: esm
+    outputFileExtension: .mjs
+    exclude:
+      - "@aws-sdk/*"
+    banner:
+      js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
+  customDomain:
+    domainName: ${self:custom.domain}
+    apiType: websocket
+    endpointType: regional
+    certificateName: yyt.life
+    createRoute53Record: true
+    autoDomain: true
+  prune:
+    automatic: true
+    number: 5
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  architecture: arm64
+  region: ap-northeast-2
+  stage: ${self:custom.stage}
+  memorySize: 256
+  timeout: 10
+  logRetentionInDays: 14
+  deploymentMethod: direct
+  websocketsApiName: ${self:service}-${self:custom.stage}
+  # Messages carry `type`; everything still lands on $default (no custom routes).
+  websocketsApiRouteSelectionExpression: $request.body.type
+  environment:
+    STAGE: ${self:custom.stage}
+    NODE_OPTIONS: --enable-source-maps
+    MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
+    MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}
+    MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
+    MYSQL_USER: ${ssm:${self:custom.ssm}/mysql-user}
+    MYSQL_PASSWORD: ${ssm:${self:custom.ssm}/mysql-password}
+    REDIS_HOST: ${ssm:${self:custom.ssm}/redis-host}
+    REDIS_PORT: ${ssm:${self:custom.ssm}/redis-port}
+    REDIS_USER: ${ssm:${self:custom.ssm}/redis-user}
+    REDIS_PASSWORD: ${ssm:${self:custom.ssm}/redis-password}
+    REDIS_KEY_PREFIX: ${ssm:${self:custom.ssm}/redis-key-prefix}
+    # Management API endpoint; connections are posted to via execute-api, not the custom domain.
+    WS_ENDPOINT: !Sub "https://${WebsocketsApi}.execute-api.${AWS::Region}.amazonaws.com/${self:custom.stage}"
+    WORKER_FUNCTION: ${self:service}-${self:custom.stage}-worker
+    DEBUG_HOOKS: ${param:debugHooks, "0"}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: execute-api:ManageConnections
+          Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:custom.stage}/*"
+        - Effect: Allow
+          Action: lambda:InvokeFunction
+          Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:custom.stage}-worker"
+
+# Connection budget (rules/data.md): every container holds one MySQL + one
+# Redis connection. ws 10 + authorizer 8 + worker 4 + tick 1 + debug 1 = 24
+# (auth 10 + console 11 + match 24 = 45 of the host's 60).
+functions:
+  authorizer:
+    handler: src/handler.authorizer
+    reservedConcurrency: 8
+  ws:
+    handler: src/handler.ws
+    reservedConcurrency: 10
+    events:
+      - websocket:
+          route: $connect
+          authorizer:
+            name: authorizer
+            identitySource:
+              - route.request.header.Sec-WebSocket-Protocol
+      - websocket:
+          route: $disconnect
+      - websocket:
+          route: $default
+  worker:
+    handler: src/handler.worker
+    reservedConcurrency: 4
+    # Waits up to 6s for the socket, lock wait 4s, then dispatches while
+    # remaining time ≥ 12s (one callback = 5s × 2 attempts + posts).
+    timeout: 45
+    # A retry minutes later matches a different queue; the tick is the backstop.
+    maximumRetryAttempts: 0
+    maximumEventAge: 120
+  tick:
+    handler: src/handler.tick
+    reservedConcurrency: 1
+    timeout: 60
+    maximumRetryAttempts: 0
+    events:
+      - schedule: rate(1 minute)
+  debug:
+    handler: src/handler.debug
+    reservedConcurrency: 1
+    environment:
+      DEBUG_KEY: ${ssm:/yyt-service/${self:custom.stage}/debug-key, ""}
+    events: ${self:custom.debugEvents.${param:debugHooks, "0"}}
+
+package:
+  individually: true
+
+resources:
+  Resources:
+    WsErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-ws-errors
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-ws
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 5
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    WorkerErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-worker-errors
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-worker
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 5
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    TickErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-tick-errors
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-tick
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 3
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    # The authorizer never throws (every failure is a Deny), so infrastructure
+    # outages surface only in its logs: count "authorize error" lines.
+    AuthorizeErrorMetric:
+      Type: AWS::Logs::MetricFilter
+      DependsOn: AuthorizerLogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${self:custom.stage}-authorizer
+        FilterPattern: '{ $.m = "authorize error" }'
+        MetricTransformations:
+          - MetricNamespace: yyt/match
+            MetricName: ${self:custom.stage}-authorize-errors
+            MetricValue: "1"
+            DefaultValue: 0
+    AuthorizeErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-authorize-errors
+        Namespace: yyt/match
+        MetricName: ${self:custom.stage}-authorize-errors
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 3
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    WsMessageCountAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-message-count
+        Namespace: AWS/ApiGateway
+        MetricName: MessageCount
+        Dimensions:
+          - Name: ApiId
+            Value: !Ref WebsocketsApi
+          - Name: Stage
+            Value: ${self:custom.stage}
+        Statistic: Sum
+        Period: 3600
+        EvaluationPeriods: 1
+        Threshold: 100000
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching

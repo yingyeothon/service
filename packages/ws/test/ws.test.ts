@@ -78,6 +78,7 @@ function fakeTransport(goneIds: string[] = [], failIds: string[] = []) {
       if (failIds.includes(id)) throw new Error("network");
       sent.push({ id, text: Buffer.from(data).toString("utf8") });
     }),
+    probe: vi.fn(async (id: string) => !goneIds.includes(id)),
     disconnect: vi.fn(async (id: string) => {
       if (goneIds.includes(id))
         throw new GoneException({
@@ -132,6 +133,13 @@ describe("createPoster", () => {
     });
     await expect(poster.send("flaky", "x")).rejects.toThrow("network");
     await expect(poster.send("a", "x".repeat(11))).rejects.toThrow(/exceeds/);
+  });
+
+  it("isConnected mirrors the probe", async () => {
+    const { transport } = fakeTransport(["dead"]);
+    const poster = createPoster({ endpoint: "https://x", transport });
+    expect(await poster.isConnected("dead")).toBe(false);
+    expect(await poster.isConnected("live")).toBe(true);
   });
 
   it("disconnect tolerates gone", async () => {
