@@ -20,3 +20,5 @@
 - Channels: `expires_at` default +7d, extend +7d (cap now+28d); disabled on expiry; deleted (secrets wiped) 30d later by the console `expire` cron.
 - `sqliteS3.write` uploads with `IfMatch`(existing)/`IfNoneMatch: *`(new) so a write whose lock expired gets `AppError("conflict")` instead of clobbering; callers may retry once. Every download is migrated locally, so reads never fail on a schema the running code is newer than.
 - `read`/`write` callbacks are synchronous: better-sqlite3 transactions cannot contain `await`; do network work (Redis, fetch) outside the callback.
+- Readers of another service's sqlite file do **not** add a Redis cache when the rows contain secrets (auth channels): `sqliteS3.read()` is one HEAD per request plus a warm `/tmp` copy, which is cheap enough. The "60s channel cache" rule applies to topic/match config without secrets.
+- A service that must (dev-only) write another service's DB builds a second `Kv` with the _owner's_ prefix (`console:{stage}:`) for the lock key so all writers contend on the same lock.

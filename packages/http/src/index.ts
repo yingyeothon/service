@@ -1,5 +1,7 @@
 export {
   createHttpHandler,
+  defineRoute,
+  type AnyRoute,
   type HttpHandlerOptions,
   type Route,
   type RouteContext,

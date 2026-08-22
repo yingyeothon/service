@@ -4,3 +4,5 @@
 - `serverless-offline` is not used (poor WebSocket fidelity); `dev` on AWS is the controllable target. Cost is negligible at this traffic.
 - Debug-only hooks (active only when `STAGE=dev` and `DEBUG_HOOKS=1`): seed a channel with a known secret, mint a test JWT (`POST /debug/token`), force-expire a topic, trigger `tryMatch`/`expire` on demand. They must be absent from `prod` deployments (guard at handler registration, not just at runtime).
 - Record the exact commands used in the task's todo doc so the next session can repeat them.
+- Stage prerequisites (per stage, once): S3 `yyt-service-{stage}` (private, versioned, SSE-KMS) and SSM `/yyt-service/{stage}/{upstash-url,upstash-token,debug-key}` via `scripts/bootstrap-ssm.sh`. `serverless.yml` fails loudly on missing Upstash params by design.
+- auth smoke: `scripts/deploy.sh auth dev --param debugHooks=1` then `scripts/smoke/auth.mjs https://auth-dev.yyt.life <debug-key>`.

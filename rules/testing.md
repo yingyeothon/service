@@ -9,3 +9,5 @@
 - `createMemoryKv` does not run Lua: `eval` pattern-matches the scripts this repo ships (currently only compare-and-delete). Adding a new script means adding a matcher in `memoryKv.ts` and a case in `kvContractTests` so the real-Upstash run (env-gated by `UPSTASH_TEST_URL`/`UPSTASH_TEST_TOKEN`) keeps the fake honest.
 - Inject `clock` _and_ `sleep` into `withLock` in tests; advancing the fake clock inside `sleep` makes timeout tests deterministic without timers.
 - `aws-sdk-client-mock` + a tiny in-memory "bucket" (Map of key → {body, etag}) is enough to test ETag-conditional downloads; assert on `commandCalls(GetObjectCommand).length` to prove the cache is used.
+- Provider HTTP via undici `MockAgent`: wrap `undici.fetch` with `{ dispatcher: agent }` and inject it as the provider's `fetch`; serve Google's JWKS through the same mock so `createRemoteJWKSet` (jose `customFetch`) runs the real path. Mint test id_tokens with `generateKeyPair("RS256")`.
+- Assert on distinctive sentinel strings (e.g. `c0de-secret-zz`) when checking that a secret never appears in a response — short words collide with legitimate error text.

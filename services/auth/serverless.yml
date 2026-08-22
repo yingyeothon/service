@@ -1,0 +1,136 @@
+# auth.yyt.life — template for the other stacks (console/topic/match copy this).
+service: yyt-auth
+frameworkVersion: "4"
+
+# SF4 bundles its own esbuild; we keep serverless-esbuild for `exclude`/ESM banner control.
+build:
+  esbuild: false
+
+plugins:
+  - serverless-esbuild
+  - serverless-domain-manager
+
+custom:
+  stage: ${opt:stage, "dev"}
+  domainSuffix:
+    dev: "-dev"
+    prod: ""
+  domain: auth${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  dbBucket: yyt-service-${self:custom.stage}
+  # auth only writes the console DB through the dev-only debug seeding hook.
+  dbActions:
+    dev: [s3:GetObject, s3:PutObject]
+    prod: [s3:GetObject]
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    target: node22
+    platform: node
+    format: esm
+    outputFileExtension: .mjs
+    # Provided by the arm64 layer (layers/better-sqlite3); AWS SDK v3 is already in the runtime.
+    exclude:
+      - better-sqlite3
+      - "@aws-sdk/*"
+    banner:
+      # ESM bundles lose `require`; `jose`/`@upstash/redis` are fine but keep the shim for transitive CJS.
+      js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
+  customDomain:
+    domainName: ${self:custom.domain}
+    apiType: http
+    endpointType: regional
+    certificateName: yyt.life
+    createRoute53Record: true
+    autoDomain: true
+  # Read by SF4's built-in pruning (serverless-prune-plugin is bundled since v4).
+  prune:
+    automatic: true
+    number: 5
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  architecture: arm64
+  region: ap-northeast-2
+  stage: ${self:custom.stage}
+  memorySize: 256
+  timeout: 10
+  logRetentionInDays: 14
+  deploymentMethod: direct
+  httpApi:
+    disableDefaultEndpoint: false
+    metrics: true
+  environment:
+    STAGE: ${self:custom.stage}
+    NODE_OPTIONS: --enable-source-maps
+    PUBLIC_BASE_URL: https://${self:custom.domain}
+    DB_BUCKET: ${self:custom.dbBucket}
+    UPSTASH_REDIS_REST_URL: ${ssm:/yyt-service/${self:custom.stage}/upstash-url}
+    UPSTASH_REDIS_REST_TOKEN: ${ssm:/yyt-service/${self:custom.stage}/upstash-token}
+    DEBUG_HOOKS: ${param:debugHooks, "0"}
+    DEBUG_KEY: ${ssm:/yyt-service/${self:custom.stage}/debug-key, ""}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: ${self:custom.dbActions.${self:custom.stage}}
+          Resource: arn:aws:s3:::${self:custom.dbBucket}/db/*
+        - Effect: Allow
+          Action: [s3:ListBucket]
+          Resource: arn:aws:s3:::${self:custom.dbBucket}
+
+layers:
+  betterSqlite3:
+    # Built by layers/better-sqlite3/build.sh (git-ignored); never use `path:` here.
+    package:
+      artifact: ../../layers/better-sqlite3/better-sqlite3-arm64.zip
+    name: yyt-better-sqlite3-${self:custom.stage}
+    description: better-sqlite3 prebuilt for nodejs22.x arm64
+    compatibleRuntimes: [nodejs22.x]
+    compatibleArchitectures: [arm64]
+    retain: false
+
+functions:
+  api:
+    handler: src/handler.handler
+    layers:
+      - { Ref: BetterSqlite3LambdaLayer }
+    events:
+      - httpApi: "*"
+
+package:
+  individually: true
+
+resources:
+  Resources:
+    ApiErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-lambda-errors
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-api
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 5
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    Api5xxAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-5xx
+        Namespace: AWS/ApiGateway
+        MetricName: 5xx
+        Dimensions:
+          - Name: ApiId
+            Value: !Ref HttpApi
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 5
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching

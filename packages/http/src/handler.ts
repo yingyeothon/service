@@ -41,8 +41,7 @@ export interface RouteContext<Body = unknown, Query = unknown> {
   logger: Logger;
 }
 
-export type RouteResult =
-  HttpResult | { [key: string]: unknown } | unknown[] | undefined;
+export type RouteResult = HttpResult | object | undefined;
 
 export interface Route<Body = unknown, Query = unknown> {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "ANY";
@@ -55,8 +54,18 @@ export interface Route<Body = unknown, Query = unknown> {
   handler(ctx: RouteContext<Body, Query>): Promise<RouteResult> | RouteResult;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyRoute = Route<any, any>;
+
+/** Keeps `body`/`query` inference inside the route while the table stays heterogeneous. */
+export function defineRoute<Body = unknown, Query = unknown>(
+  route: Route<Body, Query>,
+): AnyRoute {
+  return route as AnyRoute;
+}
+
 export interface HttpHandlerOptions {
-  routes: Route<never, never>[];
+  routes: AnyRoute[];
   identity?: IdentityResolver;
   /** Max JSON body in bytes. Default 64KB. */
   maxBodyBytes?: number;
@@ -111,13 +120,27 @@ export function createHttpHandler({
   if (cors?.credentials && cors.origins.includes("*")) {
     throw new Error("cors: credentials cannot be combined with origin '*'");
   }
-  const compiled: Array<{ route: Route<never, never>; path: CompiledPath }> =
-    routes.map((route) => ({
+  const compiled: Array<{ route: AnyRoute; path: CompiledPath }> = routes.map(
+    (route) => ({
       route,
       path: compilePath(route.path),
-    }));
+    }),
+  );
 
   return async (event) => {
+    const startedAt = Date.now();
+    const result = await dispatch(event);
+    logger.info("request", {
+      requestId: event.requestContext.requestId,
+      method: event.requestContext.http.method,
+      path: event.rawPath,
+      status: result.statusCode,
+      ms: Date.now() - startedAt,
+    });
+    return result;
+  };
+
+  async function dispatch(event: HttpEvent): Promise<HttpResult> {
     const headers = normalizeHeaders(event.headers ?? {});
     const origin = headers.origin;
     const extra = cors ? corsHeaders(cors, origin) : {};
@@ -130,7 +153,7 @@ export function createHttpHandler({
     }
 
     let params: Record<string, string> | null = null;
-    let matched: Route<never, never> | undefined;
+    let matched: AnyRoute | undefined;
     let pathExists = false;
     for (const { route, path } of compiled) {
       const p = matchPath(path, rawPath);
@@ -176,18 +199,20 @@ export function createHttpHandler({
         event.isBase64Encoded,
         maxBodyBytes,
       );
-      const body = matched.body
-        ? validate(matched.body, rawBody ?? {}, "body")
+      const bodySchema = matched.body as ZodType<unknown> | undefined;
+      const querySchema = matched.query as ZodType<unknown> | undefined;
+      const body: unknown = bodySchema
+        ? validate(bodySchema, rawBody ?? {}, "body")
         : rawBody;
-      const query = matched.query
-        ? validate(matched.query, event.queryStringParameters ?? {}, "query")
+      const query: unknown = querySchema
+        ? validate(querySchema, event.queryStringParameters ?? {}, "query")
         : (event.queryStringParameters ?? {});
 
-      const ctx: RouteContext<never, never> = {
+      const ctx: RouteContext = {
         event,
         params,
-        body: body as never,
-        query: query as never,
+        body,
+        query,
         identity: resolved,
         requireIdentity: () => {
           if (!resolved)
@@ -230,7 +255,7 @@ export function createHttpHandler({
       });
       return fail(new AppError("internal", "internal error"));
     }
-  };
+  }
 }
 
 function validate<T>(

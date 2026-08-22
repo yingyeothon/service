@@ -7,7 +7,8 @@ import {
   json,
   redirect,
   noContent,
-  type Route,
+  type AnyRoute,
+  defineRoute,
 } from "../src/index.js";
 
 function ev(
@@ -40,20 +41,23 @@ function ev(
   };
 }
 
-const routes: Route<never, never>[] = [
+const routes: AnyRoute[] = [
   { method: "GET", path: "/ping", handler: () => ({ ok: true }) },
-  {
+  defineRoute({
     method: "GET",
     path: "/c/{ch}/start",
     query: z.object({ provider: z.enum(["github", "google"]) }),
-    handler: ({ params, query }) => ({ ch: params.ch, ...(query as object) }),
-  },
-  {
+    handler: ({ params, query }) => ({
+      ch: params.ch,
+      provider: query.provider,
+    }),
+  }),
+  defineRoute({
     method: "POST",
     path: "/echo",
     body: z.object({ n: z.number() }),
-    handler: ({ body }) => ({ got: body }),
-  },
+    handler: ({ body }) => ({ got: { n: body.n } }),
+  }),
   {
     method: "GET",
     path: "/me",
@@ -91,7 +95,7 @@ const routes: Route<never, never>[] = [
     path: "/req",
     handler: (ctx) => ({ has: typeof ctx.requireIdentity().subject }),
   },
-] as Route<never, never>[];
+];
 
 const handler = createHttpHandler({
   routes,

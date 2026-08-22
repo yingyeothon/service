@@ -11,3 +11,8 @@
 - Debug hooks must be registered only on `dev` (see `manual-verification.md`).
 - `@yyt/jwt` refuses HS256 secrets under 32 bytes on sign _and_ verify; generate channel secrets with `randomHex(32)` (64 hex chars). `@yyt/http` refuses `cors: {origins:["*"], credentials:true}`.
 - Never let `decodeURIComponent` throw out of a handler: malformed percent-encoding in paths/cookies must become a 4xx (router treats it as no-match) instead of an unhandled Lambda error.
+- OAuth login-CSRF: bind `state` to the browser with a `__Host-` nonce cookie set on `/start` and checked on `/callback`; store only the nonce hash server-side. Single-use state alone does not stop an attacker from finishing _their_ login in the victim's browser.
+- GitHub access tokens carry no audience: always validate them with `POST /applications/{clientId}/token` (Basic `clientId:clientSecret`) so a token granted to another OAuth app cannot mint a JWT on this channel. Google id_tokens are pinned via `aud`.
+- Redirect allowlists compare parsed origin + path prefix at a `/` boundary, never raw `startsWith`; return the normalized `url.href`, and reject control characters (WHATWG `URL` silently strips `\t\n\r`).
+- Client-supplied strings that go into outbound headers (bearer tokens) must be restricted to printable ASCII at validation time, or undici throws a TypeError that echoes the value into logs.
+- Compare shared keys (debug key, API tokens) with `timingSafeEqual` over fixed-length hashes.
