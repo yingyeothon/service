@@ -14,4 +14,4 @@
 - `docs/decisions.md` is the contract. If implementation forces a change, edit the doc in the same commit and note it in `todo/index.md`.
 - Do not leave work in chat only: anything a future session needs must be in `todo/` or `rules/`.
 - Commit per coherent unit; never `git add .` when generated files are present. Keep `.gitignore` current.
-- Sessions start by reading `todo/index.md` → "다음 작업"; sessions end by updating the same section.
+- Sessions start by reading `todo/index.md` → "Next work"; sessions end by updating the same section.

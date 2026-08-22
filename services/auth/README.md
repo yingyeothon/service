@@ -1,41 +1,41 @@
 # services/auth — `auth.yyt.life`
 
-채널별 OAuth(GitHub/Google) 로그인으로 HS256 채널 JWT 를 발급한다. 계약은 `docs/decisions.md` §auth, 게임 쪽 검증 규약은 `docs/auth-game-contract.md`.
+Per-channel OAuth (GitHub/Google) login issuing HS256 channel JWTs. Contract: `docs/decisions.md` §auth; game-side verification: `docs/auth-game-contract.md`.
 
-## 엔드포인트
+## Endpoints
 
-| 경로                                                  | 설명                                                                                    |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `GET /c/{ch}/.well-known/config`                      | 공개 설정(`issuer`, `audience`, `providers`, `callbackUrls`, `startUrl`, `tokenTtlSec`) |
-| `GET /c/{ch}/start?provider=github\|google&redirect=` | state 발급 후 provider authorize 로 302. `redirect` 는 채널 allowlist 접두어 필수       |
-| `GET /c/{ch}/{provider}/callback?code&state`          | code 교환 → JWT → `302 {redirect}#token=&userId=&exp=`                                  |
-| `POST /c/{ch}/token {provider, accessToken\|idToken}` | 수동 발급 → `{jwt, userId, exp}`                                                        |
-| `GET /c/{ch}/verify` (Bearer)                         | `{userId, exp, channelId}` / 401                                                        |
+| Route                                                 | Description                                                                                  |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `GET /c/{ch}/.well-known/config`                      | Public config (`issuer`, `audience`, `providers`, `callbackUrls`, `startUrl`, `tokenTtlSec`) |
+| `GET /c/{ch}/start?provider=github\|google&redirect=` | Issues `state`, 302 to the provider. `redirect` must match the channel allowlist             |
+| `GET /c/{ch}/{provider}/callback?code&state`          | Exchanges the code → JWT → `302 {redirect}#token=&userId=&exp=`                              |
+| `POST /c/{ch}/token {provider, accessToken\|idToken}` | Manual issue → `{jwt, userId, exp}`                                                          |
+| `GET /c/{ch}/verify` (Bearer)                         | `{userId, exp, channelId}` or 401                                                            |
 
-없는 채널 404, 만료/비활성 410. 브라우저 경로(`/start`, `/callback`)의 오류는 최소 HTML.
+Unknown channel → 404; expired/disabled → 410. Browser routes (`/start`, `/callback`) render minimal HTML on error.
 
-- `/start` 는 `__Host-yyt_auth_nonce` 쿠키(10분)를 심고 state 에 그 해시를 저장한다. `/callback` 은 같은 브라우저의 쿠키가 있어야 통과(로그인 CSRF 방지). state 는 1회용.
-- `redirect` allowlist 는 **origin 완전 일치 + path 접두어(`/` 경계)** 로 비교한다. 항목은 절대 URL 이어야 한다(`https://game.example` 는 `https://game.example.evil/` 을 허용하지 않는다).
-- GitHub 는 `POST /applications/{clientId}/token`(token check) 으로 **이 채널의 OAuth app 에 발급된 토큰인지** 확인한 뒤 `user.id` 를 쓴다. Google 은 id_token 의 `aud = clientId`.
+- `/start` sets a `__Host-yyt_auth_nonce` cookie (10 min) and stores its hash in `state`; `/callback` requires the same browser's cookie (login-CSRF protection). `state` is single-use.
+- `redirect` allowlist: exact origin + path-prefix at a `/` boundary; entries must be absolute URLs.
+- GitHub tokens are checked with `POST /applications/{clientId}/token` so only tokens issued to this channel's OAuth app are accepted; Google id_tokens are pinned via `aud = clientId`.
 
-## 데이터
+## Data
 
-- 채널: 콘솔 MySQL DB 를 auth 의 **SELECT 전용 계정**으로 `@yyt/console-db` 를 통해 읽는다(요청당 1 SELECT). Redis 캐시 없음 — secret 을 Redis 에 두지 않기 위해.
-- Redis(`auth:{stage}:`, `@yyt/redis` 로 컨테이너당 연결 1개): `state:{state}` TTL 600s, `issued:{channelId}:{yyyymmdd}` 카운터(40일).
+- Channels: read from the console MySQL database with auth's **SELECT-only** account through `@yyt/console-db` (one SELECT per request). No Redis cache — rows contain secrets.
+- Redis (`auth:{stage}:`, one `@yyt/redis` connection per container): `state:{state}` TTL 600 s, `issued:{channelId}:{yyyymmdd}` counters (40 days).
 
-## 환경변수 (`serverless.yml`)
+## Environment (`serverless.yml`)
 
-`STAGE`, `PUBLIC_BASE_URL`, `MYSQL_*`/`REDIS_*`(SSM `/yyt-service/{stage}/auth/*`, `scripts/bootstrap-ssm.sh` 가 `local/env/auth.{stage}.env` 에서 업로드), `DEBUG_HOOKS`(`--param debugHooks=1`, dev 전용), `DEBUG_KEY`(SSM `debug-key`), `DEBUG_MYSQL_*`(dev 전용 콘솔 쓰기 계정, SSM `auth/debug-mysql-user|password`; 없으면 훅 비활성).
+`STAGE`, `PUBLIC_BASE_URL`, `MYSQL_*`/`REDIS_*` (SSM `/yyt-service/{stage}/auth/*`, uploaded by `scripts/bootstrap-ssm.sh` from `local/env/auth.{stage}.env`), `DEBUG_HOOKS` (`--param debugHooks=1`, dev only), `DEBUG_KEY` (SSM `debug-key`), `DEBUG_MYSQL_*` (console's dev writer account, SSM `auth/debug-mysql-user|password`, injected only with `debugHooks=1`; hooks are disabled when absent). See `docs/secrets.md`.
 
-## 디버그 훅 (dev + `DEBUG_HOOKS=1` 일 때만 등록)
+## Debug hooks (registered only on dev with `DEBUG_HOOKS=1`)
 
-- `POST /debug/channels` (`x-debug-key`) `{id?, audience?, tokenTtlSec?, redirectAllowlist?, providers?}` → `{channelId, secret, ...}` — 콘솔 DB 에 채널 시드.
+- `POST /debug/channels` (`x-debug-key`) `{id?, audience?, tokenTtlSec?, redirectAllowlist?, providers?}` → `{channelId, secret, …}` — seeds a channel in the console DB.
 - `POST /debug/token` (`x-debug-key`) `{channelId, userId}` → `{jwt, userId, exp}`.
 
-## 배포/검증
+## Deploy / verify
 
 ```bash
-scripts/bootstrap-ssm.sh dev   # local/env/*.dev.env → SSM (최초 1회, 로테이션 때 재실행)
+scripts/bootstrap-ssm.sh dev   # local/env/*.dev.env → SSM (once; rerun after rotation)
 scripts/deploy.sh auth dev --param debugHooks=1
 scripts/smoke/auth.mjs https://auth-dev.yyt.life "$(cat local/deploy/debug-key.dev)"
 ```

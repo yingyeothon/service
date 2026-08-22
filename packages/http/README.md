@@ -1,17 +1,17 @@
 # @yyt/http
 
-API Gateway httpApi(payload v2) 라우터.
+Router for API Gateway httpApi (payload v2).
 
 ## Public API
 
-- `createHttpHandler({routes, identity?, maxBodyBytes=64KB, cors?, logger?})` → Lambda 핸들러.
-  - `Route {method, path("/c/{ch}/start", 끝 "*" 허용), body?: zod, query?: zod, auth?: boolean, handler(ctx)}`.
-  - `RouteContext {event, params, body, query, identity?, requireIdentity(), headers(소문자), cookies, bearer?, requestId, logger}`.
-  - 핸들러 반환: 일반 객체 → 200 JSON, `undefined` → 204, `HttpResult` → 그대로.
-  - `AppError` → `{error:{code,message,details?}}` + status; 그 외 예외 → 500 `internal`(내용 숨김, 로그만).
-  - `identity({bearer, cookies, event})` 로 세션/API 토큰을 해석; `auth: true` 라우트는 identity 없으면 401.
-  - `cors.origins` 허용 목록에 있는 Origin 에만 헤더 부여, OPTIONS 는 204.
-- `defineRoute({...})` — body/query 의 zod 추론을 유지한 채 이종 라우트 배열(`AnyRoute[]`)에 넣는다.
+- `createHttpHandler({routes, identity?, maxBodyBytes=64KB, cors?, logger?})` → Lambda handler.
+  - `Route {method, path ("/c/{ch}/start", trailing "*" allowed), body?: zod, query?: zod, auth?: boolean, handler(ctx)}`.
+  - `RouteContext {event, params, body, query, identity?, requireIdentity(), headers (lower-case), cookies, bearer?, requestId, logger}`.
+  - Handler return: plain object → 200 JSON, `undefined` → 204, `HttpResult` → as is.
+  - `AppError` → `{error:{code,message,details?}}` with its status; other exceptions → 500 `internal` (details logged, never returned). 5xx logs include `cause.message` (driver codes only).
+  - `identity({bearer, cookies, event})` resolves sessions/API tokens; `auth: true` routes return 401 without identity.
+  - CORS headers only for origins in `cors.origins`; OPTIONS → 204. `origins:["*"]` with `credentials:true` is refused.
+- `defineRoute({...})` — keeps zod inference for body/query inside heterogeneous `AnyRoute[]` tables.
 - `json(body, {status?, headers?, cookies?})`, `redirect(location, {...})`, `noContent()`.
 - `parseBearer(headers)`, `parseCookies(headers, cookies?)`, `serializeCookie(name, value, {maxAgeSec, path, domain, secure=true, httpOnly=true, sameSite="Lax"})`, `parseJsonBody`.
 - `compilePath`, `matchPath`.

@@ -19,7 +19,7 @@
 - Connection budget: a frozen/reaped container never closes its socket, so the server holds it until `wait_timeout`. Every function sets `reservedConcurrency` (auth: 10; budget ≈50 across the four stacks) and `yyt-stateful` must set a short `wait_timeout` (≈120s) — tracked in `todo/07-infra.md`. Dev with debug hooks uses two pools per container.
 - `Db.transaction` pins one connection; inside the callback use only `tx` (the outer handle would wait for the same connection and the pool rejects it). A connection whose rollback/commit failed is destroyed, never released back. `migrateConsoleDb` runs inside `transaction` because `GET_LOCK` is per-session; lock wait is 5s (< Lambda timeout).
 - `upsertMember` updates only when the `github_id` matched; a colliding _id_ with another `github_id` is a no-op + `AppError("conflict")`, and the call returns the id that owns the GitHub user — use that id for foreign keys (the debug seed learned this the hard way).
-- Writers that are not console (dev-only debug seeding in auth) use console's dev account through separate `DEBUG_MYSQL_*` env (`docs/decisions.md` "디버그 시드"); the code path must degrade to "hooks disabled" when those vars are absent.
+- Writers that are not console (dev-only debug seeding in auth) use console's dev account through separate `DEBUG_MYSQL_*` env (`docs/decisions.md` §auth "Debug seeding"); the code path must degrade to "hooks disabled" when those vars are absent.
 
 ## Redis (ioredis, TCP)
 

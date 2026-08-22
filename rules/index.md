@@ -8,5 +8,5 @@ Load only the files relevant to the task. After finishing a task, add new lesson
 - [manual-verification.md](manual-verification.md) — verifying on the `dev` stage, smoke tools, debug-only hooks.
 - [deployment.md](deployment.md) — deployment decision flow, stages, domains, SSM secrets.
 - [data.md](data.md) — self-hosted MySQL/Redis account model, MySQL schema/pool/error mapping, Redis ACL quirks, key layout and TTLs, expiry.
-- [security.md](security.md) — identity, tokens, secrets, logging, callback signatures, public-repo defenses (`local/`, gitleaks hooks).
+- [security.md](security.md) — identity, tokens, secrets, logging, callback signatures, public-repo defenses. Policy for contributors: `docs/secrets.md`.
 - [serverless-aws.md](serverless-aws.md) — API Gateway WebSocket/httpApi, Lambda, layers, cost guards.
