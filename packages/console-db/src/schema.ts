@@ -104,6 +104,101 @@ export const CONSOLE_MIGRATIONS: MigrationStep[] = [
       ) engine=InnoDB default charset=utf8mb4`,
     ],
   },
+  {
+    // Binary catalog (docs/decisions.md "Binary catalog (console)").
+    // Deletes are hard (original catalog semantics): artifact rows mirror S3
+    // objects; app/group deletion cascades artifacts/permissions after the
+    // route has removed the S3 objects. `pending_*_login` columns hold legacy
+    // github logins not yet matched to a member (resolved on first login).
+    version: 3,
+    statements: [
+      `create table catalog_groups (
+        id varchar(64) not null primary key,
+        name varchar(255) not null,
+        owner_id varchar(64) null,
+        pending_owner_login varchar(255) null,
+        created_at bigint not null,
+        updated_at bigint not null,
+        unique key catalog_groups_name (name),
+        constraint catalog_groups_owner foreign key (owner_id) references members(id)
+      ) engine=InnoDB default charset=utf8mb4`,
+      `create table catalog_apps (
+        id varchar(64) not null primary key,
+        name varchar(255) not null,
+        path varchar(255) not null,
+        debug_only tinyint(1) not null default 0,
+        description mediumtext null,
+        group_id varchar(64) null,
+        owner_id varchar(64) null,
+        pending_owner_login varchar(255) null,
+        slack_hook_url varchar(1024) null,
+        slack_channel varchar(255) null,
+        message_template mediumtext null,
+        keep_recent_versions int not null default 3,
+        created_at bigint not null,
+        updated_at bigint not null,
+        unique key catalog_apps_name (name),
+        key catalog_apps_group (group_id),
+        constraint catalog_apps_group foreign key (group_id) references catalog_groups(id) on delete set null,
+        constraint catalog_apps_owner foreign key (owner_id) references members(id)
+      ) engine=InnoDB default charset=utf8mb4`,
+      `create table catalog_artifacts (
+        id varchar(64) not null primary key,
+        app_id varchar(64) not null,
+        platform enum('android','ios','web','bin','server','win32','osx','linux') not null,
+        url varchar(1024) not null,
+        object_key varchar(1024) null,
+        size bigint null,
+        hash varchar(128) null,
+        tags_json mediumtext not null,
+        created_at bigint not null,
+        key catalog_artifacts_app (app_id, created_at),
+        constraint catalog_artifacts_app foreign key (app_id) references catalog_apps(id) on delete cascade
+      ) engine=InnoDB default charset=utf8mb4`,
+      `create table catalog_app_permissions (
+        id varchar(64) not null primary key,
+        app_id varchar(64) not null,
+        member_id varchar(64) null,
+        pending_github_login varchar(255) null,
+        level enum('read','edit') not null,
+        created_at bigint not null,
+        unique key catalog_app_perm_member (app_id, member_id),
+        unique key catalog_app_perm_pending (app_id, pending_github_login),
+        key catalog_app_perm_pending_login (pending_github_login),
+        constraint catalog_app_perm_app foreign key (app_id) references catalog_apps(id) on delete cascade,
+        constraint catalog_app_perm_member_fk foreign key (member_id) references members(id)
+      ) engine=InnoDB default charset=utf8mb4`,
+      `create table catalog_group_permissions (
+        id varchar(64) not null primary key,
+        group_id varchar(64) not null,
+        member_id varchar(64) null,
+        pending_github_login varchar(255) null,
+        level enum('read','edit') not null,
+        created_at bigint not null,
+        unique key catalog_group_perm_member (group_id, member_id),
+        unique key catalog_group_perm_pending (group_id, pending_github_login),
+        key catalog_group_perm_pending_login (pending_github_login),
+        constraint catalog_group_perm_group foreign key (group_id) references catalog_groups(id) on delete cascade,
+        constraint catalog_group_perm_member_fk foreign key (member_id) references members(id)
+      ) engine=InnoDB default charset=utf8mb4`,
+      `create table catalog_pending_uploads (
+        id varchar(64) not null primary key,
+        app_id varchar(64) not null,
+        platform enum('android','ios','web','bin','server','win32','osx','linux') not null,
+        tags_json mediumtext null,
+        filename varchar(255) not null,
+        status enum('pending','completed','failed') not null default 'pending',
+        object_key varchar(1024) null,
+        etag varchar(128) null,
+        artifact_id varchar(64) null,
+        created_at bigint not null,
+        expires_at bigint not null,
+        key catalog_pending_uploads_expires (expires_at),
+        key catalog_pending_uploads_status (status),
+        constraint catalog_pending_uploads_app foreign key (app_id) references catalog_apps(id) on delete cascade
+      ) engine=InnoDB default charset=utf8mb4`,
+    ],
+  },
 ];
 
 const LOCK_NAME = "yyt_console_migrate";
