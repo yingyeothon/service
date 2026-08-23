@@ -13,3 +13,10 @@
 - Handlers return plain objects (→ 200 JSON), `undefined` (→ 204) or an `HttpResult`; throw `AppError` for every client-visible failure so the router maps status/code uniformly.
 - Route tables: wrap routes in `defineRoute({...})` from `@yyt/http` so `body`/`query` zod inference flows into the handler; the table type is `AnyRoute[]`. Browser-facing routes validate the query _inside_ the handler (behind an HTML-rendering wrapper) so a bad query still renders HTML, not the router's JSON 400.
 - Auth channel JSON shape (console writes, auth reads): `config_json = {audience, tokenTtlSec, redirectAllowlist[], providers:{github?:{clientId}, google?:{clientId}}}`, `secret_json = {secret, providers:{github?:{clientSecret}, google?:{clientSecret}}}`. Readers live in `@yyt/console-db` (`ConsoleDb.findAuthChannel`).
+
+## Sample game stack (`examples/sample-dungeon`)
+
+- It is a **standalone pnpm root** (own `pnpm-workspace.yaml`, `eslint.config.mjs`, `vitest.config.ts`), not a workspace member: it depends on `@yingyeothon/*` which is unpublished and resolved through `overrides: link:../../../tslib/packages/*`. Root `pnpm lint`/`format`/`test` ignore `examples/**`; run its own `pnpm typecheck && pnpm lint && pnpm test` inside the directory. Keep it copy-pasteable: no `@yyt/*` imports (the callback HMAC is re-implemented in `src/signature.ts` on purpose), no SSM — everything comes from one env file.
+- The match service's callback cannot target topic `POST /t` directly (signed body vs bearer + topic body): a glue route is required (`src/topicLobby.ts`). Keep `docs/decisions.md` wording ("callback target may be the topic service") read as "via a glue function".
+- Games reuse the auth JWT unchanged (`docs/auth-game-contract.md` "Reusing the auth service token"); the callback response is `{wsUrl, gameId}` with no token. `members[].memberId` must be the auth `userId` byte-for-byte.
+- tslib changes that this repo needs land in `~/git/yyt.life/tslib` as separate commits (the user pushes/releases): Redis ACL `username` (`REDIS_USER`), `runGameAllTogether.endDropDelayMillis`.

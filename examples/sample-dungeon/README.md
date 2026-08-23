@@ -1,0 +1,71 @@
+# sample-dungeon — tslib game stack wired to the yyt services
+
+The contest-day starting point: an instant dungeon on `@yingyeothon/lambda-gamebase` + `gamebase-all-together` that accepts the **auth service's JWT unchanged** and is started by the **match service's signed callback**. Copy this directory, rename the service, replace `src/game.ts`.
+
+```
+client ──JWT──▶ match WS ──party──▶ POST /match-callback (signed) ──▶ actor Lambda
+   │                                        │ {wsUrl, gameId}
+   └──────── same JWT, ?x-game-id=… ─────▶ dungeon WS ($connect authorizer) ──▶ game loop
+```
+
+## Layout
+
+| File                | Role                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `src/handler.ts`    | Lambda entry points (`authorizer`, `ws`, `actor`, `matchCallback`, `matchCallbackTopic`); the only module reading env.   |
+| `src/env.ts`        | Env contract + Redis key prefixes.                                                                                       |
+| `src/lobby.ts`      | `POST /match-callback`: verify `X-Yyt-Signature` → save `GameActorStartEvent` → invoke actor → `{wsUrl, gameId}`.        |
+| `src/topicLobby.ts` | `POST /match-callback-topic`: the server-less alternative — opens a topic room for the party and returns its `wsUrl`.    |
+| `src/actor.ts`      | `handleActor` + `runGameAllTogether` with the dungeon hooks.                                                             |
+| `src/game.ts`       | Pure rules (boss HP, attack clamp, snapshot). **Replace this.**                                                          |
+| `src/signature.ts`  | HMAC verification of the matchmaker callback.                                                                            |
+| `serverless.yml`    | WebSocket API (REQUEST authorizer on `$connect`, identity source `Sec-WebSocket-Protocol`, cache off) + httpApi + actor. |
+| `scripts/deploy.sh` | `scripts/deploy.sh <env-file> [stage]` — sources the env file, then `serverless deploy`.                                 |
+| `env.example`       | Every variable the stack needs. Real files live outside git (`../../local/`).                                            |
+
+## Identity contract (docs/auth-game-contract.md)
+
+- The dungeon verifies the auth service's token with the **auth channel secret** (`JWT_SECRET_KEY`), `iss = yyt-auth/{authChannelId}` and `aud = channel.audience`. No re-signing: the client reuses the JWT it already holds for the match socket, so the callback response carries no `token`.
+- `sub` (the auth `userId`) is copied verbatim into `GameActorStartEvent.members[].memberId` (`src/lobby.ts#toStartEvent`); `$connect` compares the two and fails closed on anything else.
+- The wait stage ends early only when **every** member connected; with `minPlayers: 1` a missing member still costs the full `gameWaitingSeconds` (20 s) before the game starts short-handed.
+- Token lifetime is the auth channel's `tokenTtlSec` (default 24 h), longer than the contract's 60-minute floor — fine for a contest; shorten the channel TTL if it matters.
+
+## Protocol (what `src/game.ts` defines)
+
+| Direction | Message                                                                                                           |
+| --------- | ----------------------------------------------------------------------------------------------------------------- |
+| client →  | `{"type":"attack","power"?:n}` (`power` clamped to 1..10)                                                         |
+| server →  | `{"type":"stage","payload":{"stage":"wait"\|"running"\|"end","age"}}`                                             |
+| server →  | `{"type":"enter","payload":{"memberId"}}`                                                                         |
+| server →  | `{"type":"snapshot","payload":{"bossHp","bossMaxHp","damage","connected"}}` (on enter/reconnect and every second) |
+| server →  | `{"type":"hit","payload":{"memberId","dealt","bossHp"}}`                                                          |
+| server →  | `{"type":"result","payload":{"reason","damage"}}` then the `end` stage; the server drops the sockets ~1 s later   |
+
+`enter`/`leave` are reserved by tslib; `handleMessages` refuses them from clients (`validateMessage` only admits `attack`).
+
+## Deploy
+
+1. Create an **auth channel** and a **match channel** in the console (or via the `yyt` CLI). Note the auth channel `secret`/`audience` and the match `apiKey` — both are shown once.
+2. Fill an env file from `env.example`; Redis is yours (any Redis 6+ reachable from Lambda; `REDIS_USER` optional for ACL users). `REDIS_KEY_PREFIX` must match the ACL key pattern.
+3. `pnpm install` (see below) and `scripts/deploy.sh <env-file> dev`. The output prints the `CallbackUrl`; set it as the match channel's `callbackUrl` (full config replace on PATCH).
+4. Smoke from the service repo: `scripts/smoke/dungeon.mjs` (`setup` → deploy → `run` → `clean`), which does steps 1–3 against `dev` with the debug hooks.
+
+Sizing: `actor` timeout (180 s) ≥ `gameWaitingSeconds + gameRunningSeconds + LIFETIME_MARGIN_SECONDS` in `src/actor.ts`; the start event TTL uses the same sum. Set `maximumRetryAttempts: 0` on the actor — a retried game would replay from the start.
+
+## Copying this directory
+
+`git archive`/`rsync --exclude node_modules --exclude .serverless` it (never `cp -r` with `node_modules/` and `.serverless/` — the latter holds the previous account's deploy state). The tsconfig is self-contained; the only path that must be fixed after copying is the tslib `overrides` below. Then `pnpm install && pnpm typecheck` — **a clean `pnpm install` does not prove the links resolve**; only `typecheck` does.
+
+Prerequisites: Node ≥ 22, pnpm, Serverless Framework v4 CLI (`npm i -g serverless`, logged in or `SERVERLESS_ACCESS_KEY`), an AWS profile.
+
+## tslib resolution
+
+`@yingyeothon/*` is not on npm yet. `pnpm-workspace.yaml` makes this directory its own pnpm root and `overrides` the packages to `link:../../../tslib/packages/*` (the sibling checkout, built with `pnpm build` there). After copying, point them at your tslib checkout (absolute paths are fine); delete the `overrides` block once the packages are published.
+
+## Logs
+
+`serverless logs -f matchCallback|authorizer|ws|actor --stage dev` (CloudWatch `/aws/lambda/<service>-<stage>-<fn>`). A game that connects but never sends `stage`/`snapshot` means the actor crashed or timed out: read the `actor` log; the start event and actor lock expire after the game lifetime (~3 min), after which the gameId is gone for good.
+
+## Checks
+
+`pnpm typecheck && pnpm lint && pnpm test` — unit tests cover the signature, the lobby handlers (with fakes) and the rules. The game loop itself is tslib's; the dev smoke is the integration test.

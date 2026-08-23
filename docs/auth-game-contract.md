@@ -4,16 +4,16 @@ Owned by the **service layer**. tslib (`@yingyeothon/*`) only provides the verif
 
 ## Decisions
 
-| Item            | Decision                                                                                     |
-| --------------- | -------------------------------------------------------------------------------------------- |
-| Identity source | Claims of the JWT issued by the auth/lobby service. `x-member-id` headers are never trusted. |
-| Signature       | HS256 symmetric key; one secret per participant channel.                                     |
-| Where verified  | API Gateway **REQUEST authorizer** on `$connect` only; `$default` does not re-verify.        |
-| Key delivery    | Game Lambda env `JWT_SECRET_KEY`. One stack per participant, so a single secret suffices.    |
-| Token transport | `Sec-WebSocket-Protocol: bearer, <token>`. Never the query string (it lands in access logs). |
-| Lifetime        | Match time + **60 min** — covers a 15-min dungeon, lobby wait, and mobile reconnects.        |
-| Reconnect       | Reuse the same token; no refresh endpoint.                                                   |
-| Anonymity       | Game-agnostic; the lobby decides what `sub` means (account or device id).                    |
+| Item            | Decision                                                                                                                                                                                                                                      |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity source | Claims of the JWT issued by the auth/lobby service. `x-member-id` headers are never trusted.                                                                                                                                                  |
+| Signature       | HS256 symmetric key; one secret per participant channel.                                                                                                                                                                                      |
+| Where verified  | API Gateway **REQUEST authorizer** on `$connect` only; `$default` does not re-verify.                                                                                                                                                         |
+| Key delivery    | Game Lambda env `JWT_SECRET_KEY`. One stack per participant, so a single secret suffices.                                                                                                                                                     |
+| Token transport | `Sec-WebSocket-Protocol: bearer, <token>`. Never the query string (it lands in access logs).                                                                                                                                                  |
+| Lifetime        | At least match time + **60 min** — covers a 15-min dungeon, lobby wait, and mobile reconnects. With the yyt auth service the token is the channel's `tokenTtlSec` (default 24 h) and is **reused as-is** by the game; no re-signing on match. |
+| Reconnect       | Reuse the same token; no refresh endpoint.                                                                                                                                                                                                    |
+| Anonymity       | Game-agnostic; the lobby decides what `sub` means (account or device id).                                                                                                                                                                     |
 
 ## Claims
 
@@ -76,6 +76,10 @@ export const handler = (event) =>
 - Without `selectSubprotocol` the browser handshake fails: the server must echo the chosen subprotocol.
 - `x-member-id` is ignored entirely. The only client-chosen value is `x-game-id`, filtered by the start event's membership check.
 
+## Reusing the auth service token (verified 2026-08-23)
+
+The auth service's JWT (`iss = yyt-auth/{channelId}`, `aud = channel.audience`, `sub = userId`) passes `createJwtRequestAuthorizer` unchanged, so the lobby step "sign JWT" disappears: the match callback returns `{wsUrl, gameId}` without a `token`, and the client connects to the game with the JWT it already used for the match socket. The game stack's `JWT_SECRET_KEY`/`JWT_ISSUER`/`JWT_AUDIENCE` are the auth channel's secret, `yyt-auth/{channelId}` and audience. `exp` is then the channel TTL rather than "match + 60 min" — longer, never shorter, which is the only direction the contract cares about. Reference implementation: `examples/sample-dungeon`.
+
 ## Handshake
 
 ```
@@ -112,7 +116,8 @@ One deployment per participant makes a single env var sufficient; no key lookup 
 2. Secrets move (lobby → participant → Lambda env); rotation means redeploy.
 3. No revocation: tokens are valid until `exp` (60 min). Post-connect eviction is the game loop's job (`Transport.drop`).
 4. The `memberId` contract is documentary: mismatch between `sub` and `GameActorStartEvent.members[].memberId` silently yields 400. Fill both from the same variable.
-5. Auth only decides _who_. Multiple sockets per member and stale connections sending on `$default` until TTL are handled by rate limits and sequence numbers, not auth.
+5. The matchmaker callback is signed but not replay-protected (no timestamp/nonce): a captured body can be re-posted until the channel apiKey rotates. The apiKey travels only to the callback owner, so this is accepted for contest use; add an `issuedAt` check if a lobby ever becomes multi-tenant.
+6. Auth only decides _who_. Multiple sockets per member and stale connections sending on `$default` until TTL are handled by rate limits and sequence numbers, not auth.
 
 ## Later
 
@@ -123,12 +128,12 @@ One deployment per participant makes a single env var sufficient; no key lookup 
 
 ## Checklist
 
-- [ ] lobby: channel issue API (`issuerId`/`secret`/`audience` create/get/revoke)
-- [ ] lobby: sign JWT on party confirm; `sub` from the same variable as the start event
-- [ ] lobby: `exp = confirm + 60 min`
-- [ ] game: `authorizer.ts` with `createJwtRequestAuthorizer`, pinned `iss`/`aud`
-- [ ] game: REQUEST authorizer on `$connect`, identity source `route.request.header.Sec-WebSocket-Protocol`, cache TTL 0
-- [ ] game: `$connect` handler with `resolveMemberId` + `selectSubprotocol`
-- [ ] client: `new WebSocket(wsUrl + "?x-game-id=" + gameId, ["bearer", token])`; reuse the token on reconnect, return to lobby near `exp`
-- [ ] access logs do not include `$context.authorizer.*`
-- [ ] decide how secrets reach participants (one-time console display vs parameter store)
+- [x] lobby: channel issue API — console `channels` (auth channel = issuer/secret/audience)
+- [x] lobby: token on party confirm — the auth token is reused; `sub` and `members[].memberId` are the same `userId` (`examples/sample-dungeon/src/lobby.ts`)
+- [x] lobby: `exp` ≥ confirm + 60 min (channel `tokenTtlSec`)
+- [x] game: `authorizer.ts` with `createJwtRequestAuthorizer`, pinned `iss`/`aud`
+- [x] game: REQUEST authorizer on `$connect`, identity source `route.request.header.Sec-WebSocket-Protocol`; `resultTtlInSeconds: 0` declared (API Gateway v2 ignores the TTL for WebSocket authorizers — they only run on `$connect` anyway)
+- [x] game: `$connect` handler with `resolveMemberId` + `selectSubprotocol`
+- [x] client: `new WebSocket(wsUrl + "?x-game-id=" + gameId, ["bearer", token])`; reuse the token on reconnect (`scripts/smoke/dungeon.mjs`)
+- [x] access logs do not include `$context.authorizer.*` (sample stack has no access logging)
+- [x] secrets reach participants through the console's one-time display (`secret`/`apiKey` on create and rotate)

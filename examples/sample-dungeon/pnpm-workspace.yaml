@@ -1,0 +1,13 @@
+# Standalone pnpm root (not part of the service workspace).
+# Until @yingyeothon/* is published, resolve it from the sibling tslib checkout (built with `pnpm build`).
+packages:
+  - "."
+overrides:
+  "@yingyeothon/gamebase-all-together": "link:../../../tslib/packages/gamebase-all-together"
+  "@yingyeothon/lambda-authorizer-jwt": "link:../../../tslib/packages/lambda-authorizer-jwt"
+  "@yingyeothon/lambda-gamebase": "link:../../../tslib/packages/lambda-gamebase"
+  "@yingyeothon/logger": "link:../../../tslib/packages/logger"
+  "@yingyeothon/naive-redis": "link:../../../tslib/packages/naive-redis"
+allowBuilds:
+  esbuild: true
+  "@parcel/watcher": false
