@@ -1,0 +1,50 @@
+# @yyt/console-web
+
+Operator console SPA (React + Vite + react-router). Served under `/ui/` on the
+console API host (`console{-dev}.yyt.life/ui/`) so API root paths (`/events`,
+`/channels`, …) never collide with SPA routes and the `__Host-` session cookie
+applies to both. S3 + CloudFront wiring: `todo/07-infra.md`.
+
+## Pages
+
+- `/ui/` — sign-in / role notice.
+- `/ui/channels`, `/ui/channels/new`, `/ui/channels/:id` — member+.
+- `/ui/tokens` — any signed-in member (tokens carry the role at use time).
+- `/ui/members` — admin.
+- `/ui/events`, `/ui/events/:id` — public for published/closed events; proposals,
+  votes and admin controls when signed in.
+
+## Development
+
+```sh
+# proxies everything outside /ui/ to the dev API (default https://console-dev.yyt.life)
+YYT_DEBUG_KEY="$(cat ../../local/deploy/debug-key.dev)" pnpm dev
+```
+
+- `VITE_API_PROXY` overrides the proxy target (scheme included). The built SPA
+  always calls the API on its own origin: the session cookie is `__Host-`, so a
+  cross-origin API can never authenticate. `vite preview` has no proxy, so only
+  anonymous pages work there.
+- React StrictMode double-invokes effects in dev, so every page fetches twice
+  — expected, not a bug.
+- The proxy rewrites `Origin` to the target so the API's same-origin CSRF check
+  accepts cookie mutations from `localhost:5173`. `YYT_DEBUG_KEY` adds
+  `x-debug-key` to `POST /debug/login` only; the key never reaches the page.
+- The proxy refuses requests whose `Origin`/`Referer` is not the dev server
+  itself, so other sites cannot use it as a CSRF or debug-login oracle.
+- Mint a session from the browser console (the proxied stack must be deployed
+  with `--param debugHooks=1`):
+
+  ```js
+  await fetch("/debug/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ login: "dev-admin", githubId: -901, role: "admin" }),
+  });
+  location.reload();
+  ```
+
+## Build / test
+
+`pnpm build` → `dist/` (base `/ui/`). `pnpm test` (vitest + jsdom),
+`pnpm typecheck`. Lint/format run from the repo root.

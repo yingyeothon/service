@@ -56,7 +56,7 @@ check(
 const admin = await login("smoke-admin", "admin", -1001);
 const member = await login("smoke-member", "member", -1002);
 const pending = await login("smoke-pending", "pending", -1003);
-const as = (u, extra = {}) => ({ cookie: u.cookie, ...extra });
+const as = (u, extra = {}) => ({ cookie: u.cookie, origin: base, ...extra });
 
 const me = await call("/me", { headers: as(member) });
 check(

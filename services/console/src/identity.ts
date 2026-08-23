@@ -68,7 +68,9 @@ export function createIdentityResolver({
       const referer = h.referer ?? h.Referer;
       const from =
         h.origin ?? h.Origin ?? (referer ? safeOrigin(referer) : undefined);
-      if (from !== undefined && from !== origin) return undefined;
+      // Fail closed: browsers always send Origin on cross-origin mutations,
+      // so a cookie mutation without any source header is not ours.
+      if (from !== origin) return undefined;
     }
     const s = await sessions.get(sid);
     if (!s) return undefined;

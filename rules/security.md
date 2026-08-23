@@ -9,7 +9,10 @@
 - The match authorizer denies on every failure (never throws) and logs only the error code; JWT verification uses the linked auth channel's secret read from MySQL on each connect (no cache for rows with secrets).
 - Console roles: `pending` can only read public data, propose, and vote; channel mutation requires `member`; member management requires `admin`. Enforce in one middleware, test the matrix.
 - S3 buckets private (SSE-KMS); poster images served only via CloudFront.
-- Event/proposal responses expose `memberLogin` only, never internal member ids (those are the keys of the admin member routes). `bodyMd` is stored and returned raw (20 KB cap): the SPA must render it through a sanitizing markdown pipeline with raw HTML disabled.
+- Event/proposal responses expose `memberLogin` only, never internal member ids (those are the keys of the admin member routes). `bodyMd` is stored and returned raw (20 KB cap): the SPA renders it as plain text (paragraphs, line breaks, `https://` autolinks only — `apps/console-web/src/lib/text.tsx`), never as HTML/markdown; keep it that way unless a sanitizer is added.
+- Cookie-authenticated mutations fail closed: `Origin`/`Referer` must equal the console origin; a request with neither is refused (browsers always send `Origin` on non-GET fetches; tests and smoke scripts set it explicitly). Bearer tokens ignore Origin.
+- The Vite dev proxy (`apps/console-web/vite.config.ts`) rewrites `Origin` to the API and injects `x-debug-key` from `YYT_DEBUG_KEY` — only for requests whose own `Origin`/`Referer` is the dev server; anything else gets 403 so a visited site cannot use the proxy as a CSRF/debug-login oracle. Never reuse this pattern outside dev.
+- One-time secrets (channel secret/API key, API token) live only in component state or router navigation state that is cleared immediately (`navigate(path, {replace, state: null})`), never in storage or URLs.
 - Debug hooks must be registered only on `dev` (see `manual-verification.md`).
 - `@yyt/jwt` refuses HS256 secrets under 32 bytes on sign _and_ verify; generate channel secrets with `randomHex(32)` (64 hex chars). `@yyt/http` refuses `cors: {origins:["*"], credentials:true}`.
 - Never let `decodeURIComponent` throw out of a handler: malformed percent-encoding in paths/cookies must become a 4xx (router treats it as no-match) instead of an unhandled Lambda error.

@@ -57,8 +57,9 @@ provider:
     STAGE: ${self:custom.stage}
     NODE_OPTIONS: --enable-source-maps
     PUBLIC_BASE_URL: https://${self:custom.domain}
-    # SPA host; until 07 wires CloudFront the API host doubles as the landing page.
-    WEB_URL: ${param:webUrl, "https://${self:custom.domain}"}
+    # SPA base (apps/console-web is served under /ui/ on the same host so the
+    # __Host- session cookie applies); CloudFront wiring is todo/07.
+    WEB_URL: ${param:webUrl, "https://${self:custom.domain}"}/ui
     AUTH_BASE_URL: https://auth${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     TOPIC_BASE_URL: https://topic${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     TOPIC_WS_URL: wss://topic-ws${self:custom.domainSuffix.${self:custom.stage}}.yyt.life

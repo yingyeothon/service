@@ -91,7 +91,11 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     const r = await githubLogin(name, githubId);
     expect(r.statusCode).toBe(302);
     const sid = cookieOf(r, SESSION_COOKIE);
-    return { id, cookie: { cookie: `${SESSION_COOKIE}=${sid}` } };
+    // Browsers send Origin on every non-GET fetch; the CSRF check fails closed without it.
+    return {
+      id,
+      cookie: { cookie: `${SESSION_COOKIE}=${sid}`, origin: BASE },
+    };
   };
   return { app, kv, db, events, posters, clock, agent, login, githubLogin };
 }

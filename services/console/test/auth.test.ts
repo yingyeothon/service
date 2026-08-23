@@ -70,17 +70,22 @@ describe("GitHub login", () => {
     const h = harness();
     const { cookie } = await h.login("alice", "member");
     const body = { name: "t" };
+    const { origin: _own, ...bare } = cookie;
     for (const origin of ["https://auth-dev.yyt.life", "null", "bad"]) {
       const r = await h.app(
-        ev("POST", "/tokens", { headers: { ...cookie, origin }, body }),
+        ev("POST", "/tokens", { headers: { ...bare, origin }, body }),
       );
       expect(r.statusCode, origin).toBe(401);
     }
+    // Fail closed: no Origin and no Referer at all is refused too.
+    expect(
+      (await h.app(ev("POST", "/tokens", { headers: bare, body }))).statusCode,
+    ).toBe(401);
     expect(
       (
         await h.app(
           ev("POST", "/tokens", {
-            headers: { ...cookie, referer: "https://auth-dev.yyt.life/x" },
+            headers: { ...bare, referer: "https://auth-dev.yyt.life/x" },
             body,
           }),
         )
