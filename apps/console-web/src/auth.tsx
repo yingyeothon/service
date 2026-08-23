@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, type ApiClient } from "./api";
 import type { Me, Role } from "./types";
 
@@ -31,6 +32,7 @@ export function AuthProvider({
   children: ReactNode;
   client?: ApiClient;
 }) {
+  const queryClient = useQueryClient();
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,9 +55,14 @@ export function AuthProvider({
   useEffect(() => {
     // A 401 from any call means the cookie session is gone: drop `me` so
     // guarded pages fall back to the sign-in notice instead of raw errors.
-    client.setUnauthorizedHandler(() => setMe(null));
+    client.setUnauthorizedHandler(() => {
+      setMe(null);
+      // The session is gone: drop cached data so nothing from the previous
+      // session can be served to a later one.
+      queryClient.clear();
+    });
     return () => client.setUnauthorizedHandler(undefined);
-  }, [client]);
+  }, [client, queryClient]);
 
   const logout = useCallback(async () => {
     try {
@@ -63,8 +70,9 @@ export function AuthProvider({
     } finally {
       // The cookie is gone or invalid either way.
       setMe(null);
+      queryClient.clear();
     }
-  }, [client]);
+  }, [client, queryClient]);
 
   return (
     <AuthContext.Provider value={{ me, loading, error, refresh, logout }}>

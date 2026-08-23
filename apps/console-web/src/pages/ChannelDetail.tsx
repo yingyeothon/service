@@ -1,3 +1,13 @@
+import {
+  Anchor,
+  Button,
+  Card,
+  Code,
+  Group,
+  Stack,
+  Text,
+  Title,
+} from "@mantine/core";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { api } from "../api";
@@ -13,7 +23,7 @@ import {
 } from "../components/ui";
 import { buildConfig, emptyForm, formFromChannel } from "../lib/channelForm";
 import { errorMessage, fmtRelative, fmtTime } from "../lib/format";
-import { useAction, useAsync } from "../lib/useAsync";
+import { useAction, useApiQuery } from "../lib/query";
 import type { AuthConfig, Channel, MatchConfig, TopicConfig } from "../types";
 
 export function ChannelDetailPage() {
@@ -21,8 +31,10 @@ export function ChannelDetailPage() {
   const { me } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
-  const ch = useAsync(() => api.channel(id), [id]);
-  const auths = useAsync(() => api.channels({ kind: "auth" }), []);
+  const ch = useApiQuery(["channel", id], () => api.channel(id));
+  const auths = useApiQuery(["channels", "auth", false], () =>
+    api.channels({ kind: "auth" }),
+  );
   const act = useAction();
   const [shown, setShown] = useState<string | null>(
     (loc.state as { shown?: string } | null)?.shown ?? null,
@@ -86,25 +98,26 @@ export function ChannelDetailPage() {
 
   return (
     <>
-      <p>
-        <Link to="/channels">← Channels</Link>
-      </p>
-      <div className="row spread">
-        <h1 style={{ margin: 0 }}>
-          {c.name} <Badge>{c.kind}</Badge>{" "}
-          <Badge
-            tone={
-              c.status === "active"
-                ? "ok"
-                : c.status === "expired"
-                  ? "warn"
-                  : "danger"
-            }
-          >
-            {c.status}
-          </Badge>
-        </h1>
-      </div>
+      <Text size="sm" mb="xs">
+        <Anchor component={Link} to="/channels">
+          ← Channels
+        </Anchor>
+      </Text>
+      <Group gap="xs" mb="sm">
+        <Title order={2}>{c.name}</Title>
+        <Badge>{c.kind}</Badge>
+        <Badge
+          tone={
+            c.status === "active"
+              ? "ok"
+              : c.status === "expired"
+                ? "warn"
+                : "danger"
+          }
+        >
+          {c.status}
+        </Badge>
+      </Group>
       {!owner && (
         <Notice>
           Owned by another member; admins can extend or delete but not edit or
@@ -120,69 +133,72 @@ export function ChannelDetailPage() {
         />
       )}
 
-      <div className="card">
+      <Card withBorder mb="md">
         <CopyField label="Channel id" value={c.id} />
         {c.kind === "auth" && <AuthDetails c={c} />}
         {c.kind === "topic" && <TopicDetails c={c} />}
         {c.kind === "match" && <MatchDetails c={c} />}
-        <p className="muted">
+        <Text size="sm" c="dimmed" my="xs">
           Created {fmtTime(c.createdAt)} · Expires {fmtTime(c.expiresAt)} (
           {fmtRelative(c.expiresAt)})
           {c.disabledAt !== null && <> · Disabled {fmtTime(c.disabledAt)}</>}
-        </p>
-        <div className="row">
-          <button
-            className="btn btn-sm"
+        </Text>
+        <Group>
+          <Button
+            size="compact-sm"
+            variant="default"
             disabled={act.busy}
             onClick={() => void extend()}
           >
             Extend +7 days
-          </button>
+          </Button>
           {owner && !editing && (
-            <button
-              className="btn btn-sm"
+            <Button
+              size="compact-sm"
+              variant="default"
               disabled={act.busy}
               onClick={startEdit}
             >
               Edit
-            </button>
+            </Button>
           )}
           {owner && (
             <Confirm
               label={`Rotate ${secretLabel.toLowerCase()}`}
-              className="btn btn-sm"
+              color="brand"
+              variant="default"
               onConfirm={rotate}
               disabled={act.busy}
             />
           )}
           <Confirm label="Delete" onConfirm={remove} disabled={act.busy} />
-        </div>
-      </div>
+        </Group>
+      </Card>
 
       {editing && (
-        <form className="stack card" onSubmit={(e) => void save(e)}>
-          <h2 style={{ margin: 0 }}>Edit</h2>
-          <ChannelForm
-            kind={c.kind}
-            form={form}
-            onChange={setForm}
-            authChannels={auths.data ?? []}
-            editing
-          />
-          {localError && <Notice kind="error">{localError}</Notice>}
-          <div className="row">
-            <button className="btn btn-primary" disabled={act.busy}>
-              Save
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setEditing(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
+        <Card withBorder>
+          <form onSubmit={(e) => void save(e)}>
+            <Stack gap="sm">
+              <Title order={4}>Edit</Title>
+              <ChannelForm
+                kind={c.kind}
+                form={form}
+                onChange={setForm}
+                authChannels={auths.data ?? []}
+                editing
+              />
+              {localError && <Notice kind="error">{localError}</Notice>}
+              <Group>
+                <Button type="submit" disabled={act.busy}>
+                  Save
+                </Button>
+                <Button variant="default" onClick={() => setEditing(false)}>
+                  Cancel
+                </Button>
+              </Group>
+            </Stack>
+          </form>
+        </Card>
       )}
     </>
   );
@@ -199,29 +215,29 @@ function AuthDetails({ c }: { c: Channel }) {
       {Object.entries(c.callbackUrls ?? {}).map(([p, url]) => (
         <CopyField key={p} label={`${p} callback`} value={url} />
       ))}
-      <p className="muted">
+      <Text size="sm" c="dimmed">
         Token TTL {cfg.tokenTtlSec}s · Providers:{" "}
         {providers.length
           ? providers.join(", ")
           : "none (set one to enable login)"}
-      </p>
-      <p className="muted">
+      </Text>
+      <Text size="sm" c="dimmed">
         Redirect allowlist:{" "}
         {cfg.redirectAllowlist.length ? (
           cfg.redirectAllowlist.map((u) => (
-            <code key={u} style={{ marginRight: "0.5rem" }}>
+            <Code key={u} mr={6}>
               {u}
-            </code>
+            </Code>
           ))
         ) : (
           <em>empty — logins cannot redirect anywhere</em>
         )}
-      </p>
-      <p className="muted">
+      </Text>
+      <Text size="sm" c="dimmed">
         Register the callback URL{providers.length > 1 ? "s" : ""} above in the
         OAuth app{providers.length > 1 ? "s" : ""}. Games verify JWTs with
-        issuer <code>{c.issuer}</code> and audience <code>{cfg.audience}</code>.
-      </p>
+        issuer <Code>{c.issuer}</Code> and audience <Code>{cfg.audience}</Code>.
+      </Text>
     </>
   );
 }
@@ -233,10 +249,10 @@ function TopicDetails({ c }: { c: Channel }) {
       <CopyField label="API base" value={c.apiBase ?? ""} />
       <CopyField label="WebSocket URL" value={c.wsUrl ?? ""} />
       <CopyField label="Auth channel" value={cfg.authChannelId} />
-      <p className="muted">
-        Create topics with <code>POST {c.apiBase}/t</code> using the API key as
+      <Text size="sm" c="dimmed">
+        Create topics with <Code>POST {c.apiBase}/t</Code> using the API key as
         Bearer; clients subscribe over the WebSocket with a player JWT.
-      </p>
+      </Text>
     </>
   );
 }
@@ -248,10 +264,10 @@ function MatchDetails({ c }: { c: Channel }) {
       <CopyField label="WebSocket URL" value={c.wsUrl ?? ""} />
       <CopyField label="Auth channel" value={cfg.authChannelId} />
       <CopyField label="Callback URL" value={cfg.callbackUrl} />
-      <p className="muted">
+      <Text size="sm" c="dimmed">
         Party size {cfg.partySize} · wait {cfg.waitTimeoutSec}s · on timeout:{" "}
         {cfg.onTimeout}
-      </p>
+      </Text>
     </>
   );
 }

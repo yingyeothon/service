@@ -23,6 +23,15 @@ Single source of truth for settled product/technical decisions. Change this file
 | Tests         | vitest. Redis/MySQL behind interfaces with in-memory fakes (`createMemoryKv`, `createMemoryConsoleDb`); drivers mocked. Integration tests against dev instances only with `YYT_IT=1` + `local/env/*.dev.env`. No Docker. Manual verification = dev deploy + `curl`/`wscat` smoke.                                                                                                                                                                         |
 | Commit/push   | Three adversarial reviews, then commit directly to `main` and push to `yingyeothon/service`.                                                                                                                                                                                                                                                                                                                                                              |
 
+## Console SPA frontend stack (revised 2026-08-24)
+
+- Earlier "no UI library, single `styles.css`" decision is superseded.
+- UI: **Mantine 8** (core/hooks/modals/notifications) + `@tabler/icons-react`; compact theme (form components default `size: sm`, small type scale), light-only, system fonts. Layout via Mantine `AppShell` (header + role-filtered side navigation; navigation config is the single source for both the menu and route guards).
+- Router: keep **react-router 7** with `basename="/ui"` (small page count; no file-based routing).
+- Data layer: **TanStack Query 5** replaces the hand-rolled `useAsync`; 401 handling still drops the session via the auth provider.
+- API client stays hand-written (`src/api.ts`); no OpenAPI codegen (the console API has no spec).
+- Invariants preserved: `/ui/` base path, `credentials: "same-origin"` + Origin-based CSRF, plain-text rendering of user text (no HTML), one-time secret display with history-state scrub, same-origin poster images with cache buster, accessible status/alert roles.
+
 ## Console permission model
 
 - Login: **GitHub OAuth only**. Session = httpOnly cookie (SPA) or Bearer API token (CLI).

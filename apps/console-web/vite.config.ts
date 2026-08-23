@@ -21,7 +21,27 @@ export default defineConfig(({ mode }) => {
   return {
     base: "/ui/",
     plugins: [react()],
-    build: { outDir: "dist", sourcemap: true },
+    // @tabler/icons-react ships thousands of modules; prebundle to keep dev fast.
+    optimizeDeps: { include: ["@tabler/icons-react"] },
+    build: {
+      outDir: "dist",
+      sourcemap: true,
+      rollupOptions: {
+        output: {
+          // Keep the app chunk small; UI/vendor code changes far less often.
+          manualChunks: {
+            vendor: ["react", "react-dom", "react-router"],
+            ui: [
+              "@mantine/core",
+              "@mantine/hooks",
+              "@mantine/modals",
+              "@mantine/notifications",
+              "@tanstack/react-query",
+            ],
+          },
+        },
+      },
+    },
     server:
       mode === "development"
         ? {

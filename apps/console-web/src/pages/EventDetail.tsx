@@ -1,3 +1,17 @@
+import {
+  Anchor,
+  Button,
+  Card,
+  Group,
+  Image,
+  Stack,
+  Stepper,
+  Table,
+  Text,
+  TextInput,
+  Textarea,
+  Title,
+} from "@mantine/core";
 import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../api";
@@ -5,7 +19,7 @@ import { hasRole, useAuth } from "../auth";
 import { Badge, Confirm, Notice, Spinner } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { renderBody } from "../lib/text";
-import { useAction, useAsync } from "../lib/useAsync";
+import { useAction, useApiQuery } from "../lib/query";
 import {
   EVENT_STATUSES,
   type EventDetail,
@@ -27,17 +41,16 @@ export function EventDetailPage() {
   const { id = "" } = useParams();
   const { me, loading: authLoading } = useAuth();
   // Wait for /me: an anonymous fetch of an in-progress event would 404 and flash an error.
-  const ev = useAsync(
-    () => (authLoading ? new Promise<EventDetail>(() => {}) : api.event(id)),
-    [id, me?.id, authLoading],
-  );
-  const props = useAsync(
-    // Anonymous viewers only get proposals for published/closed events.
+  const ev = useApiQuery(["event", id, me?.id ?? null], () => api.event(id), {
+    enabled: !authLoading,
+  });
+  const props = useApiQuery(
+    ["proposals", id, me?.id ?? null],
     () =>
       ev.data && (me || ["published", "closed"].includes(ev.data.status))
         ? api.proposals(id)
         : Promise.resolve({ proposals: [], myVote: null }),
-    [id, me?.id, ev.data?.status],
+    { enabled: ev.data !== undefined },
   );
   const act = useAction();
   const admin = hasRole(me, "admin");
@@ -54,33 +67,42 @@ export function EventDetailPage() {
 
   return (
     <>
-      <p>
-        <Link to="/events">← Events</Link>
-      </p>
-      <h1>
-        {e.title} <Badge tone={STATUS_TONE[e.status]}>{e.status}</Badge>
-      </h1>
+      <Text size="sm" mb="xs">
+        <Anchor component={Link} to="/events">
+          ← Events
+        </Anchor>
+      </Text>
+      <Group gap="xs" mb="sm">
+        <Title order={2}>{e.title}</Title>
+        <Badge tone={STATUS_TONE[e.status]}>{e.status}</Badge>
+      </Group>
       <StatusSteps status={e.status} />
       {act.error && <Notice kind="error">{act.error}</Notice>}
 
       {e.posterUrl && (
-        <img
-          className="poster"
+        <Image
           src={`${api.posterSrc(e.id)}?v=${e.updatedAt}`}
           alt={`${e.title} poster`}
+          maw={420}
+          radius="sm"
+          mb="md"
         />
       )}
-      <div className="body">{renderBody(e.bodyMd)}</div>
-      <p className="muted">
+      <div>{renderBody(e.bodyMd)}</div>
+      <Text size="sm" c="dimmed" mb="md">
         Created {fmtTime(e.createdAt)}
         {e.publishedAt !== null && <> · Published {fmtTime(e.publishedAt)}</>}
-      </p>
+      </Text>
 
       {e.winner && (
-        <div className="card winner">
-          <h3>Winning proposal</h3>
+        <Card
+          withBorder
+          mb="md"
+          style={{ borderColor: "var(--mantine-color-green-5)" }}
+        >
+          <Title order={4}>Winning proposal</Title>
           <ProposalCard p={e.winner} />
-        </div>
+        </Card>
       )}
 
       {admin && (
@@ -108,16 +130,17 @@ export function EventDetailPage() {
 function StatusSteps({ status }: { status: EventStatus }) {
   const idx = EVENT_STATUSES.indexOf(status);
   return (
-    <div className="steps" aria-label="event progress">
-      {EVENT_STATUSES.map((s, i) => (
-        <span
-          key={s}
-          className={`step ${i < idx ? "done" : i === idx ? "now" : ""}`}
-        >
-          {s}
-        </span>
+    <Stepper
+      active={idx}
+      size="xs"
+      mb="md"
+      aria-label="event progress"
+      styles={{ steps: { flexWrap: "wrap", rowGap: 8 } }}
+    >
+      {EVENT_STATUSES.map((s) => (
+        <Stepper.Step key={s} label={s} allowStepSelect={false} />
       ))}
-    </div>
+    </Stepper>
   );
 }
 
@@ -182,27 +205,35 @@ function AdminPanel({
   };
 
   return (
-    <div className="card">
-      <h3>Admin</h3>
-      <div className="row">
+    <Card withBorder mb="md">
+      <Title order={4} mb="xs">
+        Admin
+      </Title>
+      <Group>
         {next && (
           <Confirm
             label={`${NEXT_LABEL[next] ?? next} (${e.status} → ${next})`}
             confirmLabel={`Yes, ${next}`}
-            className="btn btn-primary btn-sm"
+            color="brand"
+            variant="filled"
             onConfirm={transition}
             disabled={act.busy || (next === "published" && !e.winner)}
           />
         )}
         {next === "published" && !e.winner && (
-          <span className="muted">Pick a winner below before publishing.</span>
+          <Text size="sm" c="dimmed">
+            Pick a winner below before publishing.
+          </Text>
         )}
         {next === "voting" && proposals.length === 0 && (
-          <span className="muted">Voting needs at least one proposal.</span>
+          <Text size="sm" c="dimmed">
+            Voting needs at least one proposal.
+          </Text>
         )}
         {!editing && (
-          <button
-            className="btn btn-sm"
+          <Button
+            size="compact-sm"
+            variant="default"
             onClick={() => {
               setTitle(e.title);
               setBody(e.bodyMd);
@@ -210,13 +241,13 @@ function AdminPanel({
             }}
           >
             Edit text
-          </button>
+          </Button>
         )}
         {canPoster && (
           <>
-            <button
-              type="button"
-              className="btn btn-sm"
+            <Button
+              size="compact-sm"
+              variant="default"
               disabled={uploading}
               onClick={() => fileRef.current?.click()}
             >
@@ -225,7 +256,7 @@ function AdminPanel({
                 : e.posterUrl
                   ? "Replace poster"
                   : "Upload poster"}
-            </button>
+            </Button>
             <input
               ref={fileRef}
               type="file"
@@ -243,101 +274,100 @@ function AdminPanel({
             disabled={act.busy}
           />
         )}
-      </div>
+      </Group>
       {!canPoster && (
-        <p className="muted">
+        <Text size="sm" c="dimmed" mt="xs">
           Posters can be uploaded once voting has closed (png/jpeg ≤ 5 MB).
-        </p>
+        </Text>
       )}
       {editing && (
-        <form
-          className="stack"
-          onSubmit={(x) => void save(x)}
-          style={{ marginTop: "0.8rem" }}
-        >
-          <label className="field">
-            Title
-            <input
+        <form onSubmit={(x) => void save(x)}>
+          <Stack gap="sm" mt="sm">
+            <TextInput
+              label="Title"
               value={title}
               onChange={(x) => setTitle(x.target.value)}
               required
               maxLength={200}
             />
-          </label>
-          <label className="field">
-            Description (plain text; blank line = paragraph, URLs are linked)
-            <textarea
+            <Textarea
+              label="Description (plain text; blank line = paragraph, URLs are linked)"
               value={body}
               onChange={(x) => setBody(x.target.value)}
               maxLength={20000}
+              autosize
+              minRows={4}
             />
-          </label>
-          <div className="row">
-            <button className="btn btn-primary" disabled={act.busy}>
-              Save
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setEditing(false)}
-            >
-              Cancel
-            </button>
-          </div>
+            <Group>
+              <Button type="submit" disabled={act.busy}>
+                Save
+              </Button>
+              <Button variant="default" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </Group>
+          </Stack>
         </form>
       )}
       {e.status === "decided" && (
         <>
-          <h3 style={{ marginTop: "0.8rem" }}>Results</h3>
+          <Title order={4} mt="sm" mb="xs">
+            Results
+          </Title>
           {proposals.length === 0 ? (
-            <p className="muted">No proposals.</p>
+            <Text size="sm" c="dimmed">
+              No proposals.
+            </Text>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Votes</th>
-                  <th>Proposal</th>
-                  <th>By</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {[...proposals]
-                  .sort((a, b) => (b.votes ?? 0) - (a.votes ?? 0))
-                  .map((p) => (
-                    <tr key={p.id}>
-                      <td>{p.votes ?? 0}</td>
-                      <td>{p.title}</td>
-                      <td>{p.memberLogin ?? "—"}</td>
-                      <td>
-                        {e.winner?.id === p.id ? (
-                          <Badge tone="ok">winner</Badge>
-                        ) : (
-                          <button
-                            className="btn btn-sm"
-                            disabled={act.busy}
-                            onClick={() => void decide(p.id)}
-                          >
-                            {e.winner ? "Make winner instead" : "Make winner"}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
+            <Table.ScrollContainer minWidth={480}>
+              <Table striped>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Votes</Table.Th>
+                    <Table.Th>Proposal</Table.Th>
+                    <Table.Th>By</Table.Th>
+                    <Table.Th />
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {[...proposals]
+                    .sort((a, b) => (b.votes ?? 0) - (a.votes ?? 0))
+                    .map((p) => (
+                      <Table.Tr key={p.id}>
+                        <Table.Td>{p.votes ?? 0}</Table.Td>
+                        <Table.Td>{p.title}</Table.Td>
+                        <Table.Td>{p.memberLogin ?? "—"}</Table.Td>
+                        <Table.Td>
+                          {e.winner?.id === p.id ? (
+                            <Badge tone="ok">winner</Badge>
+                          ) : (
+                            <Button
+                              size="compact-sm"
+                              variant="default"
+                              disabled={act.busy}
+                              onClick={() => void decide(p.id)}
+                            >
+                              {e.winner ? "Make winner instead" : "Make winner"}
+                            </Button>
+                          )}
+                        </Table.Td>
+                      </Table.Tr>
+                    ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
           )}
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
 function ProposalCard({ p }: { p: Proposal }) {
   return (
     <>
-      <h3>{p.title}</h3>
-      <p className="muted">
+      <Title order={5}>{p.title}</Title>
+      <Text size="sm" c="dimmed">
         by {p.memberLogin ?? "—"} · {fmtTime(p.createdAt)}
         {p.votes !== undefined && (
           <>
@@ -345,8 +375,8 @@ function ProposalCard({ p }: { p: Proposal }) {
             · {p.votes} vote{p.votes === 1 ? "" : "s"}
           </>
         )}
-      </p>
-      <div className="body">{renderBody(p.bodyMd)}</div>
+      </Text>
+      <div>{renderBody(p.bodyMd)}</div>
     </>
   );
 }
@@ -419,19 +449,23 @@ function ProposalsSection({
 
   return (
     <>
-      <div className="row spread">
-        <h2>Proposals {proposals.length ? `(${proposals.length})` : ""}</h2>
+      <Group justify="space-between" mb="xs">
+        <Title order={3}>
+          Proposals {proposals.length ? `(${proposals.length})` : ""}
+        </Title>
         {canPropose && !draft && (
-          <button
-            className="btn btn-primary btn-sm"
+          <Button
+            size="compact-sm"
             onClick={() => setDraft({ title: "", bodyMd: "" })}
           >
             New proposal ({mine}/{PROPOSALS_PER_MEMBER})
-          </button>
+          </Button>
         )}
-      </div>
+      </Group>
       {e.status === "proposing" && me?.role === "pending" && (
-        <p className="muted">Pending members can propose and vote.</p>
+        <Text size="sm" c="dimmed" mb="xs">
+          Pending members can propose and vote.
+        </Text>
       )}
       {voting && (
         <Notice>
@@ -444,13 +478,14 @@ function ProposalsSection({
                   data.myVote}
               </strong>
               .{" "}
-              <button
-                className="btn btn-sm"
+              <Button
+                size="compact-sm"
+                variant="default"
                 disabled={act.busy}
                 onClick={() => void unvote()}
               >
                 Withdraw vote
-              </button>
+              </Button>
             </>
           ) : (
             "You have not voted yet."
@@ -458,77 +493,84 @@ function ProposalsSection({
         </Notice>
       )}
       {draft && (
-        <form className="stack card" onSubmit={(x) => void submit(x)}>
-          <label className="field">
-            Title
-            <input
-              value={draft.title}
-              onChange={(x) => setDraft({ ...draft, title: x.target.value })}
-              required
-              maxLength={200}
-            />
-          </label>
-          <label className="field">
-            Details (plain text)
-            <textarea
-              value={draft.bodyMd}
-              onChange={(x) => setDraft({ ...draft, bodyMd: x.target.value })}
-              maxLength={20000}
-            />
-          </label>
-          <div className="row">
-            <button
-              className="btn btn-primary"
-              disabled={act.busy || !draft.title.trim()}
-            >
-              {draft.id ? "Save" : "Submit"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setDraft(null)}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
+        <Card withBorder mb="md">
+          <form onSubmit={(x) => void submit(x)}>
+            <Stack gap="sm">
+              <TextInput
+                label="Title"
+                value={draft.title}
+                onChange={(x) => setDraft({ ...draft, title: x.target.value })}
+                required
+                maxLength={200}
+              />
+              <Textarea
+                label="Details (plain text)"
+                value={draft.bodyMd}
+                onChange={(x) => setDraft({ ...draft, bodyMd: x.target.value })}
+                maxLength={20000}
+                autosize
+                minRows={4}
+              />
+              <Group>
+                <Button
+                  type="submit"
+                  disabled={act.busy || !draft.title.trim()}
+                >
+                  {draft.id ? "Save" : "Submit"}
+                </Button>
+                <Button variant="default" onClick={() => setDraft(null)}>
+                  Cancel
+                </Button>
+              </Group>
+            </Stack>
+          </form>
+        </Card>
       )}
       {error && <Notice kind="error">{error}</Notice>}
       {loading && !data ? (
         <Spinner />
       ) : proposals.length === 0 ? (
-        <p className="muted">No proposals yet.</p>
+        <Text size="sm" c="dimmed">
+          No proposals yet.
+        </Text>
       ) : (
         proposals.map((p) => (
-          <div
+          <Card
             key={p.id}
-            className={`card${e.winner?.id === p.id ? " winner" : ""}`}
+            withBorder
+            mb="sm"
+            style={
+              e.winner?.id === p.id
+                ? { borderColor: "var(--mantine-color-green-5)" }
+                : undefined
+            }
           >
             <ProposalCard p={p} />
-            <div className="row">
+            <Group mt="xs">
               {e.winner?.id === p.id && <Badge tone="ok">winner</Badge>}
               {p.mine && <Badge>mine</Badge>}
               {voting && data?.myVote !== p.id && (
-                <button
-                  className="btn btn-primary btn-sm"
+                <Button
+                  size="compact-sm"
                   disabled={act.busy}
                   onClick={() => void vote(p.id)}
                 >
                   Vote
-                </button>
+                </Button>
               )}
               {voting && data?.myVote === p.id && (
                 <Badge tone="accent">your vote</Badge>
               )}
               {p.mine && e.status === "proposing" && !draft && (
-                <button
-                  className="btn btn-sm"
+                <Button
+                  size="compact-sm"
+                  variant="default"
                   onClick={() =>
                     setDraft({ id: p.id, title: p.title, bodyMd: p.bodyMd })
                   }
                 >
                   Edit
-                </button>
+                </Button>
               )}
               {((p.mine && e.status === "proposing") ||
                 (admin && ["proposing", "voting"].includes(e.status))) &&
@@ -539,8 +581,8 @@ function ProposalsSection({
                     disabled={act.busy}
                   />
                 )}
-            </div>
-          </div>
+            </Group>
+          </Card>
         ))
       )}
     </>

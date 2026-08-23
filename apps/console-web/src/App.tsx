@@ -1,7 +1,10 @@
-import { NavLink, Navigate, Route, Routes, useLocation } from "react-router";
+import { Button } from "@mantine/core";
+import { Navigate, Route, Routes, useLocation } from "react-router";
 import { api } from "./api";
 import { hasRole, useAuth } from "./auth";
+import { AppShellLayout, currentPath } from "./components/layout";
 import { Notice, Spinner } from "./components/ui";
+import { NAV_ITEMS } from "./navigation";
 import { ChannelDetailPage } from "./pages/ChannelDetail";
 import { ChannelNewPage } from "./pages/ChannelNew";
 import { ChannelsPage } from "./pages/Channels";
@@ -12,9 +15,17 @@ import { MembersPage } from "./pages/Members";
 import { TokensPage } from "./pages/Tokens";
 import type { Role } from "./types";
 
-/** `next` for the login redirect: the SPA path (without the `/ui` base). */
-export function currentPath(loc: { pathname: string; search: string }): string {
-  return `${loc.pathname}${loc.search}` || "/";
+export { currentPath };
+
+/**
+ * Route guards read the same navigation config that renders the menu, so the
+ * two can never disagree. Guarded paths must exist in NAV_ITEMS with a role.
+ */
+function navMinRole(path: string): Role {
+  const item = NAV_ITEMS.find((i) => i.path === path);
+  if (!item || item.minRole === null)
+    throw new Error(`no guarded nav item for ${path}`);
+  return item.minRole;
 }
 
 function RequireRole({
@@ -31,9 +42,9 @@ function RequireRole({
     return (
       <Notice>
         <p>Sign in to continue.</p>
-        <a className="btn btn-primary" href={api.loginUrl(currentPath(loc))}>
+        <Button component="a" href={api.loginUrl(currentPath(loc))}>
           Sign in with GitHub
-        </a>
+        </Button>
       </Notice>
     );
   if (!hasRole(me, min))
@@ -48,101 +59,67 @@ function RequireRole({
 }
 
 export function App() {
-  const { me, loading, error, logout, refresh } = useAuth();
-  const loc = useLocation();
+  const { error, refresh } = useAuth();
   return (
-    <>
-      <header className="top">
-        <NavLink to="/" className="brand">
-          yyt console
-        </NavLink>
-        <nav aria-label="Main">
-          <NavLink to="/events">Events</NavLink>
-          {hasRole(me, "member") && <NavLink to="/channels">Channels</NavLink>}
-          {me && <NavLink to="/tokens">API tokens</NavLink>}
-          {hasRole(me, "admin") && <NavLink to="/members">Members</NavLink>}
-        </nav>
-        <div className="who">
-          {loading ? null : me ? (
-            <>
-              <span>
-                {me.login} <span className="badge">{me.role}</span>
-              </span>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => void logout()}
-              >
-                Sign out
-              </button>
-            </>
-          ) : (
-            <a className="btn btn-sm" href={api.loginUrl(currentPath(loc))}>
-              Sign in
-            </a>
-          )}
-        </div>
-      </header>
-      <main>
-        {error && (
-          <Notice kind="error">
-            Could not reach the API: {error}{" "}
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => void refresh()}
-            >
-              Retry
-            </button>
-          </Notice>
-        )}
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/events" element={<EventsPage />} />
-          <Route path="/events/:id" element={<EventDetailPage />} />
-          <Route
-            path="/channels"
-            element={
-              <RequireRole min="member">
-                <ChannelsPage />
-              </RequireRole>
-            }
-          />
-          <Route
-            path="/channels/new"
-            element={
-              <RequireRole min="member">
-                <ChannelNewPage />
-              </RequireRole>
-            }
-          />
-          <Route
-            path="/channels/:id"
-            element={
-              <RequireRole min="member">
-                <ChannelDetailPage />
-              </RequireRole>
-            }
-          />
-          <Route
-            path="/tokens"
-            element={
-              <RequireRole min="pending">
-                <TokensPage />
-              </RequireRole>
-            }
-          />
-          <Route
-            path="/members"
-            element={
-              <RequireRole min="admin">
-                <MembersPage />
-              </RequireRole>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </main>
-    </>
+    <AppShellLayout>
+      {error && (
+        <Notice kind="error">
+          Could not reach the API: {error}{" "}
+          <Button
+            size="compact-sm"
+            variant="default"
+            onClick={() => void refresh()}
+          >
+            Retry
+          </Button>
+        </Notice>
+      )}
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/events" element={<EventsPage />} />
+        <Route path="/events/:id" element={<EventDetailPage />} />
+        <Route
+          path="/channels"
+          element={
+            <RequireRole min={navMinRole("/channels")}>
+              <ChannelsPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/channels/new"
+          element={
+            <RequireRole min={navMinRole("/channels")}>
+              <ChannelNewPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/channels/:id"
+          element={
+            <RequireRole min={navMinRole("/channels")}>
+              <ChannelDetailPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/tokens"
+          element={
+            <RequireRole min={navMinRole("/tokens")}>
+              <TokensPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/members"
+          element={
+            <RequireRole min={navMinRole("/members")}>
+              <MembersPage />
+            </RequireRole>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AppShellLayout>
   );
 }

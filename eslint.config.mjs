@@ -10,6 +10,8 @@ export default defineConfig(
     "**/node_modules/**",
     "**/.serverless/**",
     "**/.esbuild/**",
+    // Plain CommonJS tool config (no TS project).
+    "**/postcss.config.cjs",
     "cli/**",
     "layers/**",
     // Standalone pnpm root with its own eslint config (examples/sample-dungeon).

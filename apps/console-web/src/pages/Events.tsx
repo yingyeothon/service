@@ -1,10 +1,20 @@
+import {
+  Anchor,
+  Button,
+  Card,
+  Group,
+  Table,
+  Text,
+  TextInput,
+  Title,
+} from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
 import { Badge, Notice, Spinner } from "../components/ui";
 import { fmtTime } from "../lib/format";
-import { useAction, useAsync } from "../lib/useAsync";
+import { useAction, useApiQuery } from "../lib/query";
 import type { EventStatus } from "../types";
 
 export const STATUS_TONE: Record<EventStatus, string> = {
@@ -18,7 +28,7 @@ export const STATUS_TONE: Record<EventStatus, string> = {
 
 export function EventsPage() {
   const { me, loading } = useAuth();
-  const list = useAsync(() => api.events(), [me?.id]);
+  const list = useApiQuery(["events", me?.id ?? null], () => api.events());
   const act = useAction();
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -36,76 +46,82 @@ export function EventsPage() {
 
   return (
     <>
-      <div className="row spread">
-        <h1 style={{ margin: 0 }}>Hackathon events</h1>
+      <Group justify="space-between" mb="sm">
+        <Title order={2}>Hackathon events</Title>
         {hasRole(me, "admin") && (
-          <button
-            className="btn btn-primary"
-            onClick={() => setCreating((v) => !v)}
-          >
-            New event
-          </button>
+          <Button onClick={() => setCreating((v) => !v)}>New event</Button>
         )}
-      </div>
+      </Group>
       {!loading && !me && (
-        <p className="muted">
+        <Text size="sm" c="dimmed" mb="sm">
           Only published events are listed.{" "}
-          <a href={api.loginUrl("/events")}>Sign in</a> to see events in
-          progress and take part.
-        </p>
+          <Anchor href={api.loginUrl("/events")}>Sign in</Anchor> to see events
+          in progress and take part.
+        </Text>
       )}
       {creating && (
-        <form className="row card" onSubmit={(e) => void create(e)}>
-          <input
-            aria-label="Event title"
-            placeholder="title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            required
-            maxLength={200}
-          />
-          <button
-            className="btn btn-primary"
-            disabled={act.busy || !title.trim()}
-          >
-            Create draft
-          </button>
-        </form>
+        <Card withBorder mb="md">
+          <form onSubmit={(e) => void create(e)}>
+            <Group align="end">
+              <TextInput
+                aria-label="Event title"
+                placeholder="title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                required
+                maxLength={200}
+              />
+              <Button type="submit" disabled={act.busy || !title.trim()}>
+                Create draft
+              </Button>
+            </Group>
+          </form>
+        </Card>
       )}
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {list.error && <Notice kind="error">{list.error}</Notice>}
       {list.loading && !list.data ? (
         <Spinner />
       ) : list.data?.length ? (
-        <table>
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Status</th>
-              <th>Updated</th>
-              <th>Published</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table striped highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Title</Table.Th>
+              <Table.Th>Status</Table.Th>
+              <Table.Th>Updated</Table.Th>
+              <Table.Th>Published</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
             {list.data.map((ev) => (
-              <tr key={ev.id}>
-                <td>
-                  <Link to={`/events/${encodeURIComponent(ev.id)}`}>
+              <Table.Tr key={ev.id}>
+                <Table.Td>
+                  <Anchor
+                    component={Link}
+                    to={`/events/${encodeURIComponent(ev.id)}`}
+                  >
                     {ev.title}
-                  </Link>
-                  {ev.hasPoster && <span className="muted"> · poster</span>}
-                </td>
-                <td>
+                  </Anchor>
+                  {ev.hasPoster && (
+                    <Text span size="sm" c="dimmed">
+                      {" "}
+                      · poster
+                    </Text>
+                  )}
+                </Table.Td>
+                <Table.Td>
                   <Badge tone={STATUS_TONE[ev.status]}>{ev.status}</Badge>
-                </td>
-                <td>{fmtTime(ev.updatedAt)}</td>
-                <td>{fmtTime(ev.publishedAt)}</td>
-              </tr>
+                </Table.Td>
+                <Table.Td>{fmtTime(ev.updatedAt)}</Table.Td>
+                <Table.Td>{fmtTime(ev.publishedAt)}</Table.Td>
+              </Table.Tr>
             ))}
-          </tbody>
-        </table>
+          </Table.Tbody>
+        </Table>
       ) : (
-        <p className="muted">No events.</p>
+        <Text size="sm" c="dimmed">
+          No events.
+        </Text>
       )}
     </>
   );

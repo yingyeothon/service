@@ -1,3 +1,4 @@
+import { Anchor, Button, Code, List, Text, Title } from "@mantine/core";
 import { Link } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
@@ -8,52 +9,68 @@ export function HomePage() {
   if (loading) return <Spinner />;
   return (
     <>
-      <h1>yyt console</h1>
+      <Title order={2} mb="sm">
+        yyt console
+      </Title>
       {!me && (
         <Notice>
-          <p>
+          <Text size="sm" mb="xs">
             Operator console for the yyt.life contest services: auth, topic and
-            match channels, API tokens for the <code>yyt</code> CLI, and
+            match channels, API tokens for the <Code>yyt</Code> CLI, and
             hackathon events.
-          </p>
-          <a className="btn btn-primary" href={api.loginUrl("/")}>
+          </Text>
+          <Button component="a" href={api.loginUrl("/")}>
             Sign in with GitHub
-          </a>
-          <p className="muted" style={{ marginTop: "0.6rem" }}>
+          </Button>
+          <Text size="sm" c="dimmed" mt="xs">
             Published hackathon events are visible without signing in:{" "}
-            <Link to="/events">Events</Link>.
-          </p>
+            <Anchor component={Link} to="/events">
+              Events
+            </Anchor>
+            .
+          </Text>
         </Notice>
       )}
       {me?.role === "pending" && (
         <Notice kind="warn">
-          <p>
-            Signed in as <strong>{me.login}</strong>. Your membership is{" "}
-            <strong>pending</strong> — an admin has to approve it before you can
-            create channels. Hackathon <Link to="/events">events</Link>{" "}
-            (proposals, votes) are open to you already.
-          </p>
+          Signed in as <strong>{me.login}</strong>. Your membership is{" "}
+          <strong>pending</strong> — an admin has to approve it before you can
+          create channels. Hackathon{" "}
+          <Anchor component={Link} to="/events">
+            events
+          </Anchor>{" "}
+          (proposals, votes) are open to you already.
         </Notice>
       )}
       {me && me.role !== "pending" && (
-        <ul>
-          <li>
-            <Link to="/channels">Channels</Link> — auth / topic / match channels
-            for your games.
-          </li>
-          <li>
-            <Link to="/tokens">API tokens</Link> — for{" "}
-            <code>yyt login --token …</code>.
-          </li>
-          <li>
-            <Link to="/events">Events</Link> — hackathon proposals and votes.
-          </li>
+        <List spacing="xs">
+          <List.Item>
+            <Anchor component={Link} to="/channels">
+              Channels
+            </Anchor>{" "}
+            — auth / topic / match channels for your games.
+          </List.Item>
+          <List.Item>
+            <Anchor component={Link} to="/tokens">
+              API tokens
+            </Anchor>{" "}
+            — for <Code>yyt login --token …</Code>.
+          </List.Item>
+          <List.Item>
+            <Anchor component={Link} to="/events">
+              Events
+            </Anchor>{" "}
+            — hackathon proposals and votes.
+          </List.Item>
           {me.role === "admin" && (
-            <li>
-              <Link to="/members">Members</Link> — approve sign-ups.
-            </li>
+            <List.Item>
+              <Anchor component={Link} to="/members">
+                Members
+              </Anchor>{" "}
+              — approve sign-ups.
+            </List.Item>
           )}
-        </ul>
+        </List>
       )}
     </>
   );

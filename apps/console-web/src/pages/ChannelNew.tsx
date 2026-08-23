@@ -1,3 +1,11 @@
+import {
+  Anchor,
+  Button,
+  Group,
+  NativeSelect,
+  Stack,
+  Title,
+} from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { api } from "../api";
@@ -5,14 +13,16 @@ import { ChannelForm } from "../components/ChannelForm";
 import { Notice } from "../components/ui";
 import { buildConfig, emptyForm } from "../lib/channelForm";
 import { errorMessage } from "../lib/format";
-import { useAction, useAsync } from "../lib/useAsync";
+import { useAction, useApiQuery } from "../lib/query";
 import type { ChannelKind } from "../types";
 
 export function ChannelNewPage() {
   const nav = useNavigate();
   const [kind, setKind] = useState<ChannelKind>("auth");
   const [form, setForm] = useState(emptyForm);
-  const auths = useAsync(() => api.channels({ kind: "auth" }), []);
+  const auths = useApiQuery(["channels", "auth", false], () =>
+    api.channels({ kind: "auth" }),
+  );
   const act = useAction();
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -40,46 +50,54 @@ export function ChannelNewPage() {
   const needsAuth = kind !== "auth" && auths.data?.length === 0;
   return (
     <>
-      <h1>New channel</h1>
-      <form className="stack" onSubmit={(e) => void submit(e)}>
-        <label className="field">
-          Kind
-          <select
+      <Title order={2} mb="sm">
+        New channel
+      </Title>
+      <form onSubmit={(e) => void submit(e)}>
+        <Stack gap="sm" maw={560}>
+          <NativeSelect
+            label="Kind"
             value={kind}
             onChange={(e) => setKind(e.target.value as ChannelKind)}
-          >
-            <option value="auth">
-              auth — issues JWTs to players (GitHub/Google login)
-            </option>
-            <option value="topic">
-              topic — broadcast topics over WebSocket
-            </option>
-            <option value="match">match — WebSocket matchmaker</option>
-          </select>
-        </label>
-        {needsAuth && (
-          <Notice kind="warn">
-            topic/match channels need an auth channel you own.{" "}
-            <Link to="/channels/new">Create an auth channel</Link> first.
-          </Notice>
-        )}
-        <ChannelForm
-          kind={kind}
-          form={form}
-          onChange={setForm}
-          authChannels={auths.data ?? []}
-        />
-        {(localError ?? act.error) && (
-          <Notice kind="error">{localError ?? act.error}</Notice>
-        )}
-        <div className="row">
-          <button className="btn btn-primary" disabled={act.busy || needsAuth}>
-            Create
-          </button>
-          <Link className="btn" to="/channels">
-            Cancel
-          </Link>
-        </div>
+            data={[
+              {
+                value: "auth",
+                label: "auth — issues JWTs to players (GitHub/Google login)",
+              },
+              {
+                value: "topic",
+                label: "topic — broadcast topics over WebSocket",
+              },
+              { value: "match", label: "match — WebSocket matchmaker" },
+            ]}
+          />
+          {needsAuth && (
+            <Notice kind="warn">
+              topic/match channels need an auth channel you own.{" "}
+              <Anchor component={Link} to="/channels/new">
+                Create an auth channel
+              </Anchor>{" "}
+              first.
+            </Notice>
+          )}
+          <ChannelForm
+            kind={kind}
+            form={form}
+            onChange={setForm}
+            authChannels={auths.data ?? []}
+          />
+          {(localError ?? act.error) && (
+            <Notice kind="error">{localError ?? act.error}</Notice>
+          )}
+          <Group>
+            <Button type="submit" disabled={act.busy || needsAuth}>
+              Create
+            </Button>
+            <Button component={Link} to="/channels" variant="default">
+              Cancel
+            </Button>
+          </Group>
+        </Stack>
       </form>
     </>
   );

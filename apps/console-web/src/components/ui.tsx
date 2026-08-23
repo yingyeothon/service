@@ -1,4 +1,29 @@
+import {
+  Alert,
+  Badge as MantineBadge,
+  Button,
+  Code,
+  Group,
+  Loader,
+  Text,
+} from "@mantine/core";
+import {
+  IconAlertTriangle,
+  IconCheck,
+  IconInfoCircle,
+  IconX,
+} from "@tabler/icons-react";
 import { useEffect, useState, type ReactNode } from "react";
+
+const NOTICE: Record<
+  "info" | "error" | "success" | "warn",
+  { color: string; icon: ReactNode }
+> = {
+  info: { color: "brand", icon: <IconInfoCircle size={18} /> },
+  error: { color: "red", icon: <IconX size={18} /> },
+  success: { color: "green", icon: <IconCheck size={18} /> },
+  warn: { color: "yellow", icon: <IconAlertTriangle size={18} /> },
+};
 
 export function Notice({
   kind = "info",
@@ -7,25 +32,31 @@ export function Notice({
   kind?: "info" | "error" | "success" | "warn";
   children: ReactNode;
 }) {
+  const { color, icon } = NOTICE[kind];
   return (
-    <div
-      className={`notice notice-${kind}`}
+    <Alert
+      color={color}
+      icon={icon}
+      mb="sm"
       role={kind === "error" ? "alert" : "status"}
     >
       {children}
-    </div>
+    </Alert>
   );
 }
 
 export function Spinner({ label = "Loading…" }: { label?: string }) {
   return (
-    <p className="muted" role="status" aria-live="polite">
-      {label}
-    </p>
+    <Group gap="xs" role="status" aria-live="polite" my="sm">
+      <Loader size="xs" />
+      <Text size="sm" c="dimmed">
+        {label}
+      </Text>
+    </Group>
   );
 }
 
-/** Read-only value with a copy button. */
+/** Read-only value with a copy button (with a manual fallback when the clipboard API fails). */
 export function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
   useEffect(() => {
@@ -42,17 +73,21 @@ export function CopyField({ label, value }: { label: string; value: string }) {
     }
   };
   return (
-    <div className="copy-field">
-      <span className="copy-label">{label}</span>
-      <code className="copy-value">{value}</code>
-      <button type="button" className="btn btn-sm" onClick={() => void copy()}>
+    <Group gap="xs" wrap="nowrap" my={4}>
+      <Text size="sm" c="dimmed" w={140} style={{ flexShrink: 0 }}>
+        {label}
+      </Text>
+      <Code style={{ overflowWrap: "anywhere", userSelect: "all" }}>
+        {value}
+      </Code>
+      <Button size="compact-xs" variant="default" onClick={() => void copy()}>
         {copied === "yes"
           ? "Copied"
           : copied === "failed"
             ? "Select & copy manually"
             : "Copy"}
-      </button>
-    </div>
+      </Button>
+    </Group>
   );
 }
 
@@ -68,17 +103,25 @@ export function SecretOnce({
 }) {
   return (
     <Notice kind="warn">
-      <p>
+      <Text size="sm">
         <strong>{label}</strong> — shown once. Copy it now; it cannot be
         retrieved later.
-      </p>
+      </Text>
       <CopyField label={label} value={value} />
-      <button type="button" className="btn btn-sm" onClick={onDismiss}>
+      <Button size="compact-sm" variant="default" onClick={onDismiss}>
         I have copied it
-      </button>
+      </Button>
     </Notice>
   );
 }
+
+const TONE_COLOR: Record<string, string> = {
+  neutral: "gray",
+  accent: "brand",
+  ok: "green",
+  warn: "yellow",
+  danger: "red",
+};
 
 export function Badge({
   children,
@@ -87,54 +130,58 @@ export function Badge({
   children: ReactNode;
   tone?: string;
 }) {
-  return <span className={`badge badge-${tone}`}>{children}</span>;
+  return (
+    <MantineBadge variant="light" color={TONE_COLOR[tone] ?? "gray"}>
+      {children}
+    </MantineBadge>
+  );
 }
 
 /** Two-click destructive button: first click arms, second confirms. */
 export function Confirm({
   label,
   confirmLabel = "Confirm",
-  className = "btn btn-danger btn-sm",
+  color = "red",
+  variant = "light",
   onConfirm,
   disabled,
 }: {
   label: string;
   confirmLabel?: string;
-  className?: string;
+  color?: string;
+  variant?: string;
   onConfirm: () => void | Promise<void>;
   disabled?: boolean;
 }) {
   const [arm, setArm] = useState(false);
   if (!arm)
     return (
-      <button
-        type="button"
-        className={className}
+      <Button
+        size="compact-sm"
+        color={color}
+        variant={variant}
         disabled={disabled}
         onClick={() => setArm(true)}
       >
         {label}
-      </button>
+      </Button>
     );
   return (
-    <span className="confirm">
-      <button
-        type="button"
-        className={className}
+    <Group gap="xs" wrap="nowrap">
+      <Button
+        size="compact-sm"
+        color={color}
+        variant="filled"
         onClick={() => {
           setArm(false);
           void onConfirm();
         }}
       >
         {confirmLabel}
-      </button>
-      <button
-        type="button"
-        className="btn btn-sm"
-        onClick={() => setArm(false)}
-      >
+      </Button>
+      <Button size="compact-sm" variant="default" onClick={() => setArm(false)}>
         Cancel
-      </button>
-    </span>
+      </Button>
+    </Group>
   );
 }

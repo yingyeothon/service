@@ -1,3 +1,5 @@
+import { MantineProvider } from "@mantine/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,15 +24,23 @@ vi.mock("../src/api", () => ({
 }));
 
 const { App } = await import("../src/App");
+const { theme } = await import("../src/theme");
 const { AuthProvider } = await import("../src/auth");
 
 function mount(path: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <AuthProvider client={mockApi}>
-        <App />
-      </AuthProvider>
-    </MemoryRouter>,
+    <MantineProvider theme={theme} forceColorScheme="light">
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[path]}>
+          <AuthProvider client={mockApi}>
+            <App />
+          </AuthProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </MantineProvider>,
   );
 }
 
@@ -87,6 +97,20 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("published")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New event" })).toBeNull();
+  });
+
+  it("shows the Channels nav item to members", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "m_1",
+      login: "someone",
+      role: "member",
+      via: "session",
+    });
+    mount("/");
+    // Wait until the member session is reflected in the nav.
+    const links = await screen.findAllByRole("link", { name: "Channels" });
+    expect(links.length).toBeGreaterThan(0);
+    expect(screen.queryByRole("link", { name: "Members" })).toBeNull();
   });
 
   it("lets admins see the members page", async () => {
