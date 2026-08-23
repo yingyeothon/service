@@ -13,6 +13,9 @@ plugins:
 
 custom:
   stage: ${opt:stage, "dev"}
+  # Optional stage-wide SNS topic for every alarm (scripts/bootstrap-alarms.sh);
+  # empty means alarms exist but notify nobody.
+  alarmTopic: ${ssm:/yyt-service/${self:custom.stage}/alarm-topic-arn, ""}
   domainSuffix:
     dev: "-dev"
     prod: ""
@@ -119,6 +122,8 @@ package:
   individually: true
 
 resources:
+  Conditions:
+    HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
   Resources:
     WsErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
@@ -135,6 +140,8 @@ resources:
         Threshold: 5
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     HttpErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -150,6 +157,8 @@ resources:
         Threshold: 5
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     # Throttled invocations are not Errors: with `reservedConcurrency` this low,
     # a busy topic loses messages silently unless we alarm on Throttles.
     WsThrottlesAlarm:
@@ -167,6 +176,8 @@ resources:
         Threshold: 1
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     HttpThrottlesAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -182,6 +193,8 @@ resources:
         Threshold: 1
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     # A cold-start failure (bad env) throws before `authorize` can deny.
     AuthorizerLambdaErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
@@ -198,6 +211,8 @@ resources:
         Threshold: 1
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     # The authorizer never throws (every failure is a Deny), so infrastructure
     # outages surface only in its logs: count "authorize error" lines.
     AuthorizeErrorMetric:
@@ -223,6 +238,8 @@ resources:
         Threshold: 3
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     WsMessageCountAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -240,3 +257,5 @@ resources:
         Threshold: 200000
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]

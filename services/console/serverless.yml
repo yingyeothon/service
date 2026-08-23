@@ -10,6 +10,9 @@ plugins:
 
 custom:
   stage: ${opt:stage, "dev"}
+  # Optional stage-wide SNS topic for every alarm (scripts/bootstrap-alarms.sh);
+  # empty means alarms exist but notify nobody.
+  alarmTopic: ${ssm:/yyt-service/${self:custom.stage}/alarm-topic-arn, ""}
   domainSuffix:
     dev: "-dev"
     prod: ""
@@ -129,6 +132,8 @@ package:
   individually: true
 
 resources:
+  Conditions:
+    HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
   Resources:
     # Private poster bucket; objects are reached only through presigned URLs
     # (visibility is enforced by the API, so CloudFront does not front it).
@@ -335,6 +340,8 @@ resources:
         Threshold: 5
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     ExpireErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -350,6 +357,8 @@ resources:
         Threshold: 1
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     Api5xxAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -365,6 +374,8 @@ resources:
         Threshold: 5
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
   Outputs:
     WebBucketName:
       Value: !Ref WebBucket

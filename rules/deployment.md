@@ -24,3 +24,7 @@
 - Migrating a stage that still has the old API Gateway custom domain: delete the API GW domain name and its Route53 A (and any AAAA) record **before** deploying, otherwise the `WebDnsA` RecordSet fails with "already exists". `serverless delete_domain` needs the plugin, which console no longer installs — run it from a checkout of the previous commit, or use `aws apigatewayv2 delete-domain-name` + `aws route53 change-resource-record-sets`. The host is unreachable until the CloudFront create finishes (5–15 minutes); for prod, deploy once without the two RecordSets, then swap DNS, to shrink the gap to the DNS TTL.
 - `WebBucket` is rebuildable and has no Retain policy, but CloudFormation refuses to delete a non-empty bucket: empty `yyt-console-web-<stage>` before `sls remove`.
 - The execute-api default endpoint stays enabled (it is the CloudFront origin). It carries no `__Host-` cookie for that host, so direct hits are unauthenticated API calls, same as any other origin.
+
+## Alarms
+
+- Every stack's CloudWatch alarms take `AlarmActions` from the optional stage-wide SSM `alarm-topic-arn` (CloudFormation condition `HasAlarmTopic`); without it the alarms exist but notify nobody. `scripts/bootstrap-alarms.sh <stage> <email>` creates `yyt-service-<stage>-alarms`, subscribes the address (confirm the email) and stores the ARN; then redeploy all four stacks of that stage.
