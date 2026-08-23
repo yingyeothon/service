@@ -1,10 +1,11 @@
 import { expect } from "vitest";
 import { MockAgent, fetch as undiciFetch } from "undici";
-import { createMemoryConsoleDb } from "@yyt/console-db";
+import { createMemoryConsoleDb, createMemoryEventsDb } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createMemoryKv } from "@yyt/redis";
 import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
+import { createMemoryPosterStore } from "../src/poster.js";
 import { SESSION_COOKIE } from "../src/session.js";
 
 export const BASE = "https://console-dev.yyt.life";
@@ -36,12 +37,16 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const clock = fakeClock();
   const kv = createMemoryKv({ clock });
   const db = createMemoryConsoleDb();
+  const events = createMemoryEventsDb((id) => db.members.has(id));
+  const posters = createMemoryPosterStore();
   const { agent, fetch } = mockAgent();
   const app = createConsoleApp({
     baseUrl: BASE,
     webUrl: BASE,
     urls: URLS,
     db,
+    events,
+    posters,
     kv,
     github: createGithubLogin({ clientId: "cid", clientSecret: "csec", fetch }),
     adminLogins: ["Boss"],
@@ -88,7 +93,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     const sid = cookieOf(r, SESSION_COOKIE);
     return { id, cookie: { cookie: `${SESSION_COOKIE}=${sid}` } };
   };
-  return { app, kv, db, clock, agent, login, githubLogin };
+  return { app, kv, db, events, posters, clock, agent, login, githubLogin };
 }
 
 export function cookieOf(r: HttpResult, name: string): string {

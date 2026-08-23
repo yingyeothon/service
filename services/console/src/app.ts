@@ -10,7 +10,7 @@ import {
   type Logger,
   type Role,
 } from "@yyt/core";
-import type { ChannelRow, ConsoleDb } from "@yyt/console-db";
+import type { ChannelRow, ConsoleDb, EventsDb } from "@yyt/console-db";
 import {
   createHttpHandler,
   defineRoute,
@@ -36,7 +36,9 @@ import {
   CHANNEL_TTL_SEC,
   type ServiceUrls,
 } from "./channels.js";
+import { createEventRoutes } from "./events.js";
 import type { GithubLogin } from "./github.js";
+import type { PosterStore } from "./poster.js";
 import {
   createIdentityResolver,
   requireRole,
@@ -57,6 +59,9 @@ export interface ConsoleAppOptions {
   webUrl: string;
   urls: ServiceUrls;
   db: ConsoleDb;
+  events: EventsDb;
+  /** Omit when no poster bucket is configured: poster routes answer 503. */
+  posters?: PosterStore;
   kv: Kv;
   github: GithubLogin;
   /** GitHub logins that become `admin` on every login. */
@@ -83,6 +88,8 @@ export function createConsoleApp({
   webUrl,
   urls,
   db,
+  events,
+  posters,
   kv,
   github,
   adminLogins,
@@ -577,8 +584,17 @@ export function createConsoleApp({
     },
   ];
 
+  const eventRoutes = createEventRoutes({
+    baseUrl: base,
+    db,
+    events,
+    posters,
+    clock,
+    audit,
+  });
+
   return createHttpHandler({
-    routes: [...routes, ...memberRoutes],
+    routes: [...routes, ...memberRoutes, ...eventRoutes],
     identity: createIdentityResolver({
       db,
       sessions,

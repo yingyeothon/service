@@ -64,11 +64,13 @@ Single source of truth for settled product/technical decisions. Change this file
 - Event state machine `draft → proposing → voting → decided → published → closed`, advanced by admins.
 - Proposals/votes require GitHub login (`pending` allowed). Proposal = free text (title/body incl. date, place, topic). One vote per person, changeable while `voting`.
 - In `decided` an admin picks the winner and uploads a poster (S3); `published` exposes `/events/{id}` publicly.
+- Visibility: anonymous sees `published`/`closed`; logged-in members see everything except `draft`; admins see all. Vote counts are hidden while `voting` (only the caller's own vote is returned) and public from `decided` on. Members may hold up to 3 proposals per event, edit/withdraw them while `proposing`; admins may remove proposals until `decided`.
+- Posters live in a private bucket owned by the console stack (`yyt-console-posters-{stage}`, retained on stack removal), uploaded through a presigned PUT (png/jpeg ≤ 5 MB, content headers signed) and attached only after a `commit` step re-checks the object. Until CloudFront fronts the bucket (todo 07), `GET /events/{id}/poster` redirects to a 10-minute presigned GET (browsers may cache it, so a replaced poster can lag up to 10 minutes).
 
 ## CLI (`yyt`)
 
 - `yyt login --token <API token>` (issued in console > account > API tokens), stored in `~/.config/yyt/config.json`.
-- Every console API as subcommands (`members`, `auth-channels`, `topic-channels`, `match-channels`, `events`; `list/create/get/extend/rotate-secret/delete`), `--json` output.
+- Every console API as subcommands (`members`, `channels`, `events` with `proposals`/`vote`/`poster`; `list/create/get/extend/rotate-secret/delete`), `--json` output.
 
 ## Priority
 

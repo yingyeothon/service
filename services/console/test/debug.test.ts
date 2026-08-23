@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-import { createMemoryConsoleDb } from "@yyt/console-db";
+import { createMemoryConsoleDb, createMemoryEventsDb } from "@yyt/console-db";
 import { createMemoryKv } from "@yyt/redis";
 import { describe, expect, it } from "vitest";
 import { createConsoleApp } from "../src/app.js";
@@ -20,6 +20,7 @@ describe("debug login hook", () => {
       webUrl: BASE,
       urls: URLS,
       db,
+      events: createMemoryEventsDb(),
       kv,
       github: createGithubLogin({ clientId: "a", clientSecret: "b" }),
       adminLogins: [],

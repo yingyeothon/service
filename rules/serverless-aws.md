@@ -20,3 +20,11 @@
 - Stage-scoped IAM: express per-stage action lists as `custom.<x>.{dev,prod}` maps and reference `${self:custom.x.${self:custom.stage}}`.
 - Per-service secrets: `custom.ssm: /yyt-service/${stage}/<service>` and `${ssm:${self:custom.ssm}/mysql-host}` etc. Required keys have no default (deploy fails loudly); dev-only keys use `${ssm:..., ""}` so prod resolves to empty and the code disables the feature.
 - Lambda reaches the stateful host over plain TCP from public Lambda IPs (no VPC). Source-IP restriction / TLS is tracked in `todo/07-infra.md`.
+
+## S3 / presigned URLs
+
+- CloudFormation "early validation" (`AWS::EarlyValidation::PropertyValidation`) reports only "Validation failed with N error(s)" through the CLI; bisect with `create-change-set` on the compiled template (`.serverless/cloudformation-template-update-stack.json`). Known trigger: duplicate entries in a bucket's `CorsRules.AllowedOrigins` (e.g. `${param:webUrl}` defaulting to the same host already listed).
+- Inside `serverless.yml` use `${aws:accountId}`/`${aws:region}` rather than `!Sub "${AWS::AccountId}"` (the Framework's variable resolver rejects the latter), and `!Join`/`!GetAtt` instead of `!Sub "${Resource.Arn}"`.
+- `getSignedUrl` (SDK v3) signs only `host` by default: pass `signableHeaders: new Set(["content-type", "content-length"])` so a presigned PUT actually pins type and size. Still re-check the object (`HeadObject`) in a commit step before binding it to a row — the client controls what it uploads.
+- Buckets holding durable data get `DeletionPolicy`/`UpdateReplacePolicy: Retain`; keep account ids out of bucket names (they end up in every presigned URL).
+- A Lambda role that signs URLs for an SSE-KMS bucket needs `kms:GenerateDataKey`/`kms:Decrypt` (scoped with `kms:ViaService: s3.<region>.amazonaws.com`); the browser acts as the signer, so it inherits exactly these permissions.

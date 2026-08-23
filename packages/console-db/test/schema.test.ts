@@ -13,7 +13,7 @@ describe("migrateConsoleDb", () => {
     expect(sqls[0]).toMatch(/create table if not exists schema_migrations/);
     expect(sqls[1]).toMatch(/get_lock/);
     expect(sqls.filter((s) => /^create table/.test(s.trim()))).toHaveLength(
-      CONSOLE_MIGRATIONS[0]!.statements.length + 1,
+      CONSOLE_MIGRATIONS.reduce((n, m) => n + m.statements.length, 0) + 1,
     );
     expect(sqls.at(-2)).toMatch(/insert into schema_migrations/);
     expect(sqls.at(-1)).toMatch(/release_lock/);
@@ -22,9 +22,13 @@ describe("migrateConsoleDb", () => {
     again.next([{ ok: "1" }]);
     again.next([{ v: "1" }]);
     again.next([{ ok: 1 }]);
-    expect(await migrateConsoleDb(again)).toBe(1);
+    expect(await migrateConsoleDb(again)).toBe(CONSOLE_MIGRATIONS.length);
     expect(again.calls.some((c) => /create table members/.test(c.sql))).toBe(
       false,
+    );
+    // v2 (events) still applies on top of a v1 database
+    expect(again.calls.some((c) => /create table events/.test(c.sql))).toBe(
+      true,
     );
   });
 

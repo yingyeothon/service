@@ -1,9 +1,11 @@
 import {
   createConsoleDb,
+  createEventsDb,
   createMysqlDb,
   migrateConsoleDb,
   mysqlOptionsFromEnv,
   type ConsoleDb,
+  type EventsDb,
 } from "@yyt/console-db";
 import { systemClock, type Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
@@ -12,6 +14,7 @@ import { createConsoleApp } from "./app.js";
 import { createDebugRoutes } from "./debug.js";
 import { runExpire } from "./expire.js";
 import { createGithubLogin } from "./github.js";
+import { createS3PosterStore } from "./poster.js";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
 
@@ -35,6 +38,7 @@ const logger: Logger = {
 interface Deps {
   stage: string;
   db: ConsoleDb;
+  events: EventsDb;
   kv: Kv;
 }
 
@@ -64,7 +68,12 @@ function getDeps(): Promise<Deps> {
       });
       throw e;
     }
-    return { stage, db: createConsoleDb(raw), kv: createRedisKv(redis) };
+    return {
+      stage,
+      db: createConsoleDb(raw),
+      events: createEventsDb(raw),
+      kv: createRedisKv(redis),
+    };
   })();
   // A failed cold start must retry on the next invocation, not cache the rejection.
   deps.catch(() => {
@@ -95,8 +104,11 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       .map((s) => s.trim())
       .filter(Boolean),
   };
-  const { stage, db, kv } = await getDeps();
+  const { stage, db, events, kv } = await getDeps();
   const clock = systemClock;
+  const posterBucket = process.env.POSTER_BUCKET ?? "";
+  if (!posterBucket)
+    logger.warn("POSTER_BUCKET is empty: poster upload is disabled", { stage });
   if (config.adminLogins.length === 0)
     // Without a bootstrap admin every sign-up stays `pending` forever.
     logger.warn("ADMIN_GITHUB_LOGINS is empty: nobody can approve members", {
@@ -121,6 +133,10 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
   return createConsoleApp({
     ...config,
     db,
+    events,
+    posters: posterBucket
+      ? createS3PosterStore({ bucket: posterBucket })
+      : undefined,
     kv,
     clock,
     logger,

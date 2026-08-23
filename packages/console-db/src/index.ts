@@ -38,3 +38,16 @@ export {
   type TopicChannelConfig,
 } from "./channels.js";
 export { createMemoryConsoleDb } from "./memory.js";
+export {
+  createEventsDb,
+  createMemoryEventsDb,
+  EVENT_STATUSES,
+  type EventInput,
+  type EventPatch,
+  type EventRow,
+  type EventsDb,
+  type EventStatus,
+  type ProposalInput,
+  type ProposalRow,
+  type VoteRow,
+} from "./events.js";

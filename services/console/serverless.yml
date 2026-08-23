@@ -79,6 +79,33 @@ provider:
     ADMIN_GITHUB_LOGINS: ${ssm:${self:custom.stageSsm}/admin-github-logins, ""}
     DEBUG_HOOKS: ${param:debugHooks, "0"}
     DEBUG_KEY: ${ssm:${self:custom.stageSsm}/debug-key, ""}
+    POSTER_BUCKET: !Ref PosterBucket
+  iam:
+    role:
+      statements:
+        # Posters: presigned PUT/GET are signed with this role, so it needs the
+        # object permissions plus KMS for the bucket's SSE-KMS key.
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/posters/*"]]
+        # Without ListBucket, HeadObject on a missing key answers 403 instead of 404.
+        - Effect: Allow
+          Action: s3:ListBucket
+          Resource: !GetAtt PosterBucket.Arn
+          Condition:
+            StringLike:
+              s3:prefix: posters/*
+        - Effect: Allow
+          Action:
+            - kms:GenerateDataKey
+            - kms:Decrypt
+          Resource: arn:aws:kms:${aws:region}:${aws:accountId}:key/*
+          Condition:
+            StringEquals:
+              kms:ViaService: s3.${aws:region}.amazonaws.com
 
 functions:
   api:
@@ -101,6 +128,44 @@ package:
 
 resources:
   Resources:
+    # Private poster bucket; objects are reached only through presigned URLs
+    # (CloudFront fronting is todo/07). CORS admits the browser PUT from the SPA.
+    PosterBucket:
+      Type: AWS::S3::Bucket
+      # Posters are durable data: never dropped by a stack removal or replacement.
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        BucketName: yyt-console-posters-${self:custom.stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: aws:kms
+              BucketKeyEnabled: true
+        OwnershipControls:
+          Rules:
+            - ObjectOwnership: BucketOwnerEnforced
+        LifecycleConfiguration:
+          Rules:
+            - Id: abort-incomplete
+              Status: Enabled
+              AbortIncompleteMultipartUpload:
+                DaysAfterInitiation: 1
+        CorsConfiguration:
+          CorsRules:
+            - AllowedMethods: [PUT, GET]
+              # webUrl defaults to the API host; listing both would duplicate the
+              # origin, which CloudFormation's property validation rejects.
+              AllowedOrigins:
+                - ${param:webUrl, "https://${self:custom.domain}"}
+                - http://localhost:5173
+              AllowedHeaders: ["content-type", "content-length"]
+              MaxAge: 600
     ApiErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:

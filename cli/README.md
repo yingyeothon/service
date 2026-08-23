@@ -1,6 +1,6 @@
 # `yyt` — CLI for the yingyeothon service console
 
-Single Go binary that drives the console API (`https://console.yyt.life`): members, API tokens, auth/topic/match channels, plus WebSocket smoke helpers for the match and topic services.
+Single Go binary that drives the console API (`https://console.yyt.life`): members, API tokens, auth/topic/match channels, hackathon events, plus WebSocket smoke helpers for the match and topic services.
 
 ## Install
 
@@ -35,6 +35,14 @@ yyt channels create --kind match --name n --auth-channel <auth-id> --party-size 
                     [--wait-timeout 60] [--on-timeout partial|fail]
 yyt channels update <id> [--name n] [same config flags; only the given ones change — --config replaces the whole config]
 yyt channels create … --config '{…}' | --config @file.json        # raw config instead of flags
+
+yyt events list | get <id>                                       # anonymous: published/closed only
+yyt events create <title> [--body @file.md] | update <id> [--title t] [--body …]   # admin
+yyt events transition <id> proposing|voting|decided|published|closed               # admin, in order
+yyt events decide <id> <proposal-id>                                               # admin, while decided
+yyt events proposals list|create <event-id> <title> [--body …]|update|delete
+yyt events vote <event-id> <proposal-id> | unvote <event-id>                        # while voting
+yyt events poster upload <event-id> poster.png|jpg | delete <event-id>             # admin, ≤5MB
 ```
 
 OAuth client secrets may come from `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET` to keep them out of shell history.

@@ -62,6 +62,48 @@ export const CONSOLE_MIGRATIONS: MigrationStep[] = [
       ) engine=InnoDB default charset=utf8mb4`,
     ],
   },
+  {
+    version: 2,
+    statements: [
+      `create table events (
+        id varchar(64) not null primary key,
+        title varchar(255) not null,
+        status enum('draft','proposing','voting','decided','published','closed') not null,
+        body_md mediumtext not null,
+        created_by varchar(64) not null,
+        created_at bigint not null,
+        updated_at bigint not null,
+        decided_proposal_id varchar(64) null,
+        poster_key varchar(255) null,
+        published_at bigint null,
+        key events_status (status, created_at),
+        constraint events_creator foreign key (created_by) references members(id)
+      ) engine=InnoDB default charset=utf8mb4`,
+      `create table proposals (
+        id varchar(64) not null primary key,
+        event_id varchar(64) not null,
+        member_id varchar(64) not null,
+        title varchar(255) not null,
+        body_md mediumtext not null,
+        created_at bigint not null,
+        updated_at bigint not null,
+        key proposals_event (event_id, created_at),
+        constraint proposals_event foreign key (event_id) references events(id),
+        constraint proposals_member foreign key (member_id) references members(id)
+      ) engine=InnoDB default charset=utf8mb4`,
+      `create table votes (
+        event_id varchar(64) not null,
+        member_id varchar(64) not null,
+        proposal_id varchar(64) not null,
+        updated_at bigint not null,
+        primary key (event_id, member_id),
+        key votes_proposal (proposal_id),
+        constraint votes_event foreign key (event_id) references events(id),
+        constraint votes_member foreign key (member_id) references members(id),
+        constraint votes_proposal foreign key (proposal_id) references proposals(id) on delete cascade
+      ) engine=InnoDB default charset=utf8mb4`,
+    ],
+  },
 ];
 
 const LOCK_NAME = "yyt_console_migrate";

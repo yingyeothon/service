@@ -14,3 +14,5 @@
 - Lambda: `nodejs22.x`, arm64, `serverless-esbuild` (no layers), built-in prune keep 5, log retention 14 days.
 - Infra changes (ACM, Route53, CloudFront, buckets) are listed in `todo/07-infra.md`; record what was created manually there.
 - Console stack needs stage-wide SSM keys `github-client-id`, `github-client-secret`, `admin-github-logins` (`GITHUB_CLIENT_ID=… GITHUB_CLIENT_SECRET=… ADMIN_GITHUB_LOGINS=… scripts/bootstrap-ssm.sh <stage>`); `bootstrap-ssm.sh prod` refuses an empty admin list. `--param webUrl=` points post-login redirects at the SPA host once CloudFront exists. Scheduled functions use a fixed `cron(...)` (console `expire`: 18:00 UTC) and get their own Errors alarm.
+
+- The console stack owns the poster bucket `yyt-console-posters-{stage}` (`DeletionPolicy: Retain`): `sls remove` leaves it behind, and a re-created stack adopts it only if the name is unchanged (delete or rename the bucket first otherwise). Uncommitted presigned uploads (`posters/{eventId}/…` never bound by `commit`) are not swept yet; empty them by hand if they matter.
