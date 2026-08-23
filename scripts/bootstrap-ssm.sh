@@ -5,8 +5,9 @@
 # Usage: scripts/bootstrap-ssm.sh <dev|prod> [service...]   (default: console auth topic match)
 # Input: local/env/<service>.<stage>.env (gitignored; layout in local/env.example).
 # Keys per service: mysql-{host,port,database,user,password} redis-{host,port,user,password} redis-key-prefix.
-# Stage-wide keys (kept from the previous layout, uploaded only when the env var is set):
-#   DEBUG_KEY (dev only; generated when absent), GITHUB_CLIENT_ID/SECRET, ADMIN_GITHUB_LOGINS, SESSION_SECRET.
+# Stage-wide keys (uploaded only when set): DEBUG_KEY (dev only; generated when absent), SESSION_SECRET,
+#   and GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET/ADMIN_GITHUB_LOGINS — taken from the shell environment, else from
+#   local/env/console.<stage>.env (console owns the operator OAuth app).
 # Always: cloudfront-cert-arn (looked up from ACM us-east-1, used by services/console CloudFront).
 # dev only: auth's debug seeding hook writes the console DB, so console.dev.env's MySQL account is also
 #   published as /yyt-service/dev/auth/debug-mysql-{user,password} (docs/decisions.md "디버그 시드").
@@ -69,6 +70,12 @@ if [ "${STAGE}" = "dev" ]; then
     put "auth/debug-mysql-$(echo "$var" | tr 'A-Z_' 'a-z-')" "$v"
   done
 fi
+CONSOLE_ENV="local/env/console.${STAGE}.env"
+for var in GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET ADMIN_GITHUB_LOGINS; do
+  if [ -z "${!var:-}" ] && [ -f "$CONSOLE_ENV" ]; then
+    declare "$var=$(envval "$CONSOLE_ENV" "$var")"
+  fi
+done
 if [ "${STAGE}" = "prod" ] && [ -z "${ADMIN_GITHUB_LOGINS:-}" ] && ! aws ssm get-parameter --name "/yyt-service/prod/admin-github-logins" >/dev/null 2>&1; then
   echo "prod needs ADMIN_GITHUB_LOGINS (otherwise nobody can approve console members)" >&2; exit 1
 fi
