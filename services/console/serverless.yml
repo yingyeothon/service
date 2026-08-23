@@ -7,7 +7,6 @@ build:
 
 plugins:
   - serverless-esbuild
-  - serverless-domain-manager
 
 custom:
   stage: ${opt:stage, "dev"}
@@ -29,13 +28,15 @@ custom:
       - "@aws-sdk/*"
     banner:
       js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
-  customDomain:
-    domainName: ${self:custom.domain}
-    apiType: http
-    endpointType: regional
-    certificateName: yyt.life
-    createRoute53Record: true
-    autoDomain: true
+  # The custom domain is served by CloudFront (SPA under /ui, API at the root)
+  # so the __Host- session cookie covers both; the HTTP API keeps only its
+  # default execute-api endpoint and is reached as a CloudFront origin. The
+  # us-east-1 ACM certificate ARN comes from SSM (bootstrap-ssm.sh).
+  cloudfrontCertArn: ${ssm:${self:custom.stageSsm}/cloudfront-cert-arn}
+  # Managed policy ids (public AWS constants).
+  cachingDisabled: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+  cachingOptimized: 658327ea-f89d-4fab-a63d-7e88639e58f6
+  allViewerExceptHost: b689b0a8-53d0-40ab-baf2-68738e2966ac
   prune:
     automatic: true
     number: 5
@@ -57,8 +58,8 @@ provider:
     STAGE: ${self:custom.stage}
     NODE_OPTIONS: --enable-source-maps
     PUBLIC_BASE_URL: https://${self:custom.domain}
-    # SPA base (apps/console-web is served under /ui/ on the same host so the
-    # __Host- session cookie applies); CloudFront wiring is todo/07.
+    # SPA base: apps/console-web is served under /ui/ on the same host (CloudFront)
+    # so the __Host- session cookie applies.
     WEB_URL: ${param:webUrl, "https://${self:custom.domain}"}/ui
     AUTH_BASE_URL: https://auth${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     TOPIC_BASE_URL: https://topic${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
@@ -130,7 +131,8 @@ package:
 resources:
   Resources:
     # Private poster bucket; objects are reached only through presigned URLs
-    # (CloudFront fronting is todo/07). CORS admits the browser PUT from the SPA.
+    # (visibility is enforced by the API, so CloudFront does not front it).
+    # CORS admits the browser PUT from the SPA.
     PosterBucket:
       Type: AWS::S3::Bucket
       # Posters are durable data: never dropped by a stack removal or replacement.
@@ -167,6 +169,157 @@ resources:
                 - http://localhost:5173
               AllowedHeaders: ["content-type", "content-length"]
               MaxAge: 600
+
+    # --- SPA bucket + CloudFront (todo/07) ---------------------------------
+    # Static assets are uploaded under the `ui/` prefix by scripts/deploy-web.sh,
+    # so CloudFront paths map 1:1 onto object keys.
+    WebBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: yyt-console-web-${self:custom.stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        OwnershipControls:
+          Rules:
+            - ObjectOwnership: BucketOwnerEnforced
+    WebBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref WebBucket
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: AllowCloudFrontOAC
+              Effect: Allow
+              Principal:
+                Service: cloudfront.amazonaws.com
+              Action: s3:GetObject
+              Resource: !Join ["", [!GetAtt WebBucket.Arn, "/ui/*"]]
+              Condition:
+                StringEquals:
+                  AWS:SourceArn:
+                    !Join [
+                      "",
+                      [
+                        "arn:aws:cloudfront::${aws:accountId}:distribution/",
+                        !Ref WebDistribution,
+                      ],
+                    ]
+    WebOac:
+      Type: AWS::CloudFront::OriginAccessControl
+      Properties:
+        OriginAccessControlConfig:
+          Name: ${self:service}-${self:custom.stage}-web
+          OriginAccessControlOriginType: s3
+          SigningBehavior: always
+          SigningProtocol: sigv4
+    # SPA fallback: extension-less /ui routes are served index.html. A custom
+    # error response (403 -> index) would also swallow real S3 403s, so the
+    # rewrite happens before the origin is consulted.
+    SpaRewriteFunction:
+      Type: AWS::CloudFront::Function
+      Properties:
+        Name: ${self:service}-${self:custom.stage}-spa-rewrite
+        AutoPublish: true
+        FunctionConfig:
+          Comment: Rewrite extension-less /ui routes to /ui/index.html
+          Runtime: cloudfront-js-2.0
+        FunctionCode: |
+          function handler(event) {
+            var req = event.request;
+            var uri = req.uri;
+            if (uri === '/ui' || uri === '/ui/') {
+              req.uri = '/ui/index.html';
+            } else if (uri.indexOf('/ui/') === 0 && uri.lastIndexOf('.') <= uri.lastIndexOf('/')) {
+              req.uri = '/ui/index.html';
+            }
+            return req;
+          }
+    WebDistribution:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Enabled: true
+          Comment: ${self:custom.domain}
+          Aliases:
+            - ${self:custom.domain}
+          HttpVersion: http2and3
+          IPV6Enabled: true
+          PriceClass: PriceClass_200
+          ViewerCertificate:
+            AcmCertificateArn: ${self:custom.cloudfrontCertArn}
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          Origins:
+            - Id: web
+              DomainName: !GetAtt WebBucket.RegionalDomainName
+              OriginAccessControlId: !GetAtt WebOac.Id
+              S3OriginConfig:
+                OriginAccessIdentity: ""
+            - Id: api
+              DomainName:
+                !Join [
+                  "",
+                  [!Ref HttpApi, ".execute-api.${aws:region}.amazonaws.com"],
+                ]
+              CustomOriginConfig:
+                OriginProtocolPolicy: https-only
+                OriginSSLProtocols: [TLSv1.2]
+                OriginReadTimeout: 30
+          # API: no caching, every header except Host (API Gateway needs its own
+          # Host), all cookies and query strings forwarded.
+          DefaultCacheBehavior:
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: ${self:custom.cachingDisabled}
+            OriginRequestPolicyId: ${self:custom.allViewerExceptHost}
+          CacheBehaviors:
+            - PathPattern: /ui
+              TargetOriginId: web
+              ViewerProtocolPolicy: redirect-to-https
+              AllowedMethods: [GET, HEAD]
+              Compress: true
+              CachePolicyId: ${self:custom.cachingOptimized}
+              FunctionAssociations:
+                - EventType: viewer-request
+                  FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
+            - PathPattern: /ui/*
+              TargetOriginId: web
+              ViewerProtocolPolicy: redirect-to-https
+              AllowedMethods: [GET, HEAD]
+              Compress: true
+              CachePolicyId: ${self:custom.cachingOptimized}
+              FunctionAssociations:
+                - EventType: viewer-request
+                  FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
+    WebDnsA:
+      Type: AWS::Route53::RecordSet
+      Properties:
+        HostedZoneName: yyt.life.
+        Name: ${self:custom.domain}
+        Type: A
+        AliasTarget:
+          DNSName: !GetAtt WebDistribution.DomainName
+          HostedZoneId: Z2FDTNDATAQYW2 # CloudFront's fixed hosted zone id
+    WebDnsAAAA:
+      Type: AWS::Route53::RecordSet
+      Properties:
+        HostedZoneName: yyt.life.
+        Name: ${self:custom.domain}
+        Type: AAAA
+        AliasTarget:
+          DNSName: !GetAtt WebDistribution.DomainName
+          HostedZoneId: Z2FDTNDATAQYW2
     ApiErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -212,3 +365,8 @@ resources:
         Threshold: 5
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
+  Outputs:
+    WebBucketName:
+      Value: !Ref WebBucket
+    WebDistributionId:
+      Value: !Ref WebDistribution

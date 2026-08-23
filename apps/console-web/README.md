@@ -3,7 +3,7 @@
 Operator console SPA (React + Vite + react-router). Served under `/ui/` on the
 console API host (`console{-dev}.yyt.life/ui/`) so API root paths (`/events`,
 `/channels`, …) never collide with SPA routes and the `__Host-` session cookie
-applies to both. S3 + CloudFront wiring: `todo/07-infra.md`.
+applies to both. Published to S3 + CloudFront by `scripts/deploy-web.sh <stage>` (distribution owned by `services/console`).
 
 ## Pages
 

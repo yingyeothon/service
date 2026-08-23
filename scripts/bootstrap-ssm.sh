@@ -7,6 +7,7 @@
 # Keys per service: mysql-{host,port,database,user,password} redis-{host,port,user,password} redis-key-prefix.
 # Stage-wide keys (kept from the previous layout, uploaded only when the env var is set):
 #   DEBUG_KEY (dev only; generated when absent), GITHUB_CLIENT_ID/SECRET, ADMIN_GITHUB_LOGINS, SESSION_SECRET.
+# Always: cloudfront-cert-arn (looked up from ACM us-east-1, used by services/console CloudFront).
 # dev only: auth's debug seeding hook writes the console DB, so console.dev.env's MySQL account is also
 #   published as /yyt-service/dev/auth/debug-mysql-{user,password} (docs/decisions.md "디버그 시드").
 # Legacy /yyt-service/<stage>/upstash-* parameters are deleted.
@@ -75,6 +76,16 @@ put github-client-id "${GITHUB_CLIENT_ID:-}"
 put github-client-secret "${GITHUB_CLIENT_SECRET:-}"
 put admin-github-logins "${ADMIN_GITHUB_LOGINS:-}"
 put session-secret "${SESSION_SECRET:-}"
+
+# CloudFront (console SPA) needs the us-east-1 certificate covering *.yyt.life;
+# serverless.yml reads its ARN from SSM so no account-specific ARN lives in git.
+CERT_ARN="$(aws acm list-certificates --region us-east-1 --certificate-statuses ISSUED \
+  --query "CertificateSummaryList[?contains(SubjectAlternativeNameSummaries, '*.yyt.life')].CertificateArn | [0]" --output text)"
+if [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ]; then
+  put cloudfront-cert-arn "$CERT_ARN"
+else
+  log "WARN no ISSUED us-east-1 ACM certificate for *.yyt.life; console deploy needs cloudfront-cert-arn (todo/07-infra.md)"
+fi
 
 for legacy in upstash-url upstash-token; do
   if aws ssm delete-parameter --name "/yyt-service/${STAGE}/${legacy}" >/dev/null 2>&1; then
