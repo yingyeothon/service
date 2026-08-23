@@ -1,0 +1,30 @@
+name: CLI release
+
+on:
+  push:
+    tags: ["cli/v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+      - run: cd cli && go vet ./... && go test ./...
+      - id: ver
+        run: echo "version=${GITHUB_REF_NAME#cli/v}" >> "$GITHUB_OUTPUT"
+      - run: cli/scripts/build-release.sh "$VERSION"
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "yyt v$VERSION" \
+            --generate-notes cli/dist/*.tar.gz cli/dist/*.zip cli/dist/checksums.txt

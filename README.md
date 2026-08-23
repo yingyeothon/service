@@ -8,7 +8,7 @@ Contest-support backend for the Yingyeothon hackathon: per-channel OAuth login (
 
 - `packages/*` — shared libraries (`core`, `redis`, `console-db`, `jwt`, `http`, `ws`)
 - `services/{auth,console,topic,match}` — one Serverless stack each
-- `apps/console-web` — console SPA; `cli/` — Go CLI `yyt`
+- `apps/console-web` — console SPA; `cli/` — Go CLI `yyt` (`cli/README.md`: install, login, commands, release)
 - `docs/` — decisions, contracts, secrets policy; `rules/` — engineering rules for contributors and agents
 - `local/` — machine-local config (gitignored); `todo/` — machine-local work tracker (gitignored)
 

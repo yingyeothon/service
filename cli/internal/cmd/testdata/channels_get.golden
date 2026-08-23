@@ -1,0 +1,11 @@
+id:              auth_0123
+kind:            auth
+name:            demo
+status:          active
+owner:           m_1
+created:         2025-08-24T01:46:40Z
+expires:         2025-08-31T01:46:40Z
+issuer:          yyt-auth/auth_0123
+startUrl:        https://auth.example/c/auth_0123/start
+callback.github: https://auth.example/c/auth_0123/github/callback
+config:          {"audience":"demo","providers":{},"redirectAllowlist":[],"tokenTtlSec":86400}

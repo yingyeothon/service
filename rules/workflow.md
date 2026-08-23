@@ -15,3 +15,8 @@
 - Do not leave work in chat only: anything a future session needs must be in `todo/` or `rules/`.
 - Commit per coherent unit; never `git add .` when generated files are present. Keep `.gitignore` current.
 - Sessions start by reading `todo/index.md` → "Next work"; sessions end by updating the same section.
+
+## Go CLI (`cli/`)
+
+- Every resource command maps 1:1 to a console route; when a route's semantics change (e.g. PATCH partial vs full replace), update the CLI and its `httptest` fake in the same commit. Golden files: `go test ./internal/cmd -update`.
+- Releases are tag-driven (`cli/vX.Y.Z`) via `cli/scripts/build-release.sh` + `gh release create`; goreleaser OSS cannot version from prefixed monorepo tags.

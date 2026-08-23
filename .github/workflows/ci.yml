@@ -36,7 +36,9 @@ jobs:
         with:
           go-version-file: cli/go.mod
       - if: steps.cli.outputs.present == 'true'
-        run: cd cli && go test ./... && go build ./...
+        run: cd cli && go vet ./... && go test ./... && go build ./...
+      - if: steps.cli.outputs.present == 'true'
+        run: cli/scripts/build-release.sh 0.0.0-ci
   secrets-scan:
     runs-on: ubuntu-latest
     steps:
