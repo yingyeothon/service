@@ -29,3 +29,11 @@
 - `getSignedUrl` (SDK v3) signs only `host` by default: pass `signableHeaders: new Set(["content-type", "content-length"])` so a presigned PUT actually pins type and size. Still re-check the object (`HeadObject`) in a commit step before binding it to a row — the client controls what it uploads.
 - Buckets holding durable data get `DeletionPolicy`/`UpdateReplacePolicy: Retain`; keep account ids out of bucket names (they end up in every presigned URL).
 - A Lambda role that signs URLs for an SSE-KMS bucket needs `kms:GenerateDataKey`/`kms:Decrypt` (scoped with `kms:ViaService: s3.<region>.amazonaws.com`); the browser acts as the signer, so it inherits exactly these permissions.
+
+## Catalog uploads / sweeps (2026-08-24)
+
+- Synchronous `CopyObject` in a request Lambda bounds the artifact size: 1GB cap with a 25s function timeout (API GW allows ~29s). Bigger files need an async commit design, not a bigger cap.
+- Any outbound HTTP call inside a request handler needs a timeout that fits the _remaining_ Lambda budget (Slack notify: 3s inside the commit route); a webhook timeout equal to the function timeout turns a committed mutation into a client-visible 5xx.
+- `ListObjectsV2` must be paginated even in "small" sweeps: an unpaginated call re-lists the same lexicographic first page forever once a backlog passes 1000 keys. Bound the pages (e.g. 10) and let later runs take the rest.
+- Commit flows with deterministic ids: on an insert conflict, check whether the same logical operation already succeeded and heal (mark complete, return the row) instead of rolling back S3 objects the winner now references.
+- Interactive cleanup deletes the DB row even when the S3 delete fails (user asked; retry is idempotent); the daily sweep does the opposite (keep the row, retry the object tomorrow).

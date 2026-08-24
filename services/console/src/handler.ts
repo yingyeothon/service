@@ -1,8 +1,10 @@
 import {
+  createCatalogDb,
   createConsoleDb,
   createEventsDb,
   createPrismaClient,
   mysqlOptionsFromEnv,
+  type CatalogDb,
   type ConsoleDb,
   type EventsDb,
 } from "@yyt/console-db";
@@ -10,8 +12,9 @@ import { systemClock, type Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createRedisKv, redisOptionsFromEnv, type Kv } from "@yyt/redis";
 import { createConsoleApp } from "./app.js";
+import { createS3ArtifactStore, type ArtifactStore } from "./artifact-store.js";
 import { createDebugRoutes } from "./debug.js";
-import { runExpire } from "./expire.js";
+import { runCatalogSweep, runExpire } from "./expire.js";
 import { createGithubLogin } from "./github.js";
 import { createS3PosterStore } from "./poster.js";
 
@@ -38,6 +41,7 @@ interface Deps {
   stage: string;
   db: ConsoleDb;
   events: EventsDb;
+  catalog: CatalogDb;
   kv: Kv;
 }
 
@@ -55,6 +59,7 @@ function getDeps(): Promise<Deps> {
       stage,
       db: createConsoleDb(raw),
       events: createEventsDb(raw),
+      catalog: createCatalogDb(raw),
       kv: createRedisKv(redis),
     };
   })();
@@ -87,11 +92,16 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       .map((s) => s.trim())
       .filter(Boolean),
   };
-  const { stage, db, events, kv } = await getDeps();
+  const { stage, db, events, catalog, kv } = await getDeps();
   const clock = systemClock;
   const posterBucket = process.env.POSTER_BUCKET ?? "";
   if (!posterBucket)
     logger.warn("POSTER_BUCKET is empty: poster upload is disabled", { stage });
+  const artifactBucket = process.env.ARTIFACT_BUCKET ?? "";
+  if (!artifactBucket)
+    logger.warn("ARTIFACT_BUCKET is empty: catalog upload is disabled", {
+      stage,
+    });
   if (config.adminLogins.length === 0)
     // Without a bootstrap admin every sign-up stays `pending` forever.
     logger.warn("ADMIN_GITHUB_LOGINS is empty: nobody can approve members", {
@@ -117,9 +127,12 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     ...config,
     db,
     events,
+    catalog,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
       : undefined,
+    artifacts: artifactStoreFromEnv(),
+    cdnBaseUrl: process.env.ARTIFACT_CDN_URL || undefined,
     kv,
     clock,
     logger,
@@ -132,8 +145,19 @@ export const handler = async (event: HttpEvent): Promise<HttpResult> => {
   return app(event);
 };
 
+function artifactStoreFromEnv(): ArtifactStore | undefined {
+  const bucket = process.env.ARTIFACT_BUCKET ?? "";
+  return bucket ? createS3ArtifactStore({ bucket }) : undefined;
+}
+
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { db } = await getDeps();
+  const { db, catalog } = await getDeps();
   await runExpire({ db, logger });
+  await runCatalogSweep({
+    catalog,
+    artifacts: artifactStoreFromEnv(),
+    db,
+    logger,
+  });
 };

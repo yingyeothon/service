@@ -10,7 +10,12 @@ import {
   type Logger,
   type Role,
 } from "@yyt/core";
-import type { ChannelRow, ConsoleDb, EventsDb } from "@yyt/console-db";
+import type {
+  CatalogDb,
+  ChannelRow,
+  ConsoleDb,
+  EventsDb,
+} from "@yyt/console-db";
 import {
   createHttpHandler,
   defineRoute,
@@ -36,6 +41,8 @@ import {
   CHANNEL_TTL_SEC,
   type ServiceUrls,
 } from "./channels.js";
+import type { ArtifactStore } from "./artifact-store.js";
+import { createCatalogRoutes } from "./catalog.js";
 import { createEventRoutes } from "./events.js";
 import type { GithubLogin } from "./github.js";
 import type { PosterStore } from "./poster.js";
@@ -60,8 +67,15 @@ export interface ConsoleAppOptions {
   urls: ServiceUrls;
   db: ConsoleDb;
   events: EventsDb;
+  catalog: CatalogDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
+  /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
+  artifacts?: ArtifactStore;
+  /** Public CDN in front of the artifact bucket, e.g. `https://dev-d.yyt.life`. */
+  cdnBaseUrl?: string;
+  /** Injectable for tests; Slack webhooks only. */
+  slackFetch?: typeof fetch;
   kv: Kv;
   github: GithubLogin;
   /** GitHub logins that become `admin` on every login. */
@@ -74,6 +88,13 @@ export interface ConsoleAppOptions {
 const NEXT_PATH = /^\/[^/\\][^\\]{0,255}$|^\/$/;
 const tokenCreateBody = z
   .object({ name: z.string().trim().min(1).max(100) })
+  .strict();
+const DEVICE_HANDLE = /^dev_[0-9a-f]{32}$/;
+const deviceTokenBody = z
+  .object({
+    handle: z.string().regex(DEVICE_HANDLE),
+    tokenName: z.string().trim().min(1).max(100).optional(),
+  })
   .strict();
 const channelsQuery = z
   .object({
@@ -89,7 +110,11 @@ export function createConsoleApp({
   urls,
   db,
   events,
+  catalog,
   posters,
+  artifacts,
+  cdnBaseUrl,
+  slackFetch,
   kv,
   github,
   adminLogins,
@@ -153,6 +178,18 @@ export function createConsoleApp({
     // (use /members/{id}/promote) and a demoted admin stays demoted.
     const role: Role = (await db.findMember(memberId))?.role ?? "pending";
     if (created) await audit(memberId, "member.signup", memberId, { role });
+    // Claim catalog rows imported for this GitHub login before signup.
+    try {
+      const claimed = await catalog.resolvePendingLogin(user.login, memberId);
+      if (claimed > 0)
+        await audit(memberId, "catalog.pending.claim", memberId, { claimed });
+    } catch (e) {
+      // Login must not fail on a catalog hiccup; the next login retries.
+      logger.error("catalog pending claim failed", {
+        memberId,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
     return { memberId, role, created };
   }
 
@@ -237,6 +274,117 @@ export function createConsoleApp({
         }
       },
     },
+    // ---- device flow (CLI/installer login; docs/decisions.md) ----------
+    {
+      method: "POST",
+      path: "/auth/device/start",
+      handler: async () => {
+        const d = await github.deviceStart();
+        // The GitHub device_code stays server-side; clients only see a handle.
+        const handle = `dev_${randomHex(16)}`;
+        await kv.set(
+          `device:${handle}`,
+          JSON.stringify({ deviceCode: d.deviceCode, interval: d.intervalSec }),
+          { nx: true, ex: d.expiresInSec },
+        );
+        return {
+          statusCode: 201,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+          body: JSON.stringify({
+            handle,
+            userCode: d.userCode,
+            verificationUri: d.verificationUri,
+            intervalSec: d.intervalSec,
+            expiresInSec: d.expiresInSec,
+          }),
+        } satisfies HttpResult;
+      },
+    },
+    defineRoute({
+      method: "POST",
+      path: "/auth/device/token",
+      body: deviceTokenBody,
+      handler: async (ctx) => {
+        const key = `device:${ctx.body.handle}`;
+        const raw = await kv.get(key);
+        if (raw === null)
+          throw new AppError("gone", "device login expired; start again");
+        const st = JSON.parse(raw) as { deviceCode: string; interval: number };
+        // GitHub rate-limits polls per device_code; enforce the interval here
+        // so a hot client loop cannot trip GitHub's slow_down/backoff.
+        const gate = await kv.set(`${key}:wait`, "1", {
+          nx: true,
+          ex: Math.max(1, st.interval),
+        });
+        if (!gate)
+          throw new AppError("rate_limited", "poll slower", {
+            details: { intervalSec: st.interval },
+          });
+        const r = await github.devicePoll({ deviceCode: st.deviceCode });
+        switch (r.status) {
+          case "pending":
+            return {
+              statusCode: 202,
+              headers: {
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": "no-store",
+              },
+              body: JSON.stringify({ status: "pending" }),
+            } satisfies HttpResult;
+          case "slow_down":
+            await kv.set(
+              key,
+              JSON.stringify({ ...st, interval: r.intervalSec }),
+              { ex: OAUTH_STATE_TTL_SEC },
+            );
+            throw new AppError("rate_limited", "poll slower", {
+              details: { intervalSec: r.intervalSec },
+            });
+          case "denied":
+            await kv.del(key);
+            throw new AppError("forbidden", "github login was denied");
+          case "expired":
+            await kv.del(key);
+            throw new AppError("gone", "device login expired; start again");
+          case "ok":
+            break;
+        }
+        await kv.del(key);
+        const { memberId, role } = await signIn(r.user);
+        if ((await db.listApiTokens(memberId)).length >= 20)
+          throw new AppError("conflict", "too many tokens (max 20)");
+        const token = `yyt_${randomHex(24)}`;
+        const tokenId = `tok_${randomHex(8)}`;
+        const now = nowSec(clock);
+        const name = ctx.body.tokenName ?? "device login";
+        await db.insertApiToken({
+          id: tokenId,
+          memberId,
+          tokenHash: sha256Hex(token),
+          name,
+          createdAt: now,
+        });
+        await audit(memberId, "token.create", tokenId, { via: "device" });
+        logger.info("device login", { memberId, role });
+        return {
+          statusCode: 201,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+          body: JSON.stringify({
+            status: "ok",
+            token,
+            tokenId,
+            name,
+            member: { id: memberId, login: r.user.login, role },
+          }),
+        } satisfies HttpResult;
+      },
+    }),
     ...extraRoutes,
   ];
 
@@ -593,8 +741,19 @@ export function createConsoleApp({
     audit,
   });
 
+  const catalogRoutes = createCatalogRoutes({
+    db,
+    catalog,
+    artifacts,
+    cdnBaseUrl: (cdnBaseUrl ?? "https://d.yyt.life").replace(/\/+$/, ""),
+    clock,
+    logger,
+    audit,
+    fetchFn: slackFetch,
+  });
+
   return createHttpHandler({
-    routes: [...routes, ...memberRoutes, ...eventRoutes],
+    routes: [...routes, ...memberRoutes, ...eventRoutes, ...catalogRoutes],
     identity: createIdentityResolver({
       db,
       sessions,

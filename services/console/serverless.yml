@@ -17,6 +17,15 @@ custom:
     dev: "-dev"
     prod: ""
   domain: console${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  # Binary catalog (docs/decisions.md): pre-existing public distribution buckets
+  # fronted by the manually managed CDN. Both are outside this stack (surveyed
+  # in todo/12); the stack only grants IAM on them.
+  artifactBucket:
+    dev: yyt-binary-dist-dev
+    prod: yyt-binary-dist
+  artifactCdn:
+    dev: https://dev-d.yyt.life
+    prod: https://d.yyt.life
   ssm: /yyt-service/${self:custom.stage}/console
   stageSsm: /yyt-service/${self:custom.stage}
   esbuild:
@@ -85,6 +94,8 @@ provider:
     DEBUG_HOOKS: ${param:debugHooks, "0"}
     DEBUG_KEY: ${ssm:${self:custom.stageSsm}/debug-key, ""}
     POSTER_BUCKET: !Ref PosterBucket
+    ARTIFACT_BUCKET: ${self:custom.artifactBucket.${self:custom.stage}}
+    ARTIFACT_CDN_URL: ${self:custom.artifactCdn.${self:custom.stage}}
   iam:
     role:
       statements:
@@ -103,6 +114,19 @@ provider:
           Condition:
             StringLike:
               s3:prefix: posters/*
+        # Binary catalog artifacts: presigned PUT into uploads/, commit copies
+        # to the app prefix, delete covers cleanup — whole-bucket object CRUD
+        # because committed keys are `{app}/{id}/{file}` (any app name).
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: arn:aws:s3:::${self:custom.artifactBucket.${self:custom.stage}}/*
+        # ListBucket: HeadObject 404s (vs 403) + the uploads/ garbage sweep.
+        - Effect: Allow
+          Action: s3:ListBucket
+          Resource: arn:aws:s3:::${self:custom.artifactBucket.${self:custom.stage}}
         - Effect: Allow
           Action:
             - kms:GenerateDataKey
@@ -118,12 +142,16 @@ functions:
     # One MySQL + one Redis connection per container; console's share of the
     # host budget is 10 (api) + 1 (expire) — rules/data.md.
     reservedConcurrency: 10
+    # Catalog commit copies up to 1GB inside the request; keep headroom under
+    # API Gateway's ~29s window. Other routes finish far quicker regardless.
+    timeout: 25
     events:
       - httpApi: "*"
   expire:
     handler: src/handler.expire
     reservedConcurrency: 1
-    timeout: 30
+    # Also runs the catalog sweep (S3 deletes across apps).
+    timeout: 300
     events:
       # 03:00 KST daily; a fixed time so operators can predict when channels flip.
       - schedule: cron(0 18 * * ? *)

@@ -37,3 +37,11 @@
 - Console sessions: the cookie value is a 32-byte random id and Redis stores it under `sess:{sha256(id)}`, so a Redis read never yields a usable cookie. `next` after login must match a relative path (`/…`, not `//host` or `/\host`); everything else falls back to `/`.
 - Console bootstrap admins are keyed by GitHub login (`ADMIN_GITHUB_LOGINS`) and re-checked on every login; member rows are keyed by the immutable `github_id`. Treat the list as a bootstrap aid, not as the permission store — promote real admins in the DB and keep the list short.
 - The `yyt-env-credential` gitleaks rule also matches `const token = someCall(...)`; name such locals `bearer`/`jwt` instead of `token`, and use only the `0123456789abcdef…`/`abcdef0123456789…` fixture strings (a `fedcba…` hex string trips `generic-api-key`).
+
+## Catalog / user-named resources (2026-08-24)
+
+- When user input becomes an S3 key prefix or a well-known resource name, reserve the collision set explicitly: app name `uploads` would sit inside the staging prefix (the sweep would delete its committed objects) and `installer` is served to every member as the trusted installer, so it is admin-only. Enforce on create **and** rename.
+- Stored webhook URLs the server later POSTs to are an SSRF primitive: pin the host at validation time (`https://hooks.slack.com/…`), don't just require https.
+- Guard helpers with an `ownerOnly`/`modifyOnly` mode must check owner/admin **unconditionally** in that mode; a branch like `if (modifyOnly && access !== "edit")` silently promotes permission-holders to owners. Mirror the app/group variants and test the "edit-but-not-owner" caller on every owner-only route.
+- Secret-bearing GET/PATCH responses (Slack hook URLs, minted tokens) always return an explicit `HttpResult` with `cache-control: no-store` — plain object returns skip the header.
+- GitHub device flow: keep the `device_code` server-side (Redis under an opaque handle), enforce the poll interval with a Redis `nx` gate, and mint the API token only after GitHub confirms the user.
