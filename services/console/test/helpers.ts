@@ -1,10 +1,15 @@
 import { expect } from "vitest";
 import { MockAgent, fetch as undiciFetch } from "undici";
-import { createMemoryConsoleDb, createMemoryEventsDb } from "@yyt/console-db";
+import {
+  createMemoryCatalogDb,
+  createMemoryConsoleDb,
+  createMemoryEventsDb,
+} from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createMemoryKv } from "@yyt/redis";
 import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
+import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import { createMemoryPosterStore } from "../src/poster.js";
 import { SESSION_COOKIE } from "../src/session.js";
 
@@ -38,7 +43,9 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const kv = createMemoryKv({ clock });
   const db = createMemoryConsoleDb();
   const events = createMemoryEventsDb((id) => db.members.has(id));
+  const catalog = createMemoryCatalogDb((id) => db.members.has(id));
   const posters = createMemoryPosterStore();
+  const artifacts = createMemoryArtifactStore();
   const { agent, fetch } = mockAgent();
   const app = createConsoleApp({
     baseUrl: BASE,
@@ -46,7 +53,11 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     urls: URLS,
     db,
     events,
+    catalog,
     posters,
+    artifacts,
+    cdnBaseUrl: "https://dev-d.yyt.life",
+    slackFetch: fetch,
     kv,
     github: createGithubLogin({ clientId: "cid", clientSecret: "csec", fetch }),
     adminLogins: ["Boss"],
@@ -97,7 +108,19 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
       cookie: { cookie: `${SESSION_COOKIE}=${sid}`, origin: BASE },
     };
   };
-  return { app, kv, db, events, posters, clock, agent, login, githubLogin };
+  return {
+    app,
+    kv,
+    db,
+    events,
+    catalog,
+    posters,
+    artifacts,
+    clock,
+    agent,
+    login,
+    githubLogin,
+  };
 }
 
 export function cookieOf(r: HttpResult, name: string): string {
