@@ -1,10 +1,20 @@
 import type {
   ApiToken,
+  CatalogApp,
+  CatalogArtifact,
+  CatalogCleanupResult,
+  CatalogGroup,
+  CatalogPermission,
+  CatalogPermissionLevel,
+  CatalogPlatform,
+  CatalogSettings,
+  CatalogUploadGrant,
   Channel,
   ChannelKind,
   EventDetail,
   EventStatus,
   EventSummary,
+  InstallerDownload,
   Me,
   Member,
   PosterUpload,
@@ -194,6 +204,118 @@ export function createApiClient({
       });
     },
     deletePoster: (id: string) => del(`/events/${enc(id)}/poster`),
+
+    // ---- binary catalog ---------------------------------------------------
+    catalogGroups: () =>
+      get<{ groups: CatalogGroup[] }>("/catalog/groups").then((r) => r.groups),
+    catalogGroup: (id: string) =>
+      get<CatalogGroup>(`/catalog/groups/${enc(id)}`),
+    createCatalogGroup: (name: string) =>
+      post<CatalogGroup>("/catalog/groups", { name }),
+    updateCatalogGroup: (id: string, body: { name?: string }) =>
+      patch<CatalogGroup>(`/catalog/groups/${enc(id)}`, body),
+    deleteCatalogGroup: (id: string) => del(`/catalog/groups/${enc(id)}`),
+    catalogGroupApps: (id: string) =>
+      get<{ apps: CatalogApp[] }>(`/catalog/groups/${enc(id)}/apps`).then(
+        (r) => r.apps,
+      ),
+    catalogGroupPermissions: (id: string) =>
+      get<{ permissions: CatalogPermission[] }>(
+        `/catalog/groups/${enc(id)}/permissions`,
+      ).then((r) => r.permissions),
+    grantCatalogGroupPermission: (
+      id: string,
+      login: string,
+      level: CatalogPermissionLevel,
+    ) =>
+      post<{ permissions: CatalogPermission[] }>(
+        `/catalog/groups/${enc(id)}/permissions`,
+        { login, level },
+      ).then((r) => r.permissions),
+    revokeCatalogGroupPermission: (id: string, pid: string) =>
+      del(`/catalog/groups/${enc(id)}/permissions/${enc(pid)}`),
+
+    catalogApps: () =>
+      get<{ apps: CatalogApp[] }>("/catalog/apps").then((r) => r.apps),
+    catalogApp: (name: string) => get<CatalogApp>(`/catalog/apps/${enc(name)}`),
+    createCatalogApp: (body: {
+      name: string;
+      path: string;
+      description?: string;
+      debugOnly?: boolean;
+      groupId?: string;
+    }) => post<CatalogApp>("/catalog/apps", body),
+    updateCatalogApp: (
+      name: string,
+      body: {
+        name?: string;
+        path?: string;
+        description?: string | null;
+        debugOnly?: boolean;
+        groupId?: string | null;
+      },
+    ) => patch<CatalogApp>(`/catalog/apps/${enc(name)}`, body),
+    deleteCatalogApp: (name: string) => del(`/catalog/apps/${enc(name)}`),
+    catalogSettings: (name: string) =>
+      get<CatalogSettings>(`/catalog/apps/${enc(name)}/settings`),
+    updateCatalogSettings: (name: string, body: Partial<CatalogSettings>) =>
+      patch<CatalogSettings>(`/catalog/apps/${enc(name)}/settings`, body),
+    catalogAppPermissions: (name: string) =>
+      get<{ permissions: CatalogPermission[] }>(
+        `/catalog/apps/${enc(name)}/permissions`,
+      ).then((r) => r.permissions),
+    grantCatalogAppPermission: (
+      name: string,
+      login: string,
+      level: CatalogPermissionLevel,
+    ) =>
+      post<{ permissions: CatalogPermission[] }>(
+        `/catalog/apps/${enc(name)}/permissions`,
+        { login, level },
+      ).then((r) => r.permissions),
+    revokeCatalogAppPermission: (name: string, pid: string) =>
+      del(`/catalog/apps/${enc(name)}/permissions/${enc(pid)}`),
+
+    catalogArtifacts: (name: string) =>
+      get<{ artifacts: CatalogArtifact[] }>(
+        `/catalog/apps/${enc(name)}/artifacts`,
+      ).then((r) => r.artifacts),
+    deleteCatalogArtifact: (name: string, id: string) =>
+      del(`/catalog/apps/${enc(name)}/artifacts/${enc(id)}`),
+    cleanupCatalogArtifacts: (name: string, dryRun: boolean) =>
+      post<CatalogCleanupResult>(
+        `/catalog/apps/${enc(name)}/artifacts/cleanup${dryRun ? "?dryRun=true" : ""}`,
+      ),
+    /** presign → browser PUT to S3 → commit. Returns the committed artifact. */
+    async uploadCatalogArtifact(
+      name: string,
+      file: File,
+      platform: CatalogPlatform,
+      tags: Record<string, string>,
+    ): Promise<CatalogArtifact> {
+      const grant = await post<CatalogUploadGrant>(
+        `/catalog/apps/${enc(name)}/artifacts`,
+        { platform, filename: file.name, size: file.size, tags },
+      );
+      const res = await fetchImpl(grant.url, {
+        method: grant.method,
+        headers: grant.headers,
+        body: file,
+      });
+      if (!res.ok)
+        throw new ApiError(
+          res.status,
+          "upload_failed",
+          `artifact upload failed (${res.status})`,
+        );
+      return post<CatalogArtifact>(
+        `/catalog/uploads/${enc(grant.uploadId)}/commit`,
+      );
+    },
+    installerDownloads: () =>
+      get<{ downloads: InstallerDownload[] }>(
+        "/catalog/installer/downloads",
+      ).then((r) => r.downloads),
     /**
      * Poster `<img>` source. The API's `posterUrl` is absolute to the API host;
      * building it from our own base keeps the request same-origin (cookie

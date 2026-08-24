@@ -5,6 +5,9 @@ import { hasRole, useAuth } from "./auth";
 import { AppShellLayout, currentPath } from "./components/layout";
 import { Notice, Spinner } from "./components/ui";
 import { NAV_ITEMS } from "./navigation";
+import { CatalogPage } from "./pages/Catalog";
+import { CatalogAppPage } from "./pages/CatalogApp";
+import { CatalogGroupPage } from "./pages/CatalogGroup";
 import { ChannelDetailPage } from "./pages/ChannelDetail";
 import { ChannelNewPage } from "./pages/ChannelNew";
 import { ChannelsPage } from "./pages/Channels";
@@ -99,6 +102,30 @@ export function App() {
           element={
             <RequireRole min={navMinRole("/channels")}>
               <ChannelDetailPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/catalog"
+          element={
+            <RequireRole min={navMinRole("/catalog")}>
+              <CatalogPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/catalog/apps/:name"
+          element={
+            <RequireRole min={navMinRole("/catalog")}>
+              <CatalogAppPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/catalog/groups/:id"
+          element={
+            <RequireRole min={navMinRole("/catalog")}>
+              <CatalogGroupPage />
             </RequireRole>
           }
         />
