@@ -37,3 +37,9 @@
 - `ListObjectsV2` must be paginated even in "small" sweeps: an unpaginated call re-lists the same lexicographic first page forever once a backlog passes 1000 keys. Bound the pages (e.g. 10) and let later runs take the rest.
 - Commit flows with deterministic ids: on an insert conflict, check whether the same logical operation already succeeded and heal (mark complete, return the row) instead of rolling back S3 objects the winner now references.
 - Interactive cleanup deletes the DB row even when the S3 delete fails (user asked; retry is idempotent); the daily sweep does the opposite (keep the row, retry the object tomorrow).
+
+## Retiring a stack (2026-08-24)
+
+- `sls remove` re-resolves the whole config, so any `${aws:ssm:...}` variable whose parameter was already deleted makes removal impossible. Retire in this order: stack first, shared SSM/secrets last. If the config is already unresolvable, bypass the Framework: `aws cloudformation delete-stack` (a serverless stack normally owns no bucket/domain, so this is equivalent).
+- An API Gateway custom domain with a base-path mapping blocks stage deletion (`DELETE_FAILED` on the stage): delete the custom domain (which drops the mapping) before deleting the stack. Then clean Route53 alias + ACM validation CNAME, and finally the now-unused regional ACM certificate.
+- Re-running `delete-stack` on a `DELETE_FAILED` stack resumes from the failed resource.
