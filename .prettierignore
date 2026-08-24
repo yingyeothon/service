@@ -8,3 +8,4 @@ cli
 layers/*/nodejs
 packages/console-db/src/generated
 packages/console-db/prisma/migrations
+apps/installer

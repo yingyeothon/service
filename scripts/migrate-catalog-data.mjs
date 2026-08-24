@@ -53,7 +53,9 @@ print(json.dumps(out))
 const toSec = (s) => {
   // "2026-01-30 11:31:43.894447074 +0000 UTC m=+4.4" or "2026-02-08 19:25:32"
   const t = Date.parse(`${String(s).slice(0, 19).replace(" ", "T")}Z`);
-  return Number.isFinite(t) ? Math.floor(t / 1000) : Math.floor(Date.now() / 1e3);
+  return Number.isFinite(t)
+    ? Math.floor(t / 1000)
+    : Math.floor(Date.now() / 1e3);
 };
 const parseTags = (s) => {
   try {
@@ -65,16 +67,26 @@ const parseTags = (s) => {
 };
 const hex = (n) => randomBytes(n).toString("hex");
 
-const { createCatalogDb, createConsoleDb, createPrismaClient, mysqlOptionsFromEnv } =
-  await import(
-    new URL(path.join(root, "packages", "console-db", "dist", "index.js"), "file://")
-  );
+const {
+  createCatalogDb,
+  createConsoleDb,
+  createPrismaClient,
+  mysqlOptionsFromEnv,
+} = await import(
+  new URL(
+    path.join(root, "packages", "console-db", "dist", "index.js"),
+    "file://",
+  )
+);
 const prisma = createPrismaClient(mysqlOptionsFromEnv());
 const catalog = createCatalogDb(prisma);
 const consoleDb = createConsoleDb(prisma);
 
 const members = new Map(
-  (await consoleDb.listMembers()).map((m) => [m.githubLogin.toLowerCase(), m.id]),
+  (await consoleDb.listMembers()).map((m) => [
+    m.githubLogin.toLowerCase(),
+    m.id,
+  ]),
 );
 const subject = (login) => {
   const id = members.get(String(login).toLowerCase());
@@ -125,7 +137,9 @@ for (const a of dump.apps) {
   }
   const id = `ca_${hex(8)}`;
   appIdMap.set(a.id, id);
-  const s = a.owner_github_id ? subject(a.owner_github_id) : { memberId: null, pending: null };
+  const s = a.owner_github_id
+    ? subject(a.owner_github_id)
+    : { memberId: null, pending: null };
   await act(
     `app ${a.name} -> ${id} owner=${a.owner_github_id ?? "-"}${s.pending ? " (pending)" : ""}`,
     async () => {
@@ -135,7 +149,8 @@ for (const a of dump.apps) {
         path: a.path,
         debugOnly: !!a.debug_only,
         description: a.description ?? null,
-        groupId: a.group_id != null ? (groupIdMap.get(a.group_id) ?? null) : null,
+        groupId:
+          a.group_id != null ? (groupIdMap.get(a.group_id) ?? null) : null,
         ownerId: s.memberId,
         pendingOwnerLogin: s.pending,
         createdAt: toSec(a.created_at),
@@ -184,8 +199,18 @@ if (artSkip) plan.push(`skip ${artSkip} artifact(s) already present`);
 
 // ---- permissions ----------------------------------------------------------
 for (const [rows, map, upsert, kind] of [
-  [dump.group_permissions, groupIdMap, (id, p) => catalog.upsertGroupPermission(id, p), "group"],
-  [dump.app_permissions, appIdMap, (id, p) => catalog.upsertAppPermission(id, p), "app"],
+  [
+    dump.group_permissions,
+    groupIdMap,
+    (id, p) => catalog.upsertGroupPermission(id, p),
+    "group",
+  ],
+  [
+    dump.app_permissions,
+    appIdMap,
+    (id, p) => catalog.upsertAppPermission(id, p),
+    "app",
+  ],
 ]) {
   for (const r of rows) {
     const parentId = map.get(r.group_id ?? r.app_id);
