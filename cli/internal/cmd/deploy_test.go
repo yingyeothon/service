@@ -332,6 +332,45 @@ func TestProfileLoginAndSwitch(t *testing.T) {
 		// the fake has no /catalog/apps route; reaching it proves alias+profile work
 		t.Fatalf("expected route-not-found via cata alias, got %v\n%s", err, out)
 	}
+	// `rm` aliases `remove`
+	if _, err := exec("profile", "rm", "stage"); err != nil {
+		t.Fatal(err)
+	}
+	// removing the default (prod) loses the marker; `profile default` restores it
+	if _, err := exec("profile", "add", "stage", "--api", f.srv.URL, "--token", "yyt_stage"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec("profile", "remove", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec("profile", "default", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = exec("whoami")
+	if err != nil || !strings.Contains(out, "profile: dev") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	// rename moves the profile and the default marker; `ls` aliases `list`
+	if _, err := exec("profile", "rename", "dev", "local"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = exec("profile", "ls")
+	if err != nil || strings.Contains(out, "dev") || !strings.Contains(out, "local") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	out, err = exec("whoami")
+	if err != nil || !strings.Contains(out, "profile: local") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if _, err := exec("profile", "rename", "local", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec("login", "--profile", "prod", "--api", f.srv.URL, "--token", "yyt_prod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec("profile", "use", "prod"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := exec("profile", "remove", "stage"); err != nil {
 		t.Fatal(err)
 	}

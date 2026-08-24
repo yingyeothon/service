@@ -20,9 +20,10 @@ type member struct {
 func newMembers(a *App) *cobra.Command {
 	c := &cobra.Command{Use: "members", Short: "Manage console members (admin)"}
 	c.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List members",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List members",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {

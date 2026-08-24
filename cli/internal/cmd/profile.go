@@ -13,9 +13,10 @@ func newProfile(a *App) *cobra.Command {
 	c := &cobra.Command{Use: "profile", Short: "Manage config profiles (per-stage console logins)"}
 
 	c.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List stored profiles (the active one is marked)",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List stored profiles (the active one is marked)",
+		Args:    cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			f, err := config.LoadFile()
 			if err != nil {
@@ -75,26 +76,51 @@ name. The first stored profile becomes the default.`,
 		c.AddCommand(add)
 	}
 
+	setDefault := func(_ *cobra.Command, args []string) error {
+		if err := config.SetDefault(args[0]); err != nil {
+			return err
+		}
+		if a.jsonOut {
+			return a.printer().JSONValue(map[string]any{"default": args[0]})
+		}
+		fmt.Fprintf(a.Out, "default profile is now %s\n", args[0])
+		return nil
+	}
 	c.AddCommand(&cobra.Command{
 		Use:   "use <name>",
 		Short: "Make a stored profile the default",
 		Args:  cobra.ExactArgs(1),
+		RunE:  setDefault,
+	})
+
+	c.AddCommand(&cobra.Command{
+		Use:   "default <name>",
+		Short: "Make a stored profile the default (same as `yyt profile use`)",
+		Args:  cobra.ExactArgs(1),
+		RunE:  setDefault,
+	})
+
+	c.AddCommand(&cobra.Command{
+		Use:   "rename <old> <new>",
+		Short: "Rename a stored profile (the default marker moves with it)",
+		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if err := config.SetDefault(args[0]); err != nil {
+			if err := config.RenameProfile(args[0], args[1]); err != nil {
 				return err
 			}
 			if a.jsonOut {
-				return a.printer().JSONValue(map[string]any{"default": args[0]})
+				return a.printer().JSONValue(map[string]any{"from": args[0], "to": args[1]})
 			}
-			fmt.Fprintf(a.Out, "default profile is now %s\n", args[0])
+			fmt.Fprintf(a.Out, "renamed profile %s -> %s\n", args[0], args[1])
 			return nil
 		},
 	})
 
 	c.AddCommand(&cobra.Command{
-		Use:   "remove <name>",
-		Short: "Delete a stored profile (the token itself stays valid until revoked)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "remove <name>",
+		Aliases: []string{"rm"},
+		Short:   "Delete a stored profile (the token itself stays valid until revoked)",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if err := config.RemoveProfile(args[0]); err != nil {
 				return err

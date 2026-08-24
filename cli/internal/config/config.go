@@ -163,6 +163,33 @@ func RemoveProfile(name string) error {
 	return SaveFile(f)
 }
 
+// RenameProfile renames a stored profile, moving the default marker with it.
+func RenameProfile(oldName, newName string) error {
+	f, err := LoadFile()
+	if err != nil {
+		return err
+	}
+	pr, ok := f.Profiles[oldName]
+	if !ok {
+		return fmt.Errorf("unknown profile %q (known: %s)", oldName, knownNames(f))
+	}
+	if newName == "" {
+		return fmt.Errorf("profile name must not be empty")
+	}
+	if oldName == newName {
+		return nil
+	}
+	if _, exists := f.Profiles[newName]; exists {
+		return fmt.Errorf("profile %q already exists", newName)
+	}
+	delete(f.Profiles, oldName)
+	f.Profiles[newName] = pr
+	if f.Default == oldName {
+		f.Default = newName
+	}
+	return SaveFile(f)
+}
+
 // SetDefault marks an existing profile as the default.
 func SetDefault(name string) error {
 	f, err := LoadFile()
