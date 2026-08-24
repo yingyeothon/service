@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yingyeothon/service/cli/internal/api"
@@ -22,13 +24,23 @@ type me struct {
 }
 
 func newLogin(a *App) *cobra.Command {
+	var device bool
+	var tokenName string
 	c := &cobra.Command{
-		Use:   "login [--token <API token>] [--api <url>]",
+		Use:   "login [--token <API token>] [--device] [--api <url>]",
 		Short: "Verify an API token against the console and store it in the config file",
 		Long: `Reads the token from --token, YYT_TOKEN, or stdin (prompted on a terminal),
-checks it against GET /me and stores it with the console URL in the config file.`,
+checks it against GET /me and stores it with the console URL in the config file.
+With --device, signs in through the GitHub device flow instead: the console
+mints a fresh API token once you approve the code on github.com.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if device {
+				return deviceLogin(cmd, a, tokenName)
+			}
+			if tokenName != "" {
+				return errors.New("--name only applies with --device (it names the minted token)")
+			}
 			token := a.tokFlag
 			if token == "" {
 				token = os.Getenv("YYT_TOKEN")
@@ -74,7 +86,100 @@ checks it against GET /me and stores it with the console URL in the config file.
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&device, "device", false, "sign in with the GitHub device flow (no pre-existing token needed)")
+	c.Flags().StringVar(&tokenName, "name", "", "name for the minted API token (default: device login)")
 	return c
+}
+
+// deviceLogin drives the console's GitHub device flow and stores the minted token.
+func deviceLogin(cmd *cobra.Command, a *App, tokenName string) error {
+	apiBase := a.apiFlag
+	if apiBase == "" {
+		apiBase = os.Getenv("YYT_API")
+	}
+	if apiBase == "" {
+		apiBase = config.DefaultAPI
+	}
+	apiBase = strings.TrimRight(apiBase, "/")
+	if err := config.CheckAPI(apiBase); err != nil {
+		return err
+	}
+	cl := api.New(apiBase, "")
+	if a.NewClient != nil {
+		cl = a.NewClient(config.Config{API: apiBase})
+	}
+	var start struct {
+		Handle          string `json:"handle"`
+		UserCode        string `json:"userCode"`
+		VerificationURI string `json:"verificationUri"`
+		IntervalSec     int    `json:"intervalSec"`
+		ExpiresInSec    int    `json:"expiresInSec"`
+	}
+	if err := cl.Do(cmd.Context(), http.MethodPost, "/auth/device/start", map[string]any{}, &start); err != nil {
+		return fmt.Errorf("device login unavailable: %w", err)
+	}
+	fmt.Fprintf(a.Err, "Open %s and enter the code: %s\n", start.VerificationURI, start.UserCode)
+	fmt.Fprintln(a.Err, "Waiting for approval…")
+	interval := start.IntervalSec
+	if interval < 1 {
+		interval = 5
+	}
+	body := map[string]any{"handle": start.Handle}
+	if tokenName != "" {
+		body["tokenName"] = tokenName
+	}
+	deadline := time.Now().Add(time.Duration(start.ExpiresInSec) * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			return errors.New("device login expired; run `yyt login --device` again")
+		}
+		select {
+		case <-cmd.Context().Done():
+			return cmd.Context().Err()
+		case <-time.After(time.Duration(interval) * time.Second):
+		}
+		var res struct {
+			Status string `json:"status"`
+			Token  string `json:"token"`
+			Member struct {
+				ID    string `json:"id"`
+				Login string `json:"login"`
+				Role  string `json:"role"`
+			} `json:"member"`
+		}
+		err := cl.Do(cmd.Context(), http.MethodPost, "/auth/device/token", body, &res)
+		if err != nil {
+			var ae *api.Error
+			if errors.As(err, &ae) {
+				if ae.Status == 429 { // slow_down or local gate: widen the interval
+					var d struct {
+						IntervalSec int `json:"intervalSec"`
+					}
+					if json.Unmarshal(ae.Details, &d) == nil && d.IntervalSec > interval {
+						interval = d.IntervalSec
+					}
+					continue
+				}
+			}
+			return err
+		}
+		if res.Status != "ok" { // 202 pending
+			continue
+		}
+		cfg := config.Config{API: apiBase, Token: res.Token}
+		if err := config.Save(cfg); err != nil {
+			return err
+		}
+		p, _ := config.Path()
+		if res.Member.Role == "pending" {
+			fmt.Fprintln(a.Err, "note: your account is pending; commands return 403 until an admin approves it")
+		}
+		if a.jsonOut {
+			return a.printer().JSONValue(map[string]any{"api": cfg.API, "id": res.Member.ID, "login": res.Member.Login, "role": res.Member.Role, "config": p})
+		}
+		fmt.Fprintf(a.Out, "logged in as %s (%s) at %s\nconfig: %s\n", res.Member.Login, res.Member.Role, cfg.API, p)
+		return nil
+	}
 }
 
 // readToken reads one line from stdin; prompts when stdin is a terminal.
