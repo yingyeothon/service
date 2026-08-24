@@ -37,11 +37,11 @@ custom:
     platform: node
     format: esm
     outputFileExtension: .mjs
-    # AWS SDK v3 is already in the runtime; ioredis/mysql2 are bundled (pure JS).
+    # AWS SDK v3 is already in the runtime; ioredis and the Prisma client (Rust-free, WASM query compiler inlined) are bundled.
     exclude:
       - "@aws-sdk/*"
     banner:
-      # ESM bundles lose `require`; mysql2/ioredis are CJS, so the shim is required.
+      # ESM bundles lose `require`; ioredis and the mariadb driver are CJS, so the shim is required.
       js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
   customDomain:
     domainName: ${self:custom.domain}

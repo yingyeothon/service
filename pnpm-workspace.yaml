@@ -4,6 +4,11 @@ packages:
   - "apps/*"
 allowBuilds:
   "@parcel/watcher": false
+  "@prisma/engines": true
   better-sqlite3: true
+  cpu-features: false
   esbuild: true
+  prisma: true
+  protobufjs: false
   serverless: false
+  ssh2: false

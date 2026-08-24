@@ -20,3 +20,5 @@ apps/console-web/dist/
 .DS_Store
 # Work tracker is machine-local (contains infra notes); never tracked.
 todo/
+# Prisma-generated client (rebuilt by `prisma generate` in the package build).
+packages/console-db/src/generated/

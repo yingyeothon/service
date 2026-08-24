@@ -55,7 +55,7 @@ const login = await json(`${consoleBase}/debug/login`, {
   body: { login: "smoke-match-admin", githubId: -1004, role: "admin" },
 });
 check("console debug login", login.status === 200);
-const cookie = { cookie: login.body?.cookie };
+const cookie = { cookie: login.body?.cookie, origin: consoleBase };
 const mk = async (cfg) =>
   json(`${consoleBase}/channels`, {
     method: "POST",

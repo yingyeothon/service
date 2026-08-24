@@ -1,5 +1,12 @@
 import { AppError } from "@yyt/core";
-import type { Db } from "./db.js";
+import {
+  isConflict,
+  num,
+  nul,
+  run,
+  translatePrismaError,
+  type PrismaClient,
+} from "./prisma.js";
 
 export const CATALOG_PLATFORMS = [
   "android",
@@ -255,77 +262,6 @@ export interface CatalogDb {
   deleteExpiredUploads(now: number): Promise<number>;
 }
 
-interface RawGroup {
-  id: string;
-  name: string;
-  owner_id: string | null;
-  pending_owner_login: string | null;
-  created_at: number | string;
-  updated_at: number | string;
-}
-
-interface RawApp {
-  id: string;
-  name: string;
-  path: string;
-  debug_only: number;
-  description: string | null;
-  group_id: string | null;
-  owner_id: string | null;
-  pending_owner_login: string | null;
-  slack_hook_url: string | null;
-  slack_channel: string | null;
-  message_template: string | null;
-  keep_recent_versions: number | string;
-  created_at: number | string;
-  updated_at: number | string;
-}
-
-interface RawArtifact {
-  id: string;
-  app_id: string;
-  platform: string;
-  url: string;
-  object_key: string | null;
-  size: number | string | null;
-  hash: string | null;
-  tags_json: string;
-  created_at: number | string;
-}
-
-interface RawPermission {
-  id: string;
-  member_id: string | null;
-  pending_github_login: string | null;
-  level: string;
-  created_at: number | string;
-}
-
-interface RawPendingUpload {
-  id: string;
-  app_id: string;
-  platform: string;
-  tags_json: string | null;
-  filename: string;
-  status: string;
-  object_key: string | null;
-  etag: string | null;
-  artifact_id: string | null;
-  created_at: number | string;
-  expires_at: number | string;
-}
-
-const GROUP_COLS = `id, name, owner_id, pending_owner_login, created_at, updated_at`;
-const APP_COLS = `id, name, path, debug_only, description, group_id, owner_id, pending_owner_login,
-  slack_hook_url, slack_channel, message_template, keep_recent_versions, created_at, updated_at`;
-const ARTIFACT_COLS = `id, app_id, platform, url, object_key, size, hash, tags_json, created_at`;
-const PERM_COLS = `id, member_id, pending_github_login, level, created_at`;
-const UPLOAD_COLS = `id, app_id, platform, tags_json, filename, status, object_key, etag, artifact_id, created_at, expires_at`;
-
-const num = (v: number | string): number => Number(v);
-const nul = (v: number | string | null): number | null =>
-  v === null ? null : Number(v);
-
 function parseTags(json: string): Record<string, string> {
   try {
     const v: unknown = JSON.parse(json);
@@ -350,8 +286,23 @@ function assertOneSubject(p: CatalogPermissionInput): void {
     );
 }
 
-export function createCatalogDb(db: Db): CatalogDb {
-  const toGroup = (r: RawGroup): CatalogGroupRow => ({
+type PermModel = {
+  id: string;
+  member_id: string | null;
+  pending_github_login: string | null;
+  level: string;
+  created_at: bigint | number;
+};
+
+export function createCatalogDb(prisma: PrismaClient): CatalogDb {
+  const toGroup = (r: {
+    id: string;
+    name: string;
+    owner_id: string | null;
+    pending_owner_login: string | null;
+    created_at: bigint | number;
+    updated_at: bigint | number;
+  }): CatalogGroupRow => ({
     id: r.id,
     name: r.name,
     ownerId: r.owner_id,
@@ -359,11 +310,26 @@ export function createCatalogDb(db: Db): CatalogDb {
     createdAt: num(r.created_at),
     updatedAt: num(r.updated_at),
   });
-  const toApp = (r: RawApp): CatalogAppRow => ({
+  const toApp = (r: {
+    id: string;
+    name: string;
+    path: string;
+    debug_only: boolean;
+    description: string | null;
+    group_id: string | null;
+    owner_id: string | null;
+    pending_owner_login: string | null;
+    slack_hook_url: string | null;
+    slack_channel: string | null;
+    message_template: string | null;
+    keep_recent_versions: number;
+    created_at: bigint | number;
+    updated_at: bigint | number;
+  }): CatalogAppRow => ({
     id: r.id,
     name: r.name,
     path: r.path,
-    debugOnly: Number(r.debug_only) !== 0,
+    debugOnly: r.debug_only,
     description: r.description,
     groupId: r.group_id,
     ownerId: r.owner_id,
@@ -375,7 +341,17 @@ export function createCatalogDb(db: Db): CatalogDb {
     createdAt: num(r.created_at),
     updatedAt: num(r.updated_at),
   });
-  const toArtifact = (r: RawArtifact): CatalogArtifactRow => ({
+  const toArtifact = (r: {
+    id: string;
+    app_id: string;
+    platform: string;
+    url: string;
+    object_key: string | null;
+    size: bigint | number | null;
+    hash: string | null;
+    tags_json: string;
+    created_at: bigint | number;
+  }): CatalogArtifactRow => ({
     id: r.id,
     appId: r.app_id,
     platform: r.platform as CatalogPlatform,
@@ -386,14 +362,26 @@ export function createCatalogDb(db: Db): CatalogDb {
     tags: parseTags(r.tags_json),
     createdAt: num(r.created_at),
   });
-  const toPermission = (r: RawPermission): CatalogPermissionRow => ({
+  const toPermission = (r: PermModel): CatalogPermissionRow => ({
     id: r.id,
     memberId: r.member_id,
     pendingGithubLogin: r.pending_github_login,
     level: r.level as CatalogPermissionLevel,
     createdAt: num(r.created_at),
   });
-  const toUpload = (r: RawPendingUpload): CatalogPendingUploadRow => ({
+  const toUpload = (r: {
+    id: string;
+    app_id: string;
+    platform: string;
+    tags_json: string | null;
+    filename: string;
+    status: string;
+    object_key: string | null;
+    etag: string | null;
+    artifact_id: string | null;
+    created_at: bigint | number;
+    expires_at: bigint | number;
+  }): CatalogPendingUploadRow => ({
     id: r.id,
     appId: r.app_id,
     platform: r.platform as CatalogPlatform,
@@ -407,391 +395,396 @@ export function createCatalogDb(db: Db): CatalogDb {
     expiresAt: num(r.expires_at),
   });
 
+  type PermDelegate = {
+    create(args: { data: Record<string, unknown> }): Promise<unknown>;
+    findFirst(args: {
+      where: Record<string, unknown>;
+      select: { id: true };
+    }): Promise<{ id: string } | null>;
+    updateMany(args: {
+      where: Record<string, unknown>;
+      data: Record<string, unknown>;
+    }): Promise<{ count: number }>;
+  };
   const upsertPermission = async (
-    table: "catalog_app_permissions" | "catalog_group_permissions",
+    delegate: PermDelegate,
     parentCol: "app_id" | "group_id",
     parentId: string,
     p: CatalogPermissionInput,
-  ) => {
-    assertOneSubject(p);
-    try {
-      await db.execute(
-        `insert into ${table} (id, ${parentCol}, member_id, pending_github_login, level, created_at)
-         values (?, ?, ?, ?, ?, ?)`,
-        [
-          p.id,
-          parentId,
-          p.memberId ?? null,
-          p.pendingGithubLogin ?? null,
-          p.level,
-          p.createdAt,
-        ],
-      );
-    } catch (err) {
-      // Update only the (parent, subject) row; an `on duplicate key` insert
-      // would also fire on a colliding primary-key id and silently rewrite an
-      // unrelated row.
-      if (!(err instanceof AppError) || err.code !== "conflict") throw err;
-      const subjectCol =
-        p.memberId != null ? "member_id" : "pending_github_login";
-      const rows = await db.query<{ id: string }>(
-        `select id from ${table} where ${parentCol} = ? and ${subjectCol} = ?`,
-        [parentId, p.memberId ?? p.pendingGithubLogin ?? null],
-      );
-      const hit = rows[0];
-      if (!hit) throw err; // the conflict was a stray id collision
-      await db.execute(`update ${table} set level = ? where id = ?`, [
-        p.level,
-        hit.id,
-      ]);
-    }
-  };
+  ) =>
+    run(async () => {
+      assertOneSubject(p);
+      try {
+        await delegate.create({
+          data: {
+            id: p.id,
+            [parentCol]: parentId,
+            member_id: p.memberId ?? null,
+            pending_github_login: p.pendingGithubLogin ?? null,
+            level: p.level,
+            created_at: p.createdAt,
+          },
+        });
+      } catch (err) {
+        // Update only the (parent, subject) row; a blanket upsert on the id
+        // would rewrite an unrelated row on a stray id collision.
+        if (!isConflict(err)) translatePrismaError(err);
+        const subjectCol =
+          p.memberId != null ? "member_id" : "pending_github_login";
+        const hit = await delegate.findFirst({
+          where: {
+            [parentCol]: parentId,
+            [subjectCol]: p.memberId ?? p.pendingGithubLogin ?? null,
+          },
+          select: { id: true },
+        });
+        if (!hit) translatePrismaError(err); // stray id collision
+        await delegate.updateMany({
+          where: { id: hit.id },
+          data: { level: p.level },
+        });
+      }
+    });
 
   return {
-    insertGroup: async (g) => {
-      await db.execute(
-        `insert into catalog_groups (id, name, owner_id, pending_owner_login, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?)`,
-        [
-          g.id,
-          g.name,
-          g.ownerId ?? null,
-          g.pendingOwnerLogin ?? null,
-          g.createdAt,
-          g.createdAt,
-        ],
-      );
-    },
-    findGroup: async (id) => {
-      const [r] = await db.query<RawGroup>(
-        `select ${GROUP_COLS} from catalog_groups where id = ?`,
-        [id],
-      );
-      return r && toGroup(r);
-    },
-    findGroupByName: async (name) => {
-      const [r] = await db.query<RawGroup>(
-        `select ${GROUP_COLS} from catalog_groups where name = ?`,
-        [name],
-      );
-      return r && toGroup(r);
-    },
-    listGroups: async () =>
-      (
-        await db.query<RawGroup>(
-          `select ${GROUP_COLS} from catalog_groups order by name, id`,
-        )
-      ).map(toGroup),
-    updateGroup: async (id, patch, at) => {
-      const sets = ["updated_at = ?"];
-      const params: Array<string | number | null> = [at];
-      const set = (col: string, v: string | number | null | undefined) => {
-        if (v === undefined) return;
-        sets.push(`${col} = ?`);
-        params.push(v);
-      };
-      set("name", patch.name);
-      set("owner_id", patch.ownerId);
-      set("pending_owner_login", patch.pendingOwnerLogin);
-      const r = await db.execute(
-        `update catalog_groups set ${sets.join(", ")} where id = ?`,
-        [...params, id],
-      );
-      return r.affectedRows > 0;
-    },
-    deleteGroup: async (id) => {
-      const r = await db.execute(`delete from catalog_groups where id = ?`, [
-        id,
-      ]);
-      return r.affectedRows > 0;
-    },
+    insertGroup: (g) =>
+      run(async () => {
+        await prisma.catalog_groups.create({
+          data: {
+            id: g.id,
+            name: g.name,
+            owner_id: g.ownerId ?? null,
+            pending_owner_login: g.pendingOwnerLogin ?? null,
+            created_at: g.createdAt,
+            updated_at: g.createdAt,
+          },
+        });
+      }),
+    findGroup: (id) =>
+      run(async () => {
+        const r = await prisma.catalog_groups.findUnique({ where: { id } });
+        return r ? toGroup(r) : undefined;
+      }),
+    findGroupByName: (name) =>
+      run(async () => {
+        const r = await prisma.catalog_groups.findUnique({ where: { name } });
+        return r ? toGroup(r) : undefined;
+      }),
+    listGroups: () =>
+      run(async () =>
+        (
+          await prisma.catalog_groups.findMany({
+            orderBy: [{ name: "asc" }, { id: "asc" }],
+          })
+        ).map(toGroup),
+      ),
+    updateGroup: (id, patch, at) =>
+      run(async () => {
+        const data: Record<string, string | number | null> = {
+          updated_at: at,
+        };
+        if (patch.name !== undefined) data.name = patch.name;
+        if (patch.ownerId !== undefined) data.owner_id = patch.ownerId;
+        if (patch.pendingOwnerLogin !== undefined)
+          data.pending_owner_login = patch.pendingOwnerLogin;
+        const r = await prisma.catalog_groups.updateMany({
+          where: { id },
+          data,
+        });
+        return r.count > 0;
+      }),
+    deleteGroup: (id) =>
+      run(async () => {
+        const r = await prisma.catalog_groups.deleteMany({ where: { id } });
+        return r.count > 0;
+      }),
 
-    insertApp: async (a) => {
-      await db.execute(
-        `insert into catalog_apps (id, name, path, debug_only, description, group_id,
-           owner_id, pending_owner_login, keep_recent_versions, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, 3, ?, ?)`,
-        [
-          a.id,
-          a.name,
-          a.path,
-          a.debugOnly ? 1 : 0,
-          a.description ?? null,
-          a.groupId ?? null,
-          a.ownerId ?? null,
-          a.pendingOwnerLogin ?? null,
-          a.createdAt,
-          a.createdAt,
-        ],
-      );
-    },
-    findApp: async (id) => {
-      const [r] = await db.query<RawApp>(
-        `select ${APP_COLS} from catalog_apps where id = ?`,
-        [id],
-      );
-      return r && toApp(r);
-    },
-    findAppByName: async (name) => {
-      const [r] = await db.query<RawApp>(
-        `select ${APP_COLS} from catalog_apps where name = ?`,
-        [name],
-      );
-      return r && toApp(r);
-    },
-    listApps: async (filter = {}) => {
-      const rows = filter.groupId
-        ? await db.query<RawApp>(
-            `select ${APP_COLS} from catalog_apps where group_id = ? order by name, id`,
-            [filter.groupId],
-          )
-        : await db.query<RawApp>(
-            `select ${APP_COLS} from catalog_apps order by name, id`,
-          );
-      return rows.map(toApp);
-    },
-    updateApp: async (id, patch, at) => {
-      const sets = ["updated_at = ?"];
-      const params: Array<string | number | null> = [at];
-      const set = (col: string, v: string | number | null | undefined) => {
-        if (v === undefined) return;
-        sets.push(`${col} = ?`);
-        params.push(v);
-      };
-      set("name", patch.name);
-      set("path", patch.path);
-      set(
-        "debug_only",
-        patch.debugOnly === undefined ? undefined : patch.debugOnly ? 1 : 0,
-      );
-      set("description", patch.description);
-      set("group_id", patch.groupId);
-      set("owner_id", patch.ownerId);
-      set("pending_owner_login", patch.pendingOwnerLogin);
-      set("slack_hook_url", patch.slackHookUrl);
-      set("slack_channel", patch.slackChannel);
-      set("message_template", patch.messageTemplate);
-      set("keep_recent_versions", patch.keepRecentVersions);
-      const r = await db.execute(
-        `update catalog_apps set ${sets.join(", ")} where id = ?`,
-        [...params, id],
-      );
-      return r.affectedRows > 0;
-    },
-    deleteApp: async (id) => {
-      const r = await db.execute(`delete from catalog_apps where id = ?`, [id]);
-      return r.affectedRows > 0;
-    },
+    insertApp: (a) =>
+      run(async () => {
+        await prisma.catalog_apps.create({
+          data: {
+            id: a.id,
+            name: a.name,
+            path: a.path,
+            debug_only: a.debugOnly ?? false,
+            description: a.description ?? null,
+            group_id: a.groupId ?? null,
+            owner_id: a.ownerId ?? null,
+            pending_owner_login: a.pendingOwnerLogin ?? null,
+            keep_recent_versions: 3,
+            created_at: a.createdAt,
+            updated_at: a.createdAt,
+          },
+        });
+      }),
+    findApp: (id) =>
+      run(async () => {
+        const r = await prisma.catalog_apps.findUnique({ where: { id } });
+        return r ? toApp(r) : undefined;
+      }),
+    findAppByName: (name) =>
+      run(async () => {
+        const r = await prisma.catalog_apps.findUnique({ where: { name } });
+        return r ? toApp(r) : undefined;
+      }),
+    listApps: (filter = {}) =>
+      run(async () =>
+        (
+          await prisma.catalog_apps.findMany({
+            where: filter.groupId ? { group_id: filter.groupId } : {},
+            orderBy: [{ name: "asc" }, { id: "asc" }],
+          })
+        ).map(toApp),
+      ),
+    updateApp: (id, patch, at) =>
+      run(async () => {
+        const data: Record<string, string | number | boolean | null> = {
+          updated_at: at,
+        };
+        if (patch.name !== undefined) data.name = patch.name;
+        if (patch.path !== undefined) data.path = patch.path;
+        if (patch.debugOnly !== undefined) data.debug_only = patch.debugOnly;
+        if (patch.description !== undefined)
+          data.description = patch.description;
+        if (patch.groupId !== undefined) data.group_id = patch.groupId;
+        if (patch.ownerId !== undefined) data.owner_id = patch.ownerId;
+        if (patch.pendingOwnerLogin !== undefined)
+          data.pending_owner_login = patch.pendingOwnerLogin;
+        if (patch.slackHookUrl !== undefined)
+          data.slack_hook_url = patch.slackHookUrl;
+        if (patch.slackChannel !== undefined)
+          data.slack_channel = patch.slackChannel;
+        if (patch.messageTemplate !== undefined)
+          data.message_template = patch.messageTemplate;
+        if (patch.keepRecentVersions !== undefined)
+          data.keep_recent_versions = patch.keepRecentVersions;
+        const r = await prisma.catalog_apps.updateMany({ where: { id }, data });
+        return r.count > 0;
+      }),
+    deleteApp: (id) =>
+      run(async () => {
+        const r = await prisma.catalog_apps.deleteMany({ where: { id } });
+        return r.count > 0;
+      }),
 
-    insertArtifact: async (a) => {
-      await db.execute(
-        `insert into catalog_artifacts (id, app_id, platform, url, object_key, size, hash, tags_json, created_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          a.id,
-          a.appId,
-          a.platform,
-          a.url,
-          a.objectKey ?? null,
-          a.size ?? null,
-          a.hash ?? null,
-          JSON.stringify(a.tags),
-          a.createdAt,
-        ],
-      );
-    },
-    findArtifact: async (id) => {
-      const [r] = await db.query<RawArtifact>(
-        `select ${ARTIFACT_COLS} from catalog_artifacts where id = ?`,
-        [id],
-      );
-      return r && toArtifact(r);
-    },
-    listArtifacts: async (appId, filter = {}) => {
-      const rows = filter.platform
-        ? await db.query<RawArtifact>(
-            `select ${ARTIFACT_COLS} from catalog_artifacts where app_id = ? and platform = ?
-             order by created_at desc, id desc`,
-            [appId, filter.platform],
-          )
-        : await db.query<RawArtifact>(
-            `select ${ARTIFACT_COLS} from catalog_artifacts where app_id = ?
-             order by created_at desc, id desc`,
-            [appId],
-          );
-      return rows.map(toArtifact);
-    },
-    deleteArtifact: async (id) => {
-      const r = await db.execute(`delete from catalog_artifacts where id = ?`, [
-        id,
-      ]);
-      return r.affectedRows > 0;
-    },
+    insertArtifact: (a) =>
+      run(async () => {
+        await prisma.catalog_artifacts.create({
+          data: {
+            id: a.id,
+            app_id: a.appId,
+            platform: a.platform,
+            url: a.url,
+            object_key: a.objectKey ?? null,
+            size: a.size ?? null,
+            hash: a.hash ?? null,
+            tags_json: JSON.stringify(a.tags),
+            created_at: a.createdAt,
+          },
+        });
+      }),
+    findArtifact: (id) =>
+      run(async () => {
+        const r = await prisma.catalog_artifacts.findUnique({ where: { id } });
+        return r ? toArtifact(r) : undefined;
+      }),
+    listArtifacts: (appId, filter = {}) =>
+      run(async () =>
+        (
+          await prisma.catalog_artifacts.findMany({
+            where: {
+              app_id: appId,
+              ...(filter.platform ? { platform: filter.platform } : {}),
+            },
+            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+          })
+        ).map(toArtifact),
+      ),
+    deleteArtifact: (id) =>
+      run(async () => {
+        const r = await prisma.catalog_artifacts.deleteMany({ where: { id } });
+        return r.count > 0;
+      }),
 
     upsertAppPermission: (appId, p) =>
-      upsertPermission("catalog_app_permissions", "app_id", appId, p),
-    listAppPermissions: async (appId) =>
-      (
-        await db.query<RawPermission>(
-          `select ${PERM_COLS} from catalog_app_permissions where app_id = ? order by created_at, id`,
-          [appId],
-        )
-      ).map(toPermission),
-    findAppPermission: async (appId, memberId) => {
-      const [r] = await db.query<RawPermission>(
-        `select ${PERM_COLS} from catalog_app_permissions where app_id = ? and member_id = ?`,
-        [appId, memberId],
-      );
-      return r && toPermission(r);
-    },
-    deleteAppPermission: async (appId, permissionId) => {
-      const r = await db.execute(
-        `delete from catalog_app_permissions where app_id = ? and id = ?`,
-        [appId, permissionId],
-      );
-      return r.affectedRows > 0;
-    },
+      upsertPermission(prisma.catalog_app_permissions, "app_id", appId, p),
+    listAppPermissions: (appId) =>
+      run(async () =>
+        (
+          await prisma.catalog_app_permissions.findMany({
+            where: { app_id: appId },
+            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+          })
+        ).map(toPermission),
+      ),
+    findAppPermission: (appId, memberId) =>
+      run(async () => {
+        const r = await prisma.catalog_app_permissions.findFirst({
+          where: { app_id: appId, member_id: memberId },
+        });
+        return r ? toPermission(r) : undefined;
+      }),
+    deleteAppPermission: (appId, permissionId) =>
+      run(async () => {
+        const r = await prisma.catalog_app_permissions.deleteMany({
+          where: { app_id: appId, id: permissionId },
+        });
+        return r.count > 0;
+      }),
 
     upsertGroupPermission: (groupId, p) =>
-      upsertPermission("catalog_group_permissions", "group_id", groupId, p),
-    listGroupPermissions: async (groupId) =>
-      (
-        await db.query<RawPermission>(
-          `select ${PERM_COLS} from catalog_group_permissions where group_id = ? order by created_at, id`,
-          [groupId],
-        )
-      ).map(toPermission),
-    findGroupPermission: async (groupId, memberId) => {
-      const [r] = await db.query<RawPermission>(
-        `select ${PERM_COLS} from catalog_group_permissions where group_id = ? and member_id = ?`,
-        [groupId, memberId],
-      );
-      return r && toPermission(r);
-    },
-    deleteGroupPermission: async (groupId, permissionId) => {
-      const r = await db.execute(
-        `delete from catalog_group_permissions where group_id = ? and id = ?`,
-        [groupId, permissionId],
-      );
-      return r.affectedRows > 0;
-    },
+      upsertPermission(
+        prisma.catalog_group_permissions,
+        "group_id",
+        groupId,
+        p,
+      ),
+    listGroupPermissions: (groupId) =>
+      run(async () =>
+        (
+          await prisma.catalog_group_permissions.findMany({
+            where: { group_id: groupId },
+            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+          })
+        ).map(toPermission),
+      ),
+    findGroupPermission: (groupId, memberId) =>
+      run(async () => {
+        const r = await prisma.catalog_group_permissions.findFirst({
+          where: { group_id: groupId, member_id: memberId },
+        });
+        return r ? toPermission(r) : undefined;
+      }),
+    deleteGroupPermission: (groupId, permissionId) =>
+      run(async () => {
+        const r = await prisma.catalog_group_permissions.deleteMany({
+          where: { group_id: groupId, id: permissionId },
+        });
+        return r.count > 0;
+      }),
 
     resolvePendingLogin: async (githubLogin, memberId) => {
       let n = 0;
-      for (const table of [
-        "catalog_app_permissions",
-        "catalog_group_permissions",
-      ] as const) {
+      const claim = async (delegate: PermDelegate) => {
         // Claim row by row: a claim colliding with an existing explicit
         // permission (unique parent+member) drops the pending row instead.
-        const rows = await db.query<{ id: string }>(
-          `select id from ${table} where pending_github_login = ?`,
-          [githubLogin],
-        );
+        const rows = await (
+          delegate as unknown as {
+            findMany(args: {
+              where: Record<string, unknown>;
+              select: { id: true };
+            }): Promise<Array<{ id: string }>>;
+          }
+        ).findMany({
+          where: { pending_github_login: githubLogin },
+          select: { id: true },
+        });
         for (const row of rows) {
           try {
-            const r = await db.execute(
-              `update ${table} set member_id = ?, pending_github_login = null
-               where id = ? and pending_github_login = ?`,
-              [memberId, row.id, githubLogin],
-            );
-            n += r.affectedRows;
+            const r = await delegate.updateMany({
+              where: { id: row.id, pending_github_login: githubLogin },
+              data: { member_id: memberId, pending_github_login: null },
+            });
+            n += r.count;
           } catch (err) {
-            if (err instanceof AppError && err.code === "conflict") {
-              const r = await db.execute(`delete from ${table} where id = ?`, [
-                row.id,
-              ]);
-              n += r.affectedRows;
-            } else throw err;
+            if (!isConflict(err)) translatePrismaError(err);
+            const d = await (
+              delegate as unknown as {
+                deleteMany(args: {
+                  where: Record<string, unknown>;
+                }): Promise<{ count: number }>;
+              }
+            ).deleteMany({ where: { id: row.id } });
+            n += d.count;
           }
         }
-      }
-      for (const table of ["catalog_groups", "catalog_apps"] as const) {
-        const r = await db.execute(
-          `update ${table} set owner_id = ?, pending_owner_login = null
-           where pending_owner_login = ?`,
-          [memberId, githubLogin],
-        );
-        n += r.affectedRows;
-      }
-      return n;
+      };
+      return run(async () => {
+        await claim(prisma.catalog_app_permissions);
+        await claim(prisma.catalog_group_permissions);
+        const g = await prisma.catalog_groups.updateMany({
+          where: { pending_owner_login: githubLogin },
+          data: { owner_id: memberId, pending_owner_login: null },
+        });
+        n += g.count;
+        const a = await prisma.catalog_apps.updateMany({
+          where: { pending_owner_login: githubLogin },
+          data: { owner_id: memberId, pending_owner_login: null },
+        });
+        n += a.count;
+        return n;
+      });
     },
 
-    listMemberPermissions: async (memberId) => {
-      const apps = await db.query<RawPermission & { app_id: string }>(
-        `select app_id, ${PERM_COLS} from catalog_app_permissions where member_id = ? order by created_at, id`,
-        [memberId],
-      );
-      const groups = await db.query<RawPermission & { group_id: string }>(
-        `select group_id, ${PERM_COLS} from catalog_group_permissions where member_id = ? order by created_at, id`,
-        [memberId],
-      );
-      return {
-        apps: apps.map((r) => ({ ...toPermission(r), appId: r.app_id })),
-        groups: groups.map((r) => ({
-          ...toPermission(r),
-          groupId: r.group_id,
-        })),
-      };
-    },
+    listMemberPermissions: (memberId) =>
+      run(async () => {
+        const apps = await prisma.catalog_app_permissions.findMany({
+          where: { member_id: memberId },
+          orderBy: [{ created_at: "asc" }, { id: "asc" }],
+        });
+        const groups = await prisma.catalog_group_permissions.findMany({
+          where: { member_id: memberId },
+          orderBy: [{ created_at: "asc" }, { id: "asc" }],
+        });
+        return {
+          apps: apps.map((r) => ({ ...toPermission(r), appId: r.app_id })),
+          groups: groups.map((r) => ({
+            ...toPermission(r),
+            groupId: r.group_id,
+          })),
+        };
+      }),
 
-    insertPendingUpload: async (u) => {
-      await db.execute(
-        `insert into catalog_pending_uploads (id, app_id, platform, tags_json, filename, status, created_at, expires_at)
-         values (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-        [
-          u.id,
-          u.appId,
-          u.platform,
-          u.tags === undefined || u.tags === null
-            ? null
-            : JSON.stringify(u.tags),
-          u.filename,
-          u.createdAt,
-          u.expiresAt,
-        ],
-      );
-    },
-    findPendingUpload: async (id) => {
-      const [r] = await db.query<RawPendingUpload>(
-        `select ${UPLOAD_COLS} from catalog_pending_uploads where id = ?`,
-        [id],
-      );
-      return r && toUpload(r);
-    },
-    updatePendingUpload: async (id, patch) => {
-      const sets: string[] = [];
-      const params: Array<string | number | null> = [];
-      const set = (col: string, v: string | null | undefined) => {
-        if (v === undefined) return;
-        sets.push(`${col} = ?`);
-        params.push(v);
-      };
-      set("status", patch.status);
-      set("object_key", patch.objectKey);
-      set("etag", patch.etag);
-      set("artifact_id", patch.artifactId);
-      if (sets.length === 0) return false;
-      const r = await db.execute(
-        `update catalog_pending_uploads set ${sets.join(", ")} where id = ?`,
-        [...params, id],
-      );
-      if (r.affectedRows > 0) return true;
-      // mysql2 counts *changed* rows: an identical retry (duplicate S3 event,
-      // commit fallback racing the event) matches but changes nothing.
-      const [row] = await db.query<{ id: string }>(
-        `select id from catalog_pending_uploads where id = ?`,
-        [id],
-      );
-      return row !== undefined;
-    },
-    deleteExpiredUploads: async (now) => {
-      const r = await db.execute(
-        `delete from catalog_pending_uploads where expires_at <= ? and status <> 'completed'`,
-        [now],
-      );
-      return r.affectedRows;
-    },
+    insertPendingUpload: (u) =>
+      run(async () => {
+        await prisma.catalog_pending_uploads.create({
+          data: {
+            id: u.id,
+            app_id: u.appId,
+            platform: u.platform,
+            tags_json: u.tags == null ? null : JSON.stringify(u.tags),
+            filename: u.filename,
+            status: "pending",
+            created_at: u.createdAt,
+            expires_at: u.expiresAt,
+          },
+        });
+      }),
+    findPendingUpload: (id) =>
+      run(async () => {
+        const r = await prisma.catalog_pending_uploads.findUnique({
+          where: { id },
+        });
+        return r ? toUpload(r) : undefined;
+      }),
+    updatePendingUpload: (id, patch) =>
+      run(async () => {
+        const data: Record<string, string | null> = {};
+        if (patch.status !== undefined) data.status = patch.status;
+        if (patch.objectKey !== undefined) data.object_key = patch.objectKey;
+        if (patch.etag !== undefined) data.etag = patch.etag;
+        if (patch.artifactId !== undefined) data.artifact_id = patch.artifactId;
+        if (Object.keys(data).length === 0) return false;
+        const r = await prisma.catalog_pending_uploads.updateMany({
+          where: { id },
+          data,
+        });
+        if (r.count > 0) return true;
+        // An identical retry (duplicate S3 event, commit fallback racing the
+        // event) may count as unchanged depending on driver flags; re-check.
+        const row = await prisma.catalog_pending_uploads.findUnique({
+          where: { id },
+          select: { id: true },
+        });
+        return row !== null;
+      }),
+    deleteExpiredUploads: (now) =>
+      run(async () => {
+        const r = await prisma.catalog_pending_uploads.deleteMany({
+          where: { expires_at: { lte: now }, status: { not: "completed" } },
+        });
+        return r.count;
+      }),
   };
 }
 

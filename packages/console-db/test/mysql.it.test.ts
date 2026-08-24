@@ -3,10 +3,9 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
-  createMysqlDb,
-  migrateConsoleDb,
+  createPrismaClient,
   mysqlOptionsFromEnv,
-  type Db,
+  type PrismaClient,
 } from "../src/index.js";
 import { loadItEnv } from "./itEnv.js";
 
@@ -29,26 +28,32 @@ const base = {
 };
 
 describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
-  let db: Db | undefined;
-  let ro: Db | undefined;
+  let db: PrismaClient | undefined;
+  let ro: PrismaClient | undefined;
   const id = `it_${process.pid}_${Date.now()}`;
   const memberId = `${id}_m`;
   afterAll(async () => {
-    await db?.execute(`delete from votes where event_id = ?`, [id]);
-    await db?.execute(`delete from proposals where event_id = ?`, [id]);
-    await db?.execute(`delete from events where id = ?`, [id]);
-    await db?.execute(`delete from channels where id = ?`, [id]);
-    await db?.execute(`delete from catalog_apps where id like ?`, [`${id}%`]);
-    await db?.execute(`delete from catalog_groups where id = ?`, [id]);
-    await db?.execute(`delete from members where id = ?`, [memberId]);
-    await db?.close();
-    await ro?.close();
+    const exec = (sql: string, p: string) =>
+      db?.$executeRawUnsafe(sql, p) ?? Promise.resolve(0);
+    await exec(`delete from votes where event_id = ?`, id);
+    await exec(`delete from proposals where event_id = ?`, id);
+    await exec(`delete from events where id = ?`, id);
+    await exec(`delete from channels where id = ?`, id);
+    await exec(`delete from catalog_apps where id like ?`, `${id}%`);
+    await exec(`delete from catalog_groups where id = ?`, id);
+    await exec(`delete from members where id = ?`, memberId);
+    await db?.$disconnect();
+    await ro?.$disconnect();
   });
 
-  it("migrates, writes as console, reads as auth (SELECT-only)", async () => {
-    db = createMysqlDb(mysqlOptionsFromEnv(env));
-    expect(await migrateConsoleDb(db)).toBeGreaterThanOrEqual(1);
+  it("writes as console (schema managed by prisma migrate), reads as auth (SELECT-only)", async () => {
+    db = createPrismaClient(mysqlOptionsFromEnv(env));
     const repo = createConsoleDb(db);
+    // The deployed schema is the prisma baseline: the migration table exists.
+    const applied = await db.$queryRawUnsafe<Array<{ n: bigint | number }>>(
+      `select count(*) as n from _prisma_migrations where finished_at is not null and rolled_back_at is null`,
+    );
+    expect(Number(applied[0]?.n ?? 0)).toBeGreaterThanOrEqual(1);
     // github_id -1 is reserved for this test so it never collides with real
     // members or the debug seed (github_id 0).
     const ownerId = await repo.upsertMember({
@@ -69,12 +74,7 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
     expect(
-      (
-        await db.query<{ github_login: string }>(
-          `select github_login from members where id = ?`,
-          [memberId],
-        )
-      )[0]?.github_login,
+      (await db.members.findUnique({ where: { id: memberId } }))?.github_login,
     ).toBe("it");
     await repo.insertChannel({ ...base, id, ownerId });
     await expect(repo.findChannelRow(id)).resolves.toMatchObject({
@@ -84,16 +84,6 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     await expect(
       repo.insertChannel({ ...base, id, name: "dup" }),
     ).rejects.toMatchObject({ code: "conflict" });
-    await expect(
-      db.transaction(async (tx) => {
-        await tx.execute(`update channels set name = ? where id = ?`, [
-          "tx",
-          id,
-        ]);
-        throw new Error("rollback");
-      }),
-    ).rejects.toThrow("rollback");
-    expect((await repo.findChannelRow(id))?.name).toBe("it");
 
     // events round-trip: conditional transition, upsert vote, cascade on delete
     const events = createEventsDb(db);
@@ -216,7 +206,7 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     expect(await catalog.deleteGroup(id)).toBe(true);
 
     if (reader) {
-      ro = createMysqlDb(mysqlOptionsFromEnv(reader));
+      ro = createPrismaClient(mysqlOptionsFromEnv(reader));
       const roRepo = createConsoleDb(ro);
       expect((await roRepo.findAuthChannel(id))?.config.audience).toBe("it");
       await expect(

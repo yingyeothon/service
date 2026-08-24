@@ -1,5 +1,12 @@
 import { AppError, type ChannelKind, type Role } from "@yyt/core";
-import type { Db } from "./db.js";
+import {
+  isConflict,
+  num,
+  nul,
+  run,
+  translatePrismaError,
+  type PrismaClient,
+} from "./prisma.js";
 
 export interface OAuthAppPublic {
   clientId: string;
@@ -211,49 +218,6 @@ export interface ConsoleDb {
   insertAudit(a: AuditInput): Promise<void>;
 }
 
-interface RawMember {
-  id: string;
-  github_id: number | string;
-  github_login: string;
-  role: string;
-  created_at: number | string;
-  approved_at: number | string | null;
-  approved_by: string | null;
-}
-
-interface RawToken {
-  id: string;
-  member_id: string;
-  token_hash: string;
-  name: string;
-  created_at: number | string;
-  last_used_at: number | string | null;
-  revoked_at: number | string | null;
-}
-
-interface RawRow {
-  id: string;
-  kind: string;
-  owner_id: string;
-  name: string;
-  config_json: string;
-  secret_json: string;
-  created_at: number | string;
-  expires_at: number | string;
-  disabled_at: number | string | null;
-  deleted_at: number | string | null;
-}
-
-const CHANNEL_COLS = `id, kind, owner_id, name, config_json, secret_json,
-  created_at, expires_at, disabled_at, deleted_at`;
-const SELECT = `select ${CHANNEL_COLS} from channels where id = ?`;
-const MEMBER_COLS = `id, github_id, github_login, role, created_at, approved_at, approved_by`;
-const TOKEN_COLS = `id, member_id, token_hash, name, created_at, last_used_at, revoked_at`;
-
-const num = (v: number | string): number => Number(v);
-const nul = (v: number | string | null): number | null =>
-  v === null ? null : Number(v);
-
 export function toAuthChannel(row: ChannelRow): AuthChannel | undefined {
   if (row.kind !== "auth") return undefined;
   return {
@@ -293,8 +257,21 @@ export function toTopicChannel(row: ChannelRow): TopicChannel | undefined {
   };
 }
 
-export function createConsoleDb(db: Db): ConsoleDb {
-  const toRow = (r: RawRow): ChannelRow => ({
+type ChannelModel = {
+  id: string;
+  kind: string;
+  owner_id: string;
+  name: string;
+  config_json: string;
+  secret_json: string;
+  created_at: bigint | number;
+  expires_at: bigint | number;
+  disabled_at: bigint | number | null;
+  deleted_at: bigint | number | null;
+};
+
+export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
+  const toRow = (r: ChannelModel): ChannelRow => ({
     id: r.id,
     kind: r.kind as ChannelKind,
     ownerId: r.owner_id,
@@ -306,7 +283,15 @@ export function createConsoleDb(db: Db): ConsoleDb {
     disabledAt: nul(r.disabled_at),
     deletedAt: nul(r.deleted_at),
   });
-  const toMember = (r: RawMember): MemberRow => ({
+  const toMember = (r: {
+    id: string;
+    github_id: bigint | number;
+    github_login: string;
+    role: string;
+    created_at: bigint | number;
+    approved_at: bigint | number | null;
+    approved_by: string | null;
+  }): MemberRow => ({
     id: r.id,
     githubId: num(r.github_id),
     githubLogin: r.github_login,
@@ -315,7 +300,15 @@ export function createConsoleDb(db: Db): ConsoleDb {
     approvedAt: nul(r.approved_at),
     approvedBy: r.approved_by,
   });
-  const toToken = (r: RawToken): ApiTokenRow => ({
+  const toToken = (r: {
+    id: string;
+    member_id: string;
+    token_hash: string;
+    name: string;
+    created_at: bigint | number;
+    last_used_at: bigint | number | null;
+    revoked_at: bigint | number | null;
+  }): ApiTokenRow => ({
     id: r.id,
     memberId: r.member_id,
     tokenHash: r.token_hash,
@@ -324,163 +317,173 @@ export function createConsoleDb(db: Db): ConsoleDb {
     lastUsedAt: nul(r.last_used_at),
     revokedAt: nul(r.revoked_at),
   });
-  const findChannelRow = async (id: string) => {
-    const [r] = await db.query<RawRow>(SELECT, [id]);
-    if (!r || r.deleted_at !== null) return undefined;
-    return toRow(r);
-  };
+  const findChannelRow = (id: string) =>
+    run(async () => {
+      const r = await prisma.channels.findUnique({ where: { id } });
+      if (!r || r.deleted_at !== null) return undefined;
+      return toRow(r);
+    });
   return {
-    findMember: async (id) => {
-      const [r] = await db.query<RawMember>(
-        `select ${MEMBER_COLS} from members where id = ?`,
-        [id],
-      );
-      return r && toMember(r);
-    },
-    listMembers: async () =>
-      (
-        await db.query<RawMember>(
-          `select ${MEMBER_COLS} from members order by created_at, id`,
-        )
-      ).map(toMember),
-    setMemberRole: async (id, role, approval) => {
-      const r =
-        approval === undefined
-          ? await db.execute(`update members set role = ? where id = ?`, [
-              role,
-              id,
-            ])
-          : await db.execute(
-              `update members set role = ?, approved_at = ?, approved_by = ? where id = ?`,
-              [role, approval?.at ?? null, approval?.by ?? null, id],
-            );
-      return r.affectedRows > 0;
-    },
-    insertApiToken: async (t) => {
-      await db.execute(
-        `insert into api_tokens (id, member_id, token_hash, name, created_at) values (?, ?, ?, ?, ?)`,
-        [t.id, t.memberId, t.tokenHash, t.name, t.createdAt],
-      );
-    },
-    findApiTokenByHash: async (tokenHash) => {
-      const [r] = await db.query<RawToken>(
-        `select ${TOKEN_COLS} from api_tokens where token_hash = ? and revoked_at is null`,
-        [tokenHash],
-      );
-      return r && toToken(r);
-    },
-    listApiTokens: async (memberId) =>
-      (
-        await db.query<RawToken>(
-          `select ${TOKEN_COLS} from api_tokens where member_id = ? and revoked_at is null order by created_at, id`,
-          [memberId],
-        )
-      ).map(toToken),
-    revokeApiToken: async (id, memberId, at) => {
-      const r = await db.execute(
-        `update api_tokens set revoked_at = ? where id = ? and member_id = ? and revoked_at is null`,
-        [at, id, memberId],
-      );
-      return r.affectedRows > 0;
-    },
-    touchApiToken: async (id, at) => {
-      await db.execute(`update api_tokens set last_used_at = ? where id = ?`, [
-        at,
-        id,
-      ]);
-    },
-    listChannels: async (filter = {}) => {
-      const where = ["deleted_at is null"];
-      const params: Array<string> = [];
-      if (filter.kind) {
-        where.push("kind = ?");
-        params.push(filter.kind);
-      }
-      if (filter.ownerId) {
-        where.push("owner_id = ?");
-        params.push(filter.ownerId);
-      }
-      const rows = await db.query<RawRow>(
-        `select ${CHANNEL_COLS} from channels where ${where.join(" and ")} order by created_at desc, id desc`,
-        params,
-      );
-      return rows.map(toRow);
-    },
-    updateChannel: async (id, patch) => {
-      const sets: string[] = [];
-      const params: Array<string | number | null> = [];
-      if (patch.name !== undefined) {
-        sets.push("name = ?");
-        params.push(patch.name);
-      }
-      if (patch.config !== undefined) {
-        sets.push("config_json = ?");
-        params.push(JSON.stringify(patch.config));
-      }
-      if (patch.secret !== undefined) {
-        sets.push("secret_json = ?");
-        params.push(JSON.stringify(patch.secret));
-      }
-      if (patch.expiresAt !== undefined) {
-        sets.push("expires_at = ?");
-        params.push(patch.expiresAt);
-      }
-      if (patch.disabledAt !== undefined) {
-        sets.push("disabled_at = ?");
-        params.push(patch.disabledAt);
-      }
-      if (patch.deletedAt !== undefined) {
-        sets.push("deleted_at = ?");
-        params.push(patch.deletedAt);
-      }
-      if (sets.length === 0) {
-        return (await findChannelRow(id)) !== undefined;
-      }
-      const r = await db.execute(
-        `update channels set ${sets.join(", ")} where id = ? and deleted_at is null`,
-        [...params, id],
-      );
-      return r.affectedRows > 0;
-    },
-    expireChannels: async (now, graceSec) =>
-      db.transaction(async (tx) => {
-        const toDisable = (
-          await tx.query<{ id: string }>(
-            `select id from channels where deleted_at is null and disabled_at is null and expires_at <= ?`,
-            [now],
-          )
-        ).map((r) => r.id);
-        if (toDisable.length > 0)
-          await tx.execute(
-            `update channels set disabled_at = ? where deleted_at is null and disabled_at is null and expires_at <= ?`,
-            [now, now],
-          );
-        const toDelete = (
-          await tx.query<{ id: string }>(
-            `select id from channels where deleted_at is null and disabled_at is not null and disabled_at + ? < ?`,
-            [graceSec, now],
-          )
-        ).map((r) => r.id);
-        if (toDelete.length > 0)
-          await tx.execute(
-            `update channels set deleted_at = ?, secret_json = '{}' where deleted_at is null and disabled_at is not null and disabled_at + ? < ?`,
-            [now, graceSec, now],
-          );
-        return { disabled: toDisable, deleted: toDelete };
+    findMember: (id) =>
+      run(async () => {
+        const r = await prisma.members.findUnique({ where: { id } });
+        return r ? toMember(r) : undefined;
       }),
-    insertAudit: async (a) => {
-      await db.execute(
-        `insert into audit_log (id, actor_id, action, target, at, detail_json) values (?, ?, ?, ?, ?, ?)`,
-        [
-          a.id,
-          a.actorId,
-          a.action,
-          a.target,
-          a.at,
-          a.detail === undefined ? null : JSON.stringify(a.detail),
-        ],
-      );
+    listMembers: () =>
+      run(async () =>
+        (
+          await prisma.members.findMany({
+            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+          })
+        ).map(toMember),
+      ),
+    setMemberRole: (id, role, approval) =>
+      run(async () => {
+        const data =
+          approval === undefined
+            ? { role }
+            : {
+                role,
+                approved_at: approval?.at ?? null,
+                approved_by: approval?.by ?? null,
+              };
+        const r = await prisma.members.updateMany({ where: { id }, data });
+        return r.count > 0;
+      }),
+    insertApiToken: (t) =>
+      run(async () => {
+        await prisma.api_tokens.create({
+          data: {
+            id: t.id,
+            member_id: t.memberId,
+            token_hash: t.tokenHash,
+            name: t.name,
+            created_at: t.createdAt,
+          },
+        });
+      }),
+    findApiTokenByHash: (tokenHash) =>
+      run(async () => {
+        const r = await prisma.api_tokens.findFirst({
+          where: { token_hash: tokenHash, revoked_at: null },
+        });
+        return r ? toToken(r) : undefined;
+      }),
+    listApiTokens: (memberId) =>
+      run(async () =>
+        (
+          await prisma.api_tokens.findMany({
+            where: { member_id: memberId, revoked_at: null },
+            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+          })
+        ).map(toToken),
+      ),
+    revokeApiToken: (id, memberId, at) =>
+      run(async () => {
+        const r = await prisma.api_tokens.updateMany({
+          where: { id, member_id: memberId, revoked_at: null },
+          data: { revoked_at: at },
+        });
+        return r.count > 0;
+      }),
+    touchApiToken: (id, at) =>
+      run(async () => {
+        await prisma.api_tokens.updateMany({
+          where: { id },
+          data: { last_used_at: at },
+        });
+      }),
+    listChannels: (filter = {}) =>
+      run(async () =>
+        (
+          await prisma.channels.findMany({
+            where: {
+              deleted_at: null,
+              ...(filter.kind ? { kind: filter.kind } : {}),
+              ...(filter.ownerId ? { owner_id: filter.ownerId } : {}),
+            },
+            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+          })
+        ).map(toRow),
+      ),
+    updateChannel: async (id, patch) => {
+      const data: Record<string, string | number | null> = {};
+      if (patch.name !== undefined) data.name = patch.name;
+      if (patch.config !== undefined)
+        data.config_json = JSON.stringify(patch.config);
+      if (patch.secret !== undefined)
+        data.secret_json = JSON.stringify(patch.secret);
+      if (patch.expiresAt !== undefined) data.expires_at = patch.expiresAt;
+      if (patch.disabledAt !== undefined) data.disabled_at = patch.disabledAt;
+      if (patch.deletedAt !== undefined) data.deleted_at = patch.deletedAt;
+      if (Object.keys(data).length === 0)
+        return (await findChannelRow(id)) !== undefined;
+      return run(async () => {
+        const r = await prisma.channels.updateMany({
+          where: { id, deleted_at: null },
+          data,
+        });
+        return r.count > 0;
+      });
     },
+    expireChannels: (now, graceSec) =>
+      run(() =>
+        prisma.$transaction(
+          async (tx) => {
+            const disable = {
+              deleted_at: null,
+              disabled_at: null,
+              expires_at: { lte: now },
+            };
+            const toDisable = (
+              await tx.channels.findMany({
+                where: disable,
+                select: { id: true },
+              })
+            ).map((r) => r.id);
+            if (toDisable.length > 0)
+              await tx.channels.updateMany({
+                where: disable,
+                data: { disabled_at: now },
+              });
+            // `disabled_at + graceSec < now` has no Prisma operator; compare on
+            // the fetched value and update by id (single-writer cron, no race).
+            const cutoff = now - graceSec;
+            const toDelete = (
+              await tx.channels.findMany({
+                where: {
+                  deleted_at: null,
+                  disabled_at: { not: null, lt: cutoff },
+                },
+                select: { id: true },
+              })
+            ).map((r) => r.id);
+            if (toDelete.length > 0)
+              await tx.channels.updateMany({
+                where: { id: { in: toDelete }, deleted_at: null },
+                data: { deleted_at: now, secret_json: "{}" },
+              });
+            return { disabled: toDisable, deleted: toDelete };
+            // Daily sweep can touch many rows; give the interactive transaction
+            // more than Prisma's 5s default (statements are capped at 5s each).
+          },
+          { maxWait: 2000, timeout: 15000 },
+        ),
+      ),
+    insertAudit: (a) =>
+      run(async () => {
+        await prisma.audit_log.create({
+          data: {
+            id: a.id,
+            actor_id: a.actorId,
+            action: a.action,
+            target: a.target,
+            at: a.at,
+            detail_json:
+              a.detail === undefined ? null : JSON.stringify(a.detail),
+          },
+        });
+      }),
     findChannelRow,
     findAuthChannel: async (id) => {
       const row = await findChannelRow(id);
@@ -494,38 +497,64 @@ export function createConsoleDb(db: Db): ConsoleDb {
       const row = await findChannelRow(id);
       return row && toTopicChannel(row);
     },
-    insertChannel: async (c) => {
-      await db.execute(
-        `insert into channels (id, kind, owner_id, name, config_json, secret_json, created_at, expires_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          c.id,
-          c.kind,
-          c.ownerId,
-          c.name,
-          JSON.stringify(c.config),
-          JSON.stringify(c.secret),
-          c.createdAt,
-          c.expiresAt,
-        ],
-      );
-    },
-    upsertMember: async (m) => {
-      await db.execute(
-        `insert into members (id, github_id, github_login, role, created_at)
-         values (?, ?, ?, ?, ?)
-         on duplicate key update
-           github_login = if(github_id = values(github_id), values(github_login), github_login)`,
-        [m.id, m.githubId, m.githubLogin, m.role, m.createdAt],
-      );
-      const [row] = await db.query<{ id: string }>(
-        `select id from members where github_id = ?`,
-        [m.githubId],
-      );
-      // The id exists but is bound to a different github_id.
-      if (!row)
-        throw new AppError("conflict", "member id bound to another github id");
-      return row.id;
-    },
+    insertChannel: (c) =>
+      run(async () => {
+        await prisma.channels.create({
+          data: {
+            id: c.id,
+            kind: c.kind,
+            owner_id: c.ownerId,
+            name: c.name,
+            config_json: JSON.stringify(c.config),
+            secret_json: JSON.stringify(c.secret),
+            created_at: c.createdAt,
+            expires_at: c.expiresAt,
+          },
+        });
+      }),
+    upsertMember: (m) =>
+      run(async () => {
+        // Same contract as the old conditional `on duplicate key` insert: an
+        // existing github_id only refreshes the login and wins the id; an id
+        // collision under another github_id is a conflict.
+        const existing = await prisma.members.findUnique({
+          where: { github_id: m.githubId },
+        });
+        if (existing) {
+          if (existing.github_login !== m.githubLogin)
+            await prisma.members.updateMany({
+              where: { github_id: m.githubId },
+              data: { github_login: m.githubLogin },
+            });
+          return existing.id;
+        }
+        try {
+          await prisma.members.create({
+            data: {
+              id: m.id,
+              github_id: m.githubId,
+              github_login: m.githubLogin,
+              role: m.role,
+              created_at: m.createdAt,
+            },
+          });
+          return m.id;
+        } catch (e) {
+          // Only a unique-key conflict means "id exists / racing insert";
+          // everything else (outage, timeout) must stay retryable.
+          if (!isConflict(e)) translatePrismaError(e);
+          // The id exists but is bound to a different github_id (or a racing
+          // insert of the same github_id won; re-read resolves both).
+          const winner = await prisma.members.findUnique({
+            where: { github_id: m.githubId },
+          });
+          if (winner) return winner.id;
+          if (e instanceof AppError) throw e;
+          throw new AppError(
+            "conflict",
+            "member id bound to another github id",
+          );
+        }
+      }),
   };
 }

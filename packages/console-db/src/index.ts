@@ -1,16 +1,9 @@
 export {
-  createMysqlDb,
+  createPrismaClient,
   mysqlOptionsFromEnv,
-  type Db,
   type MysqlOptions,
-  type Row,
-  type SqlParam,
-} from "./db.js";
-export {
-  CONSOLE_MIGRATIONS,
-  migrateConsoleDb,
-  type MigrationStep,
-} from "./schema.js";
+  type PrismaClient,
+} from "./prisma.js";
 export {
   createConsoleDb,
   toAuthChannel,

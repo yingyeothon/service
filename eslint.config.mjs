@@ -10,6 +10,8 @@ export default defineConfig(
     "**/node_modules/**",
     "**/.serverless/**",
     "**/.esbuild/**",
+    // Prisma-generated client (checked ignored, not committed style).
+    "**/src/generated/**",
     // Plain CommonJS tool config (no TS project).
     "**/postcss.config.cjs",
     "cli/**",
@@ -26,6 +28,7 @@ export default defineConfig(
           allowDefaultProject: [
             "*.mjs",
             "*.ts",
+            "packages/*/prisma.config.ts",
             "scripts/*.mjs",
             "scripts/smoke/*.mjs",
           ],

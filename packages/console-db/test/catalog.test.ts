@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  createCatalogDb,
-  createMemoryCatalogDb,
-  type CatalogDb,
-} from "../src/index.js";
-import { fakeDb } from "./fakeDb.js";
+import { createMemoryCatalogDb, type CatalogDb } from "../src/index.js";
 
 const grp = (id: string, at = 1) => ({
   id,
@@ -31,9 +26,9 @@ const art = (id: string, appId: string, at = 1) => ({
 });
 
 /** Behaviour shared by the fake (and, via routes, the real repository). */
-function catalogContract(make: () => CatalogDb) {
+export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
   it("groups: insert, unique name, list sorted, update, delete", async () => {
-    const db = make();
+    const db = await make();
     await db.insertGroup(grp("g2"));
     await db.insertGroup(grp("g1"));
     await expect(db.insertGroup(grp("g2"))).rejects.toMatchObject({
@@ -54,7 +49,7 @@ function catalogContract(make: () => CatalogDb) {
   });
 
   it("apps: defaults, group narrow, update settings, delete cascades", async () => {
-    const db = make();
+    const db = await make();
     await db.insertGroup(grp("g1"));
     await db.insertApp({ ...app("a1"), groupId: "g1" });
     await db.insertApp(app("a2"));
@@ -102,7 +97,7 @@ function catalogContract(make: () => CatalogDb) {
   });
 
   it("artifacts: newest first, platform narrow, tags roundtrip", async () => {
-    const db = make();
+    const db = await make();
     await db.insertApp(app("a1"));
     await db.insertArtifact(art("f1", "a1", 1));
     await db.insertArtifact({
@@ -132,7 +127,7 @@ function catalogContract(make: () => CatalogDb) {
   });
 
   it("permissions: upsert level, one subject only, delete scoped to parent", async () => {
-    const db = make();
+    const db = await make();
     await db.insertApp(app("a1"));
     await db.insertGroup(grp("g1"));
     await expect(
@@ -179,7 +174,7 @@ function catalogContract(make: () => CatalogDb) {
   });
 
   it("names and pending logins compare case-insensitively (utf8mb4 ci)", async () => {
-    const db = make();
+    const db = await make();
     await db.insertGroup(grp("g1"));
     await expect(
       db.insertGroup({ ...grp("g9"), name: "G-G1" }),
@@ -191,7 +186,7 @@ function catalogContract(make: () => CatalogDb) {
   });
 
   it("listMemberPermissions returns both scopes in one call", async () => {
-    const db = make();
+    const db = await make();
     await db.insertApp(app("a1"));
     await db.insertGroup(grp("g1"));
     await db.upsertAppPermission("a1", {
@@ -226,7 +221,7 @@ function catalogContract(make: () => CatalogDb) {
   });
 
   it("resolvePendingLogin claims permissions and owners; explicit wins", async () => {
-    const db = make();
+    const db = await make();
     await db.insertGroup({
       ...grp("g1"),
       ownerId: null,
@@ -274,7 +269,7 @@ function catalogContract(make: () => CatalogDb) {
   });
 
   it("pending uploads: lifecycle and expiry sweep", async () => {
-    const db = make();
+    const db = await make();
     await db.insertApp(app("a1"));
     await db.insertPendingUpload({
       id: "u1",
@@ -353,114 +348,5 @@ describe("memory catalog db", () => {
         createdAt: 1,
       }),
     ).rejects.toMatchObject({ code: "unavailable" });
-  });
-});
-
-describe("mysql catalog db (sql shape)", () => {
-  it("builds patch updates and maps rows", async () => {
-    const raw = fakeDb();
-    const db = createCatalogDb(raw);
-    expect(
-      await db.updateApp("a1", { debugOnly: true, slackHookUrl: null }, 9),
-    ).toBe(true);
-    const last = raw.calls.at(-1)!;
-    expect(last.sql).toMatch(
-      /update catalog_apps set updated_at = \?, debug_only = \?, slack_hook_url = \? where id = \?/,
-    );
-    expect(last.params).toEqual([9, 1, null, "a1"]);
-
-    raw.next([
-      {
-        id: "a1",
-        name: "n",
-        path: "p",
-        debug_only: 1,
-        description: null,
-        group_id: null,
-        owner_id: null,
-        pending_owner_login: "lee",
-        slack_hook_url: null,
-        slack_channel: null,
-        message_template: null,
-        keep_recent_versions: "3",
-        created_at: "1",
-        updated_at: "2",
-      },
-    ]);
-    expect(await db.findApp("a1")).toMatchObject({
-      debugOnly: true,
-      keepRecentVersions: 3,
-      pendingOwnerLogin: "lee",
-      createdAt: 1,
-      updatedAt: 2,
-    });
-
-    raw.next([
-      {
-        id: "f1",
-        app_id: "a1",
-        platform: "android",
-        url: "u",
-        object_key: null,
-        size: "42",
-        hash: null,
-        tags_json: `{"version":"1.0.0"}`,
-        created_at: "3",
-      },
-    ]);
-    expect(await db.findArtifact("f1")).toMatchObject({
-      size: 42,
-      tags: { version: "1.0.0" },
-    });
-    raw.next([
-      {
-        id: "f2",
-        app_id: "a1",
-        platform: "ios",
-        url: "u",
-        object_key: null,
-        size: null,
-        hash: null,
-        tags_json: "not-json",
-        created_at: "3",
-      },
-    ]);
-    expect((await db.findArtifact("f2"))?.tags).toEqual({});
-  });
-
-  it("upserts permissions with on-duplicate and one-subject guard", async () => {
-    const raw = fakeDb();
-    const db = createCatalogDb(raw);
-    await db.upsertAppPermission("a1", {
-      id: "p1",
-      memberId: "m1",
-      level: "edit",
-      createdAt: 1,
-    });
-    const call = raw.calls.at(-1)!;
-    expect(call.sql).toMatch(/insert into catalog_app_permissions/);
-    expect(call.sql).not.toMatch(/on duplicate key/);
-    expect(call.params).toEqual(["p1", "a1", "m1", null, "edit", 1]);
-    await expect(
-      db.upsertGroupPermission("g1", { id: "p2", level: "read", createdAt: 1 }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-  });
-
-  it("resolvePendingLogin claims rows and drops conflicts", async () => {
-    const raw = fakeDb();
-    const db = createCatalogDb(raw);
-    raw.next([{ id: "p1" }]); // app perm pending rows
-    raw.next([]); // group perm pending rows
-    expect(await db.resolvePendingLogin("lee", "m9")).toBe(3);
-    const sqls = raw.calls.map((c) => c.sql);
-    expect(
-      sqls.some((s) => /update catalog_app_permissions set member_id/.test(s)),
-    ).toBe(true);
-    expect(sqls.some((s) => /update catalog_groups set owner_id/.test(s))).toBe(
-      true,
-    );
-    expect(sqls.some((s) => /update catalog_apps set owner_id/.test(s))).toBe(
-      true,
-    );
   });
 });
