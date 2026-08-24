@@ -10,9 +10,12 @@ regex = '''(?i)(?:password|secret|token|api[_-]?key|debug[_-]?key)[ \t]*[=:][ \t
 secretGroup = 1
 entropy = 3.0
 [rules.allowlist]
+regexTarget = "line"
 regexes = [
   '''(?i)(placeholder|example|changeme|xxx+|\$\{|<[a-z-]+>)''',
   '''[=:][ \t]*[A-Z][A-Za-z]*(Secret|Token|Key|Password)\b''', # TypeScript type annotations
+  '''[=:][ \t]*keystoreProperties\[''',                        # Gradle: reads the gitignored key.properties
+  '''(?i)token[ \t]*:[ \t]*[a-z][A-Za-z0-9_]*(\?\.|\.)''',     # Dart named arg fed from an identifier (cancelToken: controller?.token)
 ]
 
 [allowlist]
