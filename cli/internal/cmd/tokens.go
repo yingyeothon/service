@@ -19,9 +19,10 @@ type token struct {
 func newTokens(a *App) *cobra.Command {
 	c := &cobra.Command{Use: "tokens", Short: "Manage your API tokens"}
 	c.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List your API tokens (plaintext is never shown)",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List your API tokens (plaintext is never shown)",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {

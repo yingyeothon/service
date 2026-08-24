@@ -217,9 +217,10 @@ func newCatalog(a *App) *cobra.Command {
 	// ---- app ----------------------------------------------------------------
 	app := &cobra.Command{Use: "app", Short: "Catalog apps"}
 	app.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List apps you can see",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List apps you can see",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var res struct {
 				Apps []catalogApp `json:"apps"`
@@ -322,9 +323,10 @@ func newCatalog(a *App) *cobra.Command {
 		app.AddCommand(update)
 	}
 	app.AddCommand(&cobra.Command{
-		Use:   "delete <name>",
-		Short: "Delete an app (must have no artifacts)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "delete <name>",
+		Aliases: []string{"rm"},
+		Short:   "Delete an app (must have no artifacts)",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := do(cmd, http.MethodDelete, "/catalog/apps/"+api.PathID(args[0]), nil, nil); err != nil {
 				return err
@@ -436,9 +438,10 @@ func newCatalog(a *App) *cobra.Command {
 	// ---- group --------------------------------------------------------------
 	group := &cobra.Command{Use: "group", Short: "Catalog groups"}
 	group.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List groups you can see",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List groups you can see",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var res struct {
 				Groups []catalogGroup `json:"groups"`
@@ -493,9 +496,10 @@ func newCatalog(a *App) *cobra.Command {
 		},
 	})
 	group.AddCommand(&cobra.Command{
-		Use:   "delete <id>",
-		Short: "Delete a group (apps are detached, not deleted)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "delete <id>",
+		Aliases: []string{"rm"},
+		Short:   "Delete a group (apps are detached, not deleted)",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := do(cmd, http.MethodDelete, "/catalog/groups/"+api.PathID(args[0]), nil, nil); err != nil {
 				return err
@@ -532,9 +536,10 @@ func newCatalog(a *App) *cobra.Command {
 		var platform string
 		var filters []string
 		list := &cobra.Command{
-			Use:   "list <app>",
-			Short: "List an app's artifacts (newest first)",
-			Args:  cobra.ExactArgs(1),
+			Use:     "list <app>",
+			Aliases: []string{"ls"},
+			Short:   "List an app's artifacts (newest first)",
+			Args:    cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				want, err := parseTags(filters)
 				if err != nil {
@@ -603,9 +608,10 @@ func newCatalog(a *App) *cobra.Command {
 		artifact.AddCommand(up)
 	}
 	artifact.AddCommand(&cobra.Command{
-		Use:   "delete <app> <id>",
-		Short: "Delete an artifact (removes the CDN object too)",
-		Args:  cobra.ExactArgs(2),
+		Use:     "delete <app> <id>",
+		Aliases: []string{"rm"},
+		Short:   "Delete an artifact (removes the CDN object too)",
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := do(cmd, http.MethodDelete, "/catalog/apps/"+api.PathID(args[0])+"/artifacts/"+api.PathID(args[1]), nil, nil); err != nil {
 				return err
@@ -629,9 +635,10 @@ func newCatalog(a *App) *cobra.Command {
 	{
 		var appName, groupID string
 		list := &cobra.Command{
-			Use:   "list",
-			Short: "List permissions",
-			Args:  cobra.NoArgs,
+			Use:     "list",
+			Aliases: []string{"ls"},
+			Short:   "List permissions",
+			Args:    cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				base, err := permBase(cmd, appName, groupID)
 				if err != nil {

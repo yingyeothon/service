@@ -185,9 +185,10 @@ func newChannels(a *App) *cobra.Command {
 
 	var kind, scope string
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "List your channels (admins: --scope all)",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List your channels (admins: --scope all)",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if kind != "" && kind != "auth" && kind != "topic" && kind != "match" {
 				return fmt.Errorf("--kind must be auth|topic|match (got %q)", kind)
@@ -364,9 +365,10 @@ func newChannels(a *App) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:   "delete <channel-id>",
-		Short: "Delete a channel (soft delete; secrets are dropped immediately)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "delete <channel-id>",
+		Aliases: []string{"rm"},
+		Short:   "Delete a channel (soft delete; secrets are dropped immediately)",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := a.client()
 			if err != nil {

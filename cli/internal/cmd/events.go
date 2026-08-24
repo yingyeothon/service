@@ -104,9 +104,10 @@ func newEvents(a *App) *cobra.Command {
 	}
 
 	c.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List events (anonymous sees published/closed only)",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List events (anonymous sees published/closed only)",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var res struct {
 				Events []event `json:"events"`
@@ -221,9 +222,10 @@ func newEvents(a *App) *cobra.Command {
 	// ---- proposals ----
 	pc := &cobra.Command{Use: "proposals", Short: "Proposals of an event"}
 	pc.AddCommand(&cobra.Command{
-		Use:   "list <event-id>",
-		Short: "List proposals (vote counts appear once voting has ended)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "list <event-id>",
+		Aliases: []string{"ls"},
+		Short:   "List proposals (vote counts appear once voting has ended)",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				Proposals []proposal `json:"proposals"`
@@ -304,9 +306,10 @@ func newEvents(a *App) *cobra.Command {
 		pc.AddCommand(cc)
 	}
 	pc.AddCommand(&cobra.Command{
-		Use:   "delete <event-id> <proposal-id>",
-		Short: "Withdraw your proposal (admins: remove any until decided)",
-		Args:  cobra.ExactArgs(2),
+		Use:     "delete <event-id> <proposal-id>",
+		Aliases: []string{"rm"},
+		Short:   "Withdraw your proposal (admins: remove any until decided)",
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return do(cmd, http.MethodDelete, "/events/"+api.PathID(args[0])+"/proposals/"+api.PathID(args[1]), nil, nil)
 		},
@@ -376,9 +379,10 @@ func newEvents(a *App) *cobra.Command {
 		},
 	})
 	poster.AddCommand(&cobra.Command{
-		Use:   "delete <event-id>",
-		Short: "Remove the poster",
-		Args:  cobra.ExactArgs(1),
+		Use:     "delete <event-id>",
+		Aliases: []string{"rm"},
+		Short:   "Remove the poster",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return do(cmd, http.MethodDelete, "/events/"+api.PathID(args[0])+"/poster", nil, nil)
 		},

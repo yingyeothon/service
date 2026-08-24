@@ -18,6 +18,45 @@ func setConfig(t *testing.T) string {
 	return p
 }
 
+func TestRenameProfile(t *testing.T) {
+	setConfig(t)
+	_ = SaveProfile("dev", Profile{API: "https://x", Token: "yyt_abc"})
+	_ = SaveProfile("prod", Profile{API: "https://y", Token: "yyt_def"})
+	if err := RenameProfile("nope", "other"); err == nil ||
+		!strings.Contains(err.Error(), "unknown profile") {
+		t.Fatalf("expected unknown profile error, got %v", err)
+	}
+	if err := RenameProfile("dev", "prod"); err == nil ||
+		!strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+	if err := RenameProfile("dev", ""); err == nil {
+		t.Fatal("expected empty-name error")
+	}
+	if err := RenameProfile("dev", "dev"); err != nil {
+		t.Fatal("same-name rename should be a no-op:", err)
+	}
+	// default marker moves with the renamed profile
+	if err := RenameProfile("dev", "local"); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := LoadFile()
+	if _, ok := f.Profiles["dev"]; ok {
+		t.Fatalf("old name kept: %+v", f)
+	}
+	if f.Profiles["local"].Token != "yyt_abc" || f.Default != "local" {
+		t.Fatalf("%+v", f)
+	}
+	// renaming a non-default profile leaves the default alone
+	if err := RenameProfile("prod", "live"); err != nil {
+		t.Fatal(err)
+	}
+	f, _ = LoadFile()
+	if f.Default != "local" || f.Profiles["live"].Token != "yyt_def" {
+		t.Fatalf("%+v", f)
+	}
+}
+
 func TestSaveLoadRemoveProfiles(t *testing.T) {
 	p := setConfig(t)
 	f, err := LoadFile()

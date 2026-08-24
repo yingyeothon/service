@@ -29,12 +29,12 @@ The config file stores one login per profile (`{"profiles":{"dev":{…},"prod":{
 yyt login --profile dev --api https://console-dev.yyt.life --device
 yyt login --profile prod --device                # default API
 yyt profile add <name> [--api …] [--device]      # same as login --profile <name>
-yyt profile list | use <name> | remove <name>
+yyt profile list | use <name> | default <name> | rename <old> <new> | remove <name>
 yyt --profile dev catalog app list
 yyt --profile dev logout                         # removes only that profile
 ```
 
-`whoami` prints the active profile and API; tokens are never printed.
+`whoami` prints the active profile and API; tokens are never printed. `profile default` is a synonym of `profile use` (handy after removing the default profile); `rename` moves the default marker with the profile. Across all commands, `ls` aliases `list` and `rm` aliases `remove`/`delete`.
 
 ## Commands
 
