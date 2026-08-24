@@ -31,7 +31,16 @@ case "$MODE" in
     fi
     pnpm exec prisma migrate deploy
     ;;
-  baseline) pnpm exec prisma migrate resolve --applied 0_init ;;
+  baseline)
+    # Refuse to mark the baseline applied when the live schema does not match
+    # it — a DB behind the baseline (e.g. missing newer tables) would silently
+    # "pass" deploy while the tables are absent (learned on prod, 2026-08-24).
+    if ! pnpm exec prisma migrate diff --from-schema prisma/schema.prisma --to-config-datasource --exit-code >/dev/null 2>&1; then
+      echo "schema drift vs prisma/schema.prisma detected — reconcile the database first (prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script)" >&2
+      exit 1
+    fi
+    pnpm exec prisma migrate resolve --applied 0_init
+    ;;
   status) pnpm exec prisma migrate status ;;
   *) echo "unknown mode $MODE (deploy|baseline|status)" >&2; exit 1 ;;
 esac
