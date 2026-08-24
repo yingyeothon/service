@@ -323,6 +323,18 @@ func TestProfileLoginAndSwitch(t *testing.T) {
 	if err != nil || !strings.Contains(out, f.srv.URL) {
 		t.Fatalf("re-login lost the stored API: %v\n%s", err, out)
 	}
+	// `profile add` is a login under a fixed name; `cata` aliases `catalog`
+	if _, err := exec("profile", "add", "stage", "--api", f.srv.URL, "--token", "yyt_stage"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = exec("--profile", "stage", "cata", "app", "list")
+	if err == nil || !strings.Contains(err.Error(), "route not found") {
+		// the fake has no /catalog/apps route; reaching it proves alias+profile work
+		t.Fatalf("expected route-not-found via cata alias, got %v\n%s", err, out)
+	}
+	if _, err := exec("profile", "remove", "stage"); err != nil {
+		t.Fatal(err)
+	}
 	// logout removes only the selected profile
 	if _, err := exec("--profile", "dev", "logout"); err != nil {
 		t.Fatal(err)

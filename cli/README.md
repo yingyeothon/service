@@ -28,6 +28,7 @@ The config file stores one login per profile (`{"profiles":{"dev":{…},"prod":{
 ```sh
 yyt login --profile dev --api https://console-dev.yyt.life --device
 yyt login --profile prod --device                # default API
+yyt profile add <name> [--api …] [--device]      # same as login --profile <name>
 yyt profile list | use <name> | remove <name>
 yyt --profile dev catalog app list
 yyt --profile dev logout                         # removes only that profile
@@ -88,7 +89,7 @@ yyt catalog installer
 
 `deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
 
-Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous).
+`yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous).
 
 Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending member or not admin), `5` not found.
 

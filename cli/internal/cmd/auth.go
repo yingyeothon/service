@@ -48,67 +48,72 @@ With --device, signs in through the GitHub device flow instead: the console
 mints a fresh API token once you approve the code on github.com.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if device {
-				return deviceLogin(cmd, a, tokenName)
-			}
-			if tokenName != "" {
-				return errors.New("--name only applies with --device (it names the minted token)")
-			}
-			token := a.tokFlag
-			if token == "" {
-				token = os.Getenv("YYT_TOKEN")
-			}
-			apiBase := a.apiFlag
-			if apiBase == "" {
-				apiBase = os.Getenv("YYT_API")
-			}
-			if token == "" {
-				// Read from stdin so the token stays out of shell history and `ps`.
-				token, _ = readToken(cmd.InOrStdin(), a.Err)
-			}
-			if token == "" {
-				return errors.New("token required: pass --token, set YYT_TOKEN, or pipe it on stdin (console > account > API tokens)")
-			}
-			prof, storedAPI, err := loginProfile(a)
-			if err != nil {
-				return err
-			}
-			if apiBase == "" {
-				apiBase = storedAPI // keep the profile's stage on token refresh
-			}
-			if apiBase == "" {
-				apiBase = config.DefaultAPI
-			}
-			apiBase = strings.TrimRight(apiBase, "/")
-			if err := config.CheckAPI(apiBase); err != nil {
-				return err
-			}
-			cfg := config.Config{API: apiBase, Token: token}
-			cl := api.New(cfg.API, cfg.Token)
-			if a.NewClient != nil {
-				cl = a.NewClient(cfg)
-			}
-			var m me
-			if err := cl.Do(cmd.Context(), http.MethodGet, "/me", nil, &m); err != nil {
-				return fmt.Errorf("token rejected: %w", err)
-			}
-			if err := config.SaveProfile(prof, config.Profile{API: apiBase, Token: token}); err != nil {
-				return err
-			}
-			p, _ := config.Path()
-			if m.Role == "pending" {
-				fmt.Fprintln(a.Err, "note: your account is pending; commands return 403 until an admin approves it")
-			}
-			if a.jsonOut {
-				return a.printer().JSONValue(map[string]any{"api": cfg.API, "id": m.ID, "login": m.Login, "role": m.Role, "profile": prof, "config": p})
-			}
-			fmt.Fprintf(a.Out, "logged in as %s (%s) at %s [profile %s]\nconfig: %s\n", m.Login, m.Role, cfg.API, prof, p)
-			return nil
+			return doLogin(cmd, a, device, tokenName)
 		},
 	}
 	c.Flags().BoolVar(&device, "device", false, "sign in with the GitHub device flow (no pre-existing token needed)")
 	c.Flags().StringVar(&tokenName, "name", "", "name for the minted API token (default: device login)")
 	return c
+}
+
+// doLogin is shared by `yyt login` and `yyt profile add`.
+func doLogin(cmd *cobra.Command, a *App, device bool, tokenName string) error {
+	if device {
+		return deviceLogin(cmd, a, tokenName)
+	}
+	if tokenName != "" {
+		return errors.New("--name only applies with --device (it names the minted token)")
+	}
+	token := a.tokFlag
+	if token == "" {
+		token = os.Getenv("YYT_TOKEN")
+	}
+	apiBase := a.apiFlag
+	if apiBase == "" {
+		apiBase = os.Getenv("YYT_API")
+	}
+	if token == "" {
+		// Read from stdin so the token stays out of shell history and `ps`.
+		token, _ = readToken(cmd.InOrStdin(), a.Err)
+	}
+	if token == "" {
+		return errors.New("token required: pass --token, set YYT_TOKEN, or pipe it on stdin (console > account > API tokens)")
+	}
+	prof, storedAPI, err := loginProfile(a)
+	if err != nil {
+		return err
+	}
+	if apiBase == "" {
+		apiBase = storedAPI // keep the profile's stage on token refresh
+	}
+	if apiBase == "" {
+		apiBase = config.DefaultAPI
+	}
+	apiBase = strings.TrimRight(apiBase, "/")
+	if err := config.CheckAPI(apiBase); err != nil {
+		return err
+	}
+	cfg := config.Config{API: apiBase, Token: token}
+	cl := api.New(cfg.API, cfg.Token)
+	if a.NewClient != nil {
+		cl = a.NewClient(cfg)
+	}
+	var m me
+	if err := cl.Do(cmd.Context(), http.MethodGet, "/me", nil, &m); err != nil {
+		return fmt.Errorf("token rejected: %w", err)
+	}
+	if err := config.SaveProfile(prof, config.Profile{API: apiBase, Token: token}); err != nil {
+		return err
+	}
+	p, _ := config.Path()
+	if m.Role == "pending" {
+		fmt.Fprintln(a.Err, "note: your account is pending; commands return 403 until an admin approves it")
+	}
+	if a.jsonOut {
+		return a.printer().JSONValue(map[string]any{"api": cfg.API, "id": m.ID, "login": m.Login, "role": m.Role, "profile": prof, "config": p})
+	}
+	fmt.Fprintf(a.Out, "logged in as %s (%s) at %s [profile %s]\nconfig: %s\n", m.Login, m.Role, cfg.API, prof, p)
+	return nil
 }
 
 // deviceLogin drives the console's GitHub device flow and stores the minted token.
