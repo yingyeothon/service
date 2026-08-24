@@ -2,6 +2,7 @@ import {
   IconCalendarEvent,
   IconHome,
   IconKey,
+  IconPackages,
   IconUsers,
   IconWorld,
   type IconProps,
@@ -27,6 +28,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: "/", label: "Home", icon: IconHome, minRole: null },
   { path: "/events", label: "Events", icon: IconCalendarEvent, minRole: null },
   { path: "/channels", label: "Channels", icon: IconWorld, minRole: "member" },
+  { path: "/catalog", label: "Catalog", icon: IconPackages, minRole: "member" },
   { path: "/tokens", label: "API tokens", icon: IconKey, minRole: "pending" },
   { path: "/members", label: "Members", icon: IconUsers, minRole: "admin" },
 ];

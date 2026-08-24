@@ -117,3 +117,105 @@ export interface PosterUpload {
   headers: Record<string, string>;
   expiresInSec: number;
 }
+
+// ---- binary catalog --------------------------------------------------------
+
+export const CATALOG_PLATFORMS = [
+  "android",
+  "ios",
+  "web",
+  "bin",
+  "server",
+  "win32",
+  "osx",
+  "linux",
+] as const;
+export type CatalogPlatform = (typeof CATALOG_PLATFORMS)[number];
+export type CatalogPermissionLevel = "read" | "edit";
+
+export interface CatalogGroup {
+  id: string;
+  name: string;
+  ownerLogin: string | null;
+  pendingOwnerLogin: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CatalogApp {
+  id: string;
+  name: string;
+  path: string;
+  debugOnly: boolean;
+  description: string | null;
+  groupId: string | null;
+  ownerLogin: string | null;
+  pendingOwnerLogin: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CatalogSettings {
+  slackHookUrl: string | null;
+  slackChannel: string | null;
+  messageTemplate: string | null;
+  keepRecentVersions: number;
+}
+
+export interface CatalogArtifact {
+  id: string;
+  appId: string;
+  platform: CatalogPlatform;
+  url: string;
+  objectKey: string | null;
+  size: number | null;
+  hash: string | null;
+  tags: Record<string, string>;
+  createdAt: number;
+  ios?: { manifestUrl: string; installUrl: string };
+}
+
+export interface CatalogPermission {
+  id: string;
+  login: string | null;
+  pending: boolean;
+  level: CatalogPermissionLevel;
+  createdAt: number;
+}
+
+export interface CatalogUploadGrant {
+  uploadId: string;
+  key: string;
+  url: string;
+  method: "PUT";
+  headers: Record<string, string>;
+  expiresAt: number;
+}
+
+export interface CatalogCleanupPreview {
+  keepRecentVersions: number;
+  totalArtifacts: number;
+  deletions: Array<{
+    artifactId: string;
+    platform: string;
+    version: string;
+    reason: "old_version" | "duplicate_variant";
+    createdAt: number;
+  }>;
+}
+
+export interface CatalogCleanupResult {
+  dryRun?: boolean;
+  executed?: boolean;
+  preview: CatalogCleanupPreview;
+  deleted?: number;
+  s3Failures?: number;
+}
+
+export interface InstallerDownload {
+  url: string;
+  filename: string;
+  platform: CatalogPlatform;
+  version: string | null;
+  createdAt: number;
+}
