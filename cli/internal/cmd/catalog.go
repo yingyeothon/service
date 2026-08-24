@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yingyeothon/service/cli/internal/api"
@@ -525,32 +526,32 @@ func newCatalog(a *App) *cobra.Command {
 	artifact := &cobra.Command{Use: "artifact", Short: "Build artifacts"}
 	{
 		var platform string
+		var filters []string
 		list := &cobra.Command{
 			Use:   "list <app>",
 			Short: "List an app's artifacts (newest first)",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				path := "/catalog/apps/" + api.PathID(args[0]) + "/artifacts"
-				if platform != "" {
-					path += "?platform=" + url.QueryEscape(platform)
+				want, err := parseTags(filters)
+				if err != nil {
+					return fmt.Errorf("invalid --filter: %w", err)
 				}
-				var res struct {
-					Artifacts []catalogArtifact `json:"artifacts"`
-				}
-				if err := do(cmd, http.MethodGet, path, nil, &res); err != nil {
+				arts, err := listArtifacts(cmd.Context(), a, args[0], platform, want)
+				if err != nil {
 					return err
 				}
 				if a.jsonOut {
-					return p().JSONValue(res)
+					return p().JSONValue(map[string]any{"artifacts": arts})
 				}
-				rows := make([][]string, 0, len(res.Artifacts))
-				for _, v := range res.Artifacts {
+				rows := make([][]string, 0, len(arts))
+				for _, v := range arts {
 					rows = append(rows, []string{v.ID, v.Tags["version"], v.Platform, fmt.Sprint(valOr(v.Size, 0)), output.Time(v.CreatedAt)})
 				}
 				return p().Table([]string{"ID", "VERSION", "PLATFORM", "SIZE", "CREATED"}, rows)
 			},
 		}
 		list.Flags().StringVar(&platform, "platform", "", "filter by platform")
+		list.Flags().StringArrayVar(&filters, "filter", nil, "tag filter key=value (repeatable, applied client-side)")
 		artifact.AddCommand(list)
 	}
 	artifact.AddCommand(&cobra.Command{
@@ -594,6 +595,7 @@ func newCatalog(a *App) *cobra.Command {
 		up.Flags().StringArrayVar(&tags, "tag", nil, "extra tag key=value (repeatable)")
 		_ = up.MarkFlagRequired("platform")
 		_ = up.MarkFlagRequired("version")
+		up.AddCommand(newUploadAndroid(a), newUploadIOS(a))
 		artifact.AddCommand(up)
 	}
 	artifact.AddCommand(&cobra.Command{
@@ -720,7 +722,7 @@ func newCatalog(a *App) *cobra.Command {
 		},
 	})
 
-	c.AddCommand(app, group, artifact, permission, newCatalogDeploy(a))
+	c.AddCommand(app, group, artifact, permission, newCatalogDeploy(a), newCatalogBump(a))
 	return c
 }
 
@@ -765,25 +767,177 @@ var profileOutput = map[string]struct {
 // Runner is swapped by tests; the default shells out to `flutter`.
 var deployRunner commandRunner = execRunner
 
+// verifyDelay is the pause between upload-verification retries (tests shrink it).
+var verifyDelay = 2 * time.Second
+
+// normalizeProfile maps legacy aliases (cata used "aab") to the server enum.
+func normalizeProfile(pr string) string {
+	if pr == "aab" {
+		return "appbundle"
+	}
+	return pr
+}
+
+// buildOutput is one file produced by a flutter build.
+type buildOutput struct {
+	path string
+	abi  string // non-empty for --split-per-abi APKs
+}
+
+// cleanBuildOutputs removes any previous build outputs that the post-build
+// glob could match, so a stale split APK from an earlier build (e.g. a wider
+// --target-platform) is never re-uploaded under the new version.
+func cleanBuildOutputs(projectPath, pr string) error {
+	spec := profileOutput[pr]
+	paths := []string{filepath.Join(projectPath, spec.out)}
+	if spec.ext == ".apk" {
+		dir := filepath.Join(projectPath, "build", "app", "outputs", "flutter-apk")
+		matches, err := filepath.Glob(filepath.Join(dir, "app-*-"+pr+".apk"))
+		if err != nil {
+			return err
+		}
+		paths = append(paths, matches...)
+	}
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale build output %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// buildOutputs locates the files a profile build produced. With splitPerAbi,
+// APK profiles emit app-<abi>-<profile>.apk files which we glob.
+func buildOutputs(projectPath, pr string, splitPerAbi bool) ([]buildOutput, error) {
+	spec := profileOutput[pr]
+	if !splitPerAbi || spec.ext != ".apk" {
+		return []buildOutput{{path: filepath.Join(projectPath, spec.out)}}, nil
+	}
+	dir := filepath.Join(projectPath, "build", "app", "outputs", "flutter-apk")
+	matches, err := filepath.Glob(filepath.Join(dir, "app-*-"+pr+".apk"))
+	if err != nil {
+		return nil, err
+	}
+	outs := make([]buildOutput, 0, len(matches))
+	for _, m := range matches {
+		base := filepath.Base(m)
+		abi := strings.TrimSuffix(strings.TrimPrefix(base, "app-"), "-"+pr+".apk")
+		outs = append(outs, buildOutput{path: m, abi: abi})
+	}
+	if len(outs) == 0 {
+		return nil, fmt.Errorf("no split APKs found in %s (expected app-<abi>-%s.apk)", dir, pr)
+	}
+	sort.Slice(outs, func(i, j int) bool { return outs[i].path < outs[j].path })
+	return outs, nil
+}
+
+// listArtifacts fetches an app's artifacts and applies a client-side tag filter
+// (the server only filters by platform).
+func listArtifacts(ctx context.Context, a *App, appName, platform string, want map[string]string) ([]catalogArtifact, error) {
+	cl, err := a.client()
+	if err != nil {
+		return nil, err
+	}
+	path := "/catalog/apps/" + api.PathID(appName) + "/artifacts"
+	if platform != "" {
+		path += "?platform=" + url.QueryEscape(platform)
+	}
+	var res struct {
+		Artifacts []catalogArtifact `json:"artifacts"`
+	}
+	if err := cl.Do(ctx, http.MethodGet, path, nil, &res); err != nil {
+		return nil, err
+	}
+	if len(want) == 0 {
+		return res.Artifacts, nil
+	}
+	filtered := make([]catalogArtifact, 0, len(res.Artifacts))
+	for _, v := range res.Artifacts {
+		ok := true
+		for k, val := range want {
+			if v.Tags[k] != val {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			filtered = append(filtered, v)
+		}
+	}
+	return filtered, nil
+}
+
+// verifyUploaded re-reads the artifact list until every just-uploaded artifact
+// id shows up (ported from the legacy cata verifyUploadedArtifact; 5 attempts).
+// Matching by id — not by version tag — so artifacts from earlier deploys of
+// the same version can never satisfy the check.
+func verifyUploaded(ctx context.Context, a *App, appName string, ids []string) (int, error) {
+	got := 0
+	for attempt := 1; attempt <= 5; attempt++ {
+		arts, err := listArtifacts(ctx, a, appName, "", nil)
+		if err != nil {
+			return 0, fmt.Errorf("verify: %w", err)
+		}
+		present := make(map[string]bool, len(arts))
+		for _, v := range arts {
+			present[v.ID] = true
+		}
+		got = 0
+		for _, id := range ids {
+			if present[id] {
+				got++
+			}
+		}
+		if got >= len(ids) {
+			return got, nil
+		}
+		if attempt < 5 {
+			select {
+			case <-ctx.Done():
+				return got, ctx.Err()
+			case <-time.After(verifyDelay):
+			}
+		}
+	}
+	return got, fmt.Errorf("verify: only %d of %d uploaded artifact(s) visible in the list", got, len(ids))
+}
+
+// addTagIf sets a tag when the value is non-empty.
+func addTagIf(tags map[string]string, key, val string) {
+	if val != "" {
+		tags[key] = val
+	}
+}
+
 func newCatalogDeploy(a *App) *cobra.Command {
 	var (
-		name        string
-		projectPath string
-		profiles    []string
-		groupID     string
-		description string
-		debugOnly   bool
-		stage       string
-		changelog   string
-		bump        string
-		doBump      bool
+		name           string
+		projectPath    string
+		profiles       []string
+		groupID        string
+		description    string
+		debugOnly      bool
+		stage          string
+		changelog      string
+		bump           string
+		doBump         bool
+		splitPerAbi    bool
+		targetPlatform string
+		buildNo        string
+		commit         string
+		minSdk         string
+		targetSdk      string
+		abiTag         string
+		extraTags      []string
+		noVerify       bool
 	)
 	c := &cobra.Command{
 		Use:   "deploy",
 		Short: "Build a Flutter Android app and upload the artifacts",
 		Long: `Reads pubspec.yaml / build.gradle from --project-path, ensures the app exists
 (creating it as you when missing), runs "flutter build" for each --profile,
-and uploads the outputs with version/build_type/application_id tags.`,
+uploads the outputs with version/build_type/application_id tags, and verifies
+the upload by re-reading the artifact list.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
@@ -797,10 +951,15 @@ and uploads the outputs with version/build_type/application_id tags.`,
 			if len(profiles) == 1 && profiles[0] == "all" {
 				profiles = []string{"debug", "release", "appbundle"}
 			}
-			for _, pr := range profiles {
-				if _, ok := profileOutput[pr]; !ok {
-					return fmt.Errorf("invalid --profile %q (debug|release|appbundle|all)", pr)
+			for i, pr := range profiles {
+				profiles[i] = normalizeProfile(pr)
+				if _, ok := profileOutput[profiles[i]]; !ok {
+					return fmt.Errorf("invalid --build-profile %q (debug|release|appbundle|aab|all)", pr)
 				}
+			}
+			userTags, err := parseTags(extraTags)
+			if err != nil {
+				return err
 			}
 			applicationID, err := flutter.ApplicationID(projectPath)
 			if err != nil {
@@ -856,42 +1015,86 @@ and uploads the outputs with version/build_type/application_id tags.`,
 			uploaded := make([]catalogArtifact, 0, len(profiles))
 			for _, pr := range profiles {
 				spec := profileOutput[pr]
-				fmt.Fprintf(a.Err, "building %s (%s)…\n", name, pr)
-				if err := deployRunner(ctx, projectPath, "flutter", spec.args...); err != nil {
-					return fmt.Errorf("flutter build %s: %w", pr, err)
+				buildArgs := append([]string{}, spec.args...)
+				if splitPerAbi && spec.ext == ".apk" {
+					buildArgs = append(buildArgs, "--split-per-abi")
 				}
-				out := filepath.Join(projectPath, spec.out)
-				// Rename so the CDN filename carries app+version+profile.
-				dst := filepath.Join(filepath.Dir(out), fmt.Sprintf("%s-%s-%s%s", name, version, pr, spec.ext))
-				if err := os.Rename(out, dst); err != nil {
+				if targetPlatform != "" {
+					buildArgs = append(buildArgs, "--target-platform", targetPlatform)
+				}
+				if err := cleanBuildOutputs(projectPath, pr); err != nil {
 					return err
 				}
-				tags := map[string]string{
-					"version":        version,
-					"build_type":     pr, // matches the server enum (debug|release|appbundle)
-					"application_id": applicationID,
+				fmt.Fprintf(a.Err, "building %s (%s)…\n", name, pr)
+				if err := deployRunner(ctx, projectPath, "flutter", buildArgs...); err != nil {
+					return fmt.Errorf("flutter build %s: %w", pr, err)
 				}
-				if stage != "" {
-					tags["stage"] = stage
-				}
-				if changelog != "" {
-					tags["changelog"] = changelog
-				}
-				if label != "" {
-					tags["title"] = label
-				}
-				fmt.Fprintf(a.Err, "uploading %s…\n", filepath.Base(dst))
-				art, err := uploadArtifact(ctx, cl, name, dst, "android", tags)
+				outs, err := buildOutputs(projectPath, pr, splitPerAbi)
 				if err != nil {
 					return err
 				}
-				uploaded = append(uploaded, *art)
+				for _, out := range outs {
+					// Rename so the CDN filename carries app+version+profile(+abi).
+					suffix := ""
+					if out.abi != "" {
+						suffix = "-" + out.abi
+					}
+					dst := filepath.Join(filepath.Dir(out.path),
+						fmt.Sprintf("%s-%s-%s%s%s", name, version, pr, suffix, spec.ext))
+					if err := os.Rename(out.path, dst); err != nil {
+						return err
+					}
+					tags := map[string]string{
+						"version":        version,
+						"build_type":     pr, // matches the server enum (debug|release|appbundle)
+						"application_id": applicationID,
+					}
+					addTagIf(tags, "stage", stage)
+					addTagIf(tags, "changelog", changelog)
+					addTagIf(tags, "title", label)
+					addTagIf(tags, "build", buildNo)
+					addTagIf(tags, "commit", commit)
+					addTagIf(tags, "min_sdk", minSdk)
+					addTagIf(tags, "target_sdk", targetSdk)
+					addTagIf(tags, "abi", abiTag)
+					if out.abi != "" {
+						tags["abi"] = out.abi
+					}
+					for k, v := range userTags {
+						tags[k] = v
+					}
+					fmt.Fprintf(a.Err, "uploading %s…\n", filepath.Base(dst))
+					art, err := uploadArtifact(ctx, cl, name, dst, "android", tags)
+					if err != nil {
+						return err
+					}
+					uploaded = append(uploaded, *art)
+				}
+			}
+			verified := 0
+			if !noVerify {
+				ids := make([]string, 0, len(uploaded))
+				for _, art := range uploaded {
+					ids = append(ids, art.ID)
+				}
+				verified, err = verifyUploaded(ctx, a, name, ids)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(a.Err, "verified: %d artifact(s) visible for version %s\n", verified, version)
 			}
 			if a.jsonOut {
-				return a.printer().JSONValue(map[string]any{"app": appRow, "version": version, "artifacts": uploaded})
+				return a.printer().JSONValue(map[string]any{
+					"app": appRow, "version": version, "artifacts": uploaded, "verified": verified,
+				})
 			}
 			for _, art := range uploaded {
-				fmt.Fprintf(a.Out, "%s %s %s\n", art.ID, art.Tags["build_type"], art.URL)
+				fields := []string{art.ID, art.Tags["build_type"]}
+				if abi := art.Tags["abi"]; abi != "" {
+					fields = append(fields, abi)
+				}
+				fields = append(fields, art.URL)
+				fmt.Fprintln(a.Out, strings.Join(fields, " "))
 			}
 			return nil
 		},
@@ -899,7 +1102,7 @@ and uploads the outputs with version/build_type/application_id tags.`,
 	f := c.Flags()
 	f.StringVar(&name, "name", "", "app name (default: last segment of the applicationId)")
 	f.StringVar(&projectPath, "project-path", ".", "Flutter project directory")
-	f.StringArrayVar(&profiles, "profile", nil, "debug|release|appbundle|all (repeatable; default release)")
+	f.StringArrayVar(&profiles, "build-profile", nil, "debug|release|appbundle|aab|all (repeatable; default release)")
 	f.StringVar(&groupID, "group", "", "group id when creating the app")
 	f.StringVar(&description, "description", "", "description when creating the app")
 	f.BoolVar(&debugOnly, "debug-only", false, "mark the app debug-only when creating it")
@@ -907,5 +1110,122 @@ and uploads the outputs with version/build_type/application_id tags.`,
 	f.StringVar(&changelog, "note", "", "changelog tag")
 	f.StringVar(&bump, "bump", "patch", "version bump when --do-bump: major|minor|patch")
 	f.BoolVar(&doBump, "do-bump", false, "bump pubspec version before building")
+	f.BoolVar(&splitPerAbi, "split-per-abi", false, "pass --split-per-abi to flutter build (APK profiles; uploads one artifact per ABI)")
+	f.StringVar(&targetPlatform, "target-platform", "", "pass --target-platform to flutter build (e.g. android-arm64)")
+	f.StringVar(&buildNo, "build", "", "build tag (build number)")
+	f.StringVar(&commit, "commit", "", "commit tag (e.g. from `git rev-parse --short HEAD`)")
+	f.StringVar(&minSdk, "min-sdk", "", "min_sdk tag")
+	f.StringVar(&targetSdk, "target-sdk", "", "target_sdk tag")
+	f.StringVar(&abiTag, "abi", "", "abi tag (overridden per file when --split-per-abi)")
+	f.StringArrayVar(&extraTags, "tag", nil, "extra tag key=value (repeatable; server allowlist applies)")
+	f.BoolVar(&noVerify, "no-verify", false, "skip the post-upload artifact list verification")
 	return c
+}
+
+// newCatalogBump is the standalone pubspec bump (legacy `cata app bump`).
+// It never touches git; commit/push stays with the calling script.
+func newCatalogBump(a *App) *cobra.Command {
+	var projectPath, bump string
+	c := &cobra.Command{
+		Use:   "bump",
+		Short: "Bump the pubspec.yaml version (+build number); no git commit",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			b, err := flutter.ParseBump(bump)
+			if err != nil {
+				return err
+			}
+			cur, err := flutter.Version(projectPath)
+			if err != nil {
+				return err
+			}
+			next, err := flutter.BumpVersion(cur, b)
+			if err != nil {
+				return err
+			}
+			if err := flutter.SetVersion(projectPath, next); err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return a.printer().JSONValue(map[string]any{"from": cur, "to": next})
+			}
+			fmt.Fprintf(a.Out, "bumped version %s -> %s\n", cur, next)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&projectPath, "project-path", ".", "Flutter project directory")
+	c.Flags().StringVar(&bump, "bump", "patch", "major|minor|patch")
+	return c
+}
+
+// typedUpload builds an upload subcommand with platform-specific tag flags
+// on top of the generic presign → PUT → commit flow.
+func typedUpload(a *App, platform string, tagFlags []struct{ flag, tag, usage string }, required []string) *cobra.Command {
+	var version, stage, changelog string
+	var extraTags []string
+	values := make([]string, len(tagFlags))
+	c := &cobra.Command{
+		Use:   platform + " <app> <file>",
+		Short: "Upload a " + platform + " artifact with typed tag flags",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := a.client()
+			if err != nil {
+				return err
+			}
+			tags, err := parseTags(extraTags)
+			if err != nil {
+				return err
+			}
+			tags["version"] = version
+			addTagIf(tags, "stage", stage)
+			addTagIf(tags, "changelog", changelog)
+			for i, tf := range tagFlags {
+				addTagIf(tags, tf.tag, values[i])
+			}
+			v, err := uploadArtifact(cmd.Context(), cl, args[0], args[1], platform, tags)
+			if err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return a.printer().JSONValue(v)
+			}
+			fmt.Fprintf(a.Out, "%s %s\n", v.ID, v.URL)
+			return nil
+		},
+	}
+	f := c.Flags()
+	f.StringVar(&version, "version", "", "artifact version tag")
+	f.StringVar(&stage, "stage", "", "stage tag")
+	f.StringVar(&changelog, "changelog", "", "changelog tag")
+	f.StringArrayVar(&extraTags, "tag", nil, "extra tag key=value (repeatable)")
+	for i, tf := range tagFlags {
+		f.StringVar(&values[i], tf.flag, "", tf.usage)
+	}
+	_ = c.MarkFlagRequired("version")
+	for _, r := range required {
+		_ = c.MarkFlagRequired(r)
+	}
+	return c
+}
+
+func newUploadAndroid(a *App) *cobra.Command {
+	return typedUpload(a, "android", []struct{ flag, tag, usage string }{
+		{"application-id", "application_id", "Android applicationId"},
+		{"build-type", "build_type", "debug|release|appbundle"},
+		{"build", "build", "build number"},
+		{"commit", "commit", "commit hash"},
+		{"min-sdk", "min_sdk", "minSdkVersion"},
+		{"target-sdk", "target_sdk", "targetSdkVersion"},
+		{"abi", "abi", "ABI (e.g. arm64-v8a)"},
+	}, []string{"application-id", "build-type"})
+}
+
+func newUploadIOS(a *App) *cobra.Command {
+	return typedUpload(a, "ios", []struct{ flag, tag, usage string }{
+		{"bundle-id", "bundle_id", "iOS bundle identifier"},
+		{"build-number", "build_number", "build number"},
+		{"distribution-method", "distribution_method", "ad-hoc|app-store|enterprise|development"},
+		{"minimum-os-version", "minimum_os_version", "minimum iOS version"},
+	}, []string{"bundle-id", "build-number"})
 }

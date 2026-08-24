@@ -22,3 +22,5 @@ apps/console-web/dist/
 todo/
 # Prisma-generated client (rebuilt by `prisma generate` in the package build).
 packages/console-db/src/generated/
+# Local `go build ./...` output of the CLI binary.
+cli/yyt

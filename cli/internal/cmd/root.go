@@ -17,11 +17,12 @@ import (
 
 // App holds the per-invocation state so tests can inject stdout and a fake API.
 type App struct {
-	Out     io.Writer
-	Err     io.Writer
-	jsonOut bool
-	apiFlag string
-	tokFlag string
+	Out      io.Writer
+	Err      io.Writer
+	jsonOut  bool
+	apiFlag  string
+	tokFlag  string
+	profFlag string
 	// NewClient lets tests replace the HTTP client; nil → real client.
 	NewClient func(cfg config.Config) *api.Client
 }
@@ -29,7 +30,7 @@ type App struct {
 func (a *App) printer() output.Printer { return output.Printer{W: a.Out, JSON: a.jsonOut} }
 
 func (a *App) client() (*api.Client, error) {
-	cfg, err := config.Resolve(a.apiFlag, a.tokFlag)
+	cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
 	if err != nil {
 		return nil, err
 	}
@@ -63,9 +64,11 @@ func NewRoot(a *App) *cobra.Command {
 	pf.BoolVar(&a.jsonOut, "json", false, "print raw JSON instead of tables")
 	pf.StringVar(&a.apiFlag, "api", "", "console base URL (default from config, YYT_API, or "+config.DefaultAPI+")")
 	pf.StringVar(&a.tokFlag, "token", "", "API token (overrides config and YYT_TOKEN)")
+	pf.StringVar(&a.profFlag, "profile", "", "config profile (default from YYT_PROFILE or the config file)")
 
 	root.AddCommand(
 		newLogin(a), newLogout(a), newWhoami(a),
+		newProfile(a),
 		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newCatalog(a), newSmoke(a),
 	)
 	return root

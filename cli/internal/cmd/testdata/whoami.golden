@@ -1,4 +1,5 @@
-id:    m_1
-login: octo
-role:  member
-api:   <api>
+id:      m_1
+login:   octo
+role:    member
+profile: (token from flag/env)
+api:     <api>

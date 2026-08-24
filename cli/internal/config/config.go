@@ -1,5 +1,10 @@
-// Package config stores the CLI login (console base URL + API token) in
-// ~/.config/yyt/config.json with 0600 permissions.
+// Package config stores CLI logins (console base URL + API token) per profile
+// in ~/.config/yyt/config.json with 0600 permissions.
+//
+// File schema: {"profiles":{"<name>":{"api","token"}},"default":"<name>"}.
+// A legacy flat file {"api","token"} is migrated to the "default" profile on
+// first load (re-saved once with 0600; read-only locations keep working with
+// the in-memory migration).
 package config
 
 import (
@@ -9,14 +14,32 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 const DefaultAPI = "https://console.yyt.life"
 
-type Config struct {
+// DefaultProfile is the profile name used when none is configured.
+const DefaultProfile = "default"
+
+// Profile is one stored login.
+type Profile struct {
 	API   string `json:"api"`
 	Token string `json:"token"`
+}
+
+// File is the on-disk config document.
+type File struct {
+	Profiles map[string]Profile `json:"profiles"`
+	Default  string             `json:"default,omitempty"`
+}
+
+// Config is the resolved per-invocation credential set.
+type Config struct {
+	API     string
+	Token   string
+	Profile string // profile name the values came from ("" when purely flags/env)
 }
 
 // Path returns the config file location. YYT_CONFIG overrides it (tests, CI).
@@ -31,28 +54,48 @@ func Path() (string, error) {
 	return filepath.Join(dir, "yyt", "config.json"), nil
 }
 
-// Load reads the file; a missing file yields an empty config, not an error.
-func Load() (Config, error) {
+// legacyDoc matches both the old flat schema and the new one during load.
+type legacyDoc struct {
+	API      string             `json:"api"`
+	Token    string             `json:"token"`
+	Profiles map[string]Profile `json:"profiles"`
+	Default  string             `json:"default"`
+}
+
+// LoadFile reads the config file, migrating a legacy flat file to the
+// profile schema (re-saved once). A missing file yields an empty File.
+func LoadFile() (File, error) {
 	p, err := Path()
 	if err != nil {
-		return Config{}, err
+		return File{}, err
 	}
 	b, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return Config{}, nil
+		return File{Profiles: map[string]Profile{}}, nil
 	}
 	if err != nil {
-		return Config{}, err
+		return File{}, err
 	}
-	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
-		return Config{}, fmt.Errorf("%s: %w", p, err)
+	var doc legacyDoc
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return File{}, fmt.Errorf("%s: %w", p, err)
 	}
-	return c, nil
+	f := File{Profiles: doc.Profiles, Default: doc.Default}
+	if f.Profiles == nil {
+		f.Profiles = map[string]Profile{}
+	}
+	if len(doc.Profiles) == 0 && (doc.API != "" || doc.Token != "") {
+		// Legacy flat file → migrate once. A failed re-save (read-only config
+		// location) is fine: the in-memory migration still serves this run.
+		f.Profiles[DefaultProfile] = Profile{API: doc.API, Token: doc.Token}
+		f.Default = DefaultProfile
+		_ = SaveFile(f)
+	}
+	return f, nil
 }
 
-// Save writes the file atomically with 0600 (the token is a credential).
-func Save(c Config) error {
+// SaveFile writes the file atomically with 0600 (tokens are credentials).
+func SaveFile(f File) error {
 	p, err := Path()
 	if err != nil {
 		return err
@@ -60,46 +103,134 @@ func Save(c Config) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(c, "", "  ")
+	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
+	// Unique temp name so concurrent writers cannot truncate each other's file
+	// mid-rename; chmod covers a pre-existing file with looser permissions.
+	tf, err := os.CreateTemp(filepath.Dir(p), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := tf.Name()
+	defer os.Remove(tmp) // no-op after a successful rename
+	if err := tf.Chmod(0o600); err != nil {
+		tf.Close()
+		return err
+	}
+	if _, err := tf.Write(append(b, '\n')); err != nil {
+		tf.Close()
+		return err
+	}
+	if err := tf.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, p)
 }
 
-// Remove deletes the file; missing is fine.
-func Remove() error {
-	p, err := Path()
+// SaveProfile stores one profile; the first stored profile becomes the default.
+func SaveProfile(name string, pr Profile) error {
+	f, err := LoadFile()
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	f.Profiles[name] = pr
+	// Only a sole profile auto-becomes the default; never silently steal it
+	// when other profiles exist (e.g. right after logging out of the default).
+	if f.Default == "" && len(f.Profiles) == 1 {
+		f.Default = name
 	}
-	return nil
+	return SaveFile(f)
 }
 
-// Resolve merges flags > env (YYT_API, YYT_TOKEN) > file > default.
-func Resolve(flagAPI, flagToken string) (Config, error) {
-	c, err := Load()
+// RemoveProfile deletes one profile; removing the default clears it (or moves
+// it to the sole remaining profile). Missing profile is fine.
+func RemoveProfile(name string) error {
+	f, err := LoadFile()
+	if err != nil {
+		return err
+	}
+	delete(f.Profiles, name)
+	if f.Default == name {
+		f.Default = ""
+		if len(f.Profiles) == 1 {
+			for n := range f.Profiles {
+				f.Default = n
+			}
+		}
+	}
+	return SaveFile(f)
+}
+
+// SetDefault marks an existing profile as the default.
+func SetDefault(name string) error {
+	f, err := LoadFile()
+	if err != nil {
+		return err
+	}
+	if _, ok := f.Profiles[name]; !ok {
+		return fmt.Errorf("unknown profile %q (known: %s)", name, knownNames(f))
+	}
+	f.Default = name
+	return SaveFile(f)
+}
+
+func knownNames(f File) string {
+	if len(f.Profiles) == 0 {
+		return "none — run `yyt login`"
+	}
+	names := make([]string, 0, len(f.Profiles))
+	for n := range f.Profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// ProfileName resolves which profile a command should use:
+// flag > YYT_PROFILE > file default > "default".
+func ProfileName(flagProfile string, f File) (name string, explicit bool) {
+	if flagProfile != "" {
+		return flagProfile, true
+	}
+	if v := os.Getenv("YYT_PROFILE"); v != "" {
+		return v, true
+	}
+	if f.Default != "" {
+		return f.Default, false
+	}
+	return DefaultProfile, false
+}
+
+// Resolve merges flags > env (YYT_API, YYT_TOKEN) > selected profile > default.
+// An explicitly requested profile (flag or YYT_PROFILE) must exist unless both
+// API and token are fully supplied by flags/env.
+func Resolve(flagProfile, flagAPI, flagToken string) (Config, error) {
+	f, err := LoadFile()
 	if err != nil {
 		return Config{}, err
 	}
+	name, explicit := ProfileName(flagProfile, f)
+	pr, ok := f.Profiles[name]
+	c := Config{API: pr.API, Token: pr.Token, Profile: name}
 	if v := os.Getenv("YYT_API"); v != "" {
 		c.API = v
 	}
 	if v := os.Getenv("YYT_TOKEN"); v != "" {
 		c.Token = v
+		c.Profile = "" // the credential is not the profile's — don't claim it is
 	}
 	if flagAPI != "" {
 		c.API = flagAPI
 	}
 	if flagToken != "" {
 		c.Token = flagToken
+		c.Profile = ""
+	}
+	if explicit && !ok && (c.API == "" || c.Token == "") {
+		return Config{}, fmt.Errorf("unknown profile %q (known: %s); run `yyt login --profile %s`",
+			name, knownNames(f), name)
 	}
 	if c.API == "" {
 		c.API = DefaultAPI

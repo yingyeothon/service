@@ -19,6 +19,22 @@ curl -fsSL https://raw.githubusercontent.com/yingyeothon/service/main/cli/instal
 
 `YYT_TOKEN` / `YYT_API` environment variables and the `--token` / `--api` flags override the file (useful in CI). `YYT_CONFIG` relocates the file.
 
+Without a pre-made token, `yyt login --device [--name box]` signs in through the GitHub device flow and mints a fresh API token.
+
+### Profiles
+
+The config file stores one login per profile (`{"profiles":{"dev":{…},"prod":{…}},"default":"prod"}`); a legacy flat file is migrated to the `default` profile on first use. Select with the global `--profile <name>` flag or `YYT_PROFILE` (flag > env > config default).
+
+```sh
+yyt login --profile dev --api https://console-dev.yyt.life --device
+yyt login --profile prod --device                # default API
+yyt profile list | use <name> | remove <name>
+yyt --profile dev catalog app list
+yyt --profile dev logout                         # removes only that profile
+```
+
+`whoami` prints the active profile and API; tokens are never printed.
+
 ## Commands
 
 Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret`.
@@ -46,6 +62,33 @@ yyt events poster upload <event-id> poster.png|jpg | delete <event-id>          
 ```
 
 OAuth client secrets may come from `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET` to keep them out of shell history.
+
+### Binary catalog
+
+```
+yyt catalog app list | create <name> --path <applicationId> | get|update|delete <name>
+yyt catalog app settings <name> [--slack-hook … --slack-channel … --template … --keep N]
+yyt catalog app cleanup <name> [--dry-run]
+yyt catalog group list|create|get|rename|delete|apps
+yyt catalog permission list|grant|revoke --app <name>|--group <id>
+yyt catalog artifact list <app> [--platform p] [--filter key=value]…   # tag filter is client-side
+yyt catalog artifact get|delete <app> <id>
+yyt catalog artifact upload <app> <file> --platform p --version v [--tag k=v]…
+yyt catalog artifact upload android <app> <file> --version v --application-id id --build-type t \
+    [--build n --commit h --min-sdk n --target-sdk n --abi a --stage s --changelog c]
+yyt catalog artifact upload ios <app> <file> --version v --bundle-id id --build-number n \
+    [--distribution-method ad-hoc --minimum-os-version 12.0 --stage s --changelog c]
+yyt catalog bump [--bump major|minor|patch] [--project-path .]          # pubspec only; git stays with your script
+yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|appbundle|aab|all]… \
+    [--split-per-abi] [--target-platform android-arm64] [--stage s] [--note changelog] \
+    [--build n] [--commit h] [--min-sdk n] [--target-sdk n] [--abi a] [--tag k=v]… \
+    [--do-bump [--bump patch]] [--no-verify]
+yyt catalog installer
+```
+
+`deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
+
+Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous).
 
 Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending member or not admin), `5` not found.
 
