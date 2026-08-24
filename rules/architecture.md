@@ -20,3 +20,11 @@
 - The match service's callback cannot target topic `POST /t` directly (signed body vs bearer + topic body): a glue route is required (`src/topicLobby.ts`). Keep `docs/decisions.md` wording ("callback target may be the topic service") read as "via a glue function".
 - Games reuse the auth JWT unchanged (`docs/auth-game-contract.md` "Reusing the auth service token"); the callback response is `{wsUrl, gameId}` with no token. `members[].memberId` must be the auth `userId` byte-for-byte.
 - tslib changes that this repo needs land in `~/git/yyt.life/tslib` as separate commits (the user pushes/releases): Redis ACL `username` (`REDIS_USER`), `runGameAllTogether.endDropDelayMillis`.
+
+## Go CLI (`cli/`)
+
+- Config is per-profile (`~/.config/yyt/config.json`, `{"profiles":{name:{api,token}},"default":name}`); resolution is `--profile` > `YYT_PROFILE` > file default, and `--api`/`--token`/`YYT_API`/`YYT_TOKEN` override the resolved profile field-wise. A legacy flat file auto-migrates on load; the re-save failure is tolerated (read-only config dirs). When a token override is in effect, `Config.Profile` is blanked so `whoami` never claims a profile it is not using.
+- Cobra: a local flag on a subcommand silently shadows a same-named persistent flag (the global `--profile` vs deploy's build profile forced the rename to `--build-profile`). Also, adding subcommands under a positional-arg command (`artifact upload android|ios`) makes those literals unusable as the first positional — accepted trade-off, documented in README.
+- `catalog deploy` safety rules learned from review: verify uploads by artifact **id** (a version-tag count false-passes on re-deploys and cross-platform uploads); delete matching build outputs before running `flutter build` (a stale `app-<abi>-<profile>.apk` from a wider `--target-platform` would otherwise be uploaded under the new version); refresh-login must default to the profile's stored API, never the prod default.
+- Atomic config writes need `os.CreateTemp` (unique name) + explicit `Chmod(0o600)`; a fixed `file.tmp` path lets two concurrent writers corrupt each other and `os.WriteFile` keeps a stale tmp file's looser mode.
+

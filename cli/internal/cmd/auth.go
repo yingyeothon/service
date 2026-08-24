@@ -23,6 +23,19 @@ type me struct {
 	Via   string `json:"via"`
 }
 
+// loginProfile picks the profile a login/logout should target:
+// --profile > YYT_PROFILE > config default > "default". It also returns the
+// profile's stored API so a token refresh without --api keeps pointing at the
+// same stage instead of silently falling back to prod.
+func loginProfile(a *App) (name, storedAPI string, err error) {
+	f, err := config.LoadFile()
+	if err != nil {
+		return "", "", err
+	}
+	name, _ = config.ProfileName(a.profFlag, f)
+	return name, f.Profiles[name].API, nil
+}
+
 func newLogin(a *App) *cobra.Command {
 	var device bool
 	var tokenName string
@@ -56,6 +69,13 @@ mints a fresh API token once you approve the code on github.com.`,
 			if token == "" {
 				return errors.New("token required: pass --token, set YYT_TOKEN, or pipe it on stdin (console > account > API tokens)")
 			}
+			prof, storedAPI, err := loginProfile(a)
+			if err != nil {
+				return err
+			}
+			if apiBase == "" {
+				apiBase = storedAPI // keep the profile's stage on token refresh
+			}
 			if apiBase == "" {
 				apiBase = config.DefaultAPI
 			}
@@ -72,7 +92,7 @@ mints a fresh API token once you approve the code on github.com.`,
 			if err := cl.Do(cmd.Context(), http.MethodGet, "/me", nil, &m); err != nil {
 				return fmt.Errorf("token rejected: %w", err)
 			}
-			if err := config.Save(cfg); err != nil {
+			if err := config.SaveProfile(prof, config.Profile{API: apiBase, Token: token}); err != nil {
 				return err
 			}
 			p, _ := config.Path()
@@ -80,9 +100,9 @@ mints a fresh API token once you approve the code on github.com.`,
 				fmt.Fprintln(a.Err, "note: your account is pending; commands return 403 until an admin approves it")
 			}
 			if a.jsonOut {
-				return a.printer().JSONValue(map[string]any{"api": cfg.API, "id": m.ID, "login": m.Login, "role": m.Role, "config": p})
+				return a.printer().JSONValue(map[string]any{"api": cfg.API, "id": m.ID, "login": m.Login, "role": m.Role, "profile": prof, "config": p})
 			}
-			fmt.Fprintf(a.Out, "logged in as %s (%s) at %s\nconfig: %s\n", m.Login, m.Role, cfg.API, p)
+			fmt.Fprintf(a.Out, "logged in as %s (%s) at %s [profile %s]\nconfig: %s\n", m.Login, m.Role, cfg.API, prof, p)
 			return nil
 		},
 	}
@@ -96,6 +116,13 @@ func deviceLogin(cmd *cobra.Command, a *App, tokenName string) error {
 	apiBase := a.apiFlag
 	if apiBase == "" {
 		apiBase = os.Getenv("YYT_API")
+	}
+	prof, storedAPI, err := loginProfile(a)
+	if err != nil {
+		return err
+	}
+	if apiBase == "" {
+		apiBase = storedAPI // keep the profile's stage on re-login
 	}
 	if apiBase == "" {
 		apiBase = config.DefaultAPI
@@ -166,8 +193,7 @@ func deviceLogin(cmd *cobra.Command, a *App, tokenName string) error {
 		if res.Status != "ok" { // 202 pending
 			continue
 		}
-		cfg := config.Config{API: apiBase, Token: res.Token}
-		if err := config.Save(cfg); err != nil {
+		if err := config.SaveProfile(prof, config.Profile{API: apiBase, Token: res.Token}); err != nil {
 			return err
 		}
 		p, _ := config.Path()
@@ -175,9 +201,9 @@ func deviceLogin(cmd *cobra.Command, a *App, tokenName string) error {
 			fmt.Fprintln(a.Err, "note: your account is pending; commands return 403 until an admin approves it")
 		}
 		if a.jsonOut {
-			return a.printer().JSONValue(map[string]any{"api": cfg.API, "id": res.Member.ID, "login": res.Member.Login, "role": res.Member.Role, "config": p})
+			return a.printer().JSONValue(map[string]any{"api": apiBase, "id": res.Member.ID, "login": res.Member.Login, "role": res.Member.Role, "profile": prof, "config": p})
 		}
-		fmt.Fprintf(a.Out, "logged in as %s (%s) at %s\nconfig: %s\n", res.Member.Login, res.Member.Role, cfg.API, p)
+		fmt.Fprintf(a.Out, "logged in as %s (%s) at %s [profile %s]\nconfig: %s\n", res.Member.Login, res.Member.Role, apiBase, prof, p)
 		return nil
 	}
 }
@@ -196,16 +222,20 @@ func readToken(in io.Reader, prompt io.Writer) (string, error) {
 func newLogout(a *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
-		Short: "Remove the stored token (the token itself stays valid until revoked)",
+		Short: "Remove the stored token for the selected profile (the token itself stays valid until revoked)",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if err := config.Remove(); err != nil {
+			prof, _, err := loginProfile(a)
+			if err != nil {
+				return err
+			}
+			if err := config.RemoveProfile(prof); err != nil {
 				return err
 			}
 			if a.jsonOut {
 				p, _ := config.Path()
-				return a.printer().JSONValue(map[string]any{"loggedOut": true, "config": p})
+				return a.printer().JSONValue(map[string]any{"loggedOut": true, "profile": prof, "config": p})
 			}
-			fmt.Fprintln(a.Out, "logged out; revoke the token with `yyt tokens revoke <id>` if it should no longer work")
+			fmt.Fprintf(a.Out, "logged out of profile %s; revoke the token with `yyt tokens revoke <id>` if it should no longer work\n", prof)
 			return nil
 		},
 	}
@@ -224,10 +254,22 @@ func newWhoami(a *App) *cobra.Command {
 			if err := cl.Do(cmd.Context(), http.MethodGet, "/me", nil, &m); err != nil {
 				return err
 			}
-			if a.jsonOut {
-				return a.printer().JSONValue(m)
+			cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
+			if err != nil {
+				return err
 			}
-			return a.printer().KV([][2]string{{"id", m.ID}, {"login", m.Login}, {"role", m.Role}, {"api", cl.Base}})
+			if a.jsonOut {
+				out := map[string]any{"id": m.ID, "login": m.Login, "role": m.Role, "via": m.Via, "api": cl.Base}
+				if cfg.Profile != "" {
+					out["profile"] = cfg.Profile
+				}
+				return a.printer().JSONValue(out)
+			}
+			prof := cfg.Profile
+			if prof == "" {
+				prof = "(token from flag/env)"
+			}
+			return a.printer().KV([][2]string{{"id", m.ID}, {"login", m.Login}, {"role", m.Role}, {"profile", prof}, {"api", cl.Base}})
 		},
 	}
 }

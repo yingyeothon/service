@@ -109,6 +109,7 @@ func TestWhoamiTableAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	out = strings.ReplaceAll(out, f.srv.URL, "<api>")
 	golden(t, "whoami_json", out)
 }
 
