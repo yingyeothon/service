@@ -6,6 +6,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["packages/*/src/**", "services/*/src/**"],
+      exclude: ["packages/*/src/generated/**"],
       thresholds: {
         // Aggregated per glob; `perFile` makes every source file meet the bar
         // so one package cannot hide behind the monorepo aggregate.

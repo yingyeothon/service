@@ -6,6 +6,10 @@ export AWS_PROFILE="${AWS_PROFILE:-yyt}"
 cd "$(dirname "$0")/.."
 # Services bundle packages from their dist/, so always rebuild them first.
 pnpm -r --filter "./packages/**" build
+# Console owns the schema: apply pending Prisma migrations before deploying it.
+if [[ "${SERVICE}" == "console" ]]; then
+  scripts/migrate.sh "${STAGE}"
+fi
 cd "services/${SERVICE}"
 shift 2
 pnpm exec serverless deploy --stage "${STAGE}" --region ap-northeast-2 "$@"

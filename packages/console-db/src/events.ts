@@ -1,5 +1,5 @@
 import { AppError } from "@yyt/core";
-import type { Db } from "./db.js";
+import { num, nul, run, type PrismaClient } from "./prisma.js";
 
 export const EVENT_STATUSES = [
   "draft",
@@ -106,39 +106,19 @@ export interface EventsDb {
   countVotes(eventId: string): Promise<Map<string, number>>;
 }
 
-interface RawEvent {
-  id: string;
-  title: string;
-  status: string;
-  body_md: string;
-  created_by: string;
-  created_at: number | string;
-  updated_at: number | string;
-  decided_proposal_id: string | null;
-  poster_key: string | null;
-  published_at: number | string | null;
-}
-
-interface RawProposal {
-  id: string;
-  event_id: string;
-  member_id: string;
-  title: string;
-  body_md: string;
-  created_at: number | string;
-  updated_at: number | string;
-}
-
-const EVENT_COLS = `id, title, status, body_md, created_by, created_at, updated_at,
-  decided_proposal_id, poster_key, published_at`;
-const PROPOSAL_COLS = `id, event_id, member_id, title, body_md, created_at, updated_at`;
-
-const num = (v: number | string): number => Number(v);
-const nul = (v: number | string | null): number | null =>
-  v === null ? null : Number(v);
-
-export function createEventsDb(db: Db): EventsDb {
-  const toEvent = (r: RawEvent): EventRow => ({
+export function createEventsDb(prisma: PrismaClient): EventsDb {
+  const toEvent = (r: {
+    id: string;
+    title: string;
+    status: string;
+    body_md: string;
+    created_by: string;
+    created_at: bigint | number;
+    updated_at: bigint | number;
+    decided_proposal_id: string | null;
+    poster_key: string | null;
+    published_at: bigint | number | null;
+  }): EventRow => ({
     id: r.id,
     title: r.title,
     status: r.status as EventStatus,
@@ -150,7 +130,15 @@ export function createEventsDb(db: Db): EventsDb {
     posterKey: r.poster_key,
     publishedAt: nul(r.published_at),
   });
-  const toProposal = (r: RawProposal): ProposalRow => ({
+  const toProposal = (r: {
+    id: string;
+    event_id: string;
+    member_id: string;
+    title: string;
+    body_md: string;
+    created_at: bigint | number;
+    updated_at: bigint | number;
+  }): ProposalRow => ({
     id: r.id,
     eventId: r.event_id,
     memberId: r.member_id,
@@ -160,155 +148,149 @@ export function createEventsDb(db: Db): EventsDb {
     updatedAt: num(r.updated_at),
   });
   return {
-    insertEvent: async (e) => {
-      await db.execute(
-        `insert into events (id, title, status, body_md, created_by, created_at, updated_at)
-         values (?, ?, 'draft', ?, ?, ?, ?)`,
-        [e.id, e.title, e.bodyMd, e.createdBy, e.createdAt, e.createdAt],
-      );
-    },
-    findEvent: async (id) => {
-      const [r] = await db.query<RawEvent>(
-        `select ${EVENT_COLS} from events where id = ?`,
-        [id],
-      );
-      return r && toEvent(r);
-    },
-    listEvents: async (statuses = []) => {
-      const rows =
-        statuses.length === 0
-          ? await db.query<RawEvent>(
-              `select ${EVENT_COLS} from events order by created_at desc, id desc`,
-            )
-          : await db.query<RawEvent>(
-              `select ${EVENT_COLS} from events where status in (${statuses.map(() => "?").join(", ")}) order by created_at desc, id desc`,
-              [...statuses],
-            );
-      return rows.map(toEvent);
-    },
-    updateEvent: async (id, patch, at, expectStatus) => {
-      const sets = ["updated_at = ?"];
-      const params: Array<string | number | null> = [at];
-      const set = (col: string, v: string | number | null | undefined) => {
-        if (v === undefined) return;
-        sets.push(`${col} = ?`);
-        params.push(v);
-      };
-      set("title", patch.title);
-      set("body_md", patch.bodyMd);
-      set("status", patch.status);
-      set("decided_proposal_id", patch.decidedProposalId);
-      set("poster_key", patch.posterKey);
-      set("published_at", patch.publishedAt);
-      params.push(id);
-      let where = "id = ?";
-      if (expectStatus !== undefined) {
-        where += " and status = ?";
-        params.push(expectStatus);
-      }
-      const r = await db.execute(
-        `update events set ${sets.join(", ")} where ${where}`,
-        params,
-      );
-      return r.affectedRows > 0;
-    },
-    insertProposal: async (p) => {
-      await db.execute(
-        `insert into proposals (id, event_id, member_id, title, body_md, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          p.id,
-          p.eventId,
-          p.memberId,
-          p.title,
-          p.bodyMd,
-          p.createdAt,
-          p.createdAt,
-        ],
-      );
-    },
-    findProposal: async (id) => {
-      const [r] = await db.query<RawProposal>(
-        `select ${PROPOSAL_COLS} from proposals where id = ?`,
-        [id],
-      );
-      return r && toProposal(r);
-    },
-    listProposals: async (eventId) =>
-      (
-        await db.query<RawProposal>(
-          `select ${PROPOSAL_COLS} from proposals where event_id = ? order by created_at, id`,
-          [eventId],
-        )
-      ).map(toProposal),
-    countProposals: async (eventId, memberId) => {
-      const [r] = await db.query<{ n: number | string }>(
-        `select count(*) as n from proposals where event_id = ? and member_id = ?`,
-        [eventId, memberId],
-      );
-      return Number(r?.n ?? 0);
-    },
-    updateProposal: async (id, patch, at) => {
-      const sets = ["updated_at = ?"];
-      const params: Array<string | number> = [at];
-      if (patch.title !== undefined) {
-        sets.push("title = ?");
-        params.push(patch.title);
-      }
-      if (patch.bodyMd !== undefined) {
-        sets.push("body_md = ?");
-        params.push(patch.bodyMd);
-      }
-      const r = await db.execute(
-        `update proposals set ${sets.join(", ")} where id = ?`,
-        [...params, id],
-      );
-      return r.affectedRows > 0;
-    },
-    deleteProposal: async (id) => {
-      const r = await db.execute(`delete from proposals where id = ?`, [id]);
-      return r.affectedRows > 0;
-    },
-    upsertVote: async (v) => {
-      await db.execute(
-        `insert into votes (event_id, member_id, proposal_id, updated_at) values (?, ?, ?, ?)
-         on duplicate key update proposal_id = values(proposal_id), updated_at = values(updated_at)`,
-        [v.eventId, v.memberId, v.proposalId, v.updatedAt],
-      );
-    },
-    deleteVote: async (eventId, memberId) => {
-      const r = await db.execute(
-        `delete from votes where event_id = ? and member_id = ?`,
-        [eventId, memberId],
-      );
-      return r.affectedRows > 0;
-    },
-    findVote: async (eventId, memberId) => {
-      const [r] = await db.query<{
-        event_id: string;
-        member_id: string;
-        proposal_id: string;
-        updated_at: number | string;
-      }>(
-        `select event_id, member_id, proposal_id, updated_at from votes where event_id = ? and member_id = ?`,
-        [eventId, memberId],
-      );
-      return (
-        r && {
-          eventId: r.event_id,
-          memberId: r.member_id,
-          proposalId: r.proposal_id,
-          updatedAt: num(r.updated_at),
-        }
-      );
-    },
-    countVotes: async (eventId) => {
-      const rows = await db.query<{ proposal_id: string; n: number | string }>(
-        `select proposal_id, count(*) as n from votes where event_id = ? group by proposal_id`,
-        [eventId],
-      );
-      return new Map(rows.map((r) => [r.proposal_id, Number(r.n)]));
-    },
+    insertEvent: (e) =>
+      run(async () => {
+        await prisma.events.create({
+          data: {
+            id: e.id,
+            title: e.title,
+            status: "draft",
+            body_md: e.bodyMd,
+            created_by: e.createdBy,
+            created_at: e.createdAt,
+            updated_at: e.createdAt,
+          },
+        });
+      }),
+    findEvent: (id) =>
+      run(async () => {
+        const r = await prisma.events.findUnique({ where: { id } });
+        return r ? toEvent(r) : undefined;
+      }),
+    listEvents: (statuses = []) =>
+      run(async () =>
+        (
+          await prisma.events.findMany({
+            where:
+              statuses.length === 0 ? {} : { status: { in: [...statuses] } },
+            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+          })
+        ).map(toEvent),
+      ),
+    updateEvent: (id, patch, at, expectStatus) =>
+      run(async () => {
+        const data: Record<string, string | number | null> = { updated_at: at };
+        if (patch.title !== undefined) data.title = patch.title;
+        if (patch.bodyMd !== undefined) data.body_md = patch.bodyMd;
+        if (patch.status !== undefined) data.status = patch.status;
+        if (patch.decidedProposalId !== undefined)
+          data.decided_proposal_id = patch.decidedProposalId;
+        if (patch.posterKey !== undefined) data.poster_key = patch.posterKey;
+        if (patch.publishedAt !== undefined)
+          data.published_at = patch.publishedAt;
+        const r = await prisma.events.updateMany({
+          where: {
+            id,
+            ...(expectStatus !== undefined ? { status: expectStatus } : {}),
+          },
+          data,
+        });
+        return r.count > 0;
+      }),
+    insertProposal: (p) =>
+      run(async () => {
+        await prisma.proposals.create({
+          data: {
+            id: p.id,
+            event_id: p.eventId,
+            member_id: p.memberId,
+            title: p.title,
+            body_md: p.bodyMd,
+            created_at: p.createdAt,
+            updated_at: p.createdAt,
+          },
+        });
+      }),
+    findProposal: (id) =>
+      run(async () => {
+        const r = await prisma.proposals.findUnique({ where: { id } });
+        return r ? toProposal(r) : undefined;
+      }),
+    listProposals: (eventId) =>
+      run(async () =>
+        (
+          await prisma.proposals.findMany({
+            where: { event_id: eventId },
+            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+          })
+        ).map(toProposal),
+      ),
+    countProposals: (eventId, memberId) =>
+      run(() =>
+        prisma.proposals.count({
+          where: { event_id: eventId, member_id: memberId },
+        }),
+      ),
+    updateProposal: (id, patch, at) =>
+      run(async () => {
+        const data: Record<string, string | number> = { updated_at: at };
+        if (patch.title !== undefined) data.title = patch.title;
+        if (patch.bodyMd !== undefined) data.body_md = patch.bodyMd;
+        const r = await prisma.proposals.updateMany({ where: { id }, data });
+        return r.count > 0;
+      }),
+    deleteProposal: (id) =>
+      run(async () => {
+        const r = await prisma.proposals.deleteMany({ where: { id } });
+        return r.count > 0;
+      }),
+    upsertVote: (v) =>
+      run(async () => {
+        await prisma.votes.upsert({
+          where: {
+            event_id_member_id: { event_id: v.eventId, member_id: v.memberId },
+          },
+          create: {
+            event_id: v.eventId,
+            member_id: v.memberId,
+            proposal_id: v.proposalId,
+            updated_at: v.updatedAt,
+          },
+          update: { proposal_id: v.proposalId, updated_at: v.updatedAt },
+        });
+      }),
+    deleteVote: (eventId, memberId) =>
+      run(async () => {
+        const r = await prisma.votes.deleteMany({
+          where: { event_id: eventId, member_id: memberId },
+        });
+        return r.count > 0;
+      }),
+    findVote: (eventId, memberId) =>
+      run(async () => {
+        const r = await prisma.votes.findUnique({
+          where: {
+            event_id_member_id: { event_id: eventId, member_id: memberId },
+          },
+        });
+        return r
+          ? {
+              eventId: r.event_id,
+              memberId: r.member_id,
+              proposalId: r.proposal_id,
+              updatedAt: num(r.updated_at),
+            }
+          : undefined;
+      }),
+    countVotes: (eventId) =>
+      run(async () => {
+        const rows = await prisma.votes.groupBy({
+          by: ["proposal_id"],
+          where: { event_id: eventId },
+          _count: { _all: true },
+        });
+        return new Map(rows.map((r) => [r.proposal_id, r._count._all]));
+      }),
   };
 }
 

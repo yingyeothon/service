@@ -1,6 +1,6 @@
 import {
   createConsoleDb,
-  createMysqlDb,
+  createPrismaClient,
   mysqlOptionsFromEnv,
 } from "@yyt/console-db";
 import { systemClock, type Logger } from "@yyt/core";
@@ -47,7 +47,7 @@ function build(): Built {
   if (redis.prefix !== `topic:${stage}:`)
     throw new Error("REDIS_KEY_PREFIX must be topic:<stage>:");
   const kv = createRedisKv(redis);
-  const db = createConsoleDb(createMysqlDb(mysqlOptionsFromEnv()));
+  const db = createConsoleDb(createPrismaClient(mysqlOptionsFromEnv()));
   const clock = systemClock;
   const channels = createChannelStore({ db, kv, clock });
   const topics = createTopicStore({ kv, clock });

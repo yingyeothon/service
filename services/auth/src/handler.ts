@@ -1,6 +1,6 @@
 import {
   createConsoleDb,
-  createMysqlDb,
+  createPrismaClient,
   mysqlOptionsFromEnv,
   type ConsoleDb,
 } from "@yyt/console-db";
@@ -42,7 +42,7 @@ function build(): (event: HttpEvent) => Promise<HttpResult> {
   // One connection per container, reused across invocations (rules/data.md).
   const kv = createRedisKv(redis);
   // auth's MySQL account is SELECT-only; the repository is shared with the writer.
-  const consoleDb = createConsoleDb(createMysqlDb(mysqlOptionsFromEnv()));
+  const consoleDb = createConsoleDb(createPrismaClient(mysqlOptionsFromEnv()));
   const channels = createChannelStore(consoleDb);
   const clock = systemClock;
 
@@ -55,7 +55,7 @@ function build(): (event: HttpEvent) => Promise<HttpResult> {
       // Seeding writes the console DB, so it needs the dev console account
       // published as /yyt-service/dev/auth/debug-mysql-* (docs/decisions.md).
       const writer: ConsoleDb = createConsoleDb(
-        createMysqlDb(mysqlOptionsFromEnv(process.env, "DEBUG_MYSQL_")),
+        createPrismaClient(mysqlOptionsFromEnv(process.env, "DEBUG_MYSQL_")),
       );
       extraRoutes = createDebugRoutes({
         debugKey: process.env.DEBUG_KEY ?? "",

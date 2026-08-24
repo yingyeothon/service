@@ -1,8 +1,7 @@
 import {
   createConsoleDb,
   createEventsDb,
-  createMysqlDb,
-  migrateConsoleDb,
+  createPrismaClient,
   mysqlOptionsFromEnv,
   type ConsoleDb,
   type EventsDb,
@@ -44,30 +43,14 @@ interface Deps {
 
 let deps: Promise<Deps> | undefined;
 
-/** One pool/client per container; console owns the schema, so it migrates on cold start. */
+/** One client per container. Schema migrations run at deploy time (`scripts/migrate.sh`), not here. */
 function getDeps(): Promise<Deps> {
   deps ??= (async () => {
     const stage = env("STAGE");
     const redis = redisOptionsFromEnv();
     if (redis.prefix !== `console:${stage}:`)
       throw new Error("REDIS_KEY_PREFIX must be console:<stage>:");
-    const raw = createMysqlDb(mysqlOptionsFromEnv());
-    try {
-      const version = await migrateConsoleDb(raw);
-      logger.info("schema ready", { version });
-    } catch (e) {
-      // Never keep a pool from a failed cold start: the retry below would
-      // open another one and the host has few connections (rules/data.md).
-      await raw.close().catch(() => undefined);
-      logger.error("cold start failed", {
-        message: e instanceof Error ? e.message : String(e),
-        cause:
-          e instanceof Error && e.cause instanceof Error
-            ? e.cause.message
-            : undefined,
-      });
-      throw e;
-    }
+    const raw = createPrismaClient(mysqlOptionsFromEnv());
     return {
       stage,
       db: createConsoleDb(raw),

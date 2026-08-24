@@ -1,0 +1,207 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  createCatalogDb,
+  createConsoleDb,
+  createEventsDb,
+  type ConsoleDb,
+} from "../src/index.js";
+import { catalogContract } from "./catalog.test.js";
+import { eventsContract } from "./events.test.js";
+import {
+  dockerAvailable,
+  resetTestDb,
+  startTestDb,
+  type TestDb,
+} from "./testDb.js";
+
+/**
+ * The same behavioural contracts the in-memory fakes pass, run against the
+ * real Prisma repositories on a MariaDB testcontainer with the deployed
+ * migration SQL. Skipped when Docker is unavailable (`YYT_TC=0` forces skip).
+ */
+describe.skipIf(!dockerAvailable())(
+  "prisma repositories (testcontainers)",
+  () => {
+    let db: TestDb;
+    beforeAll(async () => {
+      db = await startTestDb();
+    }, 180_000);
+    afterAll(async () => {
+      await db?.stop();
+    });
+
+    describe("events contract", () => {
+      eventsContract(async () => {
+        await resetTestDb(db.client);
+        return createEventsDb(db.client);
+      });
+    });
+
+    describe("catalog contract", () => {
+      catalogContract(async () => {
+        await resetTestDb(db.client);
+        return createCatalogDb(db.client);
+      });
+    });
+
+    describe("console repository", () => {
+      const channel = (
+        id: string,
+        over: Partial<{ expiresAt: number }> = {},
+      ) => ({
+        id,
+        kind: "topic" as const,
+        ownerId: "m1",
+        name: id,
+        config: { authChannelId: "a" },
+        secret: { apiKey: "k0-secret-zz" },
+        createdAt: 1,
+        expiresAt: over.expiresAt ?? 100,
+      });
+      const fresh = async (): Promise<ConsoleDb> => {
+        await resetTestDb(db.client);
+        return createConsoleDb(db.client);
+      };
+
+      it("upsertMember: existing github_id wins the id and refreshes the login", async () => {
+        const repo = await fresh();
+        const id = await repo.upsertMember({
+          id: "mA",
+          githubId: 42,
+          githubLogin: "old",
+          role: "pending",
+          createdAt: 1,
+        });
+        expect(id).toBe("mA");
+        // Same github_id under a new id → the existing row wins, login refreshed.
+        expect(
+          await repo.upsertMember({
+            id: "mB",
+            githubId: 42,
+            githubLogin: "new",
+            role: "pending",
+            createdAt: 2,
+          }),
+        ).toBe("mA");
+        expect((await repo.findMember("mA"))?.githubLogin).toBe("new");
+        expect(await repo.findMember("mB")).toBeUndefined();
+        // Existing id bound to a different github_id → conflict.
+        await expect(
+          repo.upsertMember({
+            id: "mA",
+            githubId: 43,
+            githubLogin: "x",
+            role: "pending",
+            createdAt: 3,
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+      });
+
+      it("member roles, tokens, and audit round-trip", async () => {
+        const repo = await fresh();
+        expect(
+          await repo.setMemberRole("m1", "admin", { at: 5, by: "m2" }),
+        ).toBe(true);
+        expect(await repo.findMember("m1")).toMatchObject({
+          role: "admin",
+          approvedAt: 5,
+          approvedBy: "m2",
+        });
+        expect(await repo.setMemberRole("nope", "admin")).toBe(false);
+        expect((await repo.listMembers()).map((m) => m.id)).toEqual([
+          "m1",
+          "m2",
+          "m3",
+          "m9",
+        ]);
+
+        await repo.insertApiToken({
+          id: "t1",
+          memberId: "m1",
+          tokenHash: "h".repeat(64),
+          name: "n",
+          createdAt: 1,
+        });
+        await expect(
+          repo.insertApiToken({
+            id: "t2",
+            memberId: "m1",
+            tokenHash: "h".repeat(64),
+            name: "dup-hash",
+            createdAt: 2,
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+        expect(await repo.findApiTokenByHash("h".repeat(64))).toMatchObject({
+          id: "t1",
+        });
+        await repo.touchApiToken("t1", 9);
+        expect((await repo.listApiTokens("m1"))[0]?.lastUsedAt).toBe(9);
+        expect(await repo.revokeApiToken("t1", "m2", 10)).toBe(false);
+        expect(await repo.revokeApiToken("t1", "m1", 10)).toBe(true);
+        expect(await repo.findApiTokenByHash("h".repeat(64))).toBeUndefined();
+
+        await repo.insertAudit({
+          id: "a1",
+          actorId: "m1",
+          action: "x",
+          target: null,
+          at: 1,
+          detail: { k: "v" },
+        });
+        await expect(
+          repo.insertAudit({
+            id: "a1",
+            actorId: null,
+            action: "y",
+            target: null,
+            at: 2,
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+      });
+
+      it("channel CRUD, filters, and kind parsing", async () => {
+        const repo = await fresh();
+        await repo.insertChannel(channel("t1"));
+        await expect(repo.insertChannel(channel("t1"))).rejects.toMatchObject({
+          code: "conflict",
+        });
+        await expect(
+          repo.insertChannel({ ...channel("t9"), ownerId: "ghost" }),
+        ).rejects.toMatchObject({ code: "unavailable" });
+        const t = await repo.findTopicChannel("t1");
+        expect(t?.config.authChannelId).toBe("a");
+        expect(t?.secret.apiKey).toBe("k0-secret-zz");
+        expect(await repo.findAuthChannel("t1")).toBeUndefined();
+        expect(await repo.findMatchChannel("t1")).toBeUndefined();
+        expect(
+          (await repo.listChannels({ kind: "topic", ownerId: "m1" })).map(
+            (c) => c.id,
+          ),
+        ).toEqual(["t1"]);
+        expect(await repo.listChannels({ kind: "match" })).toEqual([]);
+        expect(await repo.updateChannel("t1", { name: "renamed" })).toBe(true);
+        expect(await repo.updateChannel("t1", {})).toBe(true);
+        expect(await repo.updateChannel("nope", { name: "x" })).toBe(false);
+        expect((await repo.findChannelRow("t1"))?.name).toBe("renamed");
+      });
+
+      it("expireChannels disables, then deletes with secrets wiped", async () => {
+        const repo = await fresh();
+        await repo.insertChannel(channel("c1", { expiresAt: 10 }));
+        await repo.insertChannel(channel("c2", { expiresAt: 1000 }));
+        const first = await repo.expireChannels(20, 30);
+        expect(first).toEqual({ disabled: ["c1"], deleted: [] });
+        const second = await repo.expireChannels(60, 30);
+        expect(second).toEqual({ disabled: [], deleted: ["c1"] });
+        expect(await repo.findChannelRow("c1")).toBeUndefined();
+        expect(await repo.findTopicChannel("c2")).toBeDefined();
+        // Deleted rows have their secrets wiped, not just hidden.
+        const raw = await db.client.channels.findUnique({
+          where: { id: "c1" },
+        });
+        expect(raw?.secret_json).toBe("{}");
+        expect(raw?.secret_json).not.toContain("k0-secret-zz");
+      });
+    });
+  },
+);

@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  createEventsDb,
-  createMemoryEventsDb,
-  type EventsDb,
-} from "../src/index.js";
-import { fakeDb } from "./fakeDb.js";
+import { createMemoryEventsDb, type EventsDb } from "../src/index.js";
 
 const ev = (id: string, createdAt = 1) => ({
   id,
@@ -23,9 +18,9 @@ const prop = (id: string, eventId: string, memberId: string, at = 1) => ({
 });
 
 /** Behaviour shared by the fake and (via `YYT_IT=1`) the real DB. */
-export function eventsContract(make: () => EventsDb) {
+export function eventsContract(make: () => EventsDb | Promise<EventsDb>) {
   it("events: insert, find, list by status, conditional update", async () => {
-    const db = make();
+    const db = await make();
     await db.insertEvent(ev("e1", 1));
     await db.insertEvent(ev("e2", 2));
     await expect(db.insertEvent(ev("e1"))).rejects.toMatchObject({
@@ -71,7 +66,7 @@ export function eventsContract(make: () => EventsDb) {
   });
 
   it("proposals: per-member count, update, delete cascades votes", async () => {
-    const db = make();
+    const db = await make();
     await db.insertEvent(ev("e1"));
     await db.insertProposal(prop("p1", "e1", "m1", 1));
     await db.insertProposal(prop("p2", "e1", "m2", 2));
@@ -103,7 +98,7 @@ export function eventsContract(make: () => EventsDb) {
   });
 
   it("votes: one per member per event, replaced on upsert, counted", async () => {
-    const db = make();
+    const db = await make();
     await db.insertEvent(ev("e1"));
     await db.insertProposal(prop("p1", "e1", "m1"));
     await db.insertProposal(prop("p2", "e1", "m2"));
@@ -150,76 +145,5 @@ describe("memory events db", () => {
     await expect(
       db.insertEvent({ ...ev("e1"), createdBy: "ghost" }),
     ).rejects.toMatchObject({ code: "unavailable" });
-  });
-});
-
-describe("mysql events db (sql shape)", () => {
-  it("builds conditional updates and maps rows", async () => {
-    const raw = fakeDb();
-    const db = createEventsDb(raw);
-    expect(
-      await db.updateEvent(
-        "e1",
-        { status: "voting", title: "t" },
-        5,
-        "proposing",
-      ),
-    ).toBe(true);
-    const last = raw.calls.at(-1)!;
-    expect(last.sql).toMatch(
-      /update events set updated_at = \?, title = \?, status = \? where id = \? and status = \?/,
-    );
-    expect(last.params).toEqual([5, "t", "voting", "e1", "proposing"]);
-
-    raw.next([
-      {
-        id: "e1",
-        title: "t",
-        status: "decided",
-        body_md: "",
-        created_by: "m1",
-        created_at: "1",
-        updated_at: "2",
-        decided_proposal_id: "p1",
-        poster_key: null,
-        published_at: null,
-      },
-    ]);
-    expect(await db.findEvent("e1")).toEqual({
-      id: "e1",
-      title: "t",
-      status: "decided",
-      bodyMd: "",
-      createdBy: "m1",
-      createdAt: 1,
-      updatedAt: 2,
-      decidedProposalId: "p1",
-      posterKey: null,
-      publishedAt: null,
-    });
-
-    await db.listEvents(["published", "closed"]);
-    expect(raw.calls.at(-1)!.sql).toContain("status in (?, ?)");
-    raw.next([
-      { proposal_id: "p1", n: "2" },
-      { proposal_id: "p2", n: 1 },
-    ]);
-    expect(await db.countVotes("e1")).toEqual(
-      new Map([
-        ["p1", 2],
-        ["p2", 1],
-      ]),
-    );
-    raw.next([{ n: "3" }]);
-    expect(await db.countProposals("e1", "m1")).toBe(3);
-    raw.next([]);
-    expect(await db.findVote("e1", "m1")).toBeUndefined();
-    await db.upsertVote({
-      eventId: "e1",
-      memberId: "m1",
-      proposalId: "p1",
-      updatedAt: 1,
-    });
-    expect(raw.calls.at(-1)!.sql).toContain("on duplicate key update");
   });
 });

@@ -1,0 +1,288 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model api_tokens {
+  id           String  @id @db.VarChar(64)
+  member_id    String  @db.VarChar(64)
+  token_hash   String  @unique(map: "api_tokens_hash") @db.Char(64)
+  name         String  @db.VarChar(255)
+  created_at   BigInt
+  last_used_at BigInt?
+  revoked_at   BigInt?
+  members      members @relation(fields: [member_id], references: [id], onUpdate: Restrict, map: "api_tokens_member")
+
+  @@index([member_id], map: "api_tokens_member")
+}
+
+model audit_log {
+  id          String  @id @db.VarChar(64)
+  actor_id    String? @db.VarChar(64)
+  action      String  @db.VarChar(64)
+  target      String? @db.VarChar(255)
+  at          BigInt
+  detail_json String? @db.MediumText
+
+  @@index([at], map: "audit_log_at")
+}
+
+model catalog_app_permissions {
+  id                   String                        @id @db.VarChar(64)
+  app_id               String                        @db.VarChar(64)
+  member_id            String?                       @db.VarChar(64)
+  pending_github_login String?                       @db.VarChar(255)
+  level                catalog_app_permissions_level
+  created_at           BigInt
+  catalog_apps         catalog_apps                  @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_app_perm_app")
+  members              members?                      @relation(fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_app_perm_member_fk")
+
+  @@unique([app_id, member_id], map: "catalog_app_perm_member")
+  @@unique([app_id, pending_github_login], map: "catalog_app_perm_pending")
+  @@index([member_id], map: "catalog_app_perm_member_fk")
+  @@index([pending_github_login], map: "catalog_app_perm_pending_login")
+}
+
+model catalog_apps {
+  id                      String                    @id @db.VarChar(64)
+  name                    String                    @unique(map: "catalog_apps_name") @db.VarChar(255)
+  path                    String                    @db.VarChar(255)
+  debug_only              Boolean                   @default(false)
+  description             String?                   @db.MediumText
+  group_id                String?                   @db.VarChar(64)
+  owner_id                String?                   @db.VarChar(64)
+  pending_owner_login     String?                   @db.VarChar(255)
+  slack_hook_url          String?                   @db.VarChar(1024)
+  slack_channel           String?                   @db.VarChar(255)
+  message_template        String?                   @db.MediumText
+  keep_recent_versions    Int                       @default(3)
+  created_at              BigInt
+  updated_at              BigInt
+  catalog_app_permissions catalog_app_permissions[]
+  catalog_groups          catalog_groups?           @relation(fields: [group_id], references: [id], onUpdate: Restrict, map: "catalog_apps_group")
+  members                 members?                  @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_owner")
+  catalog_artifacts       catalog_artifacts[]
+  catalog_pending_uploads catalog_pending_uploads[]
+
+  @@index([group_id], map: "catalog_apps_group")
+  @@index([owner_id], map: "catalog_apps_owner")
+}
+
+model catalog_artifacts {
+  id           String                     @id @db.VarChar(64)
+  app_id       String                     @db.VarChar(64)
+  platform     catalog_artifacts_platform
+  url          String                     @db.VarChar(1024)
+  object_key   String?                    @db.VarChar(1024)
+  size         BigInt?
+  hash         String?                    @db.VarChar(128)
+  tags_json    String                     @db.MediumText
+  created_at   BigInt
+  catalog_apps catalog_apps               @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_artifacts_app")
+
+  @@index([app_id, created_at], map: "catalog_artifacts_app")
+}
+
+model catalog_group_permissions {
+  id                   String                          @id @db.VarChar(64)
+  group_id             String                          @db.VarChar(64)
+  member_id            String?                         @db.VarChar(64)
+  pending_github_login String?                         @db.VarChar(255)
+  level                catalog_group_permissions_level
+  created_at           BigInt
+  catalog_groups       catalog_groups                  @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_group_perm_group")
+  members              members?                        @relation(fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_group_perm_member_fk")
+
+  @@unique([group_id, member_id], map: "catalog_group_perm_member")
+  @@unique([group_id, pending_github_login], map: "catalog_group_perm_pending")
+  @@index([member_id], map: "catalog_group_perm_member_fk")
+  @@index([pending_github_login], map: "catalog_group_perm_pending_login")
+}
+
+model catalog_groups {
+  id                        String                      @id @db.VarChar(64)
+  name                      String                      @unique(map: "catalog_groups_name") @db.VarChar(255)
+  owner_id                  String?                     @db.VarChar(64)
+  pending_owner_login       String?                     @db.VarChar(255)
+  created_at                BigInt
+  updated_at                BigInt
+  catalog_apps              catalog_apps[]
+  catalog_group_permissions catalog_group_permissions[]
+  members                   members?                    @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_groups_owner")
+
+  @@index([owner_id], map: "catalog_groups_owner")
+}
+
+model catalog_pending_uploads {
+  id           String                           @id @db.VarChar(64)
+  app_id       String                           @db.VarChar(64)
+  platform     catalog_pending_uploads_platform
+  tags_json    String?                          @db.MediumText
+  filename     String                           @db.VarChar(255)
+  status       catalog_pending_uploads_status   @default(pending)
+  object_key   String?                          @db.VarChar(1024)
+  etag         String?                          @db.VarChar(128)
+  artifact_id  String?                          @db.VarChar(64)
+  created_at   BigInt
+  expires_at   BigInt
+  catalog_apps catalog_apps                     @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_pending_uploads_app")
+
+  @@index([app_id], map: "catalog_pending_uploads_app")
+  @@index([expires_at], map: "catalog_pending_uploads_expires")
+  @@index([status], map: "catalog_pending_uploads_status")
+}
+
+model channels {
+  id          String        @id @db.VarChar(64)
+  kind        channels_kind
+  owner_id    String        @db.VarChar(64)
+  name        String        @db.VarChar(255)
+  config_json String        @db.MediumText
+  secret_json String        @db.MediumText
+  created_at  BigInt
+  expires_at  BigInt
+  disabled_at BigInt?
+  deleted_at  BigInt?
+  members     members       @relation(fields: [owner_id], references: [id], onUpdate: Restrict, map: "channels_owner")
+
+  @@index([kind, owner_id], map: "channels_kind_owner")
+  @@index([owner_id], map: "channels_owner")
+}
+
+model events {
+  id                  String        @id @db.VarChar(64)
+  title               String        @db.VarChar(255)
+  status              events_status
+  body_md             String        @db.MediumText
+  created_by          String        @db.VarChar(64)
+  created_at          BigInt
+  updated_at          BigInt
+  decided_proposal_id String?       @db.VarChar(64)
+  poster_key          String?       @db.VarChar(255)
+  published_at        BigInt?
+  members             members       @relation(fields: [created_by], references: [id], onUpdate: Restrict, map: "events_creator")
+  proposals           proposals[]
+  votes               votes[]
+
+  @@index([created_by], map: "events_creator")
+  @@index([status, created_at], map: "events_status")
+}
+
+model members {
+  id                        String                      @id @db.VarChar(64)
+  github_id                 BigInt                      @unique(map: "members_github_id")
+  github_login              String                      @db.VarChar(255)
+  role                      members_role
+  created_at                BigInt
+  approved_at               BigInt?
+  approved_by               String?                     @db.VarChar(64)
+  api_tokens                api_tokens[]
+  catalog_app_permissions   catalog_app_permissions[]
+  catalog_apps              catalog_apps[]
+  catalog_group_permissions catalog_group_permissions[]
+  catalog_groups            catalog_groups[]
+  channels                  channels[]
+  events                    events[]
+  proposals                 proposals[]
+  votes                     votes[]
+}
+
+model proposals {
+  id         String  @id @db.VarChar(64)
+  event_id   String  @db.VarChar(64)
+  member_id  String  @db.VarChar(64)
+  title      String  @db.VarChar(255)
+  body_md    String  @db.MediumText
+  created_at BigInt
+  updated_at BigInt
+  events     events  @relation(fields: [event_id], references: [id], onUpdate: Restrict, map: "proposals_event")
+  members    members @relation(fields: [member_id], references: [id], onUpdate: Restrict, map: "proposals_member")
+  votes      votes[]
+
+  @@index([event_id, created_at], map: "proposals_event")
+  @@index([member_id], map: "proposals_member")
+}
+
+model schema_migrations {
+  version    Int    @id
+  applied_at BigInt
+}
+
+model votes {
+  event_id    String    @db.VarChar(64)
+  member_id   String    @db.VarChar(64)
+  proposal_id String    @db.VarChar(64)
+  updated_at  BigInt
+  events      events    @relation(fields: [event_id], references: [id], onUpdate: Restrict, map: "votes_event")
+  members     members   @relation(fields: [member_id], references: [id], onUpdate: Restrict, map: "votes_member")
+  proposals   proposals @relation(fields: [proposal_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "votes_proposal")
+
+  @@id([event_id, member_id])
+  @@index([member_id], map: "votes_member")
+  @@index([proposal_id], map: "votes_proposal")
+}
+
+enum channels_kind {
+  auth
+  topic
+  match
+}
+
+enum catalog_artifacts_platform {
+  android
+  ios
+  web
+  bin
+  server
+  win32
+  osx
+  linux
+}
+
+enum catalog_pending_uploads_platform {
+  android
+  ios
+  web
+  bin
+  server
+  win32
+  osx
+  linux
+}
+
+enum events_status {
+  draft
+  proposing
+  voting
+  decided
+  published
+  closed
+}
+
+enum members_role {
+  admin
+  member
+  pending
+}
+
+enum catalog_app_permissions_level {
+  read
+  edit
+}
+
+enum catalog_group_permissions_level {
+  read
+  edit
+}
+
+enum catalog_pending_uploads_status {
+  pending
+  completed
+  failed
+}

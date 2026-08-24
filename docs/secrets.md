@@ -26,11 +26,12 @@ Identifiers are treated as secrets because the stateful host is reachable from t
 
 ## Scripts
 
-| Script                             | Purpose                                                                                                                                                                                                       |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scripts/bootstrap-ssm.sh <stage>` | `local/env/*.<stage>.env` → SSM. Values pass through a 0600 temp file (never argv), env files are parsed (never sourced), `umask 077`, names-only log in `local/deploy/`. Keeps the existing dev `debug-key`. |
-| `scripts/get-env.sh <stage>`       | SSM → `local/env/` on a new machine.                                                                                                                                                                          |
-| `scripts/local-identifiers.sh`     | Builds gitignored `local/identifiers.txt` (grep patterns for host/DB/account names) used by the hooks. Rerun after any credential change.                                                                     |
+| Script                             | Purpose                                                                                                                                                                                                                                              |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/bootstrap-ssm.sh <stage>` | `local/env/*.<stage>.env` → SSM. Values pass through a 0600 temp file (never argv), env files are parsed (never sourced), `umask 077`, names-only log in `local/deploy/`. Keeps the existing dev `debug-key`.                                        |
+| `scripts/get-env.sh <stage>`       | SSM → `local/env/` on a new machine.                                                                                                                                                                                                                 |
+| `scripts/migrate.sh <stage>`       | Sources `local/env/console.<stage>.env` and runs `prisma migrate deploy`. The `mysql://` URL (it embeds the password) is assembled only inside `prisma.config.ts` — never pass it via argv, echo it, or export a `DATABASE_URL` into shells or logs. |
+| `scripts/local-identifiers.sh`     | Builds gitignored `local/identifiers.txt` (grep patterns for host/DB/account names) used by the hooks. Rerun after any credential change.                                                                                                            |
 
 ## Defenses (all required)
 

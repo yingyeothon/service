@@ -16,7 +16,7 @@
 
 ## Essential Commands
 
-- `pnpm install && pnpm -r build && pnpm test` — build + vitest (no Docker needed).
+- `pnpm install && pnpm -r build && pnpm test` — build (runs `prisma generate`) + vitest; with Docker present the MariaDB testcontainers suite runs too, without it those tests skip.
 - `pnpm lint && pnpm format:check && pnpm typecheck` — CI gates.
 - `scripts/deploy.sh <service> <stage>` — deploy one stack (`dev` for verification, `prod` on request only).
 - `scripts/smoke/*.mjs`, `wscat -s bearer -s <jwt>` — manual verification against `dev`.
@@ -25,7 +25,7 @@
 ## Non-Negotiables
 
 - Decisions in `docs/decisions.md` are settled; change the doc first, then the code.
-- Runtime state lives in self-hosted Redis (TCP, per-service ACL user) with a `{service}:{stage}:` prefix; durable data lives in the self-hosted MySQL database owned by console (others read-only) — `rules/data.md`. (Migration from the old Upstash/sqlite-on-S3 design: `todo/09-storage-migration.md`.)
+- Runtime state lives in self-hosted Redis (TCP, per-service ACL user) with a `{service}:{stage}:` prefix; durable data lives in the self-hosted MySQL database owned by console (others read-only); schema is Prisma-managed and migrates at deploy time (`scripts/migrate.sh`) — `rules/data.md`. (Migration from the old Upstash/sqlite-on-S3 design: `todo/09-storage-migration.md`.)
 - Identity comes only from verified JWT claims / sessions; never log tokens, OAuth codes, or secrets — `rules/security.md`.
 - Every task: tests → manual verification on `dev` → three adversarial review subagents → update rules/todo → commit to `main` and push — `rules/workflow.md`, `CONTRIBUTING.md`. Git hooks (`scripts/git-hooks/`, enabled by `pnpm install` via `prepare`) run gitleaks plus an identifier grep fed by gitignored `local/identifiers.txt` (`scripts/local-identifiers.sh`) on commit and push; never bypass them with `--no-verify`.
 
