@@ -53,6 +53,28 @@ func newProfile(a *App) *cobra.Command {
 		},
 	})
 
+	{
+		var device bool
+		var tokenName string
+		add := &cobra.Command{
+			Use:   "add <name>",
+			Short: "Log in and store the result as a named profile (same as `yyt login --profile <name>`)",
+			Long: `Verifies a token (--token, YYT_TOKEN, or stdin) or runs the GitHub device
+flow (--device) against --api and stores the login under the given profile
+name. The first stored profile becomes the default.`,
+			Args: cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				prev := a.profFlag
+				a.profFlag = args[0]
+				defer func() { a.profFlag = prev }()
+				return doLogin(cmd, a, device, tokenName)
+			},
+		}
+		add.Flags().BoolVar(&device, "device", false, "sign in with the GitHub device flow (no pre-existing token needed)")
+		add.Flags().StringVar(&tokenName, "name", "", "name for the minted API token (default: device login)")
+		c.AddCommand(add)
+	}
+
 	c.AddCommand(&cobra.Command{
 		Use:   "use <name>",
 		Short: "Make a stored profile the default",

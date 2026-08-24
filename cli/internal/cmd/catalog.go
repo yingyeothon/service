@@ -144,7 +144,11 @@ func uploadArtifact(ctx context.Context, cl *api.Client, appName, filePath, plat
 }
 
 func newCatalog(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "catalog", Short: "Binary catalog: apps, groups, artifacts, permissions"}
+	c := &cobra.Command{
+		Use:     "catalog",
+		Aliases: []string{"cata"}, // legacy cata CLI muscle memory
+		Short:   "Binary catalog: apps, groups, artifacts, permissions",
+	}
 	p := func() output.Printer { return a.printer() }
 	do := func(cmd *cobra.Command, method, path string, in, out any) error {
 		cl, err := a.client()
