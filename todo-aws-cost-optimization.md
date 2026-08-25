@@ -66,7 +66,7 @@ count-reduction saving is unaffected.
 
 ### Decision: retain 15 production alarms
 
-Remove all 17 dev alarms. Retain these 13 prod alarms:
+Remove all 17 dev alarms. Retain these 15 prod alarms:
 
 | Service | Retained signal              | Reason                                                                        |
 | ------- | ---------------------------- | ----------------------------------------------------------------------------- |
@@ -339,6 +339,6 @@ published download is far more expensive than the storage saved.
 | Safe 365-day prod deletion cohort |      about `$0.15` | Candidate/reference validation required |
 
 The non-destructive target is `$1.9–2.9/month` during days 30–89, reducing the
-current account planning range from roughly `$22–24` to roughly `$19–22/month`. Treat larger S3
-savings as optional: they require application-aware deletion, not a broad
-lifecycle expiration.
+current account planning range from roughly `$22–24` to roughly `$19–22/month`.
+Treat larger S3 savings as optional: they require application-aware deletion, not
+a broad lifecycle expiration.
