@@ -59,6 +59,15 @@ describe("createRedisAclAdmin", () => {
       GRANT.channelPattern,
       "+@all",
       "-@dangerous",
+      // `-@dangerous` does not cover SCAN, and Redis does not filter SCAN by
+      // the ACL's key patterns: without these the credential could list every
+      // key name in the instance — both stages, every service — while still
+      // being refused every read.
+      "-scan",
+      "-randomkey",
+      "-dbsize",
+      "-pubsub",
+      "-memory",
     ]);
     // Without ACL SAVE the credential dies at the next restart.
     expect(c.calls[1]).toEqual(["ACL", "SAVE"]);

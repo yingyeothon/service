@@ -30,6 +30,7 @@ import {
   runCatalogSweep,
   runExpire,
   runRedisAclReconcile,
+  runRedisUsageReport,
 } from "./expire.js";
 import { createGithubLogin } from "./github.js";
 import { createS3PosterStore } from "./poster.js";
@@ -220,6 +221,9 @@ export const expire = async (): Promise<void> => {
     // whatever the best-effort revokes above dropped, so it must still run
     // when they throw.
     () => runRedisAclReconcile({ admin: redisAcl, db, stage, logger }),
+    // Redis has no per-account memory quota, so this is the whole defence:
+    // see who is growing before `allkeys-lru` starts evicting someone else.
+    () => runRedisUsageReport({ admin: redisAcl, stage, logger }),
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),
   ]) {

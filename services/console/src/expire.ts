@@ -250,3 +250,87 @@ export async function runRedisAclReconcile({
   });
   return { checked: mine.length, revoked };
 }
+
+/**
+ * A single channel holding more keys than this gets named in the daily report.
+ * Not a quota — Redis has no per-account or per-prefix memory limit, and the
+ * eviction policy is `allkeys-lru`, so a runaway participant does not hit their
+ * own wall, they evict *other services'* state. The only defence available is
+ * seeing it (`todo/16` §B, `rules/data.md`).
+ */
+export const REDIS_CHANNEL_KEY_WARN = 5000;
+
+/**
+ * Daily usage report for the shared Redis instance.
+ *
+ * Counts, not bytes, and deliberately so: `MEMORY USAGE` needs access to the
+ * key it measures, and the issuer account holds no key patterns precisely so
+ * that no console code path can read a participant's game state. A count
+ * catches the realistic abuse (a loop writing keys) and misses the unrealistic
+ * one (a single enormous value) — `yyt-stateful`'s `redis-usage.sh` reports
+ * exact bytes with the admin account when someone needs the number.
+ *
+ * `usedBytes` against `maxBytes` is the figure that actually predicts trouble:
+ * eviction starts there, and it takes whichever key is least recently used,
+ * which will usually belong to someone innocent.
+ */
+export async function runRedisUsageReport({
+  admin,
+  stage,
+  logger,
+  warnAbove = REDIS_CHANNEL_KEY_WARN,
+}: {
+  admin?: RedisAclAdmin;
+  stage: string;
+  logger: Logger;
+  warnAbove?: number;
+}): Promise<{
+  usedBytes: number;
+  maxBytes: number;
+  gameKeys: number;
+  channels: number;
+  top: { channelId: string; keys: number }[];
+}> {
+  const empty = {
+    usedBytes: 0,
+    maxBytes: 0,
+    gameKeys: 0,
+    channels: 0,
+    top: [] as { channelId: string; keys: number }[],
+  };
+  if (!admin) return empty;
+  const memory = await admin.serverMemory();
+  const prefix = `game:${stage}:`;
+  const { counts, scanned, truncated } = await admin.countKeys(
+    `${prefix}*`,
+    (key) => {
+      // `game:{stage}:{channelId}:…` — everything up to the next colon.
+      const rest = key.slice(prefix.length);
+      const end = rest.indexOf(":");
+      return end > 0 ? rest.slice(0, end) : null;
+    },
+  );
+  const top = [...counts.entries()]
+    .map(([channelId, keys]) => ({ channelId, keys }))
+    .sort((a, b) => b.keys - a.keys)
+    .slice(0, 5);
+  const report = {
+    usedBytes: memory.usedBytes,
+    maxBytes: memory.maxBytes,
+    gameKeys: scanned,
+    channels: counts.size,
+    top,
+  };
+  logger.info("redis usage", { ...report, truncated });
+  // 80% of the ceiling: past that, LRU eviction is close enough that the next
+  // thing to disappear is somebody else's data.
+  if (memory.maxBytes > 0 && memory.usedBytes > memory.maxBytes * 0.8)
+    logger.warn("redis memory is near the ceiling", {
+      usedBytes: memory.usedBytes,
+      maxBytes: memory.maxBytes,
+    });
+  for (const t of top)
+    if (t.keys >= warnAbove)
+      logger.warn("channel is holding an unusual number of redis keys", t);
+  return report;
+}

@@ -1,4 +1,4 @@
-import { AppError, randomHex } from "@yyt/core";
+import { AppError, randomHex, sha256Hex } from "@yyt/core";
 import type { Kv } from "@yyt/redis";
 import type { ProviderName } from "./providers/types.js";
 
@@ -18,9 +18,14 @@ export interface StateStore {
 
 export const STATE_TTL_SEC = 600;
 
-/** `auth:{stage}:state:{state}` → JSON, TTL 10 minutes. */
+/**
+ * `auth:{stage}:state:{sha256(state)}` → JSON, TTL 10 minutes. Keyed by digest
+ * because a key name is not covered by the ACL's key patterns: Redis does not
+ * filter `SCAN` by them, so every account on the shared instance can list key
+ * names even when refused every read.
+ */
 export function createStateStore(kv: Kv): StateStore {
-  const key = (s: string) => `state:${s}`;
+  const key = (s: string) => `state:${sha256Hex(s)}`;
   return {
     issue: async (data) => {
       const state = randomHex(24);
