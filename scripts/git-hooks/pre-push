@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 # Scans every commit about to be pushed (covers amend/rebase/--no-verify commits) and refuses tracked secret paths.
+# Checks capture their matches rather than using `grep -q`: `grep -q` exits at the first hit, SIGPIPEs the
+# upstream command, and under `pipefail` that 141 turned the test false — the guard passed silently on large ranges.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 command -v gitleaks >/dev/null || { echo "pre-push: gitleaks is required" >&2; exit 1; }
+if [ ! -s local/identifiers.txt ]; then
+  echo "pre-push: local/identifiers.txt is missing or empty — run scripts/local-identifiers.sh" >&2
+  echo "pre-push: set YYT_ALLOW_NO_IDENTIFIERS=1 only if you know the guard is unnecessary here" >&2
+  [ "${YYT_ALLOW_NO_IDENTIFIERS:-}" = "1" ] || exit 1
+fi
 zero=0000000000000000000000000000000000000000
 while read -r _lref lsha _rref rsha; do
   [ "$lsha" = "$zero" ] && continue
   if [ "$rsha" = "$zero" ]; then range="$lsha"; else range="$rsha..$lsha"; fi
   tracked=$(git ls-tree -r --name-only "$lsha" | grep -E '(^|/)\.env(\.|$)|(^|/)\.envrc$|^local/' | grep -vE '\.example$|^local/README\.md$' || true)
   if [ -n "$tracked" ]; then echo "pre-push: secret-bearing paths are tracked in $lsha:" >&2; echo "$tracked" >&2; exit 1; fi
-  if git ls-tree -r --name-only "$lsha" | grep -qE '^todo/'; then echo "pre-push: todo/ must stay untracked" >&2; exit 1; fi
-  if [ -s local/identifiers.txt ] && git log -p --format= "$range" -- . ':!pnpm-lock.yaml' | grep -E '^\+' | grep -qE -f local/identifiers.txt; then
-    echo "pre-push: stateful host / DB / account identifiers found in $range" >&2; exit 1
+  todo=$(git ls-tree -r --name-only "$lsha" | grep -cE '^todo/' || true)
+  if [ "${todo:-0}" -gt 0 ]; then echo "pre-push: todo/ must stay untracked ($todo path(s) in $lsha)" >&2; exit 1; fi
+  if [ -s local/identifiers.txt ]; then
+    hits=$(git log -p --format= "$range" -- . ':!pnpm-lock.yaml' | grep -E '^\+' | grep -cE -f local/identifiers.txt || true)
+    if [ "${hits:-0}" -gt 0 ]; then
+      echo "pre-push: $hits added line(s) in $range carry stateful host / DB / account identifiers" >&2
+      echo "pre-push: list them with: git log -p --format= $range -- . ':!pnpm-lock.yaml' | grep -E '^\\+' | grep -E -f local/identifiers.txt" >&2
+      exit 1
+    fi
   fi
   gitleaks detect --redact --no-banner --config .gitleaks.toml --log-opts="$range"
 done
