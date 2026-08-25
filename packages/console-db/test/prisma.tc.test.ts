@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  createAssetsDb,
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
@@ -7,6 +8,7 @@ import {
   toQChannel,
   type ConsoleDb,
 } from "../src/index.js";
+import { assetsContract } from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
 import { eventsContract } from "./events.test.js";
 import {
@@ -43,6 +45,13 @@ describe.skipIf(!dockerAvailable())(
       catalogContract(async () => {
         await resetTestDb(db.client);
         return createCatalogDb(db.client);
+      });
+    });
+
+    describe("assets contract", () => {
+      assetsContract(async () => {
+        await resetTestDb(db.client);
+        return createAssetsDb(db.client);
       });
     });
 

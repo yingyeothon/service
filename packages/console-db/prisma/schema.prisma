@@ -22,6 +22,57 @@ model api_tokens {
   @@index([member_id], map: "api_tokens_member")
 }
 
+model asset_bundles {
+  id                    String                  @id @db.VarChar(64)
+  name                  String                  @unique(map: "asset_bundles_name") @db.VarChar(255)
+  description           String?                 @db.MediumText
+  owner_id              String?                 @db.VarChar(64)
+  created_at            BigInt
+  updated_at            BigInt
+  members               members?                @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_owner")
+  asset_files           asset_files[]
+  asset_pending_uploads asset_pending_uploads[]
+
+  @@index([owner_id], map: "asset_bundles_owner")
+}
+
+model asset_files {
+  id            String        @id @db.VarChar(64)
+  bundle_id     String        @db.VarChar(64)
+  version       String        @db.VarChar(64)
+  path          String        @db.VarChar(255)
+  object_key    String        @db.VarChar(1024)
+  url           String        @db.VarChar(1024)
+  content_type  String        @db.VarChar(128)
+  size          BigInt
+  hash          String?       @db.VarChar(128)
+  created_at    BigInt
+  asset_bundles asset_bundles @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "asset_files_bundle")
+
+  @@unique([bundle_id, version, path], map: "asset_files_path")
+  @@index([bundle_id, version], map: "asset_files_version")
+}
+
+model asset_pending_uploads {
+  id            String                       @id @db.VarChar(64)
+  bundle_id     String                       @db.VarChar(64)
+  version       String                       @db.VarChar(64)
+  path          String                       @db.VarChar(255)
+  content_type  String                       @db.VarChar(128)
+  size          BigInt
+  status        asset_pending_uploads_status @default(pending)
+  object_key    String?                      @db.VarChar(1024)
+  etag          String?                      @db.VarChar(128)
+  file_id       String?                      @db.VarChar(64)
+  created_at    BigInt
+  expires_at    BigInt
+  asset_bundles asset_bundles                @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "asset_pending_uploads_bundle")
+
+  @@index([bundle_id], map: "asset_pending_uploads_bundle")
+  @@index([expires_at], map: "asset_pending_uploads_expires")
+  @@index([status], map: "asset_pending_uploads_status")
+}
+
 model audit_log {
   id          String  @id @db.VarChar(64)
   actor_id    String? @db.VarChar(64)
@@ -183,6 +234,7 @@ model members {
   approved_at               BigInt?
   approved_by               String?                     @db.VarChar(64)
   api_tokens                api_tokens[]
+  asset_bundles             asset_bundles[]
   catalog_app_permissions   catalog_app_permissions[]
   catalog_apps              catalog_apps[]
   catalog_group_permissions catalog_group_permissions[]
@@ -281,6 +333,12 @@ enum catalog_app_permissions_level {
 enum catalog_group_permissions_level {
   read
   edit
+}
+
+enum asset_pending_uploads_status {
+  pending
+  completed
+  failed
 }
 
 enum catalog_pending_uploads_status {

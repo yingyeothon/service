@@ -298,6 +298,13 @@ Constraints that fall out of the platform, not the game:
   map does not re-ship art.
 - Everything under `npcs[].stats` / `spawn` is **game schema** — yyt stores and
   serves it without interpreting it, exactly like a `doc` body.
+- **Publishing it** (shipped 2026-08-25): `yyt asset create <bundle>` once, then
+  `yyt asset push <bundle> <version> <dir>` per release — the directory's layout
+  becomes the bundle's, so `rows`'s `tileset: "art/tiles.png"` resolves relative
+  to the map's own URL. Paste the resulting map URL into the lobby channel
+  (`yyt channels update <id> --map-url …`); that pointer, not the CDN, is what
+  makes a version live, so a rollback is a config edit and nothing is ever
+  invalidated. Allowed extensions and caps: `cli/README.md` "Game assets".
 
 ---
 
@@ -309,7 +316,7 @@ game's own schema, carried opaquely:
 
 | shape         | backing                          | holds here                                 | who writes                               | can the client read it directly?          |
 | ------------- | -------------------------------- | ------------------------------------------ | ---------------------------------------- | ----------------------------------------- |
-| **asset**     | S3 + CDN                         | the map, with NPC definitions inlined      | the map editor / an upload               | **yes** — a plain `fetch`, no credentials |
+| **asset**     | S3 + CDN                         | the map, with NPC definitions inlined      | `yyt asset push` (later: the map editor) | **yes** — a plain `fetch`, no credentials |
 | **doc**       | MariaDB, versioned JSON with CAS | character sheet, inventory, quest progress | the game's lambda, with a channel apiKey | **read-only, own row only**               |
 | **ephemeral** | Redis, TTL on every key          | party, dungeon runtime                     | the gateway / the dungeon actor          | no                                        |
 

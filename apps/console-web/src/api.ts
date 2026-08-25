@@ -1,5 +1,9 @@
 import type {
   ApiToken,
+  AssetBundle,
+  AssetBundleDetail,
+  AssetFile,
+  AssetUploadGrant,
   CatalogApp,
   CatalogArtifact,
   CatalogCleanupResult,
@@ -311,6 +315,53 @@ export function createApiClient({
       return post<CatalogArtifact>(
         `/catalog/uploads/${enc(grant.uploadId)}/commit`,
       );
+    },
+    assetBundles: () =>
+      get<{ bundles: AssetBundle[] }>("/assets/bundles").then((r) => r.bundles),
+    assetBundle: (name: string) =>
+      get<AssetBundleDetail>(`/assets/bundles/${enc(name)}`),
+    createAssetBundle: (body: { name: string; description?: string }) =>
+      post<AssetBundle>("/assets/bundles", body),
+    updateAssetBundle: (
+      name: string,
+      body: { name?: string; description?: string | null },
+    ) => patch<AssetBundle>(`/assets/bundles/${enc(name)}`, body),
+    deleteAssetBundle: (name: string) => del(`/assets/bundles/${enc(name)}`),
+    assetVersion: (name: string, version: string) =>
+      get<{ bundle: string; version: string; files: AssetFile[] }>(
+        `/assets/bundles/${enc(name)}/versions/${enc(version)}`,
+      ),
+    deleteAssetVersion: (name: string, version: string) =>
+      del(`/assets/bundles/${enc(name)}/versions/${enc(version)}`),
+    /**
+     * presign → browser PUT to S3 → commit, once per file. `path` is where the
+     * file sits *inside* the bundle, which is what a map JSON's relative
+     * references resolve against.
+     */
+    async uploadAssetFile(
+      name: string,
+      version: string,
+      path: string,
+      file: File,
+    ): Promise<AssetFile> {
+      const grant = await post<AssetUploadGrant>(
+        `/assets/bundles/${enc(name)}/files`,
+        { version, path, size: file.size },
+      );
+      const res = await fetchImpl(grant.url, {
+        method: grant.method,
+        // The signed `content-type` must go up verbatim; the browser would
+        // otherwise send the File's own type and the PUT would 403.
+        headers: grant.headers,
+        body: file,
+      });
+      if (!res.ok)
+        throw new ApiError(
+          res.status,
+          "upload_failed",
+          `asset upload failed (${res.status})`,
+        );
+      return post<AssetFile>(`/assets/uploads/${enc(grant.uploadId)}/commit`);
     },
     installerDownloads: () =>
       get<{ downloads: InstallerDownload[] }>(

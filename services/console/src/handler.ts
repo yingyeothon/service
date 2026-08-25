@@ -1,9 +1,11 @@
 import {
+  createAssetsDb,
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
   createPrismaClient,
   mysqlOptionsFromEnv,
+  type AssetsDb,
   type CatalogDb,
   type ConsoleDb,
   type EventsDb,
@@ -14,7 +16,7 @@ import { createRedisKv, redisOptionsFromEnv, type Kv } from "@yyt/redis";
 import { createConsoleApp } from "./app.js";
 import { createS3ArtifactStore, type ArtifactStore } from "./artifact-store.js";
 import { createDebugRoutes } from "./debug.js";
-import { runCatalogSweep, runExpire } from "./expire.js";
+import { runAssetSweep, runCatalogSweep, runExpire } from "./expire.js";
 import { createGithubLogin } from "./github.js";
 import { createS3PosterStore } from "./poster.js";
 
@@ -42,6 +44,7 @@ interface Deps {
   db: ConsoleDb;
   events: EventsDb;
   catalog: CatalogDb;
+  assets: AssetsDb;
   kv: Kv;
 }
 
@@ -60,6 +63,7 @@ function getDeps(): Promise<Deps> {
       db: createConsoleDb(raw),
       events: createEventsDb(raw),
       catalog: createCatalogDb(raw),
+      assets: createAssetsDb(raw),
       kv: createRedisKv(redis),
     };
   })();
@@ -96,7 +100,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     // Empty until the gateway ships: `GET /gw/channels/{id}` then answers 503.
     gatewayToken: process.env.GATEWAY_TOKEN ?? "",
   };
-  const { stage, db, events, catalog, kv } = await getDeps();
+  const { stage, db, events, catalog, assets, kv } = await getDeps();
   const clock = systemClock;
   const posterBucket = process.env.POSTER_BUCKET ?? "";
   if (!posterBucket)
@@ -133,6 +137,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     db,
     events,
     catalog,
+    assets,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
       : undefined,
@@ -157,12 +162,25 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
 
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { db, catalog } = await getDeps();
-  await runExpire({ db, logger });
-  await runCatalogSweep({
-    catalog,
-    artifacts: artifactStoreFromEnv(),
-    db,
-    logger,
-  });
+  const { db, catalog, assets } = await getDeps();
+  const artifacts = artifactStoreFromEnv();
+  // Run every sweep even when one throws, then rethrow so the Errors alarm
+  // still fires: chaining them bare meant a channel-expiry failure silently
+  // skipped the asset cleanup on that day and every day after.
+  const failures: unknown[] = [];
+  for (const step of [
+    () => runExpire({ db, logger }),
+    () => runCatalogSweep({ catalog, artifacts, db, logger }),
+    () => runAssetSweep({ assets, artifacts, db, logger }),
+  ]) {
+    try {
+      await step();
+    } catch (e) {
+      failures.push(e);
+      logger.error("sweep step failed", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  if (failures.length > 0) throw failures[0];
 };

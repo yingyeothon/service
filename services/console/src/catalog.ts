@@ -38,11 +38,14 @@ import { notifyNewArtifact } from "./slack.js";
 export const INSTALLER_APP_NAME = "installer";
 const INSTALLER_DOWNLOAD_LIMIT = 2;
 /**
- * `uploads` would collide with the staging prefix (the sweep would delete its
- * committed objects); `installer` is served to every member as the official
- * installer, so only admins may claim it.
+ * An app name is the first key segment, so these would collide with prefixes
+ * another owner already governs: `uploads` with the catalog staging prefix (the
+ * sweep would delete its committed objects) and `assets`/`asset-uploads` with
+ * the game-asset resource, whose objects no retention policy may touch.
+ * `installer` is served to every member as the official installer, so only
+ * admins may claim it.
  */
-const FORBIDDEN_APP_NAMES = new Set(["uploads"]);
+const FORBIDDEN_APP_NAMES = new Set(["uploads", "assets", "asset-uploads"]);
 
 // ---- validation ------------------------------------------------------------
 

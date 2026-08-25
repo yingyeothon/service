@@ -53,6 +53,21 @@ export {
   type VoteRow,
 } from "./events.js";
 export {
+  ASSET_UPLOAD_STATUSES,
+  createAssetsDb,
+  createMemoryAssetsDb,
+  type AssetBundleInput,
+  type AssetBundlePatch,
+  type AssetBundleRow,
+  type AssetFileInput,
+  type AssetFileRow,
+  type AssetsDb,
+  type AssetUploadInput,
+  type AssetUploadPatch,
+  type AssetUploadRow,
+  type AssetUploadStatus,
+} from "./assets.js";
+export {
   CATALOG_PERMISSION_LEVELS,
   CATALOG_PLATFORMS,
   CATALOG_UPLOAD_STATUSES,

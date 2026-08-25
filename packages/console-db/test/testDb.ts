@@ -82,6 +82,9 @@ export async function startTestDb(): Promise<TestDb> {
 }
 
 const WIPE_ORDER = [
+  "asset_pending_uploads",
+  "asset_files",
+  "asset_bundles",
   "votes",
   "proposals",
   "events",
