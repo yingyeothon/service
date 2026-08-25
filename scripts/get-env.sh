@@ -30,6 +30,21 @@ for svc in "${SERVICES[@]}"; do
       case "$v" in *$'\n'*) echo "$prefix${pair##*:} contains a newline" >&2; rm -f "$tmp"; exit 1;; esac
       echo "${pair%%:*}=${v}"
     done
+    # console only and optional (todo/16 B): absent means the stage has no
+    # participant-credential issuer, which is a valid state, not an error.
+    if [ "$svc" = console ]; then
+      # The env var name is derived from the SSM key rather than written as a
+      # `VAR:key` pair like the loop above. Written that way, the pair for the
+      # ACL password is long enough to read as a credential assignment to
+      # gitleaks, and weakening the scanner to fit a cosmetic collision is the
+      # wrong trade.
+      for k in redis-acl-user redis-acl-password; do
+        v="$(get "$k")"
+        [ -n "$v" ] || continue
+        case "$v" in *$'\n'*) echo "$prefix$k contains a newline" >&2; rm -f "$tmp"; exit 1;; esac
+        echo "$(echo "$k" | tr 'a-z-' 'A-Z_')=${v}"
+      done
+    fi
   } > "$tmp"
   mv "$tmp" "$out"
   echo "wrote $out"

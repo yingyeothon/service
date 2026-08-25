@@ -92,6 +92,13 @@ provider:
     REDIS_USER: ${ssm:${self:custom.ssm}/redis-user}
     REDIS_PASSWORD: ${ssm:${self:custom.ssm}/redis-password}
     REDIS_KEY_PREFIX: ${ssm:${self:custom.ssm}/redis-key-prefix}
+    # The Redis account that mints per-channel participant credentials. Empty
+    # until the stage has one, and `POST /channels/{id}/redis-user` then answers
+    # 503 with `reason: redis_acl_not_configured` rather than a bare failure.
+    # It can create and delete Redis users, so it is deliberately a second
+    # account: the console's own user keeps `-@dangerous` and no ACL rights.
+    REDIS_ACL_USER: ${ssm:${self:custom.ssm}/redis-acl-user, ""}
+    REDIS_ACL_PASSWORD: ${ssm:${self:custom.ssm}/redis-acl-password, ""}
     # Operator-wide GitHub OAuth app (stage-wide SSM keys, uploaded by bootstrap-ssm.sh).
     GITHUB_CLIENT_ID: ${ssm:${self:custom.stageSsm}/github-client-id}
     GITHUB_CLIENT_SECRET: ${ssm:${self:custom.stageSsm}/github-client-secret}

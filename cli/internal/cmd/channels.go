@@ -49,6 +49,31 @@ type channelRedis struct {
 	ChannelPrefix     string `json:"channelPrefix"`
 	ACLKeyPattern     string `json:"aclKeyPattern"`
 	ACLChannelPattern string `json:"aclChannelPattern"`
+	ACLUsername       string `json:"aclUsername"`
+}
+
+// redisUser mirrors console's `/channels/{id}/redis-user`: the whole block a
+// participant pastes into their own Lambda. Password is present on issue only.
+type redisUser struct {
+	ChannelID        string `json:"channelId"`
+	Host             string `json:"host"`
+	Port             int    `json:"port"`
+	Username         string `json:"username"`
+	Password         string `json:"password,omitempty"`
+	EventKeyPrefix   string `json:"eventKeyPrefix"`
+	QueueKeyPrefix   string `json:"queueKeyPrefix"`
+	LockKeyPrefix    string `json:"lockKeyPrefix"`
+	AwaiterKeyPrefix string `json:"awaiterKeyPrefix"`
+	ChannelPrefix    string `json:"channelPrefix"`
+	// Absent on issue (it just became true); absent on read when the stage has
+	// no issuer account, in which case `Configured` is false.
+	Issued     *bool `json:"issued,omitempty"`
+	Configured *bool `json:"configured,omitempty"`
+	// Present on issue and only when false: the account is live but missing
+	// from Redis' ACL file, so it dies at the next restart.
+	Persisted *bool `json:"persisted,omitempty"`
+	// Absent on issue/show; `revoke` reports whether anything was removed.
+	Revoked *bool `json:"revoked,omitempty"`
 }
 
 // configFlags collects the kind-specific convenience flags; `--config` (JSON
@@ -497,6 +522,7 @@ func newChannels(a *App) *cobra.Command {
 			return a.showChannel(ch, true)
 		},
 	})
+	c.AddCommand(a.channelRedisUserCmd())
 	c.AddCommand(&cobra.Command{
 		Use:     "delete <channel-id>",
 		Aliases: []string{"rm"},
@@ -601,6 +627,108 @@ func mergeCapabilities(current, incoming any) (map[string]any, bool) {
 	return out, true
 }
 
+// channelRedisUserCmd manages the scoped Redis account a `q` channel's game
+// Lambda logs in with. The account is not a channel secret — a `q` channel has
+// none — so this lives beside `rotate-secret` rather than inside it.
+func (a *App) channelRedisUserCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:     "redis-user",
+		Aliases: []string{"redis"},
+		Short:   "Scoped Redis account for a `q` channel's game Lambda (owner issues; admins may read)",
+	}
+	call := func(cmd *cobra.Command, method, id string) (redisUser, error) {
+		cl, err := a.client()
+		if err != nil {
+			return redisUser{}, err
+		}
+		var u redisUser
+		err = cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/redis-user", nil, &u)
+		return u, err
+	}
+	c.AddCommand(&cobra.Command{
+		Use:   "show <channel-id>",
+		Short: "Show the connection block and whether an account has been issued",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			u, err := call(cmd, http.MethodGet, args[0])
+			if err != nil {
+				return err
+			}
+			return a.showRedisUser(u)
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use:     "issue <channel-id>",
+		Aliases: []string{"rotate"},
+		Short:   "Create or replace the account; the password is printed once",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			u, err := call(cmd, http.MethodPost, args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(a.Err, "store the password now; it is not shown again")
+			if u.Persisted != nil && !*u.Persisted {
+				// The account works right now but is not in Redis' ACL file.
+				fmt.Fprintln(a.Err, "WARNING: not persisted — this account disappears if Redis restarts; issue again once the host is healthy")
+			}
+			return a.showRedisUser(u)
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use:     "revoke <channel-id>",
+		Aliases: []string{"rm", "delete"},
+		Short:   "Delete the account; the game Lambda stops being able to log in",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			u, err := call(cmd, http.MethodDelete, args[0])
+			if err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return a.printer().JSONValue(u)
+			}
+			if u.Revoked != nil && *u.Revoked {
+				fmt.Fprintf(a.Out, "revoked the redis account of %s\n", args[0])
+			} else {
+				fmt.Fprintf(a.Out, "%s had no redis account\n", args[0])
+			}
+			return nil
+		},
+	})
+	return c
+}
+
+func (a *App) showRedisUser(u redisUser) error {
+	if a.jsonOut {
+		return a.printer().JSONValue(u)
+	}
+	// One block, pasted verbatim: the four key prefixes are tslib's
+	// `handleActor` options and the account is scoped to exactly them, so a
+	// value the participant retypes lands outside the ACL and fails NOPERM.
+	pairs := [][2]string{
+		{"channel", u.ChannelID},
+		{"host", u.Host},
+		{"port", fmt.Sprintf("%d", u.Port)},
+		{"username", u.Username},
+	}
+	if u.Password != "" {
+		pairs = append(pairs, [2]string{"password", u.Password})
+	} else if u.Issued != nil {
+		pairs = append(pairs, [2]string{"issued", fmt.Sprintf("%t", *u.Issued)})
+	} else if u.Configured != nil && !*u.Configured {
+		pairs = append(pairs, [2]string{"issued", "unknown (stage has no issuer account)"})
+	}
+	pairs = append(pairs,
+		[2]string{"eventKeyPrefix", u.EventKeyPrefix},
+		[2]string{"queueKeyPrefix", u.QueueKeyPrefix},
+		[2]string{"lockKeyPrefix", u.LockKeyPrefix},
+		[2]string{"awaiterKeyPrefix", u.AwaiterKeyPrefix},
+		[2]string{"channelPrefix", u.ChannelPrefix},
+	)
+	return a.printer().KV(pairs)
+}
+
 func (a *App) showChannel(ch channel, withSecret bool) error {
 	// lobby/q channels have no secret at all, so the warning would be a lie.
 	hasSecret := ch.Secret != "" || ch.APIKey != ""
@@ -654,6 +782,7 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 			[2]string{"redis.channelPrefix", ch.Redis.ChannelPrefix},
 			[2]string{"redis.aclKeyPattern", ch.Redis.ACLKeyPattern},
 			[2]string{"redis.aclChannelPattern", ch.Redis.ACLChannelPattern},
+			[2]string{"redis.aclUsername", ch.Redis.ACLUsername},
 		)
 	}
 	if withSecret {

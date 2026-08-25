@@ -20,7 +20,7 @@ Identifiers are treated as secrets because the stateful host is reachable from t
 ## Where secrets live
 
 1. **`local/env/<service>.<stage>.env`** — one file per service × stage (`console|auth|topic|match` × `dev|prod`), layout in `local/env.example`, issued by `yyt-stateful`. Mode 600, directory 700.
-2. **SSM SecureString** `/yyt-service/<stage>/<service>/{mysql-host,mysql-port,mysql-database,mysql-user,mysql-password,redis-host,redis-port,redis-user,redis-password,redis-key-prefix}` plus stage-wide `debug-key` (dev), `github-client-*`, `admin-github-logins`, `session-secret`, `gateway-token`, `gateway-ws-url`, and dev-only `auth/debug-mysql-{user,password}`.
+2. **SSM SecureString** `/yyt-service/<stage>/<service>/{mysql-host,mysql-port,mysql-database,mysql-user,mysql-password,redis-host,redis-port,redis-user,redis-password,redis-key-prefix}`, console-only `console/redis-acl-{user,password}` (the participant-credential issuer, optional — set both or neither, and **removing it needs an explicit `aws ssm delete-parameter`**, which `bootstrap-ssm.sh` does when the local env file no longer carries the pair: `put` never deletes, so a stale parameter would be re-baked into the Lambda by the next deploy), plus stage-wide `debug-key` (dev), `github-client-*`, `admin-github-logins`, `session-secret`, `gateway-token`, `gateway-ws-url`, and dev-only `auth/debug-mysql-{user,password}`.
 3. **Lambda environment** — `serverless.yml` resolves `${ssm:...}` at deploy time. Values are baked into the function configuration; rotation therefore requires a redeploy.
 4. **CI** (when needed) — GitHub _environment_ secrets only. Never repo files.
 

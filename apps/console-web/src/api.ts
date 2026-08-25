@@ -15,6 +15,7 @@ import type {
   CatalogUploadGrant,
   Channel,
   ChannelKind,
+  ChannelRedisUser,
   EventDetail,
   EventStatus,
   EventSummary,
@@ -102,7 +103,7 @@ export function createApiClient({
   const patch = <T>(path: string, body: unknown) =>
     call<T>("PATCH", path, body);
   const put = <T>(path: string, body: unknown) => call<T>("PUT", path, body);
-  const del = (path: string) => call<void>("DELETE", path);
+  const del = <T = void>(path: string) => call<T>("DELETE", path);
   const enc = encodeURIComponent;
 
   return {
@@ -155,6 +156,12 @@ export function createApiClient({
     rotateChannelSecret: (id: string) =>
       post<Channel>(`/channels/${enc(id)}/rotate-secret`),
     deleteChannel: (id: string) => del(`/channels/${enc(id)}`),
+    channelRedisUser: (id: string) =>
+      get<ChannelRedisUser>(`/channels/${enc(id)}/redis-user`),
+    issueChannelRedisUser: (id: string) =>
+      post<ChannelRedisUser>(`/channels/${enc(id)}/redis-user`),
+    revokeChannelRedisUser: (id: string) =>
+      del<{ revoked: boolean }>(`/channels/${enc(id)}/redis-user`),
 
     events: () =>
       get<{ events: EventSummary[] }>("/events").then((r) => r.events),

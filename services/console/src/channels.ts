@@ -251,6 +251,13 @@ export interface GatewayRedis {
   /** ACL patterns for the participant's scoped Redis user; a wrong prefix fails `NOPERM`. */
   aclKeyPattern: string;
   aclChannelPattern: string;
+  /**
+   * The Redis username issued for this channel. Derived like the prefixes and
+   * for the same reason — it is the name `POST /channels/{id}/redis-user`
+   * upserts and `DELETE` removes, so a stored copy could disagree with the
+   * account that actually exists on the host.
+   */
+  aclUsername: string;
 }
 
 /**
@@ -278,6 +285,10 @@ export function gatewayRedis(channelId: string, stage: string): GatewayRedis {
     channelPrefix: `game:out:${stage}:${channelId}:`,
     aclKeyPattern: `~${key}*`,
     aclChannelPattern: `&game:out:${stage}:${channelId}:*`,
+    // The `game_` prefix is load-bearing: `createRedisAclAdmin` refuses every
+    // name outside it, so a miscomputed id cannot upsert one of the platform's
+    // own service accounts and lock a whole service out of Redis.
+    aclUsername: `game_${stage}_${channelId}`,
   };
 }
 

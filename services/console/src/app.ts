@@ -27,7 +27,7 @@ import {
   type HttpResult,
   type RouteContext,
 } from "@yyt/http";
-import type { Kv } from "@yyt/redis";
+import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import { z } from "zod";
 import {
   buildChannel,
@@ -46,6 +46,10 @@ import {
 } from "./channels.js";
 import type { ArtifactStore } from "./artifact-store.js";
 import { createAssetRoutes } from "./assets.js";
+import {
+  createChannelRedisRoutes,
+  revokeChannelRedis,
+} from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
 import { createEventRoutes } from "./events.js";
 import { createGatewayRoutes } from "./gateway.js";
@@ -88,6 +92,14 @@ export interface ConsoleAppOptions {
   adminLogins: string[];
   /** Shared secret the realtime gateway presents on `GET /gw/channels/{id}`; empty disables it. */
   gatewayToken?: string;
+  /**
+   * Mints the per-channel Redis credentials a participant's game Lambda uses.
+   * Omit when the stage has no issuer account: `/channels/{id}/redis-user`
+   * then answers 503 and nothing else changes.
+   */
+  redisAcl?: RedisAclAdmin;
+  /** Where those credentials point. Host is an infra identifier — never a literal in this repo. */
+  redisEndpoint?: { host: string; port: number };
   /** Stage segment of the game Redis namespace and of nothing else here. */
   stage: string;
   clock?: Clock;
@@ -133,6 +145,8 @@ export function createConsoleApp({
   logger = nullLogger,
   extraRoutes = [],
   gatewayToken = "",
+  redisAcl,
+  redisEndpoint = { host: "", port: 6379 },
   stage,
 }: ConsoleAppOptions): (event: HttpEvent) => Promise<HttpResult> {
   const base = baseUrl.replace(/\/+$/, "");
@@ -751,6 +765,11 @@ export function createConsoleApp({
           disabledAt: row.disabledAt ?? now,
           secret: {},
         });
+        // The participant credential goes with the channel. Deliberately not on
+        // *disable*: an expired channel can be revived by extending it, and a
+        // revoke there would silently strip a credential the owner still holds.
+        if (row.kind === "q")
+          await revokeChannelRedis(redisAcl, row.id, stage, logger);
         await audit(id.subject, "channel.delete", row.id);
         return undefined;
       },
@@ -773,6 +792,16 @@ export function createConsoleApp({
     token: gatewayToken,
     clock,
     logger,
+  });
+
+  const channelRedisRoutes = createChannelRedisRoutes({
+    db,
+    admin: redisAcl,
+    kv,
+    endpoint: redisEndpoint,
+    stage,
+    clock,
+    audit,
   });
 
   const assetRoutes = createAssetRoutes({
@@ -803,6 +832,7 @@ export function createConsoleApp({
       ...eventRoutes,
       ...catalogRoutes,
       ...assetRoutes,
+      ...channelRedisRoutes,
       ...gatewayRoutes,
     ],
     identity: createIdentityResolver({
