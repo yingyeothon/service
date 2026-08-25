@@ -18,13 +18,11 @@ while read -r _lref lsha _rref rsha; do
   if [ -n "$tracked" ]; then echo "pre-push: secret-bearing paths are tracked in $lsha:" >&2; echo "$tracked" >&2; exit 1; fi
   todo=$(git ls-tree -r --name-only "$lsha" | grep -cE '^todo/' || true)
   if [ "${todo:-0}" -gt 0 ]; then echo "pre-push: todo/ must stay untracked ($todo path(s) in $lsha)" >&2; exit 1; fi
-  if [ -s local/identifiers.txt ]; then
-    hits=$(git log -p --format= "$range" -- . ':!pnpm-lock.yaml' | grep -E '^\+' | grep -cE -f local/identifiers.txt || true)
-    if [ "${hits:-0}" -gt 0 ]; then
-      echo "pre-push: $hits added line(s) in $range carry stateful host / DB / account identifiers" >&2
-      echo "pre-push: list them with: git log -p --format= $range -- . ':!pnpm-lock.yaml' | grep -E '^\\+' | grep -E -f local/identifiers.txt" >&2
-      exit 1
-    fi
-  fi
+  # Scan the whole history reachable from the pushed tip, not just the new range: a leak an older
+  # commit already carries is still being published, and once it is out a later commit cannot undo it.
+  scripts/check-history-identifiers.sh "$lsha" >/dev/null || {
+    scripts/check-history-identifiers.sh "$lsha" >&2 || true
+    exit 1
+  }
   gitleaks detect --redact --no-banner --config .gitleaks.toml --log-opts="$range"
 done
