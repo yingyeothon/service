@@ -20,18 +20,18 @@ Identifiers are treated as secrets because the stateful host is reachable from t
 ## Where secrets live
 
 1. **`local/env/<service>.<stage>.env`** — one file per service × stage (`console|auth|topic|match` × `dev|prod`), layout in `local/env.example`, issued by `yyt-stateful`. Mode 600, directory 700.
-2. **SSM SecureString** `/yyt-service/<stage>/<service>/{mysql-host,mysql-port,mysql-database,mysql-user,mysql-password,redis-host,redis-port,redis-user,redis-password,redis-key-prefix}` plus stage-wide `debug-key` (dev), `github-client-*`, `admin-github-logins`, `session-secret`, and dev-only `auth/debug-mysql-{user,password}`.
+2. **SSM SecureString** `/yyt-service/<stage>/<service>/{mysql-host,mysql-port,mysql-database,mysql-user,mysql-password,redis-host,redis-port,redis-user,redis-password,redis-key-prefix}` plus stage-wide `debug-key` (dev), `github-client-*`, `admin-github-logins`, `session-secret`, `gateway-token`, `gateway-ws-url`, and dev-only `auth/debug-mysql-{user,password}`.
 3. **Lambda environment** — `serverless.yml` resolves `${ssm:...}` at deploy time. Values are baked into the function configuration; rotation therefore requires a redeploy.
 4. **CI** (when needed) — GitHub _environment_ secrets only. Never repo files.
 
 ## Scripts
 
-| Script                             | Purpose                                                                                                                                                                                                                                              |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scripts/bootstrap-ssm.sh <stage>` | `local/env/*.<stage>.env` → SSM. Values pass through a 0600 temp file (never argv), env files are parsed (never sourced), `umask 077`, names-only log in `local/deploy/`. Keeps the existing dev `debug-key`.                                        |
-| `scripts/get-env.sh <stage>`       | SSM → `local/env/` on a new machine.                                                                                                                                                                                                                 |
-| `scripts/migrate.sh <stage>`       | Sources `local/env/console.<stage>.env` and runs `prisma migrate deploy`. The `mysql://` URL (it embeds the password) is assembled only inside `prisma.config.ts` — never pass it via argv, echo it, or export a `DATABASE_URL` into shells or logs. |
-| `scripts/local-identifiers.sh`     | Builds gitignored `local/identifiers.txt` (grep patterns for host/DB/account names) used by the hooks. Rerun after any credential change.                                                                                                            |
+| Script                             | Purpose                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/bootstrap-ssm.sh <stage>` | `local/env/*.<stage>.env` → SSM. Values pass through a 0600 temp file (never argv), env files are parsed (never sourced), `umask 077`, names-only log in `local/deploy/`. Keeps the existing dev `debug-key` and `gateway-token` across re-runs (set the env var to rotate; then redeploy console **and** the gateway). |
+| `scripts/get-env.sh <stage>`       | SSM → `local/env/` on a new machine.                                                                                                                                                                                                                                                                                    |
+| `scripts/migrate.sh <stage>`       | Sources `local/env/console.<stage>.env` and runs `prisma migrate deploy`. The `mysql://` URL (it embeds the password) is assembled only inside `prisma.config.ts` — never pass it via argv, echo it, or export a `DATABASE_URL` into shells or logs.                                                                    |
+| `scripts/local-identifiers.sh`     | Builds gitignored `local/identifiers.txt` (grep patterns for host/DB/account names) used by the hooks. Rerun after any credential change.                                                                                                                                                                               |
 
 ## Defenses (all required)
 

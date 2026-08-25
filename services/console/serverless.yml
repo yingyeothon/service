@@ -77,6 +77,11 @@ provider:
     TOPIC_BASE_URL: https://topic${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     TOPIC_WS_URL: wss://topic-ws${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     MATCH_BASE_URL: https://match${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+    # Self-hosted realtime gateway (Docker on the yyt-stateful box), rendered
+    # into `lobby`/`q` channel views. Not an AWS endpoint, so there is no
+    # CloudFormation reference to take it from. Empty until the host actually
+    # resolves — the views then omit `wsUrl` instead of offering a dead one.
+    GATEWAY_WS_URL: ${ssm:${self:custom.stageSsm}/gateway-ws-url, ""}
     MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
     MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}
     MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
@@ -93,6 +98,9 @@ provider:
     ADMIN_GITHUB_LOGINS: ${ssm:${self:custom.stageSsm}/admin-github-logins, ""}
     DEBUG_HOOKS: ${param:debugHooks, "0"}
     DEBUG_KEY: ${ssm:${self:custom.stageSsm}/debug-key, ""}
+    # Shared secret the gateway presents on GET /gw/channels/{id}; empty until
+    # the gateway ships, and the route answers 503 while it is.
+    GATEWAY_TOKEN: ${ssm:${self:custom.stageSsm}/gateway-token, ""}
     POSTER_BUCKET: !Ref PosterBucket
     ARTIFACT_BUCKET: ${self:custom.artifactBucket.${self:custom.stage}}
     ARTIFACT_CDN_URL: ${self:custom.artifactCdn.${self:custom.stage}}

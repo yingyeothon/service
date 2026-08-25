@@ -110,6 +110,16 @@ run      : user → lobby → game      : lobby signs with that channel's secret
 
 One deployment per participant makes a single env var sufficient; no key lookup (Redis/SSM) on the auth path. Per-participant channels limit the **blast radius**: HS256 gives the game Lambda the signing key, so a compromised game can forge only its own channel's users.
 
+## Platform gateway path (added 2026-08-25)
+
+The self-hosted WebSocket gateway (`todo/14-websocket-gateway.md`, `docs/decisions.md` _Realtime gateway_) replaces the API Gateway authorizer for `lobby` and `q` channels. The **token contract is unchanged** — that is the whole point of writing this doc around the token rather than the authorizer — but three things differ:
+
+- **Verification is a call, not a key.** The gateway is platform-operated and serves every participant's channels, so it must never hold a channel secret. It verifies with `GET /c/{authChannelId}/verify` (Bearer) and caches the answer keyed by a hash of the token until the JWT's `exp`. `authChannelId` comes from the gateway channel's config, not from the client: `verifyChannelToken` pins `channelId`, so a token signed for one auth channel is rejected everywhere else.
+- **One token, both sockets.** A player uses the same JWT for the lobby socket and the dungeon (`q`) socket, because both channels point at the same auth channel. Nothing is re-signed at any point, exactly as in the match path above. Consequence: the verify cache has a high hit rate, which is why it is load-bearing — auth's `reservedConcurrency` is 10 and an 8-player dungeon start would otherwise burst 8 verifies.
+- **A participant's game Lambda still verifies locally** with `createJwtRequestAuthorizer` where it exposes its own HTTP/WS endpoints. Only the platform gateway uses the verify endpoint.
+
+**One provider per channel.** `userId` is `sha256(channelId + ":" + provider + ":" + providerUserId)` — `provider` is part of the hash, so a channel that enables both GitHub and Google hands **one human two identities**, with two characters, two inventories and two party memberships. No account linking is built and none is planned. A game picks a single provider when its auth channel is created; enabling a second one later silently forks every existing player.
+
 ## Accepted costs
 
 1. Game Lambdas can sign; per-channel secrets bound the damage to one participant.
@@ -124,7 +134,7 @@ One deployment per participant makes a single env var sufficient; no key lookup 
 - Bind tokens to one match via a `gameId` claim, compared with `x-game-id` before `handleConnect`.
 - Multi-tenant game Lambda: resolve keys by `iss` or `kid`; needs a key-resolver callback in tslib `verifyBearer`.
 - Asymmetric keys (RS256/EdDSA) + JWKS remove costs 1–2; do it together with multi-tenancy.
-- Self-hosted gateway: the gateway verifies `iss`/`aud`/`exp` itself; the token contract survives unchanged, which is why this doc is written around the token, not the authorizer.
+- ~~Self-hosted gateway~~ — decided 2026-08-25 and specified above (_Platform gateway path_). The token contract survived unchanged, as predicted; the gateway calls `GET /c/{ch}/verify` instead of verifying `iss`/`aud`/`exp` with a local key, because a platform-operated process must not hold participants' secrets.
 
 ## Checklist
 

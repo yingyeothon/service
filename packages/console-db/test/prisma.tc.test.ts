@@ -3,6 +3,8 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
+  toLobbyChannel,
+  toQChannel,
   type ConsoleDb,
 } from "../src/index.js";
 import { catalogContract } from "./catalog.test.js";
@@ -183,6 +185,37 @@ describe.skipIf(!dockerAvailable())(
         expect(await repo.updateChannel("t1", {})).toBe(true);
         expect(await repo.updateChannel("nope", { name: "x" })).toBe(false);
         expect((await repo.findChannelRow("t1"))?.name).toBe("renamed");
+      });
+
+      it("stores the gateway kinds the enum migration added", async () => {
+        const repo = await fresh();
+        // The ENUM is the only thing that can reject these, and it lives in
+        // migration 2 — an unmigrated database fails right here.
+        await repo.insertChannel({
+          ...channel("l1"),
+          kind: "lobby",
+          config: { authChannelId: "a", capabilities: { pos: true } },
+          secret: {},
+        });
+        await repo.insertChannel({
+          ...channel("q1"),
+          kind: "q",
+          config: { authChannelId: "a" },
+          secret: {},
+        });
+        const lobby = await repo.findChannelRow("l1");
+        expect(lobby?.kind).toBe("lobby");
+        expect(toLobbyChannel(lobby!)?.config.capabilities.pos).toBe(true);
+        expect(toQChannel(lobby!)).toBeUndefined();
+        const q = await repo.findChannelRow("q1");
+        expect(toQChannel(q!)?.config.authChannelId).toBe("a");
+        expect(toLobbyChannel(q!)).toBeUndefined();
+        // They are not topic/match/auth channels, whichever way you ask.
+        expect(await repo.findTopicChannel("l1")).toBeUndefined();
+        expect(await repo.findMatchChannel("q1")).toBeUndefined();
+        expect(
+          (await repo.listChannels({ kind: "lobby" })).map((c) => c.id),
+        ).toEqual(["l1"]);
       });
 
       it("expireChannels disables, then deletes with secrets wiped", async () => {

@@ -24,7 +24,15 @@ import {
 import { buildConfig, emptyForm, formFromChannel } from "../lib/channelForm";
 import { errorMessage, fmtRelative, fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
-import type { AuthConfig, Channel, MatchConfig, TopicConfig } from "../types";
+import { GATEWAY_KINDS } from "../types";
+import type {
+  AuthConfig,
+  Channel,
+  LobbyConfig,
+  MatchConfig,
+  QConfig,
+  TopicConfig,
+} from "../types";
 
 export function ChannelDetailPage() {
   const { id = "" } = useParams();
@@ -53,6 +61,9 @@ export function ChannelDetailPage() {
   if (!ch.data) return <Spinner />;
   const c = ch.data;
   const owner = c.ownerId === me?.id;
+  // lobby/q hold no secret: the gateway verifies tokens by calling auth and
+  // neither kind has a server-to-server caller, so there is nothing to rotate.
+  const hasSecret = !(GATEWAY_KINDS as readonly string[]).includes(c.kind);
   const secretLabel = c.kind === "auth" ? "Channel secret" : "API key";
 
   const startEdit = () => {
@@ -138,6 +149,8 @@ export function ChannelDetailPage() {
         {c.kind === "auth" && <AuthDetails c={c} />}
         {c.kind === "topic" && <TopicDetails c={c} />}
         {c.kind === "match" && <MatchDetails c={c} />}
+        {c.kind === "lobby" && <LobbyDetails c={c} />}
+        {c.kind === "q" && <QDetails c={c} />}
         <Text size="sm" c="dimmed" my="xs">
           Created {fmtTime(c.createdAt)} · Expires {fmtTime(c.expiresAt)} (
           {fmtRelative(c.expiresAt)})
@@ -162,7 +175,7 @@ export function ChannelDetailPage() {
               Edit
             </Button>
           )}
-          {owner && (
+          {owner && hasSecret && (
             <Confirm
               label={`Rotate ${secretLabel.toLowerCase()}`}
               color="brand"
@@ -252,6 +265,74 @@ function TopicDetails({ c }: { c: Channel }) {
       <Text size="sm" c="dimmed">
         Create topics with <Code>POST {c.apiBase}/t</Code> using the API key as
         Bearer; clients subscribe over the WebSocket with a player JWT.
+      </Text>
+    </>
+  );
+}
+
+function LobbyDetails({ c }: { c: Channel }) {
+  const cfg = c.config as LobbyConfig;
+  const caps = [
+    cfg.capabilities.pos && "positions",
+    cfg.capabilities.say.length && `chat (${cfg.capabilities.say.join(", ")})`,
+    cfg.capabilities.party && "party",
+    cfg.capabilities.event && "events",
+    cfg.capabilities.debug && "debug",
+  ].filter(Boolean) as string[];
+  return (
+    <>
+      <CopyField label="WebSocket URL" value={c.wsUrl ?? ""} />
+      <CopyField label="Auth channel" value={cfg.authChannelId} />
+      {cfg.mapUrl !== "" && <CopyField label="Map URL" value={cfg.mapUrl} />}
+      <Text size="sm" c="dimmed">
+        Features: {caps.length ? caps.join(" · ") : <em>none enabled</em>}
+      </Text>
+      <Text size="sm" c="dimmed">
+        Starting zone <Code>{cfg.defaultZone}</Code> · relay every{" "}
+        {cfg.flushIntervalMs}ms · up to {cfg.rateLimit} msg/s per player · move
+        delta ≤ {cfg.maxMoveDelta} · party ≤ {cfg.partySizeMax}
+      </Text>
+      <Text size="sm" c="dimmed">
+        Clients connect with a player JWT from the auth channel and are told the
+        map URL and the enabled features in the first frame. Publishing a new
+        map is an edit to the map URL here — nothing is cached against it.
+      </Text>
+    </>
+  );
+}
+
+function QDetails({ c }: { c: Channel }) {
+  const cfg = c.config as QConfig;
+  const r = c.redis;
+  return (
+    <>
+      <CopyField label="WebSocket URL" value={c.wsUrl ?? ""} />
+      <CopyField label="Auth channel" value={cfg.authChannelId} />
+      {r && (
+        <>
+          <CopyField label="Event key prefix" value={r.eventKeyPrefix} />
+          <CopyField label="Queue key prefix" value={r.queueKeyPrefix} />
+          <CopyField label="Lock key prefix" value={r.lockKeyPrefix} />
+          <CopyField label="Awaiter key prefix" value={r.awaiterKeyPrefix} />
+          <CopyField label="Pub/sub channel prefix" value={r.channelPrefix} />
+          <CopyField label="Redis ACL key pattern" value={r.aclKeyPattern} />
+          <CopyField
+            label="Redis ACL channel pattern"
+            value={r.aclChannelPattern}
+          />
+        </>
+      )}
+      <Text size="sm" c="dimmed">
+        Your entry API allocates the game id and writes the start event; player
+        sockets then connect with <Code>?gameId=…</Code> appended to the
+        WebSocket URL. Copy{" "}
+        <strong>all four key prefixes and the channel prefix</strong> into your
+        tslib actor configuration unchanged: the Redis account issued for this
+        channel is scoped to <Code>{r?.aclKeyPattern}</Code>, so a prefix you
+        invent lands outside it, and one that merely differs is a silent no-op
+        rather than an error. Pass them to the prefix options directly — a
+        helper that appends a segment of its own (a second <Code>queue:</Code>)
+        leaves you writing to a key nobody reads.
       </Text>
     </>
   );

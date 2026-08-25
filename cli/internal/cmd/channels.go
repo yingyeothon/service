@@ -31,9 +31,24 @@ type channel struct {
 	CallbackURLs map[string]string `json:"callbackUrls,omitempty"`
 	APIBase      string            `json:"apiBase,omitempty"`
 	WsURL        string            `json:"wsUrl,omitempty"`
+	// `q` only: Redis names derived from the channel id. They must match the
+	// participant's tslib configuration and their scoped ACL exactly, so the
+	// CLI prints them verbatim rather than reformatting them.
+	Redis *channelRedis `json:"redis,omitempty"`
 	// Only present on create / rotate-secret.
 	Secret string `json:"secret,omitempty"`
 	APIKey string `json:"apiKey,omitempty"`
+}
+
+// channelRedis mirrors console's `gatewayRedis` for `q` channels.
+type channelRedis struct {
+	EventKeyPrefix    string `json:"eventKeyPrefix"`
+	QueueKeyPrefix    string `json:"queueKeyPrefix"`
+	LockKeyPrefix     string `json:"lockKeyPrefix"`
+	AwaiterKeyPrefix  string `json:"awaiterKeyPrefix"`
+	ChannelPrefix     string `json:"channelPrefix"`
+	ACLKeyPattern     string `json:"aclKeyPattern"`
+	ACLChannelPattern string `json:"aclChannelPattern"`
 }
 
 // configFlags collects the kind-specific convenience flags; `--config` (JSON
@@ -55,6 +70,28 @@ type configFlags struct {
 	waitTimeout int
 	onTimeout   string
 	callbackURL string
+	// lobby
+	capPos      bool
+	capSay      []string
+	capParty    bool
+	capEvent    bool
+	capDebug    bool
+	flushMs     int
+	maxMove     int
+	rateLimit   int
+	partyMax    int
+	defaultZone string
+	mapURL      string
+}
+
+// lobbyCapFlags are the flags that land inside the nested `capabilities`
+// object; `update` has to merge them one level deeper than the rest.
+var lobbyCapFlags = map[string]string{
+	"cap-pos":   "pos",
+	"cap-say":   "say",
+	"cap-party": "party",
+	"cap-event": "event",
+	"cap-debug": "debug",
 }
 
 func (f *configFlags) bind(c *cobra.Command) {
@@ -72,6 +109,17 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.IntVar(&f.waitTimeout, "wait-timeout", 0, "match: seconds to wait before onTimeout (default 60)")
 	fl.StringVar(&f.onTimeout, "on-timeout", "", "match: partial|fail (default fail)")
 	fl.StringVar(&f.callbackURL, "callback-url", "", "match: URL called with the matched party")
+	fl.BoolVar(&f.capPos, "cap-pos", true, "lobby: enable the positional relay (--cap-pos=false disables zones entirely)")
+	fl.StringArrayVar(&f.capSay, "cap-say", nil, "lobby: permitted chat scope zone|party|user, or none to disable chat (repeatable; default zone)")
+	fl.BoolVar(&f.capParty, "cap-party", true, "lobby: enable the party primitive")
+	fl.BoolVar(&f.capEvent, "cap-event", true, "lobby: enable the opaque game-defined relay")
+	fl.BoolVar(&f.capDebug, "cap-debug", false, "lobby: enable admin/cheat commands")
+	fl.IntVar(&f.flushMs, "flush-interval-ms", 0, "lobby: relay coalescing interval, also the hello tick (default 200)")
+	fl.IntVar(&f.maxMove, "max-move-delta", 0, "lobby: largest tile delta one pos may carry (default 4)")
+	fl.IntVar(&f.rateLimit, "rate-limit", 0, "lobby: inbound messages per second per connection (default 30)")
+	fl.IntVar(&f.partyMax, "party-size-max", 0, "lobby: largest party (default 4)")
+	fl.StringVar(&f.defaultZone, "zone", "", "lobby: zone announced in hello (default lobby)")
+	fl.StringVar(&f.mapURL, "map-url", "", "lobby: immutable map asset URL announced in hello")
 }
 
 // build turns the flags into the JSON `config` for the given kind. For PATCH
@@ -174,14 +222,83 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 				}
 			}
 		}
+	case "lobby":
+		if set("auth-channel") {
+			m["authChannelId"] = f.authChannel
+		}
+		caps := map[string]any{}
+		if set("cap-pos") {
+			caps["pos"] = f.capPos
+		}
+		if set("cap-say") {
+			// `none` is the only way to express an empty list: a repeated string
+			// flag cannot carry one, and without it `--cap-pos=false` is
+			// unusable (the server defaults say to ["zone"], which then needs
+			// positions and is rejected).
+			scopes := f.capSay
+			for _, sc := range scopes {
+				if sc != "none" {
+					continue
+				}
+				if len(scopes) != 1 {
+					return nil, errors.New("--cap-say none cannot be combined with other scopes")
+				}
+				scopes = []string{}
+			}
+			caps["say"] = scopes
+		}
+		if set("cap-party") {
+			caps["party"] = f.capParty
+		}
+		if set("cap-event") {
+			caps["event"] = f.capEvent
+		}
+		if set("cap-debug") {
+			caps["debug"] = f.capDebug
+		}
+		if len(caps) > 0 {
+			m["capabilities"] = caps
+		}
+		if set("flush-interval-ms") {
+			m["flushIntervalMs"] = f.flushMs
+		}
+		if set("max-move-delta") {
+			m["maxMoveDelta"] = f.maxMove
+		}
+		if set("rate-limit") {
+			m["rateLimit"] = f.rateLimit
+		}
+		if set("party-size-max") {
+			m["partySizeMax"] = f.partyMax
+		}
+		if set("zone") {
+			m["defaultZone"] = f.defaultZone
+		}
+		if set("map-url") {
+			m["mapUrl"] = f.mapURL
+		}
+		if !patch && m["authChannelId"] == nil {
+			return nil, errors.New("--auth-channel is required for lobby channels")
+		}
+	case "q":
+		if set("auth-channel") {
+			m["authChannelId"] = f.authChannel
+		}
+		// Everything else a q channel needs (the three Redis prefixes) is
+		// derived from the channel id server-side; there is nothing to pass.
+		if !patch && m["authChannelId"] == nil {
+			return nil, errors.New("--auth-channel is required for q channels")
+		}
 	default:
-		return nil, fmt.Errorf("unknown kind %q (auth|topic|match)", kind)
+		return nil, fmt.Errorf("unknown kind %q (auth|topic|match|lobby|q)", kind)
 	}
 	return m, nil
 }
 
+var channelKinds = map[string]bool{"auth": true, "topic": true, "match": true, "lobby": true, "q": true}
+
 func newChannels(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "channels", Short: "Manage auth/topic/match channels"}
+	c := &cobra.Command{Use: "channels", Short: "Manage auth/topic/match/lobby/q channels"}
 
 	var kind, scope string
 	list := &cobra.Command{
@@ -190,8 +307,8 @@ func newChannels(a *App) *cobra.Command {
 		Short:   "List your channels (admins: --scope all)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if kind != "" && kind != "auth" && kind != "topic" && kind != "match" {
-				return fmt.Errorf("--kind must be auth|topic|match (got %q)", kind)
+			if kind != "" && !channelKinds[kind] {
+				return fmt.Errorf("--kind must be auth|topic|match|lobby|q (got %q)", kind)
 			}
 			cl, err := a.client()
 			if err != nil {
@@ -224,17 +341,22 @@ func newChannels(a *App) *cobra.Command {
 			return a.printer().Table([]string{"ID", "KIND", "NAME", "STATUS", "EXPIRES", "OWNER"}, rows)
 		},
 	}
-	list.Flags().StringVar(&kind, "kind", "", "filter: auth|topic|match")
+	list.Flags().StringVar(&kind, "kind", "", "filter: auth|topic|match|lobby|q")
 	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin)")
 	c.AddCommand(list)
 
 	var cf configFlags
 	var ckind, cname string
 	create := &cobra.Command{
-		Use:   "create --kind <auth|topic|match> --name <name> [config flags]",
+		Use:   "create --kind <auth|topic|match|lobby|q> --name <name> [config flags]",
 		Short: "Create a channel; the secret/apiKey is printed once",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cf.raw == "" && channelKinds[ckind] {
+				if err := rejectForeignFlags(cmd, ckind); err != nil {
+					return err
+				}
+			}
 			cfg, err := cf.build(cmd, ckind, false)
 			if err != nil {
 				return err
@@ -251,7 +373,7 @@ func newChannels(a *App) *cobra.Command {
 			return a.showChannel(ch, true)
 		},
 	}
-	create.Flags().StringVar(&ckind, "kind", "", "auth|topic|match")
+	create.Flags().StringVar(&ckind, "kind", "", "auth|topic|match|lobby|q")
 	create.Flags().StringVar(&cname, "name", "", "display name")
 	_ = create.MarkFlagRequired("kind")
 	_ = create.MarkFlagRequired("name")
@@ -292,7 +414,7 @@ func newChannels(a *App) *cobra.Command {
 			}
 			// Kind is needed to interpret the flags: fetch unless --config is given.
 			anyCfg := pf.raw != ""
-			for _, n := range []string{"audience", "token-ttl", "redirect", "github-client-id", "github-client-secret", "google-client-id", "google-client-secret", "auth-channel", "party-size", "wait-timeout", "on-timeout", "callback-url"} {
+			for _, n := range configFlagNames {
 				anyCfg = anyCfg || cmd.Flags().Changed(n)
 			}
 			if anyCfg {
@@ -300,11 +422,14 @@ func newChannels(a *App) *cobra.Command {
 				if err := cl.Do(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(args[0]), nil, &cur); err != nil {
 					return err
 				}
+				if err := rejectForeignFlags(cmd, cur.Kind); err != nil {
+					return err
+				}
 				cfg, err := pf.build(cmd, cur.Kind, true)
 				if err != nil {
 					return err
 				}
-				// auth PATCH is a partial merge server-side; topic/match PATCH
+				// auth PATCH is a partial merge server-side; every other kind
 				// replaces the whole config, so overlay the flags on the current one.
 				if cur.Kind != "auth" && pf.raw == "" {
 					merged := map[string]any{}
@@ -312,6 +437,14 @@ func newChannels(a *App) *cobra.Command {
 						return fmt.Errorf("current config: %w", err)
 					}
 					for k, v := range cfg {
+						// `capabilities` is the one nested object: a top-level
+						// overwrite would silently reset the flags not given.
+						if k == "capabilities" {
+							if cm, ok := mergeCapabilities(merged[k], v); ok {
+								merged[k] = cm
+								continue
+							}
+						}
 						merged[k] = v
 					}
 					cfg = merged
@@ -387,8 +520,91 @@ func newChannels(a *App) *cobra.Command {
 	return c
 }
 
+// kindConfigFlags is the config flags each kind understands. `update` uses the
+// union to decide whether it must fetch the channel, and the per-kind set to
+// refuse a flag that would otherwise be accepted and silently do nothing.
+var kindConfigFlags = func() map[string][]string {
+	m := map[string][]string{
+		"auth": {
+			"audience", "token-ttl", "redirect",
+			"github-client-id", "github-client-secret",
+			"google-client-id", "google-client-secret",
+		},
+		"topic": {"auth-channel"},
+		"match": {"auth-channel", "party-size", "wait-timeout", "on-timeout", "callback-url"},
+		"lobby": {
+			"auth-channel", "flush-interval-ms", "max-move-delta",
+			"rate-limit", "party-size-max", "zone", "map-url",
+		},
+		"q": {"auth-channel"},
+	}
+	for n := range lobbyCapFlags {
+		m["lobby"] = append(m["lobby"], n)
+	}
+	for _, names := range m {
+		sort.Strings(names)
+	}
+	return m
+}()
+
+// configFlagNames is the union: every flag `build` reads for any kind.
+var configFlagNames = func() []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, per := range kindConfigFlags {
+		for _, n := range per {
+			if !seen[n] {
+				seen[n] = true
+				names = append(names, n)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}()
+
+// rejectForeignFlags refuses a config flag that does not belong to this kind.
+// Without it `yyt channels update <q-id> --cap-debug` PATCHes the config back
+// unchanged and prints a success view.
+func rejectForeignFlags(c *cobra.Command, kind string) error {
+	allowed := map[string]bool{}
+	for _, n := range kindConfigFlags[kind] {
+		allowed[n] = true
+	}
+	for _, n := range configFlagNames {
+		if c.Flags().Changed(n) && !allowed[n] {
+			return fmt.Errorf("--%s does not apply to a %s channel", n, kind)
+		}
+	}
+	return nil
+}
+
+// mergeCapabilities overlays the given capability flags onto the stored object
+// instead of replacing it. Reports false when the stored value is not an
+// object, in which case the caller replaces it wholesale.
+func mergeCapabilities(current, incoming any) (map[string]any, bool) {
+	cur, ok := current.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	in, ok := incoming.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]any, len(cur)+len(in))
+	for k, v := range cur {
+		out[k] = v
+	}
+	for k, v := range in {
+		out[k] = v
+	}
+	return out, true
+}
+
 func (a *App) showChannel(ch channel, withSecret bool) error {
-	if withSecret {
+	// lobby/q channels have no secret at all, so the warning would be a lie.
+	hasSecret := ch.Secret != "" || ch.APIKey != ""
+	if withSecret && hasSecret {
 		fmt.Fprintln(a.Err, "store the secret now; it is not shown again")
 	}
 	if a.jsonOut {
@@ -423,6 +639,22 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 	}
 	if len(ch.Config) > 0 {
 		pairs = append(pairs, [2]string{"config", string(ch.Config)})
+	}
+	if ch.Redis != nil {
+		// One block, copied verbatim into the participant's tslib config. All
+		// four key prefixes are here because `handleActor` needs all four and
+		// the issued Redis account is scoped to aclKeyPattern: a prefix the
+		// participant invents lands outside it (NOPERM), and one that merely
+		// differs from the gateway's is a silent no-op.
+		pairs = append(pairs,
+			[2]string{"redis.eventKeyPrefix", ch.Redis.EventKeyPrefix},
+			[2]string{"redis.queueKeyPrefix", ch.Redis.QueueKeyPrefix},
+			[2]string{"redis.lockKeyPrefix", ch.Redis.LockKeyPrefix},
+			[2]string{"redis.awaiterKeyPrefix", ch.Redis.AwaiterKeyPrefix},
+			[2]string{"redis.channelPrefix", ch.Redis.ChannelPrefix},
+			[2]string{"redis.aclKeyPattern", ch.Redis.ACLKeyPattern},
+			[2]string{"redis.aclChannelPattern", ch.Redis.ACLChannelPattern},
+		)
 	}
 	if withSecret {
 		if ch.Secret != "" {

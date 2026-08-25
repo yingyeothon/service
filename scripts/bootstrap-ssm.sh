@@ -8,6 +8,10 @@
 # Stage-wide keys (uploaded only when set): DEBUG_KEY (dev only; generated when absent), SESSION_SECRET,
 #   and GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET/ADMIN_GITHUB_LOGINS — taken from the shell environment, else from
 #   local/env/console.<stage>.env (console owns the operator OAuth app).
+# Stage-wide, gateway (todo/14): gateway-token is generated when absent and kept across re-runs
+#   (GATEWAY_TOKEN=... rotates it), and written to local/deploy/gateway-token.<stage>.
+#   gateway-ws-url is NOT touched here — it is a public domain, set by hand as a plain String
+#   parameter once the gateway resolves; while unset, lobby/q channel views omit `wsUrl`.
 # Always: cloudfront-cert-arn (looked up from ACM us-east-1, used by services/console CloudFront).
 # dev only: auth's debug seeding hook writes the console DB, so console.dev.env's MySQL account is also
 #   published as /yyt-service/dev/auth/debug-mysql-{user,password} (docs/decisions.md "디버그 시드").
@@ -83,6 +87,27 @@ put github-client-id "${GITHUB_CLIENT_ID:-}"
 put github-client-secret "${GITHUB_CLIENT_SECRET:-}"
 put admin-github-logins "${ADMIN_GITHUB_LOGINS:-}"
 put session-secret "${SESSION_SECRET:-}"
+
+# Realtime gateway (todo/14): the console checks GATEWAY_TOKEN on
+# GET /gw/channels/{id}. Generated once per stage and kept across re-runs, the
+# same way as debug-key; GATEWAY_TOKEN=... forces a new one (then redeploy
+# console AND the gateway). It must be >= 32 chars — the console disables the
+# route and logs an error below that, so generate rather than hand-pick.
+if [ -z "${GATEWAY_TOKEN:-}" ]; then
+  GATEWAY_TOKEN="$(aws ssm get-parameter --name "/yyt-service/${STAGE}/gateway-token" --with-decryption --query Parameter.Value --output text 2>/dev/null || true)"
+fi
+GATEWAY_TOKEN="${GATEWAY_TOKEN:-gw_$(openssl rand -hex 32)}"
+if [ "${#GATEWAY_TOKEN}" -lt 32 ]; then
+  echo "GATEWAY_TOKEN must be at least 32 characters (console refuses shorter ones)" >&2; exit 1
+fi
+put gateway-token "${GATEWAY_TOKEN}"
+printf '%s\n' "${GATEWAY_TOKEN}" > "local/deploy/gateway-token.${STAGE}"
+chmod 600 "local/deploy/gateway-token.${STAGE}"
+log "gateway-token written to local/deploy/gateway-token.${STAGE} (hand it to the gateway; scripts/smoke/console.mjs reads it)"
+# GATEWAY_WS_URL is a public domain, not a secret, and is set by hand once the
+# gateway actually resolves:
+#   aws ssm put-parameter --name /yyt-service/<stage>/gateway-ws-url --type String --value wss://gw…
+# Until then it stays unset and lobby/q views omit `wsUrl` entirely.
 
 # CloudFront (console SPA) needs the us-east-1 certificate covering *.yyt.life;
 # serverless.yml reads its ARN from SSM so no account-specific ARN lives in git.

@@ -1,6 +1,6 @@
 # `yyt` — CLI for the yingyeothon service console
 
-Single Go binary that drives the console API (`https://console.yyt.life`): members, API tokens, auth/topic/match channels, hackathon events, plus WebSocket smoke helpers for the match and topic services.
+Single Go binary that drives the console API (`https://console.yyt.life`): members, API tokens, auth/topic/match/lobby/q channels, hackathon events, plus WebSocket smoke helpers for the match and topic services.
 
 ## Install
 
@@ -38,18 +38,24 @@ yyt --profile dev logout                         # removes only that profile
 
 ## Commands
 
-Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret`.
+Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret`; `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
 
 ```
 yyt members list | approve <id> | promote <id> | demote <id>        # admin
 yyt tokens list | create --name <n> | revoke <id>
-yyt channels list [--kind auth|topic|match] [--scope all]
+yyt channels list [--kind auth|topic|match|lobby|q] [--scope all]
 yyt channels get|extend|rotate-secret|delete <id>
 yyt channels create --kind auth  --name n --audience aud [--token-ttl 86400] [--redirect https://…]… \
                     [--github-client-id id --github-client-secret s] [--google-client-id id --google-client-secret s]
 yyt channels create --kind topic --name n --auth-channel <auth-id>
 yyt channels create --kind match --name n --auth-channel <auth-id> --party-size 4 --callback-url https://… \
                     [--wait-timeout 60] [--on-timeout partial|fail]
+yyt channels create --kind lobby --name n --auth-channel <auth-id> \
+                    [--cap-say zone --cap-say party --cap-say user] [--cap-party=false] \
+                    [--cap-pos=false --cap-say user]   # no positions means no zones, so drop zone chat \
+                    [--cap-event=false] [--cap-debug] [--zone town] [--map-url https://…] \
+                    [--flush-interval-ms 200] [--max-move-delta 4] [--rate-limit 30] [--party-size-max 4]
+yyt channels create --kind q     --name n --auth-channel <auth-id>   # prefixes are derived; `get` prints them
 yyt channels update <id> [--name n] [same config flags; only the given ones change — --config replaces the whole config]
 yyt channels create … --config '{…}' | --config @file.json        # raw config instead of flags
 

@@ -2,11 +2,12 @@ import {
   Checkbox,
   Fieldset,
   NativeSelect,
+  Text,
   TextInput,
   Textarea,
 } from "@mantine/core";
-import type { Channel, ChannelKind } from "../types";
-import type { ChannelFormState } from "../lib/channelForm";
+import type { Channel, ChannelKind, SayScope } from "../types";
+import { SAY_SCOPES, type ChannelFormState } from "../lib/channelForm";
 
 interface Props {
   kind: ChannelKind;
@@ -133,7 +134,105 @@ export function ChannelForm({
           })}
         </>
       )}
-      {kind === "topic" && authSelect}
+      {(kind === "topic" || kind === "q") && authSelect}
+      {kind === "q" && (
+        <Text c="dimmed" size="sm">
+          The Redis key prefixes this channel uses are derived from its id and
+          shown on the channel page after it is created. Copy them into the game
+          Lambda&rsquo;s tslib configuration unchanged — a prefix that differs
+          on any side fails silently.
+        </Text>
+      )}
+      {kind === "lobby" && (
+        <>
+          {authSelect}
+          <Fieldset legend="Features">
+            <Checkbox
+              label="Positions — relay movement within a zone, with enter/leave"
+              checked={form.capPos}
+              onChange={(e) => set("capPos", e.target.checked)}
+            />
+            <Checkbox
+              label="Party — create/invite/accept/leave, with a roster the game can read"
+              checked={form.capParty}
+              onChange={(e) => set("capParty", e.target.checked)}
+            />
+            <Checkbox
+              label="Events — relay game-defined messages the gateway never reads"
+              checked={form.capEvent}
+              onChange={(e) => set("capEvent", e.target.checked)}
+            />
+            <Checkbox
+              label="Debug commands (off unless you need them)"
+              checked={form.capDebug}
+              onChange={(e) => set("capDebug", e.target.checked)}
+            />
+            <Checkbox.Group
+              label="Chat scopes"
+              description="Zone chat needs positions; party chat needs the party feature."
+              value={form.capSay}
+              onChange={(v) => set("capSay", v as SayScope[])}
+            >
+              {SAY_SCOPES.map((sc) => (
+                <Checkbox key={sc} value={sc} label={sc} />
+              ))}
+            </Checkbox.Group>
+          </Fieldset>
+          <TextInput
+            label="Map URL"
+            description="Immutable versioned asset on the platform CDN, sent to every client in the first frame. Changing it here is how a new map is published; leave blank for a channel with no map. URLs on other hosts are rejected."
+            type="url"
+            value={form.mapUrl}
+            onChange={(e) => set("mapUrl", e.target.value)}
+          />
+          <TextInput
+            label="Starting zone"
+            description="Announced to a client on connect; every later zone change is the game API's call."
+            value={form.defaultZone}
+            onChange={(e) => set("defaultZone", e.target.value)}
+            required
+            maxLength={64}
+          />
+          <TextInput
+            label="Relay interval (ms, 50–2000)"
+            description="Also the tick the client is told to expect. 200 ms matches the dungeon."
+            type="number"
+            min={50}
+            max={2000}
+            value={form.flushIntervalMs}
+            onChange={(e) => set("flushIntervalMs", e.target.value)}
+            required
+          />
+          <TextInput
+            label="Max move delta (tiles, 1–64)"
+            description="Largest jump one movement message may carry. The gateway checks no terrain, only this."
+            type="number"
+            min={1}
+            max={64}
+            value={form.maxMoveDelta}
+            onChange={(e) => set("maxMoveDelta", e.target.value)}
+            required
+          />
+          <TextInput
+            label="Rate limit (messages/second, 1–200)"
+            type="number"
+            min={1}
+            max={200}
+            value={form.rateLimit}
+            onChange={(e) => set("rateLimit", e.target.value)}
+            required
+          />
+          <TextInput
+            label="Max party size (2–16)"
+            type="number"
+            min={2}
+            max={16}
+            value={form.partySizeMax}
+            onChange={(e) => set("partySizeMax", e.target.value)}
+            required
+          />
+        </>
+      )}
       {kind === "match" && (
         <>
           {authSelect}

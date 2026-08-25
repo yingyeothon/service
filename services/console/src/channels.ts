@@ -13,6 +13,13 @@ export interface ServiceUrls {
   /** WebSocket host of the topic stack (`wss://topic-ws…`); API Gateway cannot share one domain between HTTP and WebSocket APIs. */
   topicWs: string;
   match: string;
+  /**
+   * WebSocket base of the self-hosted realtime gateway (`wss://gw…`), which
+   * serves `lobby` and `q`. **Empty until the gateway is actually deployed** —
+   * `channelView` then omits `wsUrl` entirely rather than handing out a
+   * copyable URL for a host that does not resolve.
+   */
+  gatewayWs: string;
 }
 
 export const CHANNEL_TTL_SEC = 7 * 86400;
@@ -116,9 +123,167 @@ const matchConfig = z
   })
   .strict();
 
+/**
+ * An absolute https URL with no fragment or credentials, **pinned to
+ * `allowedOrigin`**. `mapUrl` is announced to every client in `hello` and is
+ * also fetched server-side by the game Lambda (`docs/decisions.md` *Storage
+ * shapes*), which makes an unpinned value an SSRF primitive and a way to point
+ * every player's browser at an attacker-chosen origin — the same reasoning
+ * `rules/security.md` already applies to stored webhook URLs. Assets live on
+ * the platform CDN by design, so the pin costs nothing.
+ */
+export function normalizeHttpsUrl(
+  field: string,
+  value: string,
+  allowedOrigin?: string,
+): string {
+  // eslint-disable-next-line no-control-regex -- rejecting control chars is the point
+  if (/[\x00-\x20\x7f]/.test(value))
+    throw new AppError("bad_request", `${field}: control characters`);
+  let u: URL;
+  try {
+    u = new URL(value);
+  } catch {
+    throw new AppError("bad_request", `${field}: not an absolute URL`);
+  }
+  if (u.protocol !== "https:")
+    throw new AppError("bad_request", `${field}: must use https`);
+  if (u.hash || value.includes("#") || u.username || u.password)
+    throw new AppError("bad_request", `${field}: no fragment or credentials`);
+  if (allowedOrigin !== undefined && u.origin !== allowedOrigin)
+    throw new AppError(
+      "bad_request",
+      `${field}: must start with ${allowedOrigin}`,
+    );
+  return u.href;
+}
+
+const SAY_SCOPES = ["zone", "party", "user"] as const;
+const capabilities = z
+  .object({
+    pos: z.boolean().default(true),
+    say: z
+      .array(z.enum(SAY_SCOPES))
+      .max(SAY_SCOPES.length * 2)
+      .default(["zone"]),
+    party: z.boolean().default(true),
+    event: z.boolean().default(true),
+    debug: z.boolean().default(false),
+  })
+  .strict()
+  .prefault({});
+
+const ZONE = /^[a-z0-9_-]{1,64}$/;
+const lobbyConfig = z
+  .object({
+    authChannelId,
+    capabilities,
+    /** Also the `tick` the gateway announces in `hello`; 200 ms matches the dungeon. */
+    flushIntervalMs: z.number().int().min(50).max(2000).default(200),
+    maxMoveDelta: z.number().int().min(1).max(64).default(4),
+    rateLimit: z.number().int().min(1).max(200).default(30),
+    partySizeMax: z.number().int().min(2).max(16).default(4),
+    defaultZone: z
+      .string()
+      .trim()
+      .regex(ZONE, "defaultZone must match [a-z0-9_-]{1,64}")
+      .default("lobby"),
+    /** Empty = this channel has no map. */
+    mapUrl: z.string().max(2048).default(""),
+  })
+  .strict()
+  .superRefine((c, ctx) => {
+    // Both combinations below are configuration errors the gateway could only
+    // report at connect time, one confusing frame at a time (`todo/14` §2.3).
+    if (c.capabilities.say.includes("party") && !c.capabilities.party)
+      ctx.addIssue({
+        code: "custom",
+        path: ["capabilities", "say"],
+        message: 'say scope "party" requires capabilities.party',
+      });
+    if (c.capabilities.say.includes("zone") && !c.capabilities.pos)
+      ctx.addIssue({
+        code: "custom",
+        path: ["capabilities", "say"],
+        message:
+          'say scope "zone" requires capabilities.pos (no pos, no zones)',
+      });
+  })
+  .transform((c) => ({
+    ...c,
+    capabilities: {
+      ...c.capabilities,
+      // Canonical order, duplicates collapsed: the stored config is compared
+      // and displayed as-is, so `["user","zone","zone"]` must not survive.
+      say: SAY_SCOPES.filter((sc) => c.capabilities.say.includes(sc)),
+    },
+  }));
+// `mapUrl` is normalized in `buildChannel`/`patchChannel`, not here: the origin
+// it must be pinned to is deployment configuration, which a zod schema has no
+// access to.
+
+/**
+ * A `q` channel stores only its auth link. The three Redis prefixes the
+ * participant needs are **derived** from the channel id (`gatewayRedis`), never
+ * typed in: they must match on three sides at once and a mismatch is a silent
+ * no-op, so there is exactly one place that computes them.
+ */
+const qConfig = z.object({ authChannelId }).strict();
+
+/** Channel kinds served by the self-hosted gateway; neither carries a secret. */
+export const GATEWAY_KINDS = ["lobby", "q"] as const;
+export type GatewayKind = (typeof GATEWAY_KINDS)[number];
+export function isGatewayKind(kind: ChannelKind): kind is GatewayKind {
+  return (GATEWAY_KINDS as readonly string[]).includes(kind);
+}
+
+export interface GatewayRedis {
+  /** tslib `eventKeyPrefix`: the start event lives at `{prefix}{gameId}`. */
+  eventKeyPrefix: string;
+  /** tslib `queueKeyPrefix`: the inbound list lives at `{prefix}{gameId}`. */
+  queueKeyPrefix: string;
+  /** tslib `lockKeyPrefix`: the actor lock. Required by `handleActor`. */
+  lockKeyPrefix: string;
+  /** tslib `awaiterKeyPrefix`: the actor's wake-up key. Required by `handleActor`. */
+  awaiterKeyPrefix: string;
+  /** tslib `channelPrefix`: outbound pub/sub is `{prefix}{gameId}`. */
+  channelPrefix: string;
+  /** ACL patterns for the participant's scoped Redis user; a wrong prefix fails `NOPERM`. */
+  aclKeyPattern: string;
+  aclChannelPattern: string;
+}
+
+/**
+ * Single source for the Redis names a `q` channel uses. Key and pub/sub
+ * namespaces are separate because Redis ACLs scope them separately, and both
+ * are channel-scoped so one participant's credential cannot touch another's.
+ *
+ * The `{stage}` segment is not decoration: dev and prod share one Redis
+ * instance, so without it the dev gateway's ACL user (`~game:dev:*`) would also
+ * match every prod game key — the same reason every platform key carries
+ * `{service}:{stage}:` (`rules/data.md`).
+ *
+ * All **four** key prefixes tslib's `handleActor` requires are derived here
+ * (event, queue, lock, awaiter). Deriving three and leaving the participant to
+ * invent the fourth would put it outside `aclKeyPattern`, so the actor would
+ * fail `NOPERM` at start — the failure this whole scheme exists to prevent.
+ */
+export function gatewayRedis(channelId: string, stage: string): GatewayRedis {
+  const key = `game:${stage}:${channelId}:`;
+  return {
+    eventKeyPrefix: `${key}event:`,
+    queueKeyPrefix: `${key}queue:`,
+    lockKeyPrefix: `${key}lock:`,
+    awaiterKeyPrefix: `${key}awaiter:`,
+    channelPrefix: `game:out:${stage}:${channelId}:`,
+    aclKeyPattern: `~${key}*`,
+    aclChannelPattern: `&game:out:${stage}:${channelId}:*`,
+  };
+}
+
 export const createBody = z
   .object({
-    kind: z.enum(["auth", "topic", "match"]),
+    kind: z.enum(["auth", "topic", "match", "lobby", "q"]),
     name,
     config: z.unknown(),
   })
@@ -129,6 +294,8 @@ export const patchBody = z
 
 export type TopicConfig = z.infer<typeof topicConfig>;
 export type MatchConfig = z.infer<typeof matchConfig>;
+export type LobbyConfig = z.infer<typeof lobbyConfig>;
+export type QConfig = z.infer<typeof qConfig>;
 export interface ApiKeySecret {
   apiKey: string;
 }
@@ -136,6 +303,12 @@ export interface ApiKeySecret {
 export interface Split {
   config: unknown;
   secret: unknown;
+}
+
+/** Deployment configuration the kind-specific validators need. */
+export interface ChannelOptions {
+  /** Origin every `mapUrl` must sit on, e.g. `https://dev-d.yyt.life`. */
+  assetOrigin: string;
 }
 
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
@@ -150,7 +323,11 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
 }
 
 /** Validates a create payload and splits it into `config_json` / `secret_json`. */
-export function buildChannel(kind: ChannelKind, input: unknown): Split {
+export function buildChannel(
+  kind: ChannelKind,
+  input: unknown,
+  opts: ChannelOptions,
+): Split {
   if (kind === "auth") {
     const c = parse(authConfigIn, input);
     const config: AuthChannelConfig = {
@@ -179,13 +356,27 @@ export function buildChannel(kind: ChannelKind, input: unknown): Split {
     };
     return { config, secret };
   }
+  if (isGatewayKind(kind)) {
+    // No apiKey: the gateway verifies tokens by calling auth and neither kind
+    // has a server-to-server caller, so there is nothing to authenticate with
+    // and nothing that `rules/data.md` would forbid caching.
+    const config =
+      kind === "lobby"
+        ? withMapUrl(parse(lobbyConfig, input), opts)
+        : parse(qConfig, input);
+    return { config, secret: {} };
+  }
   const config =
     kind === "topic" ? parse(topicConfig, input) : parse(matchConfig, input);
   return { config, secret: { apiKey: randomHex(32) } satisfies ApiKeySecret };
 }
 
 /** Applies a PATCH to stored JSON; auth provider secrets are kept unless replaced or nulled. */
-export function patchChannel(row: ChannelRow, input: unknown): Split {
+export function patchChannel(
+  row: ChannelRow,
+  input: unknown,
+  opts: ChannelOptions,
+): Split {
   const storedSecret = JSON.parse(row.secretJson) as unknown;
   if (row.kind === "auth") {
     const cur = JSON.parse(row.configJson) as AuthChannelConfig;
@@ -220,9 +411,32 @@ export function patchChannel(row: ChannelRow, input: unknown): Split {
     };
     return { config, secret: { secret: sec.secret, providers: secrets } };
   }
-  // Full replace for topic/match: the shapes are small and every field is required.
-  const schema = row.kind === "topic" ? topicConfig : matchConfig;
+  // Full replace for every non-auth kind: the shapes are small and defaulted,
+  // so a partial patch would silently reset the fields it omits either way.
+  if (row.kind === "lobby")
+    return {
+      config: withMapUrl(parse(lobbyConfig, input), opts),
+      secret: storedSecret,
+    };
+  const schema =
+    row.kind === "topic"
+      ? topicConfig
+      : row.kind === "match"
+        ? matchConfig
+        : qConfig;
   return { config: parse(schema, input), secret: storedSecret };
+}
+
+/** Applies the origin pin an in-schema transform cannot reach. */
+function withMapUrl<T extends { mapUrl: string }>(
+  config: T,
+  { assetOrigin }: ChannelOptions,
+): T {
+  if (config.mapUrl === "") return config;
+  return {
+    ...config,
+    mapUrl: normalizeHttpsUrl("mapUrl", config.mapUrl, assetOrigin),
+  };
 }
 
 /** New secret material for `rotate-secret`; `shown` is the part the response reveals once. */
@@ -235,6 +449,11 @@ export function rotateSecret(row: ChannelRow): {
     const secret = randomHex(32);
     return { secret: { ...sec, secret }, shown: { secret } };
   }
+  if (isGatewayKind(row.kind))
+    throw new AppError(
+      "bad_request",
+      `a ${row.kind} channel has no secret to rotate`,
+    );
   const apiKey = randomHex(32);
   return { secret: { apiKey }, shown: { apiKey } };
 }
@@ -247,7 +466,8 @@ export function channelStatus(
   return row.expiresAt > nowSec ? "active" : "expired";
 }
 
-function trim(u: string): string {
+/** Drops trailing slashes so `{base}/path` never doubles up. */
+export function trim(u: string): string {
   return u.replace(/\/+$/, "");
 }
 
@@ -256,6 +476,7 @@ export function channelView(
   row: ChannelRow,
   urls: ServiceUrls,
   nowSec: number,
+  stage: string,
 ): Record<string, unknown> {
   const config = JSON.parse(row.configJson) as Record<string, unknown>;
   const id = encodeURIComponent(row.id);
@@ -291,11 +512,22 @@ export function channelView(
       wsUrl: `${trim(urls.topicWs)}/`,
     };
   }
+  if (row.kind === "lobby" || row.kind === "q") {
+    // No `wsUrl` until the gateway exists: a copyable URL for a host that does
+    // not resolve reads as "configured" and costs an hour on contest day.
+    const gw = trim(urls.gatewayWs);
+    const wsUrl = gw === "" ? {} : { wsUrl: `${gw}/?channel=${id}` };
+    if (row.kind === "lobby") return { ...base, ...wsUrl };
+    // `q` sockets also carry the game: `…&gameId={gameId}`, allocated by the
+    // game's own entry API. The prefixes are derived, never stored, so they are
+    // rendered here rather than read back out of `config`.
+    return { ...base, ...wsUrl, redis: gatewayRedis(row.id, stage) };
+  }
   const ws = trim(urls.match).replace(/^http/, "ws");
   return { ...base, wsUrl: `${ws}/?channel=${id}` };
 }
 
-/** `{kind}_{random}` — lowercase so it fits the id regex auth/topic/match accept. */
+/** `{kind}_{random}` — lowercase so it fits the `[a-z0-9_-]{3,40}` id regex every service accepts. */
 export function newChannelId(kind: ChannelKind): string {
   return `${kind}_${randomHex(8)}`;
 }
