@@ -1,5 +1,5 @@
 export type Role = "admin" | "member" | "pending";
-export type ChannelKind = "auth" | "topic" | "match";
+export type ChannelKind = "auth" | "topic" | "match" | "lobby" | "q";
 
 /** Minimal logger shape; packages never touch `console.*` directly. */
 export interface Logger {

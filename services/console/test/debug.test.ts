@@ -23,6 +23,7 @@ describe("debug login hook", () => {
       baseUrl: BASE,
       webUrl: BASE,
       urls: URLS,
+      stage: "dev",
       db,
       events: createMemoryEventsDb(),
       catalog: createMemoryCatalogDb(),

@@ -232,6 +232,8 @@ enum channels_kind {
   auth
   topic
   match
+  lobby
+  q
 }
 
 enum catalog_artifacts_platform {

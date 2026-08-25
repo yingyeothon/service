@@ -69,11 +69,19 @@ export function ChannelNewPage() {
                 label: "topic — broadcast topics over WebSocket",
               },
               { value: "match", label: "match — WebSocket matchmaker" },
+              {
+                value: "lobby",
+                label: "lobby — realtime relay: movement, chat, party",
+              },
+              {
+                value: "q",
+                label: "q — bridges player sockets to your game Lambda",
+              },
             ]}
           />
           {needsAuth && (
             <Notice kind="warn">
-              topic/match channels need an auth channel you own.{" "}
+              topic/match/lobby/q channels need an auth channel you own.{" "}
               <Anchor component={Link} to="/channels/new">
                 Create an auth channel
               </Anchor>{" "}

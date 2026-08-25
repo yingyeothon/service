@@ -53,6 +53,8 @@ export function ChannelsPage() {
             { value: "auth", label: "auth" },
             { value: "topic", label: "topic" },
             { value: "match", label: "match" },
+            { value: "lobby", label: "lobby" },
+            { value: "q", label: "q" },
           ]}
         />
         {me?.role === "admin" && (

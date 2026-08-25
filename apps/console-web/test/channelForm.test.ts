@@ -104,3 +104,86 @@ describe("buildConfig topic/match", () => {
     ).toEqual({ authChannelId: "auth_1" });
   });
 });
+
+describe("buildConfig lobby/q", () => {
+  const lobby: Channel = {
+    ...authChannel,
+    id: "lobby_1",
+    kind: "lobby",
+    config: {
+      authChannelId: "auth_1",
+      capabilities: {
+        pos: true,
+        say: ["zone", "party"],
+        party: true,
+        event: false,
+        debug: false,
+      },
+      flushIntervalMs: 200,
+      maxMoveDelta: 4,
+      rateLimit: 30,
+      partySizeMax: 6,
+      defaultZone: "town",
+      mapUrl: "https://d.test/map.json",
+    },
+  };
+
+  it("round-trips a lobby channel through the form", () => {
+    expect(
+      buildConfig("lobby", formFromChannel(lobby), "patch", lobby),
+    ).toEqual(lobby.config);
+  });
+
+  it("rejects the two capability combinations the API also rejects", () => {
+    const f = formFromChannel(lobby);
+    expect(() =>
+      buildConfig("lobby", { ...f, capParty: false }, "patch", lobby),
+    ).toThrow(/party/);
+    expect(() =>
+      buildConfig(
+        "lobby",
+        { ...f, capPos: false, capSay: ["zone"] },
+        "patch",
+        lobby,
+      ),
+    ).toThrow(/zone/);
+    // Positions off with only user-scoped chat is a legitimate chat room.
+    expect(
+      buildConfig(
+        "lobby",
+        { ...f, capPos: false, capSay: ["user"], capParty: false },
+        "patch",
+        lobby,
+      ),
+    ).toMatchObject({
+      capabilities: { pos: false, say: ["user"], party: false },
+    });
+  });
+
+  it("rejects a non-https map URL before the request", () => {
+    const f = formFromChannel(lobby);
+    expect(() =>
+      buildConfig("lobby", { ...f, mapUrl: "http://d.test/m" }, "patch", lobby),
+    ).toThrow(/https/);
+    expect(
+      buildConfig("lobby", { ...f, mapUrl: "  " }, "patch", lobby),
+    ).toMatchObject({ mapUrl: "" });
+  });
+
+  it("canonicalizes the chat scope order and sends only the auth link for q", () => {
+    const f = { ...emptyForm, authChannelId: "auth_1" };
+    expect(
+      buildConfig("lobby", { ...f, capSay: ["user", "zone"] }, "create"),
+    ).toMatchObject({ capabilities: { say: ["zone", "user"] } });
+    expect(buildConfig("q", f, "create")).toEqual({ authChannelId: "auth_1" });
+    // A q channel round-trips through the same authChannelId branch as topic.
+    expect(
+      formFromChannel({
+        ...authChannel,
+        id: "q_1",
+        kind: "q",
+        config: { authChannelId: "auth_9" },
+      }).authChannelId,
+    ).toBe("auth_9");
+  });
+});

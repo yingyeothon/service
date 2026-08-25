@@ -32,10 +32,12 @@ import {
   buildChannel,
   channelView,
   createBody,
+  isGatewayKind,
   newChannelId,
   patchBody,
   patchChannel,
   rotateSecret,
+  type ChannelOptions,
   CHANNEL_EXTEND_SEC,
   CHANNEL_MAX_AHEAD_SEC,
   CHANNEL_TTL_SEC,
@@ -44,6 +46,7 @@ import {
 import type { ArtifactStore } from "./artifact-store.js";
 import { createCatalogRoutes } from "./catalog.js";
 import { createEventRoutes } from "./events.js";
+import { createGatewayRoutes } from "./gateway.js";
 import type { GithubLogin } from "./github.js";
 import type { PosterStore } from "./poster.js";
 import {
@@ -80,6 +83,10 @@ export interface ConsoleAppOptions {
   github: GithubLogin;
   /** GitHub logins that become `admin` on every login. */
   adminLogins: string[];
+  /** Shared secret the realtime gateway presents on `GET /gw/channels/{id}`; empty disables it. */
+  gatewayToken?: string;
+  /** Stage segment of the game Redis namespace and of nothing else here. */
+  stage: string;
   clock?: Clock;
   logger?: Logger;
   extraRoutes?: AnyRoute[];
@@ -98,7 +105,7 @@ const deviceTokenBody = z
   .strict();
 const channelsQuery = z
   .object({
-    kind: z.enum(["auth", "topic", "match"]).optional(),
+    kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional(),
     /** admin only: `all` lists every owner's channels. */
     scope: z.enum(["mine", "all"]).optional(),
   })
@@ -121,6 +128,8 @@ export function createConsoleApp({
   clock = systemClock,
   logger = nullLogger,
   extraRoutes = [],
+  gatewayToken = "",
+  stage,
 }: ConsoleAppOptions): (event: HttpEvent) => Promise<HttpResult> {
   const base = baseUrl.replace(/\/+$/, "");
   const web = webUrl.replace(/\/+$/, "");
@@ -193,7 +202,8 @@ export function createConsoleApp({
     return { memberId, role, created };
   }
 
-  const view = (row: ChannelRow) => channelView(row, urls, nowSec(clock));
+  const view = (row: ChannelRow) =>
+    channelView(row, urls, nowSec(clock), stage);
 
   /**
    * Owner (or admin when `adminToo`); 404 otherwise so other owners' ids are
@@ -232,6 +242,14 @@ export function createConsoleApp({
         "authChannelId is not your auth channel",
       );
   }
+
+  // Assets live on the platform CDN by design, so every `mapUrl` is pinned to
+  // it: the value is announced to every client and fetched server-side by the
+  // game (`docs/decisions.md` *Storage shapes*).
+  const cdn = (cdnBaseUrl ?? "https://d.yyt.life").replace(/\/+$/, "");
+  const channelOptions = {
+    assetOrigin: new URL(cdn).origin,
+  } satisfies ChannelOptions;
 
   const routes: AnyRoute[] = [
     // ---- login -------------------------------------------------------
@@ -611,7 +629,7 @@ export function createConsoleApp({
       handler: async (ctx) => {
         const id = requireRole(ctx, "member");
         const { kind, name, config } = ctx.body;
-        const split = buildChannel(kind, config);
+        const split = buildChannel(kind, config, channelOptions);
         if (kind !== "auth") await requireAuthChannel(id, split.config);
         const now = nowSec(clock);
         const channelId = newChannelId(kind);
@@ -631,7 +649,10 @@ export function createConsoleApp({
         const shown =
           kind === "auth"
             ? { secret: (split.secret as { secret: string }).secret }
-            : { apiKey: (split.secret as { apiKey: string }).apiKey };
+            : isGatewayKind(kind)
+              ? // lobby/q have no secret at all, so creation reveals nothing.
+                {}
+              : { apiKey: (split.secret as { apiKey: string }).apiKey };
         return {
           statusCode: 201,
           headers: {
@@ -659,7 +680,7 @@ export function createConsoleApp({
         const patch: Parameters<ConsoleDb["updateChannel"]>[1] = {};
         if (ctx.body.name !== undefined) patch.name = ctx.body.name;
         if (ctx.body.config !== undefined) {
-          const split = patchChannel(row, ctx.body.config);
+          const split = patchChannel(row, ctx.body.config, channelOptions);
           if (row.kind !== "auth") await requireAuthChannel(id, split.config);
           patch.config = split.config;
           patch.secret = split.secret;
@@ -741,11 +762,20 @@ export function createConsoleApp({
     audit,
   });
 
+  const gatewayRoutes = createGatewayRoutes({
+    db,
+    urls,
+    stage,
+    token: gatewayToken,
+    clock,
+    logger,
+  });
+
   const catalogRoutes = createCatalogRoutes({
     db,
     catalog,
     artifacts,
-    cdnBaseUrl: (cdnBaseUrl ?? "https://d.yyt.life").replace(/\/+$/, ""),
+    cdnBaseUrl: cdn,
     clock,
     logger,
     audit,
@@ -753,7 +783,13 @@ export function createConsoleApp({
   });
 
   return createHttpHandler({
-    routes: [...routes, ...memberRoutes, ...eventRoutes, ...catalogRoutes],
+    routes: [
+      ...routes,
+      ...memberRoutes,
+      ...eventRoutes,
+      ...catalogRoutes,
+      ...gatewayRoutes,
+    ],
     identity: createIdentityResolver({
       db,
       sessions,

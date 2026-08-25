@@ -19,7 +19,12 @@ export const URLS = {
   topic: "https://topic-dev.yyt.life",
   topicWs: "wss://topic-ws-dev.yyt.life",
   match: "https://match-dev.yyt.life",
+  gatewayWs: "wss://gw-dev.yyt.life",
 };
+/** 32+ chars, as `createGatewayRoutes` requires. */
+export const GATEWAY_TOKEN = "gw_" + "0123456789abcdef".repeat(2) + "ff";
+export const STAGE = "dev";
+export const CDN = "https://dev-d.yyt.life";
 export const NOW_MS = 1_700_000_000_000;
 export const NOW_SEC = NOW_MS / 1000;
 
@@ -51,16 +56,18 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     baseUrl: BASE,
     webUrl: BASE,
     urls: URLS,
+    stage: STAGE,
     db,
     events,
     catalog,
     posters,
     artifacts,
-    cdnBaseUrl: "https://dev-d.yyt.life",
+    cdnBaseUrl: CDN,
     slackFetch: fetch,
     kv,
     github: createGithubLogin({ clientId: "cid", clientSecret: "csec", fetch }),
     adminLogins: ["Boss"],
+    gatewayToken: GATEWAY_TOKEN,
     clock,
     ...over,
   });

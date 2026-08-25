@@ -40,6 +40,54 @@ export interface MatchChannelConfig {
   callbackUrl: string;
 }
 
+/** Chat scopes a `lobby` channel may permit for `say`. */
+export type SayScope = "zone" | "party" | "user";
+
+/**
+ * Which parts of the lobby protocol a channel enables. A message whose
+ * capability is off is refused with a typed error rather than ignored: silence
+ * during a contest is expensive to debug.
+ */
+export interface LobbyCapabilities {
+  /** Positional relay plus gateway-synthesised `enter`/`leave`. `false` = no zone concept at all. */
+  pos: boolean;
+  /** Permitted `say` scopes; empty disables chat. */
+  say: SayScope[];
+  /** Party primitive (create/invite/accept/leave/list). */
+  party: boolean;
+  /** Opaque game-defined relay; the gateway forwards the payload unread. */
+  event: boolean;
+  /** Admin/cheat commands. Off by default. */
+  debug: boolean;
+}
+
+/** `config_json` of a lobby channel (console validates and writes it). */
+export interface LobbyChannelConfig {
+  authChannelId: string;
+  capabilities: LobbyCapabilities;
+  /** Coalescing interval, and the `tick` the gateway announces in `hello`. */
+  flushIntervalMs: number;
+  /** Largest tile delta one `pos` may carry; bounds client authority without knowing the map. */
+  maxMoveDelta: number;
+  /** Inbound messages per second per connection. */
+  rateLimit: number;
+  partySizeMax: number;
+  /** Zone announced in `hello`; every later change is the game HTTP API's call. */
+  defaultZone: string;
+  /** Immutable versioned asset announced in `hello`. Empty = this channel has no map. */
+  mapUrl: string;
+}
+
+/**
+ * `config_json` of a q channel. The three Redis prefixes are **derived from the
+ * channel id**, never stored and never user-supplied: they are configuration on
+ * three sides (gateway, tslib, the participant's Lambda) and a mismatch is a
+ * silent no-op, so there is exactly one place that computes them.
+ */
+export interface QChannelConfig {
+  authChannelId: string;
+}
+
 /** `secret_json` of topic/match channels. */
 export interface ApiKeySecret {
   apiKey: string;
@@ -66,6 +114,24 @@ export interface MatchChannel {
   ownerId: string;
   config: MatchChannelConfig;
   secret: ApiKeySecret;
+  expiresAt: number;
+  disabledAt: number | null;
+}
+
+export interface LobbyChannel {
+  id: string;
+  name: string;
+  ownerId: string;
+  config: LobbyChannelConfig;
+  expiresAt: number;
+  disabledAt: number | null;
+}
+
+export interface QChannel {
+  id: string;
+  name: string;
+  ownerId: string;
+  config: QChannelConfig;
   expiresAt: number;
   disabledAt: number | null;
 }
@@ -252,6 +318,34 @@ export function toTopicChannel(row: ChannelRow): TopicChannel | undefined {
     ownerId: row.ownerId,
     config: JSON.parse(row.configJson) as TopicChannelConfig,
     secret: JSON.parse(row.secretJson) as ApiKeySecret,
+    expiresAt: row.expiresAt,
+    disabledAt: row.disabledAt,
+  };
+}
+
+/**
+ * `lobby`/`q` channels hold no secret (`docs/decisions.md` *Realtime gateway*),
+ * so unlike the other kinds these views have no `secret` field to omit.
+ */
+export function toLobbyChannel(row: ChannelRow): LobbyChannel | undefined {
+  if (row.kind !== "lobby") return undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    ownerId: row.ownerId,
+    config: JSON.parse(row.configJson) as LobbyChannelConfig,
+    expiresAt: row.expiresAt,
+    disabledAt: row.disabledAt,
+  };
+}
+
+export function toQChannel(row: ChannelRow): QChannel | undefined {
+  if (row.kind !== "q") return undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    ownerId: row.ownerId,
+    config: JSON.parse(row.configJson) as QChannelConfig,
     expiresAt: row.expiresAt,
     disabledAt: row.disabledAt,
   };

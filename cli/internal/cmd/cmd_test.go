@@ -449,3 +449,138 @@ func TestExitCodes(t *testing.T) {
 		t.Fatalf("code=%d err=%s", code, b)
 	}
 }
+
+func TestChannelsGatewayKinds(t *testing.T) {
+	var sent map[string]any
+	lobbyCfg := func() map[string]any {
+		return map[string]any{
+			"authChannelId": "auth_0123",
+			"capabilities": map[string]any{
+				"pos": true, "say": []any{"zone"}, "party": true, "event": true, "debug": false,
+			},
+			"flushIntervalMs": 200, "maxMoveDelta": 4, "rateLimit": 30,
+			"partySizeMax": 4, "defaultZone": "lobby", "mapUrl": "",
+		}
+	}
+	lobbyCh := map[string]any{
+		"id": "lobby_1", "kind": "lobby", "name": "l", "ownerId": "m1",
+		"status": "active", "createdAt": 1, "expiresAt": 2,
+		"config": lobbyCfg(), "wsUrl": "wss://gw-dev.yyt.life/?channel=lobby_1",
+	}
+	qCh := map[string]any{
+		"id": "q_1", "kind": "q", "name": "q", "ownerId": "m1",
+		"status": "active", "createdAt": 1, "expiresAt": 2,
+		"config": map[string]any{"authChannelId": "auth_0123"},
+		"wsUrl":  "wss://gw-dev.yyt.life/?channel=q_1",
+		"redis": map[string]any{
+			"eventKeyPrefix": "game:dev:q_1:event:", "queueKeyPrefix": "game:dev:q_1:queue:",
+			"lockKeyPrefix": "game:dev:q_1:lock:", "awaiterKeyPrefix": "game:dev:q_1:awaiter:",
+			"channelPrefix": "game:out:dev:q_1:", "aclKeyPattern": "~game:dev:q_1:*",
+			"aclChannelPattern": "&game:out:dev:q_1:*",
+		},
+	}
+	f := newFake(t, map[string]func(recorded) (int, any){
+		"POST /channels": func(r recorded) (int, any) {
+			sent = r.Body
+			if r.Body["kind"] == "q" {
+				return 201, qCh
+			}
+			return 201, lobbyCh
+		},
+		"GET /channels/lobby_1":   func(recorded) (int, any) { return 200, lobbyCh },
+		"PATCH /channels/lobby_1": func(r recorded) (int, any) { sent = r.Body; return 200, lobbyCh },
+		"GET /channels/q_1":       func(recorded) (int, any) { return 200, qCh },
+	})
+
+	// lobby create: capability flags land in the nested object, tuning at the top.
+	out, errs, err := run(t, f, "channels", "create", "--kind", "lobby", "--name", "l",
+		"--auth-channel", "auth_0123", "--cap-say", "zone", "--cap-say", "user",
+		"--cap-debug", "--zone", "town", "--map-url", "https://d.yyt.life/m/1", "--party-size-max", "6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := sent["config"].(map[string]any)
+	caps := cfg["capabilities"].(map[string]any)
+	if len(caps["say"].([]any)) != 2 || caps["debug"] != true || caps["pos"] != nil {
+		t.Fatalf("capabilities %v", caps)
+	}
+	if cfg["defaultZone"] != "town" || cfg["mapUrl"] != "https://d.yyt.life/m/1" || cfg["partySizeMax"] != float64(6) {
+		t.Fatalf("config %v", cfg)
+	}
+	// Nothing to print once, and nothing is printed once.
+	if strings.Contains(errs, "not shown again") || strings.Contains(out, "apiKey") {
+		t.Fatalf("lobby has no secret: out=%q errs=%q", out, errs)
+	}
+
+	// q create: only the auth link travels; the prefixes come back derived.
+	out, _, err = run(t, f, "channels", "create", "--kind", "q", "--name", "q", "--auth-channel", "auth_0123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sent["config"].(map[string]any)) != 1 {
+		t.Fatalf("q config %v", sent["config"])
+	}
+	// All four key prefixes plus the channel prefix and both ACL patterns:
+	// handleActor needs four, and one the participant invents falls outside
+	// the ACL the issued Redis account carries.
+	for _, want := range []string{
+		"redis.eventKeyPrefix:    game:dev:q_1:event:",
+		"redis.queueKeyPrefix:    game:dev:q_1:queue:",
+		"redis.lockKeyPrefix:     game:dev:q_1:lock:",
+		"redis.awaiterKeyPrefix:  game:dev:q_1:awaiter:",
+		"redis.channelPrefix:     game:out:dev:q_1:",
+		"redis.aclKeyPattern:     ~game:dev:q_1:*",
+		"redis.aclChannelPattern: &game:out:dev:q_1:*",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("q view must show %q: %s", want, out)
+		}
+	}
+
+	// lobby update: a capability flag merges into the stored object rather than
+	// replacing it, and the untouched top-level fields survive the full replace.
+	if _, _, err := run(t, f, "channels", "update", "lobby_1", "--cap-party=false"); err != nil {
+		t.Fatal(err)
+	}
+	cfg = sent["config"].(map[string]any)
+	caps = cfg["capabilities"].(map[string]any)
+	if caps["party"] != false || caps["pos"] != true || caps["event"] != true {
+		t.Fatalf("merged capabilities %v", caps)
+	}
+	if cfg["flushIntervalMs"] != float64(200) || cfg["partySizeMax"] != float64(4) {
+		t.Fatalf("merged config %v", cfg)
+	}
+
+	// `none` is the only way to say "no chat", and it is what makes
+	// --cap-pos=false usable at all.
+	if _, _, err := run(t, f, "channels", "create", "--kind", "lobby", "--name", "l",
+		"--auth-channel", "auth_0123", "--cap-pos=false", "--cap-say", "none"); err != nil {
+		t.Fatal(err)
+	}
+	if say := sent["config"].(map[string]any)["capabilities"].(map[string]any)["say"]; len(say.([]any)) != 0 {
+		t.Fatalf("--cap-say none must send an empty list, got %v", say)
+	}
+
+	// Validation happens before any request.
+	n := len(f.reqs)
+	for _, args := range [][]string{
+		{"channels", "create", "--kind", "lobby", "--name", "l"},
+		{"channels", "create", "--kind", "q", "--name", "q"},
+		{"channels", "list", "--kind", "lobbies"},
+		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--cap-say", "none", "--cap-say", "user"},
+		// A flag that belongs to another kind must fail, not silently no-op.
+		{"channels", "create", "--kind", "q", "--name", "q", "--auth-channel", "a", "--cap-debug"},
+		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--callback-url", "https://x/"},
+	} {
+		if _, _, err := run(t, f, args...); err == nil {
+			t.Errorf("expected error for %v", args)
+		}
+	}
+	if len(f.reqs) != n {
+		t.Fatal("validation must not hit the API")
+	}
+	if _, _, err := run(t, f, "channels", "update", "q_1", "--cap-debug"); err == nil ||
+		!strings.Contains(err.Error(), "does not apply to a q channel") {
+		t.Fatalf("update must refuse a foreign flag: %v", err)
+	}
+}

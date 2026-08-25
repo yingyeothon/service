@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 // Smoke test for the console stack on dev: debug login → /me → API token → channel CRUD → member admin.
-// Usage: scripts/smoke/console.mjs <baseUrl> <debugKey> [authBaseUrl]
+// Usage: GATEWAY_TOKEN=$(cat local/deploy/gateway-token.<stage>) \
+//          scripts/smoke/console.mjs <baseUrl> <debugKey> [authBaseUrl]
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens or secrets.
+// GATEWAY_TOKEN enables the GET /gw/channels checks; it comes through the environment
+// rather than argv because argv is visible in `ps` (docs/secrets.md).
 const [base, debugKey, authBase] = process.argv.slice(2);
+const gatewayToken = process.env.GATEWAY_TOKEN ?? "";
 if (!base || !debugKey) {
-  console.error("usage: console.mjs <baseUrl> <debugKey> [authBaseUrl]");
+  console.error(
+    "usage: [GATEWAY_TOKEN=…] console.mjs <baseUrl> <debugKey> [authBaseUrl]",
+  );
   process.exit(2);
 }
 let failed = 0;
@@ -158,6 +164,165 @@ check(
   "create match channel",
   match.status === 201 && typeof match.body?.wsUrl === "string",
 );
+const lobby = await call("/channels", {
+  method: "POST",
+  headers: as(member),
+  body: {
+    kind: "lobby",
+    name: "l",
+    config: {
+      authChannelId: chId,
+      capabilities: { say: ["zone", "user"] },
+      // Pinned to the asset CDN; any other host is rejected.
+      mapUrl: "https://dev-d.yyt.life/smoke/map.json",
+      defaultZone: "town",
+    },
+  },
+});
+check(
+  "create lobby channel",
+  lobby.status === 201 &&
+    lobby.body?.config?.defaultZone === "town" &&
+    lobby.body?.config?.capabilities?.say?.join() === "zone,user" &&
+    // Neither gateway kind carries a secret, so creation reveals nothing.
+    lobby.body?.apiKey === undefined &&
+    lobby.body?.secret === undefined,
+  lobby.text.slice(0, 200),
+);
+// `wsUrl` appears only once SSM `gateway-ws-url` is set: until the gateway host
+// resolves, a copyable URL for it would read as "configured".
+check(
+  "wsUrl tracks whether the gateway host is configured",
+  lobby.body?.wsUrl === undefined ||
+    String(lobby.body.wsUrl).startsWith("wss://"),
+  String(lobby.body?.wsUrl),
+);
+check(
+  "lobby rejects a map URL off the asset CDN",
+  (
+    await call("/channels", {
+      method: "POST",
+      headers: as(member),
+      body: {
+        kind: "lobby",
+        name: "bad-map",
+        config: { authChannelId: chId, mapUrl: "https://evil.test/map.json" },
+      },
+    })
+  ).status === 400,
+);
+check(
+  "lobby rejects an impossible capability combination",
+  (
+    await call("/channels", {
+      method: "POST",
+      headers: as(member),
+      body: {
+        kind: "lobby",
+        name: "bad",
+        config: {
+          authChannelId: chId,
+          capabilities: { party: false, say: ["party"] },
+        },
+      },
+    })
+  ).status === 400,
+);
+check(
+  "lobby has no secret to rotate",
+  (
+    await call(`/channels/${lobby.body?.id}/rotate-secret`, {
+      method: "POST",
+      headers: as(member),
+    })
+  ).status === 400,
+);
+const q = await call("/channels", {
+  method: "POST",
+  headers: as(member),
+  body: { kind: "q", name: "q", config: { authChannelId: chId } },
+});
+// `dev` is this script's only target; the stage is part of the namespace so a
+// dev credential cannot match prod keys on the shared Redis instance.
+const qKey = `game:dev:${q.body?.id}:`;
+check(
+  "create q channel with all four derived redis prefixes",
+  q.status === 201 &&
+    q.body?.redis?.eventKeyPrefix === `${qKey}event:` &&
+    q.body?.redis?.queueKeyPrefix === `${qKey}queue:` &&
+    q.body?.redis?.lockKeyPrefix === `${qKey}lock:` &&
+    q.body?.redis?.awaiterKeyPrefix === `${qKey}awaiter:` &&
+    q.body?.redis?.channelPrefix === `game:out:dev:${q.body?.id}:` &&
+    q.body?.redis?.aclKeyPattern === `~${qKey}*` &&
+    q.body?.redis?.aclChannelPattern === `&game:out:dev:${q.body?.id}:*`,
+  q.text.slice(0, 200),
+);
+
+// gateway config read (the gateway's replacement for a MariaDB connection)
+const gw = async (id, token) =>
+  call(`/gw/channels/${id}`, {
+    headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+  });
+const gwHealth = await call("/gw/health");
+check(
+  "GET /gw/health proves the gateway routes are deployed",
+  gwHealth.status === 200 && gwHealth.body?.gateway === true,
+  gwHealth.text.slice(0, 120),
+);
+const gwAnon = await gw(lobby.body?.id);
+if (gatewayToken) {
+  // With a token configured the anonymous call must be 401, never 503: a 503
+  // here would mean the deployed console has no token and the checks below are
+  // passing against a route nobody can use.
+  check(
+    "GET /gw/channels without a token is 401",
+    gwAnon.status === 401,
+    String(gwAnon.status),
+  );
+  check(
+    "health reports the token as configured",
+    gwHealth.body?.configured === true,
+  );
+  const gwLobby = await gw(lobby.body?.id, gatewayToken);
+  check(
+    "gateway reads a lobby channel",
+    gwLobby.status === 200 &&
+      gwLobby.body?.kind === "lobby" &&
+      gwLobby.body?.authVerifyUrl?.endsWith(`/c/${chId}/verify`) &&
+      gwLobby.body?.config?.flushIntervalMs === 200,
+    gwLobby.text.slice(0, 160),
+  );
+  const gwQ = await gw(q.body?.id, gatewayToken);
+  check(
+    "gateway reads a q channel with its prefixes",
+    gwQ.status === 200 && gwQ.body?.redis?.eventKeyPrefix === `${qKey}event:`,
+    gwQ.text.slice(0, 160),
+  );
+  check(
+    "gateway cannot read other channel kinds",
+    (await gw(topic.body?.id, gatewayToken)).status === 404,
+  );
+  check(
+    "gateway rejects a wrong token of the same length",
+    // Same length so the comparison itself is exercised, not a length guard.
+    (
+      await gw(
+        lobby.body?.id,
+        `x${gatewayToken.slice(1)}` === gatewayToken
+          ? `y${gatewayToken.slice(1)}`
+          : `x${gatewayToken.slice(1)}`,
+      )
+    ).status === 401,
+  );
+} else {
+  check(
+    "GET /gw/channels without a token is refused",
+    gwAnon.status === 401 || gwAnon.status === 503,
+    String(gwAnon.status),
+  );
+  console.log("skip GET /gw/channels checks (set GATEWAY_TOKEN to run them)");
+}
+
 const patched = await call(`/channels/${chId}`, {
   method: "PATCH",
   headers: as(member),
@@ -192,7 +357,7 @@ const mine = await call("/channels", { headers: as(member) });
 check(
   "list mine",
   mine.status === 200 &&
-    mine.body?.channels?.length >= 3 &&
+    mine.body?.channels?.length >= 5 &&
     !mine.text.includes("apiKey"),
 );
 check(
@@ -242,7 +407,7 @@ check(
 );
 
 // cleanup
-for (const c of [auth, topic, match]) {
+for (const c of [auth, topic, match, lobby, q]) {
   if (c.body?.id)
     check(
       `delete ${c.body.kind}`,

@@ -1,5 +1,7 @@
 export type Role = "admin" | "member" | "pending";
-export type ChannelKind = "auth" | "topic" | "match";
+export type ChannelKind = "auth" | "topic" | "match" | "lobby" | "q";
+/** Kinds served by the self-hosted realtime gateway; neither carries a secret. */
+export const GATEWAY_KINDS = ["lobby", "q"] as const;
 export type ChannelStatus = "active" | "expired" | "disabled";
 export type EventStatus =
   "draft" | "proposing" | "voting" | "decided" | "published" | "closed";
@@ -52,13 +54,44 @@ export interface MatchConfig {
   onTimeout: "partial" | "fail";
   callbackUrl: string;
 }
+export type SayScope = "zone" | "party" | "user";
+export interface LobbyCapabilities {
+  pos: boolean;
+  say: SayScope[];
+  party: boolean;
+  event: boolean;
+  debug: boolean;
+}
+export interface LobbyConfig {
+  authChannelId: string;
+  capabilities: LobbyCapabilities;
+  flushIntervalMs: number;
+  maxMoveDelta: number;
+  rateLimit: number;
+  partySizeMax: number;
+  defaultZone: string;
+  mapUrl: string;
+}
+export interface QConfig {
+  authChannelId: string;
+}
+/** `q` only: Redis names derived from the channel id, copied into tslib config verbatim. */
+export interface GatewayRedis {
+  eventKeyPrefix: string;
+  queueKeyPrefix: string;
+  lockKeyPrefix: string;
+  awaiterKeyPrefix: string;
+  channelPrefix: string;
+  aclKeyPattern: string;
+  aclChannelPattern: string;
+}
 
 export interface Channel {
   id: string;
   kind: ChannelKind;
   name: string;
   ownerId: string;
-  config: AuthConfig | TopicConfig | MatchConfig;
+  config: AuthConfig | TopicConfig | MatchConfig | LobbyConfig | QConfig;
   createdAt: number;
   expiresAt: number;
   disabledAt: number | null;
@@ -69,8 +102,10 @@ export interface Channel {
   callbackUrls?: Record<string, string>;
   // topic
   apiBase?: string;
-  // topic / match
+  // topic / match / lobby / q
   wsUrl?: string;
+  // q
+  redis?: GatewayRedis;
   // shown once on create / rotate
   secret?: string;
   apiKey?: string;

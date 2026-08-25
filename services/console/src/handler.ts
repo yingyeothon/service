@@ -82,6 +82,8 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       topic: env("TOPIC_BASE_URL"),
       topicWs: env("TOPIC_WS_URL"),
       match: env("MATCH_BASE_URL"),
+      // Empty until the gateway is deployed: lobby/q views then omit `wsUrl`.
+      gatewayWs: process.env.GATEWAY_WS_URL ?? "",
     },
     github: createGithubLogin({
       clientId: env("GITHUB_CLIENT_ID"),
@@ -91,6 +93,8 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    // Empty until the gateway ships: `GET /gw/channels/{id}` then answers 503.
+    gatewayToken: process.env.GATEWAY_TOKEN ?? "",
   };
   const { stage, db, events, catalog, kv } = await getDeps();
   const clock = systemClock;
@@ -125,6 +129,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
   }
   return createConsoleApp({
     ...config,
+    stage,
     db,
     events,
     catalog,
