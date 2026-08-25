@@ -31,10 +31,17 @@ export interface SessionStore {
 const SESSION_ID = /^[0-9a-f]{64}$/;
 const STATE = /^[0-9a-f]{48}$/;
 
-/** `console:{stage}:sess:{sha256(id)}` (7d) and `console:{stage}:oauth:{state}` (10m). */
+/**
+ * `console:{stage}:sess:{sha256(id)}` (7d) and `console:{stage}:oauth:{sha256(state)}`
+ * (10m). Both are keyed by digest for the same reason: a key **name** is not
+ * covered by the ACL's key patterns, because Redis does not filter `SCAN` by
+ * them. Every account on the shared instance can therefore list key names even
+ * when refused every read, and a raw `state` in a key name is a value an
+ * attacker could act on.
+ */
 export function createSessionStore(kv: Kv): SessionStore {
   const sessKey = (id: string) => `sess:${sha256Hex(id)}`;
-  const stateKey = (s: string) => `oauth:${s}`;
+  const stateKey = (s: string) => `oauth:${sha256Hex(s)}`;
   return {
     create: async (data) => {
       const id = randomHex(32);

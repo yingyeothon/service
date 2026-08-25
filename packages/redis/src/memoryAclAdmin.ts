@@ -4,6 +4,7 @@ import {
   ACL_USERNAME_RE,
   type RedisAclAdmin,
   type RedisAclGrant,
+  type RedisServerMemory,
 } from "./aclAdmin.js";
 
 /** How the next call fails, mirroring the real client's two failure windows. */
@@ -24,8 +25,12 @@ export interface MemoryAclAdmin extends RedisAclAdmin {
   readonly users: ReadonlyMap<string, Omit<RedisAclGrant, "username">>;
   /** Usernames the fake reports from `list()` but does not hold — orphan fixtures. */
   readonly extraUsers: Set<string>;
+  /** Key names the fake pretends the instance holds, for the usage report. */
+  readonly keys: Set<string>;
+  /** What `serverMemory()` reports. */
+  memory: RedisServerMemory;
   failNext(
-    method: "issue" | "revoke" | "exists" | "list",
+    method: "issue" | "revoke" | "exists" | "list" | "countKeys",
     when?: MemoryAclFailure,
   ): void;
 }
@@ -40,6 +45,7 @@ export interface MemoryAclAdmin extends RedisAclAdmin {
 export function createMemoryAclAdmin(): MemoryAclAdmin {
   const users = new Map<string, Omit<RedisAclGrant, "username">>();
   const extraUsers = new Set<string>();
+  const keys = new Set<string>();
   const failing = new Map<string, MemoryAclFailure>();
   const fail = () =>
     new AppError("unavailable", "redis acl error", {
@@ -60,9 +66,11 @@ export function createMemoryAclAdmin(): MemoryAclAdmin {
     if (!ACL_USERNAME_RE.test(username))
       throw new AppError("internal", "unsupported redis username");
   };
-  return {
+  const admin: MemoryAclAdmin = {
     users,
     extraUsers,
+    keys,
+    memory: { usedBytes: 1_000_000, maxBytes: 268_435_456 },
     failNext: (method, when = "before") => failing.set(method, when),
     issue: async ({ username, keyPattern, channelPattern }) => {
       check(username);
@@ -86,6 +94,25 @@ export function createMemoryAclAdmin(): MemoryAclAdmin {
       before("list");
       return [...users.keys(), ...extraUsers];
     },
+    serverMemory: async () => admin.memory,
+    countKeys: async (match, group) => {
+      before("countKeys");
+      // Mirrors the glob Redis actually applies, so a test cannot pass with a
+      // match string the real SCAN would reject.
+      const re = new RegExp(`^${match.split("*").map(escapeRe).join(".*")}$`);
+      const counts = new Map<string, number>();
+      let scanned = 0;
+      for (const key of keys) {
+        if (!re.test(key)) continue;
+        scanned++;
+        const g = group(key);
+        if (g !== null) counts.set(g, (counts.get(g) ?? 0) + 1);
+      }
+      return { counts, scanned, truncated: false };
+    },
     close: async () => {},
   };
+  return admin;
 }
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

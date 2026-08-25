@@ -1,7 +1,11 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import { describe, expect, it } from "vitest";
 import { nullLogger } from "@yyt/core";
-import { runExpire, runRedisAclReconcile } from "../src/expire.js";
+import {
+  runExpire,
+  runRedisAclReconcile,
+  runRedisUsageReport,
+} from "../src/expire.js";
 import {
   REDIS_ISSUE_COOLDOWN_SEC,
   revokeChannelRedis,
@@ -306,6 +310,40 @@ describe("participant redis credentials", () => {
       "default",
       `game_prod_${id}`,
     ]);
+  });
+
+  it("reports who is holding keys, without ever reading one", async () => {
+    const h = harness();
+    for (let i = 0; i < 7; i++)
+      h.redisAcl.keys.add(`game:${STAGE}:q_busy:k${i}`);
+    h.redisAcl.keys.add(`game:${STAGE}:q_quiet:k0`);
+    // Another stage and another service share the instance and must not be
+    // counted into this stage's report.
+    h.redisAcl.keys.add(`game:prod:q_busy:k0`);
+    h.redisAcl.keys.add(`console:${STAGE}:sess:abc`);
+    h.redisAcl.memory = { usedBytes: 10, maxBytes: 100 };
+
+    const r = await runRedisUsageReport({
+      admin: h.redisAcl,
+      stage: STAGE,
+      logger: nullLogger,
+      warnAbove: 5,
+    });
+    expect(r.gameKeys).toBe(8);
+    expect(r.channels).toBe(2);
+    expect(r.top[0]).toEqual({ channelId: "q_busy", keys: 7 });
+    expect(r.usedBytes).toBe(10);
+    expect(r.maxBytes).toBe(100);
+  });
+
+  it("usage report is a no-op when the stage has no issuer", async () => {
+    await expect(
+      runRedisUsageReport({
+        admin: undefined,
+        stage: STAGE,
+        logger: nullLogger,
+      }),
+    ).resolves.toMatchObject({ gameKeys: 0, channels: 0 });
   });
 
   it("reconcile is a no-op when the stage has no issuer", async () => {

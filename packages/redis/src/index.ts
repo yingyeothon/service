@@ -19,6 +19,8 @@ export {
   redisAclOptionsFromEnv,
   type RedisAclAdmin,
   type RedisAclIssued,
+  type RedisKeyCounts,
+  type RedisServerMemory,
   type RedisAclAdminOptions,
   type RedisAclCommands,
   type RedisAclGrant,

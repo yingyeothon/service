@@ -45,7 +45,33 @@ export interface RedisAclAdmin {
   exists(username: string): Promise<boolean>;
   /** Every account this instance knows, for the orphan reconciliation sweep. */
   list(): Promise<string[]>;
+  /** Instance-wide memory, the number that decides whether eviction starts. */
+  serverMemory(): Promise<RedisServerMemory>;
+  /**
+   * Counts keys matching `match`, grouped by `group(key)`. `SCAN` only — this
+   * account holds no key patterns, so no value is ever read; the trade is that
+   * byte-level accounting is impossible here (`MEMORY USAGE` needs key access)
+   * and a count is a proxy, not a measurement.
+   */
+  countKeys(
+    match: string,
+    group: (key: string) => string | null,
+  ): Promise<RedisKeyCounts>;
   close(): Promise<void>;
+}
+
+export interface RedisServerMemory {
+  usedBytes: number;
+  /** 0 when `maxmemory` is unset, i.e. bounded only by the host. */
+  maxBytes: number;
+}
+
+export interface RedisKeyCounts {
+  counts: Map<string, number>;
+  /** Keys seen, including ones `group` discarded. */
+  scanned: number;
+  /** `true` when the scan hit its iteration cap, so `counts` understates. */
+  truncated: boolean;
 }
 
 export interface RedisAclAdminOptions {
@@ -67,6 +93,9 @@ export interface RedisAclAdminOptions {
  * a bug rather than a request.
  */
 export const ACL_USERNAME_RE = /^game_[a-z0-9_]{3,64}$/;
+
+/** Bounds the daily usage scan; 500 keys a round, so 100k keys. */
+const SCAN_MAX_ROUNDS = 200;
 
 /** Reject anything that could smuggle a second rule into the argument list. */
 const PATTERN_RE = /^[~&][A-Za-z0-9:_*-]{3,128}$/;
@@ -208,6 +237,19 @@ export function createRedisAclAdmin({
             channelPattern,
             "+@all",
             "-@dangerous",
+            // `-@dangerous` removes KEYS but **not** SCAN, and Redis does not
+            // filter SCAN by the ACL's key patterns — a participant could
+            // enumerate every key name in the instance, both stages and every
+            // service, while still being refused every read (measured
+            // 2026-08-26). Key *names* leak regardless of `~`, so the commands
+            // that expose them have to be removed one by one. `-memory` also
+            // takes `MEMORY STATS`, which reports instance-wide numbers and
+            // has no key argument to filter on.
+            "-scan",
+            "-randomkey",
+            "-dbsize",
+            "-pubsub",
+            "-memory",
           );
           created = true;
           // `SETUSER` already ran, so the previous password is gone whatever
@@ -278,6 +320,46 @@ export function createRedisAclAdmin({
       guard(async () => {
         const r = await redis.call("ACL", "USERS");
         return Array.isArray(r) ? r.map(String) : [];
+      }),
+    serverMemory: async () =>
+      guard(async () => {
+        const info = String(await redis.call("INFO", "memory"));
+        const field = (name: string): number => {
+          const m = new RegExp(`^${name}:(\\d+)`, "m").exec(info);
+          return m ? Number(m[1]) : 0;
+        };
+        return {
+          usedBytes: field("used_memory"),
+          maxBytes: field("maxmemory"),
+        };
+      }),
+    countKeys: async (match, group) =>
+      guard(async () => {
+        const counts = new Map<string, number>();
+        let cursor = "0";
+        let scanned = 0;
+        let rounds = 0;
+        do {
+          const r = await redis.call(
+            "SCAN",
+            cursor,
+            "MATCH",
+            match,
+            "COUNT",
+            "500",
+          );
+          const [next, keys] = r as [string, string[]];
+          cursor = next;
+          for (const key of keys) {
+            scanned++;
+            const g = group(key);
+            if (g !== null) counts.set(g, (counts.get(g) ?? 0) + 1);
+          }
+          // A cap, not a page size: SCAN's cursor can revisit under rehashing,
+          // and a daily report must not become an unbounded loop on the one
+          // instance every service shares.
+        } while (cursor !== "0" && ++rounds < SCAN_MAX_ROUNDS);
+        return { counts, scanned, truncated: cursor !== "0" };
       }),
     close: async () => {
       await redis.quit();

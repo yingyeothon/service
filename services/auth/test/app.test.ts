@@ -2,6 +2,7 @@ import { decodeJwt } from "jose";
 import { describe, expect, it } from "vitest";
 import type { HttpResult } from "@yyt/http";
 import { verifyChannelToken } from "@yyt/jwt";
+import { sha256Hex } from "@yyt/core";
 import { callbackUrl } from "../src/app.js";
 import {
   BASE,
@@ -107,8 +108,13 @@ describe("browser flow", () => {
     );
     const state = loc.searchParams.get("state")!;
     expect(state).toMatch(/^[0-9a-f]{48}$/);
-    expect(await h.kv.ttl(`state:${state}`)).toBe(600);
-    expect(JSON.parse((await h.kv.get(`state:${state}`))!)).toMatchObject({
+    // Keyed by digest, never by the state itself: Redis does not filter `SCAN`
+    // by ACL key patterns, so every account on the shared instance can list key
+    // names even when refused every read.
+    const stateKey = `state:${sha256Hex(state)}`;
+    expect(await h.kv.ttl(`state:${state}`)).toBe(-2);
+    expect(await h.kv.ttl(stateKey)).toBe(600);
+    expect(JSON.parse((await h.kv.get(stateKey))!)).toMatchObject({
       channelId: CH,
       provider: "github",
       redirect: "https://game.example/cb",
