@@ -12,11 +12,25 @@ import {
 } from "@yyt/console-db";
 import { systemClock, type Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
-import { createRedisKv, redisOptionsFromEnv, type Kv } from "@yyt/redis";
+import {
+  createRedisAclAdmin,
+  createRedisKv,
+  redisAclMissing,
+  redisAclOptionsFromEnv,
+  redisOptionsFromEnv,
+  type Kv,
+  type RedisAclAdmin,
+} from "@yyt/redis";
 import { createConsoleApp } from "./app.js";
 import { createS3ArtifactStore, type ArtifactStore } from "./artifact-store.js";
 import { createDebugRoutes } from "./debug.js";
-import { runAssetSweep, runCatalogSweep, runExpire } from "./expire.js";
+import { revokeChannelRedis } from "./channel-redis.js";
+import {
+  runAssetSweep,
+  runCatalogSweep,
+  runExpire,
+  runRedisAclReconcile,
+} from "./expire.js";
 import { createGithubLogin } from "./github.js";
 import { createS3PosterStore } from "./poster.js";
 
@@ -46,6 +60,10 @@ interface Deps {
   catalog: CatalogDb;
   assets: AssetsDb;
   kv: Kv;
+  /** Absent until the stage has an issuer account; the routes then answer 503. */
+  redisAcl?: RedisAclAdmin;
+  /** Same box as `kv`; handed to participants, so it is read from config, not typed in. */
+  redisEndpoint: { host: string; port: number };
 }
 
 let deps: Promise<Deps> | undefined;
@@ -58,6 +76,19 @@ function getDeps(): Promise<Deps> {
     if (redis.prefix !== `console:${stage}:`)
       throw new Error("REDIS_KEY_PREFIX must be console:<stage>:");
     const raw = createPrismaClient(mysqlOptionsFromEnv());
+    // A second Redis connection, but a `lazyConnect` one that only dials when
+    // a credential route is actually hit. Redis connections are not the scarce
+    // resource here; MariaDB's 60 are (`rules/data.md`).
+    const acl = redisAclOptionsFromEnv();
+    if (!acl)
+      // Name the variable that is actually missing. "REDIS_ACL_USER is empty"
+      // when only the password is sends the operator to re-check a parameter
+      // they can see in SSM — and `bootstrap-ssm.sh` skips empty values
+      // silently, so a half-set pair is the likely way to get here.
+      logger.warn("participant credentials disabled", {
+        stage,
+        missing: redisAclMissing(),
+      });
     return {
       stage,
       db: createConsoleDb(raw),
@@ -65,6 +96,8 @@ function getDeps(): Promise<Deps> {
       catalog: createCatalogDb(raw),
       assets: createAssetsDb(raw),
       kv: createRedisKv(redis),
+      redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
+      redisEndpoint: { host: redis.host, port: redis.port },
     };
   })();
   // A failed cold start must retry on the next invocation, not cache the rejection.
@@ -100,7 +133,8 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     // Empty until the gateway ships: `GET /gw/channels/{id}` then answers 503.
     gatewayToken: process.env.GATEWAY_TOKEN ?? "",
   };
-  const { stage, db, events, catalog, assets, kv } = await getDeps();
+  const { stage, db, events, catalog, assets, kv, redisAcl, redisEndpoint } =
+    await getDeps();
   const clock = systemClock;
   const posterBucket = process.env.POSTER_BUCKET ?? "";
   if (!posterBucket)
@@ -144,6 +178,8 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     artifacts: artifactStoreFromEnv(),
     cdnBaseUrl: process.env.ARTIFACT_CDN_URL || undefined,
     kv,
+    redisAcl,
+    redisEndpoint,
     clock,
     logger,
     extraRoutes,
@@ -162,14 +198,28 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
 
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { db, catalog, assets } = await getDeps();
+  const { stage, db, catalog, assets, redisAcl } = await getDeps();
   const artifacts = artifactStoreFromEnv();
   // Run every sweep even when one throws, then rethrow so the Errors alarm
   // still fires: chaining them bare meant a channel-expiry failure silently
   // skipped the asset cleanup on that day and every day after.
   const failures: unknown[] = [];
   for (const step of [
-    () => runExpire({ db, logger }),
+    async () => {
+      const { deleted } = await runExpire({ db, logger });
+      // Hard-deleted channels take their participant credential with them.
+      // Only `q` channels ever had one, and each revoke costs a round trip
+      // (≈4s against an unreachable Redis), so the prefix test is what keeps
+      // a large delete batch from eating the whole 300s sweep budget and
+      // taking the catalog and asset sweeps down with it.
+      for (const id of deleted)
+        if (id.startsWith("q_"))
+          await revokeChannelRedis(redisAcl, id, stage, logger);
+    },
+    // Separate step, and after the expiry one: it is the net that catches
+    // whatever the best-effort revokes above dropped, so it must still run
+    // when they throw.
+    () => runRedisAclReconcile({ admin: redisAcl, db, stage, logger }),
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),
   ]) {

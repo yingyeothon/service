@@ -1,9 +1,11 @@
 import { nowSec, systemClock, ulid, type Clock, type Logger } from "@yyt/core";
 import type { AssetsDb, CatalogDb, ConsoleDb } from "@yyt/console-db";
+import type { RedisAclAdmin } from "@yyt/redis";
 import type { ArtifactStore } from "./artifact-store.js";
 import { ASSET_UPLOAD_KEY_PREFIX } from "./assets.js";
 import { planDeletions } from "./catalog-cleanup.js";
 import { deleteArtifactObjects } from "./catalog.js";
+import { channelIdFromAclUsername } from "./channel-redis.js";
 import { CHANNEL_DELETE_GRACE_SEC } from "./channels.js";
 
 /** Staging objects under `uploads/` linger this long past the upload TTL. */
@@ -192,4 +194,59 @@ export async function runAssetSweep({
   }
   logger.info("asset sweep", { uploadsDropped, objectsDeleted, s3Failures });
   return { uploadsDropped, objectsDeleted };
+}
+
+/**
+ * Daily reconciliation of the participant Redis accounts against the channels
+ * that justify them.
+ *
+ * This exists because revocation at delete time is best-effort: one transient
+ * Redis error there and the account is orphaned for good — the row is
+ * hard-deleted, so it never appears in a later sweep's `deleted` list and
+ * nothing in the database names the account any more. The only way back is to
+ * ask Redis what it holds. An orphan is not harmless: it is `+@all
+ * -@dangerous` inside its own prefix on a `maxmemory 256mb allkeys-lru` box,
+ * so an ex-participant can write until eviction starts taking other services'
+ * state (`rules/data.md`).
+ *
+ * Working from the ACL list rather than from a list of ids is also what keeps
+ * this bounded: one `ACL USERS` call plus one lookup per *participant* account,
+ * instead of a round trip per deleted channel of any kind.
+ */
+export async function runRedisAclReconcile({
+  admin,
+  db,
+  stage,
+  logger,
+}: {
+  admin?: RedisAclAdmin;
+  db: ConsoleDb;
+  stage: string;
+  logger: Logger;
+}): Promise<{ checked: number; revoked: string[] }> {
+  if (!admin) return { checked: 0, revoked: [] };
+  const mine: string[] = [];
+  for (const username of await admin.list()) {
+    const channelId = channelIdFromAclUsername(username, stage);
+    // Never touch an account this stage did not mint — the platform's own
+    // service users live in the same list.
+    if (channelId !== undefined) mine.push(channelId);
+  }
+  const revoked: string[] = [];
+  for (const channelId of mine) {
+    // `findChannelRow` already returns undefined for a soft-deleted row, so
+    // "the channel that justified this account is gone" is one lookup.
+    if (await db.findChannelRow(channelId)) continue;
+    if (await admin.revoke(`game_${stage}_${channelId}`))
+      revoked.push(channelId);
+  }
+  if (revoked.length > 0)
+    logger.warn("revoked orphaned participant redis accounts", {
+      count: revoked.length,
+    });
+  logger.info("redis acl reconcile", {
+    checked: mine.length,
+    revoked: revoked.length,
+  });
+  return { checked: mine.length, revoked };
 }

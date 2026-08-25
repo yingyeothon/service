@@ -188,6 +188,8 @@ export function ChannelDetailPage() {
         </Group>
       </Card>
 
+      {c.kind === "q" && <QRedisUserCard channel={c} owner={owner} />}
+
       {editing && (
         <Card withBorder>
           <form onSubmit={(e) => void save(e)}>
@@ -301,6 +303,113 @@ function LobbyDetails({ c }: { c: Channel }) {
   );
 }
 
+/**
+ * The scoped Redis account a `q` channel's game Lambda logs in with. Separate
+ * from the channel's own card because it is **not** a channel secret: `q`
+ * stores none, `rotate-secret` refuses it, and this credential lives in Redis'
+ * ACL rather than in the channel row.
+ */
+function QRedisUserCard({
+  channel,
+  owner,
+}: {
+  channel: Channel;
+  owner: boolean;
+}) {
+  const q = useApiQuery(["channel", channel.id, "redis-user"], () =>
+    api.channelRedisUser(channel.id),
+  );
+  const act = useAction();
+  const [password, setPassword] = useState<string | null>(null);
+  const [notPersisted, setNotPersisted] = useState(false);
+
+  const issue = async () => {
+    // Clear first: a failed re-issue must not leave the *previous* password on
+    // screen next to a card that now describes a different account.
+    setPassword(null);
+    setNotPersisted(false);
+    const r = await act.run(() => api.issueChannelRedisUser(channel.id));
+    if (r) {
+      setPassword(r.password ?? null);
+      setNotPersisted(r.persisted === false);
+      q.set({ ...r, password: undefined, issued: true, configured: true });
+    }
+  };
+  const revoke = async () => {
+    const r = await act.run(() => api.revokeChannelRedisUser(channel.id));
+    if (r && q.data) {
+      // The password on screen belongs to an account that no longer exists.
+      setPassword(null);
+      setNotPersisted(false);
+      q.set({ ...q.data, issued: false });
+    }
+  };
+
+  return (
+    <Card withBorder mb="md">
+      <Title order={4} mb="xs">
+        Redis account
+      </Title>
+      {q.error ? (
+        <Notice kind="error">{q.error}</Notice>
+      ) : !q.data ? (
+        <Spinner />
+      ) : (
+        <>
+          {act.error && <Notice kind="error">{act.error}</Notice>}
+          {password && (
+            <SecretOnce
+              label="Redis password"
+              value={password}
+              onDismiss={() => setPassword(null)}
+            />
+          )}
+          <CopyField label="Host" value={q.data.host} />
+          <CopyField label="Port" value={String(q.data.port)} />
+          <CopyField label="Username" value={q.data.username} />
+          {notPersisted && (
+            <Notice kind="warn">
+              The account was created but could not be written to Redis&apos;
+              ACL file, so it will disappear the next time Redis restarts. Copy
+              the password to keep going now, and issue again once the host is
+              healthy.
+            </Notice>
+          )}
+          <Text size="sm" c="dimmed" my="xs">
+            {q.data.configured === false
+              ? "This stage has no credential issuer configured, so accounts cannot be issued here yet. The prefixes above are still the ones your Lambda must use."
+              : q.data.issued
+                ? "Issued. The password exists only in Redis' hashed form — if it is lost, issue again (the old one stops working)."
+                : "Not issued yet. Your game Lambda cannot log in until you issue one."}{" "}
+            The account is scoped to this channel&apos;s prefixes above, so a
+            wrong prefix fails <Code>NOPERM</Code> instead of reaching another
+            game&apos;s queue.
+          </Text>
+          {owner && q.data.configured !== false && (
+            <Group>
+              <Button
+                size="compact-sm"
+                variant="default"
+                disabled={act.busy}
+                onClick={() => void issue()}
+              >
+                {q.data.issued ? "Re-issue" : "Issue"}
+              </Button>
+              {q.data.issued && (
+                <Confirm
+                  label="Revoke"
+                  onConfirm={revoke}
+                  disabled={act.busy}
+                />
+              )}
+            </Group>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 function QDetails({ c }: { c: Channel }) {
   const cfg = c.config as QConfig;
   const r = c.redis;
@@ -320,6 +429,7 @@ function QDetails({ c }: { c: Channel }) {
             label="Redis ACL channel pattern"
             value={r.aclChannelPattern}
           />
+          <CopyField label="Redis username" value={r.aclUsername} />
         </>
       )}
       <Text size="sm" c="dimmed">

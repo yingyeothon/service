@@ -7,7 +7,7 @@ import {
   createMemoryEventsDb,
 } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
-import { createMemoryKv } from "@yyt/redis";
+import { createMemoryAclAdmin, createMemoryKv } from "@yyt/redis";
 import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
@@ -26,6 +26,8 @@ export const URLS = {
 export const GATEWAY_TOKEN = "gw_" + "0123456789abcdef".repeat(2) + "ff";
 export const STAGE = "dev";
 export const CDN = "https://dev-d.yyt.life";
+/** Never the real host: the stateful box's address is a guarded identifier. */
+export const REDIS_ENDPOINT = { host: "redis.example", port: 6379 };
 export const NOW_MS = 1_700_000_000_000;
 export const NOW_SEC = NOW_MS / 1000;
 
@@ -53,6 +55,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const assets = createMemoryAssetsDb((id) => db.members.has(id));
   const posters = createMemoryPosterStore();
   const artifacts = createMemoryArtifactStore();
+  const redisAcl = createMemoryAclAdmin();
   const { agent, fetch } = mockAgent();
   const app = createConsoleApp({
     baseUrl: BASE,
@@ -71,6 +74,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     github: createGithubLogin({ clientId: "cid", clientSecret: "csec", fetch }),
     adminLogins: ["Boss"],
     gatewayToken: GATEWAY_TOKEN,
+    redisAcl,
+    redisEndpoint: REDIS_ENDPOINT,
     clock,
     ...over,
   });
@@ -127,6 +132,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     assets,
     posters,
     artifacts,
+    redisAcl,
     clock,
     agent,
     login,

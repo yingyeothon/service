@@ -254,8 +254,89 @@ check(
     q.body?.redis?.awaiterKeyPrefix === `${qKey}awaiter:` &&
     q.body?.redis?.channelPrefix === `game:out:dev:${q.body?.id}:` &&
     q.body?.redis?.aclKeyPattern === `~${qKey}*` &&
-    q.body?.redis?.aclChannelPattern === `&game:out:dev:${q.body?.id}:*`,
+    q.body?.redis?.aclChannelPattern === `&game:out:dev:${q.body?.id}:*` &&
+    q.body?.redis?.aclUsername === `game_dev_${q.body?.id}`,
   q.text.slice(0, 200),
+);
+
+// Participant Redis credential (todo/16 B). This really creates and deletes an
+// ACL user on the shared host, so the delete below is not optional politeness.
+const redisUser = (method) =>
+  call(`/channels/${q.body?.id}/redis-user`, { method, headers: as(member) });
+const beforeIssue = await redisUser("GET");
+check(
+  "q channel starts without a redis credential",
+  beforeIssue.status === 200 &&
+    beforeIssue.body?.issued === false &&
+    beforeIssue.body?.username === `game_dev_${q.body?.id}` &&
+    beforeIssue.body?.password === undefined,
+  beforeIssue.text.slice(0, 200),
+);
+const issue = await redisUser("POST");
+check(
+  "issue returns the whole copyable block with a fresh password",
+  issue.status === 200 &&
+    /^[0-9a-f]{64}$/.test(String(issue.body?.password)) &&
+    issue.body?.port > 0 &&
+    typeof issue.body?.host === "string" &&
+    issue.body.host.length > 0 &&
+    issue.body?.queueKeyPrefix === `${qKey}queue:` &&
+    issue.body?.awaiterKeyPrefix === `${qKey}awaiter:` &&
+    issue.body?.channelPrefix === `game:out:dev:${q.body?.id}:`,
+  // Status only: this response body carries the one-time password, and the
+  // header of this file promises never to print a credential.
+  String(issue.status),
+);
+check(
+  // A one-time secret must not sit in a proxy or browser cache.
+  "issue is no-store",
+  issue.headers.get("cache-control") === "no-store",
+  String(issue.headers.get("cache-control")),
+);
+const afterIssue = await redisUser("GET");
+check(
+  "reading it back says issued but never returns the password again",
+  afterIssue.body?.issued === true && afterIssue.body?.password === undefined,
+  afterIssue.text.slice(0, 200),
+);
+// The route is rate-limited per member (every issue rewrites Redis' whole ACL
+// file), so a back-to-back re-issue is a 429 by design.
+const throttled = await redisUser("POST");
+check(
+  "issuing again immediately is rate-limited",
+  throttled.status === 429,
+  String(throttled.status),
+);
+// From here the cleanup is mandatory, not politeness: a throw before the
+// DELETE leaves a live `game_dev_q_…` account on the shared host with no owner
+// and no channel row to find it by (the daily reconcile sweep would clear it,
+// but a day later).
+try {
+  const revoke = await redisUser("DELETE");
+  check(
+    "revoke removes the account",
+    revoke.body?.revoked === true,
+    revoke.text,
+  );
+  check(
+    "revoking again is not an error, it just found nothing",
+    (await redisUser("DELETE")).body?.revoked === false,
+    "",
+  );
+} finally {
+  await redisUser("DELETE").catch(() => undefined);
+}
+check(
+  // Admins may look at a channel they do not own but never mint for it, the
+  // same line rotate-secret draws (docs/decisions.md "Console permission model").
+  "an admin cannot mint for someone else's channel",
+  (
+    await call(`/channels/${q.body?.id}/redis-user`, {
+      method: "POST",
+      headers: as(admin),
+    })
+  ).status === 404,
+  "",
 );
 
 // gateway config read (the gateway's replacement for a MariaDB connection)

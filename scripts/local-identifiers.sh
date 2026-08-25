@@ -9,7 +9,10 @@ cd "$(dirname "$0")/.."
 out=local/identifiers.txt; tmp="$(mktemp)"; names="$(mktemp)"; all="$(mktemp)"
 trap 'rm -f "$tmp" "$names" "$all"' EXIT
 for f in local/env/*.env; do
-  grep -E '^(MYSQL_HOST|REDIS_HOST|MYSQL_DATABASE|MYSQL_USER|REDIS_USER)=' "$f" | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/'
+  # Every account-name variable belongs here. REDIS_ACL_USER was added with the
+  # participant-credential issuer (todo/16 B): a new credential class that does
+  # not extend this list is a new identifier the guard is structurally blind to.
+  grep -E '^(MYSQL_HOST|REDIS_HOST|MYSQL_DATABASE|MYSQL_USER|REDIS_USER|REDIS_ACL_USER)=' "$f" | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/'
 done | grep -vE '^[[:space:]]*$' | sort -u > "$names"
 # Other public names for the same box that no env file carries (one per line, # comments allowed).
 if [ -f local/identifiers.extra.txt ]; then

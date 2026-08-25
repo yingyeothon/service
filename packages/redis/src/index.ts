@@ -12,4 +12,16 @@ export {
   RELEASE_SCRIPT,
   type LockOptions,
 } from "./lock.js";
+export {
+  ACL_USERNAME_RE,
+  createRedisAclAdmin,
+  redisAclMissing,
+  redisAclOptionsFromEnv,
+  type RedisAclAdmin,
+  type RedisAclIssued,
+  type RedisAclAdminOptions,
+  type RedisAclCommands,
+  type RedisAclGrant,
+} from "./aclAdmin.js";
+export { createMemoryAclAdmin, type MemoryAclAdmin } from "./memoryAclAdmin.js";
 export { kvContractTests } from "./contract.js";

@@ -5,6 +5,8 @@
 # Usage: scripts/bootstrap-ssm.sh <dev|prod> [service...]   (default: console auth topic match)
 # Input: local/env/<service>.<stage>.env (gitignored; layout in local/env.example).
 # Keys per service: mysql-{host,port,database,user,password} redis-{host,port,user,password} redis-key-prefix.
+# console only (optional): redis-acl-{user,password} — the account that mints per-channel
+#   participant Redis credentials (todo/16 §B). Absent = those routes answer 503.
 # Stage-wide keys (uploaded only when set): DEBUG_KEY (dev only; generated when absent), SESSION_SECRET,
 #   and GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET/ADMIN_GITHUB_LOGINS — taken from the shell environment, else from
 #   local/env/console.<stage>.env (console owns the operator OAuth app).
@@ -75,6 +77,31 @@ if [ "${STAGE}" = "dev" ]; then
   done
 fi
 CONSOLE_ENV="local/env/console.${STAGE}.env"
+# Console-only: the Redis account that mints per-channel participant credentials
+# (todo/16 §B). Optional — while unset, /channels/{id}/redis-user answers 503 and
+# nothing else changes. Created on the host by yyt-stateful, never by this repo.
+if [ -f "$CONSOLE_ENV" ]; then
+  acl_user="$(envval "$CONSOLE_ENV" REDIS_ACL_USER)"
+  acl_pw="$(envval "$CONSOLE_ENV" REDIS_ACL_PASSWORD)"
+  # Both or neither. `put` skips an empty value silently, so a half-set pair
+  # would upload the username, leave the password absent, and produce a stage
+  # where every credential route 503s while SSM visibly holds a user name.
+  if { [ -n "$acl_user" ] && [ -z "$acl_pw" ]; } || { [ -z "$acl_user" ] && [ -n "$acl_pw" ]; }; then
+    echo "$CONSOLE_ENV: set both REDIS_ACL_USER and REDIS_ACL_PASSWORD, or neither" >&2; exit 1
+  fi
+  put console/redis-acl-user "$acl_user"
+  put console/redis-acl-password "$acl_pw"
+  # Removing the issuer needs an explicit delete: `put` never deletes, so
+  # clearing the env file alone would leave the stale pair in SSM and the next
+  # deploy would bake a revoked credential back into the Lambda.
+  if [ -z "$acl_user" ]; then
+    for k in redis-acl-user redis-acl-password; do
+      if aws ssm delete-parameter --name "/yyt-service/${STAGE}/console/${k}" >/dev/null 2>&1; then
+        log "deleted /yyt-service/${STAGE}/console/${k} (issuer unset locally)"
+      fi
+    done
+  fi
+fi
 for var in GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET ADMIN_GITHUB_LOGINS; do
   if [ -z "${!var:-}" ] && [ -f "$CONSOLE_ENV" ]; then
     declare "$var=$(envval "$CONSOLE_ENV" "$var")"

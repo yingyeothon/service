@@ -84,6 +84,35 @@ export interface GatewayRedis {
   channelPrefix: string;
   aclKeyPattern: string;
   aclChannelPattern: string;
+  aclUsername: string;
+}
+
+/**
+ * `q` only: the scoped Redis account a participant's game Lambda logs in with.
+ * `password` exists on issue and nowhere else — it is never stored in plaintext,
+ * so "lost it" always means "issue again".
+ */
+export interface ChannelRedisUser {
+  channelId: string;
+  host: string;
+  port: number;
+  username: string;
+  eventKeyPrefix: string;
+  queueKeyPrefix: string;
+  lockKeyPrefix: string;
+  awaiterKeyPrefix: string;
+  channelPrefix: string;
+  /** Present on read only; absent when the stage has no issuer to ask. */
+  issued?: boolean;
+  /** Present on read only. `false` = this stage cannot issue at all. */
+  configured?: boolean;
+  /** Present on issue only, once. */
+  password?: string;
+  /**
+   * Present on issue, and only when `false`: the account is live but missing
+   * from Redis' ACL file, so it dies at the next restart.
+   */
+  persisted?: boolean;
 }
 
 export interface Channel {
