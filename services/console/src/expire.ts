@@ -1,6 +1,7 @@
 import { nowSec, systemClock, ulid, type Clock, type Logger } from "@yyt/core";
-import type { CatalogDb, ConsoleDb } from "@yyt/console-db";
+import type { AssetsDb, CatalogDb, ConsoleDb } from "@yyt/console-db";
 import type { ArtifactStore } from "./artifact-store.js";
+import { ASSET_UPLOAD_KEY_PREFIX } from "./assets.js";
 import { planDeletions } from "./catalog-cleanup.js";
 import { deleteArtifactObjects } from "./catalog.js";
 import { CHANNEL_DELETE_GRACE_SEC } from "./channels.js";
@@ -122,4 +123,73 @@ export async function runCatalogSweep({
     s3Failures,
   });
   return { uploadsDropped, objectsDeleted, artifactsDeleted };
+}
+
+/**
+ * Daily asset sweep, sharing the `expire` schedule. It touches only the
+ * staging prefix: committed objects under `assets/` are pointed at by channel
+ * config (`mapUrl`), so no retention policy may delete them — a 404 there is
+ * not a degraded game, it is a game that cannot load at all
+ * (`docs/decisions.md` *Storage shapes*).
+ */
+export async function runAssetSweep({
+  assets,
+  artifacts,
+  db,
+  clock = systemClock,
+  logger,
+}: {
+  assets: AssetsDb;
+  artifacts?: ArtifactStore;
+  db: ConsoleDb;
+  clock?: Clock;
+  logger: Logger;
+}): Promise<{ uploadsDropped: number; objectsDeleted: number }> {
+  const now = nowSec(clock);
+  const uploadsDropped = await assets.deleteExpiredUploads(now);
+
+  let objectsDeleted = 0;
+  let s3Failures = 0;
+  if (artifacts) {
+    const stale = (await artifacts.list(ASSET_UPLOAD_KEY_PREFIX)).filter(
+      (o) => o.lastModifiedSec <= now - UPLOAD_GARBAGE_GRACE_SEC,
+    );
+    // One query for the whole page rather than one per key: a backlog of failed
+    // uploads would otherwise be thousands of round trips on a 1-connection pool.
+    const stillPending = new Set(
+      (
+        await assets.listUploadsByIds([
+          ...new Set(stale.map((o) => o.key.split("/")[1] ?? "")),
+        ])
+      )
+        .filter((u) => u.status === "pending")
+        .map((u) => u.id),
+    );
+    for (const o of stale) {
+      if (stillPending.has(o.key.split("/")[1] ?? "")) continue;
+      try {
+        await artifacts.delete(o.key);
+        objectsDeleted++;
+      } catch (e) {
+        s3Failures++;
+        logger.warn("asset upload garbage delete failed", {
+          key: o.key,
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  }
+
+  if (uploadsDropped + objectsDeleted > 0) {
+    await db.insertAudit({
+      id: ulid(),
+      actorId: null,
+      action: "asset.sweep",
+      target: null,
+      at: now,
+      detail: { uploadsDropped, objectsDeleted, s3Failures },
+    });
+  }
+  logger.info("asset sweep", { uploadsDropped, objectsDeleted, s3Failures });
+  return { uploadsDropped, objectsDeleted };
 }

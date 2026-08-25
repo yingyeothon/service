@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -94,6 +95,34 @@ func parseTags(pairs []string) (map[string]string, error) {
 	return tags, nil
 }
 
+// putPresigned uploads `body` to the presigned URL the console handed out. The
+// signed headers must be sent verbatim: `content-type` is part of the
+// signature, so substituting one turns the PUT into a 403.
+func putPresigned(ctx context.Context, cl *api.Client, grant uploadGrant, body io.Reader, size int64) error {
+	req, err := http.NewRequestWithContext(ctx, grant.Method, grant.URL, body)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+	for k, v := range grant.Headers {
+		req.Header.Set(k, v)
+	}
+	httpClient := cl.HTTP
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	// The presigned PUT of a large binary can exceed the client's API timeout.
+	res, err := (&http.Client{Transport: httpClient.Transport}).Do(req)
+	if err != nil {
+		return fmt.Errorf("upload PUT failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("upload PUT failed: HTTP %d", res.StatusCode)
+	}
+	return nil
+}
+
 // uploadArtifact runs presign → PUT file → commit.
 func uploadArtifact(ctx context.Context, cl *api.Client, appName, filePath, platform string, tags map[string]string) (*catalogArtifact, error) {
 	f, err := os.Open(filePath)
@@ -115,26 +144,8 @@ func uploadArtifact(ctx context.Context, cl *api.Client, appName, filePath, plat
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, grant.Method, grant.URL, f)
-	if err != nil {
+	if err := putPresigned(ctx, cl, grant, f, st.Size()); err != nil {
 		return nil, err
-	}
-	req.ContentLength = st.Size()
-	for k, v := range grant.Headers {
-		req.Header.Set(k, v)
-	}
-	httpClient := cl.HTTP
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	// The presigned PUT of a large binary can exceed the client's API timeout.
-	res, err := (&http.Client{Transport: httpClient.Transport}).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("upload PUT failed: %w", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode >= 300 {
-		return nil, fmt.Errorf("upload PUT failed: HTTP %d", res.StatusCode)
 	}
 	var artifact catalogArtifact
 	if err := cl.Do(ctx, http.MethodPost, "/catalog/uploads/"+api.PathID(grant.UploadID)+"/commit", map[string]any{}, &artifact); err != nil {

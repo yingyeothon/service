@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import {
+  createMemoryAssetsDb,
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
@@ -27,6 +28,7 @@ describe("debug login hook", () => {
       db,
       events: createMemoryEventsDb(),
       catalog: createMemoryCatalogDb(),
+      assets: createMemoryAssetsDb(),
       kv,
       github: createGithubLogin({ clientId: "a", clientSecret: "b" }),
       adminLogins: [],

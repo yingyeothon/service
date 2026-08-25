@@ -11,6 +11,7 @@ import {
   type Role,
 } from "@yyt/core";
 import type {
+  AssetsDb,
   CatalogDb,
   ChannelRow,
   ConsoleDb,
@@ -44,6 +45,7 @@ import {
   type ServiceUrls,
 } from "./channels.js";
 import type { ArtifactStore } from "./artifact-store.js";
+import { createAssetRoutes } from "./assets.js";
 import { createCatalogRoutes } from "./catalog.js";
 import { createEventRoutes } from "./events.js";
 import { createGatewayRoutes } from "./gateway.js";
@@ -71,6 +73,7 @@ export interface ConsoleAppOptions {
   db: ConsoleDb;
   events: EventsDb;
   catalog: CatalogDb;
+  assets: AssetsDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
@@ -118,6 +121,7 @@ export function createConsoleApp({
   db,
   events,
   catalog,
+  assets,
   posters,
   artifacts,
   cdnBaseUrl,
@@ -771,6 +775,16 @@ export function createConsoleApp({
     logger,
   });
 
+  const assetRoutes = createAssetRoutes({
+    db,
+    assets,
+    artifacts,
+    cdnBaseUrl: cdn,
+    clock,
+    logger,
+    audit,
+  });
+
   const catalogRoutes = createCatalogRoutes({
     db,
     catalog,
@@ -788,6 +802,7 @@ export function createConsoleApp({
       ...memberRoutes,
       ...eventRoutes,
       ...catalogRoutes,
+      ...assetRoutes,
       ...gatewayRoutes,
     ],
     identity: createIdentityResolver({

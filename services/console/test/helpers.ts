@@ -1,6 +1,7 @@
 import { expect } from "vitest";
 import { MockAgent, fetch as undiciFetch } from "undici";
 import {
+  createMemoryAssetsDb,
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
@@ -49,6 +50,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const db = createMemoryConsoleDb();
   const events = createMemoryEventsDb((id) => db.members.has(id));
   const catalog = createMemoryCatalogDb((id) => db.members.has(id));
+  const assets = createMemoryAssetsDb((id) => db.members.has(id));
   const posters = createMemoryPosterStore();
   const artifacts = createMemoryArtifactStore();
   const { agent, fetch } = mockAgent();
@@ -60,6 +62,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     db,
     events,
     catalog,
+    assets,
     posters,
     artifacts,
     cdnBaseUrl: CDN,
@@ -121,6 +124,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     db,
     events,
     catalog,
+    assets,
     posters,
     artifacts,
     clock,

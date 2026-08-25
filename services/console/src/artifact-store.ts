@@ -23,16 +23,36 @@ export interface ArtifactObject {
   etag: string | null;
 }
 
+/** Metadata forced onto the destination object by `copy`. */
+export interface ObjectMetadata {
+  contentType: string;
+  cacheControl: string;
+}
+
 /**
  * Binary-distribution bucket access. Objects under `uploads/{id}/{filename}`
  * are staging; committed artifacts live under `{app}/{shortId}/{filename}` and
  * are served directly by the public CDN.
  */
 export interface ArtifactStore {
-  presignPut(o: { key: string; contentLength: number }): Promise<string>;
+  /**
+   * `contentType` is signed in, so the uploader cannot substitute one; assets
+   * depend on that (an attacker-chosen `text/html` would be XSS on our own CDN
+   * origin). Defaults to `application/octet-stream`, what binaries use.
+   */
+  presignPut(o: {
+    key: string;
+    contentLength: number;
+    contentType?: string;
+  }): Promise<string>;
   /** `undefined` when the object does not exist. */
   head(key: string): Promise<ArtifactObject | undefined>;
-  copy(srcKey: string, dstKey: string): Promise<void>;
+  /** Without `metadata` the source object's headers are carried over. */
+  copy(
+    srcKey: string,
+    dstKey: string,
+    metadata?: ObjectMetadata,
+  ): Promise<void>;
   put(key: string, body: string, contentType: string): Promise<void>;
   delete(key: string): Promise<void>;
   /** Keys + last-modified under a prefix (paginated; bounded at ~10k keys). */
@@ -49,13 +69,13 @@ export function createS3ArtifactStore({
   client?: S3Client;
 }): ArtifactStore {
   return {
-    presignPut: ({ key, contentLength }) =>
+    presignPut: ({ key, contentLength, contentType }) =>
       getSignedUrl(
         client,
         new PutObjectCommand({
           Bucket: bucket,
           Key: key,
-          ContentType: "application/octet-stream",
+          ContentType: contentType ?? "application/octet-stream",
           ContentLength: contentLength,
         }),
         {
@@ -88,12 +108,19 @@ export function createS3ArtifactStore({
         });
       }
     },
-    copy: async (srcKey, dstKey) => {
+    copy: async (srcKey, dstKey, metadata) => {
       await client.send(
         new CopyObjectCommand({
           Bucket: bucket,
           CopySource: `/${bucket}/${encodeURIComponent(srcKey).replaceAll("%2F", "/")}`,
           Key: dstKey,
+          ...(metadata
+            ? {
+                MetadataDirective: "REPLACE" as const,
+                ContentType: metadata.contentType,
+                CacheControl: metadata.cacheControl,
+              }
+            : {}),
         }),
       );
     },
@@ -144,7 +171,12 @@ export function createS3ArtifactStore({
 export function createMemoryArtifactStore(): ArtifactStore & {
   objects: Map<
     string,
-    { contentLength: number; etag: string | null; body?: string }
+    {
+      contentLength: number;
+      etag: string | null;
+      body?: string;
+      metadata?: ObjectMetadata;
+    }
   >;
   deleted: string[];
   putObject(
@@ -154,7 +186,12 @@ export function createMemoryArtifactStore(): ArtifactStore & {
 } {
   const objects = new Map<
     string,
-    { contentLength: number; etag: string | null; body?: string }
+    {
+      contentLength: number;
+      etag: string | null;
+      body?: string;
+      metadata?: ObjectMetadata;
+    }
   >();
   const deleted: string[] = [];
   return {
@@ -165,15 +202,16 @@ export function createMemoryArtifactStore(): ArtifactStore & {
         contentLength: o.contentLength,
         etag: o.etag ?? null,
       }),
-    presignPut: async ({ key }) => `https://artifacts.test/put/${key}`,
+    presignPut: async ({ key, contentType }) =>
+      `https://artifacts.test/put/${key}?ct=${encodeURIComponent(contentType ?? "application/octet-stream")}`,
     head: async (key) => {
       const o = objects.get(key);
       return o && { contentLength: o.contentLength, etag: o.etag };
     },
-    copy: async (srcKey, dstKey) => {
+    copy: async (srcKey, dstKey, metadata) => {
       const o = objects.get(srcKey);
       if (!o) throw new AppError("unavailable", "artifact storage error");
-      objects.set(dstKey, { ...o });
+      objects.set(dstKey, { ...o, ...(metadata ? { metadata } : {}) });
     },
     put: async (key, body) => {
       objects.set(key, { contentLength: body.length, etag: null, body });

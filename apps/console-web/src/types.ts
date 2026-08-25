@@ -254,3 +254,46 @@ export interface InstallerDownload {
   version: string | null;
   createdAt: number;
 }
+
+export interface AssetVersion {
+  version: string;
+  files: number;
+  bytes: number;
+  createdAt: number;
+}
+
+export interface AssetBundle {
+  id: string;
+  name: string;
+  description: string | null;
+  ownerLogin: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AssetBundleDetail extends AssetBundle {
+  versions: AssetVersion[];
+  bytes: number;
+}
+
+export interface AssetFile {
+  id: string;
+  bundleId: string;
+  version: string;
+  path: string;
+  url: string;
+  objectKey: string;
+  contentType: string;
+  size: number;
+  hash: string | null;
+  createdAt: number;
+}
+
+export interface AssetUploadGrant {
+  uploadId: string;
+  key: string;
+  url: string;
+  method: "PUT";
+  headers: Record<string, string>;
+  expiresAt: number;
+}

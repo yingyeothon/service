@@ -122,16 +122,18 @@ provider:
           Condition:
             StringLike:
               s3:prefix: posters/*
-        # Binary catalog artifacts: presigned PUT into uploads/, commit copies
-        # to the app prefix, delete covers cleanup — whole-bucket object CRUD
-        # because committed keys are `{app}/{id}/{file}` (any app name).
+        # Binary catalog artifacts and game assets share this bucket: presigned
+        # PUT into uploads/ or asset-uploads/, commit copies to the app prefix
+        # or assets/{bundle}/{version}/, delete covers cleanup — whole-bucket
+        # object CRUD because both key spaces are named by the caller.
         - Effect: Allow
           Action:
             - s3:PutObject
             - s3:GetObject
             - s3:DeleteObject
           Resource: arn:aws:s3:::${self:custom.artifactBucket.${self:custom.stage}}/*
-        # ListBucket: HeadObject 404s (vs 403) + the uploads/ garbage sweep.
+        # ListBucket: HeadObject 404s (vs 403) + the uploads/ and
+        # asset-uploads/ garbage sweeps.
         - Effect: Allow
           Action: s3:ListBucket
           Resource: arn:aws:s3:::${self:custom.artifactBucket.${self:custom.stage}}
@@ -158,7 +160,7 @@ functions:
   expire:
     handler: src/handler.expire
     reservedConcurrency: 1
-    # Also runs the catalog sweep (S3 deletes across apps).
+    # Also runs the catalog and asset sweeps (S3 deletes across apps).
     timeout: 300
     events:
       # 03:00 KST daily; a fixed time so operators can predict when channels flip.

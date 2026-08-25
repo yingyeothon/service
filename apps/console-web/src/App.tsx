@@ -5,6 +5,8 @@ import { hasRole, useAuth } from "./auth";
 import { AppShellLayout, currentPath } from "./components/layout";
 import { Notice, Spinner } from "./components/ui";
 import { NAV_ITEMS } from "./navigation";
+import { AssetBundlePage } from "./pages/AssetBundle";
+import { AssetsPage } from "./pages/Assets";
 import { CatalogPage } from "./pages/Catalog";
 import { CatalogAppPage } from "./pages/CatalogApp";
 import { CatalogGroupPage } from "./pages/CatalogGroup";
@@ -126,6 +128,22 @@ export function App() {
           element={
             <RequireRole min={navMinRole("/catalog")}>
               <CatalogGroupPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/assets"
+          element={
+            <RequireRole min={navMinRole("/assets")}>
+              <AssetsPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="/assets/:name"
+          element={
+            <RequireRole min={navMinRole("/assets")}>
+              <AssetBundlePage />
             </RequireRole>
           }
         />

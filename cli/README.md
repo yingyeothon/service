@@ -97,6 +97,20 @@ yyt catalog installer
 
 `yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous).
 
+### Game assets
+
+```sh
+yyt asset list|create <name> [--description d]|get <name>
+yyt asset update <name> [--name n] [--description d] [--owner member-id]   # rename only while empty
+yyt asset delete <name>
+yyt asset files <name> <version>                       # public URLs of one version
+yyt asset upload <name> <version> <file> [--path inside/the/bundle.json]
+yyt asset push <name> <version> <dir>                  # a whole directory as one version
+yyt asset rm-version <name> <version>
+```
+
+`push` keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`, 2 MB per file and 20 MB per bundle.
+
 Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending member or not admin), `5` not found.
 
 ## Smoke helpers
