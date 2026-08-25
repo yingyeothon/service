@@ -25,6 +25,11 @@
 - Pre-flight for `3_assets`: `select name from catalog_apps where lower(name) in ('uploads','assets','asset-uploads')` must return nothing on the stage being deployed. The reservation in `catalog.ts` only guards new apps; a pre-existing app named `asset-uploads` would have its committed binaries deleted by `runAssetSweep` 24h later. Both stages were verified empty on 2026-08-25.
 - `schema_migrations` (the legacy pre-Prisma migrator's table) is frozen at whatever version each stage reached before the cutover — prod stopped at 2, dev at 3 — and nothing reads it any more. It is not drift; do not try to reconcile it with `_prisma_migrations`.
 
+## Local credential files
+
+- `scripts/get-env.sh <stage> [service…]` rebuilds `local/env/<service>.<stage>.env` from SSM and refuses to overwrite unless `FORCE=1`. That refusal is the only thing standing between a routine re-pull and data loss, because the file is **not** a pure projection of the per-service SSM prefix: console's copy also carries stage-wide values (`github-client-*`, `admin-github-logins`) that `bootstrap-ssm.sh` reads back out of it. A `FORCE=1` pull that restored only the per-service keys left those blank, and the next `bootstrap-ssm.sh` would have uploaded an **empty** OAuth app — breaking console login on that stage. Fixed 2026-08-26 by having `get-env.sh` restore them too; the round trip is now lossless, verified by diffing before and after.
+- The general shape of the trap: any file that is both generated and hand-extended needs its generator to reproduce _everything_ in it, or it needs to stop being hand-extended. Treat `FORCE=1` as destructive until the round trip is proven.
+
 ## Artifact/asset CDN (`d.yyt.life` / `dev-d.yyt.life`)
 
 - These two distributions are **manual infra, outside IaC**, and they are not twins (survey in `todo/12-catalog.md`). dev is an S3 REST origin behind OAC; prod is a legacy S3 **website** custom origin with the legacy `ForwardedValues` behaviour rather than a cache policy. Attaching the managed `SecurityHeaders` policy works on either shape — a response-headers policy is independent of `CachePolicyId` vs `ForwardedValues`, so the legacy behaviour did not have to be modernised first.

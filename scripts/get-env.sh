@@ -2,6 +2,9 @@
 # Reverse of bootstrap-ssm.sh: rebuilds local/env/<service>.<stage>.env from SSM on a new machine.
 # Usage: scripts/get-env.sh <dev|prod> [service...]   (default: console auth topic match)
 # Refuses to overwrite an existing file unless FORCE=1.
+# For `console` it also restores the stage-wide keys that live in that file
+# (github-client-*, admin-github-logins, and the optional ACL issuer pair), so a
+# FORCE=1 re-pull cannot leave bootstrap-ssm.sh with an empty OAuth app.
 set -euo pipefail
 umask 077
 STAGE="${1:?stage (dev|prod)}"; shift || true
@@ -42,6 +45,17 @@ for svc in "${SERVICES[@]}"; do
         v="$(get "$k")"
         [ -n "$v" ] || continue
         case "$v" in *$'\n'*) echo "$prefix$k contains a newline" >&2; rm -f "$tmp"; exit 1;; esac
+        echo "$(echo "$k" | tr 'a-z-' 'A-Z_')=${v}"
+      done
+      # Stage-wide, but console's env file is where bootstrap-ssm.sh looks for
+      # them: without these, a FORCE=1 re-pull silently produces a file that
+      # then uploads *empty* github-client-* on the next bootstrap. (Learned the
+      # hard way — a re-pull for verification wiped them.)
+      stage_json="$(aws ssm get-parameters-by-path --path "/yyt-service/${STAGE}" --with-decryption --output json)"
+      for k in github-client-id github-client-secret admin-github-logins; do
+        v="$(echo "$stage_json" | jq -r --arg n "/yyt-service/${STAGE}/$k" '.Parameters[] | select(.Name==$n) | .Value')"
+        [ -n "$v" ] || continue
+        case "$v" in *$'\n'*) echo "/yyt-service/${STAGE}/$k contains a newline" >&2; rm -f "$tmp"; exit 1;; esac
         echo "$(echo "$k" | tr 'a-z-' 'A-Z_')=${v}"
       done
     fi
