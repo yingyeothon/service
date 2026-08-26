@@ -67,10 +67,10 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
     <Card withBorder padding="md" mb="md">
       <Group justify="space-between" align="center" wrap="wrap">
         <div>
-          <Text fw={600}>yyt installer</Text>
+          <Text fw={600}>잉여톤 app</Text>
           <Text size="sm" c="dimmed">
-            Installs the catalog apps on your device and keeps them updated.
-            Latest: <strong>{latest.filename}</strong>
+            Installs the catalog apps on your device, keeps them updated, and
+            tracks project issues. Latest: <strong>{latest.filename}</strong>
             {latest.version ? ` (v${latest.version})` : ""} ·{" "}
             {platformLabel(latest.platform)} · {fmtTime(latest.createdAt)}
           </Text>

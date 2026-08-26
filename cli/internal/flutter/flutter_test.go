@@ -48,9 +48,9 @@ func TestVersionRoundtrip(t *testing.T) {
 func TestApplicationIDAndLabel(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "android", "app", "build.gradle.kts"),
-		"android {\n  defaultConfig {\n    applicationId = \"life.yyt.catalog\"\n  }\n}\n")
+		"android {\n  defaultConfig {\n    applicationId = \"life.yyt.console\"\n  }\n}\n")
 	id, err := ApplicationID(dir)
-	if err != nil || id != "life.yyt.catalog" {
+	if err != nil || id != "life.yyt.console" {
 		t.Fatalf("ApplicationID = %q, %v", id, err)
 	}
 	write(t, filepath.Join(dir, "android", "app", "src", "main", "res", "values", "strings.xml"),
