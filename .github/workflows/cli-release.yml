@@ -11,23 +11,38 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
       - run: cd cli && go vet ./... && go test ./...
       - id: ver
         run: echo "version=${GITHUB_REF_NAME#cli/v}" >> "$GITHUB_OUTPUT"
       - run: cli/scripts/build-release.sh "$VERSION"
         env:
           VERSION: ${{ steps.ver.outputs.version }}
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          # Draft first: `yyt self update` skips drafts, so a release is never
-          # visible with half of its assets uploaded.
-          gh release create "$GITHUB_REF_NAME" --draft --title "yyt v$VERSION" \
-            --generate-notes cli/dist/*.tar.gz cli/dist/*.zip cli/dist/checksums.txt
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          set -euo pipefail
+          assets=(cli/dist/*.tar.gz cli/dist/*.zip cli/dist/checksums.txt)
+          # A release created from the GitHub web UI already exists for this
+          # tag (that is what pushed the tag). Attach the assets to it instead
+          # of creating a second release: `gh release edit <tag>` resolves to
+          # the published one, which would leave the draft stranded.
+          if gh release view "$GITHUB_REF_NAME" --json id >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber "${assets[@]}"
+            exit 0
+          fi
+          # Draft first: `yyt self update` and install.sh skip drafts, so a
+          # release is never visible with half of its assets uploaded. Publish
+          # by release id, never by tag, so the right release is flipped.
+          url=$(gh release create "$GITHUB_REF_NAME" --draft --title "yyt v$VERSION" \
+            --generate-notes "${assets[@]}")
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.draft and .tag_name == \"$GITHUB_REF_NAME\") | .id" | head -n1)
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -f draft=false >/dev/null
+          echo "published release $id ($url)"
