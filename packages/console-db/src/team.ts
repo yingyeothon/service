@@ -182,6 +182,10 @@ export interface VersionRow {
   note: string | null;
   createdBy: string;
   createdAt: number;
+  /** Live `artifact` links. Artifact deletion cascades the link, so this is the surviving artifact count. */
+  artifactCount: number;
+  /** Live `asset_version` links (bundle deletion cascades them too). */
+  assetCount: number;
 }
 
 export interface VersionInput {
@@ -615,21 +619,27 @@ const toProject = (r: {
   updatedAt: num(r.updated_at),
 });
 
-const toVersion = (r: {
-  id: string;
-  project_id: string;
-  name: string;
-  note: string | null;
-  created_by: string;
-  created_at: bigint | number;
-}): VersionRow => ({
+const toVersion = (
+  r: {
+    id: string;
+    project_id: string;
+    name: string;
+    note: string | null;
+    created_by: string;
+    created_at: bigint | number;
+  },
+  counts: LinkCounts = { artifactCount: 0, assetCount: 0 },
+): VersionRow => ({
   id: r.id,
   projectId: r.project_id,
   name: r.name,
   note: r.note,
   createdBy: r.created_by,
   createdAt: num(r.created_at),
+  ...counts,
 });
+
+type LinkCounts = Pick<VersionRow, "artifactCount" | "assetCount">;
 
 const toLink = (r: {
   id: string;
@@ -805,6 +815,31 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
     return i
       ? { projectId: i.project_id, teamId: i.projects.team_id }
       : undefined;
+  };
+
+  /**
+   * One `groupBy` for a page of version ids: a range scan on the `version_id`
+   * prefix of the `(version_id, target)` unique index, page size × links rows.
+   * Links cascade with their artifact/bundle, so the counts are the surviving
+   * targets.
+   */
+  const linkCounts = async (
+    ids: string[],
+  ): Promise<Map<string, LinkCounts>> => {
+    const out = new Map<string, LinkCounts>();
+    if (ids.length === 0) return out;
+    const rows = await prisma.project_version_links.groupBy({
+      by: ["version_id", "kind"],
+      where: { version_id: { in: ids } },
+      _count: { _all: true },
+    });
+    for (const r of rows) {
+      const c = out.get(r.version_id) ?? { artifactCount: 0, assetCount: 0 };
+      if (r.kind === "artifact") c.artifactCount += r._count._all;
+      else c.assetCount += r._count._all;
+      out.set(r.version_id, c);
+    }
+    return out;
   };
 
   return {
@@ -1248,17 +1283,17 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
     findVersion: (id) =>
       run(async () => {
         const r = await prisma.project_versions.findUnique({ where: { id } });
-        return r ? toVersion(r) : undefined;
+        return r ? toVersion(r, (await linkCounts([id])).get(id)) : undefined;
       }),
     listVersions: (projectId) =>
-      run(async () =>
-        (
-          await prisma.project_versions.findMany({
-            where: { project_id: projectId },
-            orderBy: [{ created_at: "desc" }, { id: "desc" }],
-          })
-        ).map(toVersion),
-      ),
+      run(async () => {
+        const rows = await prisma.project_versions.findMany({
+          where: { project_id: projectId },
+          orderBy: [{ created_at: "desc" }, { id: "desc" }],
+        });
+        const counts = await linkCounts(rows.map((r) => r.id));
+        return rows.map((r) => toVersion(r, counts.get(r.id)));
+      }),
     countVersions: (projectId) =>
       run(() =>
         prisma.project_versions.count({ where: { project_id: projectId } }),
@@ -1833,6 +1868,21 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
     const p = v && projects.get(v.projectId);
     return v && p ? { version: v, project: p } : undefined;
   };
+  /** Mirrors the FK cascade: a link whose artifact/bundle is gone is invisible. */
+  const linkAlive = (l: VersionLinkRow) =>
+    l.kind === "artifact"
+      ? artifactExists(l.artifactId ?? "")
+      : bundleExists(l.bundleId ?? "");
+  const withCounts = (v: VersionRow): VersionRow => {
+    let artifactCount = 0;
+    let assetCount = 0;
+    for (const l of links.values()) {
+      if (l.versionId !== v.id || !linkAlive(l)) continue;
+      if (l.kind === "artifact") artifactCount++;
+      else assetCount++;
+    }
+    return { ...v, artifactCount, assetCount };
+  };
   const issueOf = (id: string) => {
     const i = issues.get(id);
     const p = i && projects.get(i.projectId);
@@ -2257,6 +2307,8 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
           note: v.note ?? null,
           createdBy: by.actorId,
           createdAt: by.at,
+          artifactCount: 0,
+          assetCount: 0,
         });
         record(p.teamId, by, "version.create", {
           target: v.id,
@@ -2265,12 +2317,12 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       }),
     findVersion: async (id) => {
       const r = versions.get(id);
-      return r && { ...r };
+      return r && withCounts(r);
     },
     listVersions: async (projectId) =>
       [...versions.values()]
         .filter((v) => v.projectId === projectId)
-        .map((v) => ({ ...v }))
+        .map(withCounts)
         .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),
     countVersions: async (projectId) =>
       [...versions.values()].filter((v) => v.projectId === projectId).length,
@@ -2337,7 +2389,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       }),
     listVersionLinks: async (versionId) =>
       [...links.values()]
-        .filter((l) => l.versionId === versionId)
+        .filter((l) => l.versionId === versionId && linkAlive(l))
         .map((l) => ({ ...l }))
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
     removeVersionLink: (versionId, linkId, by) =>

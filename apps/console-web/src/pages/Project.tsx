@@ -479,6 +479,7 @@ export function VersionModal({
       setArtifactId("");
       setAssetVersion("");
       await detail.reload();
+      await onChanged(); // list counts
     }
   };
   const removeLink = async (id: string) => {
@@ -487,8 +488,10 @@ export function VersionModal({
         await api.removeVersionLink(project.id, version.id, id);
         return true;
       })
-    )
+    ) {
       await detail.reload();
+      await onChanged(); // list counts
+    }
   };
   const canAdd =
     kind === "artifact"
@@ -742,6 +745,8 @@ function VersionsTab({
               <Table.Tr>
                 <Table.Th>Version</Table.Th>
                 <Table.Th>Note</Table.Th>
+                <Table.Th>Artifacts</Table.Th>
+                <Table.Th>Assets</Table.Th>
                 <Table.Th>By</Table.Th>
                 <Table.Th>Created</Table.Th>
                 <Table.Th />
@@ -764,6 +769,8 @@ function VersionsTab({
                       {v.note ?? "—"}
                     </Text>
                   </Table.Td>
+                  <Table.Td>{v.artifactCount}</Table.Td>
+                  <Table.Td>{v.assetCount}</Table.Td>
                   <Table.Td>{v.createdBy ?? "—"}</Table.Td>
                   <Table.Td>{fmtTime(v.createdAt)}</Table.Td>
                   <Table.Td>

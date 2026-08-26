@@ -109,6 +109,29 @@ describe.skipIf(!dockerAvailable())(
               createdAt: 1,
             });
           },
+          artifact: async (id) => {
+            const catalog = createCatalogDb(db.client);
+            if (!(await catalog.findApp("ca_contract")))
+              await catalog.insertApp({
+                id: "ca_contract",
+                name: "contract",
+                path: "contract",
+                teamId: "team_1",
+                projectId: "prj_1",
+                createdAt: 1,
+              });
+            await catalog.insertArtifact({
+              id,
+              appId: "ca_contract",
+              platform: "android",
+              url: "https://example.com/c.apk",
+              tags: {},
+              createdAt: 2,
+            });
+          },
+          deleteArtifact: async (id) => {
+            await createCatalogDb(db.client).deleteArtifact(id);
+          },
         },
       );
     });
@@ -364,12 +387,23 @@ describe.skipIf(!dockerAvailable())(
         expect((await team.listVersionLinks("ver_1")).map((l) => l.id)).toEqual(
           ["lnk_1", "lnk_2"],
         );
+        const counts = async () => {
+          const [v] = await team.listVersions("prj_1");
+          return [v?.artifactCount, v?.assetCount];
+        };
+        expect(await counts()).toEqual([1, 1]);
         await catalog.deleteArtifact("art_1");
         expect((await team.listVersionLinks("ver_1")).map((l) => l.id)).toEqual(
           ["lnk_2"],
         );
+        expect(await counts()).toEqual([0, 1]);
+        expect(await team.findVersion("ver_1")).toMatchObject({
+          artifactCount: 0,
+          assetCount: 1,
+        });
         await assets.deleteBundle("ab_1");
         expect(await team.listVersionLinks("ver_1")).toEqual([]);
+        expect(await counts()).toEqual([0, 0]);
       });
     });
 

@@ -333,6 +333,8 @@ export function createTeamRoutes({
     note: v.note,
     createdBy: loginOf(logins, v.createdBy),
     createdAt: v.createdAt,
+    artifactCount: v.artifactCount,
+    assetCount: v.assetCount,
   });
   const linkView = (l: VersionLinkRow) => ({
     id: l.id,

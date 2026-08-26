@@ -793,6 +793,7 @@ describe("versions", () => {
       await h.app(ev("GET", `${p}/versions`, { headers: member.cookie })),
     );
     expect(list.versions.map((v: Json) => v.name)).toEqual(["1.1.0", "1.0.0"]);
+    expect(list.versions[0]).toMatchObject({ artifactCount: 0, assetCount: 0 });
     expect(
       (await h.app(ev("GET", `${p}/versions`, { headers: other.cookie })))
         .statusCode,
@@ -921,6 +922,7 @@ describe("versions", () => {
       ),
     );
     expect(detail.links).toHaveLength(2);
+    expect(detail).toMatchObject({ artifactCount: 1, assetCount: 1 });
     const unlink = await h.app(
       ev("DELETE", `${links}/${parse(l1).id}`, { headers: member.cookie }),
     );

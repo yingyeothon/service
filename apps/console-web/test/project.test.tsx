@@ -1,7 +1,7 @@
 import { MantineProvider } from "@mantine/core";
 import { ModalsProvider } from "@mantine/modals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,6 +61,8 @@ const V1: Version = {
   note: null,
   createdBy: "alice",
   createdAt: 0,
+  artifactCount: 2,
+  assetCount: 3,
 };
 const ISSUE: IssueDetail = {
   id: "iss_1",
@@ -131,7 +133,15 @@ describe("ProjectPage", () => {
       .mockResolvedValueOnce([V1])
       .mockResolvedValue([{ ...V1, id: "ver_2", name: "v1.2.4" }, V1]);
     mount("/teams/team_1/projects/prj_1/versions");
-    await screen.findByText("v1.2.3");
+    // The help text also says "v1.2.3"; wait for the row itself.
+    await screen.findByRole("button", { name: "v1.2.3" });
+    // Live link counts sit in the list, no popup needed.
+    const row = screen.getByRole("button", { name: "v1.2.3" }).closest("tr")!;
+    const cells = within(row)
+      .getAllByRole("cell")
+      .map((c) => c.textContent);
+    expect(screen.getByText("Artifacts")).toBeInTheDocument();
+    expect(cells.slice(2, 4)).toEqual(["2", "3"]);
     await userEvent.click(screen.getByRole("button", { name: "Bump patch" }));
     expect(mockApi.bumpVersion).toHaveBeenCalledWith("prj_1", "patch");
     expect(await screen.findByText("v1.2.4")).toBeInTheDocument();

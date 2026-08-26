@@ -15,13 +15,16 @@ import (
 
 // Views mirror services/console/src/team.ts.
 type projectVersion struct {
-	ID        string        `json:"id"`
-	ProjectID string        `json:"projectId"`
-	Name      string        `json:"name"`
-	Note      *string       `json:"note"`
-	CreatedBy *string       `json:"createdBy"`
-	CreatedAt int64         `json:"createdAt"`
-	Links     []versionLink `json:"links,omitempty"`
+	ID        string  `json:"id"`
+	ProjectID string  `json:"projectId"`
+	Name      string  `json:"name"`
+	Note      *string `json:"note"`
+	CreatedBy *string `json:"createdBy"`
+	CreatedAt int64   `json:"createdAt"`
+	// Live link counts per kind (artifact retention cascades the link).
+	ArtifactCount int           `json:"artifactCount"`
+	AssetCount    int           `json:"assetCount"`
+	Links         []versionLink `json:"links,omitempty"`
 }
 
 type versionLink struct {
@@ -76,6 +79,7 @@ func (a *App) printVersion(v projectVersion) error {
 	}
 	if err := a.printer().KV([][2]string{
 		{"id", v.ID}, {"name", v.Name}, {"note", output.Str(v.Note)},
+		{"artifacts", strconv.Itoa(v.ArtifactCount)}, {"assets", strconv.Itoa(v.AssetCount)},
 		{"createdBy", output.Str(v.CreatedBy)}, {"created", output.Time(v.CreatedAt)},
 	}); err != nil {
 		return err
@@ -337,9 +341,9 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Versions))
 			for _, v := range res.Versions {
-				rows = append(rows, []string{v.ID, v.Name, output.Str(v.Note), output.Str(v.CreatedBy), output.Time(v.CreatedAt)})
+				rows = append(rows, []string{v.ID, v.Name, output.Str(v.Note), strconv.Itoa(v.ArtifactCount), strconv.Itoa(v.AssetCount), output.Str(v.CreatedBy), output.Time(v.CreatedAt)})
 			}
-			return a.printer().Table([]string{"ID", "NAME", "NOTE", "BY", "CREATED"}, rows)
+			return a.printer().Table([]string{"ID", "NAME", "NOTE", "ARTIFACTS", "ASSETS", "BY", "CREATED"}, rows)
 		},
 	})
 	{
