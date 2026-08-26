@@ -130,3 +130,45 @@ class IssueComment {
     mine: j['mine'] == true,
   );
 }
+
+/// A team discussion (`discussionView`); `comments` only on the single-entity
+/// route.
+class Discussion {
+  const Discussion({
+    required this.id,
+    required this.teamId,
+    required this.title,
+    required this.bodyMd,
+    required this.createdBy,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.mine,
+    this.comments = const [],
+  });
+
+  final String id;
+  final String teamId;
+  final String title;
+  final String bodyMd;
+  final String createdBy;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final bool mine;
+  final List<IssueComment> comments;
+
+  static Discussion fromJson(Map<String, dynamic> j) => Discussion(
+    id: j['id'] as String,
+    teamId: (j['teamId'] as String?) ?? '',
+    title: j['title'] as String,
+    bodyMd: (j['bodyMd'] as String?) ?? '',
+    createdBy: _login(j['createdBy']),
+    createdAt: _time(j['createdAt']),
+    updatedAt: _time(j['updatedAt']),
+    mine: j['mine'] == true,
+    comments:
+        ((j['comments'] as List<dynamic>?) ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(IssueComment.fromJson)
+            .toList(),
+  );
+}

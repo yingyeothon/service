@@ -76,11 +76,22 @@ class InstallVerificationResult {
   InstallVerificationResult({
     required this.installedVersion,
     required this.cancelledByUser,
+    this.installerReturnedWithoutInstall = false,
   });
 
   final String? installedVersion;
   final bool cancelledByUser;
+
+  /// The system installer handed control back to the app and the target
+  /// version still was not installed within [returnGrace]: the user cancelled
+  /// (or missed) the install prompt, denied the unknown-sources permission,
+  /// or the installer failed. Either way nothing is still in progress.
+  final bool installerReturnedWithoutInstall;
 }
+
+/// Shown when the installer returned and the package did not change.
+const installerReturnedWithoutInstallMessage =
+    '설치가 완료되지 않았습니다. 설치 화면에서 취소되었거나 실패했을 수 있습니다.';
 
 Future<InstallAttemptResult> installArtifact({
   required String artifactUrl,
@@ -210,6 +221,17 @@ Future<InstallAttemptResult> installArtifact({
         isDowngrade(targetVersion, installedVersionBefore) &&
         !isSameVersion(targetVersion, verifiedVersion);
 
+    if (verification.installerReturnedWithoutInstall && !downgradeFallback) {
+      return InstallAttemptResult(
+        success: false,
+        installedVersion: verifiedVersion,
+        needsDowngradeFallback: false,
+        downloadedPath: downloadedPath,
+        message: installerReturnedWithoutInstallMessage,
+        cancelledByUser: true,
+      );
+    }
+
     return InstallAttemptResult(
       success: false,
       installedVersion: verifiedVersion,
@@ -311,13 +333,18 @@ Future<InstallAttemptResult> reinstallAfterUninstall({
     );
     final verified = verification.installedVersion;
 
-    if (verification.cancelledByUser) {
+    if (verification.cancelledByUser ||
+        (verification.installerReturnedWithoutInstall &&
+            !isSameVersion(targetVersion, verified))) {
       return InstallAttemptResult(
         success: false,
         installedVersion: verified,
         needsDowngradeFallback: false,
         downloadedPath: downloadedPath,
-        message: '재설치를 취소했습니다.',
+        message:
+            verification.cancelledByUser
+                ? '재설치를 취소했습니다.'
+                : installerReturnedWithoutInstallMessage,
         cancelledByUser: true,
       );
     }
@@ -353,6 +380,16 @@ Future<InstallVerificationResult> waitForInstalledVersion({
   Future<void>? installerReturned,
   bool waitForInstallerReturnBeforeAcceptingVersion = false,
   Duration pollInterval = const Duration(seconds: 2),
+  // How long the package may still change after the installer returned
+  // control to the app. A return without the new version usually means the
+  // user cancelled (or missed) the prompt or the installer failed — but the
+  // user may also back out of the "Installing…" screen while the session
+  // keeps committing, and a large APK takes tens of seconds on a slow
+  // device, so the grace is generous rather than instant.
+  Duration returnGrace = const Duration(seconds: 30),
+  // Upper bound on waiting for the installer to return at all (the resume
+  // signal can be lost when the process is suspended in the background).
+  Duration maxWaitForReturn = const Duration(minutes: 10),
   InstallCancellationController? cancellationController,
   Future<String?> Function(String packageName) findInstalledVersionFn =
       findInstalledVersion,
@@ -377,13 +414,20 @@ Future<InstallVerificationResult> waitForInstalledVersion({
         });
   }
 
-  var endAt = DateTime.now().add(timeout);
+  final startedAt = DateTime.now();
+  var endAt = startedAt.add(timeout);
   while (true) {
     _throwIfCancelled(cancellationController, cancelMessage);
 
     if (resetDeadlineAfterReturn) {
-      endAt = DateTime.now().add(timeout);
+      endAt = DateTime.now().add(returnGrace);
       resetDeadlineAfterReturn = false;
+      onProgress(
+        InstallProgress(
+          phase: InstallPhase.verifying,
+          message: '설치 화면에서 돌아왔습니다. 설치 결과를 잠시 확인합니다...',
+        ),
+      );
     }
 
     final installed = await findInstalledVersionFn(packageName);
@@ -406,12 +450,21 @@ Future<InstallVerificationResult> waitForInstalledVersion({
       return InstallVerificationResult(
         installedVersion: installed,
         cancelledByUser: false,
+        installerReturnedWithoutInstall: returnedToApp,
+      );
+    }
+    if (!deadlineActive && !now.isBefore(startedAt.add(maxWaitForReturn))) {
+      return InstallVerificationResult(
+        installedVersion: installed,
+        cancelledByUser: false,
       );
     }
 
     final waitUntilCandidates = <DateTime>[now.add(pollInterval)];
     if (deadlineActive) {
       waitUntilCandidates.add(endAt);
+    } else {
+      waitUntilCandidates.add(startedAt.add(maxWaitForReturn));
     }
 
     DateTime nextWakeup = waitUntilCandidates.first;

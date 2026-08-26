@@ -28,6 +28,20 @@ only to the console API.
 - The app detail hero has a `team › project 이슈` button that opens the
   app's project issues directly (team/project come from the app view's
   breadcrumb fields; the button is hidden when they are absent).
+- Apps tab layout: a grid of small cards (name, description, version, state,
+  install button) — 2 columns, 4 on near-square screens at least 600dp wide
+  (`appGridColumns`). The detail hero is titled `description (name)`.
+- Install verification (`lib/download_install_launch.dart`): after the system
+  installer hands control back (`resumed` following a `paused`/`inactive`),
+  the package may change for `returnGrace` (30 s) more; then the attempt ends
+  as "not completed" instead of staying in progress when the user cancelled,
+  missed the prompt, denied the unknown-sources permission or the installer
+  failed. Waiting for the installer to return at all is capped at 10 min.
+- Projects tab: per team, the team discussions (`GET|POST
+  /teams/{id}/discussions`, `GET …/{did}` with comments, `POST …/{did}/comments`;
+  latest 3 inline, the rest behind "전체 보기") and one accordion per project
+  with its 5 most recently updated issues (the first project starts open;
+  tapping an issue opens its detail), then the plain project list.
 - Projects: `GET /teams/{id}/projects`, `GET|POST /projects/{id}/issues`,
   `GET /projects/{id}/issues/{n}` (with comments), `POST …/{n}/close|reopen`,
   `POST …/{n}/comments`. Writes need a seat (`owner`/`member`); an unseated
@@ -35,6 +49,30 @@ only to the console API.
 - Pre-release builds (`life.yyt.catalog`, the legacy vendor id before it) are
   abandoned; install this package fresh. The launcher icon is
   `assets/icon.png` (`dart run flutter_launcher_icons`).
+
+## Release ("배포")
+
+1. Bump the patch version in `pubspec.yaml` (`version: x.y.z+build`, both
+   numbers).
+2. `flutter analyze && flutter test && flutter build apk --release`
+   (`android/key.properties` must be present — the release keystore lives with
+   the operator, outside the repo).
+3. Upload with the repo-built CLI, to dev then prod:
+
+   ```sh
+   (cd ../../cli && go build -o yyt ./cmd/yyt)
+   ../../cli/yyt --team platform --project console catalog artifact upload console \
+     build/app/outputs/flutter-apk/app-release.apk --platform android \
+     --version <pubspec version> --tag build_type=release \
+     --tag application_id=life.yyt.console --tag title=잉여톤
+   ../../cli/yyt --profile prod --team platform --project console catalog artifact upload console \
+     build/app/outputs/flutter-apk/app-release.apk --platform android \
+     --version <pubspec version> --tag build_type=release \
+     --tag application_id=life.yyt.console --tag title=잉여톤
+   ```
+
+4. Confirm `GET /catalog/installer/downloads` lists the new version first on
+   both stages; devices running the previous build show the update banner.
 
 ## Build
 

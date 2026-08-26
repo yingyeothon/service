@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  _gridTests();
   testWidgets('AppSummaryCard prefers changelog and compact metadata', (
     tester,
   ) async {
@@ -222,4 +223,55 @@ void main() {
       expect(find.widgetWithText(FilledButton, '설치'), findsOneWidget);
     },
   );
+}
+
+void _gridTests() {
+  AppInfo app({String description = 'Console companion'}) => AppInfo(
+    id: 'ca_console',
+    name: 'console',
+    package: 'life.yyt.console',
+    description: description,
+    latestArtifact: ArtifactInfo(
+      id: 'artifact-9',
+      url: 'https://example.com/console.apk',
+      platform: 'android',
+      size: 10,
+      createdAt: DateTime.parse('2026-08-27T00:00:00Z'),
+      tags: {'version': '1.5.1', 'build_type': 'release'},
+    ),
+    installedVersion: null,
+    needsUpdate: true,
+  );
+
+  testWidgets('AppGridCard shows name then description', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 180,
+            child: AppGridCard(app: app(), state: AppInstallState.notInstalled),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('console'), findsOneWidget);
+    expect(find.text('Console companion'), findsOneWidget);
+    expect(find.text('v1.5.1'), findsOneWidget);
+    expect(find.text('미설치'), findsOneWidget);
+  });
+
+  test('hero title is description (name), name alone without description', () {
+    expect(appHeroTitle(app()), 'Console companion (console)');
+    expect(appHeroTitle(app(description: '  ')), 'console');
+  });
+
+  test('grid columns: 2 on phones, 4 on near-square screens', () {
+    expect(appGridColumns(const Size(411, 891)), 2);
+    expect(appGridColumns(const Size(891, 411)), 2);
+    expect(appGridColumns(const Size(800, 800)), 4);
+    expect(appGridColumns(const Size(900, 720)), 4);
+    // Split-screen phone: near-square but too narrow for four cards.
+    expect(appGridColumns(const Size(412, 440)), 2);
+    expect(appGridColumns(Size.zero), 2);
+  });
 }

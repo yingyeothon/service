@@ -13,6 +13,7 @@ class InstallButton extends StatefulWidget {
     required this.app,
     this.onFinished,
     this.label,
+    this.compact = false,
   });
 
   final AppInstallState state;
@@ -22,6 +23,9 @@ class InstallButton extends StatefulWidget {
   /// Overrides the computed button text (the self-update banner says
   /// "업데이트" rather than "설치").
   final String? label;
+
+  /// Small button for the grid cards.
+  final bool compact;
 
   @override
   State<InstallButton> createState() => _InstallButtonState();
@@ -44,9 +48,21 @@ class _InstallButtonState extends State<InstallButton>
     super.dispose();
   }
 
+  bool _leftForInstaller = false;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_installerReturnCompleter == null) {
+      return;
+    }
+    // `resumed` counts as "back from the installer" only after the app
+    // actually went away; a spurious resume right after `OpenFilex.open`
+    // would otherwise start the post-return grace before the installer shows.
     if (state != AppLifecycleState.resumed) {
+      _leftForInstaller = true;
+      return;
+    }
+    if (!_leftForInstaller) {
       return;
     }
 
@@ -69,17 +85,28 @@ class _InstallButtonState extends State<InstallButton>
                 (widget.state == AppInstallState.latest ? '재설치' : '설치')
             : '설치 불가';
 
-    return FilledButton(
-      onPressed: disabled ? null : _onPressed,
-      child:
-          _running
-              ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-              : Text(label),
-    );
+    final child =
+        _running
+            ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+            : Text(label);
+    if (widget.compact) {
+      return FilledButton(
+        onPressed: disabled ? null : _onPressed,
+        style: FilledButton.styleFrom(
+          // Wide enough for the spinner not to shrink the button mid-install.
+          minimumSize: const Size(60, 32),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          visualDensity: VisualDensity.compact,
+          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+        ),
+        child: child,
+      );
+    }
+    return FilledButton(onPressed: disabled ? null : _onPressed, child: child);
   }
 
   Future<void> _onPressed() async {
@@ -189,6 +216,7 @@ class _InstallButtonState extends State<InstallButton>
 
   Future<void> _beginInstallerReturnWatch() {
     final completer = Completer<void>();
+    _leftForInstaller = false;
     _installerReturnCompleter = completer;
     return completer.future;
   }
