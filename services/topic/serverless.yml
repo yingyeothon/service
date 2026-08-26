@@ -125,6 +125,8 @@ package:
 resources:
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
+    # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
+    IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
     WsErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
@@ -143,99 +145,10 @@ resources:
         TreatMissingData: notBreaching
         AlarmActions:
           !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    HttpErrorsAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-http-errors
-        Namespace: AWS/Lambda
-        MetricName: Errors
-        Dimensions:
-          - Name: FunctionName
-            Value: ${self:service}-${self:custom.stage}-http
-        Statistic: Sum
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 5
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    # Throttled invocations are not Errors: with `reservedConcurrency` this low,
-    # a busy topic loses messages silently unless we alarm on Throttles.
-    WsThrottlesAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-ws-throttles
-        Namespace: AWS/Lambda
-        MetricName: Throttles
-        Dimensions:
-          - Name: FunctionName
-            Value: ${self:service}-${self:custom.stage}-ws
-        Statistic: Sum
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 1
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    HttpThrottlesAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-http-throttles
-        Namespace: AWS/Lambda
-        MetricName: Throttles
-        Dimensions:
-          - Name: FunctionName
-            Value: ${self:service}-${self:custom.stage}-http
-        Statistic: Sum
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 1
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    # The authorizer runs before `ws`, so a throttle here refuses the handshake
-    # with nothing downstream to record it.
-    AuthorizerThrottlesAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-authorizer-throttles
-        Namespace: AWS/Lambda
-        MetricName: Throttles
-        Dimensions:
-          - Name: FunctionName
-            Value: ${self:service}-${self:custom.stage}-authorizer
-        Statistic: Sum
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 1
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    # A cold-start failure (bad env) throws before `authorize` can deny.
-    AuthorizerLambdaErrorsAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-authorizer-lambda-errors
-        Namespace: AWS/Lambda
-        MetricName: Errors
-        Dimensions:
-          - Name: FunctionName
-            Value: ${self:service}-${self:custom.stage}-authorizer
-        Statistic: Sum
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 1
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     # The authorizer never throws (every failure is a Deny), so infrastructure
     # outages surface only in its logs: count "authorize error" lines.
     AuthorizeErrorMetric:
+      Condition: IsProd
       Type: AWS::Logs::MetricFilter
       DependsOn: AuthorizerLogGroup
       Properties:
@@ -247,6 +160,7 @@ resources:
             MetricValue: "1"
             DefaultValue: 0
     AuthorizeErrorsAlarm:
+      Condition: IsProd
       Type: AWS::CloudWatch::Alarm
       Properties:
         AlarmName: ${self:service}-${self:custom.stage}-authorize-errors
@@ -256,25 +170,6 @@ resources:
         Period: 300
         EvaluationPeriods: 1
         Threshold: 3
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    WsMessageCountAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-message-count
-        Namespace: AWS/ApiGateway
-        MetricName: MessageCount
-        Dimensions:
-          - Name: ApiId
-            Value: !Ref WebsocketsApi
-          - Name: Stage
-            Value: ${self:custom.stage}
-        Statistic: Sum
-        Period: 3600
-        EvaluationPeriods: 1
-        Threshold: 200000
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
         AlarmActions:

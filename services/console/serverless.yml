@@ -430,6 +430,7 @@ resources:
         TreatMissingData: notBreaching
         AlarmActions:
           !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
+  Outputs:
     WebBucketName:
       Value: !Ref WebBucket
     WebDistributionId:
