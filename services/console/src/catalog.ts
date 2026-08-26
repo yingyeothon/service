@@ -914,6 +914,7 @@ export function createCatalogRoutes({
               : a.url,
             platform: a.platform,
             version: a.tags.version ?? null,
+            applicationId: a.tags.application_id ?? null,
             createdAt: a.createdAt,
           })),
         };

@@ -80,6 +80,8 @@ class AuthConfig {
       '$base/projects/${Uri.encodeComponent(projectId)}/issues';
   static String projectIssueUrlOf(String base, String projectId, int number) =>
       '${projectIssuesUrlOf(base, projectId)}/$number';
+  static String installerDownloadsUrlOf(String base) =>
+      '$base/catalog/installer/downloads';
   static String appArtifactsUrlOf(String base, String appId) =>
       '$base/catalog/apps/${Uri.encodeComponent(appId)}/artifacts';
 

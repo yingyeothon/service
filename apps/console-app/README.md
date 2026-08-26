@@ -48,6 +48,18 @@ Release signing reads `android/key.properties` (gitignored); the release
 keystore and that file live outside the repo with the operator. Without it the
 release build falls back to the debug key for local checks.
 
+## Self-update
+
+At launch the signed-in app asks `GET /catalog/installer/downloads` for the
+highest-versioned Android build whose `applicationId` is the running package
+(a `.debug` build is never offered the release APK; rows without the id, from
+an older console, are accepted) and, when that is newer than
+`package_info_plus` reports (`lib/self_update_check.dart`, build suffix aware,
+unparseable versions hidden), shows a banner above both tabs with an *업데이트*
+button that runs the normal install flow (`lib/self_update_banner.dart`). Any
+failure of the route (no installer configured, team not admin-locked, pending
+seat, offline) just hides the banner; dismiss lasts until the next launch.
+
 ## Distribute
 
 The installer is distributed through the catalog itself:

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"net/http"
@@ -11,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yingyeothon/service/cli/internal/api"
+	"github.com/yingyeothon/service/cli/internal/selfupdate"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -679,5 +683,66 @@ func TestChannelsGatewayKinds(t *testing.T) {
 	if _, _, err := run(t, f, "channels", "update", "q_1", "--cap-debug"); err == nil ||
 		!strings.Contains(err.Error(), "does not apply to a q channel") {
 		t.Fatalf("update must refuse a foreign flag: %v", err)
+	}
+}
+
+func TestSelfVersionAndUpdateCheck(t *testing.T) {
+	f := newFake(t, nil)
+	out, _, err := run(t, f, "self", "version")
+	if err != nil || !strings.HasPrefix(out, "yyt dev (") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	// A `dev` build sorts below every release; pin a real version so the pin
+	// path below can be a downgrade.
+	prev := api.Version
+	api.Version = "0.3.5"
+	t.Cleanup(func() { api.Version = prev })
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/releases" {
+			_, _ = w.Write([]byte(`[{"tag_name":"cli/v0.3.0"},{"tag_name":"cli/v0.4.0"}]`))
+			return
+		}
+		t.Errorf("unexpected download %s", r.URL.Path)
+		w.WriteHeader(404)
+	}))
+	t.Cleanup(gh.Close)
+	up := &selfupdate.Updater{ReleasesAPI: gh.URL + "/releases", DownloadBase: gh.URL + "/download/", HTTP: gh.Client(), OS: "linux", Arch: "amd64"}
+	var o bytes.Buffer
+	a := &App{Out: &o, Err: &o, Updater: up}
+	root := NewRoot(a)
+	root.SetArgs([]string{"self", "update", "--check", "--json"})
+	if err := root.Execute(); !errors.Is(err, ErrUpdateAvailable) {
+		t.Fatalf("want ErrUpdateAvailable, got %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(o.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["latest"] != "0.4.0" || got["updateAvailable"] != true || got["current"] != "0.3.5" {
+		t.Fatalf("got %v", got)
+	}
+	// `--check` signals an available update through the error → exit 7.
+	root = NewRoot(a)
+	root.SetArgs([]string{"self", "update", "--check"})
+	if err := root.Execute(); !errors.Is(err, ErrUpdateAvailable) {
+		t.Fatalf("want ErrUpdateAvailable, got %v", err)
+	}
+	// An older pin under --check is not "available", and --json stays JSON.
+	o.Reset()
+	root = NewRoot(a)
+	root.SetArgs([]string{"self", "update", "--check", "--version", "0.0.0", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(o.Bytes(), &got); err != nil || got["updateAvailable"] != false {
+		t.Fatalf("pin check: %s %v", o.String(), err)
+	}
+	root = NewRoot(a)
+	root.SetArgs([]string{"self", "update", "--version", "1.0.0?x=1"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "invalid version") {
+		t.Fatalf("bad pin accepted: %v", err)
+	}
+	if len(f.reqs) != 0 {
+		t.Fatal("self commands must not call the console API")
 	}
 }

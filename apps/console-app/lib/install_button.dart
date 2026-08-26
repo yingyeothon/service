@@ -12,11 +12,16 @@ class InstallButton extends StatefulWidget {
     required this.state,
     required this.app,
     this.onFinished,
+    this.label,
   });
 
   final AppInstallState state;
   final AppInfo app;
   final Future<void> Function()? onFinished;
+
+  /// Overrides the computed button text (the self-update banner says
+  /// "업데이트" rather than "설치").
+  final String? label;
 
   @override
   State<InstallButton> createState() => _InstallButtonState();
@@ -60,9 +65,8 @@ class _InstallButtonState extends State<InstallButton>
     final disabled = _running || !installable;
     final label =
         installable
-            ? widget.state == AppInstallState.latest
-                ? '재설치'
-                : '설치'
+            ? widget.label ??
+                (widget.state == AppInstallState.latest ? '재설치' : '설치')
             : '설치 불가';
 
     return FilledButton(

@@ -26,5 +26,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "yyt v$VERSION" \
+          # Draft first: `yyt self update` skips drafts, so a release is never
+          # visible with half of its assets uploaded.
+          gh release create "$GITHUB_REF_NAME" --draft --title "yyt v$VERSION" \
             --generate-notes cli/dist/*.tar.gz cli/dist/*.zip cli/dist/checksums.txt
+          gh release edit "$GITHUB_REF_NAME" --draft=false

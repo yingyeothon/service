@@ -1,5 +1,6 @@
 import 'package:yyt_console/auth/auth_state.dart';
 import 'package:yyt_console/projects/projects_screen.dart';
+import 'package:yyt_console/self_update_banner.dart';
 import 'package:yyt_console/update_app.dart';
 import 'package:flutter/material.dart';
 
@@ -23,14 +24,17 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: [
-          UpdaterApp(authState: widget.authState),
-          _projectsVisited
-              ? ProjectsScreen(authState: widget.authState)
-              : const SizedBox.shrink(),
-        ],
+      body: SelfUpdateBanner(
+        authState: widget.authState,
+        child: IndexedStack(
+          index: _index,
+          children: [
+            UpdaterApp(authState: widget.authState),
+            _projectsVisited
+                ? ProjectsScreen(authState: widget.authState)
+                : const SizedBox.shrink(),
+          ],
+        ),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
