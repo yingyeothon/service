@@ -1,9 +1,43 @@
-import { Anchor, Button, Code, List, Text, Title } from "@mantine/core";
+import {
+  Anchor,
+  Button,
+  Card,
+  Code,
+  Group,
+  List,
+  Text,
+  Title,
+} from "@mantine/core";
 import { Link } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Notice, Spinner } from "../components/ui";
+import { CopyField, Notice, Spinner } from "../components/ui";
 import { InstallerDownloadCard } from "./Installer";
+
+const CLI_INSTALL_CMD =
+  "curl -fsSL https://raw.githubusercontent.com/yingyeothon/service/main/cli/install.sh | sh";
+
+/** Home-page card with the one-line `yyt` CLI install command. */
+export function CliInstallCard() {
+  return (
+    <Card withBorder padding="md" mb="md">
+      <Group justify="space-between" align="center" wrap="wrap">
+        <div>
+          <Text fw={600}>yyt CLI</Text>
+          <Text size="sm" c="dimmed">
+            Installs the latest <Code>yyt</Code> release into your PATH, then
+            sign in with{" "}
+            <Anchor component={Link} to="/tokens">
+              an API token
+            </Anchor>
+            .
+          </Text>
+        </div>
+      </Group>
+      <CopyField label="Install" value={CLI_INSTALL_CMD} />
+    </Card>
+  );
+}
 
 export function HomePage() {
   const { me, loading } = useAuth();
@@ -44,6 +78,7 @@ export function HomePage() {
         </Notice>
       )}
       {me && me.role !== "pending" && <InstallerDownloadCard compact />}
+      {me && me.role !== "pending" && <CliInstallCard />}
       {me && me.role !== "pending" && (
         <List spacing="xs">
           <List.Item>
