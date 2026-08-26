@@ -43,8 +43,16 @@ describe("CloudFront SPA rewrite", () => {
     expect(rewrite("/ui/favicon.ico")).toBe("/ui/favicon.ico");
   });
 
+  it("redirects the exact root to /ui/ at the edge", () => {
+    const res = handler({ request: { uri: "/" } }) as unknown as {
+      statusCode?: number;
+      headers?: { location?: { value: string } };
+    };
+    expect(res.statusCode).toBe(302);
+    expect(res.headers?.location?.value).toBe("/ui/");
+  });
+
   it("never touches non-/ui paths (API routes are a different behavior anyway)", () => {
-    expect(rewrite("/")).toBe("/");
     expect(rewrite("/events")).toBe("/events");
     expect(rewrite("/uix/foo")).toBe("/uix/foo");
   });
