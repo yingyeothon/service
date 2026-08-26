@@ -167,6 +167,9 @@ if (map.deleteUnmappedChannels === true)
       !map.delete.includes(c.id)
     )
       map.delete.push(c.id);
+// Snapshot before already-mapped entries are dropped below: the settings
+// check needs the declared destination on re-runs too.
+const declaredAssign = { ...map.assign };
 const decided = new Set([...Object.keys(map.assign), ...map.delete]);
 const missing = unmapped.filter((r) => !decided.has(r.id));
 if (missing.length > 0) {
@@ -372,7 +375,7 @@ for (const [id, key] of Object.entries(map.assign)) {
 // ---- settings -------------------------------------------------------------
 if (map.settings.installerAppId) {
   const appId = map.settings.installerAppId;
-  const key = map.assign[appId];
+  const key = declaredAssign[appId];
   const teamName = key?.split("/")[0];
   if (!teamName || !map.teams[teamName]?.adminLocked)
     problems.push(
