@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Smoke test for the organization/project routes on dev (todo/17 P2):
-// org create → members (add/join/approve/promote/kick) → project → versions
+// Smoke test for the team/project routes on dev (todo/17 P2):
+// team create → members (add/join/approve/promote/kick) → project → versions
 // (create/bump/link) → issues + comments → discussion → history → admin override
-// → cleanup. Usage: scripts/smoke/org.mjs <baseUrl> <debugKey>
+// → cleanup. Usage: scripts/smoke/team.mjs <baseUrl> <debugKey>
 // Needs the console stack deployed with `--param debugHooks=1`. Prints ids only.
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
-  console.error("usage: org.mjs <baseUrl> <debugKey>");
+  console.error("usage: team.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
 let failed = 0;
@@ -48,49 +48,49 @@ const login = async (login, role, githubId) => {
 const as = (u) => ({ cookie: u.cookie, origin: base });
 const stamp = Date.now().toString(36);
 
-const admin = await login("smoke-org-admin", "admin", -1101);
-const owner = await login("smoke-org-owner", "member", -1102);
-const mate = await login("smoke-org-mate", "member", -1103);
-const guest = await login("smoke-org-guest", "member", -1104);
+const admin = await login("smoke-team-admin", "admin", -1101);
+const owner = await login("smoke-team-owner", "member", -1102);
+const mate = await login("smoke-team-mate", "member", -1103);
+const guest = await login("smoke-team-guest", "member", -1104);
 
-let orgId;
+let teamId;
 let prjId;
 try {
-  // ---- org ----------------------------------------------------------
-  const created = await call("/orgs", {
+  // ---- team ----------------------------------------------------------
+  const created = await call("/teams", {
     method: "POST",
     headers: as(owner),
     body: { name: `smoke-${stamp}`, description: "# smoke" },
   });
-  check("create org", created.status === 201, created.text.slice(0, 120));
-  orgId = created.body?.id;
+  check("create team", created.status === 201, created.text.slice(0, 120));
+  teamId = created.body?.id;
   check(
     "id-shaped name refused",
     (
-      await call("/orgs", {
+      await call("/teams", {
         method: "POST",
         headers: as(owner),
-        body: { name: "org_bad" },
+        body: { name: "team_bad" },
       })
     ).status === 400,
   );
   check(
     "outsider 404",
-    (await call(`/orgs/${orgId}`, { headers: as(guest) })).status === 404,
+    (await call(`/teams/${teamId}`, { headers: as(guest) })).status === 404,
   );
   check(
     "admin scope=all sees it",
-    (await call("/orgs?scope=all", { headers: as(admin) })).body?.orgs?.some(
-      (o) => o.id === orgId,
+    (await call("/teams?scope=all", { headers: as(admin) })).body?.teams?.some(
+      (o) => o.id === teamId,
     ) === true,
   );
   check(
     "member scope=all forbidden",
-    (await call("/orgs?scope=all", { headers: as(owner) })).status === 403,
+    (await call("/teams?scope=all", { headers: as(owner) })).status === 403,
   );
 
   // ---- members ------------------------------------------------------
-  const add = await call(`/orgs/${orgId}/members`, {
+  const add = await call(`/teams/${teamId}/members`, {
     method: "POST",
     headers: as(owner),
     body: { login: mate.login, role: "member" },
@@ -100,13 +100,13 @@ try {
     add.status === 201,
     add.text.slice(0, 120),
   );
-  const join = await call("/orgs/join", {
+  const join = await call("/teams/join", {
     method: "POST",
     headers: as(guest),
     body: { name: `SMOKE-${stamp}` },
   });
   check("join by name (ci) → pending", join.status === 202, join.text);
-  const pendingView = await call(`/orgs/${orgId}`, { headers: as(guest) });
+  const pendingView = await call(`/teams/${teamId}`, { headers: as(guest) });
   check(
     "pending sees name only",
     pendingView.status === 200 &&
@@ -115,10 +115,10 @@ try {
   );
   check(
     "pending cannot list projects",
-    (await call(`/orgs/${orgId}/projects`, { headers: as(guest) })).status ===
+    (await call(`/teams/${teamId}/projects`, { headers: as(guest) })).status ===
       403,
   );
-  const approve = await call(`/orgs/${orgId}/members/${guest.id}`, {
+  const approve = await call(`/teams/${teamId}/members/${guest.id}`, {
     method: "PATCH",
     headers: as(owner),
     body: { role: "member" },
@@ -127,7 +127,7 @@ try {
   check(
     "demote last owner refused",
     (
-      await call(`/orgs/${orgId}/members/${owner.id}`, {
+      await call(`/teams/${teamId}/members/${owner.id}`, {
         method: "PATCH",
         headers: as(owner),
         body: { role: "member" },
@@ -137,14 +137,14 @@ try {
   check(
     "admin cannot seat members",
     (
-      await call(`/orgs/${orgId}/members`, {
+      await call(`/teams/${teamId}/members`, {
         method: "POST",
         headers: as(admin),
         body: { login: guest.login, role: "member" },
       })
     ).status === 403,
   );
-  const appoint = await call(`/orgs/${orgId}/members/${mate.id}`, {
+  const appoint = await call(`/teams/${teamId}/members/${mate.id}`, {
     method: "PATCH",
     headers: as(admin),
     body: { role: "owner" },
@@ -152,7 +152,7 @@ try {
   check("admin appoints an owner", appoint.status === 200, appoint.text);
 
   // ---- project ------------------------------------------------------
-  const prj = await call(`/orgs/${orgId}/projects`, {
+  const prj = await call(`/teams/${teamId}/projects`, {
     method: "POST",
     headers: as(mate),
     body: { name: "game" },
@@ -162,7 +162,7 @@ try {
   check(
     "duplicate project name 409",
     (
-      await call(`/orgs/${orgId}/projects`, {
+      await call(`/teams/${teamId}/projects`, {
         method: "POST",
         headers: as(owner),
         body: { name: "GAME" },
@@ -172,7 +172,7 @@ try {
   check(
     "admin cannot create project",
     (
-      await call(`/orgs/${orgId}/projects`, {
+      await call(`/teams/${teamId}/projects`, {
         method: "POST",
         headers: as(admin),
         body: { name: "nope" },
@@ -252,7 +252,7 @@ try {
   // burst has to be concurrent to prove the limit.
   const burst = await Promise.all(
     ["plan", "plan2", "plan3", "plan4"].map((title) =>
-      call(`/orgs/${orgId}/discussions`, {
+      call(`/teams/${teamId}/discussions`, {
         method: "POST",
         headers: as(owner),
         body: { title, bodyMd: "- a\n- b" },
@@ -269,7 +269,7 @@ try {
   check(
     "admin cannot comment",
     (
-      await call(`/orgs/${orgId}/discussions/${d1.body?.id}/comments`, {
+      await call(`/teams/${teamId}/discussions/${d1.body?.id}/comments`, {
         method: "POST",
         headers: as(admin),
         body: { bodyMd: "hi" },
@@ -278,7 +278,7 @@ try {
   );
 
   // ---- kick + history -----------------------------------------------
-  const kick = await call(`/orgs/${orgId}/members/${guest.id}`, {
+  const kick = await call(`/teams/${teamId}/members/${guest.id}`, {
     method: "DELETE",
     headers: as(owner),
   });
@@ -294,21 +294,21 @@ try {
   check(
     "kicked member cooldown 429",
     (
-      await call("/orgs/join", {
+      await call("/teams/join", {
         method: "POST",
         headers: as(guest),
         body: { name: `smoke-${stamp}` },
       })
     ).status === 429,
   );
-  const hist = await call(`/orgs/${orgId}/history?limit=100`, {
+  const hist = await call(`/teams/${teamId}/history?limit=100`, {
     headers: as(mate),
   });
   const actions = new Set((hist.body?.history ?? []).map((h) => h.action));
   check(
     "history covers the run",
     [
-      "org.create",
+      "team.create",
       "member.add",
       "member.request",
       "member.approve",
@@ -329,7 +329,7 @@ try {
   check(
     "admin-lock refused on a mixed roster",
     (
-      await call(`/orgs/${orgId}/admin-lock`, {
+      await call(`/teams/${teamId}/admin-lock`, {
         method: "PUT",
         headers: as(admin),
         body: { locked: true },
@@ -352,12 +352,12 @@ try {
     });
     check("delete project", dp.status === 204, String(dp.status));
   }
-  if (orgId) {
-    const dorg = await call(`/orgs/${orgId}`, {
+  if (teamId) {
+    const dteam = await call(`/teams/${teamId}`, {
       method: "DELETE",
       headers: as(admin),
     });
-    check("admin deletes org", dorg.status === 204, String(dorg.status));
+    check("admin deletes team", dteam.status === 204, String(dteam.status));
   }
   for (const u of [owner, mate, guest])
     await call("/debug/login", {

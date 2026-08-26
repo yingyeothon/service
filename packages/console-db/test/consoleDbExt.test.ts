@@ -12,7 +12,7 @@ const channel = (id: string, over: Partial<{ expiresAt: number }> = {}) => ({
   id,
   kind: "topic" as const,
   ownerId: "m1",
-  orgId: "org_1",
+  teamId: "team_1",
   projectId: "prj_1",
   name: id,
   config: { authChannelId: "a" },
@@ -83,7 +83,7 @@ describe("memory console db: members/tokens/channels/audit", () => {
     await db.insertChannel({
       ...channel("c3"),
       ownerId: "m2",
-      orgId: "org_2",
+      teamId: "team_2",
       projectId: "prj_2",
     });
     expect((await db.listChannels()).map((c) => c.id)).toEqual([
@@ -92,12 +92,14 @@ describe("memory console db: members/tokens/channels/audit", () => {
       "c1",
     ]);
     expect(
-      (await db.listChannels({ kind: "topic", orgId: "org_1" })).map(
+      (await db.listChannels({ kind: "topic", teamId: "team_1" })).map(
         (c) => c.id,
       ),
     ).toEqual(["c1"]);
     expect(
-      (await db.listChannels({ orgIds: ["org_2", "org_x"] })).map((c) => c.id),
+      (await db.listChannels({ teamIds: ["team_2", "team_x"] })).map(
+        (c) => c.id,
+      ),
     ).toEqual(["c3"]);
     expect(
       (await db.listChannels({ projectId: "prj_1" })).map((c) => c.id),
@@ -130,7 +132,7 @@ describe("memory console db: members/tokens/channels/audit", () => {
           id: "c1",
           kind: "topic",
           name: "n",
-          orgId: "org_1",
+          teamId: "team_1",
           projectId: "prj_1",
         },
       ],

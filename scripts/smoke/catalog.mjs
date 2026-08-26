@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Smoke test for the console catalog on dev: debug login → org/project → app
-// CRUD → org membership → presigned upload → claim-first commit under an
+// Smoke test for the console catalog on dev: debug login → team/project → app
+// CRUD → team membership → presigned upload → claim-first commit under an
 // id-based key → CDN URL → cleanup → delete. Usage: scripts/smoke/catalog.mjs <baseUrl> <debugKey>
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens.
 // Device flow is interactive (GitHub approval) — manual procedure:
 //   1) curl -sX POST <base>/auth/device/start → open verificationUri, enter userCode
 //   2) curl -sX POST <base>/auth/device/token -d '{"handle":"..."}' until 201
-import { ensureTeam, seat } from "./_org.mjs";
+import { ensureTeam, seat } from "./_team.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
@@ -56,7 +56,7 @@ const admin = await login("smoke-cat-boss", "admin", -2007);
 const team = await ensureTeam(req, base, as(owner), "smoke-catalog", check);
 check(
   "seat a teammate",
-  await seat(req, base, as(owner), team.orgId, mate.login, "member"),
+  await seat(req, base, as(owner), team.teamId, mate.login, "member"),
 );
 
 const suffix = Date.now().toString(36);
@@ -73,7 +73,7 @@ const appId = app.body?.id;
 check(
   "view carries breadcrumbs, no owner fields",
   app.body?.projectId === team.prjId &&
-    app.body?.orgName === "smoke-catalog" &&
+    app.body?.teamName === "smoke-catalog" &&
     app.body?.createdBy === owner.login &&
     app.body?.ownerLogin === undefined,
   app.text.slice(0, 200),
@@ -99,7 +99,7 @@ check(
     appId,
 );
 check(
-  "duplicate name in the org is 409",
+  "duplicate name in the team is 409",
   (
     await call(`/projects/${team.prjId}/catalog/apps`, {
       method: "POST",
@@ -115,7 +115,7 @@ check(
   ) === true,
 );
 
-// settings (teammate may edit them: org membership is the whole model)
+// settings (teammate may edit them: team membership is the whole model)
 const settings = await call(`/catalog/apps/${appId}/settings`, {
   method: "PATCH",
   headers: as(mate),
@@ -266,11 +266,11 @@ check(
     })
   ).status === 204,
 );
-const hist = await call(`/orgs/${team.orgId}/history?limit=50`, {
+const hist = await call(`/teams/${team.teamId}/history?limit=50`, {
   headers: as(owner),
 });
 check(
-  "org history records the app lifecycle",
+  "team history records the app lifecycle",
   hist.status === 200 &&
     ["resource.create", "resource.update", "resource.delete"].every((a) =>
       (hist.body?.history ?? []).some((h) => h.action === a),
@@ -285,7 +285,7 @@ check(
   dev.status === 201 || dev.status === 503,
   String(dev.status),
 );
-// Residue on dev: the four `smoke-cat-*` members and the `smoke-catalog` org
+// Residue on dev: the four `smoke-cat-*` members and the `smoke-catalog` team
 // (reused by the next run).
 
 console.log(failed === 0 ? "ALL OK" : `${failed} FAILURES`);

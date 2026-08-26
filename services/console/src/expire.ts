@@ -4,7 +4,7 @@ import type {
   CatalogDb,
   ConsoleDb,
   ExpiredChannel,
-  OrgDb,
+  TeamDb,
   StateDb,
 } from "@yyt/console-db";
 import type { RedisAclAdmin } from "@yyt/redis";
@@ -23,7 +23,7 @@ export const UPLOAD_GARBAGE_GRACE_SEC = 24 * 3600;
 export async function runExpire({
   db,
   state,
-  org,
+  team,
   clock = systemClock,
   logger,
   graceSec = CHANNEL_DELETE_GRACE_SEC,
@@ -31,8 +31,8 @@ export async function runExpire({
   db: ConsoleDb;
   /** Present on a stage with a state stack; a deleted channel's documents go with it. */
   state?: StateDb;
-  /** Records each hard-deleted channel in its org's history (best-effort). */
-  org?: OrgDb;
+  /** Records each hard-deleted channel in its team's history (best-effort). */
+  team?: TeamDb;
   clock?: Clock;
   logger: Logger;
   graceSec?: number;
@@ -53,15 +53,15 @@ export async function runExpire({
       detail: { disabled: r.disabled, deleted: r.deleted.map((d) => d.id) },
     });
   }
-  // The org's own record of the deletion. Best-effort like every resource
+  // The team's own record of the deletion. Best-effort like every resource
   // history row (`rules/data.md`): the sweep already happened, and a failed
   // history insert must not fail the cron and re-run it tomorrow.
   for (const d of r.deleted) {
-    if (!org || d.orgId === null) continue;
+    if (!team || d.teamId === null) continue;
     try {
-      await org.appendHistory({
+      await team.appendHistory({
         id: ulid(now * 1000),
-        orgId: d.orgId,
+        teamId: d.teamId,
         at: now,
         actorId: null,
         action: "resource.expire",
@@ -71,8 +71,8 @@ export async function runExpire({
         },
       });
     } catch (e) {
-      logger.error("org history write failed", {
-        orgId: d.orgId,
+      logger.error("team history write failed", {
+        teamId: d.teamId,
         target: d.id,
         message: e instanceof Error ? e.message : String(e),
       });

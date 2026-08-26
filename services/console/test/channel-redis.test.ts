@@ -132,10 +132,10 @@ describe("participant redis credentials", () => {
     expect(h.redisAcl.users.size).toBe(1);
     h.clock.tick(REDIS_ISSUE_COOLDOWN_SEC + 1);
     expect((await post(two)).statusCode).toBe(200);
-    // And per channel: every org member may mint, so N teammates issuing the
+    // And per channel: every team member may mint, so N teammates issuing the
     // same channel back to back would otherwise be N `ACL SAVE`s.
     const mate = await h.login("mate", "member");
-    await h.seat(a, a.orgId, "mate");
+    await h.seat(a, a.teamId, "mate");
     expect(
       (
         await h.app(
@@ -397,7 +397,7 @@ describe("participant redis credentials", () => {
     expect(h.redisAcl.users.size).toBe(0);
   });
 
-  it("is 404 for another org, 403 for an admin writing, 404 for non-q kinds", async () => {
+  it("is 404 for another team, 403 for an admin writing, 404 for non-q kinds", async () => {
     const h = harness();
     const a = await h.team("alice");
     const b = await h.team("bob");

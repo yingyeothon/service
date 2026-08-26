@@ -11,7 +11,7 @@ import type {
   AssetsDb,
   AssetUploadRow,
   ConsoleDb,
-  OrgDb,
+  TeamDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
@@ -21,8 +21,8 @@ import {
 } from "./artifact-store.js";
 import { artifactUrl } from "./catalog.js";
 import { requireRole } from "./identity.js";
-import type { OrgAccessHelpers, ResourceAccess } from "./org-access.js";
-import { resourceName } from "./org.js";
+import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
+import { resourceName } from "./team.js";
 import {
   BUNDLES_PER_PROJECT,
   type CrumbResolver,
@@ -78,7 +78,7 @@ const SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
  * No dot: the bundle name is also a SPA route segment (`/ui/assets/{name}`) and
  * CloudFront's SPA rewrite treats any last-segment dot as a static file, so
  * `maps.v2` would resolve against the SPA's own `ui/assets/` chunk directory
- * instead of rendering the page. On top of that, the org-unique resource rule
+ * instead of rendering the page. On top of that, the team-unique resource rule
  * (never id-shaped).
  */
 const BUNDLE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
@@ -172,10 +172,10 @@ export function bundlePrefixes(files: Pick<AssetFileRow, "objectKey">[]) {
 export interface AssetRoutesOptions {
   db: ConsoleDb;
   assets: AssetsDb;
-  org: OrgDb;
+  team: TeamDb;
   access: Pick<
-    OrgAccessHelpers,
-    "projectAccess" | "projectResource" | "memberOrgIds"
+    TeamAccessHelpers,
+    "projectAccess" | "projectResource" | "memberTeamIds"
   >;
   crumbs: CrumbResolver;
   history: ResourceHistory;
@@ -196,7 +196,7 @@ export interface AssetRoutesOptions {
 export function createAssetRoutes({
   db,
   assets,
-  org,
+  team,
   access,
   crumbs,
   history,
@@ -206,7 +206,7 @@ export function createAssetRoutes({
   logger,
   audit,
 }: AssetRoutesOptions): AnyRoute[] {
-  const { projectAccess, projectResource, memberOrgIds } = access;
+  const { projectAccess, projectResource, memberTeamIds } = access;
 
   function requireStore(): ArtifactStore {
     if (!artifacts)
@@ -217,8 +217,8 @@ export function createAssetRoutes({
   /**
    * Asset **content** is public (the CDN serves it unauthenticated, which is
    * the point — a game client holds no GitHub account). The management API is
-   * not: every member of the bundle's org reads and writes it; a platform
-   * admin without a membership may read (`docs/decisions.md` *Organizations
+   * not: every member of the bundle's team reads and writes it; a platform
+   * admin without a membership may read (`docs/decisions.md` *Teams
    * and projects*).
    */
   async function bundleWith(
@@ -252,17 +252,17 @@ export function createAssetRoutes({
     }
   }
 
-  /** Names are unique within the org across every kind (`docs/decisions.md`). */
+  /** Names are unique within the team across every kind (`docs/decisions.md`). */
   async function requireFreeName(
-    orgId: string,
+    teamId: string,
     name: string,
     exceptId?: string,
   ): Promise<void> {
-    const hit = await assets.findBundleByName(orgId, name);
+    const hit = await assets.findBundleByName(teamId, name);
     if (hit && hit.id !== exceptId)
       throw new AppError(
         "conflict",
-        `a bundle named "${name}" already exists in this organization`,
+        `a bundle named "${name}" already exists in this team`,
       );
   }
 
@@ -273,7 +273,7 @@ export function createAssetRoutes({
     fields?: string[],
   ) =>
     history(
-      b.orgId,
+      b.teamId,
       actorId,
       action,
       b.id,
@@ -408,12 +408,12 @@ export function createAssetRoutes({
    * what a channel still serves is not a degraded game but one that cannot
    * load at all, and the URL is cached `immutable`, so this is checked before
    * the delete rather than repaired after it. The scan is **global** — the
-   * CDN is public, so another org pointing at these files is legitimate —
+   * CDN is public, so another team pointing at these files is legitimate —
    * but the ids named in the 409 are only those the caller can see.
    */
   async function referencingChannels(
     prefixes: string[],
-    visibleOrgId: string | null,
+    visibleTeamId: string | null,
   ): Promise<{ count: number; visible: string[] }> {
     // `artifactUrl` trims the trailing slash; put it back so `maps` does not
     // match `maps2` and version `1.0` does not match `1.0.1`.
@@ -431,7 +431,7 @@ export function createAssetRoutes({
       if (typeof mapUrl !== "string" || !urls.some((u) => mapUrl.startsWith(u)))
         continue;
       count++;
-      if (row.orgId !== null && row.orgId === visibleOrgId)
+      if (row.teamId !== null && row.teamId === visibleTeamId)
         visible.push(row.id);
     }
     return { count, visible };
@@ -455,12 +455,12 @@ export function createAssetRoutes({
       path: "/assets/bundles",
       auth: true,
       handler: async (ctx) => {
-        // Every bundle of every org the caller is seated in, flattened.
+        // Every bundle of every team the caller is seated in, flattened.
         const id = requireRole(ctx, "member");
-        const orgIds = await memberOrgIds(id);
-        if (orgIds.length === 0) return { bundles: [] };
+        const teamIds = await memberTeamIds(id);
+        if (teamIds.length === 0) return { bundles: [] };
         return {
-          bundles: await bundleViews(await assets.listBundles({ orgIds })),
+          bundles: await bundleViews(await assets.listBundles({ teamIds })),
         };
       },
     },
@@ -492,7 +492,7 @@ export function createAssetRoutes({
             "conflict",
             `too many asset bundles (max ${BUNDLES_PER_PROJECT} per project)`,
           );
-        await requireFreeName(a.org.id, ctx.body.name);
+        await requireFreeName(a.team.id, ctx.body.name);
         const now = nowSec(clock);
         const bundleId = `ab_${randomHex(8)}`;
         await assets.insertBundle({
@@ -500,7 +500,7 @@ export function createAssetRoutes({
           name: ctx.body.name,
           description: ctx.body.description ?? null,
           ownerId: a.id.subject,
-          orgId: a.org.id,
+          teamId: a.team.id,
           projectId: a.project.id,
           createdAt: now,
         });
@@ -538,7 +538,7 @@ export function createAssetRoutes({
       auth: true,
       body: bundlePatchBody,
       handler: async (ctx) => {
-        const { id, row: bundle, org: o } = await bundleWith(ctx, true);
+        const { id, row: bundle, team: o } = await bundleWith(ctx, true);
         const patch: { name?: string; description?: string | null } = {};
         // Renaming is fine even with files: keys are id-based now, and rows
         // from before that keep the `url` they were committed with.
@@ -572,7 +572,7 @@ export function createAssetRoutes({
         const { id, row: bundle } = await bundleWith(ctx, true);
         const files = await assets.listFiles(bundle.id);
         assertUnreferenced(
-          await referencingChannels(bundlePrefixes(files), bundle.orgId),
+          await referencingChannels(bundlePrefixes(files), bundle.teamId),
           `bundle "${bundle.name}"`,
         );
         // An empty bundle is just a row: it must stay deletable even when no
@@ -619,13 +619,13 @@ export function createAssetRoutes({
         if (files.length === 0)
           throw new AppError("not_found", "version not found");
         assertUnreferenced(
-          await referencingChannels(versionPrefixes(files), bundle.orgId),
+          await referencingChannels(versionPrefixes(files), bundle.teamId),
           `version "${ctx.params.version!}"`,
         );
         await deleteFiles(store, files);
         // A project version pointing at this asset version now dangles; the
         // link table only cascades on the bundle, so drop those rows here.
-        await org.removeAssetVersionLinks(bundle.id, files[0]!.version);
+        await team.removeAssetVersionLinks(bundle.id, files[0]!.version);
         await audit(id.subject, "asset.version.delete", bundle.id, {
           version: ctx.params.version!,
           files: files.length,

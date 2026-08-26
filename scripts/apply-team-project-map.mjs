@@ -1,24 +1,24 @@
 #!/usr/bin/env node
-// Applies the explicit org/project mapping for the rows that existed before
-// migration `6_org_project` (docs/decisions.md *Organizations and projects*,
+// Applies the explicit team/project mapping for the rows that existed before
+// migration `6_org_project` (docs/decisions.md *Teams and projects*,
 // todo/17 §4.2). Idempotent; dry-run by default.
 //
-// Usage: node scripts/apply-org-project-map.mjs <dev|prod> <map.json> [--execute]
+// Usage: node scripts/apply-team-project-map.mjs <dev|prod> <map.json> [--execute]
 //   Requires `pnpm -r build` (uses packages/console-db/dist) and the gitignored
 //   local/env/console.<stage>.env; deleting artifacts needs AWS credentials for
 //   the artifact bucket (ARTIFACT_BUCKET in the same env file).
 //
-// The map file (machine-local, `local/org-project-map.<stage>.json`) declares:
+// The map file (machine-local, `local/team-project-map.<stage>.json`) declares:
 //   {
-//     "orgs": { "<orgName>": { "owner": "<login>", "members": ["<login>", …],
+//     "teams": { "<teamName>": { "owner": "<login>", "members": ["<login>", …],
 //                              "adminLocked": false, "description": "…" } },
-//     "projects": { "<orgName>/<projectName>": {} },
-//     "assign": { "<appId|bundleId|channelId>": "<orgName>/<projectName>" },
+//     "projects": { "<teamName>/<projectName>": {} },
+//     "assign": { "<appId|bundleId|channelId>": "<teamName>/<projectName>" },
 //     "delete": ["<appId|bundleId|channelId>", …],
 //     "deleteUnmappedChannels": false,   // true = EVERY unassigned channel is deleted, live ones too
 //     "settings": { "installerAppId": "<appId>" }
 //   }
-// Every existing resource without an org must appear in `assign` or `delete`,
+// Every existing resource without a team must appear in `assign` or `delete`,
 // or the script refuses (the dry run lists what is missing). Apps are deleted
 // with their artifacts' S3 objects; channels are hard-deleted (a soft delete
 // would keep a row the contract migration's NOT NULL cannot accept).
@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 const [stage, mapPath, executeFlag] = process.argv.slice(2);
 if (!stage || !mapPath) {
   console.error(
-    "usage: apply-org-project-map.mjs <dev|prod> <map.json> [--execute]",
+    "usage: apply-team-project-map.mjs <dev|prod> <map.json> [--execute]",
   );
   process.exit(2);
 }
@@ -47,8 +47,8 @@ for (const line of readFileSync(envFile, "utf8").split("\n")) {
 
 const map = existsSync(mapPath)
   ? JSON.parse(readFileSync(mapPath, "utf8"))
-  : { orgs: {}, projects: {}, assign: {}, delete: [], settings: {} };
-map.orgs ??= {};
+  : { teams: {}, projects: {}, assign: {}, delete: [], settings: {} };
+map.teams ??= {};
 map.projects ??= {};
 map.assign ??= {};
 map.delete ??= [];
@@ -74,7 +74,7 @@ const {
   createAssetsDb,
   createCatalogDb,
   createConsoleDb,
-  createOrgDb,
+  createTeamDb,
   createPrismaClient,
   mysqlOptionsFromEnv,
 } = await import(
@@ -87,7 +87,7 @@ const prisma = createPrismaClient(mysqlOptionsFromEnv());
 const consoleDb = createConsoleDb(prisma);
 const catalog = createCatalogDb(prisma);
 const assets = createAssetsDb(prisma);
-const org = createOrgDb(prisma, { newHistoryId: () => ulid() });
+const team = createTeamDb(prisma, { newHistoryId: () => ulid() });
 
 // S3 through console's own dependency (pnpm does not hoist it to the root).
 const require = createRequire(
@@ -129,13 +129,13 @@ const channelRows = await prisma.channels.findMany({
     kind: true,
     name: true,
     owner_id: true,
-    org_id: true,
+    team_id: true,
     deleted_at: true,
   },
 });
 const unmapped = [
   ...apps
-    .filter((a) => a.orgId === null)
+    .filter((a) => a.teamId === null)
     .map((a) => ({
       kind: "app",
       id: a.id,
@@ -143,7 +143,7 @@ const unmapped = [
       owner: a.ownerId,
     })),
   ...bundles
-    .filter((b) => b.orgId === null)
+    .filter((b) => b.teamId === null)
     .map((b) => ({
       kind: "bundle",
       id: b.id,
@@ -151,7 +151,7 @@ const unmapped = [
       owner: b.ownerId,
     })),
   ...channelRows
-    .filter((c) => c.org_id === null)
+    .filter((c) => c.team_id === null)
     .map((c) => ({
       kind: `channel:${c.kind}${c.deleted_at !== null ? " (deleted)" : ""}`,
       id: c.id,
@@ -162,7 +162,7 @@ const unmapped = [
 if (map.deleteUnmappedChannels === true)
   for (const c of channelRows)
     if (
-      c.org_id === null &&
+      c.team_id === null &&
       !(c.id in map.assign) &&
       !map.delete.includes(c.id)
     )
@@ -180,7 +180,7 @@ if (missing.length > 0) {
 }
 for (const id of Object.keys(map.assign)) {
   if (alreadyMapped(id)) {
-    // Re-runs are fine; moving a live resource between orgs is not what this
+    // Re-runs are fine; moving a live resource between teams is not what this
     // script is for (no history row, no name check) — edit it in the console.
     plan.push(`skip assign ${id} (already mapped)`);
     delete map.assign[id];
@@ -198,25 +198,25 @@ map.delete = map.delete.filter((id) => {
 });
 function alreadyMapped(id) {
   return (
-    apps.some((a) => a.id === id && a.orgId !== null) ||
-    bundles.some((b) => b.id === id && b.orgId !== null) ||
-    channelRows.some((c) => c.id === id && c.org_id !== null)
+    apps.some((a) => a.id === id && a.teamId !== null) ||
+    bundles.some((b) => b.id === id && b.teamId !== null) ||
+    channelRows.some((c) => c.id === id && c.team_id !== null)
   );
 }
 
-// ---- orgs / projects ------------------------------------------------------
-const orgIds = new Map(); // name → id
-for (const [name, spec] of Object.entries(map.orgs)) {
+// ---- teams / projects ------------------------------------------------------
+const teamIds = new Map(); // name → id
+for (const [name, spec] of Object.entries(map.teams)) {
   const owner = memberId(spec.owner);
-  const existing = await org.findOrgByName(name);
+  const existing = await team.findTeamByName(name);
   if (existing) {
-    orgIds.set(name, existing.id);
-    plan.push(`skip org ${name} (exists as ${existing.id})`);
+    teamIds.set(name, existing.id);
+    plan.push(`skip team ${name} (exists as ${existing.id})`);
   } else {
-    const id = `org_${hex(4)}`;
-    orgIds.set(name, id);
-    act(`org ${name} -> ${id} owner=${spec.owner}`, async () => {
-      await org.createOrg(
+    const id = `team_${hex(4)}`;
+    teamIds.set(name, id);
+    act(`team ${name} -> ${id} owner=${spec.owner}`, async () => {
+      await team.createTeam(
         {
           id,
           name,
@@ -228,11 +228,13 @@ for (const [name, spec] of Object.entries(map.orgs)) {
       );
     });
   }
-  const orgId = orgIds.get(name);
+  const teamId = teamIds.get(name);
   for (const login of spec.members ?? []) {
     const mid = memberId(login);
     if (!mid) continue;
-    const seatRow = existing ? await org.findOrgMember(orgId, mid) : undefined;
+    const seatRow = existing
+      ? await team.findTeamMember(teamId, mid)
+      : undefined;
     if (seatRow) {
       // Any row — active, pending, declined — is a decision this script does
       // not overturn (`addMember` would 409 on it anyway).
@@ -240,27 +242,30 @@ for (const [name, spec] of Object.entries(map.orgs)) {
       continue;
     }
     act(`  member ${login} -> ${name}`, async () => {
-      await org.addMember(orgId, mid, "member", { actorId: owner, at: now() });
+      await team.addMember(teamId, mid, "member", {
+        actorId: owner,
+        at: now(),
+      });
     });
   }
   if (spec.adminLocked && !existing?.adminLocked) {
     act(`  admin-lock ${name}`, async () => {
-      await org.setAdminLocked(orgId, true, { actorId: owner, at: now() });
+      await team.setAdminLocked(teamId, true, { actorId: owner, at: now() });
     });
   }
 }
-const projectIds = new Map(); // "org/project" → id
+const projectIds = new Map(); // "team/project" → id
 for (const key of Object.keys(map.projects)) {
-  const [orgName, projectName] = key.split("/");
-  const orgId = orgIds.get(orgName);
-  if (!orgId) {
-    problems.push(`project ${key}: org ${orgName} not declared`);
+  const [teamName, projectName] = key.split("/");
+  const teamId = teamIds.get(teamName);
+  if (!teamId) {
+    problems.push(`project ${key}: team ${teamName} not declared`);
     continue;
   }
-  const owner = memberId(map.orgs[orgName].owner);
+  const owner = memberId(map.teams[teamName].owner);
   const existing =
-    orgIds.has(orgName) && (await org.findOrg(orgId))
-      ? await org.findProjectByName(orgId, projectName)
+    teamIds.has(teamName) && (await team.findTeam(teamId))
+      ? await team.findProjectByName(teamId, projectName)
       : undefined;
   if (existing) {
     projectIds.set(key, existing.id);
@@ -270,8 +275,8 @@ for (const key of Object.keys(map.projects)) {
   const id = `prj_${hex(4)}`;
   projectIds.set(key, id);
   act(`project ${key} -> ${id}`, async () => {
-    await org.createProject(
-      { id, orgId, name: projectName },
+    await team.createProject(
+      { id, teamId, name: projectName },
       { actorId: owner, at: now() },
     );
   });
@@ -344,10 +349,10 @@ for (const id of map.delete) {
 
 // ---- assignments ----------------------------------------------------------
 for (const [id, key] of Object.entries(map.assign)) {
-  const [orgName] = key.split("/");
-  const orgId = orgIds.get(orgName);
+  const [teamName] = key.split("/");
+  const teamId = teamIds.get(teamName);
   const projectId = projectIds.get(key);
-  if (!orgId || !projectId) {
+  if (!teamId || !projectId) {
     problems.push(`assign ${id}: project ${key} not declared`);
     continue;
   }
@@ -359,7 +364,7 @@ for (const [id, key] of Object.entries(map.assign)) {
   act(`assign ${table} ${id} -> ${key}`, async () => {
     await prisma[table].updateMany({
       where: { id },
-      data: { org_id: orgId, project_id: projectId },
+      data: { team_id: teamId, project_id: projectId },
     });
   });
 }
@@ -368,14 +373,14 @@ for (const [id, key] of Object.entries(map.assign)) {
 if (map.settings.installerAppId) {
   const appId = map.settings.installerAppId;
   const key = map.assign[appId];
-  const orgName = key?.split("/")[0];
-  if (!orgName || !map.orgs[orgName]?.adminLocked)
+  const teamName = key?.split("/")[0];
+  if (!teamName || !map.teams[teamName]?.adminLocked)
     problems.push(
-      `settings.installerAppId ${appId}: its org must be declared adminLocked`,
+      `settings.installerAppId ${appId}: its team must be declared adminLocked`,
     );
   act(`platform_settings.installer_app_id = ${appId}`, async () => {
-    await org.putSetting("installer_app_id", appId, {
-      actorId: memberId(map.orgs[orgName].owner),
+    await team.putSetting("installer_app_id", appId, {
+      actorId: memberId(map.teams[teamName].owner),
       at: now(),
     });
   });
@@ -424,31 +429,31 @@ if (execute) {
   console.log(`# applied ${acts.length} step(s)`);
   const nulls = [
     ...(await prisma.catalog_apps.findMany({
-      where: { OR: [{ org_id: null }, { project_id: null }] },
+      where: { OR: [{ team_id: null }, { project_id: null }] },
       select: { id: true },
     })),
     ...(await prisma.asset_bundles.findMany({
-      where: { OR: [{ org_id: null }, { project_id: null }] },
+      where: { OR: [{ team_id: null }, { project_id: null }] },
       select: { id: true },
     })),
     ...(await prisma.channels.findMany({
-      where: { OR: [{ org_id: null }, { project_id: null }] },
+      where: { OR: [{ team_id: null }, { project_id: null }] },
       select: { id: true },
     })),
   ];
   const dupes = await prisma.$queryRawUnsafe(
-    `select org_id, name, count(*) as n from (
-       select org_id, name from catalog_apps union all
-       select org_id, name from asset_bundles union all
-       select org_id, name from channels) t
-     where org_id is not null group by org_id, name having n > 1`,
+    `select team_id, name, count(*) as n from (
+       select team_id, name from catalog_apps union all
+       select team_id, name from asset_bundles union all
+       select team_id, name from channels) t
+     where team_id is not null group by team_id, name having n > 1`,
   );
   const reserved = await prisma.catalog_apps.findMany({
     where: { name: "apps" },
     select: { id: true },
   });
   console.log(
-    `# verify: ${nulls.length} unmapped row(s), ${dupes.length} duplicate name(s) in an org, ${reserved.length} app(s) named "apps"`,
+    `# verify: ${nulls.length} unmapped row(s), ${dupes.length} duplicate name(s) in a team, ${reserved.length} app(s) named "apps"`,
   );
   if (nulls.length + dupes.length + reserved.length > 0) process.exitCode = 1;
 }

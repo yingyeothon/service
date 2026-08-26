@@ -36,12 +36,12 @@ export const CHANNEL_DELETE_GRACE_SEC = 30 * 86400;
 
 const ID = /^[a-z0-9_-]{3,40}$/;
 /**
- * Free text, but never id-shaped: channel names are unique within the org and
+ * Free text, but never id-shaped: channel names are unique within the team and
  * the CLI resolves a `{prefix}_…` argument as an id, so a name in that shape
- * could never be addressed (`docs/decisions.md` *Organizations and projects*).
+ * could never be addressed (`docs/decisions.md` *Teams and projects*).
  */
 const ID_LIKE =
-  /^(org|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
 const name = z
   .string()
   .trim()
@@ -522,7 +522,7 @@ export function channelView(
     id: row.id,
     kind: row.kind,
     name: row.name,
-    orgId: row.orgId,
+    teamId: row.teamId,
     projectId: row.projectId,
     config,
     createdAt: row.createdAt,

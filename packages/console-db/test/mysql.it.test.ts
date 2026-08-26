@@ -3,7 +3,7 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
-  createOrgDb,
+  createTeamDb,
   createPrismaClient,
   mysqlOptionsFromEnv,
   type PrismaClient,
@@ -16,7 +16,7 @@ const reader = loadItEnv("auth", "dev");
 const base = {
   kind: "auth" as const,
   ownerId: "unused",
-  orgId: "unused",
+  teamId: "unused",
   projectId: "unused",
   name: "it",
   config: {
@@ -44,9 +44,9 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     await exec(`delete from channels where id = ?`, id);
     await exec(`delete from catalog_apps where id like ?`, `${id}%`);
     await exec(`delete from projects where id = ?`, `${id}_prj`);
-    await exec(`delete from org_history where org_id = ?`, `${id}_org`);
-    await exec(`delete from org_members where org_id = ?`, `${id}_org`);
-    await exec(`delete from organizations where id = ?`, `${id}_org`);
+    await exec(`delete from team_history where team_id = ?`, `${id}_team`);
+    await exec(`delete from team_members where team_id = ?`, `${id}_team`);
+    await exec(`delete from teams where id = ?`, `${id}_team`);
     await exec(`delete from members where id = ?`, memberId);
     await db?.$disconnect();
     await ro?.$disconnect();
@@ -82,17 +82,22 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     expect(
       (await db.members.findUnique({ where: { id: memberId } }))?.github_login,
     ).toBe("it");
-    // Every resource needs an org and a project since `6_org_project`.
-    const orgDb = createOrgDb(db, { newHistoryId: (at) => `${id}_h${at}` });
-    await orgDb.createOrg(
-      { id: `${id}_org`, name: `${id}_org`, createdBy: ownerId, createdAt: 1 },
+    // Every resource needs a team and a project since `6_org_project`.
+    const teamDb = createTeamDb(db, { newHistoryId: (at) => `${id}_h${at}` });
+    await teamDb.createTeam(
+      {
+        id: `${id}_team`,
+        name: `${id}_team`,
+        createdBy: ownerId,
+        createdAt: 1,
+      },
       1,
     );
-    await orgDb.createProject(
-      { id: `${id}_prj`, orgId: `${id}_org`, name: "it" },
+    await teamDb.createProject(
+      { id: `${id}_prj`, teamId: `${id}_team`, name: "it" },
       { actorId: ownerId, at: 2 },
     );
-    const parents = { orgId: `${id}_org`, projectId: `${id}_prj` };
+    const parents = { teamId: `${id}_team`, projectId: `${id}_prj` };
     await repo.insertChannel({ ...base, ...parents, id, ownerId });
     await expect(repo.findChannelRow(id)).resolves.toMatchObject({
       createdAt: 1,
@@ -143,7 +148,7 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     expect(await events.deleteProposal(`${id}_p`)).toBe(true);
     expect(await events.findVote(id, ownerId)).toBeUndefined();
 
-    // catalog round-trip: org-scoped ci name, settings, idempotent upload
+    // catalog round-trip: team-scoped ci name, settings, idempotent upload
     const catalog = createCatalogDb(db);
     await catalog.insertApp({
       id: `${id}_app`,
@@ -162,11 +167,11 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
         createdAt: 1,
       }),
     ).rejects.toMatchObject({ code: "conflict" });
-    expect(await catalog.findAppByName(`${id}_org`, `${id}_APP`)).toMatchObject(
-      { id: `${id}_app`, ownerId, ...parents },
-    );
     expect(
-      await catalog.findAppByName("org_nope", `${id}_app`),
+      await catalog.findAppByName(`${id}_team`, `${id}_APP`),
+    ).toMatchObject({ id: `${id}_app`, ownerId, ...parents });
+    expect(
+      await catalog.findAppByName("team_nope", `${id}_app`),
     ).toBeUndefined();
     // pending upload: idempotent completion retry stays true
     await catalog.insertPendingUpload({

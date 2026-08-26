@@ -59,7 +59,7 @@ export function createMemoryConsoleDb(): ConsoleDb & {
         id: c.id,
         kind: c.kind,
         ownerId: c.ownerId,
-        orgId: c.orgId,
+        teamId: c.teamId,
         projectId: c.projectId,
         name: c.name,
         configJson: JSON.stringify(c.config),
@@ -143,9 +143,9 @@ export function createMemoryConsoleDb(): ConsoleDb & {
           (c) =>
             c.deletedAt === null &&
             (!filter.kind || c.kind === filter.kind) &&
-            (!filter.orgId || c.orgId === filter.orgId) &&
-            (!filter.orgIds ||
-              (c.orgId !== null && filter.orgIds.includes(c.orgId))) &&
+            (!filter.teamId || c.teamId === filter.teamId) &&
+            (!filter.teamIds ||
+              (c.teamId !== null && filter.teamIds.includes(c.teamId))) &&
             (!filter.projectId || c.projectId === filter.projectId),
         )
         .map((c) => ({ ...c }))
@@ -188,7 +188,7 @@ export function createMemoryConsoleDb(): ConsoleDb & {
             id: c.id,
             kind: c.kind,
             name: c.name,
-            orgId: c.orgId,
+            teamId: c.teamId,
             projectId: c.projectId,
           });
         }

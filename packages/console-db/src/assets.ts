@@ -10,13 +10,13 @@ export type AssetUploadStatus = (typeof ASSET_UPLOAD_STATUSES)[number];
 
 export interface AssetBundleRow {
   id: string;
-  /** Unique within the org (case-insensitive). Legacy rows' object keys still carry it. */
+  /** Unique within the team (case-insensitive). Legacy rows' object keys still carry it. */
   name: string;
   description: string | null;
-  /** Creator, kept for display; authorization is org membership (`orgId`). */
+  /** Creator, kept for display; authorization is team membership (`teamId`). */
   ownerId: string | null;
   /** Null only for rows created before migration `6_org_project` was mapped. */
-  orgId: string | null;
+  teamId: string | null;
   projectId: string | null;
   createdAt: number;
   updatedAt: number;
@@ -27,8 +27,8 @@ export interface AssetBundleInput {
   name: string;
   description?: string | null;
   ownerId?: string | null;
-  /** The project must belong to the org; the writer asserts it. */
-  orgId: string;
+  /** The project must belong to the team; the writer asserts it. */
+  teamId: string;
   projectId: string;
   createdAt: number;
 }
@@ -110,18 +110,18 @@ export interface AssetsDb {
   insertBundle(b: AssetBundleInput): Promise<void>;
   findBundle(id: string): Promise<AssetBundleRow | undefined>;
   /**
-   * Case-insensitive name lookup **within one org**. Until the contract
+   * Case-insensitive name lookup **within one team**. Until the contract
    * migration lands the database still carries the old global unique index,
-   * so a name can exist in one org only — a 409 on insert, not a lookup miss.
+   * so a name can exist in one team only — a 409 on insert, not a lookup miss.
    */
   findBundleByName(
-    orgId: string,
+    teamId: string,
     name: string,
   ): Promise<AssetBundleRow | undefined>;
-  /** Name ascending; `orgId`/`orgIds`/`projectId` narrow. */
+  /** Name ascending; `teamId`/`teamIds`/`projectId` narrow. */
   listBundles(filter?: {
-    orgId?: string;
-    orgIds?: string[];
+    teamId?: string;
+    teamIds?: string[];
     projectId?: string;
   }): Promise<AssetBundleRow[]>;
   updateBundle(
@@ -162,7 +162,7 @@ type BundleModel = {
   name: string;
   description: string | null;
   owner_id: string | null;
-  org_id: string | null;
+  team_id: string | null;
   project_id: string | null;
   created_at: bigint | number;
   updated_at: bigint | number;
@@ -201,7 +201,7 @@ const toBundle = (r: BundleModel): AssetBundleRow => ({
   name: r.name,
   description: r.description,
   ownerId: r.owner_id,
-  orgId: r.org_id,
+  teamId: r.team_id,
   projectId: r.project_id,
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
@@ -245,7 +245,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             name: b.name,
             description: b.description ?? null,
             owner_id: b.ownerId ?? null,
-            org_id: b.orgId,
+            team_id: b.teamId,
             project_id: b.projectId,
             created_at: b.createdAt,
             updated_at: b.createdAt,
@@ -257,11 +257,11 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         const r = await prisma.asset_bundles.findUnique({ where: { id } });
         return r ? toBundle(r) : undefined;
       }),
-    findBundleByName: (orgId, name) =>
+    findBundleByName: (teamId, name) =>
       run(async () => {
         // `name` is `utf8mb4_unicode_ci`, so equality is already case-insensitive.
         const r = await prisma.asset_bundles.findFirst({
-          where: { org_id: orgId, name },
+          where: { team_id: teamId, name },
         });
         return r ? toBundle(r) : undefined;
       }),
@@ -269,8 +269,8 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
       run(async () => {
         const rows = await prisma.asset_bundles.findMany({
           where: {
-            ...(filter.orgId ? { org_id: filter.orgId } : {}),
-            ...(filter.orgIds ? { org_id: { in: filter.orgIds } } : {}),
+            ...(filter.teamId ? { team_id: filter.teamId } : {}),
+            ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
             ...(filter.projectId ? { project_id: filter.projectId } : {}),
           },
           orderBy: [{ name: "asc" }, { id: "asc" }],
@@ -438,8 +438,8 @@ export function createMemoryAssetsDb(
   };
   /**
    * Mirrors the index that is actually deployed: `asset_bundles_name` is still
-   * global until the contract migration replaces it with `(org_id, name)`.
-   * Relax to an org-scoped check in the same commit as that migration.
+   * global until the contract migration replaces it with `(team_id, name)`.
+   * Relax to a team-scoped check in the same commit as that migration.
    */
   const nameTaken = (name: string, exceptId?: string) =>
     [...bundles.values()].some((x) => x.id !== exceptId && eqI(x.name, name));
@@ -455,7 +455,7 @@ export function createMemoryAssetsDb(
         name: b.name,
         description: b.description ?? null,
         ownerId: b.ownerId ?? null,
-        orgId: b.orgId,
+        teamId: b.teamId,
         projectId: b.projectId,
         createdAt: b.createdAt,
         updatedAt: b.createdAt,
@@ -465,9 +465,9 @@ export function createMemoryAssetsDb(
       const b = bundles.get(id);
       return b && { ...b };
     },
-    findBundleByName: async (orgId, name) => {
+    findBundleByName: async (teamId, name) => {
       const b = [...bundles.values()].find(
-        (x) => x.orgId === orgId && eqI(x.name, name),
+        (x) => x.teamId === teamId && eqI(x.name, name),
       );
       return b && { ...b };
     },
@@ -475,9 +475,9 @@ export function createMemoryAssetsDb(
       [...bundles.values()]
         .filter(
           (b) =>
-            (!filter.orgId || b.orgId === filter.orgId) &&
-            (!filter.orgIds ||
-              (b.orgId !== null && filter.orgIds.includes(b.orgId))) &&
+            (!filter.teamId || b.teamId === filter.teamId) &&
+            (!filter.teamIds ||
+              (b.teamId !== null && filter.teamIds.includes(b.teamId))) &&
             (!filter.projectId || b.projectId === filter.projectId),
         )
         .map((b) => ({ ...b }))

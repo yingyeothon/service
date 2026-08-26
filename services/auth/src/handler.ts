@@ -1,6 +1,6 @@
 import {
   createConsoleDb,
-  createOrgDb,
+  createTeamDb,
   createPrismaClient,
   mysqlOptionsFromEnv,
   type ConsoleDb,
@@ -62,8 +62,8 @@ function build(): (event: HttpEvent) => Promise<HttpResult> {
       extraRoutes = createDebugRoutes({
         debugKey: process.env.DEBUG_KEY ?? "",
         consoleDb: writer,
-        // The seeder's org/project rows; the history id is what console uses.
-        orgDb: createOrgDb(writerClient, {
+        // The seeder's team/project rows; the history id is what console uses.
+        teamDb: createTeamDb(writerClient, {
           newHistoryId: (at) => ulid(at * 1000),
         }),
         channels,

@@ -82,8 +82,8 @@ describe("asset bundles", () => {
     expect(parse(created)).toMatchObject({
       name: "dungeon-maps",
       description: "MMO maps",
-      orgId: alice.orgId,
-      orgName: "alice-org",
+      teamId: alice.teamId,
+      teamName: "alice-team",
       projectId: alice.prjId,
       projectName: "game",
       createdBy: "alice",
@@ -158,14 +158,14 @@ describe("asset bundles", () => {
     ).toBe(400);
   });
 
-  it("org members write; other orgs get 404; admins read only; pending nothing", async () => {
+  it("team members write; other teams get 404; admins read only; pending nothing", async () => {
     const h = harness();
     const alice = await h.team("alice");
     const bob = await h.team("bob");
     const boss = await h.login("Boss", "admin");
     const pending = await h.login("newbie", "pending");
     const mate = await h.login("mate", "member");
-    await h.seat(alice, alice.orgId, "mate");
+    await h.seat(alice, alice.teamId, "mate");
     const id = await mkBundle(h, alice);
 
     expect(
@@ -232,7 +232,7 @@ describe("asset bundles", () => {
         .statusCode,
     ).toBe(403);
     expect((await h.app(ev("GET", "/assets/bundles"))).statusCode).toBe(401);
-    // Bob's flattened list is his own org's only.
+    // Bob's flattened list is his own team's only.
     expect(
       parse(await h.app(ev("GET", "/assets/bundles", { headers: bob.cookie })))
         .bundles,
@@ -406,7 +406,7 @@ describe("asset upload and commit", () => {
     expect(parse(over).error.message).toMatch(/bundle would exceed/);
   });
 
-  it("hides another org's upload id behind a 404 and expires stale ones", async () => {
+  it("hides another team's upload id behind a 404 and expires stale ones", async () => {
     const h = harness();
     const alice = await h.team("alice");
     const bob = await h.team("bob");
@@ -551,7 +551,7 @@ describe("asset versions and deletion", () => {
         )
       ).statusCode,
     ).toBe(404);
-    expect(await h.org.listVersionLinks(ver.id)).toEqual([]);
+    expect(await h.teamDb.listVersionLinks(ver.id)).toEqual([]);
   });
 
   it("deletes a bundle whole, files included", async () => {
@@ -623,7 +623,7 @@ describe("asset plumbing", () => {
     await assets.insertBundle({
       id: "b1",
       name: "maps",
-      orgId: "org_1",
+      teamId: "team_1",
       projectId: "prj_1",
       createdAt: 1,
     });
@@ -775,7 +775,7 @@ describe("asset quotas", () => {
     h.clock.tick(0.5);
     const prj2 = parse(
       await h.app(
-        ev("POST", `/orgs/${alice.orgId}/projects`, {
+        ev("POST", `/teams/${alice.teamId}/projects`, {
           body: { name: "two" },
           headers: alice.cookie,
         }),
@@ -820,7 +820,7 @@ describe("asset deletion safety", () => {
       id,
       kind: "lobby",
       ownerId: u.id,
-      orgId: u.orgId,
+      teamId: u.teamId,
       projectId: u.prjId,
       name: id,
       config: { authChannelId: "a", mapUrl },
@@ -838,7 +838,7 @@ describe("asset deletion safety", () => {
     await publish(h, alice, id, { version: "v1" });
     await publish(h, alice, id, { version: "v2" });
     await pointAt(h, alice, "lobby_1", `${CDN}/assets/${id}/v1/map.json`);
-    // The CDN is public, so another org pointing at the file is legitimate —
+    // The CDN is public, so another team pointing at the file is legitimate —
     // it still blocks the delete, but its id is not revealed.
     await pointAt(h, bob, "lobby_2", `${CDN}/assets/${id}/v1/map.json`);
 

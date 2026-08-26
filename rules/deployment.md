@@ -1,6 +1,6 @@
 # Deployment
 
-- **A contract migration is its own commit, and only after every stage runs the bundle that fills the columns.** `deploy.sh` applies every pending migration unconditionally, so a `NOT NULL`/`DROP` file that sits in the tree is applied by the next `deploy.sh console <stage>` whether or not that stage was ready — there is no technical gate today (todo/17 P9 adds a `migrate.sh` pre-flight that refuses a `-- contract` file unless `--allow-contract` is given and the `NULL` count is 0). Until then the gate is the commit itself: check `migrate status` on prod and the deployed bundle version before committing `7_org_project_contract`.
+- **A contract migration is its own commit, and only after every stage runs the bundle that fills the columns.** `deploy.sh` applies every pending migration unconditionally, so a `NOT NULL`/`DROP` file that sits in the tree is applied by the next `deploy.sh console <stage>` whether or not that stage was ready — there is no technical gate today (todo/17 P9 adds a `migrate.sh` pre-flight that refuses a `-- contract` file unless `--allow-contract` is given and the `NULL` count is 0). Until then the gate is the commit itself: check `migrate status` on prod and the deployed bundle version before committing `7_team_project_contract`.
 
 ## Decision flow
 
@@ -21,9 +21,9 @@
 
 - The console stack owns the poster bucket `yyt-console-posters-{stage}` (`DeletionPolicy: Retain`): `sls remove` leaves it behind, and a re-created stack adopts it only if the name is unchanged (delete or rename the bucket first otherwise). Uncommitted presigned uploads (`posters/{eventId}/…` never bound by `commit`) are not swept yet; empty them by hand if they matter.
 
-## Org/project rollout (todo/17, 2026-08-26)
+## Team/project rollout (todo/17, 2026-08-26)
 
-- Order per stage: `migrate.sh <stage>` (expand `6_org_project`, already applied on dev) → `scripts/apply-org-project-map.mjs <stage> <map> --execute` → `deploy.sh console <stage>` → `deploy.sh auth <stage>` (its bundle embeds the console-db client and its debug seeder writes org rows) → SPA → CLI → installer. The map file lives in `local/` (gitignored); prod's is the two-app mapping in `todo/17` §4.1. The order is strict: an old bundle still running after the mapping creates rows with `org_id NULL` that the new bundle then hides from their creator, and a new bundle before the mapping serves `{downloads: []}` to the installer until `installer_app_id` is set. Gate for the contract migration (`7_`): after the last old bundle (auth) is redeployed, re-run the dry run — it must list zero unmapped rows. `deleteUnmappedChannels` deletes **live** unassigned channels too; the dry run says how many.
+- Order per stage: `migrate.sh <stage>` (expand `6_org_project`, already applied on dev) → `scripts/apply-team-project-map.mjs <stage> <map> --execute` → `deploy.sh console <stage>` → `deploy.sh auth <stage>` (its bundle embeds the console-db client and its debug seeder writes team rows) → SPA → CLI → installer. The map file lives in `local/` (gitignored); prod's is the two-app mapping in `todo/17` §4.1. The order is strict: an old bundle still running after the mapping creates rows with `team_id NULL` that the new bundle then hides from their creator, and a new bundle before the mapping serves `{downloads: []}` to the installer until `installer_app_id` is set. Gate for the contract migration (`7_`): after the last old bundle (auth) is redeployed, re-run the dry run — it must list zero unmapped rows. `deleteUnmappedChannels` deletes **live** unassigned channels too; the dry run says how many.
 
 ## Channel-kind migrations (learned 2026-08-25)
 

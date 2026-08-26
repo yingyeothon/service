@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   bumpVersion,
   JOIN_COOLDOWN_SEC,
-  ORGS_PER_MEMBER,
-  PROJECTS_PER_ORG,
-} from "../src/org.js";
+  TEAMS_PER_MEMBER,
+  PROJECTS_PER_TEAM,
+} from "../src/team.js";
 import { ev, harness, NOW_SEC, parse, type Json } from "./helpers.js";
 
 type H = ReturnType<typeof harness>;
@@ -30,9 +30,9 @@ function ticking(): H & { raw: H["app"] } {
 }
 type Cookie = Awaited<ReturnType<H["login"]>>["cookie"];
 
-/** POST /orgs as `who`; returns the org view. */
-async function mkOrg(h: H, who: Cookie, name: string): Promise<Json> {
-  const r = await h.app(ev("POST", "/orgs", { body: { name }, headers: who }));
+/** POST /teams as `who`; returns the team view. */
+async function mkTeam(h: H, who: Cookie, name: string): Promise<Json> {
+  const r = await h.app(ev("POST", "/teams", { body: { name }, headers: who }));
   expect(r.statusCode, r.body).toBe(201);
   return parse(r);
 }
@@ -40,48 +40,48 @@ async function mkOrg(h: H, who: Cookie, name: string): Promise<Json> {
 async function mkProject(
   h: H,
   who: Cookie,
-  orgId: string,
+  teamId: string,
   name: string,
 ): Promise<Json> {
   const r = await h.app(
-    ev("POST", `/orgs/${orgId}/projects`, { body: { name }, headers: who }),
+    ev("POST", `/teams/${teamId}/projects`, { body: { name }, headers: who }),
   );
   expect(r.statusCode, r.body).toBe(201);
   return parse(r);
 }
 
-/** Seeds an org owned by `owner` with `member` seated as member. */
-async function team(h: H) {
+/** Seeds a team owned by `owner` with `member` seated as member. */
+async function seedTeam(h: H) {
   const owner = await h.login("owner", "member");
   const member = await h.login("mate", "member");
   const other = await h.login("guest", "member");
   const admin = await h.login("Boss", "admin");
-  const org = await mkOrg(h, owner.cookie, "acme");
+  const team = await mkTeam(h, owner.cookie, "acme");
   const add = await h.app(
-    ev("POST", `/orgs/${org.id}/members`, {
+    ev("POST", `/teams/${team.id}/members`, {
       body: { login: "mate", role: "member" },
       headers: owner.cookie,
     }),
   );
   expect(add.statusCode, add.body).toBe(201);
-  const project = await mkProject(h, owner.cookie, org.id, "game");
-  return { owner, member, other, admin, org, project };
+  const project = await mkProject(h, owner.cookie, team.id, "game");
+  return { owner, member, other, admin, team, project };
 }
 
-describe("organizations", () => {
+describe("teams", () => {
   it("creates, lists mine, shows counts, patches, and hides from outsiders", async () => {
     const h = ticking();
-    const { owner, other, org, project } = await team(h);
-    expect(org.role).toBe("owner");
-    expect(org.createdBy).toBe("owner");
+    const { owner, other, team, project } = await seedTeam(h);
+    expect(team.role).toBe("owner");
+    expect(team.createdBy).toBe("owner");
 
     const mine = parse(
-      await h.app(ev("GET", "/orgs", { headers: owner.cookie })),
+      await h.app(ev("GET", "/teams", { headers: owner.cookie })),
     );
-    expect(mine.orgs.map((o: Json) => o.name)).toEqual(["acme"]);
+    expect(mine.teams.map((o: Json) => o.name)).toEqual(["acme"]);
 
     const get = parse(
-      await h.app(ev("GET", `/orgs/${org.id}`, { headers: owner.cookie })),
+      await h.app(ev("GET", `/teams/${team.id}`, { headers: owner.cookie })),
     );
     expect(get.counts).toEqual({
       owners: 1,
@@ -90,11 +90,11 @@ describe("organizations", () => {
       projects: 1,
     });
 
-    // Not a member: 404, not 403 — the org is not revealed.
+    // Not a member: 404, not 403 — the team is not revealed.
     for (const path of [
-      `/orgs/${org.id}`,
-      `/orgs/${org.id}/members`,
-      `/orgs/${org.id}/history`,
+      `/teams/${team.id}`,
+      `/teams/${team.id}/members`,
+      `/teams/${team.id}/history`,
       `/projects/${project.id}`,
     ]) {
       const r = await h.app(ev("GET", path, { headers: other.cookie }));
@@ -102,7 +102,7 @@ describe("organizations", () => {
     }
 
     const patch = await h.app(
-      ev("PATCH", `/orgs/${org.id}`, {
+      ev("PATCH", `/teams/${team.id}`, {
         body: { description: "# hi", name: "Acme2" },
         headers: owner.cookie,
       }),
@@ -111,7 +111,7 @@ describe("organizations", () => {
     expect(parse(patch).name).toBe("Acme2");
     // `adminLocked` cannot ride in on the PATCH body.
     const locked = await h.app(
-      ev("PATCH", `/orgs/${org.id}`, {
+      ev("PATCH", `/teams/${team.id}`, {
         body: { adminLocked: true },
         headers: owner.cookie,
       }),
@@ -123,7 +123,7 @@ describe("organizations", () => {
     const h = ticking();
     const u = await h.login("u", "member");
     for (const name of [
-      "org_x",
+      "team_x",
       "prj_1",
       "auth_2",
       "a b",
@@ -132,18 +132,19 @@ describe("organizations", () => {
       "x".repeat(65),
     ]) {
       const r = await h.app(
-        ev("POST", "/orgs", { body: { name }, headers: u.cookie }),
+        ev("POST", "/teams", { body: { name }, headers: u.cookie }),
       );
       expect(r.statusCode, name).toBe(400);
     }
-    await mkOrg(h, u.cookie, "Dup");
+    await mkTeam(h, u.cookie, "Dup");
     const dup = await h.app(
-      ev("POST", "/orgs", { body: { name: "dup" }, headers: u.cookie }),
+      ev("POST", "/teams", { body: { name: "dup" }, headers: u.cookie }),
     );
     expect(dup.statusCode).toBe(409);
-    for (let i = 1; i < ORGS_PER_MEMBER; i++) await mkOrg(h, u.cookie, `o${i}`);
+    for (let i = 1; i < TEAMS_PER_MEMBER; i++)
+      await mkTeam(h, u.cookie, `o${i}`);
     const over = await h.app(
-      ev("POST", "/orgs", {
+      ev("POST", "/teams", {
         body: { name: "one-too-many" },
         headers: u.cookie,
       }),
@@ -157,45 +158,45 @@ describe("organizations", () => {
     expect(
       (
         await h.app(
-          ev("POST", "/orgs", { body: { name: "x" }, headers: p.cookie }),
+          ev("POST", "/teams", { body: { name: "x" }, headers: p.cookie }),
         )
       ).statusCode,
     ).toBe(403);
     expect(
       (
         await h.app(
-          ev("POST", "/orgs/join", { body: { name: "x" }, headers: p.cookie }),
+          ev("POST", "/teams/join", { body: { name: "x" }, headers: p.cookie }),
         )
       ).statusCode,
     ).toBe(403);
     expect(
-      (await h.app(ev("GET", "/orgs", { headers: p.cookie }))).statusCode,
+      (await h.app(ev("GET", "/teams", { headers: p.cookie }))).statusCode,
     ).toBe(403);
   });
 
   it("join by exact name → pending sees the name only; approve/decline; cooldown", async () => {
     const h = ticking();
-    const { owner, other, org, project } = await team(h);
+    const { owner, other, team, project } = await seedTeam(h);
     const unknown = await h.app(
-      ev("POST", "/orgs/join", {
+      ev("POST", "/teams/join", {
         body: { name: "nope" },
         headers: other.cookie,
       }),
     );
     expect(unknown.statusCode).toBe(404);
     const join = await h.app(
-      ev("POST", "/orgs/join", {
+      ev("POST", "/teams/join", {
         body: { name: "ACME" },
         headers: other.cookie,
       }),
     );
     expect(join.statusCode, join.body).toBe(202);
-    expect(parse(join)).toEqual({ id: org.id, name: "acme", role: "pending" });
+    expect(parse(join)).toEqual({ id: team.id, name: "acme", role: "pending" });
     // Again: conflict, not a second row.
     expect(
       (
         await h.app(
-          ev("POST", "/orgs/join", {
+          ev("POST", "/teams/join", {
             body: { name: "acme" },
             headers: other.cookie,
           }),
@@ -205,18 +206,20 @@ describe("organizations", () => {
 
     // Pending: name view only, no members/projects/history.
     const get = parse(
-      await h.app(ev("GET", `/orgs/${org.id}`, { headers: other.cookie })),
+      await h.app(ev("GET", `/teams/${team.id}`, { headers: other.cookie })),
     );
-    expect(get).toEqual({ id: org.id, name: "acme", role: "pending" });
+    expect(get).toEqual({ id: team.id, name: "acme", role: "pending" });
     const mine = parse(
-      await h.app(ev("GET", "/orgs", { headers: other.cookie })),
+      await h.app(ev("GET", "/teams", { headers: other.cookie })),
     );
-    expect(mine.orgs).toEqual([{ id: org.id, name: "acme", role: "pending" }]);
+    expect(mine.teams).toEqual([
+      { id: team.id, name: "acme", role: "pending" },
+    ]);
     for (const path of [
-      `/orgs/${org.id}/members`,
-      `/orgs/${org.id}/projects`,
-      `/orgs/${org.id}/history`,
-      `/orgs/${org.id}/discussions`,
+      `/teams/${team.id}/members`,
+      `/teams/${team.id}/projects`,
+      `/teams/${team.id}/history`,
+      `/teams/${team.id}/discussions`,
     ]) {
       const r = await h.app(ev("GET", path, { headers: other.cookie }));
       expect(r.statusCode, path).toBe(403);
@@ -232,7 +235,7 @@ describe("organizations", () => {
     // Owner sees the request and declines it.
     const members = parse(
       await h.app(
-        ev("GET", `/orgs/${org.id}/members`, { headers: owner.cookie }),
+        ev("GET", `/teams/${team.id}/members`, { headers: owner.cookie }),
       ),
     ).members as Json[];
     expect(members.find((m) => m.login === "guest")).toMatchObject({
@@ -241,7 +244,7 @@ describe("organizations", () => {
       platformRole: "member",
     });
     const decline = await h.app(
-      ev("DELETE", `/orgs/${org.id}/members/${other.id}`, {
+      ev("DELETE", `/teams/${team.id}/members/${other.id}`, {
         headers: owner.cookie,
       }),
     );
@@ -250,7 +253,7 @@ describe("organizations", () => {
     expect(
       (
         await h.app(
-          ev("POST", "/orgs/join", {
+          ev("POST", "/teams/join", {
             body: { name: "acme" },
             headers: other.cookie,
           }),
@@ -264,7 +267,7 @@ describe("organizations", () => {
     expect(
       (
         await h.app(
-          ev("POST", "/orgs/join", {
+          ev("POST", "/teams/join", {
             body: { name: "acme" },
             headers: other2.cookie,
           }),
@@ -274,7 +277,7 @@ describe("organizations", () => {
     // Approve by PATCH {role}.
     h.clock.tick(1);
     const approve = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${other.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${other.id}`, {
         body: { role: "member" },
         headers: owner2.cookie,
       }),
@@ -294,7 +297,7 @@ describe("organizations", () => {
 
     const hist = parse(
       await h.app(
-        ev("GET", `/orgs/${org.id}/history`, { headers: owner2.cookie }),
+        ev("GET", `/teams/${team.id}/history`, { headers: owner2.cookie }),
       ),
     );
     // Rows written in the same second share `at`; order is only pinned across seconds.
@@ -306,7 +309,7 @@ describe("organizations", () => {
         "member.request",
         "project.create",
         "member.add",
-        "org.create",
+        "team.create",
       ].sort(),
     );
     expect(hist.history[0]).toMatchObject({
@@ -318,9 +321,9 @@ describe("organizations", () => {
 
   it("owner adds by login (signed-up members only), promotes, demotes, never the last owner", async () => {
     const h = ticking();
-    const { owner, member, org } = await team(h);
+    const { owner, member, team } = await seedTeam(h);
     const ghost = await h.app(
-      ev("POST", `/orgs/${org.id}/members`, {
+      ev("POST", `/teams/${team.id}/members`, {
         body: { login: "nobody", role: "member" },
         headers: owner.cookie,
       }),
@@ -328,7 +331,7 @@ describe("organizations", () => {
     expect(ghost.statusCode).toBe(404);
     // Members cannot manage members.
     const byMember = await h.app(
-      ev("POST", `/orgs/${org.id}/members`, {
+      ev("POST", `/teams/${team.id}/members`, {
         body: { login: "guest", role: "member" },
         headers: member.cookie,
       }),
@@ -336,21 +339,21 @@ describe("organizations", () => {
     expect(byMember.statusCode).toBe(403);
 
     const demoteLast = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${owner.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${owner.id}`, {
         body: { role: "member" },
         headers: owner.cookie,
       }),
     );
     expect(demoteLast.statusCode).toBe(409);
     const promote = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${member.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${member.id}`, {
         body: { role: "owner" },
         headers: owner.cookie,
       }),
     );
     expect(promote.statusCode).toBe(200);
     const demote = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${owner.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${owner.id}`, {
         body: { role: "member" },
         headers: owner.cookie,
       }),
@@ -360,7 +363,7 @@ describe("organizations", () => {
     expect(
       (
         await h.app(
-          ev("PATCH", `/orgs/${org.id}/members/${owner.id}`, {
+          ev("PATCH", `/teams/${team.id}/members/${owner.id}`, {
             body: { role: "owner" },
             headers: owner.cookie,
           }),
@@ -371,12 +374,12 @@ describe("organizations", () => {
 
   it("kick and leave answer with the channels to rotate; a kicked member is locked out", async () => {
     const h = ticking();
-    const { owner, member, org, project } = await team(h);
+    const { owner, member, team, project } = await seedTeam(h);
     await h.db.insertChannel({
       id: "auth_00000001",
       kind: "auth",
       ownerId: member.id,
-      orgId: org.id,
+      teamId: team.id,
       projectId: project.id,
       name: "login",
       config: {},
@@ -388,7 +391,7 @@ describe("organizations", () => {
       id: "lobby_00000001",
       kind: "lobby",
       ownerId: member.id,
-      orgId: org.id,
+      teamId: team.id,
       projectId: project.id,
       name: "town",
       config: {},
@@ -397,7 +400,7 @@ describe("organizations", () => {
       expiresAt: NOW_SEC + 100,
     });
     const kick = await h.app(
-      ev("DELETE", `/orgs/${org.id}/members/${member.id}`, {
+      ev("DELETE", `/teams/${team.id}/members/${member.id}`, {
         headers: owner.cookie,
       }),
     );
@@ -408,9 +411,9 @@ describe("organizations", () => {
       rotate: [{ id: "auth_00000001", kind: "auth", name: "login" }],
     });
     expect(kick.body).not.toContain("c0de-secret-zz");
-    // The creator of the channel is out: the org and its project are gone for them.
+    // The creator of the channel is out: the team and its project are gone for them.
     expect(
-      (await h.app(ev("GET", `/orgs/${org.id}`, { headers: member.cookie })))
+      (await h.app(ev("GET", `/teams/${team.id}`, { headers: member.cookie })))
         .statusCode,
     ).toBe(404);
     expect(
@@ -424,7 +427,7 @@ describe("organizations", () => {
     expect(
       (
         await h.app(
-          ev("POST", "/orgs/join", {
+          ev("POST", "/teams/join", {
             body: { name: "acme" },
             headers: member.cookie,
           }),
@@ -433,7 +436,7 @@ describe("organizations", () => {
     ).toBe(429);
     // Last owner cannot leave.
     const leave = await h.app(
-      ev("DELETE", `/orgs/${org.id}/members/${owner.id}`, {
+      ev("DELETE", `/teams/${team.id}/members/${owner.id}`, {
         headers: owner.cookie,
       }),
     );
@@ -442,14 +445,20 @@ describe("organizations", () => {
 
   it("delete: owner or admin, only once no project remains; audited", async () => {
     const h = ticking();
-    const { owner, member, admin, org, project } = await team(h);
+    const { owner, member, admin, team, project } = await seedTeam(h);
     expect(
-      (await h.app(ev("DELETE", `/orgs/${org.id}`, { headers: member.cookie })))
-        .statusCode,
+      (
+        await h.app(
+          ev("DELETE", `/teams/${team.id}`, { headers: member.cookie }),
+        )
+      ).statusCode,
     ).toBe(403);
     expect(
-      (await h.app(ev("DELETE", `/orgs/${org.id}`, { headers: owner.cookie })))
-        .statusCode,
+      (
+        await h.app(
+          ev("DELETE", `/teams/${team.id}`, { headers: owner.cookie }),
+        )
+      ).statusCode,
     ).toBe(409);
     expect(
       (
@@ -466,29 +475,32 @@ describe("organizations", () => {
       ).statusCode,
     ).toBe(204);
     expect(
-      (await h.app(ev("DELETE", `/orgs/${org.id}`, { headers: admin.cookie })))
-        .statusCode,
+      (
+        await h.app(
+          ev("DELETE", `/teams/${team.id}`, { headers: admin.cookie }),
+        )
+      ).statusCode,
     ).toBe(204);
-    expect(h.db.audits.map((a) => a.action)).toContain("org.delete");
-    expect(h.org.orgs.size).toBe(0);
+    expect(h.db.audits.map((a) => a.action)).toContain("team.delete");
+    expect(h.teamDb.teams.size).toBe(0);
   });
 });
 
 describe("platform admin override", () => {
   it("lists all, reads, appoints a non-admin owner only, never touches secrets", async () => {
     const h = ticking();
-    const { owner, member, other, admin, org, project } = await team(h);
+    const { owner, member, other, admin, team, project } = await seedTeam(h);
     const all = parse(
       await h.app(
-        ev("GET", "/orgs", { query: { scope: "all" }, headers: admin.cookie }),
+        ev("GET", "/teams", { query: { scope: "all" }, headers: admin.cookie }),
       ),
     );
-    expect(all.orgs).toHaveLength(1);
-    expect(all.orgs[0].role).toBe("admin");
+    expect(all.teams).toHaveLength(1);
+    expect(all.teams[0].role).toBe("admin");
     expect(
       (
         await h.app(
-          ev("GET", "/orgs", {
+          ev("GET", "/teams", {
             query: { scope: "all" },
             headers: owner.cookie,
           }),
@@ -497,7 +509,7 @@ describe("platform admin override", () => {
     ).toBe(403);
     // `mine` for an admin without memberships is empty — no roster leak.
     expect(
-      parse(await h.app(ev("GET", "/orgs", { headers: admin.cookie }))).orgs,
+      parse(await h.app(ev("GET", "/teams", { headers: admin.cookie }))).teams,
     ).toEqual([]);
     expect(
       (
@@ -508,35 +520,35 @@ describe("platform admin override", () => {
     ).toBe(200);
     // Writes that count as "member" work (secret paths) are refused.
     for (const [method, path, body] of [
-      ["POST", `/orgs/${org.id}/projects`, { name: "p2" }],
+      ["POST", `/teams/${team.id}/projects`, { name: "p2" }],
       ["PATCH", `/projects/${project.id}`, { name: "p2" }],
       ["POST", `/projects/${project.id}/versions`, { name: "1.0.0" }],
       ["POST", `/projects/${project.id}/issues`, { title: "t" }],
-      ["POST", `/orgs/${org.id}/discussions`, { title: "t" }],
-      ["PATCH", `/orgs/${org.id}`, { name: "renamed" }],
-      ["POST", `/orgs/${org.id}/members`, { login: "guest", role: "member" }],
+      ["POST", `/teams/${team.id}/discussions`, { title: "t" }],
+      ["PATCH", `/teams/${team.id}`, { name: "renamed" }],
+      ["POST", `/teams/${team.id}/members`, { login: "guest", role: "member" }],
     ] as const) {
       const r = await h.app(ev(method, path, { body, headers: admin.cookie }));
       expect(r.statusCode, `${method} ${path}`).toBe(403);
     }
     // Appoint: only role=owner, only a non-admin platform member, never self.
     const asMember = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${member.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${member.id}`, {
         body: { role: "member" },
         headers: admin.cookie,
       }),
     );
     expect(asMember.statusCode).toBe(403);
     const self = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${admin.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${admin.id}`, {
         body: { role: "owner" },
         headers: admin.cookie,
       }),
     );
     expect(self.statusCode).toBe(403);
-    // An outsider can be seated straight in as owner (ownerless-org rescue).
+    // An outsider can be seated straight in as owner (ownerless-team rescue).
     const notSeated = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${other.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${other.id}`, {
         body: { role: "owner" },
         headers: admin.cookie,
       }),
@@ -546,7 +558,7 @@ describe("platform admin override", () => {
     expect(
       (
         await h.app(
-          ev("PATCH", `/orgs/${org.id}/members/m_nobody`, {
+          ev("PATCH", `/teams/${team.id}/members/m_nobody`, {
             body: { role: "owner" },
             headers: admin.cookie,
           }),
@@ -554,17 +566,17 @@ describe("platform admin override", () => {
       ).statusCode,
     ).toBe(403);
     const appoint = await h.app(
-      ev("PATCH", `/orgs/${org.id}/members/${member.id}`, {
+      ev("PATCH", `/teams/${team.id}/members/${member.id}`, {
         body: { role: "owner" },
         headers: admin.cookie,
       }),
     );
     expect(appoint.statusCode, appoint.body).toBe(200);
     expect(parse(appoint).role).toBe("owner");
-    expect(h.db.audits.map((a) => a.action)).toContain("org.member.appoint");
+    expect(h.db.audits.map((a) => a.action)).toContain("team.member.appoint");
     // An admin who *is* a member is judged by the membership.
     await h.app(
-      ev("POST", `/orgs/${org.id}/members`, {
+      ev("POST", `/teams/${team.id}/members`, {
         body: { login: "Boss", role: "member" },
         headers: owner.cookie,
       }),
@@ -580,16 +592,16 @@ describe("platform admin override", () => {
 
   it("admin-lock requires an all-admin roster and gates the installer setting", async () => {
     const h = ticking();
-    const { owner, admin, org, project } = await team(h);
+    const { owner, admin, team, project } = await seedTeam(h);
     const byOwner = await h.app(
-      ev("PUT", `/orgs/${org.id}/admin-lock`, {
+      ev("PUT", `/teams/${team.id}/admin-lock`, {
         body: { locked: true },
         headers: owner.cookie,
       }),
     );
     expect(byOwner.statusCode).toBe(403);
     const mixed = await h.app(
-      ev("PUT", `/orgs/${org.id}/admin-lock`, {
+      ev("PUT", `/teams/${team.id}/admin-lock`, {
         body: { locked: true },
         headers: admin.cookie,
       }),
@@ -600,7 +612,7 @@ describe("platform admin override", () => {
       id: "ca_installer",
       name: "installer",
       path: "installer",
-      orgId: org.id,
+      teamId: team.id,
       projectId: project.id,
       createdAt: NOW_SEC,
     });
@@ -615,20 +627,20 @@ describe("platform admin override", () => {
       code: "installer_untrusted",
     });
 
-    // An org made of admins only can be locked.
-    const platform = await mkOrg(h, admin.cookie, "platform");
+    // A team made of admins only can be locked.
+    const platform = await mkTeam(h, admin.cookie, "platform");
     const prj = await mkProject(h, admin.cookie, platform.id, "installer");
     const lock = await h.app(
-      ev("PUT", `/orgs/${platform.id}/admin-lock`, {
+      ev("PUT", `/teams/${platform.id}/admin-lock`, {
         body: { locked: true },
         headers: admin.cookie,
       }),
     );
     expect(lock.statusCode, lock.body).toBe(200);
     expect(parse(lock)).toMatchObject({ adminLocked: true, role: "owner" });
-    // Seating a non-admin in a locked org is refused.
+    // Seating a non-admin in a locked team is refused.
     const seat = await h.app(
-      ev("POST", `/orgs/${platform.id}/members`, {
+      ev("POST", `/teams/${platform.id}/members`, {
         body: { login: "owner", role: "member" },
         headers: admin.cookie,
       }),
@@ -638,7 +650,7 @@ describe("platform admin override", () => {
       id: "ca_inst2",
       name: "installer2",
       path: "installer2",
-      orgId: platform.id,
+      teamId: platform.id,
       projectId: prj.id,
       createdAt: NOW_SEC,
     });
@@ -651,7 +663,7 @@ describe("platform admin override", () => {
     expect(set.statusCode, set.body).toBe(200);
     expect(parse(set)).toMatchObject({
       appId: "ca_inst2",
-      orgName: "platform",
+      teamName: "platform",
       trusted: true,
     });
     expect(
@@ -672,11 +684,11 @@ describe("platform admin override", () => {
 });
 
 describe("projects", () => {
-  it("org-unique names, cap, counts, patch, and resource-guarded delete", async () => {
+  it("team-unique names, cap, counts, patch, and resource-guarded delete", async () => {
     const h = ticking();
-    const { owner, member, org, project } = await team(h);
+    const { owner, member, team, project } = await seedTeam(h);
     const dup = await h.app(
-      ev("POST", `/orgs/${org.id}/projects`, {
+      ev("POST", `/teams/${team.id}/projects`, {
         body: { name: "GAME" },
         headers: member.cookie,
       }),
@@ -684,19 +696,19 @@ describe("projects", () => {
     expect(dup.statusCode).toBe(409);
     const list = parse(
       await h.app(
-        ev("GET", `/orgs/${org.id}/projects`, { headers: member.cookie }),
+        ev("GET", `/teams/${team.id}/projects`, { headers: member.cookie }),
       ),
     );
     expect(list.projects.map((p: Json) => p.name)).toEqual(["game"]);
     expect(list.projects[0]).toMatchObject({
-      orgName: "acme",
+      teamName: "acme",
       createdBy: "owner",
     });
 
     await h.assets.insertBundle({
       id: "ab_1",
       name: "maps",
-      orgId: org.id,
+      teamId: team.id,
       projectId: project.id,
       createdAt: NOW_SEC,
     });
@@ -725,10 +737,10 @@ describe("projects", () => {
     );
     expect(parse(patch).description).toBe("md");
 
-    for (let i = 1; i < PROJECTS_PER_ORG; i++)
-      await mkProject(h, member.cookie, org.id, `p${i}`);
+    for (let i = 1; i < PROJECTS_PER_TEAM; i++)
+      await mkProject(h, member.cookie, team.id, `p${i}`);
     const over = await h.app(
-      ev("POST", `/orgs/${org.id}/projects`, {
+      ev("POST", `/teams/${team.id}/projects`, {
         body: { name: "p-over" },
         headers: member.cookie,
       }),
@@ -749,7 +761,7 @@ describe("versions", () => {
 
   it("create/bump/list/patch/delete and links inside the project only", async () => {
     const h = ticking();
-    const { member, other, org, project } = await team(h);
+    const { member, other, team, project } = await seedTeam(h);
     const p = `/projects/${project.id}`;
     const v1 = await h.app(
       ev("POST", `${p}/versions`, {
@@ -788,7 +800,7 @@ describe("versions", () => {
 
     const ver = parse(bump).id as string;
     // A version of another project cannot be reached through this project.
-    const project2 = await mkProject(h, member.cookie, org.id, "other-game");
+    const project2 = await mkProject(h, member.cookie, team.id, "other-game");
     expect(
       (
         await h.app(
@@ -804,7 +816,7 @@ describe("versions", () => {
       id: "ca_here",
       name: "here",
       path: "here",
-      orgId: org.id,
+      teamId: team.id,
       projectId: project.id,
       createdAt: NOW_SEC,
     });
@@ -820,7 +832,7 @@ describe("versions", () => {
       id: "ca_there",
       name: "there",
       path: "there",
-      orgId: org.id,
+      teamId: team.id,
       projectId: project2.id,
       createdAt: NOW_SEC,
     });
@@ -835,7 +847,7 @@ describe("versions", () => {
     await h.assets.insertBundle({
       id: "ab_maps",
       name: "maps",
-      orgId: org.id,
+      teamId: team.id,
       projectId: project.id,
       createdAt: NOW_SEC,
     });
@@ -927,14 +939,14 @@ describe("versions", () => {
         )
       ).statusCode,
     ).toBe(204);
-    expect(h.org.links.size).toBe(0);
+    expect(h.teamDb.links.size).toBe(0);
   });
 });
 
 describe("issues and discussions", () => {
   it("numbers per project, links a version of the same project, closes and reopens, comments", async () => {
     const h = ticking();
-    const { owner, member, org, project } = await team(h);
+    const { owner, member, team, project } = await seedTeam(h);
     const p = `/projects/${project.id}`;
     const v = parse(
       await h.app(
@@ -973,7 +985,7 @@ describe("issues and discussions", () => {
     );
     expect(parse(i2).number).toBe(2);
     // Another project starts at 1 again.
-    const project2 = await mkProject(h, member.cookie, org.id, "p2");
+    const project2 = await mkProject(h, member.cookie, team.id, "p2");
     h.clock.tick(1);
     const j1 = await h.app(
       ev("POST", `/projects/${project2.id}/issues`, {
@@ -1089,8 +1101,8 @@ describe("issues and discussions", () => {
 
   it("discussions: members write, author edits, author or owner deletes, admin reads only", async () => {
     const h = ticking();
-    const { owner, member, admin, org } = await team(h);
-    const d = `/orgs/${org.id}/discussions`;
+    const { owner, member, admin, team } = await seedTeam(h);
+    const d = `/teams/${team.id}/discussions`;
     const create = await h.app(
       ev("POST", d, {
         body: { title: "plan", bodyMd: "# md" },
@@ -1152,13 +1164,13 @@ describe("issues and discussions", () => {
       (await h.app(ev("DELETE", `${d}/${id}`, { headers: owner.cookie })))
         .statusCode,
     ).toBe(204);
-    expect(h.org.discussionComments.size).toBe(0);
+    expect(h.teamDb.discussionComments.size).toBe(0);
   });
 
   it("rate-limits markdown writes per member (2/s) and caps body sizes", async () => {
     const h = ticking();
-    const { member, org } = await team(h);
-    const d = `/orgs/${org.id}/discussions`;
+    const { member, team } = await seedTeam(h);
+    const d = `/teams/${team.id}/discussions`;
     const body = (t: string) => ({
       body: { title: t },
       headers: member.cookie,
@@ -1183,16 +1195,16 @@ describe("issues and discussions", () => {
 describe("review follow-ups", () => {
   it("withdrawing a pending request keeps the cooldown, and bump needs a semver", async () => {
     const h = ticking();
-    const { owner, other, org, project } = await team(h);
+    const { owner, other, team, project } = await seedTeam(h);
     const join = await h.app(
-      ev("POST", "/orgs/join", {
+      ev("POST", "/teams/join", {
         body: { name: "acme" },
         headers: other.cookie,
       }),
     );
     expect(join.statusCode).toBe(202);
     const withdraw = await h.app(
-      ev("DELETE", `/orgs/${org.id}/members/${other.id}`, {
+      ev("DELETE", `/teams/${team.id}/members/${other.id}`, {
         headers: other.cookie,
       }),
     );
@@ -1201,7 +1213,7 @@ describe("review follow-ups", () => {
     expect(
       (
         await h.app(
-          ev("POST", "/orgs/join", {
+          ev("POST", "/teams/join", {
             body: { name: "acme" },
             headers: other.cookie,
           }),
@@ -1227,12 +1239,12 @@ describe("review follow-ups", () => {
 
   it("history pages through cursor and clamps limit", async () => {
     const h = ticking();
-    const { owner, org } = await team(h);
+    const { owner, team } = await seedTeam(h);
     for (const n of ["a", "b", "c"])
-      await mkProject(h, owner.cookie, org.id, n);
+      await mkProject(h, owner.cookie, team.id, n);
     const p1 = parse(
       await h.app(
-        ev("GET", `/orgs/${org.id}/history`, {
+        ev("GET", `/teams/${team.id}/history`, {
           query: { limit: "2" },
           headers: owner.cookie,
         }),
@@ -1242,13 +1254,13 @@ describe("review follow-ups", () => {
     expect(p1.next).toEqual(expect.any(String));
     const p2 = parse(
       await h.app(
-        ev("GET", `/orgs/${org.id}/history`, {
+        ev("GET", `/teams/${team.id}/history`, {
           query: { limit: "100", cursor: p1.next as string },
           headers: owner.cookie,
         }),
       ),
     );
-    // org.create, member.add, 4 × project.create = 6 rows in total.
+    // team.create, member.add, 4 × project.create = 6 rows in total.
     expect(p2.history).toHaveLength(4);
     expect(p2.next).toBeNull();
     const ids = new Set([...p1.history, ...p2.history].map((x: Json) => x.id));
@@ -1256,7 +1268,7 @@ describe("review follow-ups", () => {
     expect(
       (
         await h.app(
-          ev("GET", `/orgs/${org.id}/history`, {
+          ev("GET", `/teams/${team.id}/history`, {
             query: { limit: "999" },
             headers: owner.cookie,
           }),
@@ -1269,12 +1281,12 @@ describe("review follow-ups", () => {
 describe("review follow-ups (correctness)", () => {
   it("a soft-deleted channel still blocks project delete (FK RESTRICT), admin may delete projects, leave works", async () => {
     const h = ticking();
-    const { owner, member, admin, org, project } = await team(h);
+    const { owner, member, admin, team, project } = await seedTeam(h);
     await h.db.insertChannel({
       id: "auth_00000009",
       kind: "auth",
       ownerId: owner.id,
-      orgId: org.id,
+      teamId: team.id,
       projectId: project.id,
       name: "gone",
       config: {},
@@ -1296,14 +1308,14 @@ describe("review follow-ups (correctness)", () => {
     h.db.channels.delete("auth_00000009");
     // Member leaves: 200 with rotation hints, then locked out.
     const leave = await h.app(
-      ev("DELETE", `/orgs/${org.id}/members/${member.id}`, {
+      ev("DELETE", `/teams/${team.id}/members/${member.id}`, {
         headers: member.cookie,
       }),
     );
     expect(leave.statusCode).toBe(200);
     expect(parse(leave)).toMatchObject({ action: "leave", rotate: [] });
     expect(
-      (await h.app(ev("GET", `/orgs/${org.id}`, { headers: member.cookie })))
+      (await h.app(ev("GET", `/teams/${team.id}`, { headers: member.cookie })))
         .statusCode,
     ).toBe(404);
     expect(
@@ -1317,25 +1329,25 @@ describe("review follow-ups (correctness)", () => {
 
   it("a pending requester does not block admin-lock", async () => {
     const h = ticking();
-    const { admin, other } = await team(h);
-    const platform = await mkOrg(h, admin.cookie, "platform");
+    const { admin, other } = await seedTeam(h);
+    const platform = await mkTeam(h, admin.cookie, "platform");
     const join = await h.app(
-      ev("POST", "/orgs/join", {
+      ev("POST", "/teams/join", {
         body: { name: "platform" },
         headers: other.cookie,
       }),
     );
     expect(join.statusCode).toBe(202);
     const lock = await h.app(
-      ev("PUT", `/orgs/${platform.id}/admin-lock`, {
+      ev("PUT", `/teams/${platform.id}/admin-lock`, {
         body: { locked: true },
         headers: admin.cookie,
       }),
     );
     expect(lock.statusCode, lock.body).toBe(200);
-    // …and cannot be approved into the locked org afterwards.
+    // …and cannot be approved into the locked team afterwards.
     const approve = await h.app(
-      ev("PATCH", `/orgs/${platform.id}/members/${other.id}`, {
+      ev("PATCH", `/teams/${platform.id}/members/${other.id}`, {
         body: { role: "member" },
         headers: admin.cookie,
       }),

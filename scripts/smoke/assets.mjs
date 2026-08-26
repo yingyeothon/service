@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Smoke test for the console asset resource on dev: debug login → org/project →
+// Smoke test for the console asset resource on dev: debug login → team/project →
 // bundle CRUD → presigned upload with a signed Content-Type → commit under an
 // id-based key → CDN fetch (type + immutable cache header) → write-once refusal
 // → rename with files → version/bundle delete.
 // Usage: scripts/smoke/assets.mjs <baseUrl> <debugKey>
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens.
-import { ensureTeam } from "./_org.mjs";
+import { ensureTeam } from "./_team.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
@@ -97,7 +97,7 @@ try {
   check(
     "view carries breadcrumbs",
     created.body?.projectId === team.prjId &&
-      created.body?.orgName === "smoke-assets",
+      created.body?.teamName === "smoke-assets",
     created.text.slice(0, 200),
   );
   check(
@@ -111,9 +111,9 @@ try {
     ).status === 409,
   );
 
-  // Org membership is the permission: another org gets 404, admins read only.
+  // Team membership is the permission: another team gets 404, admins read only.
   check(
-    "another org cannot read the bundle",
+    "another team cannot read the bundle",
     (await call(`/assets/bundles/${bundleId}`, { headers: as(other) }))
       .status === 404,
   );

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ensureTeam } from "./_org.mjs";
+import { ensureTeam } from "./_team.mjs";
 // Smoke test for the state stack on dev: create an auth channel (console debug
 // login) → issue its doc key → write, read and delete documents with enforced
 // compare-and-set → check that a player's token reads only its own row and

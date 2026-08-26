@@ -14,11 +14,11 @@ import type {
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { channelStatus } from "./channels.js";
 import type { ConsoleIdentity } from "./identity.js";
-import type { OrgAccessHelpers } from "./org-access.js";
+import type { TeamAccessHelpers } from "./team-access.js";
 import type { ResourceHistory } from "./resources.js";
 
 export interface ChannelDocKeyRoutesOptions {
-  access: Pick<OrgAccessHelpers, "projectResource">;
+  access: Pick<TeamAccessHelpers, "projectResource">;
   db: ConsoleDb;
   /** Only for the document count shown next to the key; `undefined` omits it. */
   state?: StateDb;
@@ -73,7 +73,7 @@ export function createChannelDocKeyRoutes({
   history,
 }: ChannelDocKeyRoutesOptions): AnyRoute[] {
   /**
-   * `auth` only, and only an org member may mint (an admin without a
+   * `auth` only, and only an team member may mint (an admin without a
    * membership may look, like every other secret-shaped surface). A channel
    * of another kind is 404 rather than 400, so this cannot be used to probe
    * which ids exist.
@@ -93,7 +93,7 @@ export function createChannelDocKeyRoutes({
   }
   const keyHistory = (row: ChannelRow, actorId: string, what: string) =>
     history(
-      row.orgId,
+      row.teamId,
       actorId,
       "resource.credential",
       row.id,

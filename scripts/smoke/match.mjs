@@ -4,7 +4,7 @@
 // `matched` on both with the debug callback sink's echo.
 // Usage: scripts/smoke/match.mjs <wssUrl> <debugHttpUrl> <debugKey> <authBaseUrl> <consoleBaseUrl> [--slow]
 // All three stacks must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
-import { ensureTeam } from "./_org.mjs";
+import { ensureTeam } from "./_team.mjs";
 
 const [wss, debugHttp, debugKey, authBase, consoleBase, flag] =
   process.argv.slice(2);

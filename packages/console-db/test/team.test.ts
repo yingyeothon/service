@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  createMemoryOrgDb,
+  createMemoryTeamDb,
   decodeHistoryCursor,
   encodeHistoryCursor,
   HISTORY_PAGE_MAX,
   versionLinkTarget,
-  type OrgDb,
+  type TeamDb,
 } from "../src/index.js";
 
 /** Members seeded by `resetTestDb` and the memory fake alike. */
@@ -14,13 +14,13 @@ const M2 = "m2";
 const M3 = "m3";
 const by = (actorId: string, at: number) => ({ actorId, at });
 
-async function seedOrg(db: OrgDb, id = "org_1", name = "Acme") {
-  await db.createOrg({ id, name, createdBy: M1, createdAt: 10 }, 10);
+async function seedTeam(db: TeamDb, id = "team_1", name = "Acme") {
+  await db.createTeam({ id, name, createdBy: M1, createdAt: 10 }, 10);
   return id;
 }
 
-async function seedProject(db: OrgDb, orgId: string, id = "prj_1") {
-  await db.createProject({ id, orgId, name: "game" }, by(M1, 20));
+async function seedProject(db: TeamDb, teamId: string, id = "prj_1") {
+  await db.createProject({ id, teamId, name: "game" }, by(M1, 20));
   return id;
 }
 
@@ -29,18 +29,18 @@ async function seedProject(db: OrgDb, orgId: string, id = "prj_1") {
  * a fresh repository whose `members` table holds m1/m2/m3/m9 (and, for the
  * real one, whose resource tables are empty).
  */
-export function orgContract(
-  make: () => OrgDb | Promise<OrgDb>,
+export function teamContract(
+  make: () => TeamDb | Promise<TeamDb>,
   seed: { bundle: (id: string) => Promise<void> } = {
     bundle: async () => undefined,
   },
 ) {
-  describe("organizations", () => {
-    it("creates the org, seats the creator as owner and records it", async () => {
+  describe("teams", () => {
+    it("creates the team, seats the creator as owner and records it", async () => {
       const db = await make();
-      await seedOrg(db);
-      expect(await db.findOrg("org_1")).toMatchObject({
-        id: "org_1",
+      await seedTeam(db);
+      expect(await db.findTeam("team_1")).toMatchObject({
+        id: "team_1",
         name: "Acme",
         description: null,
         adminLocked: false,
@@ -48,20 +48,20 @@ export function orgContract(
         createdAt: 10,
         updatedAt: 10,
       });
-      expect(await db.findOrgMember("org_1", M1)).toMatchObject({
+      expect(await db.findTeamMember("team_1", M1)).toMatchObject({
         role: "owner",
         state: "active",
         decidedBy: M1,
       });
-      expect(await db.listOrgsForMember(M1)).toMatchObject([
-        { id: "org_1", role: "owner", state: "active" },
+      expect(await db.listTeamsForMember(M1)).toMatchObject([
+        { id: "team_1", role: "owner", state: "active" },
       ]);
-      expect(await db.listOrgsForMember(M2)).toEqual([]);
-      expect(await db.countOrgsCreatedBy(M1)).toBe(1);
-      const h = await db.listHistory("org_1");
+      expect(await db.listTeamsForMember(M2)).toEqual([]);
+      expect(await db.countTeamsCreatedBy(M1)).toBe(1);
+      const h = await db.listHistory("team_1");
       expect(h.rows).toMatchObject([
         {
-          action: "org.create",
+          action: "team.create",
           actorId: M1,
           subjectMemberId: M1,
           detail: { name: "Acme" },
@@ -72,145 +72,149 @@ export function orgContract(
 
     it("names are unique case-insensitively, ids are unique, creator must exist", async () => {
       const db = await make();
-      await seedOrg(db);
+      await seedTeam(db);
       await expect(
-        db.createOrg(
-          { id: "org_2", name: "acme", createdBy: M2, createdAt: 11 },
+        db.createTeam(
+          { id: "team_2", name: "acme", createdBy: M2, createdAt: 11 },
           11,
         ),
       ).rejects.toMatchObject({ code: "conflict" });
       await expect(
-        db.createOrg(
-          { id: "org_1", name: "Other", createdBy: M2, createdAt: 11 },
+        db.createTeam(
+          { id: "team_1", name: "Other", createdBy: M2, createdAt: 11 },
           11,
         ),
       ).rejects.toMatchObject({ code: "conflict" });
       await expect(
-        db.createOrg(
-          { id: "org_3", name: "Ghost", createdBy: "ghost", createdAt: 11 },
+        db.createTeam(
+          { id: "team_3", name: "Ghost", createdBy: "ghost", createdAt: 11 },
           11,
         ),
       ).rejects.toMatchObject({ code: "unavailable" });
-      // A failed create leaves nothing behind: no org, no seat, no history.
-      expect(await db.findOrg("org_2")).toBeUndefined();
-      expect(await db.listOrgsForMember(M2)).toEqual([]);
-      expect(await db.findOrgByName("ACME")).toMatchObject({ id: "org_1" });
-      expect(await db.listAllOrgs()).toMatchObject([{ id: "org_1" }]);
+      // A failed create leaves nothing behind: no team, no seat, no history.
+      expect(await db.findTeam("team_2")).toBeUndefined();
+      expect(await db.listTeamsForMember(M2)).toEqual([]);
+      expect(await db.findTeamByName("ACME")).toMatchObject({ id: "team_1" });
+      expect(await db.listAllTeams()).toMatchObject([{ id: "team_1" }]);
     });
 
     it("updates fields, records the field names only, and refuses a taken name", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedOrg(db, "org_2", "Beta");
+      await seedTeam(db);
+      await seedTeam(db, "team_2", "Beta");
       expect(
-        await db.updateOrg("org_1", { description: "# hi" }, by(M1, 30)),
+        await db.updateTeam("team_1", { description: "# hi" }, by(M1, 30)),
       ).toBe(true);
-      expect(await db.setAdminLocked("org_1", true, by(M1, 30))).toBe(true);
+      expect(await db.setAdminLocked("team_1", true, by(M1, 30))).toBe(true);
       expect(await db.setAdminLocked("nope", true, by(M1, 30))).toBe(false);
-      expect(await db.findOrg("org_1")).toMatchObject({
+      expect(await db.findTeam("team_1")).toMatchObject({
         description: "# hi",
         adminLocked: true,
         updatedAt: 30,
       });
       await expect(
-        db.updateOrg("org_1", { name: "beta" }, by(M1, 31)),
+        db.updateTeam("team_1", { name: "beta" }, by(M1, 31)),
       ).rejects.toMatchObject({ code: "conflict" });
-      expect(await db.updateOrg("nope", { name: "x" }, by(M1, 32))).toBe(false);
-      const h = await db.listHistory("org_1");
+      expect(await db.updateTeam("nope", { name: "x" }, by(M1, 32))).toBe(
+        false,
+      );
+      const h = await db.listHistory("team_1");
       expect(h.rows[0]).toMatchObject({
-        action: "org.update",
+        action: "team.update",
         detail: { fields: ["adminLocked"] },
       });
       expect(h.rows[1]).toMatchObject({ detail: { fields: ["description"] } });
       // The refused rename recorded nothing.
-      expect(h.rows.filter((r) => r.action === "org.update")).toHaveLength(2);
+      expect(h.rows.filter((r) => r.action === "team.update")).toHaveLength(2);
     });
 
-    it("deletes an org without projects, cascading members and history", async () => {
+    it("deletes an team without projects, cascading members and history", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedProject(db, "org_1");
-      await expect(db.deleteOrg("org_1", by(M1, 39))).rejects.toMatchObject({
+      await seedTeam(db);
+      await seedProject(db, "team_1");
+      await expect(db.deleteTeam("team_1", by(M1, 39))).rejects.toMatchObject({
         code: "conflict",
       });
       expect(await db.deleteProject("prj_1", by(M1, 40))).toBe(true);
-      expect(await db.deleteOrg("org_1", by(M1, 41))).toBe(true);
-      expect(await db.findOrg("org_1")).toBeUndefined();
-      expect(await db.listOrgsForMember(M1)).toEqual([]);
-      expect((await db.listHistory("org_1")).rows).toEqual([]);
-      expect(await db.deleteOrg("org_1", by(M1, 42))).toBe(false);
+      expect(await db.deleteTeam("team_1", by(M1, 41))).toBe(true);
+      expect(await db.findTeam("team_1")).toBeUndefined();
+      expect(await db.listTeamsForMember(M1)).toEqual([]);
+      expect((await db.listHistory("team_1")).rows).toEqual([]);
+      expect(await db.deleteTeam("team_1", by(M1, 42))).toBe(false);
     });
   });
 
   describe("members", () => {
     it("join → pending, approve → member, and the seat sorts after owners", async () => {
       const db = await make();
-      await seedOrg(db);
-      await db.requestJoin("org_1", M2, 50, 3600);
-      expect(await db.findOrgMember("org_1", M2)).toMatchObject({
+      await seedTeam(db);
+      await db.requestJoin("team_1", M2, 50, 3600);
+      expect(await db.findTeamMember("team_1", M2)).toMatchObject({
         role: "pending",
         state: "active",
         requestedAt: 50,
         decidedAt: null,
       });
-      expect(await db.countActive("org_1")).toEqual({
+      expect(await db.countActive("team_1")).toEqual({
         owners: 1,
         members: 0,
         pending: 1,
       });
-      await expect(db.requestJoin("org_1", M2, 51, 3600)).rejects.toMatchObject(
-        {
-          code: "conflict",
-        },
-      );
-      expect(await db.approveMember("org_1", M2, "member", by(M1, 60))).toBe(
+      await expect(
+        db.requestJoin("team_1", M2, 51, 3600),
+      ).rejects.toMatchObject({
+        code: "conflict",
+      });
+      expect(await db.approveMember("team_1", M2, "member", by(M1, 60))).toBe(
         true,
       );
-      expect(await db.approveMember("org_1", M2, "member", by(M1, 61))).toBe(
+      expect(await db.approveMember("team_1", M2, "member", by(M1, 61))).toBe(
         false,
       );
-      expect(await db.findOrgMember("org_1", M2)).toMatchObject({
+      expect(await db.findTeamMember("team_1", M2)).toMatchObject({
         role: "member",
         decidedAt: 60,
         decidedBy: M1,
       });
-      expect((await db.listOrgMembers("org_1")).map((m) => m.memberId)).toEqual(
-        [M1, M2],
-      );
-      expect(await db.listOrgsForMember(M2)).toMatchObject([
-        { id: "org_1", role: "member" },
+      expect(
+        (await db.listTeamMembers("team_1")).map((m) => m.memberId),
+      ).toEqual([M1, M2]);
+      expect(await db.listTeamsForMember(M2)).toMatchObject([
+        { id: "team_1", role: "member" },
       ]);
-      const actions = (await db.listHistory("org_1")).rows.map((r) => r.action);
+      const actions = (await db.listHistory("team_1")).rows.map(
+        (r) => r.action,
+      );
       expect(actions).toEqual([
         "member.approve",
         "member.request",
-        "org.create",
+        "team.create",
       ]);
     });
 
     it("decline keeps the row for a cooldown, after which a new request works", async () => {
       const db = await make();
-      await seedOrg(db);
-      await db.requestJoin("org_1", M2, 50, 100);
-      expect(await db.declineMember("org_1", M2, by(M1, 60))).toBe(true);
-      expect(await db.declineMember("org_1", M2, by(M1, 61))).toBe(false);
-      expect(await db.findOrgMember("org_1", M2)).toMatchObject({
+      await seedTeam(db);
+      await db.requestJoin("team_1", M2, 50, 100);
+      expect(await db.declineMember("team_1", M2, by(M1, 60))).toBe(true);
+      expect(await db.declineMember("team_1", M2, by(M1, 61))).toBe(false);
+      expect(await db.findTeamMember("team_1", M2)).toMatchObject({
         state: "declined",
       });
-      // Declined rows are not part of the org.
-      expect(await db.countActive("org_1")).toEqual({
+      // Declined rows are not part of the team.
+      expect(await db.countActive("team_1")).toEqual({
         owners: 1,
         members: 0,
         pending: 0,
       });
-      await expect(db.requestJoin("org_1", M2, 100, 100)).rejects.toMatchObject(
-        {
-          code: "rate_limited",
-          details: { retryAt: 160 },
-        },
-      );
-      await db.requestJoin("org_1", M2, 160, 100);
-      expect(await db.findOrgMember("org_1", M2)).toMatchObject({
+      await expect(
+        db.requestJoin("team_1", M2, 100, 100),
+      ).rejects.toMatchObject({
+        code: "rate_limited",
+        details: { retryAt: 160 },
+      });
+      await db.requestJoin("team_1", M2, 160, 100);
+      expect(await db.findTeamMember("team_1", M2)).toMatchObject({
         role: "pending",
         state: "active",
         requestedAt: 160,
@@ -219,19 +223,19 @@ export function orgContract(
       });
     });
 
-    it("join refuses an unknown org and an unknown member", async () => {
+    it("join refuses an unknown team and an unknown member", async () => {
       const db = await make();
-      await seedOrg(db);
+      await seedTeam(db);
       await expect(db.requestJoin("nope", M2, 1, 1)).rejects.toMatchObject({
         code: "not_found",
       });
       await expect(
-        db.requestJoin("org_1", "ghost", 1, 1),
+        db.requestJoin("team_1", "ghost", 1, 1),
       ).rejects.toMatchObject({
         code: "unavailable",
       });
       await expect(
-        db.addMember("org_1", "ghost", "member", by(M1, 1)),
+        db.addMember("team_1", "ghost", "member", by(M1, 1)),
       ).rejects.toMatchObject({
         code: "unavailable",
       });
@@ -239,45 +243,45 @@ export function orgContract(
 
     it("owner adds directly, also over a declined/kicked row, never over an active one", async () => {
       const db = await make();
-      await seedOrg(db);
-      await db.addMember("org_1", M2, "owner", by(M1, 70));
-      expect(await db.findOrgMember("org_1", M2)).toMatchObject({
+      await seedTeam(db);
+      await db.addMember("team_1", M2, "owner", by(M1, 70));
+      expect(await db.findTeamMember("team_1", M2)).toMatchObject({
         role: "owner",
         state: "active",
         requestedAt: 70,
         decidedBy: M1,
       });
       await expect(
-        db.addMember("org_1", M2, "member", by(M1, 71)),
+        db.addMember("team_1", M2, "member", by(M1, 71)),
       ).rejects.toMatchObject({
         code: "conflict",
       });
-      await db.requestJoin("org_1", M3, 72, 0);
-      await db.declineMember("org_1", M3, by(M1, 73));
-      await db.addMember("org_1", M3, "member", by(M1, 74));
-      expect(await db.findOrgMember("org_1", M3)).toMatchObject({
+      await db.requestJoin("team_1", M3, 72, 0);
+      await db.declineMember("team_1", M3, by(M1, 73));
+      await db.addMember("team_1", M3, "member", by(M1, 74));
+      expect(await db.findTeamMember("team_1", M3)).toMatchObject({
         role: "member",
         state: "active",
       });
-      expect(await db.countActive("org_1")).toEqual({
+      expect(await db.countActive("team_1")).toEqual({
         owners: 2,
         members: 1,
         pending: 0,
       });
-      expect((await db.listHistory("org_1")).rows[0]).toMatchObject({
+      expect((await db.listHistory("team_1")).rows[0]).toMatchObject({
         action: "member.add",
         subjectMemberId: M3,
         detail: { role: "member" },
       });
       // Adding someone who already asked to join approves the request.
-      await db.requestJoin("org_1", "m9", 75, 0);
-      await db.addMember("org_1", "m9", "member", by(M1, 76));
-      expect(await db.findOrgMember("org_1", "m9")).toMatchObject({
+      await db.requestJoin("team_1", "m9", 75, 0);
+      await db.addMember("team_1", "m9", "member", by(M1, 76));
+      expect(await db.findTeamMember("team_1", "m9")).toMatchObject({
         role: "member",
         state: "active",
         decidedBy: M1,
       });
-      expect((await db.listHistory("org_1")).rows[0]).toMatchObject({
+      expect((await db.listHistory("team_1")).rows[0]).toMatchObject({
         action: "member.approve",
         subjectMemberId: "m9",
       });
@@ -285,41 +289,43 @@ export function orgContract(
 
     it("promotes and demotes, but never the last owner", async () => {
       const db = await make();
-      await seedOrg(db);
+      await seedTeam(db);
       await expect(
-        db.setMemberRole("org_1", M1, "member", by(M1, 80)),
+        db.setMemberRole("team_1", M1, "member", by(M1, 80)),
       ).rejects.toMatchObject({
         code: "conflict",
       });
-      await db.addMember("org_1", M2, "member", by(M1, 81));
-      expect(await db.setMemberRole("org_1", M2, "owner", by(M1, 82))).toBe(
+      await db.addMember("team_1", M2, "member", by(M1, 81));
+      expect(await db.setMemberRole("team_1", M2, "owner", by(M1, 82))).toBe(
         true,
       );
-      expect(await db.setMemberRole("org_1", M1, "member", by(M2, 83))).toBe(
+      expect(await db.setMemberRole("team_1", M1, "member", by(M2, 83))).toBe(
         true,
       );
-      expect(await db.findOrgMember("org_1", M1)).toMatchObject({
+      expect(await db.findTeamMember("team_1", M1)).toMatchObject({
         role: "member",
         decidedBy: M2,
       });
       // Same role again is a no-op success, and records nothing new.
-      const before = (await db.listHistory("org_1")).rows.length;
-      expect(await db.setMemberRole("org_1", M1, "member", by(M2, 84))).toBe(
+      const before = (await db.listHistory("team_1")).rows.length;
+      expect(await db.setMemberRole("team_1", M1, "member", by(M2, 84))).toBe(
         true,
       );
-      expect((await db.listHistory("org_1")).rows.length).toBe(before);
+      expect((await db.listHistory("team_1")).rows.length).toBe(before);
       // Pending and missing rows cannot be role-changed.
-      await db.requestJoin("org_1", M3, 85, 0);
-      expect(await db.setMemberRole("org_1", M3, "member", by(M2, 86))).toBe(
+      await db.requestJoin("team_1", M3, 85, 0);
+      expect(await db.setMemberRole("team_1", M3, "member", by(M2, 86))).toBe(
         false,
       );
-      expect(await db.setMemberRole("org_1", "m9", "member", by(M2, 86))).toBe(
+      expect(await db.setMemberRole("team_1", "m9", "member", by(M2, 86))).toBe(
         false,
       );
       expect(await db.setMemberRole("nope", M1, "member", by(M2, 86))).toBe(
         false,
       );
-      const actions = (await db.listHistory("org_1")).rows.map((r) => r.action);
+      const actions = (await db.listHistory("team_1")).rows.map(
+        (r) => r.action,
+      );
       expect(actions.slice(0, 4)).toEqual([
         "member.request",
         "member.demote",
@@ -330,26 +336,26 @@ export function orgContract(
 
     it("kick keeps a cooldown row, leave deletes the row, last owner cannot go", async () => {
       const db = await make();
-      await seedOrg(db);
+      await seedTeam(db);
       await expect(
-        db.removeMember("org_1", M1, by(M1, 90)),
+        db.removeMember("team_1", M1, by(M1, 90)),
       ).rejects.toMatchObject({
         code: "conflict",
       });
-      await db.addMember("org_1", M2, "member", by(M1, 91));
-      await db.addMember("org_1", M3, "member", by(M1, 92));
-      expect(await db.removeMember("org_1", M2, by(M1, 93))).toBe(true);
-      expect(await db.findOrgMember("org_1", M2)).toMatchObject({
+      await db.addMember("team_1", M2, "member", by(M1, 91));
+      await db.addMember("team_1", M3, "member", by(M1, 92));
+      expect(await db.removeMember("team_1", M2, by(M1, 93))).toBe(true);
+      expect(await db.findTeamMember("team_1", M2)).toMatchObject({
         state: "kicked",
         role: "member",
         decidedBy: M1,
         decidedAt: 93,
       });
-      expect(await db.removeMember("org_1", M2, by(M1, 94))).toBe(false);
-      expect(await db.removeMember("org_1", M3, by(M3, 95))).toBe(true);
-      expect(await db.findOrgMember("org_1", M3)).toBeUndefined();
-      expect(await db.removeMember("org_1", "m9", by(M1, 96))).toBe(false);
-      const rows = (await db.listHistory("org_1")).rows;
+      expect(await db.removeMember("team_1", M2, by(M1, 94))).toBe(false);
+      expect(await db.removeMember("team_1", M3, by(M3, 95))).toBe(true);
+      expect(await db.findTeamMember("team_1", M3)).toBeUndefined();
+      expect(await db.removeMember("team_1", "m9", by(M1, 96))).toBe(false);
+      const rows = (await db.listHistory("team_1")).rows;
       expect(rows[0]).toMatchObject({
         action: "member.leave",
         actorId: M3,
@@ -362,28 +368,30 @@ export function orgContract(
         detail: { role: "member" },
       });
       // Kicked rows wait out the cooldown like declined ones.
-      await expect(db.requestJoin("org_1", M2, 100, 50)).rejects.toMatchObject({
-        code: "rate_limited",
-      });
-      await db.requestJoin("org_1", M2, 143, 50);
+      await expect(db.requestJoin("team_1", M2, 100, 50)).rejects.toMatchObject(
+        {
+          code: "rate_limited",
+        },
+      );
+      await db.requestJoin("team_1", M2, 143, 50);
     });
   });
 
   describe("history", () => {
     it("pages newest-first through a stable (at, id) cursor", async () => {
       const db = await make();
-      await seedOrg(db);
+      await seedTeam(db);
       // Ten entries at the same second, plus the creation before them.
       for (let i = 0; i < 10; i++)
         await db.appendHistory({
           id: `h_x${String(i).padStart(2, "0")}`,
-          orgId: "org_1",
+          teamId: "team_1",
           at: 100,
           actorId: null,
           action: "resource.create",
           target: `ch_${i}`,
         });
-      const p1 = await db.listHistory("org_1", { limit: 4 });
+      const p1 = await db.listHistory("team_1", { limit: 4 });
       expect(p1.rows.map((r) => r.target)).toEqual([
         "ch_9",
         "ch_8",
@@ -391,22 +399,22 @@ export function orgContract(
         "ch_6",
       ]);
       expect(p1.next).toBe(encodeHistoryCursor({ at: 100, id: "h_x06" }));
-      const p2 = await db.listHistory("org_1", { limit: 4, cursor: p1.next });
+      const p2 = await db.listHistory("team_1", { limit: 4, cursor: p1.next });
       expect(p2.rows.map((r) => r.target)).toEqual([
         "ch_5",
         "ch_4",
         "ch_3",
         "ch_2",
       ]);
-      const p3 = await db.listHistory("org_1", { limit: 4, cursor: p2.next });
+      const p3 = await db.listHistory("team_1", { limit: 4, cursor: p2.next });
       expect(p3.rows.map((r) => r.target ?? r.action)).toEqual([
         "ch_1",
         "ch_0",
-        "org.create",
+        "team.create",
       ]);
       expect(p3.next).toBeUndefined();
       await expect(
-        db.listHistory("org_1", { cursor: "junk" }),
+        db.listHistory("team_1", { cursor: "junk" }),
       ).rejects.toMatchObject({
         code: "bad_request",
       });
@@ -414,21 +422,21 @@ export function orgContract(
       expect(decodeHistoryCursor("x:abc")).toBeUndefined();
       expect(decodeHistoryCursor("12:")).toBeUndefined();
       // Limit is clamped, never trusted.
-      const all = await db.listHistory("org_1", {
+      const all = await db.listHistory("team_1", {
         limit: HISTORY_PAGE_MAX * 10,
       });
       expect(all.rows).toHaveLength(11);
-      const one = await db.listHistory("org_1", { limit: 0 });
+      const one = await db.listHistory("team_1", { limit: 0 });
       expect(one.rows).toHaveLength(1);
     });
 
-    it("appendHistory needs an existing org, unique ids, and round-trips detail", async () => {
+    it("appendHistory needs an existing team, unique ids, and round-trips detail", async () => {
       const db = await make();
-      await seedOrg(db);
+      await seedTeam(db);
       await expect(
         db.appendHistory({
           id: "h_a",
-          orgId: "nope",
+          teamId: "nope",
           at: 1,
           actorId: null,
           action: "resource.create",
@@ -438,7 +446,7 @@ export function orgContract(
       });
       await db.appendHistory({
         id: "h_a",
-        orgId: "org_1",
+        teamId: "team_1",
         at: 1,
         actorId: M1,
         action: "resource.rotate",
@@ -448,65 +456,68 @@ export function orgContract(
       await expect(
         db.appendHistory({
           id: "h_a",
-          orgId: "org_1",
+          teamId: "team_1",
           at: 2,
           actorId: null,
           action: "resource.delete",
         }),
       ).rejects.toMatchObject({ code: "conflict" });
-      const rows = (await db.listHistory("org_1")).rows;
+      const rows = (await db.listHistory("team_1")).rows;
       expect(rows.find((r) => r.id === "h_a")).toMatchObject({
         actorId: M1,
         target: "ch_1",
         detail: { fields: ["secret"] },
       });
-      expect(rows.find((r) => r.action === "org.create")?.detail).toEqual({
+      expect(rows.find((r) => r.action === "team.create")?.detail).toEqual({
         name: "Acme",
       });
     });
   });
 
   describe("projects", () => {
-    it("creates, lists, renames within org-unique ci names, and records", async () => {
+    it("creates, lists, renames within team-unique ci names, and records", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedOrg(db, "org_2", "Beta");
-      await seedProject(db, "org_1");
+      await seedTeam(db);
+      await seedTeam(db, "team_2", "Beta");
+      await seedProject(db, "team_1");
       await expect(
         db.createProject(
-          { id: "prj_2", orgId: "org_1", name: "GAME" },
+          { id: "prj_2", teamId: "team_1", name: "GAME" },
           by(M1, 21),
         ),
       ).rejects.toMatchObject({ code: "conflict" });
-      // Same name in another org is fine.
+      // Same name in another team is fine.
       await db.createProject(
-        { id: "prj_3", orgId: "org_2", name: "game" },
+        { id: "prj_3", teamId: "team_2", name: "game" },
         by(M1, 22),
       );
       await db.createProject(
-        { id: "prj_4", orgId: "org_1", name: "tools" },
+        { id: "prj_4", teamId: "team_1", name: "tools" },
         by(M1, 23),
       );
       await expect(
-        db.createProject({ id: "prj_9", orgId: "nope", name: "x" }, by(M1, 24)),
+        db.createProject(
+          { id: "prj_9", teamId: "nope", name: "x" },
+          by(M1, 24),
+        ),
       ).rejects.toMatchObject({
         code: "unavailable",
       });
-      expect((await db.listProjects("org_1")).map((p) => p.id)).toEqual([
+      expect((await db.listProjects("team_1")).map((p) => p.id)).toEqual([
         "prj_1",
         "prj_4",
       ]);
-      expect(await db.countProjects("org_1")).toBe(2);
+      expect(await db.countProjects("team_1")).toBe(2);
       expect(await db.findProject("prj_1")).toMatchObject({
-        orgId: "org_1",
+        teamId: "team_1",
         name: "game",
         createdBy: M1,
         createdAt: 20,
       });
-      expect(await db.findProjectByName("org_1", "Game")).toMatchObject({
+      expect(await db.findProjectByName("team_1", "Game")).toMatchObject({
         id: "prj_1",
       });
-      expect(await db.findProjectByName("org_2", "tools")).toBeUndefined();
+      expect(await db.findProjectByName("team_2", "tools")).toBeUndefined();
       await expect(
         db.updateProject("prj_4", { name: "game" }, by(M1, 25)),
       ).rejects.toMatchObject({ code: "conflict" });
@@ -525,7 +536,7 @@ export function orgContract(
       expect(await db.updateProject("nope", { name: "x" }, by(M1, 27))).toBe(
         false,
       );
-      const h = (await db.listHistory("org_1")).rows;
+      const h = (await db.listHistory("team_1")).rows;
       expect(h[0]).toMatchObject({
         action: "project.update",
         target: "prj_4",
@@ -539,8 +550,8 @@ export function orgContract(
 
     it("deletes an empty project, cascading versions and issues", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedProject(db, "org_1");
+      await seedTeam(db);
+      await seedProject(db, "team_1");
       await db.createVersion(
         { id: "ver_1", projectId: "prj_1", name: "1.0.0" },
         by(M1, 30),
@@ -554,7 +565,7 @@ export function orgContract(
       expect(await db.findVersion("ver_1")).toBeUndefined();
       expect(await db.findIssue("prj_1", 1)).toBeUndefined();
       expect(await db.deleteProject("prj_1", by(M1, 33))).toBe(false);
-      expect((await db.listHistory("org_1")).rows[0]).toMatchObject({
+      expect((await db.listHistory("team_1")).rows[0]).toMatchObject({
         action: "project.delete",
         target: "prj_1",
       });
@@ -564,10 +575,10 @@ export function orgContract(
   describe("versions and links", () => {
     it("names are unique byte-exactly within a project", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedProject(db, "org_1");
+      await seedTeam(db);
+      await seedProject(db, "team_1");
       await db.createProject(
-        { id: "prj_2", orgId: "org_1", name: "other" },
+        { id: "prj_2", teamId: "team_1", name: "other" },
         by(M1, 20),
       );
       await db.createVersion(
@@ -617,7 +628,7 @@ export function orgContract(
       expect((await db.listVersions("prj_1")).map((v) => v.id)).toEqual([
         "ver_1",
       ]);
-      const actions = (await db.listHistory("org_1")).rows
+      const actions = (await db.listHistory("team_1")).rows
         .map((r) => r.action)
         .slice(0, 3);
       expect(actions).toEqual([
@@ -629,8 +640,8 @@ export function orgContract(
 
     it("links are deduplicated per version and scoped on removal", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedProject(db, "org_1");
+      await seedTeam(db);
+      await seedProject(db, "team_1");
       await db.createVersion(
         { id: "ver_1", projectId: "prj_1", name: "v1" },
         by(M1, 30),
@@ -726,7 +737,9 @@ export function orgContract(
       // Deleting the version cascades its links.
       await db.deleteVersion("ver_1", by(M1, 49));
       expect(await db.listVersionLinks("ver_1")).toEqual([]);
-      const actions = (await db.listHistory("org_1")).rows.map((r) => r.action);
+      const actions = (await db.listHistory("team_1")).rows.map(
+        (r) => r.action,
+      );
       expect(
         actions.filter(
           (a) => a.startsWith("version.link") || a === "version.unlink",
@@ -743,10 +756,10 @@ export function orgContract(
   describe("issues", () => {
     it("numbers per project, links versions, closes and reopens", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedProject(db, "org_1");
+      await seedTeam(db);
+      await seedProject(db, "team_1");
       await db.createProject(
-        { id: "prj_2", orgId: "org_1", name: "two" },
+        { id: "prj_2", teamId: "team_1", name: "two" },
         by(M1, 20),
       );
       await db.createVersion(
@@ -854,7 +867,9 @@ export function orgContract(
       // Deleting the version unlinks the issues instead of deleting them.
       await db.deleteVersion("ver_1", by(M1, 55));
       expect((await db.findIssue("prj_1", 2))?.versionId).toBeNull();
-      const actions = (await db.listHistory("org_1")).rows.map((r) => r.action);
+      const actions = (await db.listHistory("team_1")).rows.map(
+        (r) => r.action,
+      );
       expect(actions.slice(0, 5)).toEqual([
         "version.delete",
         "issue.reopen",
@@ -866,8 +881,8 @@ export function orgContract(
 
     it("comments hang off an issue and bump its updatedAt", async () => {
       const db = await make();
-      await seedOrg(db);
-      await seedProject(db, "org_1");
+      await seedTeam(db);
+      await seedProject(db, "team_1");
       await db.createIssue(
         { id: "iss_1", projectId: "prj_1", title: "a", bodyMd: "A" },
         by(M1, 40),
@@ -918,24 +933,24 @@ export function orgContract(
   describe("discussions", () => {
     it("full lifecycle with comments, newest activity first", async () => {
       const db = await make();
-      await seedOrg(db);
+      await seedTeam(db);
       await db.createDiscussion(
-        { id: "dsc_1", orgId: "org_1", title: "t1", bodyMd: "b1" },
+        { id: "dsc_1", teamId: "team_1", title: "t1", bodyMd: "b1" },
         by(M1, 60),
       );
       await db.createDiscussion(
-        { id: "dsc_2", orgId: "org_1", title: "t2", bodyMd: "b2" },
+        { id: "dsc_2", teamId: "team_1", title: "t2", bodyMd: "b2" },
         by(M1, 61),
       );
       await expect(
         db.createDiscussion(
-          { id: "dsc_9", orgId: "nope", title: "x", bodyMd: "x" },
+          { id: "dsc_9", teamId: "nope", title: "x", bodyMd: "x" },
           by(M1, 62),
         ),
       ).rejects.toMatchObject({
         code: "unavailable",
       });
-      expect((await db.listDiscussions("org_1")).map((d) => d.id)).toEqual([
+      expect((await db.listDiscussions("team_1")).map((d) => d.id)).toEqual([
         "dsc_2",
         "dsc_1",
       ]);
@@ -944,11 +959,11 @@ export function orgContract(
         by(M2, 63),
       );
       // The comment bumped dsc_1 to the top.
-      expect((await db.listDiscussions("org_1")).map((d) => d.id)).toEqual([
+      expect((await db.listDiscussions("team_1")).map((d) => d.id)).toEqual([
         "dsc_1",
         "dsc_2",
       ]);
-      expect(await db.countDiscussions("org_1")).toBe(2);
+      expect(await db.countDiscussions("team_1")).toBe(2);
       await expect(
         db.addDiscussionComment(
           { id: "dc_9", parentId: "nope", bodyMd: "x" },
@@ -985,7 +1000,9 @@ export function orgContract(
       expect(await db.deleteDiscussion("dsc_1", by(M1, 70))).toBe(false);
       expect(await db.findDiscussionComment("dc_2")).toBeUndefined();
       expect(await db.listDiscussionComments("dsc_1")).toEqual([]);
-      const actions = (await db.listHistory("org_1")).rows.map((r) => r.action);
+      const actions = (await db.listHistory("team_1")).rows.map(
+        (r) => r.action,
+      );
       expect(actions.slice(0, 4)).toEqual([
         "discussion.delete",
         "discussion.update",
@@ -1019,23 +1036,23 @@ export function orgContract(
   });
 }
 
-describe("memory org db", () => {
-  orgContract(() =>
-    createMemoryOrgDb({
+describe("memory team db", () => {
+  teamContract(() =>
+    createMemoryTeamDb({
       memberExists: (id) => ["m1", "m2", "m3", "m9"].includes(id),
       bundleExists: (id) => id === "ab_1",
     }),
   );
 
   it("refuses to delete a project that still has resources", async () => {
-    const db = createMemoryOrgDb({
+    const db = createMemoryTeamDb({
       countResources: (id) =>
         id === "prj_1"
           ? { channels: 1, apps: 0, bundles: 0 }
           : { channels: 0, apps: 0, bundles: 0 },
     });
-    await seedOrg(db);
-    await seedProject(db, "org_1");
+    await seedTeam(db);
+    await seedProject(db, "team_1");
     await expect(db.deleteProject("prj_1", by(M1, 1))).rejects.toMatchObject({
       code: "conflict",
     });
@@ -1048,17 +1065,17 @@ describe("memory org db", () => {
   });
 
   it("rolls the snapshot back when a multi-row write fails midway", async () => {
-    const db = createMemoryOrgDb({
+    const db = createMemoryTeamDb({
       memberExists: (id) => id !== "ghost",
     });
-    await seedOrg(db);
+    await seedTeam(db);
     // History insert fails (unknown actor) after the member row was written.
     await expect(
-      db.addMember("org_1", M2, "member", by("ghost", 5)),
+      db.addMember("team_1", M2, "member", by("ghost", 5)),
     ).rejects.toMatchObject({
       code: "unavailable",
     });
-    expect(await db.findOrgMember("org_1", M2)).toBeUndefined();
-    expect((await db.listHistory("org_1")).rows).toHaveLength(1);
+    expect(await db.findTeamMember("team_1", M2)).toBeUndefined();
+    expect((await db.listHistory("team_1")).rows).toHaveLength(1);
   });
 });

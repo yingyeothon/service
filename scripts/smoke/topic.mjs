@@ -5,7 +5,7 @@
 // and watch a short-lived topic expire.
 // Usage: scripts/smoke/topic.mjs <topicHttpUrl> <debugKey> <authBaseUrl> <consoleBaseUrl>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
-import { ensureTeam } from "./_org.mjs";
+import { ensureTeam } from "./_team.mjs";
 
 const [topicBase, debugKey, authBase, consoleBase] = process.argv.slice(2);
 if (!topicBase || !debugKey || !authBase || !consoleBase) {

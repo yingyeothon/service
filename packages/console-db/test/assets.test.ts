@@ -5,7 +5,7 @@ const bundle = (id: string, at = 1) => ({
   id,
   name: `b-${id}`,
   ownerId: "m1",
-  orgId: "org_1",
+  teamId: "team_1",
   projectId: "prj_1",
   createdAt: at,
 });
@@ -61,12 +61,12 @@ export function assetsContract(make: () => AssetsDb | Promise<AssetsDb>) {
       db.insertBundle({ ...bundle("x1"), name: "B-Z1" }),
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await db.listBundles()).map((b) => b.id)).toEqual(["a1", "z1"]);
-    expect(await db.findBundleByName("org_1", "b-a1")).toMatchObject({
+    expect(await db.findBundleByName("team_1", "b-a1")).toMatchObject({
       id: "a1",
       ownerId: "m1",
       description: null,
     });
-    expect(await db.findBundleByName("org_1", "nope")).toBeUndefined();
+    expect(await db.findBundleByName("team_1", "nope")).toBeUndefined();
 
     expect(
       await db.updateBundle("a1", { description: "maps", name: "renamed" }, 9),

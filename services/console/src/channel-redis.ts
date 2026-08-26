@@ -4,7 +4,7 @@ import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import { channelStatus, gatewayRedis } from "./channels.js";
 import type { ConsoleIdentity } from "./identity.js";
-import type { OrgAccessHelpers } from "./org-access.js";
+import type { TeamAccessHelpers } from "./team-access.js";
 import type { ResourceHistory } from "./resources.js";
 
 /**
@@ -12,7 +12,7 @@ import type { ResourceHistory } from "./resources.js";
  * `POST` runs `ACL SETUSER` **and `ACL SAVE`**, and `ACL SAVE` rewrites the
  * whole `aclfile` on Redis' single main thread — on the box that serves auth,
  * topic, match and console across both stages. Without a limit, any member of
- * an org holding one `q` channel can loop this route and turn a member-level
+ * an team holding one `q` channel can loop this route and turn a member-level
  * credential into a noisy neighbour for every other service; the per-channel
  * half closes the "N members each issue once" variant. Issuing is a
  * once-per-team action, so a cooldown this short is invisible to real use.
@@ -20,7 +20,7 @@ import type { ResourceHistory } from "./resources.js";
 export const REDIS_ISSUE_COOLDOWN_SEC = 10;
 
 export interface ChannelRedisRoutesOptions {
-  access: Pick<OrgAccessHelpers, "projectResource">;
+  access: Pick<TeamAccessHelpers, "projectResource">;
   /** `undefined` = the stage has no issuer account; the routes answer 503. */
   admin?: RedisAclAdmin;
   /** Backs the per-member issue cooldown. */
@@ -98,7 +98,7 @@ export function createChannelRedisRoutes({
   }
 
   /**
-   * `q` only, and only an org member may mint (an admin without a membership
+   * `q` only, and only an team member may mint (an admin without a membership
    * may look, like every other secret-shaped surface — `docs/decisions.md`
    * "Console permission model"). A non-`q` channel is 404 rather than 400:
    * this must not become a way to probe which ids exist under another kind.
@@ -117,7 +117,7 @@ export function createChannelRedisRoutes({
   }
   const credentialHistory = (row: ChannelRow, actorId: string, what: string) =>
     history(
-      row.orgId,
+      row.teamId,
       actorId,
       "resource.credential",
       row.id,
@@ -164,7 +164,7 @@ export function createChannelRedisRoutes({
         // Taken before the work, so a caller that hammers the route is stopped
         // before it reaches `ACL SAVE` rather than after. Two keys: the channel
         // (many members, one channel) and the member (one person, many
-        // channels) — every org member may mint, so either alone leaves a loop.
+        // channels) — every team member may mint, so either alone leaves a loop.
         // Channel first, and the member key is released if the channel one
         // was the blocker: otherwise a teammate probing a just-issued channel
         // would lock themselves out of every other channel for 10 s.

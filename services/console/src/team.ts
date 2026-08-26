@@ -11,10 +11,10 @@ import {
   type DiscussionRow,
   type IssueRow,
   type MemberRow,
-  type OrgDb,
-  type OrgHistoryRow,
-  type OrgMemberRow,
-  type OrgRow,
+  type TeamDb,
+  type TeamHistoryRow,
+  type TeamMemberRow,
+  type TeamRow,
   type ProjectRow,
   type VersionLinkRow,
   type VersionRow,
@@ -28,16 +28,16 @@ import {
 } from "@yyt/http";
 import { z } from "zod";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
-import { createOrgAccess, type Standing } from "./org-access.js";
+import { createTeamAccess, type Standing } from "./team-access.js";
 
 /* ------------------------------------------------------------------ */
-/* caps and grammars (docs/decisions.md *Organizations and projects*)   */
+/* caps and grammars (docs/decisions.md *Teams and projects*)   */
 /* ------------------------------------------------------------------ */
 
-export const ORGS_PER_MEMBER = 5;
-export const PROJECTS_PER_ORG = 20;
-export const PENDING_PER_ORG = 50;
-export const DISCUSSIONS_PER_ORG = 500;
+export const TEAMS_PER_MEMBER = 5;
+export const PROJECTS_PER_TEAM = 20;
+export const PENDING_PER_TEAM = 50;
+export const DISCUSSIONS_PER_TEAM = 500;
 export const VERSIONS_PER_PROJECT = 500;
 export const ISSUES_PER_PROJECT = 2000;
 export const COMMENTS_PER_PARENT = 500;
@@ -56,7 +56,7 @@ export const MD_RATE_SLOT_MS = 500;
  */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ID_LIKE =
-  /^(org|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
 export const RESOURCE_NAME_MESSAGE =
   "1-64 chars of letters, digits, '.', '_' or '-', not shaped like an id";
 export const resourceName = z
@@ -78,25 +78,25 @@ const bodyMd = z.string().max(MD_BODY_MAX);
 const commentMd = z.string().min(1).max(COMMENT_MAX);
 const description = z.string().max(MD_BODY_MAX).nullable();
 const ID = z.string().min(1).max(64);
-const orgRoleBody = z.enum(["owner", "member"]);
+const teamRoleBody = z.enum(["owner", "member"]);
 
-const orgCreateBody = z
+const teamCreateBody = z
   .object({ name: resourceName, description: description.optional() })
   .strict();
-const orgPatchBody = z
+const teamPatchBody = z
   .object({
     name: resourceName.optional(),
     description: description.optional(),
   })
   .strict();
-const orgJoinBody = z.object({ name: resourceName }).strict();
-const orgsQuery = z
+const teamJoinBody = z.object({ name: resourceName }).strict();
+const teamsQuery = z
   .object({ scope: z.enum(["mine", "all"]).optional() })
   .passthrough();
 const memberAddBody = z
-  .object({ login: z.string().trim().min(1).max(100), role: orgRoleBody })
+  .object({ login: z.string().trim().min(1).max(100), role: teamRoleBody })
   .strict();
-const memberPatchBody = z.object({ role: orgRoleBody }).strict();
+const memberPatchBody = z.object({ role: teamRoleBody }).strict();
 const adminLockBody = z.object({ locked: z.boolean() }).strict();
 const historyQuery = z
   .object({
@@ -104,8 +104,8 @@ const historyQuery = z
     limit: z.coerce.number().int().min(1).max(HISTORY_PAGE_MAX).optional(),
   })
   .passthrough();
-const projectCreateBody = orgCreateBody;
-const projectPatchBody = orgPatchBody;
+const projectCreateBody = teamCreateBody;
+const projectPatchBody = teamPatchBody;
 const versionCreateBody = z
   .object({ name: versionName, note: bodyMd.nullable().optional() })
   .strict();
@@ -199,9 +199,9 @@ const SECRET_KINDS = new Set(["auth", "topic", "match"]);
 /* routes                                                              */
 /* ------------------------------------------------------------------ */
 
-export interface OrgRoutesOptions {
+export interface TeamRoutesOptions {
   db: ConsoleDb;
-  org: OrgDb;
+  team: TeamDb;
   catalog: CatalogDb;
   assets: AssetsDb;
   kv: Kv;
@@ -223,17 +223,17 @@ const noStore = (statusCode: number, body: unknown): HttpResult => ({
   body: JSON.stringify(body),
 });
 
-export function createOrgRoutes({
+export function createTeamRoutes({
   db,
-  org,
+  team,
   catalog,
   assets,
   kv,
   clock,
   audit,
-}: OrgRoutesOptions): AnyRoute[] {
-  const access = createOrgAccess({ db, org, catalog, assets });
-  const { orgAccess, projectAccess } = access;
+}: TeamRoutesOptions): AnyRoute[] {
+  const access = createTeamAccess({ db, team, catalog, assets });
+  const { teamAccess, projectAccess } = access;
   const now = () => nowSec(clock);
   const actor = (id: ConsoleIdentity): Actor => ({
     actorId: id.subject,
@@ -255,7 +255,7 @@ export function createOrgRoutes({
   }
 
   /**
-   * Every recorded write (markdown or not — each one is an `org_history`
+   * Every recorded write (markdown or not — each one is an `team_history`
    * row, and history has no cap) takes one `nx` key per 500 ms slot per
    * member, so a burst is a 429 rather than rows.
    */
@@ -272,8 +272,8 @@ export function createOrgRoutes({
   }
 
   /* ---- views ------------------------------------------------------- */
-  const orgView = (
-    o: OrgRow,
+  const teamView = (
+    o: TeamRow,
     standing: Standing,
     logins: Map<string, MemberRow>,
   ) => ({
@@ -288,12 +288,12 @@ export function createOrgRoutes({
     role: standing,
   });
   /** What a pending member (or nobody yet) may see. */
-  const orgNameView = (o: OrgRow, standing: Standing) => ({
+  const teamNameView = (o: TeamRow, standing: Standing) => ({
     id: o.id,
     name: o.name,
     role: standing,
   });
-  const memberView = (m: OrgMemberRow, logins: Map<string, MemberRow>) => ({
+  const memberView = (m: TeamMemberRow, logins: Map<string, MemberRow>) => ({
     id: m.memberId,
     login: loginOf(logins, m.memberId),
     platformRole: logins.get(m.memberId)?.role ?? null,
@@ -303,7 +303,7 @@ export function createOrgRoutes({
     decidedAt: m.decidedAt,
     decidedBy: loginOf(logins, m.decidedBy),
   });
-  const historyView = (h: OrgHistoryRow, logins: Map<string, MemberRow>) => ({
+  const historyView = (h: TeamHistoryRow, logins: Map<string, MemberRow>) => ({
     id: h.id,
     at: h.at,
     actor: loginOf(logins, h.actorId),
@@ -314,12 +314,12 @@ export function createOrgRoutes({
   });
   const projectView = (
     p: ProjectRow,
-    o: OrgRow,
+    o: TeamRow,
     logins: Map<string, MemberRow>,
   ) => ({
     id: p.id,
-    orgId: o.id,
-    orgName: o.name,
+    teamId: o.id,
+    teamName: o.name,
     name: p.name,
     description: p.description,
     createdBy: loginOf(logins, p.createdBy),
@@ -374,7 +374,7 @@ export function createOrgRoutes({
     viewer: string,
   ) => ({
     id: d.id,
-    orgId: d.orgId,
+    teamId: d.teamId,
     title: d.title,
     bodyMd: d.bodyMd,
     createdBy: loginOf(logins, d.createdBy),
@@ -384,85 +384,85 @@ export function createOrgRoutes({
   });
 
   /**
-   * Channels of the org whose credentials a departing member still knows.
+   * Channels of the team whose credentials a departing member still knows.
    * Nothing is revoked (a rotation mid-game kills it); the list is the nudge.
    */
-  async function rotationHints(orgId: string) {
-    const rows = await db.listChannels({ orgId });
+  async function rotationHints(teamId: string) {
+    const rows = await db.listChannels({ teamId });
     return rows
       .filter((c: ChannelRow) => SECRET_KINDS.has(c.kind) || c.kind === "q")
       .map((c) => ({ id: c.id, kind: c.kind, name: c.name }));
   }
 
-  /** `admin_locked` orgs seat platform admins only; checked on every seating. */
-  async function requireLockable(o: OrgRow, memberId: string): Promise<void> {
+  /** `admin_locked` teams seat platform admins only; checked on every seating. */
+  async function requireLockable(o: TeamRow, memberId: string): Promise<void> {
     if (!o.adminLocked) return;
     const m = await db.findMember(memberId);
     if (m?.role !== "admin")
       throw new AppError(
         "conflict",
-        "this organization is admin-locked: only platform admins may be seated",
+        "this team is admin-locked: only platform admins may be seated",
       );
   }
 
-  /* ---- organizations ---------------------------------------------- */
-  const orgRoutes: AnyRoute[] = [
+  /* ---- teams ---------------------------------------------- */
+  const teamRoutes: AnyRoute[] = [
     defineRoute({
       method: "GET",
-      path: "/orgs",
+      path: "/teams",
       auth: true,
-      query: orgsQuery,
+      query: teamsQuery,
       handler: async (ctx) => {
         const id = requireRole(ctx, "member");
         const logins = await loginMap();
         if (ctx.query.scope === "all") {
-          // There is no member-visible global listing on purpose: seeded org
+          // There is no member-visible global listing on purpose: seeded team
           // names are GitHub logins, so a listing is the member roster.
           if (id.role !== "admin")
             throw new AppError("forbidden", "scope=all requires admin");
-          const rows = await org.listAllOrgs();
-          // One membership query, not one per org: the pool holds a single
+          const rows = await team.listAllTeams();
+          // One membership query, not one per team: the pool holds a single
           // connection, so a `Promise.all` here would only serialize.
           const mine = new Map(
-            (await org.listOrgsForMember(id.subject))
+            (await team.listTeamsForMember(id.subject))
               .filter((o) => o.state === "active")
               .map((o) => [o.id, o.role]),
           );
           return {
-            orgs: rows.map((o) =>
-              orgView(o, mine.get(o.id) ?? "admin", logins),
+            teams: rows.map((o) =>
+              teamView(o, mine.get(o.id) ?? "admin", logins),
             ),
           };
         }
-        const rows = await org.listOrgsForMember(id.subject);
+        const rows = await team.listTeamsForMember(id.subject);
         return {
-          orgs: rows
+          teams: rows
             .filter((o) => o.state === "active")
             .map((o) =>
               o.role === "pending"
-                ? orgNameView(o, o.role)
-                : orgView(o, o.role, logins),
+                ? teamNameView(o, o.role)
+                : teamView(o, o.role, logins),
             ),
         };
       },
     }),
     defineRoute({
       method: "POST",
-      path: "/orgs",
+      path: "/teams",
       auth: true,
-      body: orgCreateBody,
+      body: teamCreateBody,
       handler: async (ctx) => {
         const id = requireRole(ctx, "member");
-        if ((await org.countOrgsCreatedBy(id.subject)) >= ORGS_PER_MEMBER)
+        if ((await team.countTeamsCreatedBy(id.subject)) >= TEAMS_PER_MEMBER)
           throw new AppError(
             "conflict",
-            `too many organizations (max ${ORGS_PER_MEMBER})`,
+            `too many teams (max ${TEAMS_PER_MEMBER})`,
           );
         const at = now();
-        const orgId = `org_${randomHex(4)}`;
-        await org.createOrg(
+        const teamId = `team_${randomHex(4)}`;
+        await team.createTeam(
           {
-            id: orgId,
+            id: teamId,
             name: ctx.body.name,
             description: ctx.body.description ?? null,
             createdBy: id.subject,
@@ -470,79 +470,79 @@ export function createOrgRoutes({
           },
           at,
         );
-        const row = await org.findOrg(orgId);
-        if (!row) throw new AppError("unavailable", "organization vanished");
-        await audit(id.subject, "org.create", orgId, { name: row.name });
-        return noStore(201, orgView(row, "owner", await loginMap()));
+        const row = await team.findTeam(teamId);
+        if (!row) throw new AppError("unavailable", "team vanished");
+        await audit(id.subject, "team.create", teamId, { name: row.name });
+        return noStore(201, teamView(row, "owner", await loginMap()));
       },
     }),
     defineRoute({
       method: "POST",
-      path: "/orgs/join",
+      path: "/teams/join",
       auth: true,
-      body: orgJoinBody,
+      body: teamJoinBody,
       handler: async (ctx) => {
         const id = requireRole(ctx, "member");
-        const row = await org.findOrgByName(ctx.body.name);
+        const row = await team.findTeamByName(ctx.body.name);
         // Unknown and not-allowed look the same: the name space is private.
-        if (!row) throw new AppError("not_found", "organization not found");
+        if (!row) throw new AppError("not_found", "team not found");
         // A probe by name is also a write that records history on the target
-        // org, so it is rate-limited like every other recorded write.
+        // team, so it is rate-limited like every other recorded write.
         await mdRate(id);
-        const counts = await org.countActive(row.id);
-        if (counts.pending >= PENDING_PER_ORG)
+        const counts = await team.countActive(row.id);
+        if (counts.pending >= PENDING_PER_TEAM)
           throw new AppError(
             "conflict",
-            `too many pending requests (max ${PENDING_PER_ORG})`,
+            `too many pending requests (max ${PENDING_PER_TEAM})`,
           );
-        await org.requestJoin(row.id, id.subject, now(), JOIN_COOLDOWN_SEC);
-        return noStore(202, orgNameView(row, "pending"));
+        await team.requestJoin(row.id, id.subject, now(), JOIN_COOLDOWN_SEC);
+        return noStore(202, teamNameView(row, "pending"));
       },
     }),
     {
       method: "GET",
-      path: "/orgs/{org}",
+      path: "/teams/{team}",
       auth: true,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!, { min: "pending" });
-        if (a.standing === "pending") return orgNameView(a.org, a.standing);
-        const counts = await org.countActive(a.org.id);
+        const a = await teamAccess(ctx, ctx.params.team!, { min: "pending" });
+        if (a.standing === "pending") return teamNameView(a.team, a.standing);
+        const counts = await team.countActive(a.team.id);
         return {
-          ...orgView(a.org, a.standing, await loginMap()),
-          counts: { ...counts, projects: await org.countProjects(a.org.id) },
+          ...teamView(a.team, a.standing, await loginMap()),
+          counts: { ...counts, projects: await team.countProjects(a.team.id) },
         };
       },
     },
     defineRoute({
       method: "PATCH",
-      path: "/orgs/{org}",
+      path: "/teams/{team}",
       auth: true,
-      body: orgPatchBody,
+      body: teamPatchBody,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!, { min: "owner" });
+        const a = await teamAccess(ctx, ctx.params.team!, { min: "owner" });
         await mdRate(a.id);
-        // `adminLocked` is not in the body schema and `updateOrg` cannot set it.
-        if (!(await org.updateOrg(a.org.id, ctx.body, actor(a.id))))
-          throw new AppError("not_found", "organization not found");
-        const after = await org.findOrg(a.org.id);
-        return after && orgView(after, a.standing, await loginMap());
+        // `adminLocked` is not in the body schema and `updateTeam` cannot set it.
+        if (!(await team.updateTeam(a.team.id, ctx.body, actor(a.id))))
+          throw new AppError("not_found", "team not found");
+        const after = await team.findTeam(a.team.id);
+        return after && teamView(after, a.standing, await loginMap());
       },
     }),
     {
       method: "DELETE",
-      path: "/orgs/{org}",
+      path: "/teams/{team}",
       auth: true,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!, {
+        const a = await teamAccess(ctx, ctx.params.team!, {
           min: "owner",
           adminAsOwner: true,
         });
-        // The org's history goes with it, so the global audit log is the
+        // The team's history goes with it, so the global audit log is the
         // only record left of who deleted it.
-        if (!(await org.deleteOrg(a.org.id, actor(a.id))))
-          throw new AppError("not_found", "organization not found");
-        await audit(a.id.subject, "org.delete", a.org.id, {
-          name: a.org.name,
+        if (!(await team.deleteTeam(a.team.id, actor(a.id))))
+          throw new AppError("not_found", "team not found");
+        await audit(a.id.subject, "team.delete", a.team.id, {
+          name: a.team.name,
           via: a.standing,
         });
         return undefined;
@@ -550,21 +550,21 @@ export function createOrgRoutes({
     },
     defineRoute({
       method: "PUT",
-      path: "/orgs/{org}/admin-lock",
+      path: "/teams/{team}/admin-lock",
       auth: true,
       body: adminLockBody,
       handler: async (ctx) => {
         // Platform admin only, membership or not: the flag is the installer's
         // trust anchor, so an owner must not be able to grant it to themselves.
         const id = requireRole(ctx, "admin");
-        const row = await org.findOrg(ctx.params.org!);
-        if (!row) throw new AppError("not_found", "organization not found");
+        const row = await team.findTeam(ctx.params.team!);
+        if (!row) throw new AppError("not_found", "team not found");
         const logins = await loginMap();
         if (ctx.body.locked) {
-          const members = await org.listOrgMembers(row.id);
+          const members = await team.listTeamMembers(row.id);
           const outsider = members.find(
             // Pending requesters are not seated: anyone who knows the name
-            // could otherwise make the org un-lockable by asking to join.
+            // could otherwise make the team un-lockable by asking to join.
             (m) =>
               m.state === "active" &&
               m.role !== "pending" &&
@@ -577,14 +577,14 @@ export function createOrgRoutes({
               { details: { memberId: outsider.memberId } },
             );
         }
-        await org.setAdminLocked(row.id, ctx.body.locked, actor(id));
-        await audit(id.subject, "org.admin_lock", row.id, {
+        await team.setAdminLocked(row.id, ctx.body.locked, actor(id));
+        await audit(id.subject, "team.admin_lock", row.id, {
           locked: ctx.body.locked,
         });
-        const after = await org.findOrg(row.id);
+        const after = await team.findTeam(row.id);
         return (
           after &&
-          orgView(
+          teamView(
             after,
             (await access.standingOf(id, after)) ?? "admin",
             logins,
@@ -595,13 +595,13 @@ export function createOrgRoutes({
     // ---- members ----------------------------------------------------
     {
       method: "GET",
-      path: "/orgs/{org}/members",
+      path: "/teams/{team}/members",
       auth: true,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!);
+        const a = await teamAccess(ctx, ctx.params.team!);
         const logins = await loginMap();
         return {
-          members: (await org.listOrgMembers(a.org.id)).map((m) =>
+          members: (await team.listTeamMembers(a.team.id)).map((m) =>
             memberView(m, logins),
           ),
         };
@@ -609,38 +609,38 @@ export function createOrgRoutes({
     },
     defineRoute({
       method: "POST",
-      path: "/orgs/{org}/members",
+      path: "/teams/{team}/members",
       auth: true,
       body: memberAddBody,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!, { min: "owner" });
+        const a = await teamAccess(ctx, ctx.params.team!, { min: "owner" });
         const target = await memberByLogin(ctx.body.login);
         // A login that has not signed up is refused: there is no pending-login
         // re-seat model any more (decisions.md).
         if (!target || target.role === "pending")
           throw new AppError("not_found", "no such platform member");
-        await requireLockable(a.org, target.id);
+        await requireLockable(a.team, target.id);
         await mdRate(a.id);
-        await org.addMember(a.org.id, target.id, ctx.body.role, actor(a.id));
-        const row = await org.findOrgMember(a.org.id, target.id);
+        await team.addMember(a.team.id, target.id, ctx.body.role, actor(a.id));
+        const row = await team.findTeamMember(a.team.id, target.id);
         return noStore(201, row && memberView(row, await loginMap()));
       },
     }),
     defineRoute({
       method: "PATCH",
-      path: "/orgs/{org}/members/{mid}",
+      path: "/teams/{team}/members/{mid}",
       auth: true,
       body: memberPatchBody,
       handler: async (ctx) => {
         // Owners promote/demote/approve. A platform admin without a membership
         // may only *appoint an owner*, and only a non-admin platform member
         // other than themselves: no self-grant into the secret paths.
-        const a = await orgAccess(ctx, ctx.params.org!, {
+        const a = await teamAccess(ctx, ctx.params.team!, {
           min: "owner",
           adminAsOwner: true,
         });
         const mid = ctx.params.mid!;
-        const row = await org.findOrgMember(a.org.id, mid);
+        const row = await team.findTeamMember(a.team.id, mid);
         const seated = !!row && row.state === "active";
         if (a.standing === "admin") {
           const target = await db.findMember(mid);
@@ -654,66 +654,66 @@ export function createOrgRoutes({
               "admins may only appoint a non-admin platform member as owner",
             );
         } else if (!seated) throw new AppError("not_found", "member not found");
-        await requireLockable(a.org, mid);
+        await requireLockable(a.team, mid);
         await mdRate(a.id);
         const by = actor(a.id);
-        // An admin may seat an outsider straight in as owner: an org whose
+        // An admin may seat an outsider straight in as owner: a team whose
         // owners all left has nobody else who could.
         const ok = !seated
-          ? (await org.addMember(a.org.id, mid, "owner", by), true)
+          ? (await team.addMember(a.team.id, mid, "owner", by), true)
           : row.role === "pending"
-            ? await org.approveMember(a.org.id, mid, ctx.body.role, by)
+            ? await team.approveMember(a.team.id, mid, ctx.body.role, by)
             : row.role === ctx.body.role
               ? true
-              : await org.setMemberRole(a.org.id, mid, ctx.body.role, by);
+              : await team.setMemberRole(a.team.id, mid, ctx.body.role, by);
         if (!ok) throw new AppError("not_found", "member not found");
         if (a.standing === "admin" && (!seated || row.role !== "owner"))
-          await audit(a.id.subject, "org.member.appoint", a.org.id, {
+          await audit(a.id.subject, "team.member.appoint", a.team.id, {
             memberId: mid,
             role: ctx.body.role,
           });
-        const after = await org.findOrgMember(a.org.id, mid);
+        const after = await team.findTeamMember(a.team.id, mid);
         return after && memberView(after, await loginMap());
       },
     }),
     {
       method: "DELETE",
-      path: "/orgs/{org}/members/{mid}",
+      path: "/teams/{team}/members/{mid}",
       auth: true,
       handler: async (ctx) => {
         const mid = ctx.params.mid!;
         const self = requireRole(ctx, "member").subject === mid;
-        const a = await orgAccess(ctx, ctx.params.org!, {
+        const a = await teamAccess(ctx, ctx.params.team!, {
           min: self ? "pending" : "owner",
         });
-        const row = await org.findOrgMember(a.org.id, mid);
+        const row = await team.findTeamMember(a.team.id, mid);
         if (!row || row.state !== "active")
           throw new AppError("not_found", "member not found");
         const by = actor(a.id);
         // A withdrawn request is kept as `declined` so join→withdraw cannot
-        // loop: each cycle would write two history rows on the org for free.
+        // loop: each cycle would write two history rows on the team for free.
         const ok =
           row.role === "pending"
-            ? await org.declineMember(a.org.id, mid, by)
-            : await org.removeMember(a.org.id, mid, by);
+            ? await team.declineMember(a.team.id, mid, by)
+            : await team.removeMember(a.team.id, mid, by);
         if (!ok) throw new AppError("not_found", "member not found");
         if (row.role === "pending") return undefined;
         return {
           removed: mid,
           action: self ? "leave" : "kick",
           // Nothing is revoked automatically; these are what to rotate.
-          rotate: await rotationHints(a.org.id),
+          rotate: await rotationHints(a.team.id),
         };
       },
     },
     defineRoute({
       method: "GET",
-      path: "/orgs/{org}/history",
+      path: "/teams/{team}/history",
       auth: true,
       query: historyQuery,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!);
-        const page = await org.listHistory(a.org.id, {
+        const a = await teamAccess(ctx, ctx.params.team!);
+        const page = await team.listHistory(a.team.id, {
           cursor: ctx.query.cursor,
           limit: ctx.query.limit,
         });
@@ -726,14 +726,14 @@ export function createOrgRoutes({
     }),
   ];
 
-  /* ---- discussions (org) ------------------------------------------ */
+  /* ---- discussions (team) ------------------------------------------ */
   async function ownDiscussion(
     ctx: RouteContext,
     mode: "read" | "edit" | "delete",
   ) {
-    const a = await orgAccess(ctx, ctx.params.org!);
-    const row = await org.findDiscussion(ctx.params.id!);
-    if (!row || row.orgId !== a.org.id)
+    const a = await teamAccess(ctx, ctx.params.team!);
+    const row = await team.findDiscussion(ctx.params.id!);
+    if (!row || row.teamId !== a.team.id)
       throw new AppError("not_found", "discussion not found");
     if (mode === "edit" && row.createdBy !== a.id.subject)
       throw new AppError("forbidden", "only the author may edit");
@@ -749,13 +749,13 @@ export function createOrgRoutes({
   const discussionRoutes: AnyRoute[] = [
     {
       method: "GET",
-      path: "/orgs/{org}/discussions",
+      path: "/teams/{team}/discussions",
       auth: true,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!);
+        const a = await teamAccess(ctx, ctx.params.team!);
         const logins = await loginMap();
         return {
-          discussions: (await org.listDiscussions(a.org.id)).map((d) =>
+          discussions: (await team.listDiscussions(a.team.id)).map((d) =>
             discussionView(d, logins, a.id.subject),
           ),
         };
@@ -763,23 +763,23 @@ export function createOrgRoutes({
     },
     defineRoute({
       method: "POST",
-      path: "/orgs/{org}/discussions",
+      path: "/teams/{team}/discussions",
       auth: true,
       body: discussionCreateBody,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!, { secret: true });
+        const a = await teamAccess(ctx, ctx.params.team!, { secret: true });
         await mdRate(a.id);
-        if ((await org.countDiscussions(a.org.id)) >= DISCUSSIONS_PER_ORG)
+        if ((await team.countDiscussions(a.team.id)) >= DISCUSSIONS_PER_TEAM)
           throw new AppError(
             "conflict",
-            `too many discussions (max ${DISCUSSIONS_PER_ORG})`,
+            `too many discussions (max ${DISCUSSIONS_PER_TEAM})`,
           );
         const id = `dsc_${randomHex(8)}`;
-        await org.createDiscussion(
-          { id, orgId: a.org.id, ...ctx.body },
+        await team.createDiscussion(
+          { id, teamId: a.team.id, ...ctx.body },
           actor(a.id),
         );
-        const row = await org.findDiscussion(id);
+        const row = await team.findDiscussion(id);
         return noStore(
           201,
           row && discussionView(row, await loginMap(), a.id.subject),
@@ -788,14 +788,14 @@ export function createOrgRoutes({
     }),
     {
       method: "GET",
-      path: "/orgs/{org}/discussions/{id}",
+      path: "/teams/{team}/discussions/{id}",
       auth: true,
       handler: async (ctx) => {
         const { a, row } = await ownDiscussion(ctx, "read");
         const logins = await loginMap();
         return {
           ...discussionView(row, logins, a.id.subject),
-          comments: (await org.listDiscussionComments(row.id)).map((c) =>
+          comments: (await team.listDiscussionComments(row.id)).map((c) =>
             commentView(c, logins, a.id.subject),
           ),
         };
@@ -803,32 +803,32 @@ export function createOrgRoutes({
     },
     defineRoute({
       method: "PATCH",
-      path: "/orgs/{org}/discussions/{id}",
+      path: "/teams/{team}/discussions/{id}",
       auth: true,
       body: discussionPatchBody,
       handler: async (ctx) => {
         const { a, row } = await ownDiscussion(ctx, "edit");
         await mdRate(a.id);
-        if (!(await org.updateDiscussion(row.id, ctx.body, actor(a.id))))
+        if (!(await team.updateDiscussion(row.id, ctx.body, actor(a.id))))
           throw new AppError("not_found", "discussion not found");
-        const after = await org.findDiscussion(row.id);
+        const after = await team.findDiscussion(row.id);
         return after && discussionView(after, await loginMap(), a.id.subject);
       },
     }),
     {
       method: "DELETE",
-      path: "/orgs/{org}/discussions/{id}",
+      path: "/teams/{team}/discussions/{id}",
       auth: true,
       handler: async (ctx) => {
         const { a, row } = await ownDiscussion(ctx, "delete");
-        if (!(await org.deleteDiscussion(row.id, actor(a.id))))
+        if (!(await team.deleteDiscussion(row.id, actor(a.id))))
           throw new AppError("not_found", "discussion not found");
         return undefined;
       },
     },
     defineRoute({
       method: "POST",
-      path: "/orgs/{org}/discussions/{id}/comments",
+      path: "/teams/{team}/discussions/{id}/comments",
       auth: true,
       body: commentBody,
       handler: async (ctx) => {
@@ -837,7 +837,7 @@ export function createOrgRoutes({
           throw new AppError("forbidden", "admins cannot post");
         await mdRate(a.id);
         if (
-          (await org.listDiscussionComments(row.id)).length >=
+          (await team.listDiscussionComments(row.id)).length >=
           COMMENTS_PER_PARENT
         )
           throw new AppError(
@@ -845,11 +845,11 @@ export function createOrgRoutes({
             `too many comments (max ${COMMENTS_PER_PARENT})`,
           );
         const id = `cmt_${randomHex(8)}`;
-        await org.addDiscussionComment(
+        await team.addDiscussionComment(
           { id, parentId: row.id, bodyMd: ctx.body.bodyMd },
           actor(a.id),
         );
-        const c = await org.findDiscussionComment(id);
+        const c = await team.findDiscussionComment(id);
         return noStore(
           201,
           c && commentView(c, await loginMap(), a.id.subject),
@@ -858,29 +858,29 @@ export function createOrgRoutes({
     }),
     defineRoute({
       method: "PATCH",
-      path: "/orgs/{org}/discussions/{id}/comments/{cid}",
+      path: "/teams/{team}/discussions/{id}/comments/{cid}",
       auth: true,
       body: commentBody,
       handler: async (ctx) => {
         const { a, row } = await ownDiscussion(ctx, "read");
-        const c = await org.findDiscussionComment(ctx.params.cid!);
+        const c = await team.findDiscussionComment(ctx.params.cid!);
         if (!c || c.parentId !== row.id)
           throw new AppError("not_found", "comment not found");
         if (c.createdBy !== a.id.subject)
           throw new AppError("forbidden", "only the author may edit");
         await mdRate(a.id);
-        await org.updateDiscussionComment(c.id, ctx.body.bodyMd, now());
-        const after = await org.findDiscussionComment(c.id);
+        await team.updateDiscussionComment(c.id, ctx.body.bodyMd, now());
+        const after = await team.findDiscussionComment(c.id);
         return after && commentView(after, await loginMap(), a.id.subject);
       },
     }),
     {
       method: "DELETE",
-      path: "/orgs/{org}/discussions/{id}/comments/{cid}",
+      path: "/teams/{team}/discussions/{id}/comments/{cid}",
       auth: true,
       handler: async (ctx) => {
         const { a, row } = await ownDiscussion(ctx, "read");
-        const c = await org.findDiscussionComment(ctx.params.cid!);
+        const c = await team.findDiscussionComment(ctx.params.cid!);
         if (!c || c.parentId !== row.id)
           throw new AppError("not_found", "comment not found");
         if (c.createdBy !== a.id.subject && a.standing !== "owner")
@@ -888,7 +888,7 @@ export function createOrgRoutes({
             "forbidden",
             "only the author or an owner may delete",
           );
-        await org.deleteDiscussionComment(c.id);
+        await team.deleteDiscussionComment(c.id);
         return undefined;
       },
     },
@@ -898,43 +898,43 @@ export function createOrgRoutes({
   const projectRoutes: AnyRoute[] = [
     {
       method: "GET",
-      path: "/orgs/{org}/projects",
+      path: "/teams/{team}/projects",
       auth: true,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!);
+        const a = await teamAccess(ctx, ctx.params.team!);
         const logins = await loginMap();
         return {
-          projects: (await org.listProjects(a.org.id)).map((p) =>
-            projectView(p, a.org, logins),
+          projects: (await team.listProjects(a.team.id)).map((p) =>
+            projectView(p, a.team, logins),
           ),
         };
       },
     },
     defineRoute({
       method: "POST",
-      path: "/orgs/{org}/projects",
+      path: "/teams/{team}/projects",
       auth: true,
       body: projectCreateBody,
       handler: async (ctx) => {
-        const a = await orgAccess(ctx, ctx.params.org!, { secret: true });
+        const a = await teamAccess(ctx, ctx.params.team!, { secret: true });
         await mdRate(a.id);
-        if ((await org.countProjects(a.org.id)) >= PROJECTS_PER_ORG)
+        if ((await team.countProjects(a.team.id)) >= PROJECTS_PER_TEAM)
           throw new AppError(
             "conflict",
-            `too many projects (max ${PROJECTS_PER_ORG})`,
+            `too many projects (max ${PROJECTS_PER_TEAM})`,
           );
         const id = `prj_${randomHex(4)}`;
-        await org.createProject(
+        await team.createProject(
           {
             id,
-            orgId: a.org.id,
+            teamId: a.team.id,
             name: ctx.body.name,
             description: ctx.body.description ?? null,
           },
           actor(a.id),
         );
-        const row = await org.findProject(id);
-        return noStore(201, row && projectView(row, a.org, await loginMap()));
+        const row = await team.findProject(id);
+        return noStore(201, row && projectView(row, a.team, await loginMap()));
       },
     }),
     {
@@ -944,11 +944,11 @@ export function createOrgRoutes({
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
         return {
-          ...projectView(a.project, a.org, await loginMap()),
+          ...projectView(a.project, a.team, await loginMap()),
           counts: {
-            ...(await org.countProjectResources(a.project.id)),
-            versions: await org.countVersions(a.project.id),
-            issues: await org.countIssues(a.project.id),
+            ...(await team.countProjectResources(a.project.id)),
+            versions: await team.countVersions(a.project.id),
+            issues: await team.countIssues(a.project.id),
           },
         };
       },
@@ -961,10 +961,10 @@ export function createOrgRoutes({
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
         await mdRate(a.id);
-        if (!(await org.updateProject(a.project.id, ctx.body, actor(a.id))))
+        if (!(await team.updateProject(a.project.id, ctx.body, actor(a.id))))
           throw new AppError("not_found", "project not found");
-        const after = await org.findProject(a.project.id);
-        return after && projectView(after, a.org, await loginMap());
+        const after = await team.findProject(a.project.id);
+        return after && projectView(after, a.team, await loginMap());
       },
     }),
     {
@@ -972,18 +972,18 @@ export function createOrgRoutes({
       path: "/projects/{prj}",
       auth: true,
       handler: async (ctx) => {
-        // Admin too: deleting an org needs its projects gone first, and an
-        // ownerless org has nobody else to do it.
+        // Admin too: deleting a team needs its projects gone first, and an
+        // ownerless team has nobody else to do it.
         const a = await projectAccess(ctx, ctx.params.prj!, {
           min: "owner",
           adminAsOwner: true,
         });
         // `conflict` while a channel/app/bundle still points here — soft-deleted
         // channels included, until the daily sweep purges them.
-        if (!(await org.deleteProject(a.project.id, actor(a.id))))
+        if (!(await team.deleteProject(a.project.id, actor(a.id))))
           throw new AppError("not_found", "project not found");
         await audit(a.id.subject, "project.delete", a.project.id, {
-          orgId: a.org.id,
+          teamId: a.team.id,
         });
         return undefined;
       },
@@ -993,7 +993,7 @@ export function createOrgRoutes({
   /* ---- versions --------------------------------------------------- */
   async function ownVersion(ctx: RouteContext) {
     const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
-    const row = await org.findVersion(ctx.params.ver!);
+    const row = await team.findVersion(ctx.params.ver!);
     if (!row || row.projectId !== a.project.id)
       throw new AppError("not_found", "version not found");
     return { a, row };
@@ -1030,7 +1030,7 @@ export function createOrgRoutes({
         const a = await projectAccess(ctx, ctx.params.prj!);
         const logins = await loginMap();
         return {
-          versions: (await org.listVersions(a.project.id)).map((v) =>
+          versions: (await team.listVersions(a.project.id)).map((v) =>
             versionView(v, logins),
           ),
         };
@@ -1044,13 +1044,13 @@ export function createOrgRoutes({
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
         await mdRate(a.id);
-        if ((await org.countVersions(a.project.id)) >= VERSIONS_PER_PROJECT)
+        if ((await team.countVersions(a.project.id)) >= VERSIONS_PER_PROJECT)
           throw new AppError(
             "conflict",
             `too many versions (max ${VERSIONS_PER_PROJECT})`,
           );
         const id = `ver_${randomHex(8)}`;
-        await org.createVersion(
+        await team.createVersion(
           {
             id,
             projectId: a.project.id,
@@ -1059,7 +1059,7 @@ export function createOrgRoutes({
           },
           actor(a.id),
         );
-        const row = await org.findVersion(id);
+        const row = await team.findVersion(id);
         return noStore(201, row && versionView(row, await loginMap()));
       },
     }),
@@ -1071,7 +1071,7 @@ export function createOrgRoutes({
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
         await mdRate(a.id);
-        const existing = await org.listVersions(a.project.id);
+        const existing = await team.listVersions(a.project.id);
         if (existing.length >= VERSIONS_PER_PROJECT)
           throw new AppError(
             "conflict",
@@ -1089,11 +1089,11 @@ export function createOrgRoutes({
         const id = `ver_${randomHex(8)}`;
         // Two concurrent bumps compute the same name; the unique index makes
         // the second a 409, which is the honest answer.
-        await org.createVersion(
+        await team.createVersion(
           { id, projectId: a.project.id, name, note: null },
           actor(a.id),
         );
-        const row = await org.findVersion(id);
+        const row = await team.findVersion(id);
         return noStore(201, row && versionView(row, await loginMap()));
       },
     }),
@@ -1103,12 +1103,12 @@ export function createOrgRoutes({
       auth: true,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
-        const row = await org.findVersion(ctx.params.ver!);
+        const row = await team.findVersion(ctx.params.ver!);
         if (!row || row.projectId !== a.project.id)
           throw new AppError("not_found", "version not found");
         return {
           ...versionView(row, await loginMap()),
-          links: (await org.listVersionLinks(row.id)).map(linkView),
+          links: (await team.listVersionLinks(row.id)).map(linkView),
         };
       },
     },
@@ -1120,8 +1120,8 @@ export function createOrgRoutes({
       handler: async (ctx) => {
         const { a, row } = await ownVersion(ctx);
         await mdRate(a.id);
-        await org.updateVersion(row.id, { note: ctx.body.note }, actor(a.id));
-        const after = await org.findVersion(row.id);
+        await team.updateVersion(row.id, { note: ctx.body.note }, actor(a.id));
+        const after = await team.findVersion(row.id);
         return after && versionView(after, await loginMap());
       },
     }),
@@ -1131,7 +1131,7 @@ export function createOrgRoutes({
       auth: true,
       handler: async (ctx) => {
         const { a, row } = await ownVersion(ctx);
-        if (!(await org.deleteVersion(row.id, actor(a.id))))
+        if (!(await team.deleteVersion(row.id, actor(a.id))))
           throw new AppError("not_found", "version not found");
         return undefined;
       },
@@ -1142,10 +1142,10 @@ export function createOrgRoutes({
       auth: true,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
-        const row = await org.findVersion(ctx.params.ver!);
+        const row = await team.findVersion(ctx.params.ver!);
         if (!row || row.projectId !== a.project.id)
           throw new AppError("not_found", "version not found");
-        return { links: (await org.listVersionLinks(row.id)).map(linkView) };
+        return { links: (await team.listVersionLinks(row.id)).map(linkView) };
       },
     },
     defineRoute({
@@ -1157,17 +1157,17 @@ export function createOrgRoutes({
         const { a, row } = await ownVersion(ctx);
         await mdRate(a.id);
         await checkLinkTarget(a.project.id, ctx.body);
-        if ((await org.listVersionLinks(row.id)).length >= LINKS_PER_VERSION)
+        if ((await team.listVersionLinks(row.id)).length >= LINKS_PER_VERSION)
           throw new AppError(
             "conflict",
             `too many links (max ${LINKS_PER_VERSION})`,
           );
         const id = `lnk_${randomHex(8)}`;
-        await org.addVersionLink(
+        await team.addVersionLink(
           { id, versionId: row.id, ...ctx.body },
           actor(a.id),
         );
-        const link = (await org.listVersionLinks(row.id)).find(
+        const link = (await team.listVersionLinks(row.id)).find(
           (l) => l.id === id,
         );
         if (!link) throw new AppError("not_found", "link vanished");
@@ -1180,7 +1180,9 @@ export function createOrgRoutes({
       auth: true,
       handler: async (ctx) => {
         const { a, row } = await ownVersion(ctx);
-        if (!(await org.removeVersionLink(row.id, ctx.params.id!, actor(a.id))))
+        if (
+          !(await team.removeVersionLink(row.id, ctx.params.id!, actor(a.id)))
+        )
           throw new AppError("not_found", "link not found");
         return undefined;
       },
@@ -1202,7 +1204,7 @@ export function createOrgRoutes({
       write ? { secret: true } : {},
     );
     const n = issueNumber(ctx.params.n!);
-    const row = await org.findIssue(a.project.id, n);
+    const row = await team.findIssue(a.project.id, n);
     if (!row) throw new AppError("not_found", "issue not found");
     return { a, row };
   }
@@ -1212,7 +1214,7 @@ export function createOrgRoutes({
     versionId: string | null | undefined,
   ): Promise<void> {
     if (!versionId) return;
-    const v = await org.findVersion(versionId);
+    const v = await team.findVersion(versionId);
     if (!v || v.projectId !== projectId)
       throw new AppError("bad_request", "versionId is not in this project");
   }
@@ -1228,7 +1230,7 @@ export function createOrgRoutes({
         const logins = await loginMap();
         return {
           issues: (
-            await org.listIssues(a.project.id, { status: ctx.query.status })
+            await team.listIssues(a.project.id, { status: ctx.query.status })
           ).map((i) => issueView(i, logins)),
         };
       },
@@ -1241,14 +1243,14 @@ export function createOrgRoutes({
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
         await mdRate(a.id);
-        if ((await org.countIssues(a.project.id)) >= ISSUES_PER_PROJECT)
+        if ((await team.countIssues(a.project.id)) >= ISSUES_PER_PROJECT)
           throw new AppError(
             "conflict",
             `too many issues (max ${ISSUES_PER_PROJECT})`,
           );
         await checkVersionRef(a.project.id, ctx.body.versionId);
         const id = `iss_${randomHex(8)}`;
-        const number = await org.createIssue(
+        const number = await team.createIssue(
           {
             id,
             projectId: a.project.id,
@@ -1258,7 +1260,7 @@ export function createOrgRoutes({
           },
           actor(a.id),
         );
-        const row = await org.findIssue(a.project.id, number);
+        const row = await team.findIssue(a.project.id, number);
         return noStore(201, row && issueView(row, await loginMap()));
       },
     }),
@@ -1271,7 +1273,7 @@ export function createOrgRoutes({
         const logins = await loginMap();
         return {
           ...issueView(row, logins),
-          comments: (await org.listIssueComments(row.id)).map((c) =>
+          comments: (await team.listIssueComments(row.id)).map((c) =>
             commentView(c, logins, a.id.subject),
           ),
         };
@@ -1287,7 +1289,7 @@ export function createOrgRoutes({
         await mdRate(a.id);
         await checkVersionRef(a.project.id, ctx.body.versionId);
         if (
-          !(await org.updateIssue(
+          !(await team.updateIssue(
             a.project.id,
             row.number,
             ctx.body,
@@ -1295,7 +1297,7 @@ export function createOrgRoutes({
           ))
         )
           throw new AppError("not_found", "issue not found");
-        const after = await org.findIssue(a.project.id, row.number);
+        const after = await team.findIssue(a.project.id, row.number);
         return after && issueView(after, await loginMap());
       },
     }),
@@ -1308,7 +1310,7 @@ export function createOrgRoutes({
         await mdRate(a.id);
         const status = action === "close" ? "closed" : "open";
         if (
-          !(await org.setIssueStatus(
+          !(await team.setIssueStatus(
             a.project.id,
             row.number,
             status,
@@ -1316,7 +1318,7 @@ export function createOrgRoutes({
           ))
         )
           throw new AppError("conflict", `issue is already ${status}`);
-        const after = await org.findIssue(a.project.id, row.number);
+        const after = await team.findIssue(a.project.id, row.number);
         return after && issueView(after, await loginMap());
       },
     })),
@@ -1328,17 +1330,17 @@ export function createOrgRoutes({
       handler: async (ctx) => {
         const { a, row } = await ownIssue(ctx, true);
         await mdRate(a.id);
-        if ((await org.countIssueComments(row.id)) >= COMMENTS_PER_PARENT)
+        if ((await team.countIssueComments(row.id)) >= COMMENTS_PER_PARENT)
           throw new AppError(
             "conflict",
             `too many comments (max ${COMMENTS_PER_PARENT})`,
           );
         const id = `cmt_${randomHex(8)}`;
-        await org.addIssueComment(
+        await team.addIssueComment(
           { id, parentId: row.id, bodyMd: ctx.body.bodyMd },
           actor(a.id),
         );
-        const c = await org.findIssueComment(id);
+        const c = await team.findIssueComment(id);
         return noStore(
           201,
           c && commentView(c, await loginMap(), a.id.subject),
@@ -1352,14 +1354,14 @@ export function createOrgRoutes({
       body: commentBody,
       handler: async (ctx) => {
         const { a, row } = await ownIssue(ctx, true);
-        const c = await org.findIssueComment(ctx.params.cid!);
+        const c = await team.findIssueComment(ctx.params.cid!);
         if (!c || c.parentId !== row.id)
           throw new AppError("not_found", "comment not found");
         if (c.createdBy !== a.id.subject)
           throw new AppError("forbidden", "only the author may edit");
         await mdRate(a.id);
-        await org.updateIssueComment(c.id, ctx.body.bodyMd, now());
-        const after = await org.findIssueComment(c.id);
+        await team.updateIssueComment(c.id, ctx.body.bodyMd, now());
+        const after = await team.findIssueComment(c.id);
         return after && commentView(after, await loginMap(), a.id.subject);
       },
     }),
@@ -1369,7 +1371,7 @@ export function createOrgRoutes({
       auth: true,
       handler: async (ctx) => {
         const { a, row } = await ownIssue(ctx, true);
-        const c = await org.findIssueComment(ctx.params.cid!);
+        const c = await team.findIssueComment(ctx.params.cid!);
         if (!c || c.parentId !== row.id)
           throw new AppError("not_found", "comment not found");
         if (c.createdBy !== a.id.subject && a.standing !== "owner")
@@ -1377,7 +1379,7 @@ export function createOrgRoutes({
             "forbidden",
             "only the author or an owner may delete",
           );
-        await org.deleteIssueComment(c.id);
+        await team.deleteIssueComment(c.id);
         return undefined;
       },
     },
@@ -1385,15 +1387,15 @@ export function createOrgRoutes({
 
   /* ---- platform settings (admin) ---------------------------------- */
   async function installerAppView() {
-    const s = await org.getSetting(INSTALLER_APP_SETTING);
+    const s = await team.getSetting(INSTALLER_APP_SETTING);
     const appId = typeof s?.value === "string" ? s.value : null;
     const app = appId ? await catalog.findApp(appId) : undefined;
-    const o = app?.orgId ? await org.findOrg(app.orgId) : undefined;
+    const o = app?.teamId ? await team.findTeam(app.teamId) : undefined;
     return {
       appId,
       appName: app?.name ?? null,
-      orgId: o?.id ?? null,
-      orgName: o?.name ?? null,
+      teamId: o?.id ?? null,
+      teamName: o?.name ?? null,
       /** The downloads route serves only while this is true. */
       trusted: !!(app && o?.adminLocked),
       updatedAt: s?.updatedAt ?? null,
@@ -1420,17 +1422,17 @@ export function createOrgRoutes({
         if (ctx.body.appId !== null) {
           const app = await catalog.findApp(ctx.body.appId);
           if (!app) throw new AppError("not_found", "app not found");
-          const o = app.orgId ? await org.findOrg(app.orgId) : undefined;
-          // Every member of the org can push an APK to this app, and the
-          // downloads route hands it to every device: the org must be admins only.
+          const o = app.teamId ? await team.findTeam(app.teamId) : undefined;
+          // Every member of the team can push an APK to this app, and the
+          // downloads route hands it to every device: the team must be admins only.
           if (!o?.adminLocked)
             throw new AppError(
               "conflict",
-              "the app's organization must be admin-locked",
+              "the app's team must be admin-locked",
               { details: { code: "installer_untrusted" } },
             );
         }
-        await org.putSetting(INSTALLER_APP_SETTING, ctx.body.appId, actor(id));
+        await team.putSetting(INSTALLER_APP_SETTING, ctx.body.appId, actor(id));
         await audit(id.subject, "settings.installer_app", ctx.body.appId);
         return installerAppView();
       },
@@ -1438,7 +1440,7 @@ export function createOrgRoutes({
   ];
 
   return [
-    ...orgRoutes,
+    ...teamRoutes,
     ...discussionRoutes,
     ...projectRoutes,
     ...versionRoutes,
@@ -1447,6 +1449,6 @@ export function createOrgRoutes({
   ];
 }
 
-// `ulid` is what `OrgDb` uses for history ids; re-exported so the handler and
+// `ulid` is what `TeamDb` uses for history ids; re-exported so the handler and
 // the test harness build the repository the same way.
 export const historyId = (at: number): string => ulid(at * 1000);
