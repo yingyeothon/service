@@ -14,6 +14,9 @@
 //     "team": "<teamName>", "from": "<projectName>", "actor": "<login>",
 //     "apps": { "<appName>": { "description": "…", "project": "<projectName>" } }
 //   }
+// `from` may be omitted: then no project is deleted and apps are only moved
+// to their declared project (a stage that never had a catch-all project only
+// needs the version backfill).
 // `project` defaults to the app name; an omitted `description` is left alone,
 // `null` clears it. Every app in `from` must be declared and
 // every declared app must exist in `from`, or the script refuses. Version
@@ -49,7 +52,7 @@ for (const line of readFileSync(envFile, "utf8").split("\n")) {
 }
 
 const map = JSON.parse(readFileSync(mapPath, "utf8"));
-for (const k of ["team", "from", "actor", "apps"])
+for (const k of ["team", "actor", "apps"])
   if (!map[k]) {
     console.error(`map: missing "${k}"`);
     process.exit(2);
@@ -123,10 +126,12 @@ if (teamRow && actorRow) {
   if (!seat || seat.role !== "owner" || seat.state !== "active")
     problems.push(`actor ${map.actor} is not an active owner of ${map.team}`);
 }
-const from = teamRow ? await team.findProjectByName(teamId, map.from) : null;
+const from =
+  teamRow && map.from ? await team.findProjectByName(teamId, map.from) : null;
 // On a re-run the source project is already gone; that is the success state.
 const fromApps = from ? await catalog.listApps({ projectId: from.id }) : [];
-if (!from) plan.push(`source project ${map.team}/${map.from} already gone`);
+if (map.from && !from)
+  plan.push(`source project ${map.team}/${map.from} already gone`);
 
 // ---- reconcile the map against the source project -------------------------
 const declared = new Map(
@@ -162,7 +167,7 @@ for (const [lc, spec] of declared) {
   t.apps.push({ app, description });
   targets.set(key, t);
 }
-if (from && targets.has(map.from.toLowerCase()))
+if (from && targets.has(String(map.from).toLowerCase()))
   problems.push(`a target project is the source project ${map.from}`);
 
 const projectIds = new Map(); // key → id (existing or planned)
