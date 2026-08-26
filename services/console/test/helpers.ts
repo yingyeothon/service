@@ -5,6 +5,7 @@ import {
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
+  createMemoryOrgDb,
   createMemoryStateDb,
 } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
@@ -13,6 +14,7 @@ import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import { createMemoryPosterStore } from "../src/poster.js";
+import { historyId } from "../src/org.js";
 import { SESSION_COOKIE } from "../src/session.js";
 
 export const BASE = "https://console-dev.yyt.life";
@@ -59,6 +61,22 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const artifacts = createMemoryArtifactStore();
   const redisAcl = createMemoryAclAdmin();
   const state = createMemoryStateDb((id) => db.channels.has(id));
+  const countIn = (
+    pick: (r: { orgId: string | null; projectId: string | null }) => boolean,
+  ) => ({
+    // Soft-deleted rows count: the FK is RESTRICT until the sweep purges them.
+    channels: [...db.channels.values()].filter(pick).length,
+    apps: [...catalog.apps.values()].filter(pick).length,
+    bundles: [...assets.bundles.values()].filter(pick).length,
+  });
+  const org = createMemoryOrgDb({
+    memberExists: (id) => db.members.has(id),
+    artifactExists: (id) => catalog.artifacts.has(id),
+    bundleExists: (id) => assets.bundles.has(id),
+    countResources: (projectId) => countIn((r) => r.projectId === projectId),
+    countOrgResources: (orgId) => countIn((r) => r.orgId === orgId),
+    newHistoryId: historyId,
+  });
   const { agent, fetch } = mockAgent();
   const app = createConsoleApp({
     baseUrl: BASE,
@@ -69,6 +87,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     catalog,
     assets,
+    org,
     posters,
     artifacts,
     cdnBaseUrl: CDN,
@@ -134,6 +153,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     catalog,
     assets,
+    org,
     posters,
     artifacts,
     redisAcl,

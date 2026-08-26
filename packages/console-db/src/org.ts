@@ -906,7 +906,9 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
         if (projects > 0) throw conflict("organization still has projects");
         // Expand phase: a resource may carry `org_id` without a project.
         const [ch, ap, bu] = await Promise.all([
-          t.channels.count({ where: { org_id: id, deleted_at: null } }),
+          // Soft-deleted channels count too: the FK is RESTRICT and the row
+          // stays until the daily sweep purges it, so the delete would 503.
+          t.channels.count({ where: { org_id: id } }),
           t.catalog_apps.count({ where: { org_id: id } }),
           t.asset_bundles.count({ where: { org_id: id } }),
         ]);
@@ -1646,7 +1648,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
     projectId: string,
   ): Promise<ProjectResourceCounts> {
     const [channels, apps, bundles] = await Promise.all([
-      t.channels.count({ where: { project_id: projectId, deleted_at: null } }),
+      t.channels.count({ where: { project_id: projectId } }),
       t.catalog_apps.count({ where: { project_id: projectId } }),
       t.asset_bundles.count({ where: { project_id: projectId } }),
     ]);

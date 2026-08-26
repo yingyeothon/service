@@ -3,6 +3,7 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
+  createOrgDb,
   createPrismaClient,
   createStateDb,
   mysqlOptionsFromEnv,
@@ -10,6 +11,7 @@ import {
   type CatalogDb,
   type ConsoleDb,
   type EventsDb,
+  type OrgDb,
   type StateDb,
 } from "@yyt/console-db";
 import { systemClock, type Logger } from "@yyt/core";
@@ -35,6 +37,7 @@ import {
   runRedisUsageReport,
 } from "./expire.js";
 import { createGithubLogin } from "./github.js";
+import { historyId } from "./org.js";
 import { createS3PosterStore } from "./poster.js";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
@@ -62,6 +65,7 @@ interface Deps {
   events: EventsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
+  org: OrgDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
   kv: Kv;
@@ -100,6 +104,7 @@ function getDeps(): Promise<Deps> {
       events: createEventsDb(raw),
       catalog: createCatalogDb(raw),
       assets: createAssetsDb(raw),
+      org: createOrgDb(raw, { newHistoryId: historyId }),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
@@ -148,6 +153,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     catalog,
     assets,
+    org,
     state,
     kv,
     redisAcl,
@@ -190,6 +196,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     catalog,
     assets,
+    org,
     state,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
