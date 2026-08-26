@@ -17,7 +17,8 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
-/// Teams → projects → issues → comments, over the console API. Every call
+/// Teams → projects → issues → comments, plus team discussions, over the
+/// console API. Every call
 /// carries the saved token; 401 surfaces as [UnauthorizedException] so the
 /// caller logs out like the app list does.
 class ProjectsApi {
@@ -96,6 +97,44 @@ class ProjectsApi {
     _object(
       await _post(
         '${AuthConfig.projectIssueUrlOf(baseUrl, projectId, number)}/comments',
+        {'bodyMd': bodyMd},
+      ),
+    ),
+  );
+
+  Future<List<Discussion>> listDiscussions(String teamId) async {
+    final body = await _get(AuthConfig.teamDiscussionsUrlOf(baseUrl, teamId));
+    return _list(body['discussions']).map(Discussion.fromJson).toList();
+  }
+
+  Future<Discussion> getDiscussion(String teamId, String id) async =>
+      Discussion.fromJson(
+        _object(
+          await _get(AuthConfig.teamDiscussionUrlOf(baseUrl, teamId, id)),
+        ),
+      );
+
+  Future<Discussion> createDiscussion(
+    String teamId, {
+    required String title,
+    String bodyMd = '',
+  }) async => Discussion.fromJson(
+    _object(
+      await _post(AuthConfig.teamDiscussionsUrlOf(baseUrl, teamId), {
+        'title': title,
+        'bodyMd': bodyMd,
+      }),
+    ),
+  );
+
+  Future<IssueComment> addDiscussionComment(
+    String teamId,
+    String id,
+    String bodyMd,
+  ) async => IssueComment.fromJson(
+    _object(
+      await _post(
+        '${AuthConfig.teamDiscussionUrlOf(baseUrl, teamId, id)}/comments',
         {'bodyMd': bodyMd},
       ),
     ),

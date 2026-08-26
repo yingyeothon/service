@@ -6,6 +6,130 @@ import 'package:yyt_console/format_time.dart';
 import 'package:yyt_console/artifact_version_group.dart';
 import 'package:flutter/material.dart';
 
+/// Hero title: the human description first, the catalog name in parentheses
+/// (`잉여톤 콘솔 (console)`); the name alone when there is no description.
+String appHeroTitle(AppInfo app) {
+  final description = app.description.trim();
+  return description.isEmpty ? app.name : '$description (${app.name})';
+}
+
+/// Grid columns for the app list: 2 on phones, 4 on near-square screens
+/// (tablets, foldables opened flat) where two wide cards would waste width.
+int appGridColumns(Size size) {
+  if (size.width <= 0 || size.height <= 0) return 2;
+  final ratio = size.width / size.height;
+  // Width gate: a split-screen phone is near-square too, but 4 cards in
+  // ~400dp leave no room for a name or a button label.
+  return ratio >= 0.75 && ratio <= 1.34 && size.width >= 600 ? 4 : 2;
+}
+
+/// The small list-card: name, description, version + state, install button.
+class AppGridCard extends StatelessWidget {
+  const AppGridCard({
+    super.key,
+    required this.app,
+    required this.state,
+    this.onTap,
+    this.action,
+  });
+
+  final AppInfo app;
+  final AppInstallState state;
+  final VoidCallback? onTap;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = _buildTone(app.buildType);
+    final theme = Theme.of(context);
+    final description = app.description.trim();
+    final content = Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _AppAvatar(name: app.name, color: tone.accent, size: 32),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  app.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            description.isEmpty ? app.applicationId : description,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color:
+                  description.isEmpty
+                      ? CatalogPalette.slate
+                      : CatalogPalette.ink,
+              height: 1.3,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                'v${app.version}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: CatalogPalette.ink,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              CatalogStateChip(
+                label: _stateLabel(state),
+                color: _stateColor(state),
+                dense: true,
+              ),
+            ],
+          ),
+          if (action != null) ...[
+            const SizedBox(height: 8),
+            Align(alignment: Alignment.centerRight, child: action!),
+          ],
+        ],
+      ),
+    );
+
+    final card = Ink(
+      decoration: BoxDecoration(
+        color: tone.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: tone.border),
+      ),
+      child: content,
+    );
+
+    return Material(
+      color: Colors.transparent,
+      child:
+          onTap == null
+              ? card
+              : InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: onTap,
+                child: card,
+              ),
+    );
+  }
+}
+
 class AppSummaryCard extends StatelessWidget {
   const AppSummaryCard({
     super.key,
@@ -15,6 +139,7 @@ class AppSummaryCard extends StatelessWidget {
     this.onTap,
     this.action,
     this.extraChips = const <Widget>[],
+    this.title,
   });
 
   final AppInfo app;
@@ -23,6 +148,9 @@ class AppSummaryCard extends StatelessWidget {
   final VoidCallback? onTap;
   final Widget? action;
   final List<Widget> extraChips;
+
+  /// Overrides the card title (the detail hero shows `description (name)`).
+  final String? title;
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +176,7 @@ class AppSummaryCard extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         Text(
-                          app.name,
+                          title ?? app.name,
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         CatalogStateChip(
@@ -465,15 +593,24 @@ class ArtifactVersionGroupCard extends StatelessWidget {
 }
 
 class CatalogStateChip extends StatelessWidget {
-  const CatalogStateChip({super.key, required this.label, required this.color});
+  const CatalogStateChip({
+    super.key,
+    required this.label,
+    required this.color,
+    this.dense = false,
+  });
 
   final String label;
   final Color color;
+  final bool dense;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding:
+          dense
+              ? const EdgeInsets.symmetric(horizontal: 7, vertical: 3)
+              : const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
@@ -522,19 +659,20 @@ class CatalogValueChip extends StatelessWidget {
 }
 
 class _AppAvatar extends StatelessWidget {
-  const _AppAvatar({required this.name, required this.color});
+  const _AppAvatar({required this.name, required this.color, this.size = 44});
 
   final String name;
   final Color color;
+  final double size;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 44,
-      height: 44,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(size * 0.32),
       ),
       child: Center(
         child: Text(

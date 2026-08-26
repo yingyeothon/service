@@ -6,24 +6,47 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   group('waitForInstalledVersion', () {
     test(
-      'does not report system installer return as user cancellation',
+      'reports installer return without the new version after the grace',
       () async {
         final installerReturned = Completer<void>()..complete();
+        final stopwatch = Stopwatch()..start();
 
         final result = await waitForInstalledVersion(
           packageName: 'com.example.app',
           targetVersion: '2.0.0',
-          timeout: const Duration(milliseconds: 300),
+          timeout: const Duration(seconds: 5),
+          returnGrace: const Duration(milliseconds: 120),
           pollInterval: const Duration(milliseconds: 30),
           installerReturned: installerReturned.future,
           findInstalledVersionFn: (_) async => null,
           onProgress: (_) {},
         );
 
+        // The grace, not the full verify timeout, bounds the wait.
+        expect(stopwatch.elapsed, lessThan(const Duration(seconds: 2)));
         expect(result.cancelledByUser, isFalse);
+        expect(result.installerReturnedWithoutInstall, isTrue);
         expect(result.installedVersion, isNull);
       },
     );
+
+    test('gives up when the installer never returns', () async {
+      final installerReturned = Completer<void>();
+
+      final result = await waitForInstalledVersion(
+        packageName: 'com.example.app',
+        targetVersion: '2.0.0',
+        timeout: const Duration(seconds: 5),
+        maxWaitForReturn: const Duration(milliseconds: 100),
+        pollInterval: const Duration(milliseconds: 30),
+        installerReturned: installerReturned.future,
+        findInstalledVersionFn: (_) async => null,
+        onProgress: (_) {},
+      );
+
+      expect(result.installerReturnedWithoutInstall, isFalse);
+      expect(result.installedVersion, isNull);
+    });
 
     test(
       'does not mark cancellation when installed within grace period',

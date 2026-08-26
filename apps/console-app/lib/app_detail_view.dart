@@ -51,9 +51,21 @@ class _AppDetailViewState extends State<AppDetailView>
     _loadArtifacts();
   }
 
+  bool _leftForInstaller = false;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_installerReturnCompleter == null) {
+      return;
+    }
+    // `resumed` counts as "back from the installer" only after the app
+    // actually went away; a spurious resume right after `OpenFilex.open`
+    // would otherwise start the post-return grace before the installer shows.
     if (state != AppLifecycleState.resumed) {
+      _leftForInstaller = true;
+      return;
+    }
+    if (!_leftForInstaller) {
       return;
     }
 
@@ -234,6 +246,7 @@ class _AppDetailViewState extends State<AppDetailView>
 
   Future<void> _beginInstallerReturnWatch() {
     final completer = Completer<void>();
+    _leftForInstaller = false;
     _installerReturnCompleter = completer;
     return completer.future;
   }
@@ -362,7 +375,7 @@ class _AppDetailViewState extends State<AppDetailView>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.app.name)),
+      appBar: AppBar(title: Text(appHeroTitle(widget.app))),
       body: RefreshIndicator(onRefresh: _loadArtifacts, child: _buildBody()),
     );
   }
@@ -418,6 +431,7 @@ class _AppDetailViewState extends State<AppDetailView>
       children: [
         AppSummaryCard(
           app: currentApp,
+          title: appHeroTitle(currentApp),
           state: state,
           installedVersion: heroInstalledVersion,
           // Straight to the app's project issues — the app *is* the project.

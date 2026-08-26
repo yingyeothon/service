@@ -278,6 +278,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
     return source.where((app) {
       final values = <String>[
         app.name,
+        app.description,
         app.package,
         app.version,
         app.releaseNote,
