@@ -305,6 +305,47 @@ resources:
             }
             return req;
           }
+    # Response headers for everything the web origin serves (the SPA and the
+    # "/" redirect). The CSP is what makes the markdown renderer's sanitizer a
+    # second line rather than the only one: no inline or remote scripts, no
+    # frames, uploads only to S3 (presigned PUT) and the API on this origin.
+    # `style-src 'unsafe-inline'` is required by Mantine's inline style
+    # attributes and its CSS-variables <style> element.
+    WebHeadersPolicy:
+      Type: AWS::CloudFront::ResponseHeadersPolicy
+      Properties:
+        ResponseHeadersPolicyConfig:
+          Name: ${self:service}-${self:custom.stage}-web-headers
+          SecurityHeadersConfig:
+            ContentSecurityPolicy:
+              Override: true
+              ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://*.amazonaws.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+            ContentTypeOptions:
+              Override: true
+            FrameOptions:
+              Override: true
+              FrameOption: DENY
+            ReferrerPolicy:
+              Override: true
+              ReferrerPolicy: strict-origin-when-cross-origin
+            StrictTransportSecurity:
+              Override: true
+              AccessControlMaxAgeSec: 31536000
+              IncludeSubdomains: false
+    # The API behavior gets the transport headers only: no CSP (JSON is never a
+    # document), but HSTS and nosniff reach clients that never load the SPA.
+    ApiHeadersPolicy:
+      Type: AWS::CloudFront::ResponseHeadersPolicy
+      Properties:
+        ResponseHeadersPolicyConfig:
+          Name: ${self:service}-${self:custom.stage}-api-headers
+          SecurityHeadersConfig:
+            ContentTypeOptions:
+              Override: true
+            StrictTransportSecurity:
+              Override: true
+              AccessControlMaxAgeSec: 31536000
+              IncludeSubdomains: false
     WebDistribution:
       Type: AWS::CloudFront::Distribution
       Properties:
@@ -346,6 +387,7 @@ resources:
             Compress: true
             CachePolicyId: ${self:custom.cachingDisabled}
             OriginRequestPolicyId: ${self:custom.allViewerExceptHost}
+            ResponseHeadersPolicyId: !Ref ApiHeadersPolicy
           CacheBehaviors:
             # Exact "/" only: the function answers 302 -> /ui/ at the edge, so
             # the origin is never reached. API paths keep the default behavior.
@@ -355,6 +397,7 @@ resources:
               AllowedMethods: [GET, HEAD]
               Compress: true
               CachePolicyId: ${self:custom.cachingOptimized}
+              ResponseHeadersPolicyId: !Ref WebHeadersPolicy
               FunctionAssociations:
                 - EventType: viewer-request
                   FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
@@ -364,6 +407,7 @@ resources:
               AllowedMethods: [GET, HEAD]
               Compress: true
               CachePolicyId: ${self:custom.cachingOptimized}
+              ResponseHeadersPolicyId: !Ref WebHeadersPolicy
               FunctionAssociations:
                 - EventType: viewer-request
                   FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
@@ -373,6 +417,7 @@ resources:
               AllowedMethods: [GET, HEAD]
               Compress: true
               CachePolicyId: ${self:custom.cachingOptimized}
+              ResponseHeadersPolicyId: !Ref WebHeadersPolicy
               FunctionAssociations:
                 - EventType: viewer-request
                   FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN

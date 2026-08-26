@@ -14,6 +14,8 @@ const mockApi = {
   setUnauthorizedHandler: vi.fn(),
   channel: vi.fn(),
   channels: vi.fn(),
+  team: vi.fn(),
+  projectChannels: vi.fn(),
   channelDocKey: vi.fn(),
   issueChannelDocKey: vi.fn(),
   revokeChannelDocKey: vi.fn(),
@@ -32,7 +34,11 @@ const CHANNEL: Channel = {
   id: "auth_9",
   kind: "auth",
   name: "login",
-  ownerId: "m_1",
+  teamId: "team_1",
+  teamName: "studio",
+  projectId: "prj_1",
+  projectName: "game",
+  createdBy: "alice",
   config: {
     audience: "game-a",
     tokenTtlSec: 3600,
@@ -88,6 +94,13 @@ describe("auth channel document key", () => {
     });
     vi.mocked(mockApi.channel).mockResolvedValue(CHANNEL);
     vi.mocked(mockApi.channels).mockResolvedValue([]);
+    vi.mocked(mockApi.projectChannels).mockResolvedValue([]);
+    // Seated member of the channel's team: may issue and revoke.
+    vi.mocked(mockApi.team).mockResolvedValue({
+      id: "team_1",
+      name: "studio",
+      role: "member",
+    });
   });
 
   it("offers Issue while none exists and shows the key exactly once", async () => {
@@ -149,12 +162,17 @@ describe("auth channel document key", () => {
     expect(screen.queryByText(apiKey)).toBeNull();
   });
 
-  it("hides the buttons from a non-owner but still shows the block", async () => {
+  it("hides the buttons from a seatless admin but still shows the block", async () => {
     vi.mocked(mockApi.me).mockResolvedValue({
       id: "m_admin",
       login: "root",
       role: "admin",
       via: "session",
+    });
+    vi.mocked(mockApi.team).mockResolvedValue({
+      id: "team_1",
+      name: "studio",
+      role: "admin",
     });
     vi.mocked(mockApi.channelDocKey).mockResolvedValue({
       ...BLOCK,
@@ -177,7 +195,7 @@ describe("auth channel document key", () => {
     vi.mocked(mockApi.channelDocKey).mockResolvedValue(BLOCK);
     mount();
 
-    await screen.findByText("login");
+    await screen.findByRole("heading", { name: "login" });
     expect(screen.queryByText("Document storage")).toBeNull();
     // And the card's own query is never made: there is nothing to configure.
     expect(mockApi.channelDocKey).not.toHaveBeenCalled();

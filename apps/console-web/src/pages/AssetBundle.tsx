@@ -13,10 +13,12 @@ import {
 import { useRef, useState, type DragEvent, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
+import { Crumbs } from "../components/Crumbs";
 import { Confirm, CopyField, Notice, Spinner } from "../components/ui";
 import { fmtSize } from "../lib/catalog";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
+import { projectUrl, useTeamStanding } from "../lib/team";
 
 /**
  * Upload a whole bundle version. Each file keeps its path relative to the
@@ -202,48 +204,111 @@ function VersionFiles({
 }
 
 export function AssetBundlePage() {
-  const { name = "" } = useParams();
+  const { id = "" } = useParams();
   const navigate = useNavigate();
-  const bundle = useApiQuery(["assets", "bundle", name], () =>
-    api.assetBundle(name),
+  const bundle = useApiQuery(["assets", "bundle", id], () =>
+    api.assetBundle(id),
   );
+  const standing = useTeamStanding(bundle.data?.teamId);
   const act = useAction();
   const [open, setOpen] = useState<string | null>(null);
+  const [name, setName] = useState<string | null>(null);
+  const [desc, setDesc] = useState<string | null>(null);
 
   const removeVersion = async (version: string) => {
-    const r = await act.run(() => api.deleteAssetVersion(name, version));
-    if (r === undefined) return;
+    const ok = await act.run(async () => {
+      await api.deleteAssetVersion(id, version);
+      return true;
+    });
+    if (!ok) return;
     if (open === version) setOpen(null);
     await bundle.reload();
   };
 
   const removeBundle = async () => {
-    const r = await act.run(() => api.deleteAssetBundle(name));
-    if (r === undefined) return;
-    void navigate("/assets");
+    const ok = await act.run(async () => {
+      await api.deleteAssetBundle(id);
+      return true;
+    });
+    if (!ok || !bundle.data) return;
+    const b = bundle.data;
+    void navigate(
+      b.teamId && b.projectId
+        ? projectUrl(b.teamId, b.projectId, "assets")
+        : "/teams",
+    );
+  };
+
+  const saveInfo = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!bundle.data) return;
+    const b = bundle.data;
+    const body: { name?: string; description?: string | null } = {};
+    if (name !== null && name.trim() !== b.name) body.name = name.trim();
+    if (desc !== null) body.description = desc.trim() || null;
+    if (Object.keys(body).length === 0) return;
+    const r = await act.run(() => api.updateAssetBundle(id, body));
+    if (!r) return;
+    bundle.set({ ...b, ...r });
+    setName(null);
+    setDesc(null);
   };
 
   if (bundle.error) return <Notice kind="error">{bundle.error}</Notice>;
   if (!bundle.data) return <Spinner />;
   const b = bundle.data;
+  const canWrite = standing.canWrite;
 
   return (
     <>
+      <Crumbs crumbs={b} current={b.name} />
       <Group justify="space-between" align="start" mb="sm">
         <div>
           <Title order={2}>{b.name}</Title>
           <Text size="sm" c="dimmed">
-            {b.description ?? "No description"} · owner {b.ownerLogin ?? "—"} ·{" "}
-            {fmtSize(b.bytes)} of 20 MB
+            {b.description ?? "No description"} · created by{" "}
+            {b.createdBy ?? "—"} · {fmtSize(b.bytes)} of 20 MB
           </Text>
         </div>
-        <Confirm
-          label="Delete bundle"
-          confirmLabel="Delete everything"
-          onConfirm={() => void removeBundle()}
-          disabled={act.busy}
-        />
+        {canWrite && (
+          <Confirm
+            label="Delete bundle"
+            confirmLabel="Delete everything"
+            onConfirm={() => void removeBundle()}
+            disabled={act.busy}
+          />
+        )}
       </Group>
+      {!canWrite && !standing.loading && (
+        <Notice>
+          Read-only: you are not seated in this bundle&rsquo;s team.
+        </Notice>
+      )}
+      {canWrite && (
+        <Card withBorder mb="md" padding="sm">
+          <form onSubmit={(e) => void saveInfo(e)}>
+            <Group align="end" wrap="wrap">
+              <TextInput
+                label="Name"
+                value={name ?? b.name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={64}
+                w={200}
+              />
+              <TextInput
+                label="Description"
+                value={desc ?? b.description ?? ""}
+                onChange={(e) => setDesc(e.target.value)}
+                maxLength={2000}
+                w={280}
+              />
+              <Button type="submit" disabled={act.busy}>
+                Save
+              </Button>
+            </Group>
+          </form>
+        </Card>
+      )}
       <Text size="xs" c="dimmed" mb="sm">
         Deleting a version or a bundle is refused while a lobby channel still
         points at it — re-point the channel&rsquo;s map URL first. Clients cache
@@ -251,7 +316,9 @@ export function AssetBundlePage() {
       </Text>
       {act.error && <Notice kind="error">{act.error}</Notice>}
 
-      <UploadCard bundle={name} onUploaded={() => bundle.reload()} />
+      {canWrite && (
+        <UploadCard bundle={id} onUploaded={() => bundle.reload()} />
+      )}
 
       {b.versions.length === 0 ? (
         <Text size="sm" c="dimmed">
@@ -276,17 +343,19 @@ export function AssetBundlePage() {
                 >
                   {open === v.version ? "Hide files" : "Show files"}
                 </Button>
-                <Confirm
-                  label="Delete version"
-                  confirmLabel="Delete"
-                  onConfirm={() => void removeVersion(v.version)}
-                  disabled={act.busy}
-                />
+                {canWrite && (
+                  <Confirm
+                    label="Delete version"
+                    confirmLabel="Delete"
+                    onConfirm={() => void removeVersion(v.version)}
+                    disabled={act.busy}
+                  />
+                )}
               </Group>
             </Group>
             {open === v.version && (
               <div style={{ marginTop: 8 }}>
-                <VersionFiles bundle={name} version={v.version} />
+                <VersionFiles bundle={id} version={v.version} />
               </div>
             )}
           </Card>
@@ -303,7 +372,11 @@ export function AssetBundlePage() {
           channel&rsquo;s <b>Map URL</b>: the live pointer is the channel
           config, so nothing has to be invalidated.
         </Text>
-        <CopyField label="CDN prefix" value={`assets/${b.name}/`} />
+        <CopyField label="CDN prefix" value={`assets/${b.id}/`} />
+        <Text size="xs" c="dimmed">
+          Versions published before 2026-08-26 keep their name-based prefix; the
+          file list shows each file&rsquo;s actual URL.
+        </Text>
       </Card>
     </>
   );

@@ -10,7 +10,11 @@ const authChannel: Channel = {
   id: "auth_1",
   kind: "auth",
   name: "a",
-  ownerId: "m_1",
+  teamId: "team_1",
+  teamName: "studio",
+  projectId: "prj_1",
+  projectName: "game",
+  createdBy: "alice",
   config: {
     audience: "game",
     tokenTtlSec: 3600,

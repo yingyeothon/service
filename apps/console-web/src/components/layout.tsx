@@ -35,7 +35,9 @@ function SideNavigation({ onNavigate }: { onNavigate?: () => void }) {
     <ScrollArea>
       <Stack gap={0} p="xs" component="nav" aria-label="Main">
         {NAV_ITEMS.filter(
-          (item) => item.minRole === null || hasRole(me, item.minRole),
+          (item) =>
+            !item.hidden &&
+            (item.minRole === null || hasRole(me, item.minRole)),
         ).map((item) => (
           <NavLink
             key={item.path}

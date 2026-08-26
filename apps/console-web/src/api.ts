@@ -7,9 +7,6 @@ import type {
   CatalogApp,
   CatalogArtifact,
   CatalogCleanupResult,
-  CatalogGroup,
-  CatalogPermission,
-  CatalogPermissionLevel,
   CatalogPlatform,
   CatalogSettings,
   CatalogUploadGrant,
@@ -17,14 +14,32 @@ import type {
   ChannelKind,
   ChannelDocKey,
   ChannelRedisUser,
+  Comment,
+  Discussion,
+  DiscussionDetail,
   EventDetail,
   EventStatus,
   EventSummary,
+  HistoryPage,
+  InstallerAppSetting,
   InstallerDownload,
+  Issue,
+  IssueDetail,
+  IssueStatus,
   Me,
   Member,
   PosterUpload,
+  Project,
+  ProjectDetail,
   Proposal,
+  RemoveMemberResult,
+  Team,
+  TeamDetail,
+  TeamMember,
+  Version,
+  VersionDetail,
+  VersionLink,
+  VersionLinkInput,
 } from "./types";
 
 /** Error body shape of `@yyt/http`: `{ error: { code, message, details? } }`. */
@@ -106,6 +121,40 @@ export function createApiClient({
   const put = <T>(path: string, body: unknown) => call<T>("PUT", path, body);
   const del = <T = void>(path: string) => call<T>("DELETE", path);
   const enc = encodeURIComponent;
+  const qs = (params: Record<string, string | undefined>) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v) q.set(k, v);
+    const s = q.toString();
+    return s ? `?${s}` : "";
+  };
+
+  /** presign → browser PUT to S3. The signed headers go up verbatim. */
+  async function putToGrant(
+    grant: { url: string; method: string; headers: Record<string, string> },
+    file: File,
+    what: string,
+  ): Promise<void> {
+    const res = await fetchImpl(grant.url, {
+      method: grant.method,
+      // The signed `content-type` must go up verbatim; the browser would
+      // otherwise send the File's own type and the PUT would 403.
+      headers: grant.headers,
+      body: file,
+    });
+    if (!res.ok)
+      throw new ApiError(
+        res.status,
+        "upload_failed",
+        `${what} upload failed (${res.status})`,
+      );
+  }
+
+  const teamPath = (team: string) => `/teams/${enc(team)}`;
+  const projectPath = (prj: string) => `/projects/${enc(prj)}`;
+  const issuePath = (prj: string, n: number) =>
+    `${projectPath(prj)}/issues/${enc(String(n))}`;
+  const discussionPath = (team: string, id: string) =>
+    `${teamPath(team)}/discussions/${enc(id)}`;
 
   return {
     /** Lets the auth provider react to a session that expired mid-use. */
@@ -136,21 +185,150 @@ export function createApiClient({
       post<ApiToken & { token: string }>("/tokens", { name }),
     revokeToken: (id: string) => del(`/tokens/${enc(id)}`),
 
-    channels: (opts: { kind?: ChannelKind; scope?: "mine" | "all" } = {}) => {
-      const q = new URLSearchParams();
-      if (opts.kind) q.set("kind", opts.kind);
-      if (opts.scope) q.set("scope", opts.scope);
-      const qs = q.toString();
-      return get<{ channels: Channel[] }>(
-        `/channels${qs ? `?${qs}` : ""}`,
-      ).then((r) => r.channels);
-    },
+    // ---- teams -------------------------------------------------------------
+    teams: (scope?: "mine" | "all") =>
+      get<{ teams: Team[] }>(`/teams${qs({ scope })}`).then((r) => r.teams),
+    createTeam: (body: { name: string; description?: string | null }) =>
+      post<Team>("/teams", body),
+    /** 202 with the name-only view; 404 hides unknown and not-allowed alike. */
+    joinTeam: (name: string) => post<Team>("/teams/join", { name }),
+    team: (team: string) => get<TeamDetail>(teamPath(team)),
+    updateTeam: (
+      team: string,
+      body: { name?: string; description?: string | null },
+    ) => patch<Team>(teamPath(team), body),
+    deleteTeam: (team: string) => del(teamPath(team)),
+    setTeamAdminLock: (team: string, locked: boolean) =>
+      put<Team>(`${teamPath(team)}/admin-lock`, { locked }),
+    teamMembers: (team: string) =>
+      get<{ members: TeamMember[] }>(`${teamPath(team)}/members`).then(
+        (r) => r.members,
+      ),
+    addTeamMember: (team: string, login: string, role: "owner" | "member") =>
+      post<TeamMember>(`${teamPath(team)}/members`, { login, role }),
+    /** Approves a pending request, promotes or demotes, or (admin) appoints an owner. */
+    setTeamMemberRole: (team: string, mid: string, role: "owner" | "member") =>
+      patch<TeamMember>(`${teamPath(team)}/members/${enc(mid)}`, { role }),
+    /** Kick (owner) or leave (self). `undefined` when a pending request was declined/withdrawn. */
+    removeTeamMember: (team: string, mid: string) =>
+      del<RemoveMemberResult | undefined>(
+        `${teamPath(team)}/members/${enc(mid)}`,
+      ),
+    teamHistory: (team: string, cursor?: string, limit?: number) =>
+      get<HistoryPage>(
+        `${teamPath(team)}/history${qs({ cursor, limit: limit ? String(limit) : undefined })}`,
+      ),
+
+    discussions: (team: string) =>
+      get<{ discussions: Discussion[] }>(`${teamPath(team)}/discussions`).then(
+        (r) => r.discussions,
+      ),
+    createDiscussion: (team: string, body: { title: string; bodyMd: string }) =>
+      post<Discussion>(`${teamPath(team)}/discussions`, body),
+    discussion: (team: string, id: string) =>
+      get<DiscussionDetail>(discussionPath(team, id)),
+    updateDiscussion: (
+      team: string,
+      id: string,
+      body: { title?: string; bodyMd?: string },
+    ) => patch<Discussion>(discussionPath(team, id), body),
+    deleteDiscussion: (team: string, id: string) =>
+      del(discussionPath(team, id)),
+    addDiscussionComment: (team: string, id: string, bodyMd: string) =>
+      post<Comment>(`${discussionPath(team, id)}/comments`, { bodyMd }),
+    updateDiscussionComment: (
+      team: string,
+      id: string,
+      cid: string,
+      bodyMd: string,
+    ) =>
+      patch<Comment>(`${discussionPath(team, id)}/comments/${enc(cid)}`, {
+        bodyMd,
+      }),
+    deleteDiscussionComment: (team: string, id: string, cid: string) =>
+      del(`${discussionPath(team, id)}/comments/${enc(cid)}`),
+
+    // ---- projects ----------------------------------------------------------
+    projects: (team: string) =>
+      get<{ projects: Project[] }>(`${teamPath(team)}/projects`).then(
+        (r) => r.projects,
+      ),
+    createProject: (
+      team: string,
+      body: { name: string; description?: string | null },
+    ) => post<Project>(`${teamPath(team)}/projects`, body),
+    project: (prj: string) => get<ProjectDetail>(projectPath(prj)),
+    updateProject: (
+      prj: string,
+      body: { name?: string; description?: string | null },
+    ) => patch<Project>(projectPath(prj), body),
+    deleteProject: (prj: string) => del(projectPath(prj)),
+
+    versions: (prj: string) =>
+      get<{ versions: Version[] }>(`${projectPath(prj)}/versions`).then(
+        (r) => r.versions,
+      ),
+    createVersion: (
+      prj: string,
+      body: { name: string; note?: string | null },
+    ) => post<Version>(`${projectPath(prj)}/versions`, body),
+    bumpVersion: (prj: string, part: "patch" | "minor" | "major") =>
+      post<Version>(`${projectPath(prj)}/versions/bump`, { part }),
+    version: (prj: string, ver: string) =>
+      get<VersionDetail>(`${projectPath(prj)}/versions/${enc(ver)}`),
+    updateVersion: (prj: string, ver: string, note: string | null) =>
+      patch<Version>(`${projectPath(prj)}/versions/${enc(ver)}`, { note }),
+    deleteVersion: (prj: string, ver: string) =>
+      del(`${projectPath(prj)}/versions/${enc(ver)}`),
+    addVersionLink: (prj: string, ver: string, body: VersionLinkInput) =>
+      post<VersionLink>(`${projectPath(prj)}/versions/${enc(ver)}/links`, body),
+    removeVersionLink: (prj: string, ver: string, id: string) =>
+      del(`${projectPath(prj)}/versions/${enc(ver)}/links/${enc(id)}`),
+
+    issues: (prj: string, status?: IssueStatus) =>
+      get<{ issues: Issue[] }>(
+        `${projectPath(prj)}/issues${qs({ status })}`,
+      ).then((r) => r.issues),
+    createIssue: (
+      prj: string,
+      body: { title: string; bodyMd?: string; versionId?: string | null },
+    ) => post<Issue>(`${projectPath(prj)}/issues`, body),
+    issue: (prj: string, n: number) => get<IssueDetail>(issuePath(prj, n)),
+    updateIssue: (
+      prj: string,
+      n: number,
+      body: { title?: string; bodyMd?: string; versionId?: string | null },
+    ) => patch<Issue>(issuePath(prj, n), body),
+    setIssueStatus: (prj: string, n: number, to: "close" | "reopen") =>
+      post<Issue>(`${issuePath(prj, n)}/${to}`),
+    addIssueComment: (prj: string, n: number, bodyMd: string) =>
+      post<Comment>(`${issuePath(prj, n)}/comments`, { bodyMd }),
+    updateIssueComment: (prj: string, n: number, cid: string, bodyMd: string) =>
+      patch<Comment>(`${issuePath(prj, n)}/comments/${enc(cid)}`, { bodyMd }),
+    deleteIssueComment: (prj: string, n: number, cid: string) =>
+      del(`${issuePath(prj, n)}/comments/${enc(cid)}`),
+
+    // ---- admin settings ----------------------------------------------------
+    installerApp: () =>
+      get<InstallerAppSetting>("/admin/settings/installer-app"),
+    setInstallerApp: (appId: string | null) =>
+      put<InstallerAppSetting>("/admin/settings/installer-app", { appId }),
+
+    // ---- channels ----------------------------------------------------------
+    /** Every channel of every team the caller sits in; `scope: "all"` is admin only. */
+    channels: (opts: { kind?: ChannelKind; scope?: "mine" | "all" } = {}) =>
+      get<{ channels: Channel[] }>(
+        `/channels${qs({ kind: opts.kind, scope: opts.scope })}`,
+      ).then((r) => r.channels),
+    projectChannels: (prj: string, kind?: ChannelKind) =>
+      get<{ channels: Channel[] }>(
+        `${projectPath(prj)}/channels${qs({ kind })}`,
+      ).then((r) => r.channels),
     channel: (id: string) => get<Channel>(`/channels/${enc(id)}`),
-    createChannel: (body: {
-      kind: ChannelKind;
-      name: string;
-      config: unknown;
-    }) => post<Channel>("/channels", body),
+    createChannel: (
+      prj: string,
+      body: { kind: ChannelKind; name: string; config: unknown },
+    ) => post<Channel>(`${projectPath(prj)}/channels`, body),
     updateChannel: (id: string, body: { name?: string; config?: unknown }) =>
       patch<Channel>(`/channels/${enc(id)}`, body),
     extendChannel: (id: string) => post<Channel>(`/channels/${enc(id)}/extend`),
@@ -170,6 +348,7 @@ export function createApiClient({
     revokeChannelDocKey: (id: string) =>
       del<{ revoked: boolean }>(`/channels/${enc(id)}/doc-key`),
 
+    // ---- events ------------------------------------------------------------
     events: () =>
       get<{ events: EventSummary[] }>("/events").then((r) => r.events),
     event: (id: string) => get<EventDetail>(`/events/${enc(id)}`),
@@ -206,181 +385,103 @@ export function createApiClient({
         contentType: file.type,
         size: file.size,
       });
-      const res = await fetchImpl(grant.url, {
-        method: grant.method,
-        headers: grant.headers,
-        body: file,
-      });
-      if (!res.ok)
-        throw new ApiError(
-          res.status,
-          "upload_failed",
-          `poster upload failed (${res.status})`,
-        );
+      await putToGrant(grant, file, "poster");
       return post<EventDetail>(`/events/${enc(id)}/poster/commit`, {
         key: grant.key,
       });
     },
     deletePoster: (id: string) => del(`/events/${enc(id)}/poster`),
 
-    // ---- binary catalog ---------------------------------------------------
-    catalogGroups: () =>
-      get<{ groups: CatalogGroup[] }>("/catalog/groups").then((r) => r.groups),
-    catalogGroup: (id: string) =>
-      get<CatalogGroup>(`/catalog/groups/${enc(id)}`),
-    createCatalogGroup: (name: string) =>
-      post<CatalogGroup>("/catalog/groups", { name }),
-    updateCatalogGroup: (id: string, body: { name?: string }) =>
-      patch<CatalogGroup>(`/catalog/groups/${enc(id)}`, body),
-    deleteCatalogGroup: (id: string) => del(`/catalog/groups/${enc(id)}`),
-    catalogGroupApps: (id: string) =>
-      get<{ apps: CatalogApp[] }>(`/catalog/groups/${enc(id)}/apps`).then(
+    // ---- binary catalog (apps are addressed by id) -------------------------
+    projectCatalogApps: (prj: string) =>
+      get<{ apps: CatalogApp[] }>(`${projectPath(prj)}/catalog/apps`).then(
         (r) => r.apps,
       ),
-    catalogGroupPermissions: (id: string) =>
-      get<{ permissions: CatalogPermission[] }>(
-        `/catalog/groups/${enc(id)}/permissions`,
-      ).then((r) => r.permissions),
-    grantCatalogGroupPermission: (
-      id: string,
-      login: string,
-      level: CatalogPermissionLevel,
-    ) =>
-      post<{ permissions: CatalogPermission[] }>(
-        `/catalog/groups/${enc(id)}/permissions`,
-        { login, level },
-      ).then((r) => r.permissions),
-    revokeCatalogGroupPermission: (id: string, pid: string) =>
-      del(`/catalog/groups/${enc(id)}/permissions/${enc(pid)}`),
-
-    catalogApps: () =>
-      get<{ apps: CatalogApp[] }>("/catalog/apps").then((r) => r.apps),
-    catalogApp: (name: string) => get<CatalogApp>(`/catalog/apps/${enc(name)}`),
-    createCatalogApp: (body: {
-      name: string;
-      path: string;
-      description?: string;
-      debugOnly?: boolean;
-      groupId?: string;
-    }) => post<CatalogApp>("/catalog/apps", body),
+    createCatalogApp: (
+      prj: string,
+      body: { name: string; path: string; description?: string },
+    ) => post<CatalogApp>(`${projectPath(prj)}/catalog/apps`, body),
+    catalogApp: (id: string) => get<CatalogApp>(`/catalog/apps/${enc(id)}`),
     updateCatalogApp: (
-      name: string,
-      body: {
-        name?: string;
-        path?: string;
-        description?: string | null;
-        debugOnly?: boolean;
-        groupId?: string | null;
-      },
-    ) => patch<CatalogApp>(`/catalog/apps/${enc(name)}`, body),
-    deleteCatalogApp: (name: string) => del(`/catalog/apps/${enc(name)}`),
-    catalogSettings: (name: string) =>
-      get<CatalogSettings>(`/catalog/apps/${enc(name)}/settings`),
-    updateCatalogSettings: (name: string, body: Partial<CatalogSettings>) =>
-      patch<CatalogSettings>(`/catalog/apps/${enc(name)}/settings`, body),
-    catalogAppPermissions: (name: string) =>
-      get<{ permissions: CatalogPermission[] }>(
-        `/catalog/apps/${enc(name)}/permissions`,
-      ).then((r) => r.permissions),
-    grantCatalogAppPermission: (
-      name: string,
-      login: string,
-      level: CatalogPermissionLevel,
-    ) =>
-      post<{ permissions: CatalogPermission[] }>(
-        `/catalog/apps/${enc(name)}/permissions`,
-        { login, level },
-      ).then((r) => r.permissions),
-    revokeCatalogAppPermission: (name: string, pid: string) =>
-      del(`/catalog/apps/${enc(name)}/permissions/${enc(pid)}`),
-
-    catalogArtifacts: (name: string) =>
+      id: string,
+      body: { name?: string; path?: string; description?: string | null },
+    ) => patch<CatalogApp>(`/catalog/apps/${enc(id)}`, body),
+    deleteCatalogApp: (id: string) => del(`/catalog/apps/${enc(id)}`),
+    catalogSettings: (id: string) =>
+      get<CatalogSettings>(`/catalog/apps/${enc(id)}/settings`),
+    updateCatalogSettings: (id: string, body: Partial<CatalogSettings>) =>
+      patch<CatalogSettings>(`/catalog/apps/${enc(id)}/settings`, body),
+    catalogArtifacts: (id: string) =>
       get<{ artifacts: CatalogArtifact[] }>(
-        `/catalog/apps/${enc(name)}/artifacts`,
+        `/catalog/apps/${enc(id)}/artifacts`,
       ).then((r) => r.artifacts),
-    deleteCatalogArtifact: (name: string, id: string) =>
-      del(`/catalog/apps/${enc(name)}/artifacts/${enc(id)}`),
-    cleanupCatalogArtifacts: (name: string, dryRun: boolean) =>
+    deleteCatalogArtifact: (id: string, artifactId: string) =>
+      del(`/catalog/apps/${enc(id)}/artifacts/${enc(artifactId)}`),
+    cleanupCatalogArtifacts: (id: string, dryRun: boolean) =>
       post<CatalogCleanupResult>(
-        `/catalog/apps/${enc(name)}/artifacts/cleanup${dryRun ? "?dryRun=true" : ""}`,
+        `/catalog/apps/${enc(id)}/artifacts/cleanup${dryRun ? "?dryRun=true" : ""}`,
       ),
     /** presign → browser PUT to S3 → commit. Returns the committed artifact. */
     async uploadCatalogArtifact(
-      name: string,
+      id: string,
       file: File,
       platform: CatalogPlatform,
       tags: Record<string, string>,
     ): Promise<CatalogArtifact> {
       const grant = await post<CatalogUploadGrant>(
-        `/catalog/apps/${enc(name)}/artifacts`,
+        `/catalog/apps/${enc(id)}/artifacts`,
         { platform, filename: file.name, size: file.size, tags },
       );
-      const res = await fetchImpl(grant.url, {
-        method: grant.method,
-        headers: grant.headers,
-        body: file,
-      });
-      if (!res.ok)
-        throw new ApiError(
-          res.status,
-          "upload_failed",
-          `artifact upload failed (${res.status})`,
-        );
+      await putToGrant(grant, file, "artifact");
       return post<CatalogArtifact>(
         `/catalog/uploads/${enc(grant.uploadId)}/commit`,
       );
     },
-    assetBundles: () =>
-      get<{ bundles: AssetBundle[] }>("/assets/bundles").then((r) => r.bundles),
-    assetBundle: (name: string) =>
-      get<AssetBundleDetail>(`/assets/bundles/${enc(name)}`),
-    createAssetBundle: (body: { name: string; description?: string }) =>
-      post<AssetBundle>("/assets/bundles", body),
+    installerDownloads: () =>
+      get<{ downloads: InstallerDownload[] }>(
+        "/catalog/installer/downloads",
+      ).then((r) => r.downloads),
+
+    // ---- assets (bundles are addressed by id) ------------------------------
+    projectAssetBundles: (prj: string) =>
+      get<{ bundles: AssetBundle[] }>(
+        `${projectPath(prj)}/assets/bundles`,
+      ).then((r) => r.bundles),
+    createAssetBundle: (
+      prj: string,
+      body: { name: string; description?: string },
+    ) => post<AssetBundle>(`${projectPath(prj)}/assets/bundles`, body),
+    assetBundle: (id: string) =>
+      get<AssetBundleDetail>(`/assets/bundles/${enc(id)}`),
     updateAssetBundle: (
-      name: string,
+      id: string,
       body: { name?: string; description?: string | null },
-    ) => patch<AssetBundle>(`/assets/bundles/${enc(name)}`, body),
-    deleteAssetBundle: (name: string) => del(`/assets/bundles/${enc(name)}`),
-    assetVersion: (name: string, version: string) =>
+    ) => patch<AssetBundle>(`/assets/bundles/${enc(id)}`, body),
+    deleteAssetBundle: (id: string) => del(`/assets/bundles/${enc(id)}`),
+    assetVersion: (id: string, version: string) =>
       get<{ bundle: string; version: string; files: AssetFile[] }>(
-        `/assets/bundles/${enc(name)}/versions/${enc(version)}`,
+        `/assets/bundles/${enc(id)}/versions/${enc(version)}`,
       ),
-    deleteAssetVersion: (name: string, version: string) =>
-      del(`/assets/bundles/${enc(name)}/versions/${enc(version)}`),
+    deleteAssetVersion: (id: string, version: string) =>
+      del(`/assets/bundles/${enc(id)}/versions/${enc(version)}`),
     /**
      * presign → browser PUT to S3 → commit, once per file. `path` is where the
      * file sits *inside* the bundle, which is what a map JSON's relative
      * references resolve against.
      */
     async uploadAssetFile(
-      name: string,
+      id: string,
       version: string,
       path: string,
       file: File,
     ): Promise<AssetFile> {
       const grant = await post<AssetUploadGrant>(
-        `/assets/bundles/${enc(name)}/files`,
+        `/assets/bundles/${enc(id)}/files`,
         { version, path, size: file.size },
       );
-      const res = await fetchImpl(grant.url, {
-        method: grant.method,
-        // The signed `content-type` must go up verbatim; the browser would
-        // otherwise send the File's own type and the PUT would 403.
-        headers: grant.headers,
-        body: file,
-      });
-      if (!res.ok)
-        throw new ApiError(
-          res.status,
-          "upload_failed",
-          `asset upload failed (${res.status})`,
-        );
+      await putToGrant(grant, file, "asset");
       return post<AssetFile>(`/assets/uploads/${enc(grant.uploadId)}/commit`);
     },
-    installerDownloads: () =>
-      get<{ downloads: InstallerDownload[] }>(
-        "/catalog/installer/downloads",
-      ).then((r) => r.downloads),
     /**
      * Poster `<img>` source. The API's `posterUrl` is absolute to the API host;
      * building it from our own base keeps the request same-origin (cookie

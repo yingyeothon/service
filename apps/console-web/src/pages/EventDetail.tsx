@@ -9,16 +9,16 @@ import {
   Table,
   Text,
   TextInput,
-  Textarea,
   Title,
 } from "@mantine/core";
 import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
+import { Markdown } from "../components/Markdown";
+import { MdField } from "../components/MdField";
 import { Badge, Confirm, Notice, Spinner } from "../components/ui";
 import { fmtTime } from "../lib/format";
-import { renderBody } from "../lib/text";
 import { useAction, useApiQuery } from "../lib/query";
 import {
   EVENT_STATUSES,
@@ -88,7 +88,7 @@ export function EventDetailPage() {
           mb="md"
         />
       )}
-      <div>{renderBody(e.bodyMd)}</div>
+      <Markdown text={e.bodyMd} />
       <Text size="sm" c="dimmed" mb="md">
         Created {fmtTime(e.createdAt)}
         {e.publishedAt !== null && <> · Published {fmtTime(e.publishedAt)}</>}
@@ -290,14 +290,7 @@ function AdminPanel({
               required
               maxLength={200}
             />
-            <Textarea
-              label="Description (plain text; blank line = paragraph, URLs are linked)"
-              value={body}
-              onChange={(x) => setBody(x.target.value)}
-              maxLength={20000}
-              autosize
-              minRows={4}
-            />
+            <MdField label="Description" value={body} onChange={setBody} />
             <Group>
               <Button type="submit" disabled={act.busy}>
                 Save
@@ -376,7 +369,7 @@ function ProposalCard({ p }: { p: Proposal }) {
           </>
         )}
       </Text>
-      <div>{renderBody(p.bodyMd)}</div>
+      <Markdown text={p.bodyMd} />
     </>
   );
 }
@@ -503,13 +496,10 @@ function ProposalsSection({
                 required
                 maxLength={200}
               />
-              <Textarea
-                label="Details (plain text)"
+              <MdField
+                label="Details"
                 value={draft.bodyMd}
-                onChange={(x) => setDraft({ ...draft, bodyMd: x.target.value })}
-                maxLength={20000}
-                autosize
-                minRows={4}
+                onChange={(bodyMd) => setDraft({ ...draft, bodyMd })}
               />
               <Group>
                 <Button

@@ -13,8 +13,11 @@ const mockApi = {
   ),
   events: vi.fn(),
   channels: vi.fn(),
+  teams: vi.fn(),
   tokens: vi.fn(),
   members: vi.fn(),
+  installerApp: vi.fn(),
+  installerDownloads: vi.fn(),
   setUnauthorizedHandler: vi.fn(),
 } as unknown as ApiClient;
 
@@ -48,8 +51,18 @@ describe("App", () => {
   beforeEach(() => {
     vi.mocked(mockApi.events).mockResolvedValue([]);
     vi.mocked(mockApi.channels).mockResolvedValue([]);
+    vi.mocked(mockApi.teams).mockResolvedValue([]);
     vi.mocked(mockApi.tokens).mockResolvedValue([]);
     vi.mocked(mockApi.members).mockResolvedValue([]);
+    vi.mocked(mockApi.installerDownloads).mockResolvedValue([]);
+    vi.mocked(mockApi.installerApp).mockResolvedValue({
+      appId: null,
+      appName: null,
+      teamId: null,
+      teamName: null,
+      trusted: false,
+      updatedAt: null,
+    });
   });
 
   it("asks anonymous visitors to sign in on protected pages, with next= preserved", async () => {
@@ -60,7 +73,7 @@ describe("App", () => {
     expect(link.getAttribute("href")).toBe(
       "/auth/github/start?next=%2Fchannels%3Fkind%3Dauth",
     );
-    expect(screen.queryByRole("link", { name: "Channels" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Teams" })).toBeNull();
   });
 
   it("tells pending members to wait and hides admin navigation", async () => {
@@ -99,17 +112,21 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "New event" })).toBeNull();
   });
 
-  it("shows the Channels nav item to members", async () => {
+  it("shows the Teams nav item to members and keeps Channels out of the menu", async () => {
     vi.mocked(mockApi.me).mockResolvedValue({
       id: "m_1",
       login: "someone",
       role: "member",
       via: "session",
     });
-    mount("/");
+    mount("/teams");
     // Wait until the member session is reflected in the nav.
-    const links = await screen.findAllByRole("link", { name: "Channels" });
+    const links = await screen.findAllByRole("link", { name: "Teams" });
     expect(links.length).toBeGreaterThan(0);
+    expect(await screen.findByText(/not in any team yet/)).toBeInTheDocument();
+    // Hidden items stay guards, not menu entries.
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(nav.textContent).not.toContain("Channels");
     expect(screen.queryByRole("link", { name: "Members" })).toBeNull();
   });
 
