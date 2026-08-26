@@ -7,12 +7,29 @@ applies to both. Published to S3 + CloudFront by `scripts/deploy-web.sh <stage>`
 
 ## Pages
 
-- `/ui/` — sign-in / role notice.
-- `/ui/channels`, `/ui/channels/new`, `/ui/channels/:id` — member+.
+- `/ui/` — sign-in / role notice, installer downloads.
+- `/ui/teams`, `/ui/teams/:team[/projects|members|discussions|history|settings]`,
+  `/ui/teams/:team/discussions/:id` — member+; what a page offers follows the
+  caller's standing in the team (`role` of `GET /teams/{id}`): owner/member
+  write, a seatless platform admin reads, a pending requester sees the name.
+- `/ui/teams/:team/projects/:prj[/channels|catalog|assets|versions|issues|settings]`,
+  `…/channels/new`, `…/issues/:n` — member+. Channels, catalog apps and asset
+  bundles are created here.
+- `/ui/channels` (every channel across the caller's teams), `/ui/channels/:id`,
+  `/ui/catalog/apps/:id`, `/ui/assets/:id` — member+; detail pages are addressed
+  by id and carry a breadcrumb from the view's `teamName`/`projectName`.
+  `/ui/catalog` and `/ui/assets` redirect to `/ui/teams`.
 - `/ui/tokens` — any signed-in member (tokens carry the role at use time).
-- `/ui/members` — admin.
+- `/ui/members` — admin; also the installer-app setting.
 - `/ui/events`, `/ui/events/:id` — public for published/closed events; proposals,
   votes and admin controls when signed in.
+
+User text (team/project descriptions, discussions, issues, comments, event and
+proposal bodies) is markdown rendered by `src/components/Markdown.tsx`
+(react-markdown + remark-gfm + rehype-sanitize: no raw HTML, no images,
+`http(s)` links only). The CloudFront distribution adds a CSP header
+(`services/console/serverless.yml`, `WebHeadersPolicy`); the built `index.html`
+must stay free of inline scripts for `script-src 'self'` to hold.
 
 ## Development
 

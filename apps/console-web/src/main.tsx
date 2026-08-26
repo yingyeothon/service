@@ -18,16 +18,19 @@ const queryClient = createQueryClient();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <MantineProvider theme={theme} forceColorScheme="light">
-      <ModalsProvider>
-        <Notifications position="top-right" />
-        <QueryClientProvider client={queryClient}>
-          <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-            <AuthProvider>
+      <Notifications position="top-right" />
+      {/* Query and router providers sit outside ModalsProvider: modal
+          children (`modals.open`) render in the provider's portal and must
+          still see the query client and the router. */}
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+          <AuthProvider>
+            <ModalsProvider>
               <App />
-            </AuthProvider>
-          </BrowserRouter>
-        </QueryClientProvider>
-      </ModalsProvider>
+            </ModalsProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
     </MantineProvider>
   </StrictMode>,
 );

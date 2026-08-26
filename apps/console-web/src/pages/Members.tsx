@@ -1,10 +1,98 @@
-import { Button, Table, Text, Title } from "@mantine/core";
+import {
+  Button,
+  Card,
+  Group,
+  Table,
+  Text,
+  TextInput,
+  Title,
+} from "@mantine/core";
+import { useState, type FormEvent } from "react";
+import { Link } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Badge, Confirm, Notice, Spinner } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
+import { teamUrl } from "../lib/team";
 import type { Role } from "../types";
+
+/**
+ * Which catalog app `GET /catalog/installer/downloads` serves. Its team must
+ * be admin-locked, or every member of that team could push the APK every
+ * device self-updates to.
+ */
+export function InstallerAppCard() {
+  const setting = useApiQuery(["admin", "installer-app"], () =>
+    api.installerApp(),
+  );
+  const act = useAction();
+  const [appId, setAppId] = useState("");
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const r = await act.run(() => api.setInstallerApp(appId.trim() || null));
+    if (!r) return;
+    setting.set(r);
+    setAppId("");
+  };
+  const s = setting.data;
+  return (
+    <Card withBorder mb="md" padding="sm">
+      <Text size="sm" fw={600} mb={4}>
+        Installer app
+      </Text>
+      {setting.error && <Notice kind="error">{setting.error}</Notice>}
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      {s && (
+        <Text size="sm" mb="xs">
+          {s.appId ? (
+            <>
+              <strong>{s.appName ?? s.appId}</strong> (<code>{s.appId}</code>)
+              in{" "}
+              {s.teamId ? (
+                <Link to={teamUrl(s.teamId)}>{s.teamName ?? s.teamId}</Link>
+              ) : (
+                "no team"
+              )}{" "}
+              ·{" "}
+              {s.trusted ? (
+                <Badge tone="ok">trusted</Badge>
+              ) : (
+                <Badge tone="danger">untrusted — downloads answer 503</Badge>
+              )}
+            </>
+          ) : (
+            "Not set: the downloads route answers 503."
+          )}
+        </Text>
+      )}
+      <form onSubmit={(e) => void save(e)}>
+        <Group align="end" wrap="wrap">
+          <TextInput
+            label="Catalog app id"
+            placeholder="ca_…"
+            value={appId}
+            onChange={(e) => setAppId(e.target.value)}
+            maxLength={64}
+          />
+          <Button type="submit" disabled={act.busy || !appId.trim()}>
+            Set
+          </Button>
+          {s?.appId && (
+            <Confirm
+              label="Clear"
+              onConfirm={async () => {
+                const r = await act.run(() => api.setInstallerApp(null));
+                if (r) setting.set(r);
+              }}
+              disabled={act.busy}
+            />
+          )}
+        </Group>
+      </form>
+    </Card>
+  );
+}
 
 const TONE: Record<Role, string> = {
   admin: "accent",
@@ -26,6 +114,7 @@ export function MembersPage() {
       <Title order={2} mb="sm">
         Members
       </Title>
+      <InstallerAppCard />
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {list.error && <Notice kind="error">{list.error}</Notice>}
       {pending.length > 0 && (

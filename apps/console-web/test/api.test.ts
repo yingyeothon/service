@@ -127,3 +127,68 @@ describe("session expiry", () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("team and project routes", () => {
+  it("addresses teams, projects, versions, issues and resources by id", async () => {
+    const calls: Array<[string, string, string | undefined]> = [];
+    const fetch = vi.fn<typeof globalThis.fetch>((url, init) => {
+      calls.push([
+        init?.method ?? "GET",
+        typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
+        typeof init?.body === "string" ? init.body : undefined,
+      ]);
+      return Promise.resolve(jsonRes(200, {}));
+    });
+    const api = createApiClient({ fetch });
+    await api.teams("all");
+    await api.joinTeam("studio");
+    await api.setTeamMemberRole("team_1", "m/2", "owner");
+    await api.teamHistory("team_1", "c u", 50);
+    await api.createProject("team_1", { name: "game" });
+    await api.bumpVersion("prj_1", "minor");
+    await api.addVersionLink("prj_1", "ver_1", {
+      kind: "asset_version",
+      bundleId: "ab_1",
+      assetVersion: "v1",
+    });
+    await api.issues("prj_1", "closed");
+    await api.setIssueStatus("prj_1", 7, "close");
+    await api.createChannel("prj_1", { kind: "q", name: "x", config: {} });
+    await api.projectChannels("prj_1", "auth");
+    await api.createCatalogApp("prj_1", { name: "a", path: "life.yyt.a" });
+    await api.catalogSettings("ca_1");
+    await api.createAssetBundle("prj_1", { name: "b" });
+    await api.assetBundle("ab_1");
+    await api.setInstallerApp(null);
+    expect(calls).toEqual([
+      ["GET", "/teams?scope=all", undefined],
+      ["POST", "/teams/join", '{"name":"studio"}'],
+      ["PATCH", "/teams/team_1/members/m%2F2", '{"role":"owner"}'],
+      ["GET", "/teams/team_1/history?cursor=c+u&limit=50", undefined],
+      ["POST", "/teams/team_1/projects", '{"name":"game"}'],
+      ["POST", "/projects/prj_1/versions/bump", '{"part":"minor"}'],
+      [
+        "POST",
+        "/projects/prj_1/versions/ver_1/links",
+        '{"kind":"asset_version","bundleId":"ab_1","assetVersion":"v1"}',
+      ],
+      ["GET", "/projects/prj_1/issues?status=closed", undefined],
+      ["POST", "/projects/prj_1/issues/7/close", "{}"],
+      [
+        "POST",
+        "/projects/prj_1/channels",
+        '{"kind":"q","name":"x","config":{}}',
+      ],
+      ["GET", "/projects/prj_1/channels?kind=auth", undefined],
+      [
+        "POST",
+        "/projects/prj_1/catalog/apps",
+        '{"name":"a","path":"life.yyt.a"}',
+      ],
+      ["GET", "/catalog/apps/ca_1/settings", undefined],
+      ["POST", "/projects/prj_1/assets/bundles", '{"name":"b"}'],
+      ["GET", "/assets/bundles/ab_1", undefined],
+      ["PUT", "/admin/settings/installer-app", '{"appId":null}'],
+    ]);
+  });
+});

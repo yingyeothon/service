@@ -2,7 +2,6 @@ import {
   Anchor,
   Button,
   Card,
-  Checkbox,
   Code,
   Group,
   NumberInput,
@@ -17,8 +16,8 @@ import {
 import { useRef, useState, type DragEvent, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api";
-import { CatalogPermissionsCard } from "../components/CatalogPermissions";
-import { Badge, Confirm, Notice, Spinner } from "../components/ui";
+import { Crumbs } from "../components/Crumbs";
+import { Badge, Confirm, CopyField, Notice, Spinner } from "../components/ui";
 import {
   fmtSize,
   groupArtifactsByVersion,
@@ -26,6 +25,7 @@ import {
 } from "../lib/catalog";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
+import { projectUrl, useTeamStanding } from "../lib/team";
 import {
   CATALOG_PLATFORMS,
   type CatalogApp,
@@ -85,7 +85,7 @@ function UploadCard({
       }
     }
     const r = await act.run(() =>
-      api.uploadCatalogArtifact(app.name, file, platform, tags),
+      api.uploadCatalogArtifact(app.id, file, platform, tags),
     );
     if (!r) return;
     setFile(null);
@@ -210,14 +210,14 @@ function UploadCard({
 }
 
 function SettingsCard({ app }: { app: CatalogApp }) {
-  // Owner/admin only: a 403 hides the card entirely.
+  // Members only (the hook URL is a credential): a 403 hides the card entirely.
   const settings = useApiQuery(
-    ["catalog", "app", app.name, "settings"],
+    ["catalog", "app", app.id, "settings"],
     async () => {
       try {
-        return await api.catalogSettings(app.name);
+        return await api.catalogSettings(app.id);
       } catch (e) {
-        // `null` = not owner/admin: the card stays hidden. TanStack Query v5
+        // `null` = not a member: the card stays hidden. TanStack Query v5
         // rejects `undefined` from a queryFn.
         if (e instanceof ApiError && (e.status === 403 || e.status === 404))
           return null;
@@ -233,7 +233,7 @@ function SettingsCard({ app }: { app: CatalogApp }) {
   const [keep, setKeep] = useState<number | string | null>(null);
   const s = settings.data;
   if (settings.error) return <Notice kind="error">{settings.error}</Notice>;
-  if (s === undefined || s === null) return null; // loading or not owner
+  if (s === undefined || s === null) return null; // loading or not a member
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -243,7 +243,7 @@ function SettingsCard({ app }: { app: CatalogApp }) {
     if (template !== null) body.messageTemplate = template.trim() || null;
     if (typeof keep === "number") body.keepRecentVersions = keep;
     if (Object.keys(body).length === 0) return;
-    const r = await act.run(() => api.updateCatalogSettings(app.name, body));
+    const r = await act.run(() => api.updateCatalogSettings(app.id, body));
     if (!r) return;
     settings.set(r);
     setHook(null);
@@ -255,7 +255,7 @@ function SettingsCard({ app }: { app: CatalogApp }) {
   return (
     <Card withBorder mb="md" padding="sm">
       <Text size="sm" fw={600} mb={4}>
-        Settings (owner only)
+        Settings (team members only)
       </Text>
       {act.error && <Notice kind="error">{act.error}</Notice>}
       <form onSubmit={(e) => void save(e)}>
@@ -308,9 +308,7 @@ function CleanupCard({
   const act = useAction();
   const [result, setResult] = useState<CatalogCleanupResult | null>(null);
   const run = async (dryRun: boolean) => {
-    const r = await act.run(() =>
-      api.cleanupCatalogArtifacts(app.name, dryRun),
-    );
+    const r = await act.run(() => api.cleanupCatalogArtifacts(app.id, dryRun));
     if (!r) return;
     setResult(r);
     if (!dryRun) await onDone();
@@ -318,7 +316,7 @@ function CleanupCard({
   return (
     <Card withBorder mb="md" padding="sm">
       <Text size="sm" fw={600} mb={4}>
-        Retention cleanup (owner only)
+        Retention cleanup
       </Text>
       {act.error && <Notice kind="error">{act.error}</Notice>}
       <Group mb="xs">
@@ -352,123 +350,112 @@ function CleanupCard({
 }
 
 export function CatalogAppPage() {
-  const { name = "" } = useParams();
+  const { id = "" } = useParams();
   const navigate = useNavigate();
-  const app = useApiQuery(["catalog", "app", name], () => api.catalogApp(name));
-  const artifacts = useApiQuery(["catalog", "app", name, "artifacts"], () =>
-    api.catalogArtifacts(name),
+  const app = useApiQuery(["catalog", "app", id], () => api.catalogApp(id));
+  const artifacts = useApiQuery(["catalog", "app", id, "artifacts"], () =>
+    api.catalogArtifacts(id),
   );
-  const groups = useApiQuery(["catalog", "groups"], () => api.catalogGroups());
-  // `null` = not owner/admin (card hidden); TanStack Query v5 rejects
-  // `undefined` from a queryFn.
-  const perms = useApiQuery(["catalog", "app", name, "perms"], async () => {
-    try {
-      return await api.catalogAppPermissions(name);
-    } catch (e) {
-      if (e instanceof ApiError && (e.status === 403 || e.status === 404))
-        return null;
-      throw e;
-    }
-  });
+  const standing = useTeamStanding(app.data?.teamId);
   const act = useAction();
+  const [name, setName] = useState<string | null>(null);
+  const [path, setPath] = useState<string | null>(null);
   const [desc, setDesc] = useState<string | null>(null);
-  const [groupId, setGroupId] = useState<string | null | undefined>(undefined);
-  const [debugOnly, setDebugOnly] = useState<boolean | null>(null);
   const iosDevice = isIosUserAgent(navigator.userAgent);
 
   if (app.error) return <Notice kind="error">{app.error}</Notice>;
   if (!app.data) return <Spinner />;
   const a = app.data;
+  const canWrite = standing.canWrite;
 
   const saveInfo = async (e: FormEvent) => {
     e.preventDefault();
-    const body: Record<string, unknown> = {};
+    const body: { name?: string; path?: string; description?: string | null } =
+      {};
+    if (name !== null && name.trim() !== a.name) body.name = name.trim();
+    if (path !== null && path.trim() !== a.path) body.path = path.trim();
     if (desc !== null) body.description = desc.trim() || null;
-    if (groupId !== undefined) body.groupId = groupId;
-    if (debugOnly !== null) body.debugOnly = debugOnly;
     if (Object.keys(body).length === 0) return;
-    const r = await act.run(() => api.updateCatalogApp(a.name, body));
+    const r = await act.run(() => api.updateCatalogApp(a.id, body));
     if (!r) return;
     app.set(r);
+    setName(null);
+    setPath(null);
     setDesc(null);
-    setGroupId(undefined);
-    setDebugOnly(null);
   };
 
   const versionGroups = groupArtifactsByVersion(artifacts.data ?? []);
+  const backTo =
+    a.teamId && a.projectId
+      ? projectUrl(a.teamId, a.projectId, "catalog")
+      : "/teams";
 
   return (
     <>
+      <Crumbs crumbs={a} current={a.name} />
       <Title order={2} mb="sm">
-        {a.name} {a.debugOnly && <Badge tone="warn">debug</Badge>}
+        {a.name}
       </Title>
+      {!canWrite && !standing.loading && (
+        <Notice>Read-only: you are not seated in this app&rsquo;s team.</Notice>
+      )}
       {act.error && <Notice kind="error">{act.error}</Notice>}
       <Card withBorder mb="md" padding="sm">
+        <CopyField label="App id" value={a.id} />
         <Text size="sm" mb={4}>
-          <Code>{a.path}</Code> · owner{" "}
-          {a.ownerLogin ?? a.pendingOwnerLogin ?? "—"} · created{" "}
+          <Code>{a.path}</Code> · created by {a.createdBy ?? "—"} ·{" "}
           {fmtTime(a.createdAt)}
         </Text>
-        <form onSubmit={(e) => void saveInfo(e)}>
-          <Group align="end" wrap="wrap">
-            <TextInput
-              label="Description"
-              value={desc ?? a.description ?? ""}
-              onChange={(e) => setDesc(e.target.value)}
-              w={280}
-            />
-            <Select
-              label="Group"
-              placeholder="(none)"
-              clearable
-              data={(groups.data ?? []).map((g) => ({
-                value: g.id,
-                label: g.name,
-              }))}
-              value={groupId === undefined ? a.groupId : groupId}
-              onChange={(v) => setGroupId(v)}
-            />
-            <Checkbox
-              label="Debug only"
-              checked={debugOnly ?? a.debugOnly}
-              onChange={(e) => setDebugOnly(e.currentTarget.checked)}
-              mb={8}
-            />
-            <Button type="submit" disabled={act.busy}>
-              Save
-            </Button>
-            <Confirm
-              label="Delete app"
-              onConfirm={async () => {
-                const ok = await act.run(async () => {
-                  await api.deleteCatalogApp(a.name);
-                  return true;
-                });
-                if (ok) void navigate("/catalog");
-              }}
-              disabled={act.busy}
-            />
-          </Group>
-        </form>
+        {canWrite && (
+          <form onSubmit={(e) => void saveInfo(e)}>
+            <Group align="end" wrap="wrap">
+              <TextInput
+                label="Name"
+                value={name ?? a.name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={64}
+                w={180}
+              />
+              <TextInput
+                label="Application id"
+                value={path ?? a.path}
+                onChange={(e) => setPath(e.target.value)}
+                maxLength={200}
+                w={220}
+              />
+              <TextInput
+                label="Description"
+                value={desc ?? a.description ?? ""}
+                onChange={(e) => setDesc(e.target.value)}
+                w={280}
+              />
+              <Button type="submit" disabled={act.busy}>
+                Save
+              </Button>
+              <Confirm
+                label="Delete app"
+                onConfirm={async () => {
+                  const ok = await act.run(async () => {
+                    await api.deleteCatalogApp(a.id);
+                    return true;
+                  });
+                  if (ok) void navigate(backTo);
+                }}
+                disabled={act.busy}
+              />
+            </Group>
+          </form>
+        )}
+        {!canWrite && a.description && <Text size="sm">{a.description}</Text>}
       </Card>
 
-      <UploadCard app={a} onUploaded={() => artifacts.reload()} />
-      <SettingsCard app={a} />
-      <CleanupCard app={a} onDone={() => artifacts.reload()} />
-      {perms.error && <Notice kind="error">{perms.error}</Notice>}
-      <CatalogPermissionsCard
-        title="App permissions"
-        permissions={perms.data ?? undefined}
-        onGrant={async (login, level) => {
-          const r = await api.grantCatalogAppPermission(a.name, login, level);
-          perms.set(r);
-          return r;
-        }}
-        onRevoke={async (pid) => {
-          await api.revokeCatalogAppPermission(a.name, pid);
-          await perms.reload();
-        }}
-      />
+      {canWrite && (
+        <>
+          <UploadCard app={a} onUploaded={() => artifacts.reload()} />
+          <SettingsCard app={a} />
+          <CleanupCard app={a} onDone={() => artifacts.reload()} />
+        </>
+      )}
 
       <Title order={4} mb="xs">
         Artifacts
@@ -514,17 +501,19 @@ export function CatalogAppPage() {
                           ))}
                       </Table.Td>
                       <Table.Td>
-                        <Confirm
-                          label="Delete"
-                          onConfirm={async () => {
-                            const ok = await act.run(async () => {
-                              await api.deleteCatalogArtifact(a.name, art.id);
-                              return true;
-                            });
-                            if (ok) await artifacts.reload();
-                          }}
-                          disabled={act.busy}
-                        />
+                        {canWrite && (
+                          <Confirm
+                            label="Delete"
+                            onConfirm={async () => {
+                              const ok = await act.run(async () => {
+                                await api.deleteCatalogArtifact(a.id, art.id);
+                                return true;
+                              });
+                              if (ok) await artifacts.reload();
+                            }}
+                            disabled={act.busy}
+                          />
+                        )}
                       </Table.Td>
                     </Table.Tr>
                   ))}

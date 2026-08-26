@@ -7,21 +7,27 @@ import {
   Title,
 } from "@mantine/core";
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { ChannelForm } from "../components/ChannelForm";
-import { Notice } from "../components/ui";
+import { Crumbs } from "../components/Crumbs";
+import { Notice, Spinner } from "../components/ui";
 import { buildConfig, emptyForm } from "../lib/channelForm";
 import { errorMessage } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
+import { projectUrl, useTeamStanding } from "../lib/team";
 import type { ChannelKind } from "../types";
 
+/** Channels are created inside a project; topic/match/lobby/q link an auth channel of the same project. */
 export function ChannelNewPage() {
+  const { team: teamId = "", prj = "" } = useParams();
   const nav = useNavigate();
+  const project = useApiQuery(["project", prj], () => api.project(prj));
+  const standing = useTeamStanding(project.data?.teamId);
   const [kind, setKind] = useState<ChannelKind>("auth");
   const [form, setForm] = useState(emptyForm);
-  const auths = useApiQuery(["channels", "auth", false], () =>
-    api.channels({ kind: "auth" }),
+  const auths = useApiQuery(["project", prj, "channels", "auth"], () =>
+    api.projectChannels(prj, "auth"),
   );
   const act = useAction();
   const [localError, setLocalError] = useState<string | null>(null);
@@ -37,7 +43,7 @@ export function ChannelNewPage() {
       return;
     }
     const created = await act.run(() =>
-      api.createChannel({ kind, name: form.name.trim(), config }),
+      api.createChannel(prj, { kind, name: form.name.trim(), config }),
     );
     if (!created) return;
     // The secret is only in this response: hand it to the detail page via
@@ -47,12 +53,30 @@ export function ChannelNewPage() {
     });
   };
 
+  if (project.error) return <Notice kind="error">{project.error}</Notice>;
+  if (!project.data) return <Spinner />;
+  const back = projectUrl(teamId, prj, "channels");
   const needsAuth = kind !== "auth" && auths.data?.length === 0;
   return (
     <>
+      <Crumbs
+        crumbs={{
+          teamId: project.data.teamId,
+          teamName: project.data.teamName,
+          projectId: project.data.id,
+          projectName: project.data.name,
+        }}
+        current="New channel"
+      />
       <Title order={2} mb="sm">
         New channel
       </Title>
+      {!standing.canWrite && !standing.loading && (
+        <Notice>
+          Read-only: creating a channel reveals its secret, so it takes a seat
+          in this project&rsquo;s team (platform admins are refused).
+        </Notice>
+      )}
       <form onSubmit={(e) => void submit(e)}>
         <Stack gap="sm" maw={560}>
           <NativeSelect
@@ -81,8 +105,8 @@ export function ChannelNewPage() {
           />
           {needsAuth && (
             <Notice kind="warn">
-              topic/match/lobby/q channels need an auth channel you own.{" "}
-              <Anchor component={Link} to="/channels/new">
+              topic/match/lobby/q channels need an auth channel in this project.{" "}
+              <Anchor component="button" onClick={() => setKind("auth")}>
                 Create an auth channel
               </Anchor>{" "}
               first.
@@ -98,10 +122,13 @@ export function ChannelNewPage() {
             <Notice kind="error">{localError ?? act.error}</Notice>
           )}
           <Group>
-            <Button type="submit" disabled={act.busy || needsAuth}>
+            <Button
+              type="submit"
+              disabled={act.busy || needsAuth || !standing.canWrite}
+            >
               Create
             </Button>
-            <Button component={Link} to="/channels" variant="default">
+            <Button component={Link} to={back} variant="default">
               Cancel
             </Button>
           </Group>

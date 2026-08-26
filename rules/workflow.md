@@ -20,6 +20,10 @@
 
 - `pnpm -r build` now runs `vite build`; `pnpm lint`/`typecheck` cover `.tsx` (type-aware ESLint via `projectService`). SPA tests run under the root `pnpm test` (`vitest.config.ts` projects include `apps/*`) but are excluded from the coverage thresholds on purpose.
 - When a console route changes shape, update `src/types.ts` + `src/api.ts` and the affected page in the same commit (same rule as the CLI).
+- Every route lives in `src/routes.tsx` with the `NAV_ITEMS` path that guards it; `test/routes.test.tsx` proves each guard resolves, so a new page that forgets its nav item fails in CI rather than on a user's screen. Items that must guard without appearing in the menu use `hidden: true`.
+- `ModalsProvider` must sit **inside** `QueryClientProvider` and the router: `modals.open` renders its children in the provider's portal, and a modal that queries or navigates crashes otherwise (found when the version-links modal was the first `modals.open` user). A tab that opens modals closes them on unmount (`modals.closeAll()`), or the modal outlives the list it reloads.
+- `useAction.run` returns `undefined` on error; a call whose success is _also_ `undefined` (a 204) must map success to a sentinel (`?? null`, `return true`) before deciding what to do next, and never read `act.error` inside the same closure — it is the value from the render that created the closure, not the one `run` just set.
+- What a page may do follows the caller's standing in the team (`useTeamStanding` → `GET /teams/{id}.role`), not the platform role: a seated platform admin writes like any member, a seatless one only reads (`secret: true` routes answer 403), so "delete team/project" is gated on `owner || standing === "admin"`, never on `me.role`.
 
 ## Go CLI (`cli/`)
 

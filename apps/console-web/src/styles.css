@@ -3,8 +3,19 @@ body {
   background: var(--mantine-color-gray-0);
 }
 
-/* renderBody() output (plain-text event/proposal bodies). */
-p {
-  margin: 0 0 0.6em;
+/* Markdown output (sanitized): lists and quotes keep the small type scale. */
+.markdown {
   overflow-wrap: anywhere;
+}
+.markdown ul,
+.markdown ol {
+  font-size: var(--mantine-font-size-sm);
+  padding-left: 1.5em;
+  margin: 0 0 0.6em;
+}
+.markdown blockquote {
+  margin: 0 0 0.6em;
+  padding-left: 0.8em;
+  border-left: 3px solid var(--mantine-color-gray-4);
+  color: var(--mantine-color-dimmed);
 }

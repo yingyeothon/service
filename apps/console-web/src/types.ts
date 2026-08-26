@@ -38,6 +38,197 @@ export interface ApiToken {
   lastUsedAt: number | null;
 }
 
+// ---- teams and projects ----------------------------------------------------
+
+export type TeamRole = "owner" | "member" | "pending";
+/** The caller's standing in a team: `admin` = platform admin without a seat. */
+export type TeamStanding = TeamRole | "admin";
+export type TeamMemberState = "active" | "declined" | "kicked";
+
+/** Every team standing that may read and write the team's projects. */
+export const canWriteTeam = (standing: TeamStanding | undefined): boolean =>
+  standing === "owner" || standing === "member";
+export const isTeamOwner = (standing: TeamStanding | undefined): boolean =>
+  standing === "owner";
+
+/**
+ * A team as listed for its members. A `pending` requester only gets the
+ * name-only shape (`description` and the rest are absent).
+ */
+export interface Team {
+  id: string;
+  name: string;
+  role: TeamStanding;
+  description?: string | null;
+  adminLocked?: boolean;
+  createdBy?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface TeamDetail extends Team {
+  counts?: {
+    owners: number;
+    members: number;
+    pending: number;
+    projects: number;
+  };
+}
+
+export interface TeamMember {
+  id: string;
+  login: string | null;
+  platformRole: Role | null;
+  role: TeamRole;
+  state: TeamMemberState;
+  requestedAt: number;
+  decidedAt: number | null;
+  decidedBy: string | null;
+}
+
+/** Channels whose credentials a departed member still knows. */
+export interface RotationHint {
+  id: string;
+  kind: ChannelKind;
+  name: string;
+}
+
+export interface RemoveMemberResult {
+  removed: string;
+  action: "leave" | "kick";
+  rotate: RotationHint[];
+}
+
+export interface TeamHistoryEntry {
+  id: string;
+  at: number;
+  actor: string | null;
+  action: string;
+  subject: string | null;
+  target: string | null;
+  detail: Record<string, unknown> | null;
+}
+
+export interface HistoryPage {
+  history: TeamHistoryEntry[];
+  next: string | null;
+}
+
+export interface Comment {
+  id: string;
+  bodyMd: string;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  mine: boolean;
+}
+
+export interface Discussion {
+  id: string;
+  teamId: string;
+  title: string;
+  bodyMd: string;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  mine: boolean;
+}
+
+export interface DiscussionDetail extends Discussion {
+  comments: Comment[];
+}
+
+export interface Project {
+  id: string;
+  teamId: string;
+  teamName: string;
+  name: string;
+  description: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectDetail extends Project {
+  counts: {
+    channels: number;
+    apps: number;
+    bundles: number;
+    versions: number;
+    issues: number;
+  };
+}
+
+export interface Version {
+  id: string;
+  projectId: string;
+  name: string;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: number;
+}
+
+export type VersionLinkKind = "artifact" | "asset_version";
+
+export interface VersionLink {
+  id: string;
+  versionId: string;
+  kind: VersionLinkKind;
+  artifactId: string | null;
+  bundleId: string | null;
+  assetVersion: string | null;
+  createdAt: number;
+}
+
+export interface VersionDetail extends Version {
+  links: VersionLink[];
+}
+
+export type VersionLinkInput =
+  | { kind: "artifact"; artifactId: string }
+  | { kind: "asset_version"; bundleId: string; assetVersion: string };
+
+export type IssueStatus = "open" | "closed";
+
+export interface Issue {
+  id: string;
+  projectId: string;
+  number: number;
+  title: string;
+  bodyMd: string;
+  status: IssueStatus;
+  versionId: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  closedAt: number | null;
+}
+
+export interface IssueDetail extends Issue {
+  comments: Comment[];
+}
+
+/** Breadcrumb fields every resource view carries (null on unmapped legacy rows). */
+export interface ResourceCrumbs {
+  teamId: string | null;
+  teamName: string | null;
+  projectId: string | null;
+  projectName: string | null;
+  createdBy: string | null;
+}
+
+export interface InstallerAppSetting {
+  appId: string | null;
+  appName: string | null;
+  teamId: string | null;
+  teamName: string | null;
+  /** The downloads route serves only while this is true. */
+  trusted: boolean;
+  updatedAt: number | null;
+}
+
+// ---- channels ---------------------------------------------------------------
+
 export interface AuthConfig {
   audience: string;
   tokenTtlSec: number;
@@ -132,11 +323,10 @@ export interface ChannelDocKey {
   apiKey?: string;
 }
 
-export interface Channel {
+export interface Channel extends ResourceCrumbs {
   id: string;
   kind: ChannelKind;
   name: string;
-  ownerId: string;
   config: AuthConfig | TopicConfig | MatchConfig | LobbyConfig | QConfig;
   createdAt: number;
   expiresAt: number;
@@ -158,6 +348,8 @@ export interface Channel {
   secret?: string;
   apiKey?: string;
 }
+
+// ---- events -----------------------------------------------------------------
 
 export interface EventSummary {
   id: string;
@@ -214,26 +406,12 @@ export const CATALOG_PLATFORMS = [
   "linux",
 ] as const;
 export type CatalogPlatform = (typeof CATALOG_PLATFORMS)[number];
-export type CatalogPermissionLevel = "read" | "edit";
 
-export interface CatalogGroup {
-  id: string;
-  name: string;
-  ownerLogin: string | null;
-  pendingOwnerLogin: string | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface CatalogApp {
+export interface CatalogApp extends ResourceCrumbs {
   id: string;
   name: string;
   path: string;
-  debugOnly: boolean;
   description: string | null;
-  groupId: string | null;
-  ownerLogin: string | null;
-  pendingOwnerLogin: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -256,14 +434,6 @@ export interface CatalogArtifact {
   tags: Record<string, string>;
   createdAt: number;
   ios?: { manifestUrl: string; installUrl: string };
-}
-
-export interface CatalogPermission {
-  id: string;
-  login: string | null;
-  pending: boolean;
-  level: CatalogPermissionLevel;
-  createdAt: number;
 }
 
 export interface CatalogUploadGrant {
@@ -303,6 +473,8 @@ export interface InstallerDownload {
   createdAt: number;
 }
 
+// ---- assets ----------------------------------------------------------------
+
 export interface AssetVersion {
   version: string;
   files: number;
@@ -310,11 +482,10 @@ export interface AssetVersion {
   createdAt: number;
 }
 
-export interface AssetBundle {
+export interface AssetBundle extends ResourceCrumbs {
   id: string;
   name: string;
   description: string | null;
-  ownerLogin: string | null;
   createdAt: number;
   updatedAt: number;
 }

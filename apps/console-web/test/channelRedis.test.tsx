@@ -14,6 +14,8 @@ const mockApi = {
   setUnauthorizedHandler: vi.fn(),
   channel: vi.fn(),
   channels: vi.fn(),
+  team: vi.fn(),
+  projectChannels: vi.fn(),
   channelRedisUser: vi.fn(),
   issueChannelRedisUser: vi.fn(),
   revokeChannelRedisUser: vi.fn(),
@@ -32,7 +34,11 @@ const CHANNEL: Channel = {
   id: "q_0123",
   kind: "q",
   name: "dungeon",
-  ownerId: "m_1",
+  teamId: "team_1",
+  teamName: "studio",
+  projectId: "prj_1",
+  projectName: "game",
+  createdBy: "alice",
   config: { authChannelId: "auth_9" },
   createdAt: 0,
   expiresAt: 0,
@@ -92,6 +98,13 @@ describe("q channel redis account", () => {
     });
     vi.mocked(mockApi.channel).mockResolvedValue(CHANNEL);
     vi.mocked(mockApi.channels).mockResolvedValue([]);
+    vi.mocked(mockApi.projectChannels).mockResolvedValue([]);
+    // Seated member of the channel's team: may issue and revoke.
+    vi.mocked(mockApi.team).mockResolvedValue({
+      id: "team_1",
+      name: "studio",
+      role: "member",
+    });
   });
 
   it("offers Issue while none exists and shows the password exactly once", async () => {
@@ -192,12 +205,17 @@ describe("q channel redis account", () => {
     ).toBeInTheDocument();
   });
 
-  it("hides the buttons from a non-owner but still shows the block", async () => {
+  it("hides the buttons from a seatless admin but still shows the block", async () => {
     vi.mocked(mockApi.me).mockResolvedValue({
       id: "m_admin",
       login: "root",
       role: "admin",
       via: "session",
+    });
+    vi.mocked(mockApi.team).mockResolvedValue({
+      id: "team_1",
+      name: "studio",
+      role: "admin",
     });
     vi.mocked(mockApi.channelRedisUser).mockResolvedValue({
       ...BLOCK,

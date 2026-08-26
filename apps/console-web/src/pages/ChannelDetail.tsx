@@ -1,18 +1,9 @@
-import {
-  Anchor,
-  Button,
-  Card,
-  Code,
-  Group,
-  Stack,
-  Text,
-  Title,
-} from "@mantine/core";
+import { Button, Card, Code, Group, Stack, Text, Title } from "@mantine/core";
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { api } from "../api";
-import { useAuth } from "../auth";
 import { ChannelForm } from "../components/ChannelForm";
+import { Crumbs } from "../components/Crumbs";
 import {
   Badge,
   Confirm,
@@ -24,6 +15,7 @@ import {
 import { buildConfig, emptyForm, formFromChannel } from "../lib/channelForm";
 import { errorMessage, fmtRelative, fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
+import { projectUrl, useTeamStanding } from "../lib/team";
 import { GATEWAY_KINDS } from "../types";
 import type {
   AuthConfig,
@@ -36,13 +28,17 @@ import type {
 
 export function ChannelDetailPage() {
   const { id = "" } = useParams();
-  const { me } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
   const ch = useApiQuery(["channel", id], () => api.channel(id));
-  const auths = useApiQuery(["channels", "auth", false], () =>
-    api.channels({ kind: "auth" }),
+  const projectId = ch.data?.projectId ?? null;
+  // Sibling auth channels for the edit form: same project only.
+  const auths = useApiQuery(
+    ["project", projectId, "channels", "auth"],
+    () => api.projectChannels(projectId ?? "", "auth"),
+    { enabled: projectId !== null },
   );
+  const standing = useTeamStanding(ch.data?.teamId);
   const act = useAction();
   const [shown, setShown] = useState<string | null>(
     (loc.state as { shown?: string } | null)?.shown ?? null,
@@ -60,7 +56,9 @@ export function ChannelDetailPage() {
   if (ch.error) return <Notice kind="error">{ch.error}</Notice>;
   if (!ch.data) return <Spinner />;
   const c = ch.data;
-  const owner = c.ownerId === me?.id;
+  // Members of the team write (secrets included); a platform admin without a
+  // seat, or anyone on a legacy row with no team, only reads.
+  const owner = standing.canWrite;
   // lobby/q hold no secret: the gateway verifies tokens by calling auth and
   // neither kind has a server-to-server caller, so there is nothing to rotate.
   const hasSecret = !(GATEWAY_KINDS as readonly string[]).includes(c.kind);
@@ -104,16 +102,21 @@ export function ChannelDetailPage() {
       await api.deleteChannel(c.id);
       return true;
     });
-    if (ok) void nav("/channels");
+    if (ok)
+      void nav(
+        c.teamId && c.projectId
+          ? projectUrl(c.teamId, c.projectId, "channels")
+          : "/channels",
+      );
   };
 
   return (
     <>
-      <Text size="sm" mb="xs">
-        <Anchor component={Link} to="/channels">
-          ← Channels
-        </Anchor>
-      </Text>
+      <Crumbs
+        crumbs={c}
+        current={c.name}
+        fallback={{ label: "Channels", to: "/channels" }}
+      />
       <Group gap="xs" mb="sm">
         <Title order={2}>{c.name}</Title>
         <Badge>{c.kind}</Badge>
@@ -129,10 +132,11 @@ export function ChannelDetailPage() {
           {c.status}
         </Badge>
       </Group>
-      {!owner && (
+      {!owner && !standing.loading && (
         <Notice>
-          Owned by another member; admins can extend or delete but not edit or
-          rotate.
+          Read-only: you are not seated in this channel&rsquo;s team. Platform
+          admins can extend or delete, but never edit, rotate or issue
+          credentials.
         </Notice>
       )}
       {act.error && <Notice kind="error">{act.error}</Notice>}
@@ -146,6 +150,9 @@ export function ChannelDetailPage() {
 
       <Card withBorder mb="md">
         <CopyField label="Channel id" value={c.id} />
+        <Text size="sm" c="dimmed">
+          Created by {c.createdBy ?? "—"}
+        </Text>
         {c.kind === "auth" && <AuthDetails c={c} />}
         {c.kind === "topic" && <TopicDetails c={c} />}
         {c.kind === "match" && <MatchDetails c={c} />}

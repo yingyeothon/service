@@ -1,6 +1,5 @@
 import {
   Anchor,
-  Button,
   Code,
   Group,
   NativeSelect,
@@ -15,6 +14,7 @@ import { useAuth } from "../auth";
 import { Badge, Notice, Spinner } from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { useApiQuery } from "../lib/query";
+import { projectUrl } from "../lib/team";
 import type { ChannelKind, ChannelStatus } from "../types";
 
 const STATUS_TONE: Record<ChannelStatus, string> = {
@@ -23,6 +23,7 @@ const STATUS_TONE: Record<ChannelStatus, string> = {
   disabled: "danger",
 };
 
+/** Every channel across the caller's teams; creation happens on a project page. */
 export function ChannelsPage() {
   const { me } = useAuth();
   const [kind, setKind] = useState<ChannelKind | "">("");
@@ -32,16 +33,18 @@ export function ChannelsPage() {
   );
   return (
     <>
-      <Group justify="space-between" mb="sm">
-        <Title order={2}>Channels</Title>
-        <Button component={Link} to="/channels/new">
-          New channel
-        </Button>
-      </Group>
+      <Title order={2} mb="sm">
+        Channels
+      </Title>
       <Text size="sm" c="dimmed" mb="sm">
-        Channels expire 7 days after creation; extend them from the detail page
-        (up to 28 days ahead). Expired channels are disabled, then deleted 30
-        days later.
+        Every channel of every team you sit in. New channels are created from a
+        project&rsquo;s <b>Channels</b> tab (
+        <Anchor component={Link} to="/teams">
+          Teams
+        </Anchor>
+        ). Channels expire 7 days after creation; extend them from the detail
+        page (up to 28 days ahead). Expired channels are disabled, then deleted
+        30 days later.
       </Text>
       <Group mb="md">
         <NativeSelect
@@ -63,8 +66,8 @@ export function ChannelsPage() {
             value={all ? "all" : "mine"}
             onChange={(e) => setAll(e.target.value === "all")}
             data={[
-              { value: "mine", label: "mine" },
-              { value: "all", label: "everyone (admin)" },
+              { value: "mine", label: "my teams" },
+              { value: "all", label: "every team (admin)" },
             ]}
           />
         )}
@@ -73,12 +76,13 @@ export function ChannelsPage() {
       {list.loading && !list.data ? (
         <Spinner />
       ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={560}>
+        <Table.ScrollContainer minWidth={640}>
           <Table striped highlightOnHover>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Name</Table.Th>
                 <Table.Th>Kind</Table.Th>
+                <Table.Th>Project</Table.Th>
                 <Table.Th>Id</Table.Th>
                 <Table.Th>Status</Table.Th>
                 <Table.Th>Expires</Table.Th>
@@ -94,14 +98,24 @@ export function ChannelsPage() {
                     >
                       {c.name}
                     </Anchor>
-                    {all && c.ownerId !== me?.id && (
-                      <Text span size="sm" c="dimmed">
-                        {" "}
-                        · {c.ownerId}
+                  </Table.Td>
+                  <Table.Td>{c.kind}</Table.Td>
+                  <Table.Td>
+                    {c.teamId && c.projectId ? (
+                      <Anchor
+                        component={Link}
+                        to={projectUrl(c.teamId, c.projectId)}
+                        size="sm"
+                      >
+                        {c.teamName ?? c.teamId} /{" "}
+                        {c.projectName ?? c.projectId}
+                      </Anchor>
+                    ) : (
+                      <Text size="sm" c="dimmed">
+                        unassigned
                       </Text>
                     )}
                   </Table.Td>
-                  <Table.Td>{c.kind}</Table.Td>
                   <Table.Td>
                     <Code>{c.id}</Code>
                   </Table.Td>
