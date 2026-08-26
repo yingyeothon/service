@@ -10,6 +10,7 @@
 //   clean: scripts/smoke/dungeon.mjs clean <debugKey> <consoleBaseUrl> <stateFile>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
 import { readFileSync, writeFileSync } from "node:fs";
+import { ensureTeam } from "./_org.mjs";
 
 const [mode, ...args] = process.argv.slice(2);
 let failed = 0;
@@ -55,20 +56,32 @@ if (mode === "setup") {
   ] = args;
   if (!outState) usage();
   const dbg = { "x-debug-key": debugKey };
+  const cookie = await login(consoleBase, debugKey);
+  const team = await ensureTeam(
+    json,
+    consoleBase,
+    cookie,
+    "smoke-dungeon",
+    check,
+  );
   const seeded = await json(`${authBase}/debug/channels`, {
     method: "POST",
     headers: dbg,
     // Short-lived: the debug channel is the only residue `clean` cannot delete.
-    body: { audience: "sample-dungeon", ttlSec: 6 * 3600 },
+    body: {
+      audience: "sample-dungeon",
+      ttlSec: 6 * 3600,
+      projectId: team.prjId,
+    },
   });
   check("seed auth channel", seeded.status === 200, seeded.body?.channelId);
-  const cookie = await login(consoleBase, debugKey);
-  const ch = await json(`${consoleBase}/channels`, {
+  const stamp = Date.now().toString(36);
+  const ch = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
     method: "POST",
     headers: cookie,
     body: {
       kind: "match",
-      name: "sample-dungeon smoke",
+      name: `sample-dungeon smoke ${stamp}`,
       config: {
         authChannelId: seeded.body.channelId,
         partySize: 2,
@@ -80,22 +93,22 @@ if (mode === "setup") {
     },
   });
   check("create match channel", ch.status === 201, ch.body?.id);
-  const topicCh = await json(`${consoleBase}/channels`, {
+  const topicCh = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
     method: "POST",
     headers: cookie,
     body: {
       kind: "topic",
-      name: "sample-dungeon smoke (rooms)",
+      name: `sample-dungeon smoke ${stamp} (rooms)`,
       config: { authChannelId: seeded.body.channelId },
     },
   });
   check("create topic channel", topicCh.status === 201, topicCh.body?.id);
-  const chTopic = await json(`${consoleBase}/channels`, {
+  const chTopic = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
     method: "POST",
     headers: cookie,
     body: {
       kind: "match",
-      name: "sample-dungeon smoke (topic flow)",
+      name: `sample-dungeon smoke ${stamp} (topic flow)`,
       config: {
         authChannelId: seeded.body.channelId,
         partySize: 2,

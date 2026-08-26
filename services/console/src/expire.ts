@@ -1,5 +1,12 @@
 import { nowSec, systemClock, ulid, type Clock, type Logger } from "@yyt/core";
-import type { AssetsDb, CatalogDb, ConsoleDb, StateDb } from "@yyt/console-db";
+import type {
+  AssetsDb,
+  CatalogDb,
+  ConsoleDb,
+  ExpiredChannel,
+  OrgDb,
+  StateDb,
+} from "@yyt/console-db";
 import type { RedisAclAdmin } from "@yyt/redis";
 import type { ArtifactStore } from "./artifact-store.js";
 import { ASSET_UPLOAD_KEY_PREFIX } from "./assets.js";
@@ -16,6 +23,7 @@ export const UPLOAD_GARBAGE_GRACE_SEC = 24 * 3600;
 export async function runExpire({
   db,
   state,
+  org,
   clock = systemClock,
   logger,
   graceSec = CHANNEL_DELETE_GRACE_SEC,
@@ -23,10 +31,16 @@ export async function runExpire({
   db: ConsoleDb;
   /** Present on a stage with a state stack; a deleted channel's documents go with it. */
   state?: StateDb;
+  /** Records each hard-deleted channel in its org's history (best-effort). */
+  org?: OrgDb;
   clock?: Clock;
   logger: Logger;
   graceSec?: number;
-}): Promise<{ disabled: string[]; deleted: string[]; documents: number }> {
+}): Promise<{
+  disabled: string[];
+  deleted: ExpiredChannel[];
+  documents: number;
+}> {
   const now = nowSec(clock);
   const r = await db.expireChannels(now, graceSec);
   if (r.disabled.length + r.deleted.length > 0) {
@@ -36,8 +50,33 @@ export async function runExpire({
       action: "channel.expire",
       target: null,
       at: now,
-      detail: r,
+      detail: { disabled: r.disabled, deleted: r.deleted.map((d) => d.id) },
     });
+  }
+  // The org's own record of the deletion. Best-effort like every resource
+  // history row (`rules/data.md`): the sweep already happened, and a failed
+  // history insert must not fail the cron and re-run it tomorrow.
+  for (const d of r.deleted) {
+    if (!org || d.orgId === null) continue;
+    try {
+      await org.appendHistory({
+        id: ulid(now * 1000),
+        orgId: d.orgId,
+        at: now,
+        actorId: null,
+        action: "resource.expire",
+        target: d.id,
+        detail: {
+          resource: { kind: `channel:${d.kind}`, id: d.id, name: d.name },
+        },
+      });
+    } catch (e) {
+      logger.error("org history write failed", {
+        orgId: d.orgId,
+        target: d.id,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
   // Documents die with their channel — at deletion, not expiry, because
   // extending revives an expired channel and would leave the owner with a live
@@ -47,8 +86,8 @@ export async function runExpire({
   // a prefix test would be wrong anyway — auth's debug seeding hook mints
   // channels as `dbg_{ulid}`, which an `auth_` test would skip for ever.
   let documents = 0;
-  for (const id of r.deleted)
-    if (state) documents += await deleteChannelDocs(state, id, logger);
+  for (const d of r.deleted)
+    if (state) documents += await deleteChannelDocs(state, d.id, logger);
   logger.info("expire sweep", {
     disabled: r.disabled.length,
     deleted: r.deleted.length,

@@ -95,6 +95,8 @@ export function build(
       id: "auth_a",
       kind: "auth",
       ownerId: "m1",
+      orgId: "org_1",
+      projectId: "prj_1",
       name: "a",
       config: {
         audience: "game-a",
@@ -110,6 +112,8 @@ export function build(
       id: "match_a",
       kind: "match",
       ownerId: "m1",
+      orgId: "org_1",
+      projectId: "prj_1",
       name: "m",
       config: matchConfig,
       secret: { apiKey: API_KEY },

@@ -13,33 +13,36 @@ import {
   parse,
   STAGE,
   URLS,
+  type Team,
 } from "./helpers.js";
 
-/** Creates an auth channel for `cookie` and returns its id. */
+/** Creates an auth channel in `u`'s project and returns its id. */
 async function authFor(
   h: ReturnType<typeof harness>,
-  cookie: Record<string, string>,
+  u: Team,
 ): Promise<string> {
   return parse(
     await h.app(
-      ev("POST", "/channels", {
-        headers: cookie,
+      ev("POST", `/projects/${u.prjId}/channels`, {
+        headers: u.cookie,
         body: { kind: "auth", name: "base", config: { audience: "x" } },
       }),
     ),
   ).id as string;
 }
 
+let seq = 0;
 async function create(
   h: ReturnType<typeof harness>,
-  cookie: Record<string, string>,
+  u: Team,
   kind: "lobby" | "q",
   config: Record<string, unknown>,
 ) {
+  // Names are unique within the org, so every attempt gets a fresh one.
   return h.app(
-    ev("POST", "/channels", {
-      headers: cookie,
-      body: { kind, name: kind, config },
+    ev("POST", `/projects/${u.prjId}/channels`, {
+      headers: u.cookie,
+      body: { kind, name: `${kind}-${++seq}`, config },
     }),
   );
 }
@@ -47,10 +50,10 @@ async function create(
 describe("lobby/q channels", () => {
   it("creates both kinds without a secret and renders the gateway URL", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
 
-    const lc = await create(h, a.cookie, "lobby", { authChannelId });
+    const lc = await create(h, a, "lobby", { authChannelId });
     expect(lc.statusCode).toBe(201);
     const lobby = parse(lc);
     // Neither kind has a server-to-server caller, so creation reveals nothing.
@@ -82,7 +85,7 @@ describe("lobby/q channels", () => {
     });
     expect(lobby.redis).toBeUndefined();
 
-    const q = parse(await create(h, a.cookie, "q", { authChannelId }));
+    const q = parse(await create(h, a, "q", { authChannelId }));
     expect(q).toMatchObject({
       kind: "q",
       wsUrl: `${URLS.gatewayWs}/?channel=${q.id}`,
@@ -121,10 +124,10 @@ describe("lobby/q channels", () => {
 
   it("rejects the capability combinations the gateway could not report cleanly", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
 
-    const partyScope = await create(h, a.cookie, "lobby", {
+    const partyScope = await create(h, a, "lobby", {
       authChannelId,
       capabilities: { party: false, say: ["party"] },
     });
@@ -134,7 +137,7 @@ describe("lobby/q channels", () => {
       message: 'say scope "party" requires capabilities.party',
     });
 
-    const zoneScope = await create(h, a.cookie, "lobby", {
+    const zoneScope = await create(h, a, "lobby", {
       authChannelId,
       capabilities: { pos: false, say: ["zone"] },
     });
@@ -142,7 +145,7 @@ describe("lobby/q channels", () => {
 
     // A chat-only lobby is legitimate: no positions, user-scoped chat only.
     const chatOnly = parse(
-      await create(h, a.cookie, "lobby", {
+      await create(h, a, "lobby", {
         authChannelId,
         capabilities: { pos: false, say: ["user"], party: false, event: false },
       }),
@@ -158,11 +161,11 @@ describe("lobby/q channels", () => {
 
   it("normalizes mapUrl and canonicalizes say scopes", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
 
     const ok = parse(
-      await create(h, a.cookie, "lobby", {
+      await create(h, a, "lobby", {
         authChannelId,
         mapUrl: `${CDN}/assets/map/7`,
         capabilities: { say: ["user", "zone", "zone"] },
@@ -184,15 +187,15 @@ describe("lobby/q channels", () => {
       `${CDN}.evil.test/map.json`,
       `${CDN}:8443/map.json`,
     ]) {
-      const r = await create(h, a.cookie, "lobby", { authChannelId, mapUrl });
+      const r = await create(h, a, "lobby", { authChannelId, mapUrl });
       expect(r.statusCode, mapUrl).toBe(400);
     }
   });
 
   it("rejects unknown fields, bad zones and out-of-range tuning", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
     for (const config of [
       { authChannelId, queueKeyPrefix: "game:mine:" }, // prefixes are derived
       { authChannelId, defaultZone: "Town Square" },
@@ -200,30 +203,27 @@ describe("lobby/q channels", () => {
       { authChannelId, partySizeMax: 1 },
       { authChannelId, capabilities: { say: ["shout"] } },
     ]) {
-      expect((await create(h, a.cookie, "lobby", config)).statusCode).toBe(400);
+      expect((await create(h, a, "lobby", config)).statusCode).toBe(400);
     }
     // `q` takes the auth link and nothing else.
     expect(
-      (await create(h, a.cookie, "q", { authChannelId, queueKeyPrefix: "x" }))
+      (await create(h, a, "q", { authChannelId, queueKeyPrefix: "x" }))
         .statusCode,
     ).toBe(400);
   });
 
   it("requires an auth channel the caller owns, and has no secret to rotate", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const b = await h.login("bob", "member");
-    const mine = await authFor(h, a.cookie);
-    const theirs = await authFor(h, b.cookie);
+    const a = await h.team("alice");
+    const b = await h.team("bob");
+    const mine = await authFor(h, a);
+    const theirs = await authFor(h, b);
 
     expect(
-      (await create(h, a.cookie, "lobby", { authChannelId: theirs }))
-        .statusCode,
+      (await create(h, a, "lobby", { authChannelId: theirs })).statusCode,
     ).toBe(400);
 
-    const lobby = parse(
-      await create(h, a.cookie, "lobby", { authChannelId: mine }),
-    );
+    const lobby = parse(await create(h, a, "lobby", { authChannelId: mine }));
     const rot = await h.app(
       ev("POST", `/channels/${lobby.id}/rotate-secret`, { headers: a.cookie }),
     );
@@ -233,10 +233,10 @@ describe("lobby/q channels", () => {
 
   it("replaces config wholesale on PATCH, defaults included", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
     const lobby = parse(
-      await create(h, a.cookie, "lobby", {
+      await create(h, a, "lobby", {
         authChannelId,
         partySizeMax: 8,
         mapUrl: `${CDN}/assets/map/1`,
@@ -265,10 +265,10 @@ describe("lobby/q channels", () => {
 describe("GET /gw/channels/{id}", () => {
   const setup = async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
-    const lobby = parse(await create(h, a.cookie, "lobby", { authChannelId }));
-    const q = parse(await create(h, a.cookie, "q", { authChannelId }));
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
+    const lobby = parse(await create(h, a, "lobby", { authChannelId }));
+    const q = parse(await create(h, a, "q", { authChannelId }));
     return { h, a, authChannelId, lobby, q };
   };
   const gw = (id: string, token = GATEWAY_TOKEN) =>
@@ -283,7 +283,6 @@ describe("GET /gw/channels/{id}", () => {
     expect(parse(r)).toMatchObject({
       id: lobby.id,
       kind: "lobby",
-      name: "lobby",
       expiresAt: NOW_SEC + 7 * 86400,
       authVerifyUrl: `${URLS.auth}/c/${authChannelId}/verify`,
       config: { capabilities: { pos: true }, flushIntervalMs: 200 },
@@ -327,7 +326,7 @@ describe("GET /gw/channels/{id}", () => {
     const { h, a, authChannelId } = await setup();
     const topic = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: { kind: "topic", name: "t", config: { authChannelId } },
         }),
@@ -367,21 +366,21 @@ describe("GET /gw/channels/{id}", () => {
 
   it("omits wsUrl until the gateway host actually exists", async () => {
     const h = harness({ urls: { ...URLS, gatewayWs: "" } });
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
-    const lobby = parse(await create(h, a.cookie, "lobby", { authChannelId }));
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
+    const lobby = parse(await create(h, a, "lobby", { authChannelId }));
     // A copyable URL for a host that does not resolve reads as "configured".
     expect(lobby.wsUrl).toBeUndefined();
-    const q = parse(await create(h, a.cookie, "q", { authChannelId }));
+    const q = parse(await create(h, a, "q", { authChannelId }));
     expect(q.wsUrl).toBeUndefined();
     expect(q.redis).toBeDefined();
   });
 
   it("answers 503 when no token is configured, and refuses a weak one", async () => {
     const h = harness({ gatewayToken: "" });
-    const a = await h.login("alice", "member");
-    const authChannelId = await authFor(h, a.cookie);
-    const lobby = parse(await create(h, a.cookie, "lobby", { authChannelId }));
+    const a = await h.team("alice");
+    const authChannelId = await authFor(h, a);
+    const lobby = parse(await create(h, a, "lobby", { authChannelId }));
     const unconf = await h.app(gw(lobby.id as string));
     expect(unconf.statusCode).toBe(503);
     // Distinguishable from the 503 a database outage produces: one is
@@ -395,10 +394,10 @@ describe("GET /gw/channels/{id}", () => {
     // `buildApp` is memoized without a catch, so a throw here would turn every
     // console request into a 502 that only a redeploy clears.
     const weak = harness({ gatewayToken: "too-short" });
-    const wa = await weak.login("alice", "member");
-    const weakAuth = await authFor(weak, wa.cookie);
+    const wa = await weak.team("alice");
+    const weakAuth = await authFor(weak, wa);
     const weakLobby = parse(
-      await create(weak, wa.cookie, "lobby", { authChannelId: weakAuth }),
+      await create(weak, wa, "lobby", { authChannelId: weakAuth }),
     );
     expect((await weak.app(gw(weakLobby.id as string))).statusCode).toBe(503);
     expect(

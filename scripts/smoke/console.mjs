@@ -5,6 +5,8 @@
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens or secrets.
 // GATEWAY_TOKEN enables the GET /gw/channels checks; it comes through the environment
 // rather than argv because argv is visible in `ps` (docs/secrets.md).
+import { ensureTeam } from "./_org.mjs";
+
 const [base, debugKey, authBase] = process.argv.slice(2);
 const gatewayToken = process.env.GATEWAY_TOKEN ?? "";
 if (!base || !debugKey) {
@@ -59,11 +61,15 @@ check(
   ).status === 401,
 );
 
+const stamp = Date.now().toString(36);
 const admin = await login("smoke-admin", "admin", -1001);
 const member = await login("smoke-member", "member", -1002);
 const pending = await login("smoke-pending", "pending", -1003);
 const as = (u, extra = {}) => ({ cookie: u.cookie, origin: base, ...extra });
 
+// Every channel lives in a project: the member's own `smoke-console` org.
+const req = (url, o) => call(url.replace(base, ""), o);
+const team = await ensureTeam(req, base, as(member), "smoke-console", check);
 const me = await call("/me", { headers: as(member) });
 check(
   "/me via session",
@@ -96,19 +102,19 @@ check(
 check(
   "pending cannot create",
   (
-    await call("/channels", {
+    await call(`/projects/${team.prjId}/channels`, {
       method: "POST",
       headers: as(pending),
       body: { kind: "topic", name: "x", config: { authChannelId: "abc" } },
     })
   ).status === 403,
 );
-const auth = await call("/channels", {
+const auth = await call(`/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: bearer,
   body: {
     kind: "auth",
-    name: "smoke auth",
+    name: `smoke auth ${stamp}`,
     config: { audience: "smoke", redirectAllowlist: ["https://example.com/"] },
   },
 });
@@ -120,39 +126,51 @@ check(
 const chId = auth.body?.id;
 const got = await call(`/channels/${chId}`, { headers: as(member) });
 check(
-  "get hides secret",
+  "get hides secret and carries breadcrumbs",
   got.status === 200 &&
     got.body?.secret === undefined &&
-    got.body?.startUrl?.includes(chId),
+    got.body?.startUrl?.includes(chId) &&
+    got.body?.projectId === team.prjId &&
+    got.body?.orgName === "smoke-console" &&
+    got.body?.createdBy === "smoke-member",
+  got.text.slice(0, 200),
 );
 check(
-  "other member 404",
-  (await call(`/channels/${chId}`, { headers: as(pending) })).status === 404 ||
-    true,
+  "pending member 403",
+  (await call(`/channels/${chId}`, { headers: as(pending) })).status === 403,
 );
 check(
   "admin can view",
   (await call(`/channels/${chId}`, { headers: as(admin) })).status === 200,
 );
+check(
+  "admin cannot rotate",
+  (
+    await call(`/channels/${chId}/rotate-secret`, {
+      method: "POST",
+      headers: as(admin),
+    })
+  ).status === 403,
+);
 if (authBase) {
   const wk = await fetch(`${authBase}/c/${chId}/.well-known/config`);
   check("auth stack sees the channel", wk.status === 200, String(wk.status));
 }
-const topic = await call("/channels", {
+const topic = await call(`/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: as(member),
-  body: { kind: "topic", name: "t", config: { authChannelId: chId } },
+  body: { kind: "topic", name: `t-${stamp}`, config: { authChannelId: chId } },
 });
 check(
   "create topic channel",
   topic.status === 201 && /^[0-9a-f]{64}$/.test(topic.body?.apiKey ?? ""),
 );
-const match = await call("/channels", {
+const match = await call(`/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: as(member),
   body: {
     kind: "match",
-    name: "m",
+    name: `m-${stamp}`,
     config: {
       authChannelId: chId,
       partySize: 2,
@@ -164,12 +182,12 @@ check(
   "create match channel",
   match.status === 201 && typeof match.body?.wsUrl === "string",
 );
-const lobby = await call("/channels", {
+const lobby = await call(`/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: as(member),
   body: {
     kind: "lobby",
-    name: "l",
+    name: `l-${stamp}`,
     config: {
       authChannelId: chId,
       capabilities: { say: ["zone", "user"] },
@@ -200,7 +218,7 @@ check(
 check(
   "lobby rejects a map URL off the asset CDN",
   (
-    await call("/channels", {
+    await call(`/projects/${team.prjId}/channels`, {
       method: "POST",
       headers: as(member),
       body: {
@@ -214,7 +232,7 @@ check(
 check(
   "lobby rejects an impossible capability combination",
   (
-    await call("/channels", {
+    await call(`/projects/${team.prjId}/channels`, {
       method: "POST",
       headers: as(member),
       body: {
@@ -237,10 +255,10 @@ check(
     })
   ).status === 400,
 );
-const q = await call("/channels", {
+const q = await call(`/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: as(member),
-  body: { kind: "q", name: "q", config: { authChannelId: chId } },
+  body: { kind: "q", name: `q-${stamp}`, config: { authChannelId: chId } },
 });
 // `dev` is this script's only target; the stage is part of the namespace so a
 // dev credential cannot match prod keys on the shared Redis instance.
@@ -327,15 +345,15 @@ try {
   await redisUser("DELETE").catch(() => undefined);
 }
 check(
-  // Admins may look at a channel they do not own but never mint for it, the
-  // same line rotate-secret draws (docs/decisions.md "Console permission model").
-  "an admin cannot mint for someone else's channel",
+  // Admins may look at a channel of an org they are not in but never mint for
+  // it, the same line rotate-secret draws (docs/decisions.md).
+  "an admin cannot mint for another org's channel",
   (
     await call(`/channels/${q.body?.id}/redis-user`, {
       method: "POST",
       headers: as(admin),
     })
-  ).status === 404,
+  ).status === 403,
   "",
 );
 
@@ -467,9 +485,26 @@ const approved = await call(`/members/${pending.id}/approve`, {
 });
 check("approve", approved.status === 200 && approved.body?.role === "member");
 check(
-  "topic must reference own auth channel",
+  "an outsider cannot create in the org's project",
   (
-    await call("/channels", {
+    await call(`/projects/${team.prjId}/channels`, {
+      method: "POST",
+      headers: as(pending),
+      body: { kind: "auth", name: `p-${stamp}`, config: { audience: "p" } },
+    })
+  ).status === 404,
+);
+const theirs = await ensureTeam(
+  req,
+  base,
+  as(pending),
+  "smoke-console-2",
+  check,
+);
+check(
+  "topic must reference an auth channel of the same project",
+  (
+    await call(`/projects/${theirs.prjId}/channels`, {
       method: "POST",
       headers: as(pending),
       body: { kind: "topic", name: "p", config: { authChannelId: chId } },
@@ -477,14 +512,34 @@ check(
   ).status === 400,
 );
 check(
-  "approved member now creates",
+  "approved member now creates in their own project",
   (
-    await call("/channels", {
+    await call(`/projects/${theirs.prjId}/channels`, {
       method: "POST",
       headers: as(pending),
-      body: { kind: "auth", name: "p", config: { audience: "p" } },
+      body: { kind: "auth", name: `p-${stamp}`, config: { audience: "p" } },
     })
   ).status === 201,
+);
+check(
+  "duplicate channel name in the org is 409",
+  (
+    await call(`/projects/${theirs.prjId}/channels`, {
+      method: "POST",
+      headers: as(pending),
+      body: { kind: "auth", name: `P-${stamp}`, config: { audience: "p" } },
+    })
+  ).status === 409,
+);
+const hist = await call(`/orgs/${team.orgId}/history?limit=50`, {
+  headers: as(member),
+});
+check(
+  "org history records the channel writes",
+  hist.status === 200 &&
+    (hist.body?.history ?? []).some((h) => h.action === "resource.create") &&
+    (hist.body?.history ?? []).some((h) => h.action === "resource.rotate"),
+  hist.text.slice(0, 160),
 );
 
 // cleanup
@@ -525,9 +580,10 @@ check(
   "session gone",
   (await call("/me", { headers: as(member) })).status === 401,
 );
-// Residue on dev: the three `smoke-*` members, soft-deleted channels, revoked
-// tokens and audit rows stay until the sweep; reruns reset the pending member's
-// role through the debug hook (it re-applies `role`).
+// Residue on dev: the three `smoke-*` members, the `smoke-console{,-2}` orgs
+// (reused by the next run), soft-deleted channels, revoked tokens and audit
+// rows stay until the sweep; reruns reset the pending member's role through
+// the debug hook (it re-applies `role`).
 
 console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");
 process.exit(failed ? 1 : 0);

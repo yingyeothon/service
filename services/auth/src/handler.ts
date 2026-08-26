@@ -1,10 +1,11 @@
 import {
   createConsoleDb,
+  createOrgDb,
   createPrismaClient,
   mysqlOptionsFromEnv,
   type ConsoleDb,
 } from "@yyt/console-db";
-import { systemClock, type Logger } from "@yyt/core";
+import { systemClock, ulid, type Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createRedisKv, redisOptionsFromEnv } from "@yyt/redis";
 import { createAuthApp } from "./app.js";
@@ -54,12 +55,17 @@ function build(): (event: HttpEvent) => Promise<HttpResult> {
     try {
       // Seeding writes the console DB, so it needs the dev console account
       // published as /yyt-service/dev/auth/debug-mysql-* (docs/decisions.md).
-      const writer: ConsoleDb = createConsoleDb(
-        createPrismaClient(mysqlOptionsFromEnv(process.env, "DEBUG_MYSQL_")),
+      const writerClient = createPrismaClient(
+        mysqlOptionsFromEnv(process.env, "DEBUG_MYSQL_"),
       );
+      const writer: ConsoleDb = createConsoleDb(writerClient);
       extraRoutes = createDebugRoutes({
         debugKey: process.env.DEBUG_KEY ?? "",
         consoleDb: writer,
+        // The seeder's org/project rows; the history id is what console uses.
+        orgDb: createOrgDb(writerClient, {
+          newHistoryId: (at) => ulid(at * 1000),
+        }),
         channels,
         clock,
       });

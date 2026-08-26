@@ -19,35 +19,38 @@ import {
   REDIS_ENDPOINT,
   STAGE,
   type Json,
+  type Team,
 } from "./helpers.js";
 
+let seq = 0;
 async function qChannel(
   h: ReturnType<typeof harness>,
-  cookie: Record<string, string>,
+  u: Team,
 ): Promise<string> {
+  const n = ++seq;
   const authChannelId = parse(
     await h.app(
-      ev("POST", "/channels", {
-        headers: cookie,
-        body: { kind: "auth", name: "base", config: { audience: "x" } },
+      ev("POST", `/projects/${u.prjId}/channels`, {
+        headers: u.cookie,
+        body: { kind: "auth", name: `base-${n}`, config: { audience: "x" } },
       }),
     ),
   ).id as string;
-  return parse(
-    await h.app(
-      ev("POST", "/channels", {
-        headers: cookie,
-        body: { kind: "q", name: "q", config: { authChannelId } },
-      }),
-    ),
-  ).id as string;
+  const q = await h.app(
+    ev("POST", `/projects/${u.prjId}/channels`, {
+      headers: u.cookie,
+      body: { kind: "q", name: `q-${n}`, config: { authChannelId } },
+    }),
+  );
+  expect(q.statusCode, q.body).toBe(201);
+  return parse(q).id as string;
 }
 
 describe("participant redis credentials", () => {
   it("issues a scoped credential once, with the whole copyable block", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
 
     const before = parse(
       await h.app(
@@ -94,8 +97,8 @@ describe("participant redis credentials", () => {
 
   it("re-issuing replaces the credential rather than adding a second one", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     const first = parse(
       await h.app(
         ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
@@ -116,25 +119,44 @@ describe("participant redis credentials", () => {
 
   it("rate-limits issuing, because every issue rewrites the whole aclfile", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const one = await qChannel(h, a.cookie);
-    const two = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const one = await qChannel(h, a);
+    const two = await qChannel(h, a);
     const post = (id: string) =>
       h.app(ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }));
     expect((await post(one)).statusCode).toBe(200);
-    // Per member, not per channel: owning a second channel must not double the
-    // rate at which one member can make Redis rewrite its ACL file.
+    // Per member: a second channel must not double the rate at which one
+    // member can make Redis rewrite its ACL file.
     expect((await post(two)).statusCode).toBe(429);
     // The refusal lands before any work reaches Redis.
     expect(h.redisAcl.users.size).toBe(1);
     h.clock.tick(REDIS_ISSUE_COOLDOWN_SEC + 1);
     expect((await post(two)).statusCode).toBe(200);
+    // And per channel: every org member may mint, so N teammates issuing the
+    // same channel back to back would otherwise be N `ACL SAVE`s.
+    const mate = await h.login("mate", "member");
+    await h.seat(a, a.orgId, "mate");
+    expect(
+      (
+        await h.app(
+          ev("POST", `/channels/${two}/redis-user`, { headers: mate.cookie }),
+        )
+      ).statusCode,
+    ).toBe(429);
+    h.clock.tick(REDIS_ISSUE_COOLDOWN_SEC + 1);
+    expect(
+      (
+        await h.app(
+          ev("POST", `/channels/${two}/redis-user`, { headers: mate.cookie }),
+        )
+      ).statusCode,
+    ).toBe(200);
   });
 
   it("tells the owner when a credential could not be persisted", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     h.redisAcl.failNext("issue", "after-mutation");
     const r = await h.app(
       ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
@@ -152,8 +174,8 @@ describe("participant redis credentials", () => {
 
   it("keeps the password out of the audit log", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     const issued = parse(
       await h.app(
         ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
@@ -168,8 +190,8 @@ describe("participant redis credentials", () => {
 
   it("revokes on request and on channel delete", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     await h.app(
       ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
     );
@@ -207,8 +229,8 @@ describe("participant redis credentials", () => {
 
   it("survives a revoke failure while deleting a channel", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     await h.app(
       ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
     );
@@ -224,8 +246,8 @@ describe("participant redis credentials", () => {
 
   it("keeps the credential while the channel is only expired", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     await h.app(
       ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
     );
@@ -242,16 +264,16 @@ describe("participant redis credentials", () => {
       clock: h.clock,
       logger: nullLogger,
     });
-    expect(deleted).toContain(id);
+    expect(deleted.map((d) => d.id)).toContain(id);
     for (const gone of deleted)
-      await revokeChannelRedis(h.redisAcl, gone, STAGE, nullLogger);
+      await revokeChannelRedis(h.redisAcl, gone.id, STAGE, nullLogger);
     expect(h.redisAcl.users.size).toBe(0);
   });
 
   it("reconciles orphans the delete-time revoke dropped", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     await h.app(
       ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
     );
@@ -286,8 +308,8 @@ describe("participant redis credentials", () => {
 
   it("never touches an account it did not mint", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     await h.app(
       ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
     );
@@ -360,8 +382,8 @@ describe("participant redis credentials", () => {
 
   it("refuses an expired channel", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     // Expire the channel without ticking past the 7-day session TTL, which
     // would answer 401 and prove nothing about this route.
     h.db.channels.set(id, {
@@ -375,19 +397,27 @@ describe("participant redis credentials", () => {
     expect(h.redisAcl.users.size).toBe(0);
   });
 
-  it("is 404 for another owner, for an admin writing, and for non-q kinds", async () => {
+  it("is 404 for another org, 403 for an admin writing, 404 for non-q kinds", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const b = await h.login("bob", "member");
+    const a = await h.team("alice");
+    const b = await h.team("bob");
     const boss = await h.login("Boss", "admin");
-    const id = await qChannel(h, a.cookie);
+    const id = await qChannel(h, a);
 
-    for (const cookie of [b.cookie, boss.cookie]) {
-      const r = await h.app(
-        ev("POST", `/channels/${id}/redis-user`, { headers: cookie }),
-      );
-      expect(r.statusCode).toBe(404);
-    }
+    expect(
+      (
+        await h.app(
+          ev("POST", `/channels/${id}/redis-user`, { headers: b.cookie }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await h.app(
+          ev("POST", `/channels/${id}/redis-user`, { headers: boss.cookie }),
+        )
+      ).statusCode,
+    ).toBe(403);
     // Admins may look — the response holds no secret — but never mint.
     expect(
       (
@@ -399,7 +429,7 @@ describe("participant redis credentials", () => {
 
     const authId = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: { kind: "auth", name: "x", config: { audience: "y" } },
         }),
@@ -417,8 +447,8 @@ describe("participant redis credentials", () => {
 
   it("still renders the block when the stage has no issuer, instead of erroring", async () => {
     const h = harness({ redisAcl: undefined });
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     const r = await h.app(
       ev("GET", `/channels/${id}/redis-user`, { headers: a.cookie }),
     );
@@ -434,8 +464,8 @@ describe("participant redis credentials", () => {
 
   it("answers 503 with a distinguishable reason when the stage has no issuer", async () => {
     const h = harness({ redisAcl: undefined });
-    const a = await h.login("alice", "member");
-    const id = await qChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await qChannel(h, a);
     const r = await h.app(
       ev("POST", `/channels/${id}/redis-user`, { headers: a.cookie }),
     );

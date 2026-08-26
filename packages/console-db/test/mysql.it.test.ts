@@ -3,6 +3,7 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
+  createOrgDb,
   createPrismaClient,
   mysqlOptionsFromEnv,
   type PrismaClient,
@@ -15,6 +16,8 @@ const reader = loadItEnv("auth", "dev");
 const base = {
   kind: "auth" as const,
   ownerId: "unused",
+  orgId: "unused",
+  projectId: "unused",
   name: "it",
   config: {
     audience: "it",
@@ -40,7 +43,10 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     await exec(`delete from events where id = ?`, id);
     await exec(`delete from channels where id = ?`, id);
     await exec(`delete from catalog_apps where id like ?`, `${id}%`);
-    await exec(`delete from catalog_groups where id = ?`, id);
+    await exec(`delete from projects where id = ?`, `${id}_prj`);
+    await exec(`delete from org_history where org_id = ?`, `${id}_org`);
+    await exec(`delete from org_members where org_id = ?`, `${id}_org`);
+    await exec(`delete from organizations where id = ?`, `${id}_org`);
     await exec(`delete from members where id = ?`, memberId);
     await db?.$disconnect();
     await ro?.$disconnect();
@@ -76,13 +82,25 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     expect(
       (await db.members.findUnique({ where: { id: memberId } }))?.github_login,
     ).toBe("it");
-    await repo.insertChannel({ ...base, id, ownerId });
+    // Every resource needs an org and a project since `6_org_project`.
+    const orgDb = createOrgDb(db, { newHistoryId: (at) => `${id}_h${at}` });
+    await orgDb.createOrg(
+      { id: `${id}_org`, name: `${id}_org`, createdBy: ownerId, createdAt: 1 },
+      1,
+    );
+    await orgDb.createProject(
+      { id: `${id}_prj`, orgId: `${id}_org`, name: "it" },
+      { actorId: ownerId, at: 2 },
+    );
+    const parents = { orgId: `${id}_org`, projectId: `${id}_prj` };
+    await repo.insertChannel({ ...base, ...parents, id, ownerId });
     await expect(repo.findChannelRow(id)).resolves.toMatchObject({
       createdAt: 1,
       expiresAt: 2,
+      ...parents,
     });
     await expect(
-      repo.insertChannel({ ...base, id, name: "dup" }),
+      repo.insertChannel({ ...base, ...parents, id, name: "dup" }),
     ).rejects.toMatchObject({ code: "conflict" });
 
     // events round-trip: conditional transition, upsert vote, cascade on delete
@@ -125,63 +143,31 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     expect(await events.deleteProposal(`${id}_p`)).toBe(true);
     expect(await events.findVote(id, ownerId)).toBeUndefined();
 
-    // catalog round-trip: unique ci name, permission upsert, pending claim
+    // catalog round-trip: org-scoped ci name, settings, idempotent upload
     const catalog = createCatalogDb(db);
-    await catalog.insertGroup({ id, name: id, ownerId, createdAt: 1 });
-    await expect(
-      catalog.insertGroup({
-        id: `${id}g2`,
-        name: id.toUpperCase(),
-        createdAt: 1,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
     await catalog.insertApp({
       id: `${id}_app`,
       name: `${id}_app`,
       path: `apps/${id}`,
-      groupId: id,
-      pendingOwnerLogin: `${id}-legacy`,
-      createdAt: 1,
-    });
-    // explicit permission + a pending row for the same login → claim drops it
-    await catalog.upsertAppPermission(`${id}_app`, {
-      id: `${id}_p1`,
-      memberId: ownerId,
-      level: "read",
-      createdAt: 1,
-    });
-    await catalog.upsertAppPermission(`${id}_app`, {
-      id: `${id}_p2`,
-      pendingGithubLogin: `${id}-legacy`,
-      level: "edit",
-      createdAt: 2,
-    });
-    // upsert same subject bumps level in place (no on-duplicate id rewrite)
-    await catalog.upsertAppPermission(`${id}_app`, {
-      id: `${id}_p3`,
-      memberId: ownerId,
-      level: "edit",
-      createdAt: 3,
-    });
-    expect(
-      (await catalog.listAppPermissions(`${id}_app`)).map((p) => [
-        p.id,
-        p.level,
-      ]),
-    ).toEqual([
-      [`${id}_p1`, "edit"],
-      [`${id}_p2`, "edit"],
-    ]);
-    expect(await catalog.resolvePendingLogin(`${id}-legacy`, ownerId)).toBe(2);
-    expect(
-      (await catalog.listAppPermissions(`${id}_app`)).map((p) => p.id),
-    ).toEqual([`${id}_p1`]);
-    expect(await catalog.findApp(`${id}_app`)).toMatchObject({
       ownerId,
-      pendingOwnerLogin: null,
+      ...parents,
+      createdAt: 1,
     });
-    const mine = await catalog.listMemberPermissions(ownerId);
-    expect(mine.apps.map((p) => p.appId)).toEqual([`${id}_app`]);
+    await expect(
+      catalog.insertApp({
+        id: `${id}_app2`,
+        name: `${id}_APP`,
+        path: `apps/${id}`,
+        ...parents,
+        createdAt: 1,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await catalog.findAppByName(`${id}_org`, `${id}_APP`)).toMatchObject(
+      { id: `${id}_app`, ownerId, ...parents },
+    );
+    expect(
+      await catalog.findAppByName("org_nope", `${id}_app`),
+    ).toBeUndefined();
     // pending upload: idempotent completion retry stays true
     await catalog.insertPendingUpload({
       id: `${id}_u`,
@@ -200,17 +186,16 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
     expect(await catalog.updatePendingUpload(`${id}_u`, done)).toBe(true);
     expect(await catalog.updatePendingUpload(`${id}_u`, done)).toBe(true);
     expect(await catalog.updatePendingUpload("nope", done)).toBe(false);
-    // deleting the app cascades artifacts/permissions/uploads
+    // deleting the app cascades artifacts/uploads
     expect(await catalog.deleteApp(`${id}_app`)).toBe(true);
     expect(await catalog.findPendingUpload(`${id}_u`)).toBeUndefined();
-    expect(await catalog.deleteGroup(id)).toBe(true);
 
     if (reader) {
       ro = createPrismaClient(mysqlOptionsFromEnv(reader));
       const roRepo = createConsoleDb(ro);
       expect((await roRepo.findAuthChannel(id))?.config.audience).toBe("it");
       await expect(
-        roRepo.insertChannel({ ...base, id: `${id}x` }),
+        roRepo.insertChannel({ ...base, ...parents, id: `${id}x` }),
       ).rejects.toMatchObject({ code: "unavailable" });
     }
   });

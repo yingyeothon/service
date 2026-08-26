@@ -7,6 +7,7 @@ import {
   type AuditInput,
   type ChannelRow,
   type ConsoleDb,
+  type ExpiredChannel,
   type MemberRow,
 } from "./channels.js";
 
@@ -58,8 +59,8 @@ export function createMemoryConsoleDb(): ConsoleDb & {
         id: c.id,
         kind: c.kind,
         ownerId: c.ownerId,
-        orgId: c.orgId ?? null,
-        projectId: c.projectId ?? null,
+        orgId: c.orgId,
+        projectId: c.projectId,
         name: c.name,
         configJson: JSON.stringify(c.config),
         secretJson: JSON.stringify(c.secret),
@@ -142,8 +143,9 @@ export function createMemoryConsoleDb(): ConsoleDb & {
           (c) =>
             c.deletedAt === null &&
             (!filter.kind || c.kind === filter.kind) &&
-            (!filter.ownerId || c.ownerId === filter.ownerId) &&
             (!filter.orgId || c.orgId === filter.orgId) &&
+            (!filter.orgIds ||
+              (c.orgId !== null && filter.orgIds.includes(c.orgId))) &&
             (!filter.projectId || c.projectId === filter.projectId),
         )
         .map((c) => ({ ...c }))
@@ -174,7 +176,7 @@ export function createMemoryConsoleDb(): ConsoleDb & {
     },
     expireChannels: async (now, graceSec) => {
       const disabled: string[] = [];
-      const deleted: string[] = [];
+      const deleted: ExpiredChannel[] = [];
       for (const c of channels.values()) {
         if (c.deletedAt !== null) continue;
         if (c.disabledAt === null && c.expiresAt <= now) {
@@ -182,7 +184,13 @@ export function createMemoryConsoleDb(): ConsoleDb & {
           disabled.push(c.id);
         } else if (c.disabledAt !== null && c.disabledAt + graceSec < now) {
           channels.set(c.id, { ...c, deletedAt: now, secretJson: "{}" });
-          deleted.push(c.id);
+          deleted.push({
+            id: c.id,
+            kind: c.kind,
+            name: c.name,
+            orgId: c.orgId,
+            projectId: c.projectId,
+          });
         }
       }
       return { disabled, deleted };

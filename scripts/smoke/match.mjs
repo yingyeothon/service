@@ -4,6 +4,8 @@
 // `matched` on both with the debug callback sink's echo.
 // Usage: scripts/smoke/match.mjs <wssUrl> <debugHttpUrl> <debugKey> <authBaseUrl> <consoleBaseUrl> [--slow]
 // All three stacks must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
+import { ensureTeam } from "./_org.mjs";
+
 const [wss, debugHttp, debugKey, authBase, consoleBase, flag] =
   process.argv.slice(2);
 if (!wss || !debugHttp || !debugKey || !authBase || !consoleBase) {
@@ -31,11 +33,19 @@ const json = async (url, { method = "GET", headers = {}, body } = {}) => {
 };
 const dbg = { "x-debug-key": debugKey };
 
-// 1. auth channel + tokens
+// 1. console login + a project of our own, then the auth channel seeded into it
+const login = await json(`${consoleBase}/debug/login`, {
+  method: "POST",
+  headers: dbg,
+  body: { login: "smoke-match-admin", githubId: -1004, role: "admin" },
+});
+check("console debug login", login.status === 200);
+const cookie = { cookie: login.body?.cookie, origin: consoleBase };
+const team = await ensureTeam(json, consoleBase, cookie, "smoke-match", check);
 const seeded = await json(`${authBase}/debug/channels`, {
   method: "POST",
   headers: dbg,
-  body: { audience: "match-smoke" },
+  body: { audience: "match-smoke", projectId: team.prjId },
 });
 check("seed auth channel", seeded.status === 200, seeded.body?.channelId);
 const authId = seeded.body.channelId;
@@ -48,21 +58,15 @@ const mint = async (userId) =>
     })
   ).body?.jwt;
 
-// 2. match channel via console (admin may reference any auth channel)
-const login = await json(`${consoleBase}/debug/login`, {
-  method: "POST",
-  headers: dbg,
-  body: { login: "smoke-match-admin", githubId: -1004, role: "admin" },
-});
-check("console debug login", login.status === 200);
-const cookie = { cookie: login.body?.cookie, origin: consoleBase };
+// 2. match channel in the same project
+let seq = 0;
 const mk = async (cfg) =>
-  json(`${consoleBase}/channels`, {
+  json(`${consoleBase}/projects/${team.prjId}/channels`, {
     method: "POST",
     headers: cookie,
     body: {
       kind: "match",
-      name: "smoke",
+      name: `smoke-${Date.now().toString(36)}-${++seq}`,
       config: { authChannelId: authId, ...cfg },
     },
   });

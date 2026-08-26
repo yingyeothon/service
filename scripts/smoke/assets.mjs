@@ -1,9 +1,12 @@
 #!/usr/bin/env node
-// Smoke test for the console asset resource on dev: debug login → bundle CRUD →
-// presigned upload with a signed Content-Type → commit → CDN fetch (type +
-// immutable cache header) → write-once refusal → version/bundle delete.
+// Smoke test for the console asset resource on dev: debug login → org/project →
+// bundle CRUD → presigned upload with a signed Content-Type → commit under an
+// id-based key → CDN fetch (type + immutable cache header) → write-once refusal
+// → rename with files → version/bundle delete.
 // Usage: scripts/smoke/assets.mjs <baseUrl> <debugKey>
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens.
+import { ensureTeam } from "./_org.mjs";
+
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: assets.mjs <baseUrl> <debugKey>");
@@ -33,6 +36,7 @@ const call = async (path, { method = "GET", headers = {}, body } = {}) => {
   }
   return { status: res.status, body: json, text, headers: res.headers };
 };
+const req = (url, o) => call(url.replace(base, ""), o);
 const login = async (login, role, githubId) => {
   const r = await call("/debug/login", {
     method: "POST",
@@ -46,76 +50,90 @@ const as = (u) => ({ cookie: u.cookie, origin: base });
 
 const owner = await login("smoke-asset-owner", "member", -2101);
 const other = await login("smoke-asset-other", "member", -2102);
+const admin = await login("smoke-asset-admin", "admin", -2103);
+const team = await ensureTeam(req, base, as(owner), "smoke-assets", check);
 
 const suffix = Date.now().toString(36);
-const bundle = `smoke-asset-${suffix}`;
+const bundleName = `smoke-asset-${suffix}`;
+let bundleId = null;
+let quotaId = null;
 
 /**
  * Cleanup runs even when a check throws mid-run. Without it a crashed run
  * leaks objects into `assets/`, the one prefix no sweep ever looks at.
  */
 async function cleanup() {
-  const detail = await call(`/assets/bundles/${bundle}`, {
-    headers: as(owner),
-  });
-  if (detail.status === 404) return;
-  for (const v of detail.body?.versions ?? [])
-    await call(`/assets/bundles/${bundle}/versions/${v.version}`, {
+  for (const id of [bundleId, quotaId]) {
+    if (!id) continue;
+    const detail = await call(`/assets/bundles/${id}`, { headers: as(owner) });
+    if (detail.status === 404) continue;
+    for (const v of detail.body?.versions ?? [])
+      await call(`/assets/bundles/${id}/versions/${v.version}`, {
+        method: "DELETE",
+        headers: as(owner),
+      });
+    await call(`/assets/bundles/${id}`, {
       method: "DELETE",
       headers: as(owner),
     });
-  await call(`/assets/bundles/${bundle}`, {
-    method: "DELETE",
-    headers: as(owner),
-  });
+  }
   // Leave no standing member behind, the same discipline smoke/console.mjs uses.
   for (const u of [owner, other])
     if (u.id)
       await call(`/members/${u.id}/demote`, {
         method: "POST",
-        headers: as(owner),
+        headers: as(admin),
       });
 }
 
 try {
-  const created = await call("/assets/bundles", {
+  const created = await call(`/projects/${team.prjId}/assets/bundles`, {
     method: "POST",
     headers: as(owner),
-    body: { name: bundle, description: "smoke" },
+    body: { name: bundleName, description: "smoke" },
   });
-  check("create bundle", created.status === 201, String(created.status));
+  check("create bundle", created.status === 201, created.text.slice(0, 160));
+  bundleId = created.body?.id;
+  check(
+    "view carries breadcrumbs",
+    created.body?.projectId === team.prjId &&
+      created.body?.orgName === "smoke-assets",
+    created.text.slice(0, 200),
+  );
   check(
     "duplicate name conflicts",
     (
-      await call("/assets/bundles", {
+      await call(`/projects/${team.prjId}/assets/bundles`, {
         method: "POST",
         headers: as(owner),
-        body: { name: bundle },
+        body: { name: bundleName },
       })
     ).status === 409,
   );
 
-  // Every member reads the management API; only the owner (or an admin) writes.
+  // Org membership is the permission: another org gets 404, admins read only.
   check(
-    "another member can read the bundle",
-    (await call(`/assets/bundles/${bundle}`, { headers: as(other) })).status ===
-      200,
+    "another org cannot read the bundle",
+    (await call(`/assets/bundles/${bundleId}`, { headers: as(other) }))
+      .status === 404,
   );
   check(
-    "another member cannot patch it",
-    (
-      await call(`/assets/bundles/${bundle}`, {
-        method: "PATCH",
-        headers: as(other),
-        body: { description: "mine" },
-      })
-    ).status === 403,
+    "admin reads but cannot patch it",
+    (await call(`/assets/bundles/${bundleId}`, { headers: as(admin) }))
+      .status === 200 &&
+      (
+        await call(`/assets/bundles/${bundleId}`, {
+          method: "PATCH",
+          headers: as(admin),
+          body: { description: "ops" },
+        })
+      ).status === 403,
   );
 
   // Disallowed extensions never reach a presigned URL: `text/html` on our own CDN
   // origin would be stored XSS.
   for (const path of ["index.html", "logo.svg", "../escape.json"]) {
-    const r = await call(`/assets/bundles/${bundle}/files`, {
+    const r = await call(`/assets/bundles/${bundleId}/files`, {
       method: "POST",
       headers: as(owner),
       body: { version: "v1", path, size: 10 },
@@ -124,7 +142,7 @@ try {
   }
 
   const payload = JSON.stringify({ smoke: suffix, tiles: [[0, 1]] });
-  const up = await call(`/assets/bundles/${bundle}/files`, {
+  const up = await call(`/assets/bundles/${bundleId}/files`, {
     method: "POST",
     headers: as(owner),
     body: { version: "v1", path: "world/map.json", size: payload.length },
@@ -162,6 +180,11 @@ try {
     });
     check("commit upload", commit.status === 200, String(commit.status));
     file = commit.body;
+    check(
+      "object key is id-based",
+      file?.objectKey === `assets/${bundleId}/v1/world/map.json`,
+      file?.objectKey ?? "-",
+    );
     const again = await call(`/assets/uploads/${up.body.uploadId}/commit`, {
       method: "POST",
       headers: as(owner),
@@ -202,25 +225,26 @@ try {
   check(
     "the same path in the same version conflicts",
     (
-      await call(`/assets/bundles/${bundle}/files`, {
+      await call(`/assets/bundles/${bundleId}/files`, {
         method: "POST",
         headers: as(owner),
         body: { version: "v1", path: "world/map.json", size: payload.length },
       })
     ).status === 409,
   );
+  // Keys are id-based, so a bundle holding files can be renamed.
   check(
-    "a bundle holding files cannot be renamed",
+    "a bundle holding files can be renamed",
     (
-      await call(`/assets/bundles/${bundle}`, {
+      await call(`/assets/bundles/${bundleId}`, {
         method: "PATCH",
         headers: as(owner),
-        body: { name: `${bundle}-2` },
+        body: { name: `${bundleName}-2` },
       })
-    ).status === 409,
+    ).status === 200,
   );
 
-  const v2 = await call(`/assets/bundles/${bundle}/files`, {
+  const v2 = await call(`/assets/bundles/${bundleId}/files`, {
     method: "POST",
     headers: as(owner),
     body: { version: "v2", path: "world/map.json", size: payload.length },
@@ -238,7 +262,7 @@ try {
     check("second version commits", c.status === 200, String(c.status));
   }
 
-  const detail = await call(`/assets/bundles/${bundle}`, {
+  const detail = await call(`/assets/bundles/${bundleId}`, {
     headers: as(owner),
   });
   check(
@@ -251,13 +275,13 @@ try {
   check(
     "delete version v1",
     (
-      await call(`/assets/bundles/${bundle}/versions/v1`, {
+      await call(`/assets/bundles/${bundleId}/versions/v1`, {
         method: "DELETE",
         headers: as(owner),
       })
     ).status === 204,
   );
-  const v2files = await call(`/assets/bundles/${bundle}/versions/v2`, {
+  const v2files = await call(`/assets/bundles/${bundleId}/versions/v2`, {
     headers: as(owner),
   });
   check(
@@ -268,7 +292,7 @@ try {
   check(
     "v1 is gone",
     (
-      await call(`/assets/bundles/${bundle}/versions/v1`, {
+      await call(`/assets/bundles/${bundleId}/versions/v1`, {
         headers: as(owner),
       })
     ).status === 404,
@@ -277,7 +301,7 @@ try {
   check(
     "delete bundle",
     (
-      await call(`/assets/bundles/${bundle}`, {
+      await call(`/assets/bundles/${bundleId}`, {
         method: "DELETE",
         headers: as(owner),
       })
@@ -285,17 +309,17 @@ try {
   );
   check(
     "the bundle is gone",
-    (await call(`/assets/bundles/${bundle}`, { headers: as(owner) })).status ===
-      404,
+    (await call(`/assets/bundles/${bundleId}`, { headers: as(owner) }))
+      .status === 404,
   );
 
   // A catalog app named after either asset prefix would write into the asset key
   // space — and `asset-uploads` is the one whose sweep would then delete binaries.
-  for (const name of ["assets", "asset-uploads"])
+  for (const name of ["assets", "asset-uploads", "apps"])
     check(
       `catalog refuses an app named ${name}`,
       (
-        await call("/catalog/apps", {
+        await call(`/projects/${team.prjId}/catalog/apps`, {
           method: "POST",
           headers: as(owner),
           body: { name, path: `life.yyt.${name}` },
@@ -305,15 +329,15 @@ try {
 
   // Quotas must count grants, not just commits: a caller that pipelines presigns
   // would otherwise see an empty bundle on every request.
-  const quotaBundle = `${bundle}-q`;
-  await call("/assets/bundles", {
+  const quota = await call(`/projects/${team.prjId}/assets/bundles`, {
     method: "POST",
     headers: as(owner),
-    body: { name: quotaBundle },
+    body: { name: `${bundleName}-q` },
   });
+  quotaId = quota.body?.id;
   const grant = async (path, size) =>
     (
-      await call(`/assets/bundles/${quotaBundle}/files`, {
+      await call(`/assets/bundles/${quotaId}/files`, {
         method: "POST",
         headers: as(owner),
         body: { version: "v1", path, size },
@@ -340,7 +364,7 @@ try {
   check(
     "delete the quota bundle",
     (
-      await call(`/assets/bundles/${quotaBundle}`, {
+      await call(`/assets/bundles/${quotaId}`, {
         method: "DELETE",
         headers: as(owner),
       })

@@ -224,7 +224,7 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
 
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { stage, db, catalog, assets, state, redisAcl } = await getDeps();
+  const { stage, db, catalog, assets, org, state, redisAcl } = await getDeps();
   const artifacts = artifactStoreFromEnv();
   // Run every sweep even when one throws, then rethrow so the Errors alarm
   // still fires: chaining them bare meant a channel-expiry failure silently
@@ -232,15 +232,15 @@ export const expire = async (): Promise<void> => {
   const failures: unknown[] = [];
   for (const step of [
     async () => {
-      const { deleted } = await runExpire({ db, state, logger });
+      const { deleted } = await runExpire({ db, state, org, logger });
       // Hard-deleted channels take their participant credential with them.
       // Only `q` channels ever had one, and each revoke costs a round trip
-      // (≈4s against an unreachable Redis), so the prefix test is what keeps
+      // (≈4s against an unreachable Redis), so the kind test is what keeps
       // a large delete batch from eating the whole 300s sweep budget and
       // taking the catalog and asset sweeps down with it.
-      for (const id of deleted)
-        if (id.startsWith("q_"))
-          await revokeChannelRedis(redisAcl, id, stage, logger);
+      for (const d of deleted)
+        if (d.kind === "q")
+          await revokeChannelRedis(redisAcl, d.id, stage, logger);
     },
     // Separate step, and after the expiry one: it is the net that catches
     // whatever the best-effort revokes above dropped, so it must still run

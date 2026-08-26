@@ -10,7 +10,7 @@ export type AssetUploadStatus = (typeof ASSET_UPLOAD_STATUSES)[number];
 
 export interface AssetBundleRow {
   id: string;
-  /** Also the object-key segment: `assets/{name}/{version}/{path}`. */
+  /** Unique within the org (case-insensitive). Legacy rows' object keys still carry it. */
   name: string;
   description: string | null;
   /** Creator, kept for display; authorization is org membership (`orgId`). */
@@ -27,16 +27,15 @@ export interface AssetBundleInput {
   name: string;
   description?: string | null;
   ownerId?: string | null;
-  /** Both or neither; the project must belong to the org (asserted by the writer). */
-  orgId?: string;
-  projectId?: string;
+  /** The project must belong to the org; the writer asserts it. */
+  orgId: string;
+  projectId: string;
   createdAt: number;
 }
 
 export interface AssetBundlePatch {
   name?: string;
   description?: string | null;
-  ownerId?: string | null;
 }
 
 export interface AssetFileRow {
@@ -110,10 +109,19 @@ export interface AssetUploadPatch {
 export interface AssetsDb {
   insertBundle(b: AssetBundleInput): Promise<void>;
   findBundle(id: string): Promise<AssetBundleRow | undefined>;
-  findBundleByName(name: string): Promise<AssetBundleRow | undefined>;
-  /** Name ascending. */
+  /**
+   * Case-insensitive name lookup **within one org**. Until the contract
+   * migration lands the database still carries the old global unique index,
+   * so a name can exist in one org only — a 409 on insert, not a lookup miss.
+   */
+  findBundleByName(
+    orgId: string,
+    name: string,
+  ): Promise<AssetBundleRow | undefined>;
+  /** Name ascending; `orgId`/`orgIds`/`projectId` narrow. */
   listBundles(filter?: {
     orgId?: string;
+    orgIds?: string[];
     projectId?: string;
   }): Promise<AssetBundleRow[]>;
   updateBundle(
@@ -237,8 +245,8 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             name: b.name,
             description: b.description ?? null,
             owner_id: b.ownerId ?? null,
-            org_id: b.orgId ?? null,
-            project_id: b.projectId ?? null,
+            org_id: b.orgId,
+            project_id: b.projectId,
             created_at: b.createdAt,
             updated_at: b.createdAt,
           },
@@ -249,9 +257,12 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         const r = await prisma.asset_bundles.findUnique({ where: { id } });
         return r ? toBundle(r) : undefined;
       }),
-    findBundleByName: (name) =>
+    findBundleByName: (orgId, name) =>
       run(async () => {
-        const r = await prisma.asset_bundles.findUnique({ where: { name } });
+        // `name` is `utf8mb4_unicode_ci`, so equality is already case-insensitive.
+        const r = await prisma.asset_bundles.findFirst({
+          where: { org_id: orgId, name },
+        });
         return r ? toBundle(r) : undefined;
       }),
     listBundles: (filter = {}) =>
@@ -259,6 +270,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         const rows = await prisma.asset_bundles.findMany({
           where: {
             ...(filter.orgId ? { org_id: filter.orgId } : {}),
+            ...(filter.orgIds ? { org_id: { in: filter.orgIds } } : {}),
             ...(filter.projectId ? { project_id: filter.projectId } : {}),
           },
           orderBy: [{ name: "asc" }, { id: "asc" }],
@@ -274,7 +286,6 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             ...(patch.description !== undefined
               ? { description: patch.description }
               : {}),
-            ...(patch.ownerId !== undefined ? { owner_id: patch.ownerId } : {}),
             // Always bumped so `updateMany` reports a changed row even when the
             // patch is a no-op (`rules/data.md`: MariaDB counts changed rows).
             updated_at: at,
@@ -425,24 +436,27 @@ export function createMemoryAssetsDb(
   const checkOwner = (ownerId: string | null | undefined) => {
     if (ownerId != null && !memberExists(ownerId)) throw fk();
   };
+  /**
+   * Mirrors the index that is actually deployed: `asset_bundles_name` is still
+   * global until the contract migration replaces it with `(org_id, name)`.
+   * Relax to an org-scoped check in the same commit as that migration.
+   */
+  const nameTaken = (name: string, exceptId?: string) =>
+    [...bundles.values()].some((x) => x.id !== exceptId && eqI(x.name, name));
   return {
     bundles,
     files,
     uploads,
     insertBundle: async (b) => {
       checkOwner(b.ownerId);
-      if (
-        bundles.has(b.id) ||
-        [...bundles.values()].some((x) => eqI(x.name, b.name))
-      )
-        throw conflict();
+      if (bundles.has(b.id) || nameTaken(b.name)) throw conflict();
       bundles.set(b.id, {
         id: b.id,
         name: b.name,
         description: b.description ?? null,
         ownerId: b.ownerId ?? null,
-        orgId: b.orgId ?? null,
-        projectId: b.projectId ?? null,
+        orgId: b.orgId,
+        projectId: b.projectId,
         createdAt: b.createdAt,
         updatedAt: b.createdAt,
       });
@@ -451,8 +465,10 @@ export function createMemoryAssetsDb(
       const b = bundles.get(id);
       return b && { ...b };
     },
-    findBundleByName: async (name) => {
-      const b = [...bundles.values()].find((x) => eqI(x.name, name));
+    findBundleByName: async (orgId, name) => {
+      const b = [...bundles.values()].find(
+        (x) => x.orgId === orgId && eqI(x.name, name),
+      );
       return b && { ...b };
     },
     listBundles: async (filter = {}) =>
@@ -460,6 +476,8 @@ export function createMemoryAssetsDb(
         .filter(
           (b) =>
             (!filter.orgId || b.orgId === filter.orgId) &&
+            (!filter.orgIds ||
+              (b.orgId !== null && filter.orgIds.includes(b.orgId))) &&
             (!filter.projectId || b.projectId === filter.projectId),
         )
         .map((b) => ({ ...b }))
@@ -469,13 +487,7 @@ export function createMemoryAssetsDb(
     updateBundle: async (id, patch, at) => {
       const b = bundles.get(id);
       if (!b) return false;
-      checkOwner(patch.ownerId);
-      if (
-        patch.name !== undefined &&
-        [...bundles.values()].some(
-          (x) => x.id !== id && eqI(x.name, patch.name!),
-        )
-      )
+      if (patch.name !== undefined && nameTaken(patch.name, id))
         throw conflict();
       bundles.set(id, {
         ...b,
@@ -483,7 +495,6 @@ export function createMemoryAssetsDb(
         ...(patch.description !== undefined
           ? { description: patch.description }
           : {}),
-        ...(patch.ownerId !== undefined ? { ownerId: patch.ownerId } : {}),
         updatedAt: at,
       });
       return true;

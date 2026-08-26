@@ -3,7 +3,7 @@ import { nullLogger } from "@yyt/core";
 import { createMemoryCatalogDb, createMemoryConsoleDb } from "@yyt/console-db";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import { planDeletions } from "../src/catalog-cleanup.js";
-import { validateUploadMetadata } from "../src/catalog.js";
+import { finalObjectKey, validateUploadMetadata } from "../src/catalog.js";
 import { runCatalogSweep, UPLOAD_GARBAGE_GRACE_SEC } from "../src/expire.js";
 import {
   installUrl,
@@ -11,280 +11,321 @@ import {
   manifestPlist,
   manifestUrlForPackageUrl,
 } from "../src/ios-dist.js";
-import { ev, fakeClock, harness, NOW_SEC } from "./helpers.js";
+import { APPS_PER_PROJECT } from "../src/resources.js";
+import { ev, fakeClock, harness, NOW_SEC, type Team } from "./helpers.js";
 
 const j = (r: { body?: string }) => JSON.parse(r.body ?? "{}") as never;
+type H = ReturnType<typeof harness>;
 
-async function makeApp(
-  h: Awaited<ReturnType<typeof harness>>,
-  cookie: Record<string, string>,
-  name = "myapp",
-) {
+/** Creates an app in `u`'s project; returns the view. */
+async function makeApp(h: H, u: Team, name = "myapp") {
   const r = await h.app(
-    ev("POST", "/catalog/apps", {
+    ev("POST", `/projects/${u.prjId}/catalog/apps`, {
       body: { name, path: `life.yyt.${name}` },
-      headers: cookie,
+      headers: u.cookie,
     }),
   );
-  expect(r.statusCode).toBe(201);
+  expect(r.statusCode, r.body).toBe(201);
   return j(r) as { id: string; name: string };
 }
 
 describe("catalog apps", () => {
-  it("creates, lists, patches and hides apps by permission", async () => {
+  it("creates in a project, lists per project and flattened, patches, hides from outsiders", async () => {
     const h = harness();
-    // Explicit github ids: the helper's default collides for owner/other.
-    const owner = await h.login("owner", "member", 9001);
-    const other = await h.login("other", "member", 9002);
+    const owner = await h.team("owner", "member", 9001);
+    const other = await h.team("other", "member", 9002);
     const admin = await h.login("Boss", "admin", 9003);
-    const app = await makeApp(h, owner.cookie);
+    const mate = await h.login("mate", "member", 9004);
+    await h.seat(owner, owner.orgId, "mate");
+    const app = await makeApp(h, owner);
+    expect(app).toMatchObject({
+      name: "myapp",
+      orgId: owner.orgId,
+      orgName: "owner-org",
+      projectId: owner.prjId,
+      projectName: "game",
+      createdBy: "owner",
+    });
+    expect((app as Record<string, unknown>).ownerLogin).toBeUndefined();
 
-    // Owner and admin see it; a stranger gets 404 and an empty list.
-    expect(
-      (await h.app(ev("GET", "/catalog/apps/myapp", { headers: owner.cookie })))
-        .statusCode,
-    ).toBe(200);
-    expect(
-      (await h.app(ev("GET", "/catalog/apps/myapp", { headers: other.cookie })))
-        .statusCode,
-    ).toBe(404);
-    const mine = j(
-      await h.app(ev("GET", "/catalog/apps", { headers: other.cookie })),
-    ) as { apps: unknown[] };
-    expect(mine.apps).toHaveLength(0);
-    const all = j(
-      await h.app(ev("GET", "/catalog/apps", { headers: admin.cookie })),
-    ) as { apps: Array<{ name: string; ownerLogin: string }> };
-    expect(all.apps.map((a) => a.name)).toContain("myapp");
-    expect(all.apps[0]!.ownerLogin).toBe("owner");
-
-    // Read permission grants visibility but not settings.
-    const perm = await h.app(
-      ev("POST", "/catalog/apps/myapp/permissions", {
-        body: { login: "other", level: "read" },
-        headers: owner.cookie,
-      }),
-    );
-    expect(perm.statusCode).toBe(200);
-    expect(
-      (await h.app(ev("GET", "/catalog/apps/myapp", { headers: other.cookie })))
-        .statusCode,
-    ).toBe(200);
+    // Members of the org and admins see it; another org gets 404 and an
+    // empty flattened list.
+    for (const who of [owner, mate, admin])
+      expect(
+        (
+          await h.app(
+            ev("GET", `/catalog/apps/${app.id}`, { headers: who.cookie }),
+          )
+        ).statusCode,
+      ).toBe(200);
     expect(
       (
         await h.app(
-          ev("GET", "/catalog/apps/myapp/settings", { headers: other.cookie }),
+          ev("GET", `/catalog/apps/${app.id}`, { headers: other.cookie }),
         )
       ).statusCode,
-    ).toBe(403);
+    ).toBe(404);
+    expect(
+      (
+        j(
+          await h.app(ev("GET", "/catalog/apps", { headers: other.cookie })),
+        ) as {
+          apps: unknown[];
+        }
+      ).apps,
+    ).toHaveLength(0);
+    expect(
+      (
+        j(
+          await h.app(ev("GET", "/catalog/apps", { headers: mate.cookie })),
+        ) as {
+          apps: Array<{ name: string }>;
+        }
+      ).apps.map((a) => a.name),
+    ).toEqual(["myapp"]);
+    // An admin without a membership has no "mine" list either.
+    expect(
+      (
+        j(
+          await h.app(ev("GET", "/catalog/apps", { headers: admin.cookie })),
+        ) as {
+          apps: unknown[];
+        }
+      ).apps,
+    ).toHaveLength(0);
+    expect(
+      (
+        j(
+          await h.app(
+            ev("GET", `/projects/${owner.prjId}/catalog/apps`, {
+              headers: admin.cookie,
+            }),
+          ),
+        ) as { apps: Array<{ id: string }> }
+      ).apps.map((a) => a.id),
+    ).toEqual([app.id]);
+    expect(
+      (
+        await h.app(
+          ev("GET", `/projects/${owner.prjId}/catalog/apps`, {
+            headers: other.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
 
-    // Settings only for owner/admin; app view never contains slack fields.
+    // Settings: members only (the hook URL is a credential), never admins;
+    // the app view never contains slack fields.
     const s = await h.app(
-      ev("PATCH", "/catalog/apps/myapp/settings", {
+      ev("PATCH", `/catalog/apps/${app.id}/settings`, {
         body: {
           slackHookUrl: "https://hooks.slack.com/services/x",
           keepRecentVersions: 2,
         },
-        headers: owner.cookie,
+        headers: mate.cookie,
       }),
     );
     expect(s.statusCode).toBe(200);
+    expect(s.headers?.["cache-control"]).toBe("no-store");
+    expect(
+      (
+        await h.app(
+          ev("GET", `/catalog/apps/${app.id}/settings`, {
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(403);
     const view = j(
-      await h.app(ev("GET", "/catalog/apps/myapp", { headers: owner.cookie })),
+      await h.app(
+        ev("GET", `/catalog/apps/${app.id}`, { headers: owner.cookie }),
+      ),
     ) as Record<string, unknown>;
     expect(view.slackHookUrl).toBeUndefined();
     expect(view.keepRecentVersions).toBeUndefined();
 
-    // Ownership transfer is admin-only.
+    // Patch: name unique in the org, admins refused, unknown fields refused.
     expect(
       (
         await h.app(
-          ev("PATCH", "/catalog/apps/myapp", {
+          ev("PATCH", `/catalog/apps/${app.id}`, {
+            body: { name: "renamed", description: "d" },
+            headers: mate.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    await makeApp(h, owner, "second");
+    expect(
+      (
+        await h.app(
+          ev("PATCH", `/catalog/apps/${app.id}`, {
+            body: { name: "SECOND" },
+            headers: owner.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(409);
+    expect(
+      (
+        await h.app(
+          ev("PATCH", `/catalog/apps/${app.id}`, {
+            body: { name: "x" },
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await h.app(
+          ev("PATCH", `/catalog/apps/${app.id}`, {
             body: { ownerId: other.id },
             headers: owner.cookie,
           }),
         )
       ).statusCode,
+    ).toBe(400);
+    // Delete: members, not admins.
+    expect(
+      (
+        await h.app(
+          ev("DELETE", `/catalog/apps/${app.id}`, { headers: admin.cookie }),
+        )
+      ).statusCode,
     ).toBe(403);
     expect(
       (
         await h.app(
-          ev("PATCH", "/catalog/apps/myapp", {
-            body: { ownerId: other.id },
-            headers: admin.cookie,
-          }),
+          ev("DELETE", `/catalog/apps/${app.id}`, { headers: mate.cookie }),
         )
       ).statusCode,
-    ).toBe(200);
-    expect(h.catalog.apps.get(app.id)!.ownerId).toBe(other.id);
+    ).toBe(204);
+    // History carries the resource writes, names only.
+    const hist = await h.org.listHistory(owner.orgId, { limit: 50 });
+    const resource = hist.rows.filter((r) => r.action.startsWith("resource."));
+    expect(resource.map((r) => r.action)).toEqual(
+      expect.arrayContaining([
+        "resource.create",
+        "resource.update",
+        "resource.delete",
+      ]),
+    );
+    expect(JSON.stringify(hist.rows)).not.toContain("hooks.slack.com");
   });
 
-  it("group permissions cascade to apps in the group", async () => {
+  it("names: org-unique across kinds, id-shaped and reserved names refused, per-project cap", async () => {
     const h = harness();
-    const owner = await h.login("owner", "member");
-    const dev = await h.login("dev", "member");
-    const g = j(
+    const u = await h.team("plain");
+    const post = (name: string, prjId = u.prjId) =>
+      h.app(
+        ev("POST", `/projects/${prjId}/catalog/apps`, {
+          body: { name, path: "p" },
+          headers: u.cookie,
+        }),
+      );
+    // "uploads" collides with the staging prefix, "apps" with the id layout.
+    for (const name of ["uploads", "apps", "Assets", "asset-uploads"])
+      expect((await post(name)).statusCode, name).toBe(400);
+    // Looks like an id: the CLI could never address it by name.
+    expect((await post("ca_deadbeef")).statusCode).toBe(400);
+    expect((await post("ok-app")).statusCode).toBe(201);
+    expect((await post("OK-APP")).statusCode).toBe(409);
+    // A second project of the same org shares the name space.
+    h.clock.tick(0.5);
+    const prj2 = j(
       await h.app(
-        ev("POST", "/catalog/groups", {
-          body: { name: "team" },
-          headers: owner.cookie,
+        ev("POST", `/orgs/${u.orgId}/projects`, {
+          body: { name: "other" },
+          headers: u.cookie,
         }),
       ),
     ) as { id: string };
-    await h.app(
-      ev("POST", "/catalog/apps", {
-        body: { name: "gapp", path: "life.yyt.gapp", groupId: g.id },
-        headers: owner.cookie,
-      }),
-    );
+    expect((await post("ok-app", prj2.id)).statusCode).toBe(409);
+    // Slack hook must live on hooks.slack.com (SSRF guard).
+    const app = j(
+      await h.app(
+        ev("GET", `/projects/${u.prjId}/catalog/apps`, { headers: u.cookie }),
+      ),
+    ) as { apps: Array<{ id: string }> };
     expect(
-      (await h.app(ev("GET", "/catalog/apps/gapp", { headers: dev.cookie })))
+      (
+        await h.app(
+          ev("PATCH", `/catalog/apps/${app.apps[0]!.id}/settings`, {
+            body: { slackHookUrl: "https://169.254.169.254/latest" },
+            headers: u.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(400);
+    // The cap is per project.
+    for (let i = 1; i < APPS_PER_PROJECT; i++)
+      expect((await post(`app-${i}`)).statusCode).toBe(201);
+    expect((await post("one-too-many")).statusCode).toBe(409);
+  });
+
+  it("resolves a name for one release (the installed installer), only when unique", async () => {
+    const h = harness();
+    const u = await h.team("alice");
+    const other = await h.team("bob");
+    const app = await makeApp(h, u, "tools");
+    // Bob has a `tools` too — invisible to alice, so hers still resolves.
+    await makeApp(h, other, "tools2");
+    expect(
+      (
+        j(
+          await h.app(ev("GET", "/catalog/apps/tools", { headers: u.cookie })),
+        ) as {
+          id: string;
+        }
+      ).id,
+    ).toBe(app.id);
+    expect(
+      (
+        await h.app(
+          ev("GET", "/catalog/apps/tools/artifacts", { headers: u.cookie }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (await h.app(ev("GET", "/catalog/apps/tools", { headers: other.cookie })))
         .statusCode,
     ).toBe(404);
-    await h.app(
-      ev("POST", `/catalog/groups/${g.id}/permissions`, {
-        body: { login: "dev", level: "edit" },
-        headers: owner.cookie,
-      }),
-    );
-    expect(
-      (await h.app(ev("GET", "/catalog/apps/gapp", { headers: dev.cookie })))
-        .statusCode,
-    ).toBe(200);
-    // Edit via group allows upload but not settings/permissions.
-    expect(
-      (
-        await h.app(
-          ev("GET", "/catalog/apps/gapp/settings", { headers: dev.cookie }),
-        )
-      ).statusCode,
-    ).toBe(403);
-    const list = j(
-      await h.app(ev("GET", "/catalog/apps", { headers: dev.cookie })),
-    ) as { apps: Array<{ name: string }> };
-    expect(list.apps.map((a) => a.name)).toEqual(["gapp"]);
-    // A group "edit" permission is not ownership: no group rename/delete or
-    // permission management.
-    expect(
-      (
-        await h.app(
-          ev("PATCH", `/catalog/groups/${g.id}`, {
-            body: { name: "stolen" },
-            headers: dev.cookie,
-          }),
-        )
-      ).statusCode,
-    ).toBe(403);
-    expect(
-      (
-        await h.app(
-          ev("DELETE", `/catalog/groups/${g.id}`, { headers: dev.cookie }),
-        )
-      ).statusCode,
-    ).toBe(403);
-    expect(
-      (
-        await h.app(
-          ev("POST", `/catalog/groups/${g.id}/permissions`, {
-            body: { login: "dev", level: "edit" },
-            headers: dev.cookie,
-          }),
-        )
-      ).statusCode,
-    ).toBe(403);
-  });
-
-  it("reserved app names and slack hook host are enforced", async () => {
-    const h = harness();
-    const member = await h.login("plain", "member");
-    // "uploads" collides with the staging prefix; "installer" is admin-only.
-    expect(
-      (
-        await h.app(
-          ev("POST", "/catalog/apps", {
-            body: { name: "uploads", path: "p" },
-            headers: member.cookie,
-          }),
-        )
-      ).statusCode,
-    ).toBe(400);
-    expect(
-      (
-        await h.app(
-          ev("POST", "/catalog/apps", {
-            body: { name: "Installer", path: "p" },
-            headers: member.cookie,
-          }),
-        )
-      ).statusCode,
-    ).toBe(403);
-    await makeApp(h, member.cookie, "ok-app");
-    expect(
-      (
-        await h.app(
-          ev("PATCH", "/catalog/apps/ok-app", {
-            body: { name: "uploads" },
-            headers: member.cookie,
-          }),
-        )
-      ).statusCode,
-    ).toBe(400);
-    // Slack hook must live on hooks.slack.com (SSRF guard).
-    expect(
-      (
-        await h.app(
-          ev("PATCH", "/catalog/apps/ok-app/settings", {
-            body: { slackHookUrl: "https://169.254.169.254/latest" },
-            headers: member.cookie,
-          }),
-        )
-      ).statusCode,
-    ).toBe(400);
-  });
-
-  it("unknown permission logins become pending and are claimed on first login", async () => {
-    const h = harness();
-    const owner = await h.login("owner", "member");
-    await makeApp(h, owner.cookie);
-    const r = j(
+    // Two orgs of alice's with the same app name: ambiguous → 404, the id works.
+    h.clock.tick(0.5);
+    const org2 = j(
       await h.app(
-        ev("POST", "/catalog/apps/myapp/permissions", {
-          body: { login: "newbie", level: "edit" },
-          headers: owner.cookie,
+        ev("POST", "/orgs", { body: { name: "alice-two" }, headers: u.cookie }),
+      ),
+    ) as { id: string };
+    h.clock.tick(0.5);
+    const prj2 = j(
+      await h.app(
+        ev("POST", `/orgs/${org2.id}/projects`, {
+          body: { name: "game" },
+          headers: u.cookie,
         }),
       ),
-    ) as { permissions: Array<{ login: string; pending: boolean }> };
-    expect(r.permissions[0]).toMatchObject({ login: "newbie", pending: true });
-    // First login claims the pending row.
-    const newbie = await h.login("newbie", "member");
-    const after = j(
-      await h.app(
-        ev("GET", "/catalog/apps/myapp/permissions", { headers: owner.cookie }),
-      ),
-    ) as { permissions: Array<{ login: string; pending: boolean }> };
-    expect(after.permissions[0]).toMatchObject({
-      login: "newbie",
-      pending: false,
-    });
-    // And the member can now edit (upload presign works).
-    const up = await h.app(
-      ev("POST", "/catalog/apps/myapp/artifacts", {
-        body: {
-          platform: "bin",
-          filename: "tool.zip",
-          size: 10,
-          tags: { version: "1.0" },
-        },
-        headers: newbie.cookie,
+    ) as { id: string };
+    // The global unique index survives until the contract migration, so the
+    // fake refuses the duplicate name across orgs exactly like MariaDB does.
+    const dup = await h.app(
+      ev("POST", `/projects/${prj2.id}/catalog/apps`, {
+        body: { name: "tools", path: "p" },
+        headers: u.cookie,
       }),
     );
-    expect(up.statusCode).toBe(201);
+    expect(dup.statusCode).toBe(409);
+    expect(
+      (await h.app(ev("GET", "/catalog/apps/nope", { headers: u.cookie })))
+        .statusCode,
+    ).toBe(404);
   });
 
   it("refuses to delete an app that still has artifacts", async () => {
     const h = harness();
-    const owner = await h.login("owner", "member");
-    const app = await makeApp(h, owner.cookie);
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
     await h.catalog.insertArtifact({
       id: "art_x",
       appId: app.id,
@@ -296,10 +337,55 @@ describe("catalog apps", () => {
     expect(
       (
         await h.app(
-          ev("DELETE", "/catalog/apps/myapp", { headers: owner.cookie }),
+          ev("DELETE", `/catalog/apps/${app.id}`, { headers: owner.cookie }),
         )
       ).statusCode,
     ).toBe(409);
+  });
+
+  it("a kicked creator loses the app, a teammate keeps it", async () => {
+    const h = harness();
+    const owner = await h.team("owner");
+    const mate = await h.login("mate", "member");
+    await h.seat(owner, owner.orgId, "mate", "owner");
+    const app = await makeApp(h, owner);
+    h.clock.tick(0.5);
+    expect(
+      (
+        await h.app(
+          ev("DELETE", `/orgs/${owner.orgId}/members/${owner.id}`, {
+            headers: mate.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    for (const r of [
+      ev("GET", `/catalog/apps/${app.id}`, { headers: owner.cookie }),
+      ev("GET", `/catalog/apps/${app.id}/settings`, { headers: owner.cookie }),
+      ev("POST", `/catalog/apps/${app.id}/artifacts`, {
+        headers: owner.cookie,
+        body: {
+          platform: "bin",
+          filename: "a.zip",
+          size: 1,
+          tags: { version: "1" },
+        },
+      }),
+      ev("POST", `/projects/${owner.prjId}/catalog/apps`, {
+        headers: owner.cookie,
+        body: { name: "again", path: "p" },
+      }),
+    ])
+      expect((await h.app(r)).statusCode, r.rawPath).toBe(404);
+    expect(
+      (
+        await h.app(
+          ev("GET", `/catalog/apps/${app.id}/settings`, {
+            headers: mate.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
   });
 });
 
@@ -312,26 +398,27 @@ describe("catalog uploads", () => {
   };
 
   async function startUpload(
-    h: Awaited<ReturnType<typeof harness>>,
-    cookie: Record<string, string>,
+    h: H,
+    who: { cookie: Record<string, string> },
+    appId: string,
     body: object = uploadBody,
   ) {
     const r = await h.app(
-      ev("POST", "/catalog/apps/myapp/artifacts", {
+      ev("POST", `/catalog/apps/${appId}/artifacts`, {
         body,
-        headers: cookie,
+        headers: who.cookie,
       }),
     );
-    expect(r.statusCode).toBe(201);
+    expect(r.statusCode, r.body).toBe(201);
     return j(r) as { uploadId: string; key: string; url: string };
   }
 
-  it("presigns, commits, serves the CDN URL and notifies slack", async () => {
+  it("presigns, commits claim-first under an id-based key, serves the CDN URL and notifies slack", async () => {
     const h = harness();
-    const owner = await h.login("owner", "member");
-    await makeApp(h, owner.cookie);
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
     await h.app(
-      ev("PATCH", "/catalog/apps/myapp/settings", {
+      ev("PATCH", `/catalog/apps/${app.id}/settings`, {
         body: {
           slackHookUrl: "https://hooks.slack.com/T1/B1",
           messageTemplate: "{{app}} {{version}} out",
@@ -339,16 +426,17 @@ describe("catalog uploads", () => {
         headers: owner.cookie,
       }),
     );
-    const up = await startUpload(h, owner.cookie);
+    const up = await startUpload(h, owner, app.id);
     expect(up.key).toBe(`uploads/${up.uploadId}/app-release.apk`);
 
-    // Commit before uploading → bad_request.
+    // Commit before uploading → bad_request, and no claim is left behind.
     const early = await h.app(
       ev("POST", `/catalog/uploads/${up.uploadId}/commit`, {
         headers: owner.cookie,
       }),
     );
     expect(early.statusCode).toBe(400);
+    expect(h.catalog.artifacts.size).toBe(0);
 
     h.artifacts.putObject(up.key, { contentLength: 1234, etag: "abc123" });
     let slack: unknown;
@@ -372,9 +460,12 @@ describe("catalog uploads", () => {
       size: number;
       hash: string;
     };
+    // Id-based key, whole upload id: renaming the app leaves the URL valid.
+    expect(art.objectKey).toBe(`apps/${app.id}/${up.uploadId}/app-release.apk`);
     expect(art.objectKey).toBe(
-      `myapp/${up.uploadId.slice(0, 8)}/app-release.apk`,
+      finalObjectKey(app, up.uploadId, "app-release.apk"),
     );
+    expect(art.id).toBe(`art_${up.uploadId}`);
     expect(art.url).toBe(`https://dev-d.yyt.life/${art.objectKey}`);
     expect(art.size).toBe(1234);
     expect(art.hash).toBe("abc123");
@@ -401,38 +492,120 @@ describe("catalog uploads", () => {
     expect(st).toMatchObject({ status: "completed", artifactId: art.id });
   });
 
-  it("read-level members cannot start or commit uploads", async () => {
-    const h = harness();
-    const owner = await h.login("owner", "member");
-    const reader = await h.login("reader", "member");
-    await makeApp(h, owner.cookie);
-    await h.app(
-      ev("POST", "/catalog/apps/myapp/permissions", {
-        body: { login: "reader", level: "read" },
+  it("rolls the claim back when the copy fails, and resumes its own half-done commit", async () => {
+    const artifacts = createMemoryArtifactStore();
+    const realCopy = artifacts.copy.bind(artifacts);
+    let broken = true;
+    artifacts.copy = async (src, dst, meta) => {
+      if (broken) throw new Error("s3 down");
+      return realCopy(src, dst, meta);
+    };
+    const h = harness({ artifacts });
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
+    const up = await startUpload(h, owner, app.id);
+    artifacts.putObject(up.key, { contentLength: 1234, etag: "e" });
+    const failed = await h.app(
+      ev("POST", `/catalog/uploads/${up.uploadId}/commit`, {
         headers: owner.cookie,
       }),
     );
-    const denied = await h.app(
-      ev("POST", "/catalog/apps/myapp/artifacts", {
-        body: uploadBody,
-        headers: reader.cookie,
+    expect(failed.statusCode).toBe(503);
+    // The row was the claim; it must not outlive the object it names. The
+    // upload stays pending: a storage error is exactly what a retry fixes.
+    expect(h.catalog.artifacts.size).toBe(0);
+    expect(h.catalog.uploads.get(up.uploadId)?.status).toBe("pending");
+    broken = false;
+    expect(
+      (
+        await h.app(
+          ev("POST", `/catalog/uploads/${up.uploadId}/commit`, {
+            headers: owner.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    broken = true;
+
+    // A crash *between* the claim and the copy: the retry heals it.
+    broken = false;
+    const up2 = await startUpload(h, owner, app.id);
+    artifacts.putObject(up2.key, { contentLength: 1234, etag: "e2" });
+    await h.catalog.insertArtifact({
+      id: `art_${up2.uploadId}`,
+      appId: app.id,
+      platform: "android",
+      url: "https://dev-d.yyt.life/x",
+      objectKey: finalObjectKey(app, up2.uploadId, "app-release.apk"),
+      tags: {},
+      createdAt: NOW_SEC,
+    });
+    const healed = await h.app(
+      ev("POST", `/catalog/uploads/${up2.uploadId}/commit`, {
+        headers: owner.cookie,
       }),
     );
-    expect(denied.statusCode).toBe(403);
-    const up = await startUpload(h, owner.cookie);
+    expect(healed.statusCode).toBe(200);
+    expect(
+      artifacts.objects.has(
+        finalObjectKey(app, up2.uploadId, "app-release.apk"),
+      ),
+    ).toBe(true);
+  });
+
+  it("other orgs cannot start or commit uploads; admins cannot either", async () => {
+    const h = harness();
+    const owner = await h.team("owner");
+    const stranger = await h.team("stranger");
+    const admin = await h.login("Boss", "admin");
+    const app = await makeApp(h, owner);
+    expect(
+      (
+        await h.app(
+          ev("POST", `/catalog/apps/${app.id}/artifacts`, {
+            body: uploadBody,
+            headers: stranger.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await h.app(
+          ev("POST", `/catalog/apps/${app.id}/artifacts`, {
+            body: uploadBody,
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(403);
+    const up = await startUpload(h, owner, app.id);
     h.artifacts.putObject(up.key, { contentLength: 1234, etag: "e" });
-    const commit = await h.app(
-      ev("POST", `/catalog/uploads/${up.uploadId}/commit`, {
-        headers: reader.cookie,
-      }),
-    );
-    expect(commit.statusCode).toBe(404); // hidden, not just forbidden
+    // Hidden, not just forbidden: an upload id must not be probeable.
+    expect(
+      (
+        await h.app(
+          ev("POST", `/catalog/uploads/${up.uploadId}/commit`, {
+            headers: stranger.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await h.app(
+          ev("GET", `/catalog/uploads/${up.uploadId}`, {
+            headers: stranger.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
   });
 
   it("rejects invalid upload metadata", async () => {
     const h = harness();
-    const owner = await h.login("owner", "member");
-    await makeApp(h, owner.cookie);
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
     for (const body of [
       { ...uploadBody, filename: "app.zip" }, // android needs apk/aab
       { ...uploadBody, tags: { build_type: "release" } }, // missing version
@@ -445,7 +618,7 @@ describe("catalog uploads", () => {
       },
     ]) {
       const r = await h.app(
-        ev("POST", "/catalog/apps/myapp/artifacts", {
+        ev("POST", `/catalog/apps/${app.id}/artifacts`, {
           body,
           headers: owner.cookie,
         }),
@@ -456,9 +629,9 @@ describe("catalog uploads", () => {
 
   it("expired uploads cannot commit", async () => {
     const h = harness();
-    const owner = await h.login("owner", "member");
-    await makeApp(h, owner.cookie);
-    const up = await startUpload(h, owner.cookie);
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
+    const up = await startUpload(h, owner, app.id);
     h.artifacts.putObject(up.key, { contentLength: 1234, etag: "e" });
     h.clock.tick(3601);
     const r = await h.app(
@@ -471,9 +644,9 @@ describe("catalog uploads", () => {
 
   it("iOS ad-hoc commit writes a manifest and exposes install URLs", async () => {
     const h = harness();
-    const owner = await h.login("owner", "member");
-    await makeApp(h, owner.cookie);
-    const up = await startUpload(h, owner.cookie, {
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
+    const up = await startUpload(h, owner, app.id, {
       platform: "ios",
       filename: "app.ipa",
       size: 9,
@@ -492,23 +665,20 @@ describe("catalog uploads", () => {
     );
     expect(commit.statusCode).toBe(200);
     const art = j(commit) as {
+      id: string;
       objectKey: string;
       ios?: { manifestUrl: string; installUrl: string };
     };
-    const mKey = `myapp/${up.uploadId.slice(0, 8)}/manifest.plist`;
+    const mKey = `apps/${app.id}/${up.uploadId}/manifest.plist`;
     expect(h.artifacts.objects.get(mKey)?.body).toContain("life.yyt.myapp");
     expect(art.ios?.manifestUrl).toBe(`https://dev-d.yyt.life/${mKey}`);
     expect(art.ios?.installUrl).toContain("itms-services://");
 
     // Deleting the artifact removes both objects.
     const del = await h.app(
-      ev(
-        "DELETE",
-        `/catalog/apps/myapp/artifacts/${(j(commit) as { id: string }).id}`,
-        {
-          headers: owner.cookie,
-        },
-      ),
+      ev("DELETE", `/catalog/apps/${app.id}/artifacts/${art.id}`, {
+        headers: owner.cookie,
+      }),
     );
     expect(del.statusCode).toBe(204);
     expect(h.artifacts.deleted).toContain(art.objectKey);
@@ -554,12 +724,13 @@ describe("catalog cleanup", () => {
     expect(planDeletions(rows, 0)).toHaveLength(0);
   });
 
-  it("cleanup route: dry-run previews, execute deletes", async () => {
+  it("cleanup route: dry-run previews, execute deletes; admins may not even preview", async () => {
     const h = harness();
-    const owner = await h.login("owner", "member");
-    const app = await makeApp(h, owner.cookie);
+    const owner = await h.team("owner");
+    const admin = await h.login("Boss", "admin");
+    const app = await makeApp(h, owner);
     await h.app(
-      ev("PATCH", "/catalog/apps/myapp/settings", {
+      ev("PATCH", `/catalog/apps/${app.id}/settings`, {
         body: { keepRecentVersions: 1 },
         headers: owner.cookie,
       }),
@@ -579,9 +750,19 @@ describe("catalog cleanup", () => {
       });
       h.artifacts.putObject(`myapp/${id}/f.zip`, { contentLength: 1 });
     }
+    expect(
+      (
+        await h.app(
+          ev("POST", `/catalog/apps/${app.id}/artifacts/cleanup`, {
+            query: { dryRun: "true" },
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(403);
     const dry = j(
       await h.app(
-        ev("POST", "/catalog/apps/myapp/artifacts/cleanup", {
+        ev("POST", `/catalog/apps/${app.id}/artifacts/cleanup`, {
           query: { dryRun: "true" },
           headers: owner.cookie,
         }),
@@ -596,13 +777,14 @@ describe("catalog cleanup", () => {
 
     const run = j(
       await h.app(
-        ev("POST", "/catalog/apps/myapp/artifacts/cleanup", {
+        ev("POST", `/catalog/apps/${app.id}/artifacts/cleanup`, {
           headers: owner.cookie,
         }),
       ),
     ) as { executed: boolean; deleted: number };
     expect(run).toMatchObject({ executed: true, deleted: 1 });
     expect(h.catalog.artifacts.has("art_1")).toBe(false);
+    // Legacy `{name}/…` keys are deleted as stored, never recomputed.
     expect(h.artifacts.deleted).toContain("myapp/art_1/f.zip");
   });
 });
@@ -617,6 +799,8 @@ describe("catalog sweep", () => {
       id: "a1",
       name: "app",
       path: "p",
+      orgId: "org_1",
+      projectId: "prj_1",
       createdAt: NOW_SEC,
     });
     await catalog.updateApp("a1", { keepRecentVersions: 1 }, NOW_SEC);
@@ -666,12 +850,11 @@ describe("catalog sweep", () => {
 });
 
 describe("installer downloads", () => {
-  it("lists the two newest installer artifacts for any member", async () => {
+  it("serves the configured app's two newest artifacts only while its org is admin-locked", async () => {
     const h = harness();
-    const admin = await h.login("Boss", "admin");
+    const admin = await h.team("Boss", "admin");
     const member = await h.login("someone", "member");
-    await makeApp(h, admin.cookie, "installer");
-    const app = (await h.catalog.findAppByName("installer"))!;
+    const app = await makeApp(h, admin, "installer");
     for (const [id, at] of [
       ["i1", NOW_SEC - 20],
       ["i2", NOW_SEC - 10],
@@ -687,13 +870,67 @@ describe("installer downloads", () => {
         createdAt: at,
       });
     }
-    const r = j(
-      await h.app(
+    const downloads = () =>
+      h.app(
         ev("GET", "/catalog/installer/downloads", { headers: member.cookie }),
-      ),
-    ) as { downloads: Array<{ version: string; filename: string }> };
+      );
+    // Nothing configured: an empty list, not an error.
+    expect(j(await downloads())).toEqual({ downloads: [] });
+    // The setting refuses an app whose org is not admin-locked.
+    h.clock.tick(0.5);
+    expect(
+      (
+        await h.app(
+          ev("PUT", "/admin/settings/installer-app", {
+            body: { appId: app.id },
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(409);
+    h.clock.tick(0.5);
+    expect(
+      (
+        await h.app(
+          ev("PUT", `/orgs/${admin.orgId}/admin-lock`, {
+            body: { locked: true },
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    h.clock.tick(0.5);
+    expect(
+      (
+        await h.app(
+          ev("PUT", "/admin/settings/installer-app", {
+            body: { appId: app.id },
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    const r = j(await downloads()) as {
+      downloads: Array<{ version: string; filename: string }>;
+    };
     expect(r.downloads.map((d) => d.version)).toEqual(["i3", "i2"]);
     expect(r.downloads[0]!.filename).toBe("app.apk");
+    // Unlocking the org afterwards stops the route rather than serving a
+    // member-pushed APK to every device.
+    h.clock.tick(0.5);
+    await h.app(
+      ev("PUT", `/orgs/${admin.orgId}/admin-lock`, {
+        body: { locked: false },
+        headers: admin.cookie,
+      }),
+    );
+    const untrusted = await downloads();
+    expect(untrusted.statusCode).toBe(503);
+    expect(
+      (j(untrusted) as { error: { details: unknown } }).error.details,
+    ).toEqual({
+      reason: "installer_untrusted",
+    });
   });
 });
 
