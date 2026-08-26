@@ -245,7 +245,7 @@ that can fail adoption or introduce unintended deletion/replacement semantics.
       differs from the reviewed baseline.
 - [x] Review the exact lifecycle diff and estimate (≈950 objects → monitoring ≈$0.003/month, one-time transition ≈$0.01) transition-request plus
       monitoring fees for the measured object count; obtain approval.
-- [ ] Apply dev first (done 2026-08-26), then prod (`scripts/s3-intelligent-tiering.sh yyt-binary-dist --apply`).
+- [x] Apply dev first, then prod (both 2026-08-26).
 - [ ] Verify lifecycle attachment without expecting immediate tier movement.
 - [ ] Observe for at least 30 days, then record the actual Frequent/Infrequent
       bytes using S3 Storage Lens or daily CloudWatch storage metrics plus Cost
