@@ -23,21 +23,37 @@ func (p Printer) JSONValue(v any) error {
 	return enc.Encode(v)
 }
 
-// Table prints a header + rows with aligned columns.
+// Clean strips terminal control characters (keeping \n and \t) from text
+// that other members wrote — a discussion body or an issue title can carry
+// an escape sequence that retitles the terminal or writes the clipboard.
+func Clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// Table prints a header + rows with aligned columns; cells are cleaned.
 func (p Printer) Table(header []string, rows [][]string) error {
 	tw := tabwriter.NewWriter(p.W, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, strings.Join(header, "\t"))
 	for _, r := range rows {
-		fmt.Fprintln(tw, strings.Join(r, "\t"))
+		cells := make([]string, len(r))
+		for i, c := range r {
+			cells[i] = Clean(c)
+		}
+		fmt.Fprintln(tw, strings.Join(cells, "\t"))
 	}
 	return tw.Flush()
 }
 
-// KV prints `key: value` lines for a single record.
+// KV prints `key: value` lines for a single record; values are cleaned.
 func (p Printer) KV(pairs [][2]string) error {
 	tw := tabwriter.NewWriter(p.W, 0, 0, 1, ' ', 0)
 	for _, kv := range pairs {
-		fmt.Fprintf(tw, "%s:\t%s\n", kv[0], kv[1])
+		fmt.Fprintf(tw, "%s:\t%s\n", kv[0], Clean(kv[1]))
 	}
 	return tw.Flush()
 }

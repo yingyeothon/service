@@ -15,6 +15,63 @@ import (
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
+// TestMain strips the developer's own context so tests see only what they set.
+func TestMain(m *testing.M) {
+	flag.Parse()
+	for _, k := range []string{"YYT_TEAM", "YYT_PROJECT", "YYT_PROFILE"} {
+		_ = os.Unsetenv(k)
+	}
+	os.Exit(m.Run())
+}
+
+// Context fixtures: one team `dooroo` (team_1) with one project `game` (prj_1).
+var sampleTeam = map[string]any{
+	"id": "team_1", "name": "dooroo", "role": "owner", "description": "the studio",
+	"adminLocked": false, "createdBy": "octo", "createdAt": 1756000000, "updatedAt": 1756000100,
+}
+
+var sampleProject = map[string]any{
+	"id": "prj_1", "teamId": "team_1", "teamName": "dooroo", "name": "game",
+	"description": nil, "createdBy": "octo", "createdAt": 1756000000, "updatedAt": 1756000100,
+}
+
+// ctxRoutes adds the routes context resolution walks (teams → projects →
+// per-project resource lists) to a route table. Callers pass the resources
+// the project holds; nil lists answer empty.
+func ctxRoutes(routes map[string]func(recorded) (int, any), channels, apps, bundles []any) map[string]func(recorded) (int, any) {
+	if routes == nil {
+		routes = map[string]func(recorded) (int, any){}
+	}
+	list := func(key string, items []any) func(recorded) (int, any) {
+		if items == nil {
+			items = []any{}
+		}
+		return func(recorded) (int, any) { return 200, map[string]any{key: items} }
+	}
+	defaults := map[string]func(recorded) (int, any){
+		"GET /teams":                         list("teams", []any{sampleTeam}),
+		"GET /teams/team_1":                  func(recorded) (int, any) { return 200, sampleTeam },
+		"GET /teams/team_1/projects":         list("projects", []any{sampleProject}),
+		"GET /projects/prj_1":                func(recorded) (int, any) { return 200, sampleProject },
+		"GET /projects/prj_1/channels":       list("channels", channels),
+		"GET /projects/prj_1/catalog/apps":   list("apps", apps),
+		"GET /projects/prj_1/assets/bundles": list("bundles", bundles),
+	}
+	for k, h := range defaults {
+		if _, own := routes[k]; !own { // a test's own route wins
+			routes[k] = h
+		}
+	}
+	return routes
+}
+
+// withProject pins the project context by id for the test (what a script
+// with YYT_PROJECT or .yyt.json does).
+func withProject(t *testing.T) {
+	t.Helper()
+	t.Setenv("YYT_PROJECT", "prj_1")
+}
+
 // fakeConsole records requests and answers from a route table.
 type fakeConsole struct {
 	t    *testing.T
@@ -83,7 +140,8 @@ func golden(t *testing.T, name, got string) {
 }
 
 var sampleChannel = map[string]any{
-	"id": "auth_0123", "kind": "auth", "name": "demo", "ownerId": "m_1",
+	"id": "auth_0123", "kind": "auth", "name": "demo",
+	"teamId": "team_1", "teamName": "dooroo", "projectId": "prj_1", "projectName": "game", "createdBy": "octo",
 	"config":    map[string]any{"audience": "demo", "tokenTtlSec": 86400, "redirectAllowlist": []string{}, "providers": map[string]any{}},
 	"createdAt": 1756000000, "expiresAt": 1756604800, "disabledAt": nil, "status": "active",
 	"issuer": "yyt-auth/auth_0123", "startUrl": "https://auth.example/c/auth_0123/start",
@@ -256,7 +314,8 @@ func TestTokens(t *testing.T) {
 }
 
 func TestChannelsListAndGet(t *testing.T) {
-	f := newFake(t, map[string]func(recorded) (int, any){
+	var projectListed int
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /channels": func(r recorded) (int, any) {
 			if r.Path != "/channels?kind=auth&scope=all" {
 				return 400, map[string]any{"error": map[string]any{"code": "bad_request", "message": r.Path}}
@@ -264,7 +323,7 @@ func TestChannelsListAndGet(t *testing.T) {
 			return 200, map[string]any{"channels": []any{sampleChannel}}
 		},
 		"GET /channels/auth_0123": func(recorded) (int, any) { return 200, sampleChannel },
-	})
+	}, []any{sampleChannel}, nil, nil))
 	out, _, err := run(t, f, "channels", "list", "--kind", "auth", "--scope", "all")
 	if err != nil {
 		t.Fatal(err)
@@ -278,12 +337,36 @@ func TestChannelsListAndGet(t *testing.T) {
 		t.Fatalf("get must not mention secrets: %q", errs)
 	}
 	golden(t, "channels_get", out)
+
+	// A named context narrows the list to that project; a name resolves to the
+	// id through the project's channel list (case-insensitively).
+	f.reqs = nil
+	if _, _, err := run(t, f, "channels", "list", "--team", "dooroo", "--project", "game"); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.reqs {
+		if r.Path == "/channels" {
+			t.Fatal("named context must use the project route")
+		}
+		projectListed++
+	}
+	if projectListed == 0 {
+		t.Fatal("no request made")
+	}
+	out2, _, err := run(t, f, "channels", "get", "DEMO", "--project", "prj_1")
+	if err != nil || out2 != out {
+		t.Fatalf("name lookup: %v\n%s", err, out2)
+	}
+	// Reads auto-select the only team/project; an unknown name is a 404.
+	if _, _, err := run(t, f, "channels", "get", "nope"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func TestChannelsCreateFlags(t *testing.T) {
 	var created map[string]any
-	f := newFake(t, map[string]func(recorded) (int, any){
-		"POST /channels": func(r recorded) (int, any) {
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /projects/prj_1/channels": func(r recorded) (int, any) {
 			created = r.Body
 			kind, _ := r.Body["kind"].(string)
 			resp := map[string]any{}
@@ -298,8 +381,19 @@ func TestChannelsCreateFlags(t *testing.T) {
 			}
 			return 201, resp
 		},
-	})
+	}, []any{sampleChannel}, nil, nil))
 	t.Setenv("GITHUB_CLIENT_SECRET", "ghs")
+	// A write command never auto-selects the project, even when it is the only one.
+	if _, _, err := run(t, f, "channels", "create", "--kind", "auth", "--name", "demo", "--audience", "demo"); err == nil ||
+		!strings.Contains(err.Error(), "no team context") {
+		t.Fatalf("err=%v", err)
+	}
+	for _, r := range f.reqs {
+		if r.Method == "POST" {
+			t.Fatal("must not create without an explicit context")
+		}
+	}
+	withProject(t)
 	out, errs, err := run(t, f, "channels", "create", "--kind", "auth", "--name", "demo",
 		"--audience", "demo", "--redirect", "https://a/", "--redirect", "https://b/", "--github-client-id", "gid", "--token-ttl", "3600")
 	if err != nil {
@@ -317,7 +411,8 @@ func TestChannelsCreateFlags(t *testing.T) {
 		t.Fatalf("out=%q errs=%q", out, errs)
 	}
 
-	out, _, err = run(t, f, "channels", "create", "--kind", "match", "--name", "m", "--auth-channel", "auth_0123",
+	// --auth-channel may be the auth channel's name; it resolves in the same project.
+	out, _, err = run(t, f, "channels", "create", "--kind", "match", "--name", "m", "--auth-channel", "demo",
 		"--party-size", "4", "--callback-url", "https://cb/", "--on-timeout", "partial", "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -463,12 +558,12 @@ func TestChannelsGatewayKinds(t *testing.T) {
 		}
 	}
 	lobbyCh := map[string]any{
-		"id": "lobby_1", "kind": "lobby", "name": "l", "ownerId": "m1",
+		"id": "lobby_1", "kind": "lobby", "name": "l", "projectId": "prj_1",
 		"status": "active", "createdAt": 1, "expiresAt": 2,
 		"config": lobbyCfg(), "wsUrl": "wss://gw-dev.yyt.life/?channel=lobby_1",
 	}
 	qCh := map[string]any{
-		"id": "q_1", "kind": "q", "name": "q", "ownerId": "m1",
+		"id": "q_1", "kind": "q", "name": "q", "projectId": "prj_1",
 		"status": "active", "createdAt": 1, "expiresAt": 2,
 		"config": map[string]any{"authChannelId": "auth_0123"},
 		"wsUrl":  "wss://gw-dev.yyt.life/?channel=q_1",
@@ -479,8 +574,9 @@ func TestChannelsGatewayKinds(t *testing.T) {
 			"aclChannelPattern": "&game:out:dev:q_1:*",
 		},
 	}
-	f := newFake(t, map[string]func(recorded) (int, any){
-		"POST /channels": func(r recorded) (int, any) {
+	withProject(t)
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /projects/prj_1/channels": func(r recorded) (int, any) {
 			sent = r.Body
 			if r.Body["kind"] == "q" {
 				return 201, qCh
@@ -490,7 +586,7 @@ func TestChannelsGatewayKinds(t *testing.T) {
 		"GET /channels/lobby_1":   func(recorded) (int, any) { return 200, lobbyCh },
 		"PATCH /channels/lobby_1": func(r recorded) (int, any) { sent = r.Body; return 200, lobbyCh },
 		"GET /channels/q_1":       func(recorded) (int, any) { return 200, qCh },
-	})
+	}, nil, nil, nil))
 
 	// lobby create: capability flags land in the nested object, tuning at the top.
 	out, errs, err := run(t, f, "channels", "create", "--kind", "lobby", "--name", "l",

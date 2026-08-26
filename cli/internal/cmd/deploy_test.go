@@ -47,14 +47,13 @@ func fakeBuild(t *testing.T, fn func(dir string, args []string) error) *[][]stri
 // the tag maps sent to presign, listed serves the artifact list responses.
 func deployRoutes(f **fakeConsole, committed *[]map[string]any, listCalls *int, listAfter int) map[string]func(recorded) (int, any) {
 	n := 0
-	return map[string]func(recorded) (int, any){
-		"GET /catalog/apps/demo": func(recorded) (int, any) {
-			return 200, map[string]any{
-				"id": "ca_1", "name": "demo", "path": "life.yyt.demo", "debugOnly": false,
-				"createdAt": 1, "updatedAt": 1,
-			}
-		},
-		"POST /catalog/apps/demo/artifacts": func(r recorded) (int, any) {
+	demo := map[string]any{
+		"id": "ca_1", "name": "demo", "path": "life.yyt.demo", "projectId": "prj_1", "projectName": "game",
+		"teamId": "team_1", "teamName": "dooroo", "createdAt": 1, "updatedAt": 1,
+	}
+	return ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /catalog/apps/ca_1": func(recorded) (int, any) { return 200, demo },
+		"POST /catalog/apps/ca_1/artifacts": func(r recorded) (int, any) {
 			*committed = append(*committed, r.Body["tags"].(map[string]any))
 			n++
 			return 201, map[string]any{
@@ -72,7 +71,7 @@ func deployRoutes(f **fakeConsole, committed *[]map[string]any, listCalls *int, 
 			return 200, map[string]any{"id": "art_2", "appId": "ca_1", "platform": "android",
 				"url": "https://d/2", "tags": map[string]string{"build_type": "appbundle"}, "createdAt": 1}
 		},
-		"GET /catalog/apps/demo/artifacts": func(recorded) (int, any) {
+		"GET /catalog/apps/ca_1/artifacts": func(recorded) (int, any) {
 			*listCalls++
 			if *listCalls < listAfter {
 				return 200, map[string]any{"artifacts": []any{}}
@@ -86,7 +85,7 @@ func deployRoutes(f **fakeConsole, committed *[]map[string]any, listCalls *int, 
 			}
 			return 200, map[string]any{"artifacts": arts}
 		},
-	}
+	}, nil, []any{demo}, nil)
 }
 
 func TestDeploySplitPerAbiAndAabAlias(t *testing.T) {
@@ -112,7 +111,19 @@ func TestDeploySplitPerAbiAndAabAlias(t *testing.T) {
 	var f *fakeConsole
 	f = newFake(t, deployRoutes(&f, &committed, &listCalls, 2)) // first verify empty → retry
 
-	out, _, err := run(t, f, "catalog", "deploy",
+	// deploy is a write: no context → refused before any build or request.
+	if _, _, err := run(t, f, "catalog", "deploy", "--project-path", proj); err == nil ||
+		!strings.Contains(err.Error(), "no team context") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(*calls) != 0 || len(f.reqs) != 0 {
+		t.Fatal("must not build or call the API without a context")
+	}
+	// .yyt.json next to the Flutter project supplies it (searched from --project-path).
+	if err := os.WriteFile(filepath.Join(proj, ContextFile), []byte(`{"team":"dooroo","project":"game"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errs, err := run(t, f, "catalog", "deploy",
 		"--project-path", proj, "--build-profile", "release", "--build-profile", "aab",
 		"--split-per-abi", "--target-platform", "android-arm64",
 		"--stage", "beta", "--note", "hello", "--build", "4", "--commit", "abc123",
@@ -154,6 +165,42 @@ func TestDeploySplitPerAbiAndAabAlias(t *testing.T) {
 	if !strings.Contains(out, "art_1") || !strings.Contains(out, "art_2") {
 		t.Fatalf("output:\n%s", out)
 	}
+	if !strings.Contains(errs, "deploying demo to team dooroo / project game") {
+		t.Fatalf("stderr must name the resolved context:\n%s", errs)
+	}
+}
+
+func TestDeployCreatesMissingApp(t *testing.T) {
+	prevDelay := verifyDelay
+	verifyDelay = time.Millisecond
+	t.Cleanup(func() { verifyDelay = prevDelay })
+	proj := makeFlutterProject(t, "1.0.0+1")
+	fakeBuild(t, func(dir string, _ []string) error {
+		p := filepath.Join(dir, "build", "app", "outputs", "flutter-apk")
+		_ = os.MkdirAll(p, 0o755)
+		return os.WriteFile(filepath.Join(p, "app-release.apk"), []byte("apk"), 0o644)
+	})
+	var committed []map[string]any
+	listCalls := 0
+	var f *fakeConsole
+	routes := deployRoutes(&f, &committed, &listCalls, 1)
+	created := false
+	routes["GET /projects/prj_1/catalog/apps"] = func(recorded) (int, any) { return 200, map[string]any{"apps": []any{}} }
+	routes["POST /projects/prj_1/catalog/apps"] = func(r recorded) (int, any) {
+		created = true
+		if r.Body["name"] != "demo" || r.Body["path"] != "life.yyt.demo" {
+			return 400, map[string]any{"error": map[string]any{"code": "bad_request", "message": "body"}}
+		}
+		return 201, map[string]any{"id": "ca_1", "name": "demo", "path": "life.yyt.demo", "projectId": "prj_1", "createdAt": 1, "updatedAt": 1}
+	}
+	f = newFake(t, routes)
+	withProject(t)
+	if _, _, err := run(t, f, "catalog", "deploy", "--project-path", proj, "--no-verify"); err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("app was not created in the project")
+	}
 }
 
 func TestDeployVerifyFails(t *testing.T) {
@@ -170,6 +217,7 @@ func TestDeployVerifyFails(t *testing.T) {
 	listCalls := 0
 	var f *fakeConsole
 	f = newFake(t, deployRoutes(&f, &committed, &listCalls, 99)) // never shows up
+	withProject(t)
 	_, _, err := run(t, f, "catalog", "deploy", "--project-path", proj)
 	if err == nil || !strings.Contains(err.Error(), "verify") {
 		t.Fatalf("expected verify failure, got %v", err)
@@ -180,8 +228,8 @@ func TestDeployVerifyFails(t *testing.T) {
 }
 
 func TestArtifactListFilter(t *testing.T) {
-	f := newFake(t, map[string]func(recorded) (int, any){
-		"GET /catalog/apps/demo/artifacts": func(recorded) (int, any) {
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /catalog/apps/ca_1/artifacts": func(recorded) (int, any) {
 			return 200, map[string]any{"artifacts": []any{
 				map[string]any{"id": "art_1", "platform": "android", "url": "u",
 					"tags": map[string]string{"version": "1.0.0", "stage": "beta"}, "createdAt": 1},
@@ -189,7 +237,7 @@ func TestArtifactListFilter(t *testing.T) {
 					"tags": map[string]string{"version": "2.0.0", "stage": "beta"}, "createdAt": 1},
 			}}
 		},
-	})
+	}, nil, []any{map[string]any{"id": "ca_1", "name": "demo"}}, nil))
 	out, _, err := run(t, f, "catalog", "artifact", "list", "demo", "--filter", "version=2.0.0", "--filter", "stage=beta")
 	if err != nil {
 		t.Fatal(err)
@@ -223,8 +271,9 @@ func TestTypedUploadAndroid(t *testing.T) {
 	_ = os.WriteFile(file, []byte("apk"), 0o644)
 	var tags map[string]any
 	var f *fakeConsole
-	f = newFake(t, map[string]func(recorded) (int, any){
-		"POST /catalog/apps/demo/artifacts": func(r recorded) (int, any) {
+	withProject(t)
+	f = newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /catalog/apps/ca_1/artifacts": func(r recorded) (int, any) {
 			tags = r.Body["tags"].(map[string]any)
 			if r.Body["platform"] != "android" {
 				return 400, map[string]any{"error": map[string]any{"code": "bad_request", "message": "platform"}}
@@ -237,7 +286,7 @@ func TestTypedUploadAndroid(t *testing.T) {
 			return 200, map[string]any{"id": "art_1", "appId": "ca_1", "platform": "android",
 				"url": "https://d/1", "tags": map[string]string{}, "createdAt": 1}
 		},
-	})
+	}, nil, []any{map[string]any{"id": "ca_1", "name": "demo"}}, nil))
 	// missing required flags
 	if _, _, err := run(t, f, "catalog", "artifact", "upload", "android", "demo", file, "--version", "1.0.0"); err == nil {
 		t.Fatal("expected required-flag error")

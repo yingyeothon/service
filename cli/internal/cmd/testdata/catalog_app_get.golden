@@ -1,9 +1,8 @@
 id:          ca_1
 name:        my-game
 path:        life.yyt.my-game
-debugOnly:   false
+project:     dooroo/game
 description: demo
-group:       -
-owner:       octo
+createdBy:   octo
 created:     2025-08-24T01:46:40Z
 updated:     2025-08-24T01:48:20Z

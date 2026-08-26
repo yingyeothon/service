@@ -10,7 +10,8 @@ import (
 
 var sampleBundle = map[string]any{
 	"id": "ab_1", "name": "dungeon-maps", "description": "MMO maps",
-	"ownerLogin": "octo", "createdAt": 1756000000, "updatedAt": 1756000100,
+	"teamId": "team_1", "teamName": "dooroo", "projectId": "prj_1", "projectName": "game", "createdBy": "octo",
+	"createdAt": 1756000000, "updatedAt": 1756000100,
 }
 
 func assetFileJSON(version, path string, size int) map[string]any {
@@ -33,12 +34,12 @@ func TestAssetListAndGet(t *testing.T) {
 		map[string]any{"version": "v2", "files": 1, "bytes": 32, "createdAt": 1756000300},
 		map[string]any{"version": "v1", "files": 2, "bytes": 64, "createdAt": 1756000200},
 	}
-	f := newFake(t, map[string]func(recorded) (int, any){
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /assets/bundles": func(recorded) (int, any) {
 			return 200, map[string]any{"bundles": []any{sampleBundle}}
 		},
-		"GET /assets/bundles/dungeon-maps": func(recorded) (int, any) { return 200, detail },
-	})
+		"GET /assets/bundles/ab_1": func(recorded) (int, any) { return 200, detail },
+	}, nil, nil, []any{sampleBundle}))
 	out, _, err := run(t, f, "asset", "ls")
 	if err != nil {
 		t.Fatal(err)
@@ -59,8 +60,9 @@ func TestAssetUploadFlow(t *testing.T) {
 	}
 	var putType string
 	var f *fakeConsole
-	f = newFake(t, map[string]func(recorded) (int, any){
-		"POST /assets/bundles/dungeon-maps/files": func(r recorded) (int, any) {
+	withProject(t)
+	f = newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /assets/bundles/ab_1/files": func(r recorded) (int, any) {
 			if r.Body["version"] != "v1" || r.Body["path"] != "world/map.json" || r.Body["size"] != float64(7) {
 				return 400, map[string]any{"error": map[string]any{"code": "bad_request", "message": "presign body"}}
 			}
@@ -78,7 +80,7 @@ func TestAssetUploadFlow(t *testing.T) {
 		"POST /assets/uploads/u1/commit": func(recorded) (int, any) {
 			return 200, assetFileJSON("v1", "world/map.json", 7)
 		},
-	})
+	}, nil, nil, []any{sampleBundle}))
 	out, _, err := run(t, f, "asset", "upload", "dungeon-maps", "v1", file, "--path", "world/map.json")
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +110,7 @@ func TestAssetPushWalksTheDirectory(t *testing.T) {
 	var uploaded []string
 	var f *fakeConsole
 	routes := map[string]func(recorded) (int, any){
-		"POST /assets/bundles/maps/files": func(r recorded) (int, any) {
+		"POST /assets/bundles/ab_1/files": func(r recorded) (int, any) {
 			p, _ := r.Body["path"].(string)
 			uploaded = append(uploaded, p)
 			return 201, map[string]any{
@@ -128,8 +130,17 @@ func TestAssetPushWalksTheDirectory(t *testing.T) {
 		}
 	}
 	f = newFake(t, routes)
-	if _, _, err := run(t, f, "asset", "push", "maps", "v1", dir); err != nil {
+	// A write command with a bundle *id* needs no context at all.
+	if _, _, err := run(t, f, "asset", "push", "ab_1", "v1", dir); err != nil {
 		t.Fatal(err)
+	}
+	// With a name and no explicit context it refuses before any request.
+	n := len(f.reqs)
+	if _, _, err := run(t, f, "asset", "push", "maps", "v1", dir); err == nil || !strings.Contains(err.Error(), "no team context") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(f.reqs) != n {
+		t.Fatal("must not call the API without a context")
 	}
 	// Sorted, slash-separated, relative to <dir>; dot-files are skipped so a
 	// stray editor file never lands on the public CDN.
@@ -140,12 +151,13 @@ func TestAssetPushWalksTheDirectory(t *testing.T) {
 
 func TestAssetUpdateRequiresAFlagAndClearsDescription(t *testing.T) {
 	var sent map[string]any
-	f := newFake(t, map[string]func(recorded) (int, any){
-		"PATCH /assets/bundles/dungeon-maps": func(r recorded) (int, any) {
+	withProject(t)
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"PATCH /assets/bundles/ab_1": func(r recorded) (int, any) {
 			sent = r.Body
 			return 200, sampleBundle
 		},
-	})
+	}, nil, nil, []any{sampleBundle}))
 	if _, _, err := run(t, f, "asset", "update", "dungeon-maps"); err == nil {
 		t.Fatal("expected an error when no field is given")
 	}

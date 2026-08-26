@@ -3,3 +3,5 @@ login:   octo
 role:    member
 profile: (token from flag/env)
 api:     <api>
+team:    (none; reads auto-select when unique)
+project: (none; reads auto-select when unique)

@@ -20,7 +20,11 @@ type assetBundle struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
-	OwnerLogin  *string `json:"ownerLogin"`
+	TeamID      *string `json:"teamId"`
+	TeamName    *string `json:"teamName"`
+	ProjectID   *string `json:"projectId"`
+	ProjectName *string `json:"projectName"`
+	CreatedBy   *string `json:"createdBy"`
 	CreatedAt   int64   `json:"createdAt"`
 	UpdatedAt   int64   `json:"updatedAt"`
 	// Only on the detail route.
@@ -48,8 +52,9 @@ type assetFile struct {
 }
 
 // uploadAssetFile runs presign → PUT file → commit for one file of a bundle
-// version. `path` is the file's location *inside* the bundle, which is what the
-// map JSON's relative references resolve against — not the local filename.
+// version. `bundle` is the bundle id. `path` is the file's location *inside*
+// the bundle, which is what the map JSON's relative references resolve
+// against — not the local filename.
 func uploadAssetFile(ctx context.Context, cl *api.Client, bundle, version, path, localPath string) (*assetFile, error) {
 	f, err := os.Open(localPath)
 	if err != nil {
@@ -82,25 +87,40 @@ func uploadAssetFile(ctx context.Context, cl *api.Client, bundle, version, path,
 func newAssets(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "asset",
-		Short: "Game asset bundles: immutable versioned files on the public CDN",
+		Short: "Game asset bundles: immutable versioned files on the public CDN (a bundle belongs to a project)",
 		Long: "Game asset bundles: immutable versioned files on the public CDN.\n\n" +
 			"An asset object is public, cached forever and never overwritten: fixing a\n" +
 			"file means publishing a new version and pointing the lobby channel's\n" +
-			"--map-url at it (`yyt channels update <id> --map-url ...`).",
+			"--map-url at it (`yyt channels update <id> --map-url ...`).\n\n" +
+			"<bundle> is an id (ab_…) or a name unique within the team; a name is looked\n" +
+			"up in the project context (--project, YYT_PROJECT, " + ContextFile + ",\n" +
+			"`yyt project use`). `create`, `upload` and `push` need an explicit context.",
+	}
+	// bundleID resolves <bundle> (id or name); write=true refuses auto-selection.
+	bundleID := func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error) {
+		cc, err := a.ctxClient(cmd)
+		if err != nil {
+			return nil, "", err
+		}
+		id, err := cc.bundle(cmd.Context(), arg, write)
+		return cc, id, err
 	}
 	c.AddCommand(
 		newAssetList(a),
 		newAssetCreate(a),
-		newAssetGet(a),
-		newAssetUpdate(a),
-		newAssetDelete(a),
-		newAssetFiles(a),
-		newAssetVersionDelete(a),
-		newAssetUpload(a),
-		newAssetPush(a),
+		newAssetGet(a, bundleID),
+		newAssetUpdate(a, bundleID),
+		newAssetDelete(a, bundleID),
+		newAssetFiles(a, bundleID),
+		newAssetVersionDelete(a, bundleID),
+		newAssetUpload(a, bundleID),
+		newAssetPush(a, bundleID),
 	)
-	return c
+	return group(c)
 }
+
+// bundleResolver turns <bundle> into an id; write=true means the command mutates.
+type bundleResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
 
 func (a *App) printBundle(b assetBundle) error {
 	if a.jsonOut {
@@ -109,8 +129,9 @@ func (a *App) printBundle(b assetBundle) error {
 	pairs := [][2]string{
 		{"id", b.ID},
 		{"name", b.Name},
+		{"project", crumb(b.TeamName, b.ProjectName)},
 		{"description", output.Str(b.Description)},
-		{"owner", output.Str(b.OwnerLogin)},
+		{"createdBy", output.Str(b.CreatedBy)},
 		{"created", output.Time(b.CreatedAt)},
 		{"updated", output.Time(b.UpdatedAt)},
 	}
@@ -135,17 +156,25 @@ func newAssetList(a *App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List asset bundles",
+		Short:   "List the bundles of the project in context, or of every team you sit in",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cl, err := a.client()
+			cc, err := a.ctxClient(cmd)
 			if err != nil {
 				return err
+			}
+			path := "/assets/bundles"
+			if cc.spec.explicitTeam() || cc.spec.explicitProject() {
+				r, err := cc.project(cmd.Context(), false)
+				if err != nil {
+					return err
+				}
+				path = "/projects/" + api.PathID(r.ProjectID) + "/assets/bundles"
 			}
 			var res struct {
 				Bundles []assetBundle `json:"bundles"`
 			}
-			if err := cl.Do(cmd.Context(), http.MethodGet, "/assets/bundles", nil, &res); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
 				return err
 			}
 			if a.jsonOut {
@@ -153,9 +182,9 @@ func newAssetList(a *App) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Bundles))
 			for _, b := range res.Bundles {
-				rows = append(rows, []string{b.Name, output.Str(b.OwnerLogin), output.Str(b.Description), output.Time(b.UpdatedAt)})
+				rows = append(rows, []string{b.ID, b.Name, crumb(b.TeamName, b.ProjectName), output.Str(b.Description), output.Time(b.UpdatedAt)})
 			}
-			return a.printer().Table([]string{"NAME", "OWNER", "DESCRIPTION", "UPDATED"}, rows)
+			return a.printer().Table([]string{"ID", "NAME", "TEAM/PROJECT", "DESCRIPTION", "UPDATED"}, rows)
 		},
 	}
 }
@@ -164,10 +193,14 @@ func newAssetCreate(a *App) *cobra.Command {
 	var description string
 	c := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create an asset bundle",
+		Short: "Create an asset bundle in the project context (explicit)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, err := a.ctxClient(cmd)
+			if err != nil {
+				return err
+			}
+			r, err := cc.project(cmd.Context(), true)
 			if err != nil {
 				return err
 			}
@@ -176,7 +209,7 @@ func newAssetCreate(a *App) *cobra.Command {
 				body["description"] = description
 			}
 			var b assetBundle
-			if err := cl.Do(cmd.Context(), http.MethodPost, "/assets/bundles", body, &b); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/projects/"+api.PathID(r.ProjectID)+"/assets/bundles", body, &b); err != nil {
 				return err
 			}
 			return a.printBundle(b)
@@ -186,18 +219,18 @@ func newAssetCreate(a *App) *cobra.Command {
 	return c
 }
 
-func newAssetGet(a *App) *cobra.Command {
+func newAssetGet(a *App, bundleID bundleResolver) *cobra.Command {
 	return &cobra.Command{
-		Use:   "get <name>",
+		Use:   "get <bundle>",
 		Short: "Show one bundle with its versions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := bundleID(cmd, args[0], false)
 			if err != nil {
 				return err
 			}
 			var b assetBundle
-			if err := cl.Do(cmd.Context(), http.MethodGet, "/assets/bundles/"+api.PathID(args[0]), nil, &b); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/assets/bundles/"+api.PathID(id), nil, &b); err != nil {
 				return err
 			}
 			return a.printBundle(b)
@@ -205,20 +238,13 @@ func newAssetGet(a *App) *cobra.Command {
 	}
 }
 
-func newAssetUpdate(a *App) *cobra.Command {
-	var name, description, owner string
+func newAssetUpdate(a *App, bundleID bundleResolver) *cobra.Command {
+	var name, description string
 	c := &cobra.Command{
-		Use:   "update <name>",
-		Short: "Rename a bundle, change its description, or transfer it (admin)",
-		Long: "Rename a bundle, change its description, or transfer it (admin).\n\n" +
-			"A bundle that already holds files cannot be renamed: its name is a live\n" +
-			"object-key segment, so every published URL would stop resolving.",
-		Args: cobra.ExactArgs(1),
+		Use:   "update <bundle>",
+		Short: "Rename a bundle or change its description (empty --description clears it)",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
-			if err != nil {
-				return err
-			}
 			body := map[string]any{}
 			if cmd.Flags().Changed("name") {
 				body["name"] = name
@@ -230,38 +256,38 @@ func newAssetUpdate(a *App) *cobra.Command {
 					body["description"] = description
 				}
 			}
-			if cmd.Flags().Changed("owner") {
-				body["ownerId"] = owner
-			}
 			if len(body) == 0 {
-				return fmt.Errorf("nothing to update: pass --name, --description or --owner")
+				return fmt.Errorf("nothing to update: pass --name and/or --description")
+			}
+			cc, id, err := bundleID(cmd, args[0], true)
+			if err != nil {
+				return err
 			}
 			var b assetBundle
-			if err := cl.Do(cmd.Context(), http.MethodPatch, "/assets/bundles/"+api.PathID(args[0]), body, &b); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodPatch, "/assets/bundles/"+api.PathID(id), body, &b); err != nil {
 				return err
 			}
 			return a.printBundle(b)
 		},
 	}
 	f := c.Flags()
-	f.StringVar(&name, "name", "", "new bundle name")
+	f.StringVar(&name, "name", "", "new bundle name (unique within the team)")
 	f.StringVar(&description, "description", "", "new description (empty clears it)")
-	f.StringVar(&owner, "owner", "", "member id of the new owner (admin only)")
 	return c
 }
 
-func newAssetDelete(a *App) *cobra.Command {
+func newAssetDelete(a *App, bundleID bundleResolver) *cobra.Command {
 	return &cobra.Command{
-		Use:     "delete <name>",
+		Use:     "delete <bundle>",
 		Aliases: []string{"rm", "remove"},
 		Short:   "Delete a bundle with every version and object it holds",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := bundleID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
-			if err := cl.Do(cmd.Context(), http.MethodDelete, "/assets/bundles/"+api.PathID(args[0]), nil, nil); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodDelete, "/assets/bundles/"+api.PathID(id), nil, nil); err != nil {
 				return err
 			}
 			fmt.Fprintf(a.Out, "deleted %s\n", args[0])
@@ -281,14 +307,14 @@ func (a *App) printFiles(bundle, version string, files []assetFile) error {
 	return a.printer().Table([]string{"PATH", "TYPE", "BYTES", "URL"}, rows)
 }
 
-func newAssetFiles(a *App) *cobra.Command {
+func newAssetFiles(a *App, bundleID bundleResolver) *cobra.Command {
 	return &cobra.Command{
-		Use:     "files <name> <version>",
+		Use:     "files <bundle> <version>",
 		Aliases: []string{"version"},
 		Short:   "List the files of one version with their public URLs",
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := bundleID(cmd, args[0], false)
 			if err != nil {
 				return err
 			}
@@ -297,8 +323,8 @@ func newAssetFiles(a *App) *cobra.Command {
 				Version string      `json:"version"`
 				Files   []assetFile `json:"files"`
 			}
-			path := "/assets/bundles/" + api.PathID(args[0]) + "/versions/" + api.PathID(args[1])
-			if err := cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
+			path := "/assets/bundles/" + api.PathID(id) + "/versions/" + api.PathID(args[1])
+			if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
 				return err
 			}
 			return a.printFiles(res.Bundle, res.Version, res.Files)
@@ -306,9 +332,9 @@ func newAssetFiles(a *App) *cobra.Command {
 	}
 }
 
-func newAssetVersionDelete(a *App) *cobra.Command {
+func newAssetVersionDelete(a *App, bundleID bundleResolver) *cobra.Command {
 	return &cobra.Command{
-		Use:   "rm-version <name> <version>",
+		Use:   "rm-version <bundle> <version>",
 		Short: "Delete one version's files and objects",
 		Long: "Delete one version's files and objects.\n\n" +
 			"Nothing checks whether a channel still points at this version: a client\n" +
@@ -316,12 +342,12 @@ func newAssetVersionDelete(a *App) *cobra.Command {
 			"every lobby channel's --map-url first.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := bundleID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
-			path := "/assets/bundles/" + api.PathID(args[0]) + "/versions/" + api.PathID(args[1])
-			if err := cl.Do(cmd.Context(), http.MethodDelete, path, nil, nil); err != nil {
+			path := "/assets/bundles/" + api.PathID(id) + "/versions/" + api.PathID(args[1])
+			if err := cc.cl.Do(cmd.Context(), http.MethodDelete, path, nil, nil); err != nil {
 				return err
 			}
 			fmt.Fprintf(a.Out, "deleted %s/%s\n", args[0], args[1])
@@ -330,14 +356,14 @@ func newAssetVersionDelete(a *App) *cobra.Command {
 	}
 }
 
-func newAssetUpload(a *App) *cobra.Command {
+func newAssetUpload(a *App, bundleID bundleResolver) *cobra.Command {
 	var path string
 	c := &cobra.Command{
-		Use:   "upload <name> <version> <file>",
+		Use:   "upload <bundle> <version> <file>",
 		Short: "Upload one file into a bundle version (presigned PUT + commit)",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := bundleID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
@@ -345,7 +371,7 @@ func newAssetUpload(a *App) *cobra.Command {
 			if inBundle == "" {
 				inBundle = filepath.Base(args[2])
 			}
-			f, err := uploadAssetFile(cmd.Context(), cl, args[0], args[1], inBundle, args[2])
+			f, err := uploadAssetFile(cmd.Context(), cc.cl, id, args[1], inBundle, args[2])
 			if err != nil {
 				return err
 			}
@@ -356,19 +382,20 @@ func newAssetUpload(a *App) *cobra.Command {
 	return c
 }
 
-func newAssetPush(a *App) *cobra.Command {
+func newAssetPush(a *App, bundleID bundleResolver) *cobra.Command {
 	c := &cobra.Command{
-		Use:   "push <name> <version> <dir>",
+		Use:   "push <bundle> <version> <dir>",
 		Short: "Upload a whole directory as one bundle version",
 		Long: "Upload a whole directory as one bundle version.\n\n" +
 			"Every file keeps its path relative to <dir>, so the relative references\n" +
 			"inside a map JSON keep resolving once the bundle is on the CDN.",
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := bundleID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
+			cl := cc.cl
 			bundle, version, dir := args[0], args[1], args[2]
 			local, err := collectAssetFiles(dir)
 			if err != nil {
@@ -379,7 +406,7 @@ func newAssetPush(a *App) *cobra.Command {
 			}
 			uploaded := make([]assetFile, 0, len(local))
 			for _, rel := range local {
-				f, err := uploadAssetFile(cmd.Context(), cl, bundle, version, rel, filepath.Join(dir, filepath.FromSlash(rel)))
+				f, err := uploadAssetFile(cmd.Context(), cl, id, version, rel, filepath.Join(dir, filepath.FromSlash(rel)))
 				if err != nil {
 					// Partial versions are harmless: nothing points at this
 					// version until a channel's --map-url does. Name what landed,
