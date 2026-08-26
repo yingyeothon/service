@@ -6,6 +6,7 @@ import {
   createEventsDb,
   createTeamDb,
   createStateDb,
+  contractPreflight,
   toLobbyChannel,
   toQChannel,
   type ConsoleDb,
@@ -110,6 +111,94 @@ describe.skipIf(!dockerAvailable())(
           },
         },
       );
+    });
+
+    describe("contract preflight", () => {
+      it("passes on a mapped stage and lists every violation otherwise", async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        expect(await contractPreflight(db.client)).toEqual([]);
+        const channel = (id: string, name: string, deleted: number | null) =>
+          db.client.channels.create({
+            data: {
+              id,
+              kind: "auth",
+              owner_id: "m1",
+              team_id: "team_1",
+              project_id: "prj_1",
+              name,
+              config_json: "{}",
+              secret_json: "{}",
+              created_at: 1,
+              expires_at: 10_000,
+              deleted_at: deleted,
+            },
+          });
+        const app = (id: string, name: string, mapped: boolean) =>
+          db.client.catalog_apps.create({
+            data: {
+              id,
+              name,
+              path: name,
+              created_at: 1,
+              updated_at: 1,
+              ...(mapped ? { team_id: "team_1", project_id: "prj_1" } : {}),
+            },
+          });
+        // Mapped resources with distinct names across tables, one of them
+        // soft-deleted: still clean.
+        await channel("auth_1", "dup", null);
+        await channel("auth_9", "gone", 5);
+        await app("app_0", "fine", true);
+        expect(await contractPreflight(db.client)).toEqual([]);
+        // A soft-deleted twin still counts: the unique index ignores
+        // deleted_at. Names collide across tables (channel + app + bundle).
+        await channel("auth_2", "dup", 5);
+        await app("app_2", "dup", true);
+        await db.client.asset_bundles.create({
+          data: {
+            id: "b_1",
+            name: "dup",
+            team_id: "team_1",
+            project_id: "prj_1",
+            created_at: 1,
+            updated_at: 1,
+          },
+        });
+        // Reserved name on a fully mapped app; unmapped rows in each table,
+        // including a half-mapped one (team without project).
+        await app("app_1", "apps", true);
+        await app("app_3", "loose", false);
+        await db.client.asset_bundles.create({
+          data: {
+            id: "b_2",
+            name: "half",
+            team_id: "team_1",
+            created_at: 1,
+            updated_at: 1,
+          },
+        });
+        await db.client.channels.create({
+          data: {
+            id: "auth_3",
+            kind: "auth",
+            owner_id: "m1",
+            name: "orphan",
+            config_json: "{}",
+            secret_json: "{}",
+            created_at: 1,
+            expires_at: 10_000,
+          },
+        });
+        const problems = await contractPreflight(db.client);
+        expect(problems).toEqual([
+          "catalog_apps: 1 row(s) without team/project",
+          "asset_bundles: 1 row(s) without team/project",
+          "channels: 1 row(s) without team/project",
+          'team team_1: name "dup" used by 4 resources',
+          'catalog_apps: 1 app(s) named "apps" (reserved)',
+        ]);
+      });
     });
 
     describe("team / project columns on resources (migration 6)", () => {

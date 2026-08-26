@@ -145,3 +145,4 @@ export {
   type CatalogPlatform,
   type CatalogUploadStatus,
 } from "./catalog.js";
+export { contractPreflight } from "./preflight.js";

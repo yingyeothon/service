@@ -79,6 +79,7 @@ const ulid = (() => {
 })();
 
 const {
+  contractPreflight,
   createAssetsDb,
   createCatalogDb,
   createConsoleDb,
@@ -438,34 +439,10 @@ if (problems.length > 0) {
 if (execute) {
   for (const fn of acts) await fn();
   console.log(`# applied ${acts.length} step(s)`);
-  const nulls = [
-    ...(await prisma.catalog_apps.findMany({
-      where: { OR: [{ team_id: null }, { project_id: null }] },
-      select: { id: true },
-    })),
-    ...(await prisma.asset_bundles.findMany({
-      where: { OR: [{ team_id: null }, { project_id: null }] },
-      select: { id: true },
-    })),
-    ...(await prisma.channels.findMany({
-      where: { OR: [{ team_id: null }, { project_id: null }] },
-      select: { id: true },
-    })),
-  ];
-  const dupes = await prisma.$queryRawUnsafe(
-    `select team_id, name, count(*) as n from (
-       select team_id, name from catalog_apps union all
-       select team_id, name from asset_bundles union all
-       select team_id, name from channels) t
-     where team_id is not null group by team_id, name having n > 1`,
-  );
-  const reserved = await prisma.catalog_apps.findMany({
-    where: { name: "apps" },
-    select: { id: true },
-  });
-  console.log(
-    `# verify: ${nulls.length} unmapped row(s), ${dupes.length} duplicate name(s) in a team, ${reserved.length} app(s) named "apps"`,
-  );
-  if (nulls.length + dupes.length + reserved.length > 0) process.exitCode = 1;
+  // Same checks migrate.sh runs before the contract migration.
+  const problems = await contractPreflight(prisma);
+  console.log(`# verify: ${problems.length} contract problem(s)`);
+  for (const p of problems) console.log(`  ${p}`);
+  if (problems.length > 0) process.exitCode = 1;
 }
 await prisma.$disconnect();
