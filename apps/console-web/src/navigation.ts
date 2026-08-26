@@ -1,5 +1,6 @@
 import {
   IconCalendarEvent,
+  IconDeviceMobileDown,
   IconHome,
   IconKey,
   IconPackages,
@@ -56,6 +57,12 @@ export const NAV_ITEMS: NavItem[] = [
     icon: IconPhoto,
     minRole: "member",
     hidden: true,
+  },
+  {
+    path: "/installer",
+    label: "Installer",
+    icon: IconDeviceMobileDown,
+    minRole: "member",
   },
   { path: "/tokens", label: "API tokens", icon: IconKey, minRole: "pending" },
   { path: "/members", label: "Members", icon: IconUsers, minRole: "admin" },

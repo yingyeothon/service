@@ -23,7 +23,16 @@ const mockApi = {
 
 vi.mock("../src/api", () => ({
   api: mockApi,
-  ApiError: class extends Error {},
+  ApiError: class extends Error {
+    constructor(
+      readonly status: number,
+      readonly code: string,
+      message: string,
+      readonly details?: unknown,
+    ) {
+      super(message);
+    }
+  },
 }));
 
 const { App } = await import("../src/App");
@@ -152,5 +161,103 @@ describe("App", () => {
       await screen.findByRole("button", { name: "Approve" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/1 sign-up waiting/)).toBeInTheDocument();
+  });
+});
+
+describe("installer downloads", () => {
+  const member = {
+    login: "alice",
+    role: "member" as const,
+    memberId: "m_1",
+    teams: [],
+  };
+  const builds = [
+    {
+      url: "https://d.example/installer-1.2.0.apk",
+      filename: "installer-1.2.0.apk",
+      platform: "android" as const,
+      version: "1.2.0+14",
+      createdAt: 1_787_757_641,
+    },
+    {
+      url: "https://d.example/app-release.apk",
+      filename: "app-release.apk",
+      platform: "android" as const,
+      version: "1.1.0+13",
+      createdAt: 1_787_550_897,
+    },
+  ];
+
+  it("puts the latest build on the home page and in the navigation", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue(member as never);
+    vi.mocked(mockApi.installerDownloads).mockResolvedValue(builds);
+    mount("/");
+    const btn = await screen.findByRole("link", {
+      name: /Download installer v1\.2\.0\+14/,
+    });
+    expect(btn.getAttribute("href")).toBe(builds[0]!.url);
+    expect(screen.getAllByRole("link", { name: "Installer" }).length).toBe(2);
+  });
+
+  it("lists every build on /installer, newest marked", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue(member as never);
+    vi.mocked(mockApi.installerDownloads).mockResolvedValue(builds);
+    mount("/installer");
+    expect(
+      await screen.findByRole("link", { name: "app-release.apk" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "installer-1.2.0.apk (latest)" }),
+    ).toBeInTheDocument();
+  });
+
+  it("explains an empty list and an untrusted installer app differently", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue(member as never);
+    vi.mocked(mockApi.installerDownloads).mockResolvedValue([]);
+    mount("/installer");
+    expect(
+      await screen.findByText(/No installer build is published yet/),
+    ).toBeInTheDocument();
+    vi.mocked(mockApi.installerDownloads).mockRejectedValue(
+      new (await import("../src/api")).ApiError(503, "unavailable", "x", {
+        reason: "installer_untrusted",
+      }),
+    );
+    mount("/installer");
+    expect(
+      await screen.findByText(/team is not admin-locked/),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces an unrelated 503 as an error instead of an empty list", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue(member as never);
+    vi.mocked(mockApi.installerDownloads).mockRejectedValue(
+      new (await import("../src/api")).ApiError(503, "unavailable", "db down"),
+    );
+    mount("/installer");
+    expect(await screen.findByRole("alert")).toHaveTextContent("db down");
+  });
+
+  it("denies /installer to pending members", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      ...member,
+      role: "pending",
+    } as never);
+    mount("/installer");
+    await screen.findAllByRole("link", { name: "Events" });
+    expect(screen.queryByRole("heading", { name: "Installer" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Installer" })).toBeNull();
+  });
+
+  it("stays quiet on the home page when no installer is served", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue(member as never);
+    vi.mocked(mockApi.installerDownloads).mockRejectedValue(
+      new (await import("../src/api")).ApiError(503, "unavailable", "x", {
+        reason: "installer_untrusted",
+      }),
+    );
+    mount("/");
+    await screen.findAllByRole("link", { name: "Teams" });
+    expect(screen.queryByText(/Download installer/)).toBeNull();
   });
 });

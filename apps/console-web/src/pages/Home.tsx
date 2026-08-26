@@ -1,48 +1,9 @@
-import {
-  Anchor,
-  Button,
-  Card,
-  Code,
-  Group,
-  List,
-  Text,
-  Title,
-} from "@mantine/core";
+import { Anchor, Button, Code, List, Text, Title } from "@mantine/core";
 import { Link } from "react-router";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { useAuth } from "../auth";
 import { Notice, Spinner } from "../components/ui";
-import { useApiQuery } from "../lib/query";
-
-/** Latest installer builds; every member may install them. */
-function InstallerDownloads() {
-  const list = useApiQuery(["catalog", "installer"], async () => {
-    try {
-      return await api.installerDownloads();
-    } catch (e) {
-      // 503 `installer_untrusted`: no installer app is configured (or its team
-      // is not admin-locked) — nothing to offer, not an error to paint.
-      if (e instanceof ApiError && e.status === 503) return [];
-      throw e;
-    }
-  });
-  if (!list.data?.length) return null;
-  return (
-    <Card withBorder mt="md" padding="sm">
-      <Text size="sm" fw={600} mb={4}>
-        Installer
-      </Text>
-      <Group gap="sm">
-        {list.data.map((d) => (
-          <Anchor key={d.url} href={d.url} size="sm">
-            {d.filename}
-            {d.version ? ` (v${d.version})` : ""}
-          </Anchor>
-        ))}
-      </Group>
-    </Card>
-  );
-}
+import { InstallerDownloadCard } from "./Installer";
 
 export function HomePage() {
   const { me, loading } = useAuth();
@@ -82,6 +43,7 @@ export function HomePage() {
           (proposals, votes) are open to you already.
         </Notice>
       )}
+      {me && me.role !== "pending" && <InstallerDownloadCard compact />}
       {me && me.role !== "pending" && (
         <List spacing="xs">
           <List.Item>
@@ -109,6 +71,12 @@ export function HomePage() {
             </Anchor>{" "}
             — hackathon proposals and votes.
           </List.Item>
+          <List.Item>
+            <Anchor component={Link} to="/installer">
+              Installer
+            </Anchor>{" "}
+            — every published build of the device installer.
+          </List.Item>
           {me.role === "admin" && (
             <List.Item>
               <Anchor component={Link} to="/members">
@@ -119,7 +87,6 @@ export function HomePage() {
           )}
         </List>
       )}
-      {me && me.role !== "pending" && <InstallerDownloads />}
     </>
   );
 }

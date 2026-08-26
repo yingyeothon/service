@@ -9,6 +9,7 @@ import { DiscussionPage } from "./pages/Discussion";
 import { EventDetailPage } from "./pages/EventDetail";
 import { EventsPage } from "./pages/Events";
 import { HomePage } from "./pages/Home";
+import { InstallerPage } from "./pages/Installer";
 import { IssuePage } from "./pages/Issue";
 import { MembersPage } from "./pages/Members";
 import { ProjectPage } from "./pages/Project";
@@ -75,6 +76,7 @@ export const ROUTES: AppRoute[] = [
     element: <Navigate to="/teams" replace />,
   },
   { path: "/assets/:id", guard: "/assets", element: <AssetBundlePage /> },
+  { path: "/installer", guard: "/installer", element: <InstallerPage /> },
   { path: "/tokens", guard: "/tokens", element: <TokensPage /> },
   { path: "/members", guard: "/members", element: <MembersPage /> },
 ];
