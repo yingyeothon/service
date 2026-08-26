@@ -63,7 +63,11 @@ export interface CatalogAppRow {
   debugOnly: boolean;
   description: string | null;
   groupId: string | null;
+  /** Creator, kept for display; authorization is org membership (`orgId`). */
   ownerId: string | null;
+  /** Null only for rows created before migration `6_org_project` was mapped. */
+  orgId: string | null;
+  projectId: string | null;
   pendingOwnerLogin: string | null;
   slackHookUrl: string | null;
   slackChannel: string | null;
@@ -81,6 +85,9 @@ export interface CatalogAppInput {
   description?: string | null;
   groupId?: string | null;
   ownerId?: string | null;
+  /** Both or neither; the project must belong to the org (asserted by the writer). */
+  orgId?: string;
+  projectId?: string;
   pendingOwnerLogin?: string | null;
   createdAt: number;
 }
@@ -195,7 +202,11 @@ export interface CatalogDb {
   findApp(id: string): Promise<CatalogAppRow | undefined>;
   findAppByName(name: string): Promise<CatalogAppRow | undefined>;
   /** Name ascending; `groupId` narrows to one group. */
-  listApps(filter?: { groupId?: string }): Promise<CatalogAppRow[]>;
+  listApps(filter?: {
+    groupId?: string;
+    orgId?: string;
+    projectId?: string;
+  }): Promise<CatalogAppRow[]>;
   updateApp(id: string, patch: CatalogAppPatch, at: number): Promise<boolean>;
   deleteApp(id: string): Promise<boolean>;
 
@@ -318,6 +329,8 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
     description: string | null;
     group_id: string | null;
     owner_id: string | null;
+    org_id: string | null;
+    project_id: string | null;
     pending_owner_login: string | null;
     slack_hook_url: string | null;
     slack_channel: string | null;
@@ -333,6 +346,8 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
     description: r.description,
     groupId: r.group_id,
     ownerId: r.owner_id,
+    orgId: r.org_id,
+    projectId: r.project_id,
     pendingOwnerLogin: r.pending_owner_login,
     slackHookUrl: r.slack_hook_url,
     slackChannel: r.slack_channel,
@@ -510,6 +525,8 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
             description: a.description ?? null,
             group_id: a.groupId ?? null,
             owner_id: a.ownerId ?? null,
+            org_id: a.orgId ?? null,
+            project_id: a.projectId ?? null,
             pending_owner_login: a.pendingOwnerLogin ?? null,
             keep_recent_versions: 3,
             created_at: a.createdAt,
@@ -531,7 +548,11 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
       run(async () =>
         (
           await prisma.catalog_apps.findMany({
-            where: filter.groupId ? { group_id: filter.groupId } : {},
+            where: {
+              ...(filter.groupId ? { group_id: filter.groupId } : {}),
+              ...(filter.orgId ? { org_id: filter.orgId } : {}),
+              ...(filter.projectId ? { project_id: filter.projectId } : {}),
+            },
             orderBy: [{ name: "asc" }, { id: "asc" }],
           })
         ).map(toApp),
@@ -944,6 +965,8 @@ export function createMemoryCatalogDb(
         description: a.description ?? null,
         groupId: a.groupId ?? null,
         ownerId: a.ownerId ?? null,
+        orgId: a.orgId ?? null,
+        projectId: a.projectId ?? null,
         pendingOwnerLogin: a.pendingOwnerLogin ?? null,
         slackHookUrl: null,
         slackChannel: null,
@@ -963,7 +986,12 @@ export function createMemoryCatalogDb(
     },
     listApps: async (filter = {}) =>
       [...apps.values()]
-        .filter((a) => !filter.groupId || a.groupId === filter.groupId)
+        .filter(
+          (a) =>
+            (!filter.groupId || a.groupId === filter.groupId) &&
+            (!filter.orgId || a.orgId === filter.orgId) &&
+            (!filter.projectId || a.projectId === filter.projectId),
+        )
         .map((a) => ({ ...a }))
         .sort(byName),
     updateApp: async (id, patch, at) => {
