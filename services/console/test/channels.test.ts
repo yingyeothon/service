@@ -715,7 +715,7 @@ describe("expire sweep", () => {
     );
     expect(
       await runExpire({ db: h.db, clock: h.clock, logger: nullLogger }),
-    ).toEqual({ disabled: [], deleted: [], documents: 0 });
+    ).toEqual({ disabled: [], deleted: [], documents: 0, purged: [] });
     h.clock.tick(7 * 86400 + 1);
     const swept = await runExpire({
       db: h.db,
@@ -755,6 +755,67 @@ describe("expire sweep", () => {
     expect(
       hist.rows.filter((r) => r.action === "resource.expire"),
     ).toHaveLength(2);
+    expect(gone.purged).toEqual([]);
+    // 30 days after the soft-delete the rows are purged for good.
+    h.clock.tick(30 * 86400 + 1);
+    const purged = await runExpire({
+      db: h.db,
+      clock: h.clock,
+      logger: nullLogger,
+    });
+    expect(purged.purged.sort()).toEqual(gone.deleted.map((d) => d.id).sort());
+    expect(h.db.channels.has(t.id)).toBe(false);
+  });
+
+  it("a deleted channel holds its name until the purge", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const post = (name: string) =>
+      h.app(
+        ev("POST", `/projects/${a.prjId}/channels`, {
+          headers: a.cookie,
+          body: { kind: "auth", name, config: { audience: "x" } },
+        }),
+      );
+    const first = parse(await post("base"));
+    const other = parse(await post("other"));
+    expect(
+      (
+        await h.app(
+          ev("DELETE", `/channels/${first.id}`, { headers: a.cookie }),
+        )
+      ).statusCode,
+    ).toBe(204);
+    // Create and rename both see the soft-deleted holder (the unique index does).
+    const again = await post("BASE");
+    expect(again.statusCode).toBe(409);
+    expect(again.body).toContain("deleted channel");
+    const rename = await h.app(
+      ev("PATCH", `/channels/${other.id}`, {
+        headers: a.cookie,
+        body: { name: "base" },
+      }),
+    );
+    expect(rename.statusCode).toBe(409);
+    expect(rename.body).toContain("deleted channel");
+    h.clock.tick(30 * 86400 + 1);
+    const swept = await runExpire({
+      db: h.db,
+      clock: h.clock,
+      logger: nullLogger,
+    });
+    expect(swept.purged).toEqual([first.id]);
+    const a2 = await h.login("alice", "member");
+    expect(
+      (
+        await h.app(
+          ev("POST", `/projects/${a.prjId}/channels`, {
+            headers: a2.cookie,
+            body: { kind: "auth", name: "base", config: { audience: "x" } },
+          }),
+        )
+      ).statusCode,
+    ).toBe(201);
   });
 });
 

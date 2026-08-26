@@ -47,7 +47,7 @@ describe("createMemoryConsoleDb contract", () => {
   it("returns undefined for missing, wrong-kind, or deleted channels", async () => {
     const db = await fresh();
     expect(await db.findAuthChannel("nope")).toBeUndefined();
-    await db.insertChannel({ ...channel, id: "t1", kind: "topic" });
+    await db.insertChannel({ ...channel, id: "t1", kind: "topic", name: "t1" });
     expect(await db.findAuthChannel("t1")).toBeUndefined();
     expect((await db.findChannelRow("t1"))?.kind).toBe("topic");
     await db.insertChannel(channel);
@@ -66,6 +66,25 @@ describe("createMemoryConsoleDb contract", () => {
     await expect(
       db.insertChannel({ ...channel, id: "x", ownerId: "ghost" }),
     ).rejects.toBeInstanceOf(AppError);
+  });
+
+  it("holds a team-unique name, case-insensitively and through soft-delete", async () => {
+    const db = await fresh();
+    await db.insertChannel(channel);
+    await expect(
+      db.insertChannel({ ...channel, id: "x", kind: "topic", name: "TEST" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    db.patchChannel(channel.id, { deletedAt: 5 });
+    await expect(
+      db.insertChannel({ ...channel, id: "y" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    // The same name in another team is free.
+    await db.insertChannel({
+      ...channel,
+      id: "z",
+      teamId: "team_2",
+      projectId: "prj_2",
+    });
   });
 
   it("upsertMember refreshes the login for an existing github id", async () => {
@@ -91,6 +110,7 @@ describe("findMatchChannel", () => {
     ...channel,
     id: "m1",
     kind: "match" as const,
+    name: "match-row",
     config: {
       authChannelId: "ch_a",
       partySize: 2,
@@ -119,6 +139,7 @@ describe("findTopicChannel", () => {
     ...channel,
     id: "t1",
     kind: "topic" as const,
+    name: "topic-row",
     config: { authChannelId: "ch_a" },
     secret: { apiKey: "k".repeat(64) },
   };

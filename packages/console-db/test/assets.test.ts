@@ -210,6 +210,32 @@ export function assetsContract(make: () => AssetsDb | Promise<AssetsDb>) {
 
 describe("memory assets repository", () => {
   assetsContract(() => createMemoryAssetsDb());
+  it("scopes the unique name to the team (`asset_bundles_team_name`)", async () => {
+    const db = createMemoryAssetsDb();
+    await db.insertBundle(bundle("b1"));
+    await db.insertBundle({
+      ...bundle("b2"),
+      name: "B-B1",
+      teamId: "team_2",
+      projectId: "prj_2",
+    });
+    await expect(
+      db.insertBundle({
+        ...bundle("b3"),
+        name: "b-b2",
+        teamId: "team_2",
+        projectId: "prj_2",
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      db.insertBundle({
+        ...bundle("b4"),
+        name: "B-B1",
+        teamId: "team_2",
+        projectId: "prj_2",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
   it("rejects an unknown owner like a foreign key would", async () => {
     const db = createMemoryAssetsDb((id) => id === "m1");
     await expect(

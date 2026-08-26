@@ -14,7 +14,7 @@ import { planDeletions } from "./catalog-cleanup.js";
 import { deleteArtifactObjects } from "./catalog.js";
 import { deleteChannelDocs } from "./channel-doc-key.js";
 import { channelIdFromAclUsername } from "./channel-redis.js";
-import { CHANNEL_DELETE_GRACE_SEC } from "./channels.js";
+import { CHANNEL_DELETE_GRACE_SEC, CHANNEL_PURGE_SEC } from "./channels.js";
 
 /** Staging objects under `uploads/` linger this long past the upload TTL. */
 export const UPLOAD_GARBAGE_GRACE_SEC = 24 * 3600;
@@ -27,6 +27,7 @@ export async function runExpire({
   clock = systemClock,
   logger,
   graceSec = CHANNEL_DELETE_GRACE_SEC,
+  purgeSec = CHANNEL_PURGE_SEC,
 }: {
   db: ConsoleDb;
   /** Present on a stage with a state stack; a deleted channel's documents go with it. */
@@ -36,10 +37,13 @@ export async function runExpire({
   clock?: Clock;
   logger: Logger;
   graceSec?: number;
+  purgeSec?: number;
 }): Promise<{
   disabled: string[];
   deleted: ExpiredChannel[];
   documents: number;
+  /** Rows hard-deleted `purgeSec` after their soft-delete; their names are free again. */
+  purged: string[];
 }> {
   const now = nowSec(clock);
   const r = await db.expireChannels(now, graceSec);
@@ -88,12 +92,17 @@ export async function runExpire({
   let documents = 0;
   for (const d of r.deleted)
     if (state) documents += await deleteChannelDocs(state, d.id, logger);
+  // Soft-deleted rows hold their `(team_id, name)` (unique index without a
+  // deleted_at filter); the purge is what frees the name. Documents and the
+  // Redis credential were already dropped at soft-delete time.
+  const purged = await db.purgeChannels(now, purgeSec);
   logger.info("expire sweep", {
     disabled: r.disabled.length,
     deleted: r.deleted.length,
     documents,
+    purged: purged.length,
   });
-  return { ...r, documents };
+  return { ...r, documents, purged };
 }
 
 /**

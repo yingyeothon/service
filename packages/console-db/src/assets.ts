@@ -109,11 +109,7 @@ export interface AssetUploadPatch {
 export interface AssetsDb {
   insertBundle(b: AssetBundleInput): Promise<void>;
   findBundle(id: string): Promise<AssetBundleRow | undefined>;
-  /**
-   * Case-insensitive name lookup **within one team**. Until the contract
-   * migration lands the database still carries the old global unique index,
-   * so a name can exist in one team only — a 409 on insert, not a lookup miss.
-   */
+  /** Case-insensitive name lookup within one team (`asset_bundles_team_name`). */
   findBundleByName(
     teamId: string,
     name: string,
@@ -436,20 +432,18 @@ export function createMemoryAssetsDb(
   const checkOwner = (ownerId: string | null | undefined) => {
     if (ownerId != null && !memberExists(ownerId)) throw fk();
   };
-  /**
-   * Mirrors the index that is actually deployed: `asset_bundles_name` is still
-   * global until the contract migration replaces it with `(team_id, name)`.
-   * Relax to a team-scoped check in the same commit as that migration.
-   */
-  const nameTaken = (name: string, exceptId?: string) =>
-    [...bundles.values()].some((x) => x.id !== exceptId && eqI(x.name, name));
+  /** Mirrors `asset_bundles_team_name`: unique per team, case-insensitive. */
+  const nameTaken = (teamId: string, name: string, exceptId?: string) =>
+    [...bundles.values()].some(
+      (x) => x.id !== exceptId && x.teamId === teamId && eqI(x.name, name),
+    );
   return {
     bundles,
     files,
     uploads,
     insertBundle: async (b) => {
       checkOwner(b.ownerId);
-      if (bundles.has(b.id) || nameTaken(b.name)) throw conflict();
+      if (bundles.has(b.id) || nameTaken(b.teamId, b.name)) throw conflict();
       bundles.set(b.id, {
         id: b.id,
         name: b.name,
@@ -487,7 +481,11 @@ export function createMemoryAssetsDb(
     updateBundle: async (id, patch, at) => {
       const b = bundles.get(id);
       if (!b) return false;
-      if (patch.name !== undefined && nameTaken(patch.name, id))
+      if (
+        patch.name !== undefined &&
+        b.teamId !== null &&
+        nameTaken(b.teamId, patch.name, id)
+      )
         throw conflict();
       bundles.set(id, {
         ...b,

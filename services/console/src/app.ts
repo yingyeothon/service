@@ -42,6 +42,7 @@ import {
   rotateSecret,
   type ChannelOptions,
   CHANNEL_EXTEND_SEC,
+  CHANNEL_PURGE_SEC,
   CHANNEL_MAX_AHEAD_SEC,
   CHANNEL_TTL_SEC,
   type ServiceUrls,
@@ -297,11 +298,16 @@ export function createConsoleApp({
     name: string,
     exceptId?: string,
   ): Promise<void> {
-    const rows = await db.listChannels({ teamId });
-    if (rows.some((c) => c.id !== exceptId && sameName(c.name, name)))
+    const rows = await db.listChannels({ teamId, includeDeleted: true });
+    const holder = rows.find(
+      (c) => c.id !== exceptId && sameName(c.name, name),
+    );
+    if (holder)
       throw new AppError(
         "conflict",
-        `a channel named "${name}" already exists in this team`,
+        holder.deletedAt === null
+          ? `a channel named "${name}" already exists in this team`
+          : `a deleted channel named "${name}" still holds the name in this team (freed ${CHANNEL_PURGE_SEC / 86400} days after deletion)`,
       );
   }
 

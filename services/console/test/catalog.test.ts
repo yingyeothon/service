@@ -352,15 +352,23 @@ describe("catalog apps", () => {
         }),
       ),
     ) as { id: string };
-    // The global unique index survives until the contract migration, so the
-    // fake refuses the duplicate name across teams exactly like MariaDB does.
+    // Names are unique per team (`catalog_apps_team_name`), so alice's second
+    // team may have its own `tools` — and then the name no longer resolves.
     const dup = await h.app(
       ev("POST", `/projects/${prj2.id}/catalog/apps`, {
         body: { name: "tools", path: "p" },
         headers: u.cookie,
       }),
     );
-    expect(dup.statusCode).toBe(409);
+    expect(dup.statusCode).toBe(201);
+    expect(
+      (await h.app(ev("GET", "/catalog/apps/tools", { headers: u.cookie })))
+        .statusCode,
+    ).toBe(404);
+    expect(
+      (await h.app(ev("GET", `/catalog/apps/${app.id}`, { headers: u.cookie })))
+        .statusCode,
+    ).toBe(200);
     expect(
       (await h.app(ev("GET", "/catalog/apps/nope", { headers: u.cookie })))
         .statusCode,
@@ -1026,8 +1034,8 @@ describe("upload metadata validation", () => {
   });
 });
 
-describe("catalog apps: names across teams until the contract migration", () => {
-  it("explains the global unique index instead of a bare duplicate key", async () => {
+describe("catalog apps: names are unique per team", () => {
+  it("lets two teams use the same app name", async () => {
     const h = harness();
     const alice = await h.team("alice");
     const bob = await h.team("bob");
@@ -1038,7 +1046,6 @@ describe("catalog apps: names across teams until the contract migration", () => 
         headers: bob.cookie,
       }),
     );
-    expect(r.statusCode).toBe(409);
-    expect(r.body).toContain("another team");
+    expect(r.statusCode).toBe(201);
   });
 });
