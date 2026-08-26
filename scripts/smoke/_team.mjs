@@ -1,11 +1,11 @@
 // Shared helper for the smoke scripts: every resource lives in a project since
-// todo/17, so each script seats its synthetic member in an team of its own.
+// todo/17, so each script seats its synthetic member in a team of its own.
 // The team is found-or-created by name and never deleted: a soft-deleted
 // channel keeps its project undeletable until the daily sweep purges it, so
 // deleting per run would leave one dead team behind per run instead of one
 // live team per script. Never prints tokens or secrets.
 
-/** Sleeps past the 500 ms recorded-write slot (`mdRate`) before an team write. */
+/** Sleeps past the 500 ms recorded-write slot (`mdRate`) before a team write. */
 export const settle = () => new Promise((r) => setTimeout(r, 550));
 
 /**

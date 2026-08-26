@@ -12,7 +12,7 @@ import type { ResourceHistory } from "./resources.js";
  * `POST` runs `ACL SETUSER` **and `ACL SAVE`**, and `ACL SAVE` rewrites the
  * whole `aclfile` on Redis' single main thread — on the box that serves auth,
  * topic, match and console across both stages. Without a limit, any member of
- * an team holding one `q` channel can loop this route and turn a member-level
+ * a team holding one `q` channel can loop this route and turn a member-level
  * credential into a noisy neighbour for every other service; the per-channel
  * half closes the "N members each issue once" variant. Issuing is a
  * once-per-team action, so a cooldown this short is invisible to real use.
@@ -98,7 +98,7 @@ export function createChannelRedisRoutes({
   }
 
   /**
-   * `q` only, and only an team member may mint (an admin without a membership
+   * `q` only, and only a team member may mint (an admin without a membership
    * may look, like every other secret-shaped surface — `docs/decisions.md`
    * "Console permission model"). A non-`q` channel is 404 rather than 400:
    * this must not become a way to probe which ids exist under another kind.

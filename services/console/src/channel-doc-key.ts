@@ -73,7 +73,7 @@ export function createChannelDocKeyRoutes({
   history,
 }: ChannelDocKeyRoutesOptions): AnyRoute[] {
   /**
-   * `auth` only, and only an team member may mint (an admin without a
+   * `auth` only, and only a team member may mint (an admin without a
    * membership may look, like every other secret-shaped surface). A channel
    * of another kind is 404 rather than 400, so this cannot be used to probe
    * which ids exist.

@@ -15,12 +15,12 @@ import type { RouteContext } from "@yyt/http";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 
 /*
- * The one place that decides who may touch an team, a project, or a resource
+ * The one place that decides who may touch a team, a project, or a resource
  * (docs/decisions.md *Teams and projects*). Every route goes through
  * `teamAccess` / `projectAccess` / `projectResource`; nothing else compares
  * member ids to rows.
  *
- * Standing in an team, from weakest to strongest:
+ * Standing in a team, from weakest to strongest:
  *   - none      → 404 (the team is not revealed)
  *   - pending   → may read the team's name and its own state, nothing else
  *   - member    → reads and writes every project and resource, secrets included
