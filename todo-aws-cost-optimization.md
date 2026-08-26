@@ -172,7 +172,7 @@ combined expression is harder to diagnose.
       30 alarms (40 → 10); no Lambda/API/data resource replacement.
 - [x] Obtain explicit approval for the observability reduction before deployment (2026-08-26).
 - [x] Deploy dev first and verify only the two dev `ws-errors` alarms remain.
-- [ ] Deploy prod (auth/topic/match done 2026-08-26; console/state after the state-prod prerequisites); verify 8 alarms are `OK` and all point
+- [x] Deploy prod (all five stacks, 2026-08-26); verified exactly 8 prod alarms are `OK` and all point
       to the confirmed prod notification topic.
 - [ ] Recheck Cost Explorer after one complete month for
       `CW:AlarmMonitorUsage`; verify 10 alarm metrics exist and that free-tier
