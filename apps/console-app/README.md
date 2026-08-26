@@ -14,11 +14,20 @@ only to the console API.
   app-bar avatar switches, adds (scan another QR) or removes them. The app
   ships no server address at all — the QR carries it. A 401 drops the
   active profile (the token was revoked).
-- Apps: `GET /teams` then `GET /teams/{id}/catalog/apps` for every seated
-  team (pending seats are skipped), deduplicated by app id; artifacts by app
-  id (`/catalog/apps/{id}/artifacts`). Permission is team membership only, so
-  the app has no permission screen. The flattened `GET /catalog/apps` is no
-  longer used (todo/17 P10 may drop it).
+- Apps: `GET /teams` then
+  `GET /teams/{id}/catalog/apps?artifacts=summary&platform=android` for every
+  seated team (pending seats are skipped), deduplicated by app id. The summary
+  embeds each app's newest Android artifact and its `applicationIds`, so the
+  list needs one request per team, not one per app (the per-app
+  `/catalog/apps/{id}/artifacts` walk made the first load take seconds); the
+  detail screen still lists artifacts by app id. Permission is team membership
+  only, so the app has no permission screen. The flattened `GET /catalog/apps`
+  is no longer used (todo/17 P10 may drop it).
+- Times: the API sends UTC unix seconds; every screen formats them in the
+  device time zone through `lib/format_time.dart`.
+- The app detail hero has a `team › project 이슈` button that opens the
+  app's project issues directly (team/project come from the app view's
+  breadcrumb fields; the button is hidden when they are absent).
 - Projects: `GET /teams/{id}/projects`, `GET|POST /projects/{id}/issues`,
   `GET /projects/{id}/issues/{n}` (with comments), `POST …/{n}/close|reopen`,
   `POST …/{n}/comments`. Writes need a seat (`owner`/`member`); an unseated

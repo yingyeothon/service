@@ -1,3 +1,4 @@
+import 'package:yyt_console/app_home.dart';
 import 'package:yyt_console/artifact_info.dart';
 
 class RemoteApp {
@@ -13,6 +14,9 @@ class RemoteApp {
   /// checks must consider all of them, not just the latest artifact's id.
   final List<String> applicationIds;
 
+  /// Team + project of the app, when the server sent the breadcrumb.
+  final AppHome? home;
+
   RemoteApp({
     required this.id,
     required this.name,
@@ -20,6 +24,7 @@ class RemoteApp {
     required this.description,
     required this.latestArtifact,
     List<String>? applicationIds,
+    this.home,
   }) : applicationIds = applicationIds ?? const <String>[];
 
   Map<String, dynamic> toJson() {

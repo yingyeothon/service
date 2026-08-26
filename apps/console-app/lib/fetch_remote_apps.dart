@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:yyt_console/app_home.dart';
 import 'package:yyt_console/artifact_info.dart';
-import 'package:yyt_console/artifact_version_group.dart';
 import 'package:yyt_console/auth/auth_config.dart';
 import 'package:yyt_console/remote_app.dart';
 import 'package:http/http.dart' as http;
@@ -16,6 +16,10 @@ class UnauthorizedException implements Exception {
   String toString() => 'UnauthorizedException: $message';
 }
 
+/// The app list: `/teams`, then `/teams/{id}/catalog/apps?artifacts=summary&platform=android`
+/// per seated team. The summary carries each app's newest Android artifact
+/// and application ids, so no per-app `/artifacts` round trip is needed —
+/// that was the N+1 that made the first load take seconds.
 Future<List<RemoteApp>> fetchRemoteApps({
   String? token,
   http.Client? client,
@@ -31,20 +35,35 @@ Future<List<RemoteApp>> fetchRemoteApps({
     token: token,
     client: client,
     baseUrl: base,
+    query: const {'artifacts': 'summary', 'platform': 'android'},
   );
 
+  // A console that predates `artifacts=summary` answers without the key
+  // (`null` means "no artifact"); fall back to the per-app walk for those
+  // so an updated app never shows an empty list against an older server.
+  final http.Client c = client ?? http.Client();
   final results = <RemoteApp>[];
-  const maxParallel = 5;
-
-  for (var i = 0; i < appMaps.length; i += maxParallel) {
-    final end = min(i + maxParallel, appMaps.length);
-    final batch = appMaps.sublist(i, end);
-    final batchResults = await Future.wait(
-      batch.map((appJson) => _toRemoteApp(appJson, token: token, base: base)),
-    );
-    results.addAll(batchResults.whereType<RemoteApp>());
+  try {
+    final legacy = <Map<String, dynamic>>[];
+    for (final appJson in appMaps) {
+      if (!appJson.containsKey('latestArtifact')) {
+        legacy.add(appJson);
+      } else if (_toRemoteApp(appJson) case final app?) {
+        results.add(app);
+      }
+    }
+    const maxParallel = 5;
+    for (var i = 0; i < legacy.length; i += maxParallel) {
+      final batch = legacy.sublist(i, min(i + maxParallel, legacy.length));
+      results.addAll(
+        (await Future.wait(
+          batch.map((a) => _withFetchedArtifacts(a, c, token, base)),
+        )).whereType<RemoteApp>(),
+      );
+    }
+  } finally {
+    if (client == null) c.close();
   }
-
   results.sort(
     (a, b) => b.latestArtifact.createdAt.compareTo(a.latestArtifact.createdAt),
   );
@@ -54,14 +73,23 @@ Future<List<RemoteApp>> fetchRemoteApps({
 /// Every catalog app of every team the caller is seated in (`/teams` then
 /// `/teams/{id}/catalog/apps`), deduplicated by app id. Teams where the
 /// caller is still `pending` are skipped: their app route answers 403.
+///
+/// One `http.Client` serves every request so the TLS connection is reused.
+/// `query` is appended to each team's app route.
 Future<List<Map<String, dynamic>>> fetchTeamApps({
   required String token,
   http.Client? client,
   String? baseUrl,
+  Map<String, String> query = const {},
 }) async {
   final http.Client c = client ?? http.Client();
   try {
-    return await _fetchTeamApps(c, token, baseUrl ?? AuthConfig.apiBaseUrl);
+    return await _fetchTeamApps(
+      c,
+      token,
+      baseUrl ?? AuthConfig.apiBaseUrl,
+      query,
+    );
   } finally {
     if (client == null) c.close();
   }
@@ -71,6 +99,7 @@ Future<List<Map<String, dynamic>>> _fetchTeamApps(
   http.Client c,
   String token,
   String base,
+  Map<String, String> query,
 ) async {
   final headers = <String, String>{'Authorization': 'Bearer $token'};
   final teamsResponse = await c.get(
@@ -98,12 +127,16 @@ Future<List<Map<String, dynamic>>> _fetchTeamApps(
       if (team['id'] is String && team['role'] != 'pending')
         team['id'] as String,
   ];
+  final roleOf = <String, String>{
+    for (final team in teams)
+      if (team['id'] is String && team['role'] is String)
+        team['id'] as String: team['role'] as String,
+  };
 
   Future<List<Map<String, dynamic>>> appsOf(String teamId) async {
-    final response = await c.get(
-      Uri.parse(AuthConfig.teamAppsUrlOf(base, teamId)),
-      headers: headers,
-    );
+    var uri = Uri.parse(AuthConfig.teamAppsUrlOf(base, teamId));
+    if (query.isNotEmpty) uri = uri.replace(queryParameters: query);
+    final response = await c.get(uri, headers: headers);
     if (response.statusCode == 401) {
       throw UnauthorizedException('인증이 만료되었습니다. 다시 로그인해주세요.');
     }
@@ -114,7 +147,13 @@ Future<List<Map<String, dynamic>>> _fetchTeamApps(
     }
     final body =
         jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-    return (body['apps'] as List<dynamic>).cast<Map<String, dynamic>>();
+    // The caller's seat in the team an app was listed under: the detail
+    // screen needs it to open the project's issues with the right role.
+    return [
+      for (final app
+          in (body['apps'] as List<dynamic>).cast<Map<String, dynamic>>())
+        {...app, 'teamRole': roleOf[teamId] ?? 'member'},
+    ];
   }
 
   // Team order is kept so the dedupe below is deterministic.
@@ -140,11 +179,12 @@ Future<List<ArtifactInfo>> fetchAppArtifacts({
   required String token,
   String platform = 'android',
   String? baseUrl,
+  http.Client? client,
 }) async {
   final uri = Uri.parse(
     '${AuthConfig.appArtifactsUrlOf(baseUrl ?? AuthConfig.apiBaseUrl, appId)}?platform=$platform',
   );
-  final response = await http.get(
+  final response = await (client ?? http.Client()).get(
     uri,
     headers: {'Authorization': 'Bearer $token'},
   );
@@ -167,61 +207,64 @@ Future<List<ArtifactInfo>> fetchAppArtifacts({
   return artifacts;
 }
 
-Future<RemoteApp?> _toRemoteApp(
-  Map<String, dynamic> appJson, {
-  required String token,
-  required String base,
-}) async {
+/// Legacy path: fills the summary fields from `/catalog/apps/{id}/artifacts`.
+Future<RemoteApp?> _withFetchedArtifacts(
+  Map<String, dynamic> appJson,
+  http.Client c,
+  String token,
+  String base,
+) async {
+  final id = appJson['id'];
+  if (id is! String) return null;
+  final List<ArtifactInfo> artifacts;
+  try {
+    artifacts = await fetchAppArtifacts(
+      appId: id,
+      token: token,
+      baseUrl: base,
+      client: c,
+    );
+  } on UnauthorizedException {
+    rethrow;
+  } catch (_) {
+    return null; // one app failing must not hide the others
+  }
+  // Newest first, as the server orders them: the first is the summary's pick.
+  final android =
+      artifacts.where((a) => a.platform.toLowerCase() == 'android').toList();
+  if (android.isEmpty) return null;
+  return _toRemoteApp({
+    ...appJson,
+    'latestArtifact': android.first.toJson(),
+    'applicationIds':
+        <String>{
+          for (final a in android)
+            if (a.applicationId.isNotEmpty) a.applicationId,
+        }.toList(),
+  });
+}
+
+/// Builds an app from the `artifacts=summary` view; apps without an Android
+/// artifact are skipped, like before.
+RemoteApp? _toRemoteApp(Map<String, dynamic> appJson) {
   final id = appJson['id'] as String?;
   final name = appJson['name'] as String?;
   final packageName = appJson['path'] as String?;
-  if (id == null || name == null || packageName == null) {
+  final latestJson = appJson['latestArtifact'];
+  if (id == null ||
+      name == null ||
+      packageName == null ||
+      latestJson is! Map<String, dynamic>) {
     return null;
   }
-
-  final artifactsUri = Uri.parse(
-    '${AuthConfig.appArtifactsUrlOf(base, id)}?platform=android',
-  );
-  final response = await http.get(
-    artifactsUri,
-    headers: {'Authorization': 'Bearer $token'},
-  );
-
-  if (response.statusCode == 401) {
-    throw UnauthorizedException('인증이 만료되었습니다. 다시 로그인해주세요.');
-  }
-  if (response.statusCode != 200) {
+  final latestArtifact = ArtifactInfo.fromJson(latestJson);
+  if (latestArtifact.platform.toLowerCase() != 'android') {
     return null;
   }
-
-  final artifactsBody =
-      jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-  final artifactsJson = artifactsBody['artifacts'] as List<dynamic>;
-  if (artifactsJson.isEmpty) {
-    return null;
-  }
-
-  final artifacts =
-      artifactsJson
-          .map((item) => ArtifactInfo.fromJson(item as Map<String, dynamic>))
-          .where((artifact) => artifact.platform.toLowerCase() == 'android')
-          .toList();
-  if (artifacts.isEmpty) {
-    return null;
-  }
-
-  final versionGroups = groupArtifactsByVersion(artifacts);
-  if (versionGroups.isEmpty) {
-    return null;
-  }
-  final latestArtifact = versionGroups.first.topArtifact;
-
-  final applicationIds =
-      <String>{
-        for (final artifact in artifacts)
-          if (artifact.applicationId.isNotEmpty) artifact.applicationId,
-      }.toList();
-
+  final applicationIds = <String>[
+    for (final v in (appJson['applicationIds'] as List<dynamic>? ?? const []))
+      if (v is String && v.isNotEmpty) v,
+  ];
   return RemoteApp(
     id: id,
     name: name,
@@ -229,5 +272,6 @@ Future<RemoteApp?> _toRemoteApp(
     description: (appJson['description'] as String?) ?? '',
     latestArtifact: latestArtifact,
     applicationIds: applicationIds,
+    home: AppHome.fromAppJson(appJson),
   );
 }

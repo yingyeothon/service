@@ -182,6 +182,17 @@ if (up.status === 201) {
   } else {
     check("artifact served by CDN", false, "no url");
   }
+  // The console app's list view: one team call carries the newest artifact.
+  const summary = await call(
+    `/teams/${team.teamId}/catalog/apps?artifacts=summary&platform=bin`,
+    { headers: as(mate) },
+  );
+  const mine = summary.body?.apps?.find((a) => a.id === appId);
+  check(
+    "team list embeds the newest artifact on artifacts=summary",
+    summary.status === 200 && mine?.latestArtifact?.id === artifact?.id,
+    `${summary.status} ${mine?.latestArtifact?.id ?? "-"}`,
+  );
   const again = await call(`/catalog/uploads/${up.body.uploadId}/commit`, {
     method: "POST",
     headers: as(owner),

@@ -109,6 +109,12 @@ const artifactsQuery = z
     limit: z.coerce.number().int().positive().max(1000).optional(),
   })
   .passthrough();
+const teamAppsQuery = z
+  .object({
+    artifacts: z.enum(["summary"]).optional(),
+    platform: z.enum(CATALOG_PLATFORMS).optional(),
+  })
+  .passthrough();
 const cleanupQuery = z
   .object({ dryRun: z.enum(["true", "false"]).optional() })
   .passthrough();
@@ -407,6 +413,34 @@ export function createCatalogRoutes({
     };
   }
 
+  /**
+   * Per app: the newest artifact (`created_at`, then id — the order
+   * `listArtifactsOf` returns) and the distinct `application_id` tags, both
+   * over the rows given (so `platform` narrows them together). Build variants
+   * install under different ids, so an installer must probe them all. Cost is
+   * O(artifacts of the team), not O(apps): move to a window-function query
+   * once per-app artifact counts grow (`todo/index.md` 2026-08-27).
+   */
+  function artifactSummaries(rows: CatalogArtifactRow[]) {
+    const out = new Map<
+      string,
+      {
+        latestArtifact: ReturnType<typeof artifactView>;
+        applicationIds: string[];
+      }
+    >();
+    for (const a of rows) {
+      let s = out.get(a.appId);
+      if (!s) {
+        s = { latestArtifact: artifactView(a), applicationIds: [] };
+        out.set(a.appId, s);
+      }
+      const id = a.tags.application_id;
+      if (id && !s.applicationIds.includes(id)) s.applicationIds.push(id);
+    }
+    return out;
+  }
+
   const uploadView = (u: CatalogPendingUploadRow) => ({
     id: u.id,
     appId: u.appId,
@@ -435,21 +469,40 @@ export function createCatalogRoutes({
         return { apps: await appViews(await catalog.listApps({ teamIds })) };
       },
     },
-    {
+    defineRoute({
       method: "GET",
       path: "/teams/{team}/catalog/apps",
       auth: true,
+      query: teamAppsQuery,
       handler: async (ctx) => {
         // Every app of the team across its projects: app names are unique
         // within the team, so this is how the CLI turns a name into an app
         // (and its project) with only a team context. Permanent, unlike the
         // flattened `/catalog/apps`.
         const a = await teamAccess(ctx, ctx.params.team!);
+        const rows = await catalog.listApps({ teamId: a.team.id });
+        const apps = await appViews(rows);
+        if (ctx.query.artifacts !== "summary") return { apps };
+        // `artifacts=summary` embeds what a list screen needs per app in one
+        // query instead of one `/artifacts` round trip per app: the newest
+        // artifact (`platform` narrows) and every distinct `application_id`.
+        const summary = artifactSummaries(
+          await catalog.listArtifactsOf(
+            rows.map((r) => r.id),
+            ctx.query.platform ? { platform: ctx.query.platform } : {},
+          ),
+        );
         return {
-          apps: await appViews(await catalog.listApps({ teamId: a.team.id })),
+          apps: apps.map((app) => ({
+            ...app,
+            ...(summary.get(app.id) ?? {
+              latestArtifact: null,
+              applicationIds: [],
+            }),
+          })),
         };
       },
-    },
+    }),
     {
       method: "GET",
       path: "/projects/{prj}/catalog/apps",

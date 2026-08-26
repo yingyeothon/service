@@ -375,6 +375,87 @@ describe("catalog apps", () => {
     ).toBe(404);
   });
 
+  it("embeds the newest artifact and application ids per app on request", async () => {
+    const h = harness();
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
+    const bare = await makeApp(h, owner, "bare");
+    const art = (id: string, createdAt: number, tags: Record<string, string>) =>
+      h.catalog.insertArtifact({
+        id,
+        appId: app.id,
+        platform: "android",
+        url: `https://dev-d.yyt.life/${id}.apk`,
+        tags,
+        createdAt,
+      });
+    await art("art_old", NOW_SEC - 10, {
+      version: "1",
+      application_id: "life.yyt.myapp.debug",
+    });
+    await art("art_new", NOW_SEC, {
+      version: "2",
+      application_id: "life.yyt.myapp",
+    });
+    await art("art_alt", NOW_SEC, { version: "2" }); // same second, lower id
+    await h.catalog.insertArtifact({
+      id: "art_ios",
+      appId: app.id,
+      platform: "ios",
+      url: "https://dev-d.yyt.life/art_ios.ipa",
+      tags: { version: "3", application_id: "life.yyt.myapp.ios" },
+      createdAt: NOW_SEC + 5,
+    });
+    const list = async (query: Record<string, string>) =>
+      (
+        j(
+          await h.app(
+            ev("GET", `/teams/${owner.teamId}/catalog/apps`, {
+              headers: owner.cookie,
+              query,
+            }),
+          ),
+        ) as {
+          apps: Array<{
+            id: string;
+            latestArtifact?: { id: string } | null;
+            applicationIds?: string[];
+          }>;
+        }
+      ).apps;
+    // Without the flag the view is unchanged.
+    expect((await list({})).every((a) => !("latestArtifact" in a))).toBe(true);
+    const byId = new Map(
+      (await list({ artifacts: "summary", platform: "android" })).map((a) => [
+        a.id,
+        a,
+      ]),
+    );
+    expect(byId.get(app.id)).toMatchObject({
+      latestArtifact: { id: "art_new" },
+      applicationIds: ["life.yyt.myapp", "life.yyt.myapp.debug"],
+    });
+    expect(byId.get(bare.id)).toMatchObject({
+      latestArtifact: null,
+      applicationIds: [],
+    });
+    // Without `platform` the iOS build is the newest one.
+    expect(
+      (await list({ artifacts: "summary" })).find((a) => a.id === app.id)
+        ?.latestArtifact,
+    ).toMatchObject({ id: "art_ios" });
+    expect(
+      (
+        await h.app(
+          ev("GET", `/teams/${owner.teamId}/catalog/apps`, {
+            headers: owner.cookie,
+            query: { artifacts: "all" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(400);
+  });
+
   it("refuses to delete an app that still has artifacts", async () => {
     const h = harness();
     const owner = await h.team("owner");

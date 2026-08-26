@@ -9,30 +9,26 @@ Future<List<AppInfo>> loadAppInfo(
 }) async {
   final remoteApps = await fetchRemoteApp(token: token);
 
-  final List<AppInfo> infos = [];
-  for (final remoteApp in remoteApps) {
-    final installedVersion = await _resolveInstalledVersion(
-      remoteApp,
-      findInstalledVersion,
-    );
-    final needsUpdate = checkIfNeedToUpdate(
-      remoteApp.version,
-      installedVersion,
-    );
-
-    infos.add(
-      AppInfo(
+  // The platform-channel probes are independent; run them together instead
+  // of one app at a time.
+  return Future.wait(
+    remoteApps.map((remoteApp) async {
+      final installedVersion = await _resolveInstalledVersion(
+        remoteApp,
+        findInstalledVersion,
+      );
+      return AppInfo(
         id: remoteApp.id,
         name: remoteApp.name,
         package: remoteApp.package,
         description: remoteApp.description,
         latestArtifact: remoteApp.latestArtifact,
         installedVersion: installedVersion,
-        needsUpdate: needsUpdate,
-      ),
-    );
-  }
-  return infos;
+        needsUpdate: checkIfNeedToUpdate(remoteApp.version, installedVersion),
+        home: remoteApp.home,
+      );
+    }),
+  );
 }
 
 /// Probes each build variant's applicationId (release and `.debug`) and returns
