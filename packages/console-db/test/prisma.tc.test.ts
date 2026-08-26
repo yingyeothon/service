@@ -4,6 +4,7 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
+  createStateDb,
   toLobbyChannel,
   toQChannel,
   type ConsoleDb,
@@ -11,6 +12,7 @@ import {
 import { assetsContract } from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
 import { eventsContract } from "./events.test.js";
+import { stateContract } from "./state.test.js";
 import {
   dockerAvailable,
   resetTestDb,
@@ -52,6 +54,28 @@ describe.skipIf(!dockerAvailable())(
       assetsContract(async () => {
         await resetTestDb(db.client);
         return createAssetsDb(db.client);
+      });
+    });
+
+    describe("state contract", () => {
+      stateContract(async () => {
+        await resetTestDb(db.client);
+        // `state_docs.channel_id` is a foreign key, so the contract's channels
+        // have to exist before any document can.
+        for (const id of ["c1", "c2"])
+          await db.client.channels.create({
+            data: {
+              id,
+              kind: "q",
+              owner_id: "m1",
+              name: id,
+              config_json: "{}",
+              secret_json: "{}",
+              created_at: 1,
+              expires_at: 10_000,
+            },
+          });
+        return createStateDb(db.client);
       });
     });
 

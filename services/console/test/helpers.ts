@@ -5,6 +5,7 @@ import {
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
+  createMemoryStateDb,
 } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createMemoryAclAdmin, createMemoryKv } from "@yyt/redis";
@@ -20,6 +21,7 @@ export const URLS = {
   topic: "https://topic-dev.yyt.life",
   topicWs: "wss://topic-ws-dev.yyt.life",
   match: "https://match-dev.yyt.life",
+  doc: "https://doc-dev.yyt.life",
   gatewayWs: "wss://gw-dev.yyt.life",
 };
 /** 32+ chars, as `createGatewayRoutes` requires. */
@@ -56,6 +58,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const posters = createMemoryPosterStore();
   const artifacts = createMemoryArtifactStore();
   const redisAcl = createMemoryAclAdmin();
+  const state = createMemoryStateDb((id) => db.channels.has(id));
   const { agent, fetch } = mockAgent();
   const app = createConsoleApp({
     baseUrl: BASE,
@@ -76,6 +79,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     gatewayToken: GATEWAY_TOKEN,
     redisAcl,
     redisEndpoint: REDIS_ENDPOINT,
+    state,
     clock,
     ...over,
   });
@@ -133,6 +137,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     posters,
     artifacts,
     redisAcl,
+    state,
     clock,
     agent,
     login,

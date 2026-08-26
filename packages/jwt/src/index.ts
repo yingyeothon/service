@@ -3,6 +3,7 @@ export {
   verifyChannelToken,
   channelIssuer,
   deriveUserId,
+  unverifiedChannelId,
   MIN_SECRET_BYTES,
   type ChannelClaims,
   type SignChannelTokenOptions,

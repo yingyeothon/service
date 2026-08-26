@@ -1,0 +1,23 @@
+{
+  "name": "@yyt/service-state",
+  "version": "0.0.0",
+  "private": true,
+  "description": "doc.yyt.life — versioned JSON documents per (auth channel, owner) with enforced compare-and-set",
+  "type": "module",
+  "scripts": {
+    "build": "echo 'bundled by serverless-esbuild at deploy time'",
+    "typecheck": "tsc --noEmit",
+    "deploy:dev": "serverless deploy --stage dev --region ap-northeast-2"
+  },
+  "dependencies": {
+    "@yyt/console-db": "workspace:*",
+    "@yyt/core": "workspace:*",
+    "@yyt/http": "workspace:*",
+    "@yyt/jwt": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.9",
+    "serverless-domain-manager": "^8.0.0",
+    "serverless-esbuild": "^1.55.0"
+  }
+}

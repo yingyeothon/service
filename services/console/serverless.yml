@@ -82,6 +82,10 @@ provider:
     # CloudFormation reference to take it from. Empty until the host actually
     # resolves — the views then omit `wsUrl` instead of offering a dead one.
     GATEWAY_WS_URL: ${ssm:${self:custom.stageSsm}/gateway-ws-url, ""}
+    # State service base, rendered into `auth` channel views. Written by
+    # scripts/bootstrap-ssm.sh only when this stage has a state stack, so an
+    # undeployed stage omits `docUrl` rather than advertising a dead endpoint.
+    DOC_BASE_URL: ${ssm:${self:custom.stageSsm}/doc-base-url, ""}
     MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
     MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}
     MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}

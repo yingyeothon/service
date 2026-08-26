@@ -201,6 +201,7 @@ model channels {
   disabled_at BigInt?
   deleted_at  BigInt?
   members     members       @relation(fields: [owner_id], references: [id], onUpdate: Restrict, map: "channels_owner")
+  state_docs  state_docs[]
 
   @@index([kind, owner_id], map: "channels_kind_owner")
   @@index([owner_id], map: "channels_owner")
@@ -264,6 +265,18 @@ model proposals {
 model schema_migrations {
   version    Int    @id
   applied_at BigInt
+}
+
+model state_docs {
+  channel_id String   @db.VarChar(64)
+  owner_id   String   @db.VarChar(64)
+  version    BigInt
+  body       String   @db.MediumText
+  created_at BigInt
+  updated_at BigInt
+  channels   channels @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "state_docs_channel")
+
+  @@id([channel_id, owner_id])
 }
 
 model votes {

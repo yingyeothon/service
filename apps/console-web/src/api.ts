@@ -15,6 +15,7 @@ import type {
   CatalogUploadGrant,
   Channel,
   ChannelKind,
+  ChannelDocKey,
   ChannelRedisUser,
   EventDetail,
   EventStatus,
@@ -162,6 +163,12 @@ export function createApiClient({
       post<ChannelRedisUser>(`/channels/${enc(id)}/redis-user`),
     revokeChannelRedisUser: (id: string) =>
       del<{ revoked: boolean }>(`/channels/${enc(id)}/redis-user`),
+    channelDocKey: (id: string) =>
+      get<ChannelDocKey>(`/channels/${enc(id)}/doc-key`),
+    issueChannelDocKey: (id: string) =>
+      post<ChannelDocKey>(`/channels/${enc(id)}/doc-key`),
+    revokeChannelDocKey: (id: string) =>
+      del<{ revoked: boolean }>(`/channels/${enc(id)}/doc-key`),
 
     events: () =>
       get<{ events: EventSummary[] }>("/events").then((r) => r.events),

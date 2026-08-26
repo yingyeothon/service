@@ -189,6 +189,9 @@ export function ChannelDetailPage() {
       </Card>
 
       {c.kind === "q" && <QRedisUserCard channel={c} owner={owner} />}
+      {c.kind === "auth" && c.docUrl && (
+        <AuthDocKeyCard channel={c} owner={owner} />
+      )}
 
       {editing && (
         <Card withBorder>
@@ -384,6 +387,119 @@ function QRedisUserCard({
             The account is scoped to this channel&apos;s prefixes above, so a
             wrong prefix fails <Code>NOPERM</Code> instead of reaching another
             game&apos;s queue.
+          </Text>
+          {owner && q.data.configured !== false && (
+            <Group>
+              <Button
+                size="compact-sm"
+                variant="default"
+                disabled={act.busy}
+                onClick={() => void issue()}
+              >
+                {q.data.issued ? "Re-issue" : "Issue"}
+              </Button>
+              {q.data.issued && (
+                <Confirm
+                  label="Revoke"
+                  onConfirm={revoke}
+                  disabled={act.busy}
+                />
+              )}
+            </Group>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * The server credential for the state service, on the auth channel that owns
+ * the document namespace. A separate card from the channel's own secret
+ * because the two have different holders: the signing secret never leaves the
+ * platform, this one is pasted into a participant's game server — and rotating
+ * either must leave the other alone.
+ */
+function AuthDocKeyCard({
+  channel,
+  owner,
+}: {
+  channel: Channel;
+  owner: boolean;
+}) {
+  const q = useApiQuery(["channel", channel.id, "doc-key"], () =>
+    api.channelDocKey(channel.id),
+  );
+  const act = useAction();
+  const [apiKey, setApiKey] = useState<string | null>(null);
+
+  const issue = async () => {
+    // Cleared first: a failed re-issue must not leave the previous key on
+    // screen beside a card that now describes a different one.
+    setApiKey(null);
+    const r = await act.run(() => api.issueChannelDocKey(channel.id));
+    if (r) {
+      setApiKey(r.apiKey ?? null);
+      // `documents` is not on the issue response; keeping the previous count
+      // beats making it vanish from the card until the next refetch.
+      q.set({
+        ...r,
+        apiKey: undefined,
+        issued: true,
+        documents: r.documents ?? q.data?.documents,
+      });
+    }
+  };
+  const revoke = async () => {
+    const r = await act.run(() => api.revokeChannelDocKey(channel.id));
+    if (r && q.data) {
+      setApiKey(null);
+      q.set({ ...q.data, issued: false });
+    }
+  };
+
+  return (
+    <Card withBorder mb="md">
+      <Title order={4} mb="xs">
+        Document storage
+      </Title>
+      {q.error ? (
+        <Notice kind="error">{q.error}</Notice>
+      ) : !q.data ? (
+        <Spinner />
+      ) : (
+        <>
+          {act.error && <Notice kind="error">{act.error}</Notice>}
+          {apiKey && (
+            <SecretOnce
+              label="Document API key"
+              value={apiKey}
+              onDismiss={() => setApiKey(null)}
+            />
+          )}
+          <CopyField label="Base URL" value={q.data.docUrl} />
+          <CopyField label="Path" value={q.data.writePath} />
+          <Text size="sm" c="dimmed" my="xs">
+            {q.data.configured === false
+              ? "This stage has no document service deployed, so a key cannot be issued here yet."
+              : q.data.issued
+                ? "Issued. The key is shown once — if it is lost, issue again (the old one stops working)."
+                : "Not issued yet. Your game server cannot write documents until you issue one."}
+            {q.data.documents !== undefined && (
+              <>
+                {" "}
+                {q.data.documents} document
+                {q.data.documents === 1 ? "" : "s"} stored.
+              </>
+            )}
+          </Text>
+          <Text size="sm" c="dimmed" my="xs">
+            Your server writes with <Code>Authorization: Bearer</Code> and{" "}
+            <Code>If-Match</Code> set to the version it read (<Code>0</Code> to
+            create). A stale version is answered <Code>409</Code> with the
+            version that won, so two results landing on one inventory cannot
+            silently overwrite each other. Players read only their own document,
+            with the channel JWT they already hold.
           </Text>
           {owner && q.data.configured !== false && (
             <Group>

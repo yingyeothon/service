@@ -29,6 +29,15 @@ export interface AuthChannelSecret {
   /** HS256 key, ≥32 bytes (`randomHex(32)`). */
   secret: string;
   providers: { github?: OAuthAppSecret; google?: OAuthAppSecret };
+  /**
+   * Server-side credential for the state service (`docs/decisions.md` *state
+   * service*), absent until the owner issues one. A **second** secret rather
+   * than a reuse of `secret`: this one is pasted into a participant's Lambda
+   * while the signing key never leaves the platform, and rotating either must
+   * not invalidate the other. Self-identifying (`yds.{channelId}.{random}`)
+   * because the state routes carry no channel segment.
+   */
+  apiKey?: string;
 }
 
 /** `config_json` of a match channel (console validates and writes it). */

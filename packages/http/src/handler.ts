@@ -69,7 +69,18 @@ export interface HttpHandlerOptions {
   identity?: IdentityResolver;
   /** Max JSON body in bytes. Default 64KB. */
   maxBodyBytes?: number;
-  cors?: { origins: string[]; credentials?: boolean; headers?: string[] };
+  cors?: {
+    origins: string[];
+    credentials?: boolean;
+    headers?: string[];
+    /**
+     * Response headers a browser may read. Only a handful are readable by
+     * default (`Content-Type`, `Cache-Control`, …) and **`ETag` is not one of
+     * them**, so a cross-origin client cannot see a version it is then asked to
+     * send back in `If-Match` unless it is named here.
+     */
+    exposeHeaders?: string[];
+  };
   logger?: Logger;
 }
 
@@ -98,6 +109,9 @@ function corsHeaders(
       cors.headers ?? ["content-type", "authorization"]
     ).join(","),
     "access-control-max-age": "600",
+    ...(cors.exposeHeaders?.length
+      ? { "access-control-expose-headers": cors.exposeHeaders.join(",") }
+      : {}),
   };
 }
 

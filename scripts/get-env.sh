@@ -1,6 +1,6 @@
 #!/bin/bash
 # Reverse of bootstrap-ssm.sh: rebuilds local/env/<service>.<stage>.env from SSM on a new machine.
-# Usage: scripts/get-env.sh <dev|prod> [service...]   (default: console auth topic match)
+# Usage: scripts/get-env.sh <dev|prod> [service...]   (default: console auth topic match state)
 # Refuses to overwrite an existing file unless FORCE=1.
 # For `console` it also restores the stage-wide keys that live in that file
 # (github-client-*, admin-github-logins, and the optional ACL issuer pair), so a
@@ -8,7 +8,7 @@
 set -euo pipefail
 umask 077
 STAGE="${1:?stage (dev|prod)}"; shift || true
-SERVICES=("$@"); [ ${#SERVICES[@]} -eq 0 ] && SERVICES=(console auth topic match)
+SERVICES=("$@"); [ ${#SERVICES[@]} -eq 0 ] && SERVICES=(console auth topic match state)
 command -v jq >/dev/null || { echo "get-env.sh: jq is required" >&2; exit 1; }
 export AWS_PROFILE="${AWS_PROFILE:-yyt}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-ap-northeast-2}"
@@ -20,13 +20,20 @@ for svc in "${SERVICES[@]}"; do
   prefix="/yyt-service/${STAGE}/${svc}/"
   json="$(aws ssm get-parameters-by-path --path "$prefix" --with-decryption --output json)"
   get() { echo "$json" | jq -r --arg n "${prefix}$1" '.Parameters[] | select(.Name==$n) | .Value'; }
+  # A stage may legitimately have no state stack; every other service must exist.
+  if [ "$svc" = state ] && [ -z "$(get mysql-host)" ]; then
+    echo "skip $out (this stage has no state stack in SSM)"; continue
+  fi
   tmp="$(mktemp)"; chmod 600 "$tmp"
   {
     echo "# ${svc} / ${STAGE} — pulled from SSM by scripts/get-env.sh on $(date -u +%F). Do not commit."
     echo "STAGE=${STAGE}"
-    for pair in MYSQL_HOST:mysql-host MYSQL_PORT:mysql-port MYSQL_DATABASE:mysql-database MYSQL_USER:mysql-user \
-                MYSQL_PASSWORD:mysql-password REDIS_HOST:redis-host REDIS_PORT:redis-port REDIS_USER:redis-user \
-                REDIS_PASSWORD:redis-password REDIS_KEY_PREFIX:redis-key-prefix; do
+    pairs=(MYSQL_HOST:mysql-host MYSQL_PORT:mysql-port MYSQL_DATABASE:mysql-database
+           MYSQL_USER:mysql-user MYSQL_PASSWORD:mysql-password)
+    # `state` holds no Redis connection, so it has no redis-* parameters to pull.
+    [ "$svc" = state ] || pairs+=(REDIS_HOST:redis-host REDIS_PORT:redis-port REDIS_USER:redis-user
+                                  REDIS_PASSWORD:redis-password REDIS_KEY_PREFIX:redis-key-prefix)
+    for pair in "${pairs[@]}"; do
       v="$(get "${pair##*:}")"
       [ -n "$v" ] || { echo "$prefix${pair##*:} missing in SSM" >&2; rm -f "$tmp"; exit 1; }
       # Values are written verbatim and parsed (not sourced) by bootstrap-ssm.sh; refuse newlines anyway.
