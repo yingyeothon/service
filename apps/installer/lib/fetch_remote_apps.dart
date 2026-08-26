@@ -16,34 +16,14 @@ class UnauthorizedException implements Exception {
   String toString() => 'UnauthorizedException: $message';
 }
 
-Future<List<RemoteApp>> fetchRemoteApps({String? token}) async {
+Future<List<RemoteApp>> fetchRemoteApps({
+  String? token,
+  http.Client? client,
+}) async {
   if (token == null || token.isEmpty) {
     throw UnauthorizedException('로그인이 필요합니다.');
   }
-
-  final headers = <String, String>{'Authorization': 'Bearer $token'};
-  final appsResponse = await http.get(
-    Uri.parse(AuthConfig.appsUrl),
-    headers: headers,
-  );
-
-  if (appsResponse.statusCode == 401) {
-    throw UnauthorizedException('인증이 만료되었습니다. 다시 로그인해주세요.');
-  }
-  if (appsResponse.statusCode == 403) {
-    // /me accepts a pending member; the catalog does not. Say so instead of a
-    // bare status code.
-    throw Exception('아직 승인되지 않은 계정입니다. 관리자 승인 후 다시 시도해주세요.');
-  }
-  if (appsResponse.statusCode != 200) {
-    throw Exception('앱 목록 조회 실패: ${appsResponse.statusCode}');
-  }
-
-  // Console envelope: {"apps": [...]}.
-  final appsBody =
-      jsonDecode(utf8.decode(appsResponse.bodyBytes)) as Map<String, dynamic>;
-  final appMaps =
-      (appsBody['apps'] as List<dynamic>).cast<Map<String, dynamic>>();
+  final appMaps = await fetchTeamApps(token: token, client: client);
 
   final results = <RemoteApp>[];
   const maxParallel = 5;
@@ -61,6 +41,88 @@ Future<List<RemoteApp>> fetchRemoteApps({String? token}) async {
     (a, b) => b.latestArtifact.createdAt.compareTo(a.latestArtifact.createdAt),
   );
   return results;
+}
+
+/// Every catalog app of every team the caller is seated in (`/teams` then
+/// `/teams/{id}/catalog/apps`), deduplicated by app id. Teams where the
+/// caller is still `pending` are skipped: their app route answers 403.
+Future<List<Map<String, dynamic>>> fetchTeamApps({
+  required String token,
+  http.Client? client,
+}) async {
+  final http.Client c = client ?? http.Client();
+  try {
+    return await _fetchTeamApps(c, token);
+  } finally {
+    if (client == null) c.close();
+  }
+}
+
+Future<List<Map<String, dynamic>>> _fetchTeamApps(
+  http.Client c,
+  String token,
+) async {
+  final headers = <String, String>{'Authorization': 'Bearer $token'};
+  final teamsResponse = await c.get(
+    Uri.parse(AuthConfig.teamsUrl),
+    headers: headers,
+  );
+  if (teamsResponse.statusCode == 401) {
+    throw UnauthorizedException('인증이 만료되었습니다. 다시 로그인해주세요.');
+  }
+  if (teamsResponse.statusCode == 403) {
+    // /me accepts a pending member; /teams does not. Say so instead of a
+    // bare status code.
+    throw Exception('아직 승인되지 않은 계정입니다. 관리자 승인 후 다시 시도해주세요.');
+  }
+  if (teamsResponse.statusCode != 200) {
+    throw Exception('팀 목록 조회 실패: ${teamsResponse.statusCode}');
+  }
+  final teamsBody =
+      jsonDecode(utf8.decode(teamsResponse.bodyBytes)) as Map<String, dynamic>;
+  final teams =
+      (teamsBody['teams'] as List<dynamic>).cast<Map<String, dynamic>>();
+
+  final teamIds = <String>[
+    for (final team in teams)
+      if (team['id'] is String && team['role'] != 'pending')
+        team['id'] as String,
+  ];
+
+  Future<List<Map<String, dynamic>>> appsOf(String teamId) async {
+    final response = await c.get(
+      Uri.parse(AuthConfig.teamAppsUrl(teamId)),
+      headers: headers,
+    );
+    if (response.statusCode == 401) {
+      throw UnauthorizedException('인증이 만료되었습니다. 다시 로그인해주세요.');
+    }
+    if (response.statusCode != 200) {
+      // A single team failing (e.g. seat revoked between the two calls)
+      // must not hide every other team's apps.
+      return const [];
+    }
+    final body =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    return (body['apps'] as List<dynamic>).cast<Map<String, dynamic>>();
+  }
+
+  // Team order is kept so the dedupe below is deterministic.
+  final seen = <String>{};
+  final apps = <Map<String, dynamic>>[];
+  const maxParallel = 5;
+  for (var i = 0; i < teamIds.length; i += maxParallel) {
+    final batch = teamIds.sublist(i, min(i + maxParallel, teamIds.length));
+    for (final list in await Future.wait(batch.map(appsOf))) {
+      for (final app in list) {
+        final id = app['id'];
+        if (id is String && seen.add(id)) {
+          apps.add(app);
+        }
+      }
+    }
+  }
+  return apps;
 }
 
 Future<List<ArtifactInfo>> fetchAppArtifacts({

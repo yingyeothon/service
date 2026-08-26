@@ -5,7 +5,7 @@ import 'package:catalog/app_theme.dart';
 import 'package:catalog/auth/auth_diagnostics.dart';
 import 'package:catalog/auth/auth_state.dart';
 import 'package:catalog/login_screen.dart';
-import 'package:catalog/update_app.dart';
+import 'package:catalog/home_shell.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -52,6 +52,7 @@ class CatalogApp extends StatefulWidget {
 
 class _CatalogAppState extends State<CatalogApp> {
   late final AuthState _authState;
+  final _navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
@@ -68,6 +69,11 @@ class _CatalogAppState extends State<CatalogApp> {
   }
 
   void _onAuthStateChanged() {
+    // `home` only swaps the root route; pushed screens (issue detail, app
+    // detail) would otherwise stay on top of the login screen after a logout.
+    if (!_authState.isLoggedIn) {
+      _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    }
     setState(() {});
   }
 
@@ -75,10 +81,11 @@ class _CatalogAppState extends State<CatalogApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      navigatorKey: _navigatorKey,
       theme: buildCatalogTheme(),
       home:
           _authState.isLoggedIn
-              ? UpdaterApp(authState: _authState)
+              ? HomeShell(authState: _authState)
               : LoginScreen(authState: _authState),
     );
   }

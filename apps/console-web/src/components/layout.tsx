@@ -74,7 +74,15 @@ function HeaderBar({
           aria-expanded={opened}
         />
         <Anchor component={RouterNavLink} to="/" underline="never" c="inherit">
-          <Title order={4}>yyt console</Title>
+          <Group gap="xs" wrap="nowrap">
+            <img
+              src={`${import.meta.env.BASE_URL}yyt-logo.png`}
+              alt=""
+              width={28}
+              height={28}
+            />
+            <Title order={4}>yyt console</Title>
+          </Group>
         </Anchor>
       </Group>
       {loading ? null : me ? (

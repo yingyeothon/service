@@ -169,7 +169,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
             const SizedBox(height: 100),
             _StateCard(
               icon: Icons.cloud_off_rounded,
-              title: '카탈로그를 불러오지 못했습니다',
+              title: '앱 목록을 불러오지 못했습니다',
               body: errorMessage!,
               actionLabel: '다시 시도',
               onPressed: checkUpdates,
@@ -300,17 +300,12 @@ class _CatalogWordmark extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            color: CatalogPalette.ocean,
-          ),
-          child: const Icon(Icons.apps_rounded, color: Colors.white, size: 18),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.asset('assets/icon.png', width: 34, height: 34),
         ),
         const SizedBox(width: 10),
-        Text('Catalog', style: Theme.of(context).textTheme.titleMedium),
+        Text('잉여톤 · 앱', style: Theme.of(context).textTheme.titleMedium),
       ],
     );
   }
