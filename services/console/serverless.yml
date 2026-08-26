@@ -183,6 +183,8 @@ package:
 resources:
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
+    # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
+    IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
     # Private poster bucket; objects are reached only through presigned URLs
     # (visibility is enforced by the API, so CloudFront does not front it).
@@ -283,12 +285,19 @@ resources:
         Name: ${self:service}-${self:custom.stage}-spa-rewrite
         AutoPublish: true
         FunctionConfig:
-          Comment: Rewrite extension-less /ui routes to /ui/index.html
+          Comment: Redirect / to /ui/; rewrite extension-less /ui routes to /ui/index.html
           Runtime: cloudfront-js-2.0
         FunctionCode: |
           function handler(event) {
             var req = event.request;
             var uri = req.uri;
+            if (uri === '/') {
+              return {
+                statusCode: 302,
+                statusDescription: 'Found',
+                headers: { location: { value: '/ui/' } }
+              };
+            }
             if (uri === '/ui' || uri === '/ui/') {
               req.uri = '/ui/index.html';
             } else if (uri.indexOf('/ui/') === 0 && uri.lastIndexOf('.') <= uri.lastIndexOf('/')) {
@@ -338,6 +347,17 @@ resources:
             CachePolicyId: ${self:custom.cachingDisabled}
             OriginRequestPolicyId: ${self:custom.allViewerExceptHost}
           CacheBehaviors:
+            # Exact "/" only: the function answers 302 -> /ui/ at the edge, so
+            # the origin is never reached. API paths keep the default behavior.
+            - PathPattern: /
+              TargetOriginId: web
+              ViewerProtocolPolicy: redirect-to-https
+              AllowedMethods: [GET, HEAD]
+              Compress: true
+              CachePolicyId: ${self:custom.cachingOptimized}
+              FunctionAssociations:
+                - EventType: viewer-request
+                  FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
             - PathPattern: /ui
               TargetOriginId: web
               ViewerProtocolPolicy: redirect-to-https
@@ -375,6 +395,7 @@ resources:
           DNSName: !GetAtt WebDistribution.DomainName
           HostedZoneId: Z2FDTNDATAQYW2
     ApiErrorsAlarm:
+      Condition: IsProd
       Type: AWS::CloudWatch::Alarm
       Properties:
         AlarmName: ${self:service}-${self:custom.stage}-lambda-errors
@@ -392,6 +413,7 @@ resources:
         AlarmActions:
           !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     ExpireErrorsAlarm:
+      Condition: IsProd
       Type: AWS::CloudWatch::Alarm
       Properties:
         AlarmName: ${self:service}-${self:custom.stage}-expire-errors
@@ -408,24 +430,6 @@ resources:
         TreatMissingData: notBreaching
         AlarmActions:
           !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    Api5xxAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-5xx
-        Namespace: AWS/ApiGateway
-        MetricName: 5xx
-        Dimensions:
-          - Name: ApiId
-            Value: !Ref HttpApi
-        Statistic: Sum
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 5
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-  Outputs:
     WebBucketName:
       Value: !Ref WebBucket
     WebDistributionId:
