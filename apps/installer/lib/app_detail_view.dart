@@ -78,7 +78,7 @@ class _AppDetailViewState extends State<AppDetailView>
       }
 
       final artifacts = await fetchAppArtifacts(
-        appName: widget.app.name,
+        appId: widget.app.id,
         token: token,
       );
       final installedVersions = await _resolveInstalledVersions(artifacts);
@@ -203,7 +203,7 @@ class _AppDetailViewState extends State<AppDetailView>
       }
 
       await ArtifactsApi().deleteArtifact(
-        appName: widget.app.name,
+        appId: widget.app.id,
         artifactId: artifact.id,
         token: token,
       );
@@ -398,6 +398,7 @@ class _AppDetailViewState extends State<AppDetailView>
     final heroInstalledVersion = _summaryInstalledVersion(latestArtifact);
     final state = resolveAppInstallState(latestVersion, heroInstalledVersion);
     final currentApp = AppInfo(
+      id: widget.app.id,
       name: widget.app.name,
       package: widget.app.package,
       description: widget.app.description,

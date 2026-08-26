@@ -1,6 +1,8 @@
 import 'package:catalog/artifact_info.dart';
 
 class RemoteApp {
+  /// Console app id (`ca_…`); artifact routes are addressed by it.
+  final String id;
   final String name;
   final String package;
   final String description;
@@ -12,6 +14,7 @@ class RemoteApp {
   final List<String> applicationIds;
 
   RemoteApp({
+    required this.id,
     required this.name,
     required this.package,
     required this.description,
@@ -21,6 +24,7 @@ class RemoteApp {
 
   Map<String, dynamic> toJson() {
     return {
+      'id': id,
       'name': name,
       'package': package,
       'description': description,

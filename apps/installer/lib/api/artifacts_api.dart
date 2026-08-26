@@ -18,12 +18,12 @@ class ArtifactsApi {
   String get _baseUrl => _baseUrlOverride ?? AuthConfig.apiBaseUrl;
 
   Future<void> deleteArtifact({
-    required String appName,
+    required String appId,
     required String artifactId,
     required String token,
   }) async {
     final url = Uri.parse(
-      '$_baseUrl/catalog/apps/${Uri.encodeComponent(appName)}/artifacts/${Uri.encodeComponent(artifactId)}',
+      '$_baseUrl/catalog/apps/${Uri.encodeComponent(appId)}/artifacts/${Uri.encodeComponent(artifactId)}',
     );
     final response = await http.delete(
       url,

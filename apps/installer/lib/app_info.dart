@@ -1,6 +1,8 @@
 import 'package:catalog/artifact_info.dart';
 
 class AppInfo {
+  /// Console app id (`ca_…`).
+  final String id;
   final String name;
   final String package;
   final String description;
@@ -9,6 +11,7 @@ class AppInfo {
   final bool needsUpdate;
 
   AppInfo({
+    required this.id,
     required this.name,
     required this.package,
     required this.description,
