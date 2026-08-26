@@ -166,4 +166,4 @@ cd cli && go test ./... && go build ./cmd/yyt
 go test ./internal/cmd -update   # refresh golden files after an intentional output change
 ```
 
-Release: tag `cli/vX.Y.Z` on `main`; `.github/workflows/cli-release.yml` runs `cli/scripts/build-release.sh` and publishes the archives + `checksums.txt` with `gh release create`.
+Release: tag `cli/vX.Y.Z` on `main`; `.github/workflows/cli-release.yml` runs `cli/scripts/build-release.sh` and publishes the archives + `checksums.txt` (creating the release, or uploading into one already created from the GitHub web UI for that tag).
