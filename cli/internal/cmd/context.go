@@ -21,7 +21,9 @@ import (
 // (`yyt team use` / `yyt project use`) > auto-select when unique, for read
 // commands only. Each field is layered independently. Write commands refuse
 // to auto-select: a non-interactive script must not start failing with
-// "ambiguous" the day its author joins a second team.
+// "ambiguous" the day its author joins a second team. Catalog apps need only
+// a team context, never a project: their names are unique within the team
+// (see `app`).
 
 // ContextFile is the per-directory context file name. Team and project ids
 // are not secrets (docs/secrets.md), so the file may be committed.
@@ -398,8 +400,87 @@ func (c *ctxClient) channel(ctx context.Context, arg string, write bool) (string
 	return c.resource(ctx, "channel", "/channels", "channels", arg, write)
 }
 
+// app turns an app id-or-name into an id. App names are unique within the
+// team, so a name needs only a team context: it is looked up across the
+// team's projects (`GET /teams/{team}/catalog/apps`), which is what lets one
+// deploy script serve every repository with just YYT_TEAM. An explicit
+// project context narrows the lookup to that project.
 func (c *ctxClient) app(ctx context.Context, arg string, write bool) (string, error) {
-	return c.resource(ctx, "app", "/catalog/apps", "apps", arg, write)
+	if IsID(arg) {
+		return arg, nil
+	}
+	if c.spec.explicitProject() {
+		return c.resource(ctx, "app", "/catalog/apps", "apps", arg, write)
+	}
+	r, err := c.team(ctx, write)
+	if err != nil {
+		return "", fmt.Errorf("app %q is a name, which needs a team: %w", arg, err)
+	}
+	rows, err := c.teamApps(ctx, r.TeamID)
+	if err != nil {
+		return "", err
+	}
+	for _, row := range rows {
+		if strings.EqualFold(row.Name, arg) {
+			return row.ID, nil
+		}
+	}
+	return "", &api.Error{Status: 404, Code: "not_found",
+		Message: fmt.Sprintf("app %q not found in team %s", arg, r.TeamName)}
+}
+
+// teamApp is an app row with the project it belongs to.
+type teamApp struct {
+	named
+	ProjectID string `json:"projectId"`
+}
+
+func (c *ctxClient) teamApps(ctx context.Context, teamID string) ([]teamApp, error) {
+	var res struct {
+		Apps []teamApp `json:"apps"`
+	}
+	if err := c.cl.Do(ctx, http.MethodGet, "/teams/"+api.PathID(teamID)+"/catalog/apps", nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Apps, nil
+}
+
+// scope resolves the team, and the project too when one is explicit (a
+// `prj_` id alone also names its team). write=true refuses auto-selection.
+func (c *ctxClient) scope(ctx context.Context, write bool) (resolved, error) {
+	if c.spec.explicitProject() {
+		return c.project(ctx, write)
+	}
+	return c.team(ctx, write)
+}
+
+// projectIn resolves the project a new app goes into: the explicit project
+// in `team` when there is one, else the project named `defaultName` in the
+// team (the deploy directory's basename, which is our repository convention),
+// created when missing (created=true). Never auto-selects among existing
+// projects.
+func (c *ctxClient) projectIn(ctx context.Context, team resolved, defaultName string) (r resolved, created bool, err error) {
+	if team.ProjectID != "" {
+		return team, false, nil
+	}
+	var res struct {
+		Projects []projectRow `json:"projects"`
+	}
+	if err := c.cl.Do(ctx, http.MethodGet, "/teams/"+api.PathID(team.TeamID)+"/projects", nil, &res); err != nil {
+		return resolved{}, false, err
+	}
+	for _, p := range res.Projects {
+		if strings.EqualFold(p.Name, defaultName) {
+			team.ProjectID, team.ProjectName = p.ID, p.Name
+			return team, false, nil
+		}
+	}
+	var p named
+	if err := c.cl.Do(ctx, http.MethodPost, "/teams/"+api.PathID(team.TeamID)+"/projects", map[string]any{"name": defaultName}, &p); err != nil {
+		return resolved{}, false, fmt.Errorf("create project %q in team %s (pass --project to use another): %w", defaultName, team.TeamName, err)
+	}
+	team.ProjectID, team.ProjectName = p.ID, p.Name
+	return team, true, nil
 }
 
 func (c *ctxClient) bundle(ctx context.Context, arg string, write bool) (string, error) {

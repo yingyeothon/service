@@ -93,6 +93,48 @@ describe("catalog apps", () => {
         }
       ).apps,
     ).toHaveLength(0);
+    // The team route lists across projects for members, 404 for outsiders,
+    // 403 for a pending seat (the team is visible to it, the apps are not).
+    expect(
+      (
+        j(
+          await h.app(
+            ev("GET", `/teams/${owner.teamId}/catalog/apps`, {
+              headers: mate.cookie,
+            }),
+          ),
+        ) as { apps: Array<{ name: string; projectId: string }> }
+      ).apps.map((a) => [a.name, a.projectId]),
+    ).toEqual([["myapp", owner.prjId]]);
+    expect(
+      (
+        await h.app(
+          ev("GET", `/teams/${owner.teamId}/catalog/apps`, {
+            headers: other.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    const pending = await h.login("pend", "member", 9005);
+    expect(
+      (
+        await h.app(
+          ev("POST", "/teams/join", {
+            headers: pending.cookie,
+            body: { name: "owner-team" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(202);
+    expect(
+      (
+        await h.app(
+          ev("GET", `/teams/${owner.teamId}/catalog/apps`, {
+            headers: pending.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(403);
     expect(
       (
         j(

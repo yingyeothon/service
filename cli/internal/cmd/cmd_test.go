@@ -55,6 +55,7 @@ func ctxRoutes(routes map[string]func(recorded) (int, any), channels, apps, bund
 		"GET /projects/prj_1":                func(recorded) (int, any) { return 200, sampleProject },
 		"GET /projects/prj_1/channels":       list("channels", channels),
 		"GET /projects/prj_1/catalog/apps":   list("apps", apps),
+		"GET /teams/team_1/catalog/apps":     list("apps", apps),
 		"GET /projects/prj_1/assets/bundles": list("bundles", bundles),
 	}
 	for k, h := range defaults {

@@ -145,9 +145,9 @@ func newCatalog(a *App) *cobra.Command {
 		Aliases: []string{"cata"}, // legacy cata CLI muscle memory
 		Short:   "Binary catalog: apps and their build artifacts (an app belongs to a project)",
 		Long: "Binary catalog: apps and their build artifacts. An app belongs to a project.\n\n" +
-			"<app> is an id (ca_…) or a name unique within the team; a name is looked up in\n" +
-			"the project context (--project, YYT_PROJECT, " + ContextFile + ", `yyt project use`).\n" +
-			"Uploads and `deploy` need an explicit project context.",
+			"<app> is an id (ca_…) or a name unique within the team; a name is looked up across\n" +
+			"the team context (--team, YYT_TEAM, " + ContextFile + ", `yyt team use`), or within the\n" +
+			"project context when one is set. Uploads and `deploy` need an explicit team.",
 	}
 	p := func() output.Printer { return a.printer() }
 	// appID resolves <app> (id or name); write=true refuses auto-selection.
@@ -205,7 +205,7 @@ func newCatalog(a *App) *cobra.Command {
 	app.AddCommand(&cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List the apps of the project in context, or of every team you sit in",
+		Short:   "List the apps of the project or team in context, or of every team you sit in",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := a.ctxClient(cmd)
@@ -213,12 +213,18 @@ func newCatalog(a *App) *cobra.Command {
 				return err
 			}
 			path := "/catalog/apps"
-			if cc.spec.explicitTeam() || cc.spec.explicitProject() {
+			if cc.spec.explicitProject() {
 				r, err := cc.project(cmd.Context(), false)
 				if err != nil {
 					return err
 				}
 				path = "/projects/" + api.PathID(r.ProjectID) + "/catalog/apps"
+			} else if cc.spec.explicitTeam() {
+				r, err := cc.team(cmd.Context(), false)
+				if err != nil {
+					return err
+				}
+				path = "/teams/" + api.PathID(r.TeamID) + "/catalog/apps"
 			}
 			var res struct {
 				Apps []catalogApp `json:"apps"`
@@ -759,12 +765,13 @@ func newCatalogDeploy(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "deploy",
 		Short: "Build a Flutter Android app and upload the artifacts",
-		Long: `Reads pubspec.yaml / build.gradle from --project-path, ensures the app exists
-in the project context (creating it when missing; the context must be explicit:
---team/--project, YYT_TEAM/YYT_PROJECT, ` + ContextFile + ` next to the project, or
-` + "`yyt project use`" + `), runs "flutter build" for each --profile, uploads the
-outputs with version/build_type/application_id tags, and verifies the upload by
-re-reading the artifact list.`,
+		Long: `Reads pubspec.yaml / build.gradle from --project-path, finds the app by name in
+the team context (explicit: --team, YYT_TEAM, ` + ContextFile + ` next to the project, or
+` + "`yyt team use`" + `), runs "flutter build" for each --profile, uploads the outputs
+with version/build_type/application_id tags, and verifies the upload by re-reading
+the artifact list. A missing app is created in the project context if one is set
+(--project/YYT_PROJECT/...), else in the project named after the --project-path
+directory (created when missing).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -803,12 +810,12 @@ re-reading the artifact list.`,
 			if err != nil {
 				return err
 			}
-			r, err := cc.project(ctx, true)
+			team, err := cc.scope(ctx, true)
 			if err != nil {
 				return err
 			}
 			cl := cc.cl
-			fmt.Fprintf(a.Err, "deploying %s to %s\n", name, r)
+			fmt.Fprintf(a.Err, "deploying %s to %s\n", name, team)
 
 			if doBump {
 				b, err := flutter.ParseBump(bump)
@@ -831,6 +838,31 @@ re-reading the artifact list.`,
 			appID, err := cc.app(ctx, name, true)
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) && apiErr.Status == 404 {
+				// With a project context the lookup was narrowed; an app of that
+				// name in another project of the team would make the create a 409,
+				// so say where it lives instead.
+				if team.ProjectID != "" {
+					rows, err := cc.teamApps(ctx, team.TeamID)
+					if err != nil {
+						return err
+					}
+					for _, row := range rows {
+						if strings.EqualFold(row.Name, name) && row.ProjectID != team.ProjectID {
+							return fmt.Errorf("app %q already exists in team %s under project %s, not %s: drop --project or pass --project %s", name, team.TeamName, row.ProjectID, team.ProjectName, row.ProjectID)
+						}
+					}
+				}
+				abs, err := filepath.Abs(projectPath)
+				if err != nil {
+					return err
+				}
+				r, created, err := cc.projectIn(ctx, team, filepath.Base(abs))
+				if created {
+					fmt.Fprintf(a.Err, "created project %s (%s)\n", r.ProjectName, r.ProjectID)
+				}
+				if err != nil {
+					return err
+				}
 				body := map[string]any{"name": name, "path": applicationID}
 				if description != "" {
 					body["description"] = description
@@ -839,7 +871,7 @@ re-reading the artifact list.`,
 					return err
 				}
 				appID = appRow.ID
-				fmt.Fprintf(a.Err, "created app %s (%s)\n", name, appID)
+				fmt.Fprintf(a.Err, "created app %s (%s) in %s\n", name, appID, r)
 			} else if err != nil {
 				return err
 			} else if err := cl.Do(ctx, http.MethodGet, "/catalog/apps/"+api.PathID(appID), nil, &appRow); err != nil {

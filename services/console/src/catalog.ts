@@ -220,7 +220,7 @@ export interface CatalogRoutesOptions {
   team: TeamDb;
   access: Pick<
     TeamAccessHelpers,
-    "projectAccess" | "projectResource" | "memberTeamIds"
+    "teamAccess" | "projectAccess" | "projectResource" | "memberTeamIds"
   >;
   crumbs: CrumbResolver;
   history: ResourceHistory;
@@ -253,7 +253,7 @@ export function createCatalogRoutes({
   audit,
   fetchFn,
 }: CatalogRoutesOptions): AnyRoute[] {
-  const { projectAccess, projectResource, memberTeamIds } = access;
+  const { teamAccess, projectAccess, projectResource, memberTeamIds } = access;
 
   function requireStore(): ArtifactStore {
     if (!artifacts)
@@ -434,6 +434,21 @@ export function createCatalogRoutes({
         const teamIds = await memberTeamIds(id);
         if (teamIds.length === 0) return { apps: [] };
         return { apps: await appViews(await catalog.listApps({ teamIds })) };
+      },
+    },
+    {
+      method: "GET",
+      path: "/teams/{team}/catalog/apps",
+      auth: true,
+      handler: async (ctx) => {
+        // Every app of the team across its projects: app names are unique
+        // within the team, so this is how the CLI turns a name into an app
+        // (and its project) with only a team context. Permanent, unlike the
+        // flattened `/catalog/apps`.
+        const a = await teamAccess(ctx, ctx.params.team!);
+        return {
+          apps: await appViews(await catalog.listApps({ teamId: a.team.id })),
+        };
       },
     },
     {
