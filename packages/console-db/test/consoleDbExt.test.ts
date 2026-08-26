@@ -144,6 +144,18 @@ describe("memory console db: members/tokens/channels/audit", () => {
       disabled: [],
       deleted: [],
     });
+    // Soft-deleted at 101: still listed with includeDeleted, purged 30s later.
+    expect(
+      (await db.listChannels({ teamId: "team_1", includeDeleted: true })).map(
+        (c) => c.id,
+      ),
+    ).toContain("c1");
+    await expect(
+      db.insertChannel({ ...channel("c9"), name: "N" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await db.purgeChannels(131, 30)).toEqual([]);
+    expect(await db.purgeChannels(132, 30)).toEqual(["c1"]);
+    expect(db.channels.has("c1")).toBe(false);
     await db.insertAudit({
       id: "a1",
       actorId: "m1",

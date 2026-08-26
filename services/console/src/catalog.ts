@@ -35,7 +35,6 @@ import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
 import {
   APPS_PER_PROJECT,
   sameName,
-  untilContractUnique,
   type CrumbResolver,
   type ResourceHistory,
 } from "./resources.js";
@@ -481,19 +480,16 @@ export function createCatalogRoutes({
           );
         await requireFreeName(a.team.id, ctx.body.name);
         const appId = `ca_${randomHex(8)}`;
-        await untilContractUnique(
-          "app",
-          catalog.insertApp({
-            id: appId,
-            name: ctx.body.name,
-            path: ctx.body.path,
-            description: ctx.body.description ?? null,
-            ownerId: a.id.subject,
-            teamId: a.team.id,
-            projectId: a.project.id,
-            createdAt: nowSec(clock),
-          }),
-        );
+        await catalog.insertApp({
+          id: appId,
+          name: ctx.body.name,
+          path: ctx.body.path,
+          description: ctx.body.description ?? null,
+          ownerId: a.id.subject,
+          teamId: a.team.id,
+          projectId: a.project.id,
+          createdAt: nowSec(clock),
+        });
         await audit(a.id.subject, "catalog.app.create", appId, {
           name: ctx.body.name,
           projectId: a.project.id,

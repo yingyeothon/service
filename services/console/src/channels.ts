@@ -33,6 +33,8 @@ export const CHANNEL_TTL_SEC = 7 * 86400;
 export const CHANNEL_EXTEND_SEC = 7 * 86400;
 export const CHANNEL_MAX_AHEAD_SEC = 28 * 86400;
 export const CHANNEL_DELETE_GRACE_SEC = 30 * 86400;
+/** Soft-deleted rows are purged (and their names freed) this long after deletion. */
+export const CHANNEL_PURGE_SEC = 30 * 86400;
 
 const ID = /^[a-z0-9_-]{3,40}$/;
 /**

@@ -21,6 +21,16 @@ export function createMemoryConsoleDb(): ConsoleDb & {
   patchChannel(id: string, patch: Partial<ChannelRow>): void;
 } {
   const channels = new Map<string, ChannelRow>();
+  const conflictKey = () => new AppError("conflict", "duplicate key");
+  // `channels_team_name` is unique, case-insensitive and has no deleted_at
+  // filter: a soft-deleted channel holds its name until `purgeChannels`.
+  const nameHeld = (teamId: string | null, name: string, exceptId?: string) =>
+    [...channels.values()].some(
+      (x) =>
+        x.id !== exceptId &&
+        x.teamId === teamId &&
+        x.name.toLowerCase() === name.toLowerCase(),
+    );
   const members = new Map<string, MemberRow>();
   const tokens = new Map<string, ApiTokenRow>();
   const audits: AuditInput[] = [];
@@ -52,7 +62,8 @@ export function createMemoryConsoleDb(): ConsoleDb & {
       return row && toTopicChannel(row);
     },
     insertChannel: async (c) => {
-      if (channels.has(c.id)) throw new AppError("conflict", "duplicate key");
+      if (channels.has(c.id)) throw conflictKey();
+      if (nameHeld(c.teamId, c.name)) throw conflictKey();
       if (!members.has(c.ownerId))
         throw new AppError("unavailable", "database error");
       channels.set(c.id, {
@@ -141,7 +152,7 @@ export function createMemoryConsoleDb(): ConsoleDb & {
       [...channels.values()]
         .filter(
           (c) =>
-            c.deletedAt === null &&
+            (filter.includeDeleted || c.deletedAt === null) &&
             (!filter.kind || c.kind === filter.kind) &&
             (!filter.teamId || c.teamId === filter.teamId) &&
             (!filter.teamIds ||
@@ -153,6 +164,8 @@ export function createMemoryConsoleDb(): ConsoleDb & {
     updateChannel: async (id, patch) => {
       const c = channels.get(id);
       if (!c || c.deletedAt !== null) return false;
+      if (patch.name !== undefined && nameHeld(c.teamId, patch.name, id))
+        throw conflictKey();
       channels.set(id, {
         ...c,
         ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -194,6 +207,13 @@ export function createMemoryConsoleDb(): ConsoleDb & {
         }
       }
       return { disabled, deleted };
+    },
+    purgeChannels: async (now, retainSec) => {
+      const ids = [...channels.values()]
+        .filter((c) => c.deletedAt !== null && c.deletedAt < now - retainSec)
+        .map((c) => c.id);
+      for (const id of ids) channels.delete(id);
+      return ids;
     },
     insertAudit: async (a) => {
       if (audits.some((x) => x.id === a.id))

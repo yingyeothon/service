@@ -177,6 +177,27 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
 
 describe("memory catalog db", () => {
   catalogContract(() => createMemoryCatalogDb());
+  it("scopes the unique name to the team (`catalog_apps_team_name`)", async () => {
+    const db = createMemoryCatalogDb();
+    await db.insertApp(app("a1"));
+    await db.insertApp({
+      ...app("a2"),
+      name: "A-A1",
+      teamId: "team_2",
+      projectId: "prj_2",
+    });
+    await expect(
+      db.updateApp("a2", { name: "x" }, 2).then(() =>
+        db.insertApp({
+          ...app("a3"),
+          name: "x",
+          teamId: "team_2",
+          projectId: "prj_2",
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await db.findAppByName("team_2", "x")).toMatchObject({ id: "a2" });
+  });
   it("rejects an unknown member like a foreign key would", async () => {
     const db = createMemoryCatalogDb((id) => id === "m1");
     await expect(

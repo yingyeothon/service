@@ -12,14 +12,17 @@ export async function contractPreflight(
   prisma: PrismaClient,
 ): Promise<string[]> {
   const problems: string[] = [];
-  const where = { OR: [{ team_id: null }, { project_id: null }] };
-  const unmapped = {
-    catalog_apps: await prisma.catalog_apps.count({ where }),
-    asset_bundles: await prisma.asset_bundles.count({ where }),
-    channels: await prisma.channels.count({ where }),
-  };
-  for (const [table, n] of Object.entries(unmapped))
-    if (n > 0) problems.push(`${table}: ${n} row(s) without team/project`);
+  // Raw SQL: the generated client models the post-contract schema, where
+  // these columns cannot be null, but the pre-flight runs *before* it.
+  const [unmapped] = await prisma.$queryRaw<
+    { catalog_apps: bigint; asset_bundles: bigint; channels: bigint }[]
+  >`select
+      (select count(*) from catalog_apps where team_id is null or project_id is null) as catalog_apps,
+      (select count(*) from asset_bundles where team_id is null or project_id is null) as asset_bundles,
+      (select count(*) from channels where team_id is null or project_id is null) as channels`;
+  for (const [table, n] of Object.entries(unmapped ?? {}))
+    if (Number(n) > 0)
+      problems.push(`${table}: ${Number(n)} row(s) without team/project`);
 
   // Soft-deleted channels count too: the contract's unique index does not
   // filter on deleted_at (rules/data.md).

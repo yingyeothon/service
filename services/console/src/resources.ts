@@ -1,4 +1,4 @@
-import { AppError, ulid, type Logger } from "@yyt/core";
+import { ulid, type Logger } from "@yyt/core";
 import type {
   ConsoleDb,
   TeamDb,
@@ -17,30 +17,6 @@ import type {
 export const CHANNELS_PER_PROJECT = 50;
 export const APPS_PER_PROJECT = 50;
 export const BUNDLES_PER_PROJECT = 20;
-
-/**
- * Until the contract migration (`todo/17` §4.2 step 4) replaces the global
- * unique indexes on `catalog_apps.name` / `asset_bundles.name` with
- * `(team_id, name)`, a name already used by *another* team is refused by the
- * database after the team-local check passed. Say so, instead of the bare
- * `duplicate key` the repository maps `ER_DUP_ENTRY` to.
- */
-export async function untilContractUnique<T>(
-  what: "app" | "bundle",
-  work: Promise<T>,
-): Promise<T> {
-  try {
-    return await work;
-  } catch (e) {
-    if (e instanceof AppError && e.code === "conflict")
-      throw new AppError(
-        "conflict",
-        `${what} name is already used by another team (names are unique across all teams until the contract migration)`,
-        { cause: e },
-      );
-    throw e;
-  }
-}
 
 /** MariaDB's default collation compares names case-insensitively. */
 export function sameName(a: string, b: string): boolean {

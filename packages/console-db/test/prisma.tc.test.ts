@@ -137,90 +137,76 @@ describe.skipIf(!dockerAvailable())(
     });
 
     describe("contract preflight", () => {
-      it("passes on a mapped stage and lists every violation otherwise", async () => {
+      it("is clean on the contract schema, which admits no violation", async () => {
         await resetTestDb(db.client);
         await seedTeamProject(db.client);
         expect(await contractPreflight(db.client)).toEqual([]);
-        const channel = (id: string, name: string, deleted: number | null) =>
-          db.client.channels.create({
-            data: {
-              id,
-              kind: "auth",
-              owner_id: "m1",
-              team_id: "team_1",
-              project_id: "prj_1",
-              name,
-              config_json: "{}",
-              secret_json: "{}",
-              created_at: 1,
-              expires_at: 10_000,
-              deleted_at: deleted,
-            },
-          });
-        const app = (id: string, name: string, mapped: boolean) =>
-          db.client.catalog_apps.create({
-            data: {
-              id,
-              name,
-              path: name,
-              created_at: 1,
-              updated_at: 1,
-              ...(mapped ? { team_id: "team_1", project_id: "prj_1" } : {}),
-            },
-          });
-        // Mapped resources with distinct names across tables, one of them
-        // soft-deleted: still clean.
-        await channel("auth_1", "dup", null);
-        await channel("auth_9", "gone", 5);
-        await app("app_0", "fine", true);
-        expect(await contractPreflight(db.client)).toEqual([]);
-        // A soft-deleted twin still counts: the unique index ignores
-        // deleted_at. Names collide across tables (channel + app + bundle).
-        await channel("auth_2", "dup", 5);
-        await app("app_2", "dup", true);
-        await db.client.asset_bundles.create({
-          data: {
-            id: "b_1",
-            name: "dup",
-            team_id: "team_1",
-            project_id: "prj_1",
-            created_at: 1,
-            updated_at: 1,
-          },
+      });
+
+      // The violations the pre-flight exists for can only be stored by the
+      // pre-contract schema, so this suite runs on a database migrated
+      // through `7_team_rename` only.
+      describe("on the expand schema", () => {
+        let pre: TestDb;
+        beforeAll(async () => {
+          pre = await startTestDb({ through: "7_team_rename" });
+        }, 180_000);
+        afterAll(async () => {
+          await pre?.stop();
         });
-        // Reserved name on a fully mapped app; unmapped rows in each table,
-        // including a half-mapped one (team without project).
-        await app("app_1", "apps", true);
-        await app("app_3", "loose", false);
-        await db.client.asset_bundles.create({
-          data: {
-            id: "b_2",
-            name: "half",
-            team_id: "team_1",
-            created_at: 1,
-            updated_at: 1,
-          },
+
+        it("passes on a mapped stage and lists every violation otherwise", async () => {
+          await resetTestDb(pre.client);
+          await seedTeamProject(pre.client);
+          expect(await contractPreflight(pre.client)).toEqual([]);
+          // Raw inserts: the generated client models the contract schema.
+          const run = (sql: string) => pre.client.$executeRawUnsafe(sql);
+          const channel = (
+            id: string,
+            name: string,
+            deleted: number | null,
+            mapped = true,
+          ) =>
+            run(
+              `insert into channels (id, kind, owner_id, team_id, project_id, name, config_json, secret_json, created_at, expires_at, deleted_at)
+               values ('${id}', 'auth', 'm1', ${mapped ? "'team_1', 'prj_1'" : "null, null"}, '${name}', '{}', '{}', 1, 10000, ${deleted ?? "null"})`,
+            );
+          const app = (id: string, name: string, mapped: boolean) =>
+            run(
+              `insert into catalog_apps (id, name, path, created_at, updated_at, team_id, project_id)
+               values ('${id}', '${name}', '${name}', 1, 1, ${mapped ? "'team_1', 'prj_1'" : "null, null"})`,
+            );
+          const bundle = (id: string, name: string, project: string | null) =>
+            run(
+              `insert into asset_bundles (id, name, team_id, project_id, created_at, updated_at)
+               values ('${id}', '${name}', 'team_1', ${project ? `'${project}'` : "null"}, 1, 1)`,
+            );
+          // Mapped resources with distinct names across tables, one of them
+          // soft-deleted: still clean.
+          await channel("auth_1", "dup", null);
+          await channel("auth_9", "gone", 5);
+          await app("app_0", "fine", true);
+          expect(await contractPreflight(pre.client)).toEqual([]);
+          // A soft-deleted twin still counts: the unique index ignores
+          // deleted_at. Names collide across tables (channel + app + bundle).
+          await channel("auth_2", "dup", 5);
+          await app("app_2", "dup", true);
+          await bundle("b_1", "dup", "prj_1");
+          // Reserved name on a fully mapped app; unmapped rows in each table,
+          // including a half-mapped one (team without project).
+          await app("app_1", "apps", true);
+          await app("app_3", "loose", false);
+          await bundle("b_2", "half", null);
+          await channel("auth_3", "orphan", null, false);
+          const problems = await contractPreflight(pre.client);
+          expect(problems).toEqual([
+            "catalog_apps: 1 row(s) without team/project",
+            "asset_bundles: 1 row(s) without team/project",
+            "channels: 1 row(s) without team/project",
+            'team team_1: name "dup" used by 4 resources',
+            'catalog_apps: 1 app(s) named "apps" (reserved)',
+          ]);
         });
-        await db.client.channels.create({
-          data: {
-            id: "auth_3",
-            kind: "auth",
-            owner_id: "m1",
-            name: "orphan",
-            config_json: "{}",
-            secret_json: "{}",
-            created_at: 1,
-            expires_at: 10_000,
-          },
-        });
-        const problems = await contractPreflight(db.client);
-        expect(problems).toEqual([
-          "catalog_apps: 1 row(s) without team/project",
-          "asset_bundles: 1 row(s) without team/project",
-          "channels: 1 row(s) without team/project",
-          'team team_1: name "dup" used by 4 resources',
-          'catalog_apps: 1 app(s) named "apps" (reserved)',
-        ]);
       });
     });
 
@@ -315,29 +301,82 @@ describe.skipIf(!dockerAvailable())(
         ).rejects.toMatchObject({
           code: "conflict",
         });
-        // Rows from before the mapping (null parents) are still readable and
-        // listable — the repository no longer writes them, so insert raw.
-        await db.client.channels.create({
-          data: {
-            id: "auth_3",
+        // The contract schema: no row without both parents, and names are
+        // unique per team — a soft-deleted channel still holds its name,
+        // while the same name is free in another team.
+        await expect(
+          db.client.$executeRawUnsafe(
+            `insert into channels (id, kind, owner_id, name, config_json, secret_json, created_at, expires_at)
+             values ('auth_3', 'auth', 'm1', 'legacy', '{}', '{}', 3, 1000)`,
+          ),
+        ).rejects.toThrow();
+        expect(await console.updateChannel("auth_1", { deletedAt: 5 })).toBe(
+          true,
+        );
+        const twin = (id: string, name: string) =>
+          console.insertChannel({
+            id,
             kind: "auth",
-            owner_id: "m1",
-            name: "legacy",
-            config_json: "{}",
-            secret_json: "{}",
-            created_at: 3,
-            expires_at: 1000,
-          },
+            ownerId: "m1",
+            teamId: "team_1",
+            projectId: "prj_1",
+            name,
+            config: {},
+            secret: {},
+            createdAt: 6,
+            expiresAt: 1000,
+          });
+        await expect(twin("auth_4", "A")).rejects.toMatchObject({
+          code: "conflict",
         });
-        expect(await console.findChannelRow("auth_3")).toMatchObject({
-          teamId: null,
-          projectId: null,
+        await twin("auth_5", "c");
+        await team.createTeam(
+          { id: "team_2", name: "Other", createdBy: "m2", createdAt: 70 },
+          70,
+        );
+        await team.createProject(
+          { id: "prj_2", teamId: "team_2", name: "g" },
+          { actorId: "m2", at: 80 },
+        );
+        await catalog.insertApp({
+          id: "ca_2",
+          name: "APP",
+          path: "app2",
+          teamId: "team_2",
+          projectId: "prj_2",
+          createdAt: 9,
         });
+        await expect(
+          catalog.insertApp({
+            id: "ca_3",
+            name: "APP",
+            path: "app3",
+            teamId: "team_1",
+            projectId: "prj_1",
+            createdAt: 9,
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+        await assets.insertBundle({
+          id: "ab_2",
+          name: "MAPS",
+          teamId: "team_2",
+          projectId: "prj_2",
+          createdAt: 9,
+        });
+        await expect(
+          assets.insertBundle({
+            id: "ab_3",
+            name: "MAPS",
+            teamId: "team_1",
+            projectId: "prj_1",
+            createdAt: 9,
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
         expect(
           (await console.listChannels({ teamIds: ["team_1"] })).map(
             (c) => c.id,
           ),
-        ).toEqual(["auth_1"]);
+        ).toEqual(["auth_5"]);
         // Artifact links cascade with the artifact; bundle links with the bundle.
         await catalog.insertArtifact({
           id: "art_1",
@@ -410,14 +449,14 @@ describe.skipIf(!dockerAvailable())(
     describe("console repository", () => {
       const channel = (
         id: string,
-        over: Partial<{ expiresAt: number }> = {},
+        over: Partial<{ expiresAt: number; name: string }> = {},
       ) => ({
         id,
         kind: "topic" as const,
         ownerId: "m1",
         teamId: "team_1",
         projectId: "prj_1",
-        name: id,
+        name: over.name ?? id,
         config: { authChannelId: "a" },
         secret: { apiKey: "k0-secret-zz" },
         createdAt: 1,
@@ -609,6 +648,16 @@ describe.skipIf(!dockerAvailable())(
         });
         expect(raw?.secret_json).toBe("{}");
         expect(raw?.secret_json).not.toContain("k0-secret-zz");
+        // The deleted row still holds `(team_id, name)`; the purge frees it.
+        await expect(
+          repo.insertChannel(channel("c3", { name: "C1" })),
+        ).rejects.toMatchObject({ code: "conflict" });
+        expect(await repo.purgeChannels(90, 30)).toEqual([]);
+        expect(await repo.purgeChannels(91, 30)).toEqual(["c1"]);
+        expect(
+          await db.client.channels.findUnique({ where: { id: "c1" } }),
+        ).toBeNull();
+        await repo.insertChannel(channel("c3", { name: "C1" }));
       });
     });
   },

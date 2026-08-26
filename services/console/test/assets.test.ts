@@ -985,8 +985,8 @@ describe("asset deletion safety", () => {
   });
 });
 
-describe("asset bundles: names across teams until the contract migration", () => {
-  it("explains the global unique index instead of a bare duplicate key", async () => {
+describe("asset bundles: names are unique per team", () => {
+  it("lets two teams use the same bundle name", async () => {
     const h = harness();
     const alice = await h.team("alice");
     const bob = await h.team("bob");
@@ -997,7 +997,6 @@ describe("asset bundles: names across teams until the contract migration", () =>
         headers: bob.cookie,
       }),
     );
-    expect(r.statusCode).toBe(409);
-    expect(r.body).toContain("another team");
+    expect(r.statusCode).toBe(201);
   });
 });

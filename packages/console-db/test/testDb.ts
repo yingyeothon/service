@@ -26,7 +26,12 @@ export interface TestDb {
  * order (the same files `prisma migrate deploy` runs), so the schema under
  * test is exactly the deployed one.
  */
-export async function startTestDb(): Promise<TestDb> {
+export async function startTestDb(
+  opts: {
+    /** Apply migrations up to and including this directory name (lexical). */
+    through?: string;
+  } = {},
+): Promise<TestDb> {
   const container: StartedTestContainer = await new GenericContainer(
     "mariadb:11",
   )
@@ -60,6 +65,7 @@ export async function startTestDb(): Promise<TestDb> {
     "../prisma/migrations",
   );
   for (const entry of (await readdir(dir)).sort()) {
+    if (opts.through !== undefined && entry > opts.through) break;
     const file = join(dir, entry, "migration.sql");
     if (!existsSync(file)) continue;
     const sql = await readFile(file, "utf8");

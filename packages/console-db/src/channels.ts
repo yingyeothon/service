@@ -237,9 +237,11 @@ export interface ChannelFilter {
   /** Every team the caller is seated in — one query, not one per team. */
   teamIds?: string[];
   projectId?: string;
+  /** Soft-deleted rows too — they still hold their `(team_id, name)`. */
+  includeDeleted?: boolean;
 }
 
-/** A channel the sweep hard-deleted, with where it lived (for team history). */
+/** A channel the sweep soft-deleted, with where it lived (for team history). */
 export interface ExpiredChannel {
   id: string;
   kind: ChannelKind;
@@ -308,6 +310,12 @@ export interface ConsoleDb {
     now: number,
     graceSec: number,
   ): Promise<{ disabled: string[]; deleted: ExpiredChannel[] }>;
+  /**
+   * Hard-deletes rows soft-deleted more than `retainSec` ago and returns their
+   * ids. Until then a deleted channel keeps its `(team_id, name)` — the unique
+   * index has no `deleted_at` filter (docs/decisions.md).
+   */
+  purgeChannels(now: number, retainSec: number): Promise<string[]>;
 
   insertAudit(a: AuditInput): Promise<void>;
 }
@@ -524,7 +532,7 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
         (
           await prisma.channels.findMany({
             where: {
-              deleted_at: null,
+              ...(filter.includeDeleted ? {} : { deleted_at: null }),
               ...(filter.kind ? { kind: filter.kind } : {}),
               ...(filter.teamId ? { team_id: filter.teamId } : {}),
               ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
@@ -613,6 +621,18 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
           { maxWait: 2000, timeout: 15000 },
         ),
       ),
+    purgeChannels: (now, retainSec) =>
+      run(async () => {
+        const ids = (
+          await prisma.channels.findMany({
+            where: { deleted_at: { not: null, lt: now - retainSec } },
+            select: { id: true },
+          })
+        ).map((r) => r.id);
+        if (ids.length > 0)
+          await prisma.channels.deleteMany({ where: { id: { in: ids } } });
+        return ids;
+      }),
     insertAudit: (a) =>
       run(async () => {
         await prisma.audit_log.create({

@@ -25,8 +25,7 @@ export type CatalogUploadStatus = (typeof CATALOG_UPLOAD_STATUSES)[number];
  * pending logins, owner transfer, `debug_only`) was withdrawn on 2026-08-26
  * (docs/decisions.md *Teams and projects*): an app belongs to a
  * project and team membership is the only permission. The tables and columns
- * still exist until the contract migration drops them; nothing here reads or
- * writes them any more, and the Prisma inserts leave them at their defaults.
+ * were dropped by `m0008_team_project_contract`.
  */
 
 export interface CatalogAppRow {
@@ -137,11 +136,7 @@ export interface CatalogPendingUploadPatch {
 export interface CatalogDb {
   insertApp(a: CatalogAppInput): Promise<void>;
   findApp(id: string): Promise<CatalogAppRow | undefined>;
-  /**
-   * Case-insensitive name lookup **within one team**. Until the contract
-   * migration lands the database still carries the old global unique index,
-   * so a name can exist in one team only — a 409 on insert, not a lookup miss.
-   */
+  /** Case-insensitive name lookup within one team (`catalog_apps_team_name`). */
   findAppByName(
     teamId: string,
     name: string,
@@ -452,19 +447,17 @@ export function createMemoryCatalogDb(
   };
   const byName = <T extends { name: string; id: string }>(a: T, b: T) =>
     a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
-  /**
-   * Mirrors the index that is actually deployed: `catalog_apps_name` is still
-   * global until the contract migration replaces it with `(team_id, name)`.
-   * Relax to a team-scoped check in the same commit as that migration.
-   */
-  const nameTaken = (name: string, exceptId?: string) =>
-    [...apps.values()].some((x) => x.id !== exceptId && eqI(x.name, name));
+  /** Mirrors `catalog_apps_team_name`: unique per team, case-insensitive. */
+  const nameTaken = (teamId: string, name: string, exceptId?: string) =>
+    [...apps.values()].some(
+      (x) => x.id !== exceptId && x.teamId === teamId && eqI(x.name, name),
+    );
   return {
     apps,
     artifacts,
     uploads,
     insertApp: async (a) => {
-      if (apps.has(a.id) || nameTaken(a.name)) throw conflict();
+      if (apps.has(a.id) || nameTaken(a.teamId, a.name)) throw conflict();
       checkOwner(a.ownerId);
       apps.set(a.id, {
         id: a.id,
@@ -506,7 +499,11 @@ export function createMemoryCatalogDb(
     updateApp: async (id, patch, at) => {
       const a = apps.get(id);
       if (!a) return false;
-      if (patch.name !== undefined && nameTaken(patch.name, id))
+      if (
+        patch.name !== undefined &&
+        a.teamId !== null &&
+        nameTaken(a.teamId, patch.name, id)
+      )
         throw conflict();
       const next = { ...a, updatedAt: at };
       for (const k of Object.keys(patch) as Array<keyof CatalogAppPatch>) {
