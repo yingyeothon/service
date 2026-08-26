@@ -1,5 +1,7 @@
 # Deployment
 
+- **A contract migration is its own commit, and only after every stage runs the bundle that fills the columns.** `deploy.sh` applies every pending migration unconditionally, so a `NOT NULL`/`DROP` file that sits in the tree is applied by the next `deploy.sh console <stage>` whether or not that stage was ready — there is no technical gate today (todo/17 P9 adds a `migrate.sh` pre-flight that refuses a `-- contract` file unless `--allow-contract` is given and the `NULL` count is 0). Until then the gate is the commit itself: check `migrate status` on prod and the deployed bundle version before committing `7_org_project_contract`.
+
 ## Decision flow
 
 1. Decide whether the change needs only a `dev` redeploy (default for every task) or a `prod` release.

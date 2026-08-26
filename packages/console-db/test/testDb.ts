@@ -83,30 +83,23 @@ export async function startTestDb(): Promise<TestDb> {
   };
 }
 
-const WIPE_ORDER = [
-  "asset_pending_uploads",
-  "asset_files",
-  "asset_bundles",
-  "votes",
-  "proposals",
-  "events",
-  "catalog_pending_uploads",
-  "catalog_artifacts",
-  "catalog_app_permissions",
-  "catalog_group_permissions",
-  "catalog_apps",
-  "catalog_groups",
-  "api_tokens",
-  "audit_log",
-  "state_docs",
-  "channels",
-  "members",
-] as const;
-
-/** Empties every table (FK-safe order) and seeds the members the contracts use. */
+/** Empties every table and seeds the members the contracts use. */
 export async function resetTestDb(client: PrismaClient): Promise<void> {
-  for (const t of WIPE_ORDER)
-    await client.$executeRawUnsafe(`delete from ${t}`);
+  // Every base table, discovered rather than listed: a hard-coded order went
+  // stale with each migration and silently left the new tables populated.
+  // Foreign-key checks are off for the wipe (they are per session, and this
+  // is the test container's one connection), so order does not matter.
+  const tables = await client.$queryRaw<{ table_name: string }[]>`
+    select table_name as table_name from information_schema.tables
+    where table_schema = database() and table_type = 'BASE TABLE'
+      and table_name <> '_prisma_migrations'`;
+  await client.$executeRawUnsafe("set foreign_key_checks = 0");
+  try {
+    for (const { table_name } of tables)
+      await client.$executeRawUnsafe(`delete from \`${table_name}\``);
+  } finally {
+    await client.$executeRawUnsafe("set foreign_key_checks = 1");
+  }
   let github = 1000;
   for (const id of ["m1", "m2", "m3", "m9"])
     await client.members.create({

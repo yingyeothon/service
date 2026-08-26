@@ -13,7 +13,11 @@ export interface AssetBundleRow {
   /** Also the object-key segment: `assets/{name}/{version}/{path}`. */
   name: string;
   description: string | null;
+  /** Creator, kept for display; authorization is org membership (`orgId`). */
   ownerId: string | null;
+  /** Null only for rows created before migration `6_org_project` was mapped. */
+  orgId: string | null;
+  projectId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -23,6 +27,9 @@ export interface AssetBundleInput {
   name: string;
   description?: string | null;
   ownerId?: string | null;
+  /** Both or neither; the project must belong to the org (asserted by the writer). */
+  orgId?: string;
+  projectId?: string;
   createdAt: number;
 }
 
@@ -105,7 +112,10 @@ export interface AssetsDb {
   findBundle(id: string): Promise<AssetBundleRow | undefined>;
   findBundleByName(name: string): Promise<AssetBundleRow | undefined>;
   /** Name ascending. */
-  listBundles(): Promise<AssetBundleRow[]>;
+  listBundles(filter?: {
+    orgId?: string;
+    projectId?: string;
+  }): Promise<AssetBundleRow[]>;
   updateBundle(
     id: string,
     patch: AssetBundlePatch,
@@ -144,6 +154,8 @@ type BundleModel = {
   name: string;
   description: string | null;
   owner_id: string | null;
+  org_id: string | null;
+  project_id: string | null;
   created_at: bigint | number;
   updated_at: bigint | number;
 };
@@ -181,6 +193,8 @@ const toBundle = (r: BundleModel): AssetBundleRow => ({
   name: r.name,
   description: r.description,
   ownerId: r.owner_id,
+  orgId: r.org_id,
+  projectId: r.project_id,
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
 });
@@ -223,6 +237,8 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             name: b.name,
             description: b.description ?? null,
             owner_id: b.ownerId ?? null,
+            org_id: b.orgId ?? null,
+            project_id: b.projectId ?? null,
             created_at: b.createdAt,
             updated_at: b.createdAt,
           },
@@ -238,9 +254,13 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         const r = await prisma.asset_bundles.findUnique({ where: { name } });
         return r ? toBundle(r) : undefined;
       }),
-    listBundles: () =>
+    listBundles: (filter = {}) =>
       run(async () => {
         const rows = await prisma.asset_bundles.findMany({
+          where: {
+            ...(filter.orgId ? { org_id: filter.orgId } : {}),
+            ...(filter.projectId ? { project_id: filter.projectId } : {}),
+          },
           orderBy: [{ name: "asc" }, { id: "asc" }],
         });
         return rows.map(toBundle);
@@ -421,6 +441,8 @@ export function createMemoryAssetsDb(
         name: b.name,
         description: b.description ?? null,
         ownerId: b.ownerId ?? null,
+        orgId: b.orgId ?? null,
+        projectId: b.projectId ?? null,
         createdAt: b.createdAt,
         updatedAt: b.createdAt,
       });
@@ -433,8 +455,13 @@ export function createMemoryAssetsDb(
       const b = [...bundles.values()].find((x) => eqI(x.name, name));
       return b && { ...b };
     },
-    listBundles: async () =>
+    listBundles: async (filter = {}) =>
       [...bundles.values()]
+        .filter(
+          (b) =>
+            (!filter.orgId || b.orgId === filter.orgId) &&
+            (!filter.projectId || b.projectId === filter.projectId),
+        )
         .map((b) => ({ ...b }))
         .sort(
           (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),

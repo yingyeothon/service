@@ -4,6 +4,7 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
+  createOrgDb,
   createStateDb,
   toLobbyChannel,
   toQChannel,
@@ -12,6 +13,7 @@ import {
 import { assetsContract } from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
 import { eventsContract } from "./events.test.js";
+import { orgContract } from "./org.test.js";
 import { stateContract } from "./state.test.js";
 import {
   dockerAvailable,
@@ -76,6 +78,187 @@ describe.skipIf(!dockerAvailable())(
             },
           });
         return createStateDb(db.client);
+      });
+    });
+
+    describe("org contract", () => {
+      let seq = 0;
+      orgContract(
+        async () => {
+          await resetTestDb(db.client);
+          seq = 0;
+          return createOrgDb(db.client, {
+            newHistoryId: () => `h_${String(++seq).padStart(8, "0")}`,
+          });
+        },
+        {
+          bundle: async (id) => {
+            await createAssetsDb(db.client).insertBundle({
+              id,
+              name: id,
+              createdAt: 1,
+            });
+          },
+        },
+      );
+    });
+
+    describe("org / project columns on resources (migration 6)", () => {
+      it("channels, apps and bundles carry their parents and the FKs hold", async () => {
+        await resetTestDb(db.client);
+        const org = createOrgDb(db.client, { newHistoryId: (at) => `h_${at}` });
+        const console = createConsoleDb(db.client);
+        const catalog = createCatalogDb(db.client);
+        const assets = createAssetsDb(db.client);
+        await org.createOrg(
+          { id: "org_1", name: "Acme", createdBy: "m1", createdAt: 1 },
+          1,
+        );
+        await org.createProject(
+          { id: "prj_1", orgId: "org_1", name: "g" },
+          { actorId: "m1", at: 2 },
+        );
+        await console.insertChannel({
+          id: "auth_1",
+          kind: "auth",
+          ownerId: "m1",
+          orgId: "org_1",
+          projectId: "prj_1",
+          name: "a",
+          config: {},
+          secret: {},
+          createdAt: 3,
+          expiresAt: 1000,
+        });
+        await catalog.insertApp({
+          id: "ca_1",
+          name: "app",
+          path: "app",
+          orgId: "org_1",
+          projectId: "prj_1",
+          createdAt: 3,
+        });
+        await assets.insertBundle({
+          id: "ab_1",
+          name: "maps",
+          orgId: "org_1",
+          projectId: "prj_1",
+          createdAt: 3,
+        });
+        expect(await console.findChannelRow("auth_1")).toMatchObject({
+          orgId: "org_1",
+          projectId: "prj_1",
+        });
+        expect(
+          (await console.listChannels({ projectId: "prj_1" })).map((c) => c.id),
+        ).toEqual(["auth_1"]);
+        expect(await console.listChannels({ orgId: "org_other" })).toEqual([]);
+        expect(
+          (await catalog.listApps({ orgId: "org_1" })).map((a) => a.projectId),
+        ).toEqual(["prj_1"]);
+        expect(
+          (await assets.listBundles({ projectId: "prj_1" })).map(
+            (b) => b.orgId,
+          ),
+        ).toEqual(["org_1"]);
+        expect(await org.countProjectResources("prj_1")).toEqual({
+          channels: 1,
+          apps: 1,
+          bundles: 1,
+        });
+        // A parent that does not exist is a foreign-key failure, not a silent null.
+        await expect(
+          console.insertChannel({
+            id: "auth_2",
+            kind: "auth",
+            ownerId: "m1",
+            orgId: "org_1",
+            projectId: "prj_ghost",
+            name: "b",
+            config: {},
+            secret: {},
+            createdAt: 3,
+            expiresAt: 1000,
+          }),
+        ).rejects.toMatchObject({ code: "unavailable" });
+        // The project cannot go while resources point at it — repository guard
+        // and, underneath it, the RESTRICT foreign key.
+        await expect(
+          org.deleteProject("prj_1", { actorId: "m1", at: 4 }),
+        ).rejects.toMatchObject({
+          code: "conflict",
+        });
+        // Rows from before the mapping (null parents) are still readable and listable.
+        await console.insertChannel({
+          id: "auth_3",
+          kind: "auth",
+          ownerId: "m1",
+          name: "legacy",
+          config: {},
+          secret: {},
+          createdAt: 3,
+          expiresAt: 1000,
+        });
+        expect(await console.findChannelRow("auth_3")).toMatchObject({
+          orgId: null,
+          projectId: null,
+        });
+        // Artifact links cascade with the artifact; bundle links with the bundle.
+        await catalog.insertArtifact({
+          id: "art_1",
+          appId: "ca_1",
+          platform: "android",
+          url: "https://example.com/a.apk",
+          objectKey: "apps/ca_1/x/a.apk",
+          size: 1,
+          hash: null,
+          tags: {},
+          createdAt: 5,
+        });
+        await org.createVersion(
+          { id: "ver_1", projectId: "prj_1", name: "1.0.0" },
+          { actorId: "m1", at: 6 },
+        );
+        await org.addVersionLink(
+          {
+            id: "lnk_1",
+            versionId: "ver_1",
+            kind: "artifact",
+            artifactId: "art_1",
+          },
+          { actorId: "m1", at: 7 },
+        );
+        await org.addVersionLink(
+          {
+            id: "lnk_2",
+            versionId: "ver_1",
+            kind: "asset_version",
+            bundleId: "ab_1",
+            assetVersion: "v1",
+          },
+          { actorId: "m1", at: 8 },
+        );
+        await expect(
+          org.addVersionLink(
+            {
+              id: "lnk_3",
+              versionId: "ver_1",
+              kind: "artifact",
+              artifactId: "art_ghost",
+            },
+            { actorId: "m1", at: 9 },
+          ),
+        ).rejects.toMatchObject({ code: "unavailable" });
+        expect((await org.listVersionLinks("ver_1")).map((l) => l.id)).toEqual([
+          "lnk_1",
+          "lnk_2",
+        ]);
+        await catalog.deleteArtifact("art_1");
+        expect((await org.listVersionLinks("ver_1")).map((l) => l.id)).toEqual([
+          "lnk_2",
+        ]);
+        await assets.deleteBundle("ab_1");
+        expect(await org.listVersionLinks("ver_1")).toEqual([]);
       });
     });
 

@@ -148,7 +148,11 @@ export interface QChannel {
 export interface ChannelRow {
   id: string;
   kind: ChannelKind;
+  /** Creator, kept for display; authorization is org membership (`orgId`). */
   ownerId: string;
+  /** Null only for rows created before migration `6_org_project` was mapped. */
+  orgId: string | null;
+  projectId: string | null;
   name: string;
   configJson: string;
   secretJson: string;
@@ -172,6 +176,9 @@ export interface InsertChannelInput {
   id: string;
   kind: ChannelKind;
   ownerId: string;
+  /** Both or neither; the project must belong to the org (asserted by the writer). */
+  orgId?: string;
+  projectId?: string;
   name: string;
   config: unknown;
   secret: unknown;
@@ -227,6 +234,8 @@ export interface ChannelPatch {
 export interface ChannelFilter {
   kind?: ChannelKind;
   ownerId?: string;
+  orgId?: string;
+  projectId?: string;
 }
 
 /**
@@ -364,6 +373,8 @@ type ChannelModel = {
   id: string;
   kind: string;
   owner_id: string;
+  org_id: string | null;
+  project_id: string | null;
   name: string;
   config_json: string;
   secret_json: string;
@@ -378,6 +389,8 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
     id: r.id,
     kind: r.kind as ChannelKind,
     ownerId: r.owner_id,
+    orgId: r.org_id,
+    projectId: r.project_id,
     name: r.name,
     configJson: r.config_json,
     secretJson: r.secret_json,
@@ -504,6 +517,8 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
               deleted_at: null,
               ...(filter.kind ? { kind: filter.kind } : {}),
               ...(filter.ownerId ? { owner_id: filter.ownerId } : {}),
+              ...(filter.orgId ? { org_id: filter.orgId } : {}),
+              ...(filter.projectId ? { project_id: filter.projectId } : {}),
             },
             orderBy: [{ created_at: "desc" }, { id: "desc" }],
           })
@@ -607,6 +622,8 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
             id: c.id,
             kind: c.kind,
             owner_id: c.ownerId,
+            org_id: c.orgId ?? null,
+            project_id: c.projectId ?? null,
             name: c.name,
             config_json: JSON.stringify(c.config),
             secret_json: JSON.stringify(c.secret),

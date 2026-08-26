@@ -58,6 +58,8 @@ export function createMemoryConsoleDb(): ConsoleDb & {
         id: c.id,
         kind: c.kind,
         ownerId: c.ownerId,
+        orgId: c.orgId ?? null,
+        projectId: c.projectId ?? null,
         name: c.name,
         configJson: JSON.stringify(c.config),
         secretJson: JSON.stringify(c.secret),
@@ -140,7 +142,9 @@ export function createMemoryConsoleDb(): ConsoleDb & {
           (c) =>
             c.deletedAt === null &&
             (!filter.kind || c.kind === filter.kind) &&
-            (!filter.ownerId || c.ownerId === filter.ownerId),
+            (!filter.ownerId || c.ownerId === filter.ownerId) &&
+            (!filter.orgId || c.orgId === filter.orgId) &&
+            (!filter.projectId || c.projectId === filter.projectId),
         )
         .map((c) => ({ ...c }))
         .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),

@@ -29,11 +29,18 @@ model asset_bundles {
   owner_id              String?                 @db.VarChar(64)
   created_at            BigInt
   updated_at            BigInt
+  org_id                String?                 @db.VarChar(64)
+  project_id            String?                 @db.VarChar(64)
   members               members?                @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_owner")
+  organizations         organizations?          @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_org_fk")
+  projects              projects?               @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_project_fk")
   asset_files           asset_files[]
   asset_pending_uploads asset_pending_uploads[]
+  project_version_links project_version_links[]
 
   @@index([owner_id], map: "asset_bundles_owner")
+  @@index([project_id], map: "asset_bundles_project")
+  @@index([org_id, name], map: "asset_bundles_org_name")
 }
 
 model asset_files {
@@ -115,27 +122,34 @@ model catalog_apps {
   keep_recent_versions    Int                       @default(3)
   created_at              BigInt
   updated_at              BigInt
+  org_id                  String?                   @db.VarChar(64)
+  project_id              String?                   @db.VarChar(64)
   catalog_app_permissions catalog_app_permissions[]
   catalog_groups          catalog_groups?           @relation(fields: [group_id], references: [id], onUpdate: Restrict, map: "catalog_apps_group")
   members                 members?                  @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_owner")
+  organizations           organizations?            @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_org_fk")
+  projects                projects?                 @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_project_fk")
   catalog_artifacts       catalog_artifacts[]
   catalog_pending_uploads catalog_pending_uploads[]
 
   @@index([group_id], map: "catalog_apps_group")
   @@index([owner_id], map: "catalog_apps_owner")
+  @@index([project_id], map: "catalog_apps_project")
+  @@index([org_id, name], map: "catalog_apps_org_name")
 }
 
 model catalog_artifacts {
-  id           String                     @id @db.VarChar(64)
-  app_id       String                     @db.VarChar(64)
-  platform     catalog_artifacts_platform
-  url          String                     @db.VarChar(1024)
-  object_key   String?                    @db.VarChar(1024)
-  size         BigInt?
-  hash         String?                    @db.VarChar(128)
-  tags_json    String                     @db.MediumText
-  created_at   BigInt
-  catalog_apps catalog_apps               @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_artifacts_app")
+  id                    String                     @id @db.VarChar(64)
+  app_id                String                     @db.VarChar(64)
+  platform              catalog_artifacts_platform
+  url                   String                     @db.VarChar(1024)
+  object_key            String?                    @db.VarChar(1024)
+  size                  BigInt?
+  hash                  String?                    @db.VarChar(128)
+  tags_json             String                     @db.MediumText
+  created_at            BigInt
+  catalog_apps          catalog_apps               @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_artifacts_app")
+  project_version_links project_version_links[]
 
   @@index([app_id, created_at], map: "catalog_artifacts_app")
 }
@@ -190,21 +204,27 @@ model catalog_pending_uploads {
 }
 
 model channels {
-  id          String        @id @db.VarChar(64)
-  kind        channels_kind
-  owner_id    String        @db.VarChar(64)
-  name        String        @db.VarChar(255)
-  config_json String        @db.MediumText
-  secret_json String        @db.MediumText
-  created_at  BigInt
-  expires_at  BigInt
-  disabled_at BigInt?
-  deleted_at  BigInt?
-  members     members       @relation(fields: [owner_id], references: [id], onUpdate: Restrict, map: "channels_owner")
-  state_docs  state_docs[]
+  id            String         @id @db.VarChar(64)
+  kind          channels_kind
+  owner_id      String         @db.VarChar(64)
+  name          String         @db.VarChar(255)
+  config_json   String         @db.MediumText
+  secret_json   String         @db.MediumText
+  created_at    BigInt
+  expires_at    BigInt
+  disabled_at   BigInt?
+  deleted_at    BigInt?
+  org_id        String?        @db.VarChar(64)
+  project_id    String?        @db.VarChar(64)
+  members       members        @relation(fields: [owner_id], references: [id], onUpdate: Restrict, map: "channels_owner")
+  organizations organizations? @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "channels_org_fk")
+  projects      projects?      @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "channels_project_fk")
+  state_docs    state_docs[]
 
   @@index([kind, owner_id], map: "channels_kind_owner")
   @@index([owner_id], map: "channels_owner")
+  @@index([project_id], map: "channels_project")
+  @@index([org_id, name], map: "channels_org_name")
 }
 
 model events {
@@ -244,6 +264,18 @@ model members {
   events                    events[]
   proposals                 proposals[]
   votes                     votes[]
+  organizations_created     organizations[]             @relation("org_creator")
+  org_members               org_members[]               @relation("org_member")
+  org_members_decided       org_members[]               @relation("org_decider")
+  org_history_acted         org_history[]               @relation("history_actor")
+  org_history_subject       org_history[]               @relation("history_subject")
+  discussions               discussions[]
+  discussion_comments       discussion_comments[]
+  projects                  projects[]
+  project_versions          project_versions[]
+  issues                    issues[]
+  issue_comments            issue_comments[]
+  platform_settings         platform_settings[]
 }
 
 model proposals {
@@ -358,4 +390,213 @@ enum catalog_pending_uploads_status {
   pending
   completed
   failed
+}
+
+model organizations {
+  id            String          @id @db.VarChar(64)
+  name          String          @unique(map: "organizations_name") @db.VarChar(255)
+  description   String?         @db.MediumText
+  admin_locked  Boolean         @default(false)
+  created_by    String          @db.VarChar(64)
+  created_at    BigInt
+  updated_at    BigInt
+  members       members         @relation("org_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "organizations_creator")
+  org_members   org_members[]
+  org_history   org_history[]
+  discussions   discussions[]
+  projects      projects[]
+  channels      channels[]
+  catalog_apps  catalog_apps[]
+  asset_bundles asset_bundles[]
+
+  @@index([created_by], map: "organizations_creator")
+}
+
+model org_members {
+  org_id        String            @db.VarChar(64)
+  member_id     String            @db.VarChar(64)
+  role          org_members_role
+  state         org_members_state @default(active)
+  requested_at  BigInt
+  decided_at    BigInt?
+  decided_by    String?           @db.VarChar(64)
+  organizations organizations     @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "org_members_org")
+  members       members           @relation("org_member", fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_members_member_fk")
+  decider       members?          @relation("org_decider", fields: [decided_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_members_decider_fk")
+
+  @@id([org_id, member_id])
+  @@index([member_id], map: "org_members_member")
+  @@index([decided_by], map: "org_members_decider")
+}
+
+model org_history {
+  id                String        @id @db.VarChar(64)
+  org_id            String        @db.VarChar(64)
+  at                BigInt
+  actor_id          String?       @db.VarChar(64)
+  action            String        @db.VarChar(64)
+  subject_member_id String?       @db.VarChar(64)
+  target            String?       @db.VarChar(255)
+  detail_json       String?       @db.MediumText
+  organizations     organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "org_history_org")
+  actor             members?      @relation("history_actor", fields: [actor_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_history_actor_fk")
+  subject           members?      @relation("history_subject", fields: [subject_member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_history_subject_fk")
+
+  @@index([org_id, at, id], map: "org_history_org_at")
+  @@index([actor_id], map: "org_history_actor")
+  @@index([subject_member_id], map: "org_history_subject")
+}
+
+model discussions {
+  id                  String                @id @db.VarChar(64)
+  org_id              String                @db.VarChar(64)
+  title               String                @db.VarChar(255)
+  body_md             String                @db.MediumText
+  created_by          String                @db.VarChar(64)
+  created_at          BigInt
+  updated_at          BigInt
+  organizations       organizations         @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "discussions_org_fk")
+  members             members               @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "discussions_author_fk")
+  discussion_comments discussion_comments[]
+
+  @@index([org_id, created_at], map: "discussions_org")
+  @@index([created_by], map: "discussions_author")
+}
+
+model discussion_comments {
+  id            String      @id @db.VarChar(64)
+  discussion_id String      @db.VarChar(64)
+  body_md       String      @db.MediumText
+  created_by    String      @db.VarChar(64)
+  created_at    BigInt
+  updated_at    BigInt
+  discussions   discussions @relation(fields: [discussion_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "discussion_comments_discussion_fk")
+  members       members     @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "discussion_comments_author_fk")
+
+  @@index([discussion_id, created_at], map: "discussion_comments_discussion")
+  @@index([created_by], map: "discussion_comments_author")
+}
+
+model projects {
+  id                String             @id @db.VarChar(64)
+  org_id            String             @db.VarChar(64)
+  name              String             @db.VarChar(255)
+  description       String?            @db.MediumText
+  next_issue_number Int                @default(1)
+  created_by        String             @db.VarChar(64)
+  created_at        BigInt
+  updated_at        BigInt
+  organizations     organizations      @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "projects_org")
+  members           members            @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "projects_creator_fk")
+  project_versions  project_versions[]
+  issues            issues[]
+  channels          channels[]
+  catalog_apps      catalog_apps[]
+  asset_bundles     asset_bundles[]
+
+  @@unique([org_id, name], map: "projects_org_name")
+  @@index([created_by], map: "projects_creator")
+}
+
+model project_versions {
+  id                    String                  @id @db.VarChar(64)
+  project_id            String                  @db.VarChar(64)
+  name                  String                  @db.VarChar(64)
+  note                  String?                 @db.MediumText
+  created_by            String                  @db.VarChar(64)
+  created_at            BigInt
+  projects              projects                @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "project_versions_project")
+  members               members                 @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "project_versions_creator_fk")
+  project_version_links project_version_links[]
+  issues                issues[]
+
+  @@unique([project_id, name], map: "project_versions_name")
+  @@index([created_by], map: "project_versions_creator")
+}
+
+model project_version_links {
+  id                String                     @id @db.VarChar(64)
+  version_id        String                     @db.VarChar(64)
+  kind              project_version_links_kind
+  target            String                     @db.VarChar(255)
+  artifact_id       String?                    @db.VarChar(64)
+  bundle_id         String?                    @db.VarChar(64)
+  asset_version     String?                    @db.VarChar(64)
+  created_at        BigInt
+  project_versions  project_versions           @relation(fields: [version_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "project_version_links_version")
+  catalog_artifacts catalog_artifacts?         @relation(fields: [artifact_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "project_version_links_artifact_fk")
+  asset_bundles     asset_bundles?             @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "project_version_links_bundle_fk")
+
+  @@unique([version_id, target], map: "project_version_links_target")
+  @@index([artifact_id], map: "project_version_links_artifact")
+  @@index([bundle_id], map: "project_version_links_bundle")
+}
+
+model issues {
+  id               String            @id @db.VarChar(64)
+  project_id       String            @db.VarChar(64)
+  number           Int
+  title            String            @db.VarChar(255)
+  body_md          String            @db.MediumText
+  status           issues_status     @default(open)
+  version_id       String?           @db.VarChar(64)
+  created_by       String            @db.VarChar(64)
+  created_at       BigInt
+  updated_at       BigInt
+  closed_at        BigInt?
+  projects         projects          @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "issues_project")
+  project_versions project_versions? @relation(fields: [version_id], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "issues_version_fk")
+  members          members           @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "issues_author_fk")
+  issue_comments   issue_comments[]
+
+  @@unique([project_id, number], map: "issues_number")
+  @@index([project_id, status, number], map: "issues_status")
+  @@index([version_id], map: "issues_version")
+  @@index([created_by], map: "issues_author")
+}
+
+model issue_comments {
+  id         String  @id @db.VarChar(64)
+  issue_id   String  @db.VarChar(64)
+  body_md    String  @db.MediumText
+  created_by String  @db.VarChar(64)
+  created_at BigInt
+  updated_at BigInt
+  issues     issues  @relation(fields: [issue_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "issue_comments_issue_fk")
+  members    members @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "issue_comments_author_fk")
+
+  @@index([issue_id, created_at], map: "issue_comments_issue")
+  @@index([created_by], map: "issue_comments_author")
+}
+
+model platform_settings {
+  key        String   @id @db.VarChar(64)
+  value_json String   @db.MediumText
+  updated_by String?  @db.VarChar(64)
+  updated_at BigInt
+  members    members? @relation(fields: [updated_by], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "platform_settings_updater_fk")
+
+  @@index([updated_by], map: "platform_settings_updater")
+}
+
+enum org_members_role {
+  owner
+  member
+  pending
+}
+
+enum org_members_state {
+  active
+  declined
+  kicked
+}
+
+enum project_version_links_kind {
+  artifact
+  asset_version
+}
+
+enum issues_status {
+  open
+  closed
 }
