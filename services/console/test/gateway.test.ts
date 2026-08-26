@@ -38,7 +38,7 @@ async function create(
   kind: "lobby" | "q",
   config: Record<string, unknown>,
 ) {
-  // Names are unique within the org, so every attempt gets a fresh one.
+  // Names are unique within the team, so every attempt gets a fresh one.
   return h.app(
     ev("POST", `/projects/${u.prjId}/channels`, {
       headers: u.cookie,

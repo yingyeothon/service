@@ -7,7 +7,7 @@ import {
   ulid,
   type Clock,
 } from "@yyt/core";
-import type { ConsoleDb, OrgDb } from "@yyt/console-db";
+import type { ConsoleDb, TeamDb } from "@yyt/console-db";
 import { defineRoute, type AnyRoute } from "@yyt/http";
 import { signChannelToken } from "@yyt/jwt";
 import { z } from "zod";
@@ -24,16 +24,16 @@ export interface DebugRouteOptions {
   /**
    * Same dev credentials: every channel belongs to a project since todo/17,
    * so the seeder needs somewhere to put one. By default that is the `debug`
-   * org's `smoke` project, created on first use.
+   * team's `smoke` project, created on first use.
    */
-  orgDb: OrgDb;
+  teamDb: TeamDb;
   channels: ChannelStore;
   clock: Clock;
 }
 
 /** Where seeded channels live unless the caller names a project. */
-export const DEBUG_ORG_NAME = "debug";
-export const DEBUG_ORG_ID = "org_debug";
+export const DEBUG_TEAM_NAME = "debug";
+export const DEBUG_TEAM_ID = "team_debug";
 export const DEBUG_PROJECT_NAME = "smoke";
 export const DEBUG_PROJECT_ID = "prj_debug";
 
@@ -66,7 +66,7 @@ const seedBody = z
       .int()
       .positive()
       .default(7 * 86400),
-    /** Seed into this project instead of the `debug` org's `smoke` project. */
+    /** Seed into this project instead of the `debug` team's `smoke` project. */
     projectId: z
       .string()
       .regex(/^prj_[a-z0-9]{1,32}$/)
@@ -86,7 +86,7 @@ const mintBody = z
 export function createDebugRoutes({
   debugKey,
   consoleDb,
-  orgDb,
+  teamDb,
   channels,
   clock,
 }: DebugRouteOptions): AnyRoute[] {
@@ -95,30 +95,30 @@ export function createDebugRoutes({
   const expected = Buffer.from(sha256Hex(debugKey), "hex");
   /**
    * The project a seeded channel goes into. An explicit `projectId` must
-   * exist (404 otherwise — a smoke script that created its own org/project
+   * exist (404 otherwise — a smoke script that created its own team/project
    * passes it so its topic/match channels can reference the auth channel
-   * from the same project). Without one, the `debug` org's `smoke` project
+   * from the same project). Without one, the `debug` team's `smoke` project
    * is found or created; both ids are fixed so concurrent seeds converge.
    */
   const placement = async (
     ownerId: string,
     projectId: string | undefined,
     now: number,
-  ): Promise<{ orgId: string; projectId: string }> => {
+  ): Promise<{ teamId: string; projectId: string }> => {
     if (projectId) {
-      const p = await orgDb.findProject(projectId);
+      const p = await teamDb.findProject(projectId);
       if (!p) throw new AppError("not_found", "project not found");
-      return { orgId: p.orgId, projectId: p.id };
+      return { teamId: p.teamId, projectId: p.id };
     }
-    // By id, not by name: any dev member could create an org named `debug`
+    // By id, not by name: any dev member could create a team named `debug`
     // first and would then receive every seeded secret.
-    let org = await orgDb.findOrg(DEBUG_ORG_ID);
-    if (!org) {
+    let team = await teamDb.findTeam(DEBUG_TEAM_ID);
+    if (!team) {
       try {
-        await orgDb.createOrg(
+        await teamDb.createTeam(
           {
-            id: DEBUG_ORG_ID,
-            name: DEBUG_ORG_NAME,
+            id: DEBUG_TEAM_ID,
+            name: DEBUG_TEAM_NAME,
             createdBy: ownerId,
             createdAt: now,
           },
@@ -128,27 +128,27 @@ export function createDebugRoutes({
         // A concurrent seed won the race; re-read below.
         if (!(e instanceof AppError && e.code === "conflict")) throw e;
       }
-      org = await orgDb.findOrg(DEBUG_ORG_ID);
-      if (!org)
+      team = await teamDb.findTeam(DEBUG_TEAM_ID);
+      if (!team)
         throw new AppError(
           "conflict",
-          `an organization named "${DEBUG_ORG_NAME}" exists that the seeder did not create`,
+          `a team named "${DEBUG_TEAM_NAME}" exists that the seeder did not create`,
         );
     }
-    let project = await orgDb.findProjectByName(org.id, DEBUG_PROJECT_NAME);
+    let project = await teamDb.findProjectByName(team.id, DEBUG_PROJECT_NAME);
     if (!project) {
       try {
-        await orgDb.createProject(
-          { id: DEBUG_PROJECT_ID, orgId: org.id, name: DEBUG_PROJECT_NAME },
+        await teamDb.createProject(
+          { id: DEBUG_PROJECT_ID, teamId: team.id, name: DEBUG_PROJECT_NAME },
           { actorId: ownerId, at: now },
         );
       } catch (e) {
         if (!(e instanceof AppError && e.code === "conflict")) throw e;
       }
-      project = await orgDb.findProjectByName(org.id, DEBUG_PROJECT_NAME);
+      project = await teamDb.findProjectByName(team.id, DEBUG_PROJECT_NAME);
       if (!project) throw new AppError("unavailable", "debug project vanished");
     }
-    return { orgId: org.id, projectId: project.id };
+    return { teamId: team.id, projectId: project.id };
   };
   const guard = (headers: Record<string, string | undefined>) => {
     const given = Buffer.from(sha256Hex(headers["x-debug-key"] ?? ""), "hex");
@@ -173,12 +173,16 @@ export function createDebugRoutes({
           role: "admin",
           createdAt: now,
         });
-        const { orgId, projectId } = await placement(ownerId, b.projectId, now);
+        const { teamId, projectId } = await placement(
+          ownerId,
+          b.projectId,
+          now,
+        );
         await consoleDb.insertChannel({
           id,
           kind: "auth",
           ownerId,
-          orgId,
+          teamId,
           projectId,
           name: `debug ${id}`,
           config: {
@@ -214,7 +218,7 @@ export function createDebugRoutes({
         });
         return {
           channelId: id,
-          orgId,
+          teamId,
           projectId,
           secret,
           audience: b.audience,

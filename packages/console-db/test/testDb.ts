@@ -114,23 +114,23 @@ export async function resetTestDb(client: PrismaClient): Promise<void> {
 }
 
 /**
- * One org (`org_1`, owned by `m1`) and one project (`prj_1`) for the resource
+ * One team (`team_1`, owned by `m1`) and one project (`prj_1`) for the resource
  * contracts: since `6_org_project` every channel, app and bundle needs both
  * parents, and the foreign keys refuse anything else.
  */
-export async function seedOrgProject(client: PrismaClient): Promise<void> {
-  await client.organizations.create({
+export async function seedTeamProject(client: PrismaClient): Promise<void> {
+  await client.teams.create({
     data: {
-      id: "org_1",
+      id: "team_1",
       name: "Acme",
       created_by: "m1",
       created_at: 1,
       updated_at: 1,
     },
   });
-  await client.org_members.create({
+  await client.team_members.create({
     data: {
-      org_id: "org_1",
+      team_id: "team_1",
       member_id: "m1",
       role: "owner",
       state: "active",
@@ -140,7 +140,7 @@ export async function seedOrgProject(client: PrismaClient): Promise<void> {
   await client.projects.create({
     data: {
       id: "prj_1",
-      org_id: "org_1",
+      team_id: "team_1",
       name: "game",
       created_by: "m1",
       created_at: 1,

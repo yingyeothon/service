@@ -13,7 +13,7 @@ const channel = {
   id: "ch_a",
   kind: "auth" as const,
   ownerId: "m1",
-  orgId: "org_1",
+  teamId: "team_1",
   projectId: "prj_1",
   name: "test",
   config: {

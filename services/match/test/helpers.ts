@@ -95,7 +95,7 @@ export function build(
       id: "auth_a",
       kind: "auth",
       ownerId: "m1",
-      orgId: "org_1",
+      teamId: "team_1",
       projectId: "prj_1",
       name: "a",
       config: {
@@ -112,7 +112,7 @@ export function build(
       id: "match_a",
       kind: "match",
       ownerId: "m1",
-      orgId: "org_1",
+      teamId: "team_1",
       projectId: "prj_1",
       name: "m",
       config: matchConfig,

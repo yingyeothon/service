@@ -2,31 +2,31 @@ import { AppError } from "@yyt/core";
 import { num, nul, run, type PrismaClient } from "./prisma.js";
 
 /*
- * Organization → Project → Resource (docs/decisions.md *Organizations and
+ * Team → Project → Resource (docs/decisions.md *Teams and
  * projects*, migration `6_org_project`).
  *
- * Every org-scoped write that must be recorded goes through this repository
- * and writes its `org_history` row **in the same transaction** as the change.
- * That is why org, member, project, version, issue and discussion writes all
+ * Every team-scoped write that must be recorded goes through this repository
+ * and writes its `team_history` row **in the same transaction** as the change.
+ * That is why team, member, project, version, issue and discussion writes all
  * live in one repository rather than one per entity: the alternative is a
  * transaction-sharing API between repositories, which the codebase does not
  * have and does not want. Resource writes (channels, apps, bundles) stay in
  * their own repositories and record history best-effort via `appendHistory`.
  */
 
-export const ORG_ROLES = ["owner", "member", "pending"] as const;
-export type OrgRole = (typeof ORG_ROLES)[number];
-export const ORG_MEMBER_STATES = ["active", "declined", "kicked"] as const;
-export type OrgMemberState = (typeof ORG_MEMBER_STATES)[number];
+export const TEAM_ROLES = ["owner", "member", "pending"] as const;
+export type TeamRole = (typeof TEAM_ROLES)[number];
+export const TEAM_MEMBER_STATES = ["active", "declined", "kicked"] as const;
+export type TeamMemberState = (typeof TEAM_MEMBER_STATES)[number];
 export const ISSUE_STATUSES = ["open", "closed"] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 export const VERSION_LINK_KINDS = ["artifact", "asset_version"] as const;
 export type VersionLinkKind = (typeof VERSION_LINK_KINDS)[number];
 
 /** Which member action a history row records. Field names only in `detail`, never config or secrets. */
-export type OrgHistoryAction =
-  | "org.create"
-  | "org.update"
+export type TeamHistoryAction =
+  | "team.create"
+  | "team.update"
   | "member.request"
   | "member.add"
   | "member.approve"
@@ -57,18 +57,18 @@ export type OrgHistoryAction =
   | "resource.rotate"
   | "resource.credential";
 
-export interface OrgRow {
+export interface TeamRow {
   id: string;
   name: string;
   description: string | null;
-  /** Every owner/member is a platform admin; required of the org that owns the installer app. */
+  /** Every owner/member is a platform admin; required of the team that owns the installer app. */
   adminLocked: boolean;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface OrgInput {
+export interface TeamInput {
   id: string;
   name: string;
   description?: string | null;
@@ -77,38 +77,38 @@ export interface OrgInput {
   createdAt: number;
 }
 
-/** `adminLocked` is deliberately not here: see `OrgDb.setAdminLocked`. */
-export interface OrgPatch {
+/** `adminLocked` is deliberately not here: see `TeamDb.setAdminLocked`. */
+export interface TeamPatch {
   name?: string;
   description?: string | null;
 }
 
-export interface OrgMemberRow {
-  orgId: string;
+export interface TeamMemberRow {
+  teamId: string;
   memberId: string;
-  role: OrgRole;
-  state: OrgMemberState;
+  role: TeamRole;
+  state: TeamMemberState;
   requestedAt: number;
   decidedAt: number | null;
   decidedBy: string | null;
 }
 
-/** An org as seen by one member: the row plus that member's standing in it. */
-export interface OrgMembershipRow extends OrgRow {
-  role: OrgRole;
-  state: OrgMemberState;
+/** A team as seen by one member: the row plus that member's standing in it. */
+export interface TeamMembershipRow extends TeamRow {
+  role: TeamRole;
+  state: TeamMemberState;
 }
 
 /**
  * What a history row may say. A closed shape on purpose: history is readable
- * by every org member, so like the audit log it carries names of fields and
+ * by every team member, so like the audit log it carries names of fields and
  * roles, never the values of config or secrets. A `{ secret: … }` payload
  * must fail to compile, not merely be frowned upon.
  */
-export interface OrgHistoryDetail {
+export interface TeamHistoryDetail {
   fields?: string[];
   name?: string;
-  role?: OrgRole;
+  role?: TeamRole;
   projectId?: string;
   number?: number;
   kind?: string;
@@ -118,31 +118,31 @@ export interface OrgHistoryDetail {
   resource?: { kind: string; id: string; name?: string };
 }
 
-export interface OrgHistoryRow {
+export interface TeamHistoryRow {
   /** ULID: sortable, so `(at, id)` is a stable cursor. */
   id: string;
-  orgId: string;
+  teamId: string;
   at: number;
   actorId: string | null;
-  action: OrgHistoryAction;
+  action: TeamHistoryAction;
   subjectMemberId: string | null;
   target: string | null;
-  detail: OrgHistoryDetail | undefined;
+  detail: TeamHistoryDetail | undefined;
 }
 
-export interface OrgHistoryInput {
+export interface TeamHistoryInput {
   id: string;
-  orgId: string;
+  teamId: string;
   at: number;
   actorId: string | null;
-  action: OrgHistoryAction;
+  action: TeamHistoryAction;
   subjectMemberId?: string | null;
   target?: string | null;
-  detail?: OrgHistoryDetail;
+  detail?: TeamHistoryDetail;
 }
 
 export interface HistoryPage {
-  rows: OrgHistoryRow[];
+  rows: TeamHistoryRow[];
   /** Pass back as `cursor` to fetch older rows; absent when this was the last page. */
   next?: string;
 }
@@ -155,7 +155,7 @@ export interface Actor {
 
 export interface ProjectRow {
   id: string;
-  orgId: string;
+  teamId: string;
   name: string;
   description: string | null;
   createdBy: string;
@@ -165,7 +165,7 @@ export interface ProjectRow {
 
 export interface ProjectInput {
   id: string;
-  orgId: string;
+  teamId: string;
   name: string;
   description?: string | null;
 }
@@ -252,7 +252,7 @@ export interface CommentInput {
 
 export interface DiscussionRow {
   id: string;
-  orgId: string;
+  teamId: string;
   title: string;
   bodyMd: string;
   createdBy: string;
@@ -262,7 +262,7 @@ export interface DiscussionRow {
 
 export interface DiscussionInput {
   id: string;
-  orgId: string;
+  teamId: string;
   title: string;
   bodyMd: string;
 }
@@ -279,53 +279,53 @@ export interface PlatformSettingRow {
   updatedAt: number;
 }
 
-/** Per-org resource counts used by the delete guards and quotas. */
+/** Per-team resource counts used by the delete guards and quotas. */
 export interface ProjectResourceCounts {
   channels: number;
   apps: number;
   bundles: number;
 }
 
-export interface OrgDb {
-  /* --- organizations --- */
-  /** Creates the org and seats `createdBy` as its first `owner`; records `org.create`. */
-  createOrg(o: OrgInput, at: number): Promise<void>;
-  findOrg(id: string): Promise<OrgRow | undefined>;
+export interface TeamDb {
+  /* --- teams --- */
+  /** Creates the team and seats `createdBy` as its first `owner`; records `team.create`. */
+  createTeam(o: TeamInput, at: number): Promise<void>;
+  findTeam(id: string): Promise<TeamRow | undefined>;
   /** Case-insensitive, like the unique index. */
-  findOrgByName(name: string): Promise<OrgRow | undefined>;
-  /** Every org this member has a row in (any role, any state), oldest first. */
-  listOrgsForMember(memberId: string): Promise<OrgMembershipRow[]>;
+  findTeamByName(name: string): Promise<TeamRow | undefined>;
+  /** Every team this member has a row in (any role, any state), oldest first. */
+  listTeamsForMember(memberId: string): Promise<TeamMembershipRow[]>;
   /** Admin-only listing; oldest first. */
-  listAllOrgs(): Promise<OrgRow[]>;
-  countOrgsCreatedBy(memberId: string): Promise<number>;
-  /** `false` when missing. Records `org.update` with the patched field names. */
-  updateOrg(id: string, patch: OrgPatch, by: Actor): Promise<boolean>;
+  listAllTeams(): Promise<TeamRow[]>;
+  countTeamsCreatedBy(memberId: string): Promise<number>;
+  /** `false` when missing. Records `team.update` with the patched field names. */
+  updateTeam(id: string, patch: TeamPatch, by: Actor): Promise<boolean>;
   /**
-   * Separate from `updateOrg` so a route that spreads a validated body into
+   * Separate from `updateTeam` so a route that spreads a validated body into
    * the patch cannot reach it: only a platform admin may set it (it is the
    * trust anchor of the installer download route), and the route decides who
-   * the caller is. Records `org.update` with `fields: ["adminLocked"]`.
+   * the caller is. Records `team.update` with `fields: ["adminLocked"]`.
    */
   setAdminLocked(id: string, locked: boolean, by: Actor): Promise<boolean>;
   /**
-   * Hard-deletes the org and, by cascade, its members, history and
+   * Hard-deletes the team and, by cascade, its members, history and
    * discussions. `conflict` while any project remains — projects hold the
    * resources, and those are refused by their own foreign keys anyway. The
-   * history goes with the org, so the **route** must write the global audit
+   * history goes with the team, so the **route** must write the global audit
    * entry (`by` is taken here so the caller cannot forget who did it).
    */
-  deleteOrg(id: string, by: Actor): Promise<boolean>;
+  deleteTeam(id: string, by: Actor): Promise<boolean>;
 
   /* --- members --- */
-  findOrgMember(
-    orgId: string,
+  findTeamMember(
+    teamId: string,
     memberId: string,
-  ): Promise<OrgMemberRow | undefined>;
-  /** Every row of the org, any state, owners first then by request time. */
-  listOrgMembers(orgId: string): Promise<OrgMemberRow[]>;
-  /** Owners and members (`active`) only — the set that may read the org. */
+  ): Promise<TeamMemberRow | undefined>;
+  /** Every row of the team, any state, owners first then by request time. */
+  listTeamMembers(teamId: string): Promise<TeamMemberRow[]>;
+  /** Owners and members (`active`) only — the set that may read the team. */
   countActive(
-    orgId: string,
+    teamId: string,
   ): Promise<{ owners: number; members: number; pending: number }>;
   /**
    * Self-service join: inserts a `pending` row. `conflict` when the member
@@ -333,7 +333,7 @@ export interface OrgDb {
    * older than `cooldownSec`, in which case it becomes `pending` again.
    */
   requestJoin(
-    orgId: string,
+    teamId: string,
     memberId: string,
     at: number,
     cooldownSec: number,
@@ -344,29 +344,29 @@ export interface OrgDb {
    * kicked row is re-seated. `conflict` only when an owner/member row exists.
    */
   addMember(
-    orgId: string,
+    teamId: string,
     memberId: string,
-    role: Exclude<OrgRole, "pending">,
+    role: Exclude<TeamRole, "pending">,
     by: Actor,
   ): Promise<void>;
   /** pending → owner|member. `false` when there is no pending row. */
   approveMember(
-    orgId: string,
+    teamId: string,
     memberId: string,
-    role: Exclude<OrgRole, "pending">,
+    role: Exclude<TeamRole, "pending">,
     by: Actor,
   ): Promise<boolean>;
   /** pending → declined (row kept for the cooldown). `false` when there is no pending row. */
-  declineMember(orgId: string, memberId: string, by: Actor): Promise<boolean>;
+  declineMember(teamId: string, memberId: string, by: Actor): Promise<boolean>;
   /**
    * owner ↔ member. `false` when no active row; `conflict` when demoting the
-   * last owner. Runs under the org row lock so two concurrent demotions cannot
+   * last owner. Runs under the team row lock so two concurrent demotions cannot
    * both see "another owner exists".
    */
   setMemberRole(
-    orgId: string,
+    teamId: string,
     memberId: string,
-    role: Exclude<OrgRole, "pending">,
+    role: Exclude<TeamRole, "pending">,
     by: Actor,
   ): Promise<boolean>;
   /**
@@ -375,14 +375,14 @@ export interface OrgDb {
    * leaving. `conflict` when the subject is the last owner. `false` when no
    * row exists.
    */
-  removeMember(orgId: string, memberId: string, by: Actor): Promise<boolean>;
+  removeMember(teamId: string, memberId: string, by: Actor): Promise<boolean>;
 
   /* --- history --- */
   /** Best-effort history for writes that live in other repositories (resources). */
-  appendHistory(h: OrgHistoryInput): Promise<void>;
+  appendHistory(h: TeamHistoryInput): Promise<void>;
   /** Newest first; `cursor` is the `next` of the previous page. */
   listHistory(
-    orgId: string,
+    teamId: string,
     opts?: { cursor?: string; limit?: number },
   ): Promise<HistoryPage>;
 
@@ -390,11 +390,11 @@ export interface OrgDb {
   createProject(p: ProjectInput, by: Actor): Promise<void>;
   findProject(id: string): Promise<ProjectRow | undefined>;
   findProjectByName(
-    orgId: string,
+    teamId: string,
     name: string,
   ): Promise<ProjectRow | undefined>;
-  listProjects(orgId: string): Promise<ProjectRow[]>;
-  countProjects(orgId: string): Promise<number>;
+  listProjects(teamId: string): Promise<ProjectRow[]>;
+  countProjects(teamId: string): Promise<number>;
   updateProject(id: string, patch: ProjectPatch, by: Actor): Promise<boolean>;
   /** `conflict` while any channel/app/bundle still points at it (the FKs say so too). */
   deleteProject(id: string, by: Actor): Promise<boolean>;
@@ -428,7 +428,7 @@ export interface OrgDb {
   ): Promise<number>;
 
   /* --- issues --- */
-  /** Allocates the next per-project number under the org row lock; returns it. */
+  /** Allocates the next per-project number under the team row lock; returns it. */
   createIssue(i: IssueInput, by: Actor): Promise<number>;
   findIssue(projectId: string, number: number): Promise<IssueRow | undefined>;
   listIssues(
@@ -459,8 +459,8 @@ export interface OrgDb {
   /* --- discussions --- */
   createDiscussion(d: DiscussionInput, by: Actor): Promise<void>;
   findDiscussion(id: string): Promise<DiscussionRow | undefined>;
-  listDiscussions(orgId: string): Promise<DiscussionRow[]>;
-  countDiscussions(orgId: string): Promise<number>;
+  listDiscussions(teamId: string): Promise<DiscussionRow[]>;
+  countDiscussions(teamId: string): Promise<number>;
   updateDiscussion(
     id: string,
     patch: DiscussionPatch,
@@ -521,8 +521,8 @@ const historyLimit = (limit: number | undefined): number =>
   Math.min(HISTORY_PAGE_MAX, Math.max(1, limit ?? HISTORY_PAGE_DEFAULT));
 
 /** Row ids for history entries come from the caller-supplied `ulid`, injected so tests are deterministic. */
-export interface OrgDbOptions {
-  /** Produces the `org_history.id` for entries the repository writes itself. */
+export interface TeamDbOptions {
+  /** Produces the `team_history.id` for entries the repository writes itself. */
   newHistoryId: (at: number) => string;
 }
 
@@ -534,7 +534,7 @@ const conflict = (msg: string) => new AppError("conflict", msg);
 
 type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
 
-type OrgModel = {
+type TeamModel = {
   id: string;
   name: string;
   description: string | null;
@@ -544,8 +544,8 @@ type OrgModel = {
   updated_at: bigint | number;
 };
 
-type OrgMemberModel = {
-  org_id: string;
+type TeamMemberModel = {
+  team_id: string;
   member_id: string;
   role: string;
   state: string;
@@ -554,7 +554,7 @@ type OrgMemberModel = {
   decided_by: string | null;
 };
 
-const toOrg = (r: OrgModel): OrgRow => ({
+const toTeam = (r: TeamModel): TeamRow => ({
   id: r.id,
   name: r.name,
   description: r.description,
@@ -564,11 +564,11 @@ const toOrg = (r: OrgModel): OrgRow => ({
   updatedAt: num(r.updated_at),
 });
 
-const toOrgMember = (r: OrgMemberModel): OrgMemberRow => ({
-  orgId: r.org_id,
+const toTeamMember = (r: TeamMemberModel): TeamMemberRow => ({
+  teamId: r.team_id,
   memberId: r.member_id,
-  role: r.role as OrgRole,
-  state: r.state as OrgMemberState,
+  role: r.role as TeamRole,
+  state: r.state as TeamMemberState,
   requestedAt: num(r.requested_at),
   decidedAt: nul(r.decided_at),
   decidedBy: r.decided_by,
@@ -576,30 +576,30 @@ const toOrgMember = (r: OrgMemberModel): OrgMemberRow => ({
 
 const toHistory = (r: {
   id: string;
-  org_id: string;
+  team_id: string;
   at: bigint | number;
   actor_id: string | null;
   action: string;
   subject_member_id: string | null;
   target: string | null;
   detail_json: string | null;
-}): OrgHistoryRow => ({
+}): TeamHistoryRow => ({
   id: r.id,
-  orgId: r.org_id,
+  teamId: r.team_id,
   at: num(r.at),
   actorId: r.actor_id,
-  action: r.action as OrgHistoryAction,
+  action: r.action as TeamHistoryAction,
   subjectMemberId: r.subject_member_id,
   target: r.target,
   detail:
     r.detail_json === null
       ? undefined
-      : (JSON.parse(r.detail_json) as OrgHistoryDetail),
+      : (JSON.parse(r.detail_json) as TeamHistoryDetail),
 });
 
 const toProject = (r: {
   id: string;
-  org_id: string;
+  team_id: string;
   name: string;
   description: string | null;
   created_by: string;
@@ -607,7 +607,7 @@ const toProject = (r: {
   updated_at: bigint | number;
 }): ProjectRow => ({
   id: r.id,
-  orgId: r.org_id,
+  teamId: r.team_id,
   name: r.name,
   description: r.description,
   createdBy: r.created_by,
@@ -695,7 +695,7 @@ const toComment = (
 
 const toDiscussion = (r: {
   id: string;
-  org_id: string;
+  team_id: string;
   title: string;
   body_md: string;
   created_by: string;
@@ -703,7 +703,7 @@ const toDiscussion = (r: {
   updated_at: bigint | number;
 }): DiscussionRow => ({
   id: r.id,
-  orgId: r.org_id,
+  teamId: r.team_id,
   title: r.title,
   bodyMd: r.body_md,
   createdBy: r.created_by,
@@ -711,12 +711,12 @@ const toDiscussion = (r: {
   updatedAt: num(r.updated_at),
 });
 
-export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
-  const history = (tx: Tx, h: OrgHistoryInput) =>
-    tx.org_history.create({
+export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
+  const history = (tx: Tx, h: TeamHistoryInput) =>
+    tx.team_history.create({
       data: {
         id: h.id,
-        org_id: h.orgId,
+        team_id: h.teamId,
         at: h.at,
         actor_id: h.actorId,
         action: h.action,
@@ -727,17 +727,17 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
     });
   const record = (
     tx: Tx,
-    orgId: string,
+    teamId: string,
     by: Actor,
-    action: OrgHistoryAction,
+    action: TeamHistoryAction,
     extra: Omit<
-      OrgHistoryInput,
-      "id" | "orgId" | "at" | "actorId" | "action"
+      TeamHistoryInput,
+      "id" | "teamId" | "at" | "actorId" | "action"
     > = {},
   ) =>
     history(tx, {
       id: o.newHistoryId(by.at),
-      orgId,
+      teamId,
       at: by.at,
       actorId: by.actorId,
       action,
@@ -745,114 +745,124 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
     });
 
   /**
-   * The org row is the mutex for everything that must count before it writes
+   * The team row is the mutex for everything that must count before it writes
    * (last-owner protection, issue numbering). `FOR UPDATE` blocks a second
-   * transaction on the same org until this one commits, and `undefined` here
-   * means the org is gone. Interactive transactions pin the container's one
+   * transaction on the same team until this one commits, and `undefined` here
+   * means the team is gone. Interactive transactions pin the container's one
    * connection, so nothing inside may touch `prisma` — only `tx`.
    */
-  const lockOrg = async (tx: Tx, orgId: string): Promise<boolean> => {
-    // Every transaction that writes `org_history` also takes a *shared* lock
-    // on the org row through the foreign key. If only some paths took the
+  const lockTeam = async (tx: Tx, teamId: string): Promise<boolean> => {
+    // Every transaction that writes `team_history` also takes a *shared* lock
+    // on the team row through the foreign key. If only some paths took the
     // exclusive lock first, two lock orders would exist and InnoDB would
     // deadlock one of them — so every recording transaction calls this first.
     const rows = await tx.$queryRaw<
       { id: string }[]
-    >`SELECT id FROM organizations WHERE id = ${orgId} FOR UPDATE`;
+    >`SELECT id FROM teams WHERE id = ${teamId} FOR UPDATE`;
     return rows.length > 0;
   };
 
   const tx = <T>(fn: (tx: Tx) => Promise<T>): Promise<T> =>
     run(() => prisma.$transaction(fn));
 
-  const findMember = (tx: Tx | PrismaClient, orgId: string, memberId: string) =>
-    tx.org_members.findUnique({
-      where: { org_id_member_id: { org_id: orgId, member_id: memberId } },
+  const findMember = (
+    tx: Tx | PrismaClient,
+    teamId: string,
+    memberId: string,
+  ) =>
+    tx.team_members.findUnique({
+      where: { team_id_member_id: { team_id: teamId, member_id: memberId } },
     });
 
-  const ownerCount = (tx: Tx, orgId: string) =>
-    tx.org_members.count({
-      where: { org_id: orgId, role: "owner", state: "active" },
+  const ownerCount = (tx: Tx, teamId: string) =>
+    tx.team_members.count({
+      where: { team_id: teamId, role: "owner", state: "active" },
     });
 
-  const projectOrg = async (tx: Tx, projectId: string) => {
+  const projectTeam = async (tx: Tx, projectId: string) => {
     const p = await tx.projects.findUnique({
       where: { id: projectId },
-      select: { org_id: true },
+      select: { team_id: true },
     });
-    return p?.org_id;
+    return p?.team_id;
   };
 
-  const versionOrg = async (tx: Tx, versionId: string) => {
+  const versionTeam = async (tx: Tx, versionId: string) => {
     const v = await tx.project_versions.findUnique({
       where: { id: versionId },
-      select: { project_id: true, projects: { select: { org_id: true } } },
+      select: { project_id: true, projects: { select: { team_id: true } } },
     });
     return v
-      ? { projectId: v.project_id, orgId: v.projects.org_id }
+      ? { projectId: v.project_id, teamId: v.projects.team_id }
       : undefined;
   };
 
-  const issueOrg = async (tx: Tx, issueId: string) => {
+  const issueTeam = async (tx: Tx, issueId: string) => {
     const i = await tx.issues.findUnique({
       where: { id: issueId },
-      select: { project_id: true, projects: { select: { org_id: true } } },
+      select: { project_id: true, projects: { select: { team_id: true } } },
     });
     return i
-      ? { projectId: i.project_id, orgId: i.projects.org_id }
+      ? { projectId: i.project_id, teamId: i.projects.team_id }
       : undefined;
   };
 
   return {
-    /* --- organizations --- */
-    createOrg: (org, at) =>
+    /* --- teams --- */
+    createTeam: (team, at) =>
       tx(async (t) => {
-        await t.organizations.create({
+        await t.teams.create({
           data: {
-            id: org.id,
-            name: org.name,
-            description: org.description ?? null,
-            admin_locked: org.adminLocked ?? false,
-            created_by: org.createdBy,
-            created_at: org.createdAt,
-            updated_at: org.createdAt,
+            id: team.id,
+            name: team.name,
+            description: team.description ?? null,
+            admin_locked: team.adminLocked ?? false,
+            created_by: team.createdBy,
+            created_at: team.createdAt,
+            updated_at: team.createdAt,
           },
         });
-        await t.org_members.create({
+        await t.team_members.create({
           data: {
-            org_id: org.id,
-            member_id: org.createdBy,
+            team_id: team.id,
+            member_id: team.createdBy,
             role: "owner",
             state: "active",
-            requested_at: org.createdAt,
-            decided_at: org.createdAt,
-            decided_by: org.createdBy,
+            requested_at: team.createdAt,
+            decided_at: team.createdAt,
+            decided_by: team.createdBy,
           },
         });
-        await record(t, org.id, { actorId: org.createdBy, at }, "org.create", {
-          subjectMemberId: org.createdBy,
-          detail: { name: org.name },
-        });
+        await record(
+          t,
+          team.id,
+          { actorId: team.createdBy, at },
+          "team.create",
+          {
+            subjectMemberId: team.createdBy,
+            detail: { name: team.name },
+          },
+        );
       }),
-    findOrg: (id) =>
+    findTeam: (id) =>
       run(async () => {
-        const r = await prisma.organizations.findUnique({ where: { id } });
-        return r ? toOrg(r) : undefined;
+        const r = await prisma.teams.findUnique({ where: { id } });
+        return r ? toTeam(r) : undefined;
       }),
-    findOrgByName: (name) =>
+    findTeamByName: (name) =>
       run(async () => {
-        const r = await prisma.organizations.findUnique({ where: { name } });
-        return r ? toOrg(r) : undefined;
+        const r = await prisma.teams.findUnique({ where: { name } });
+        return r ? toTeam(r) : undefined;
       }),
-    listOrgsForMember: (memberId) =>
+    listTeamsForMember: (memberId) =>
       run(async () => {
-        const rows = await prisma.org_members.findMany({
+        const rows = await prisma.team_members.findMany({
           where: { member_id: memberId },
-          include: { organizations: true },
+          include: { teams: true },
         });
         return rows
           .map((r) => ({
-            ...toOrg(r.organizations),
+            ...toTeam(r.teams),
             role: r.role,
             state: r.state,
           }))
@@ -860,84 +870,81 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
           );
       }),
-    listAllOrgs: () =>
+    listAllTeams: () =>
       run(async () =>
         (
-          await prisma.organizations.findMany({
+          await prisma.teams.findMany({
             orderBy: [{ created_at: "asc" }, { id: "asc" }],
           })
-        ).map(toOrg),
+        ).map(toTeam),
       ),
-    countOrgsCreatedBy: (memberId) =>
-      run(() =>
-        prisma.organizations.count({ where: { created_by: memberId } }),
-      ),
-    updateOrg: (id, patch, by) =>
+    countTeamsCreatedBy: (memberId) =>
+      run(() => prisma.teams.count({ where: { created_by: memberId } })),
+    updateTeam: (id, patch, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, id))) return false;
+        if (!(await lockTeam(t, id))) return false;
         const data: Record<string, unknown> = { updated_at: by.at };
         if (patch.name !== undefined) data.name = patch.name;
         if (patch.description !== undefined)
           data.description = patch.description;
-        const r = await t.organizations.updateMany({ where: { id }, data });
+        const r = await t.teams.updateMany({ where: { id }, data });
         if (r.count === 0) return false;
-        await record(t, id, by, "org.update", {
+        await record(t, id, by, "team.update", {
           detail: { fields: Object.keys(patch).sort() },
         });
         return true;
       }),
     setAdminLocked: (id, locked, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, id))) return false;
-        const r = await t.organizations.updateMany({
+        if (!(await lockTeam(t, id))) return false;
+        const r = await t.teams.updateMany({
           where: { id },
           data: { admin_locked: locked, updated_at: by.at },
         });
         if (r.count === 0) return false;
-        await record(t, id, by, "org.update", {
+        await record(t, id, by, "team.update", {
           detail: { fields: ["adminLocked"] },
         });
         return true;
       }),
-    deleteOrg: (id) =>
+    deleteTeam: (id) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, id))) return false;
-        const projects = await t.projects.count({ where: { org_id: id } });
-        if (projects > 0) throw conflict("organization still has projects");
-        // Expand phase: a resource may carry `org_id` without a project.
+        if (!(await lockTeam(t, id))) return false;
+        const projects = await t.projects.count({ where: { team_id: id } });
+        if (projects > 0) throw conflict("team still has projects");
+        // Expand phase: a resource may carry `team_id` without a project.
         const [ch, ap, bu] = await Promise.all([
           // Soft-deleted channels count too: the FK is RESTRICT and the row
           // stays until the daily sweep purges it, so the delete would 503.
-          t.channels.count({ where: { org_id: id } }),
-          t.catalog_apps.count({ where: { org_id: id } }),
-          t.asset_bundles.count({ where: { org_id: id } }),
+          t.channels.count({ where: { team_id: id } }),
+          t.catalog_apps.count({ where: { team_id: id } }),
+          t.asset_bundles.count({ where: { team_id: id } }),
         ]);
-        if (ch + ap + bu > 0)
-          throw conflict("organization still has resources");
-        const r = await t.organizations.deleteMany({ where: { id } });
+        if (ch + ap + bu > 0) throw conflict("team still has resources");
+        const r = await t.teams.deleteMany({ where: { id } });
         return r.count > 0;
       }),
 
     /* --- members --- */
-    findOrgMember: (orgId, memberId) =>
+    findTeamMember: (teamId, memberId) =>
       run(async () => {
-        const r = await findMember(prisma, orgId, memberId);
-        return r ? toOrgMember(r) : undefined;
+        const r = await findMember(prisma, teamId, memberId);
+        return r ? toTeamMember(r) : undefined;
       }),
-    listOrgMembers: (orgId) =>
+    listTeamMembers: (teamId) =>
       run(async () =>
-        (await prisma.org_members.findMany({ where: { org_id: orgId } }))
-          .map(toOrgMember)
+        (await prisma.team_members.findMany({ where: { team_id: teamId } }))
+          .map(toTeamMember)
           .sort(sortMembers),
       ),
-    countActive: (orgId) =>
+    countActive: (teamId) =>
       run(async () => {
-        const rows = await prisma.org_members.groupBy({
+        const rows = await prisma.team_members.groupBy({
           by: ["role"],
-          where: { org_id: orgId, state: "active" },
+          where: { team_id: teamId, state: "active" },
           _count: { _all: true },
         });
-        const n = (role: OrgRole) =>
+        const n = (role: TeamRole) =>
           rows.find((r) => r.role === role)?._count._all ?? 0;
         return {
           owners: n("owner"),
@@ -945,11 +952,11 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           pending: n("pending"),
         };
       }),
-    requestJoin: (orgId, memberId, at, cooldownSec) =>
+    requestJoin: (teamId, memberId, at, cooldownSec) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, orgId)))
-          throw new AppError("not_found", "no such organization");
-        const cur = await findMember(t, orgId, memberId);
+        if (!(await lockTeam(t, teamId)))
+          throw new AppError("not_found", "no such team");
+        const cur = await findMember(t, teamId, memberId);
         if (cur) {
           if (cur.state === "active") throw conflict("already a member");
           const since = num(cur.decided_at ?? cur.requested_at);
@@ -957,8 +964,10 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             throw new AppError("rate_limited", "join cooldown", {
               details: { retryAt: since + cooldownSec },
             });
-          await t.org_members.update({
-            where: { org_id_member_id: { org_id: orgId, member_id: memberId } },
+          await t.team_members.update({
+            where: {
+              team_id_member_id: { team_id: teamId, member_id: memberId },
+            },
             data: {
               role: "pending",
               state: "active",
@@ -968,9 +977,9 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             },
           });
         } else {
-          await t.org_members.create({
+          await t.team_members.create({
             data: {
-              org_id: orgId,
+              team_id: teamId,
               member_id: memberId,
               role: "pending",
               state: "active",
@@ -978,15 +987,15 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             },
           });
         }
-        await record(t, orgId, { actorId: memberId, at }, "member.request", {
+        await record(t, teamId, { actorId: memberId, at }, "member.request", {
           subjectMemberId: memberId,
         });
       }),
-    addMember: (orgId, memberId, role, by) =>
+    addMember: (teamId, memberId, role, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, orgId)))
-          throw new AppError("not_found", "no such organization");
-        const cur = await findMember(t, orgId, memberId);
+        if (!(await lockTeam(t, teamId)))
+          throw new AppError("not_found", "no such team");
+        const cur = await findMember(t, teamId, memberId);
         if (cur?.state === "active" && cur.role !== "pending")
           throw conflict("already a member");
         const pending = cur?.state === "active" && cur.role === "pending";
@@ -998,25 +1007,27 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           decided_by: by.actorId,
         };
         if (cur)
-          await t.org_members.update({
-            where: { org_id_member_id: { org_id: orgId, member_id: memberId } },
+          await t.team_members.update({
+            where: {
+              team_id_member_id: { team_id: teamId, member_id: memberId },
+            },
             data,
           });
         else
-          await t.org_members.create({
-            data: { org_id: orgId, member_id: memberId, ...data },
+          await t.team_members.create({
+            data: { team_id: teamId, member_id: memberId, ...data },
           });
-        await record(t, orgId, by, pending ? "member.approve" : "member.add", {
+        await record(t, teamId, by, pending ? "member.approve" : "member.add", {
           subjectMemberId: memberId,
           detail: { role },
         });
       }),
-    approveMember: (orgId, memberId, role, by) =>
+    approveMember: (teamId, memberId, role, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, orgId))) return false;
-        const r = await t.org_members.updateMany({
+        if (!(await lockTeam(t, teamId))) return false;
+        const r = await t.team_members.updateMany({
           where: {
-            org_id: orgId,
+            team_id: teamId,
             member_id: memberId,
             role: "pending",
             state: "active",
@@ -1024,18 +1035,18 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           data: { role, decided_at: by.at, decided_by: by.actorId },
         });
         if (r.count === 0) return false;
-        await record(t, orgId, by, "member.approve", {
+        await record(t, teamId, by, "member.approve", {
           subjectMemberId: memberId,
           detail: { role },
         });
         return true;
       }),
-    declineMember: (orgId, memberId, by) =>
+    declineMember: (teamId, memberId, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, orgId))) return false;
-        const r = await t.org_members.updateMany({
+        if (!(await lockTeam(t, teamId))) return false;
+        const r = await t.team_members.updateMany({
           where: {
-            org_id: orgId,
+            team_id: teamId,
             member_id: memberId,
             role: "pending",
             state: "active",
@@ -1047,47 +1058,49 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           },
         });
         if (r.count === 0) return false;
-        await record(t, orgId, by, "member.decline", {
+        await record(t, teamId, by, "member.decline", {
           subjectMemberId: memberId,
         });
         return true;
       }),
-    setMemberRole: (orgId, memberId, role, by) =>
+    setMemberRole: (teamId, memberId, role, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, orgId))) return false;
-        const cur = await findMember(t, orgId, memberId);
+        if (!(await lockTeam(t, teamId))) return false;
+        const cur = await findMember(t, teamId, memberId);
         if (!cur || cur.state !== "active" || cur.role === "pending")
           return false;
         if (cur.role === role) return true;
-        if (cur.role === "owner" && (await ownerCount(t, orgId)) <= 1)
+        if (cur.role === "owner" && (await ownerCount(t, teamId)) <= 1)
           throw conflict("last owner");
-        await t.org_members.update({
-          where: { org_id_member_id: { org_id: orgId, member_id: memberId } },
+        await t.team_members.update({
+          where: {
+            team_id_member_id: { team_id: teamId, member_id: memberId },
+          },
           data: { role, decided_at: by.at, decided_by: by.actorId },
         });
         await record(
           t,
-          orgId,
+          teamId,
           by,
           role === "owner" ? "member.promote" : "member.demote",
           { subjectMemberId: memberId, detail: { role } },
         );
         return true;
       }),
-    removeMember: (orgId, memberId, by) =>
+    removeMember: (teamId, memberId, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, orgId))) return false;
-        const cur = await findMember(t, orgId, memberId);
+        if (!(await lockTeam(t, teamId))) return false;
+        const cur = await findMember(t, teamId, memberId);
         if (!cur || cur.state !== "active") return false;
-        if (cur.role === "owner" && (await ownerCount(t, orgId)) <= 1)
+        if (cur.role === "owner" && (await ownerCount(t, teamId)) <= 1)
           throw conflict("last owner");
         const leaving = by.actorId === memberId;
         const where = {
-          org_id_member_id: { org_id: orgId, member_id: memberId },
+          team_id_member_id: { team_id: teamId, member_id: memberId },
         };
-        if (leaving) await t.org_members.delete({ where });
+        if (leaving) await t.team_members.delete({ where });
         else
-          await t.org_members.update({
+          await t.team_members.update({
             where,
             data: {
               state: "kicked",
@@ -1095,7 +1108,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
               decided_by: by.actorId,
             },
           });
-        await record(t, orgId, by, leaving ? "member.leave" : "member.kick", {
+        await record(t, teamId, by, leaving ? "member.leave" : "member.kick", {
           subjectMemberId: memberId,
           detail: { role: cur.role },
         });
@@ -1104,7 +1117,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
 
     /* --- history --- */
     appendHistory: (h) => run(() => history(prisma, h).then(() => undefined)),
-    listHistory: (orgId, opts = {}) =>
+    listHistory: (teamId, opts = {}) =>
       run(async () => {
         const limit = historyLimit(opts.limit);
         const cursor = opts.cursor
@@ -1112,9 +1125,9 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           : undefined;
         if (opts.cursor && !cursor)
           throw new AppError("bad_request", "invalid cursor");
-        const rows = await prisma.org_history.findMany({
+        const rows = await prisma.team_history.findMany({
           where: {
-            org_id: orgId,
+            team_id: teamId,
             ...(cursor
               ? {
                   OR: [
@@ -1137,14 +1150,14 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
     /* --- projects --- */
     createProject: (p, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, p.orgId)))
+        if (!(await lockTeam(t, p.teamId)))
           throw new AppError("unavailable", "database error", {
             cause: new Error("prisma P2003"),
           });
         await t.projects.create({
           data: {
             id: p.id,
-            org_id: p.orgId,
+            team_id: p.teamId,
             name: p.name,
             description: p.description ?? null,
             created_by: by.actorId,
@@ -1152,7 +1165,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             updated_at: by.at,
           },
         });
-        await record(t, p.orgId, by, "project.create", {
+        await record(t, p.teamId, by, "project.create", {
           target: p.id,
           detail: { name: p.name },
         });
@@ -1162,35 +1175,35 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
         const r = await prisma.projects.findUnique({ where: { id } });
         return r ? toProject(r) : undefined;
       }),
-    findProjectByName: (orgId, name) =>
+    findProjectByName: (teamId, name) =>
       run(async () => {
         const r = await prisma.projects.findUnique({
-          where: { org_id_name: { org_id: orgId, name } },
+          where: { team_id_name: { team_id: teamId, name } },
         });
         return r ? toProject(r) : undefined;
       }),
-    listProjects: (orgId) =>
+    listProjects: (teamId) =>
       run(async () =>
         (
           await prisma.projects.findMany({
-            where: { org_id: orgId },
+            where: { team_id: teamId },
             orderBy: [{ created_at: "asc" }, { id: "asc" }],
           })
         ).map(toProject),
       ),
-    countProjects: (orgId) =>
-      run(() => prisma.projects.count({ where: { org_id: orgId } })),
+    countProjects: (teamId) =>
+      run(() => prisma.projects.count({ where: { team_id: teamId } })),
     updateProject: (id, patch, by) =>
       tx(async (t) => {
-        const orgId = await projectOrg(t, id);
-        if (!orgId || !(await lockOrg(t, orgId))) return false;
+        const teamId = await projectTeam(t, id);
+        if (!teamId || !(await lockTeam(t, teamId))) return false;
         const data: Record<string, unknown> = { updated_at: by.at };
         if (patch.name !== undefined) data.name = patch.name;
         if (patch.description !== undefined)
           data.description = patch.description;
         const r = await t.projects.updateMany({ where: { id }, data });
         if (r.count === 0) return false;
-        await record(t, orgId, by, "project.update", {
+        await record(t, teamId, by, "project.update", {
           target: id,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -1198,14 +1211,14 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       }),
     deleteProject: (id, by) =>
       tx(async (t) => {
-        const orgId = await projectOrg(t, id);
-        if (!orgId || !(await lockOrg(t, orgId))) return false;
+        const teamId = await projectTeam(t, id);
+        if (!teamId || !(await lockTeam(t, teamId))) return false;
         const counts = await countResources(t, id);
         if (counts.channels + counts.apps + counts.bundles > 0)
           throw conflict("project still has resources");
         const r = await t.projects.deleteMany({ where: { id } });
         if (r.count === 0) return false;
-        await record(t, orgId, by, "project.delete", { target: id });
+        await record(t, teamId, by, "project.delete", { target: id });
         return true;
       }),
     countProjectResources: (projectId) =>
@@ -1214,8 +1227,8 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
     /* --- versions --- */
     createVersion: (v, by) =>
       tx(async (t) => {
-        const orgId = await projectOrg(t, v.projectId);
-        if (!orgId || !(await lockOrg(t, orgId)))
+        const teamId = await projectTeam(t, v.projectId);
+        if (!teamId || !(await lockTeam(t, teamId)))
           throw new AppError("not_found", "no such project");
         await t.project_versions.create({
           data: {
@@ -1227,7 +1240,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             created_at: by.at,
           },
         });
-        await record(t, orgId, by, "version.create", {
+        await record(t, teamId, by, "version.create", {
           target: v.id,
           detail: { projectId: v.projectId, name: v.name },
         });
@@ -1252,8 +1265,8 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       ),
     updateVersion: (id, patch, by) =>
       tx(async (t) => {
-        const v = await versionOrg(t, id);
-        if (!v || !(await lockOrg(t, v.orgId))) return false;
+        const v = await versionTeam(t, id);
+        if (!v || !(await lockTeam(t, v.teamId))) return false;
         if (patch.note !== undefined) {
           const r = await t.project_versions.updateMany({
             where: { id },
@@ -1261,7 +1274,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           });
           if (r.count === 0) return false;
         }
-        await record(t, v.orgId, by, "version.update", {
+        await record(t, v.teamId, by, "version.update", {
           target: id,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -1269,11 +1282,11 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       }),
     deleteVersion: (id, by) =>
       tx(async (t) => {
-        const v = await versionOrg(t, id);
-        if (!v || !(await lockOrg(t, v.orgId))) return false;
+        const v = await versionTeam(t, id);
+        if (!v || !(await lockTeam(t, v.teamId))) return false;
         const r = await t.project_versions.deleteMany({ where: { id } });
         if (r.count === 0) return false;
-        await record(t, v.orgId, by, "version.delete", {
+        await record(t, v.teamId, by, "version.delete", {
           target: id,
           detail: { projectId: v.projectId },
         });
@@ -1281,8 +1294,8 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       }),
     addVersionLink: (l, by) =>
       tx(async (t) => {
-        const v = await versionOrg(t, l.versionId);
-        if (!v || !(await lockOrg(t, v.orgId)))
+        const v = await versionTeam(t, l.versionId);
+        if (!v || !(await lockTeam(t, v.teamId)))
           throw new AppError("not_found", "no such version");
         await t.project_version_links.create({
           data: {
@@ -1296,7 +1309,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             created_at: by.at,
           },
         });
-        await record(t, v.orgId, by, "version.link", {
+        await record(t, v.teamId, by, "version.link", {
           target: l.versionId,
           detail: { kind: l.kind, link: versionLinkTarget(l) },
         });
@@ -1312,13 +1325,13 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       ),
     removeVersionLink: (versionId, linkId, by) =>
       tx(async (t) => {
-        const v = await versionOrg(t, versionId);
-        if (!v || !(await lockOrg(t, v.orgId))) return false;
+        const v = await versionTeam(t, versionId);
+        if (!v || !(await lockTeam(t, v.teamId))) return false;
         const r = await t.project_version_links.deleteMany({
           where: { id: linkId, version_id: versionId },
         });
         if (r.count === 0) return false;
-        await record(t, v.orgId, by, "version.unlink", {
+        await record(t, v.teamId, by, "version.unlink", {
           target: versionId,
           detail: { linkId },
         });
@@ -1335,13 +1348,13 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
     /* --- issues --- */
     createIssue: (i, by) =>
       tx(async (t) => {
-        const orgId = await projectOrg(t, i.projectId);
-        if (!orgId) throw new AppError("not_found", "no such project");
-        // The org row lock serialises numbering for every project of the org;
-        // per-project would be finer but the org already is the mutex for
+        const teamId = await projectTeam(t, i.projectId);
+        if (!teamId) throw new AppError("not_found", "no such project");
+        // The team row lock serialises numbering for every project of the team;
+        // per-project would be finer but the team already is the mutex for
         // membership and one lock is easier to reason about than two.
-        if (!(await lockOrg(t, orgId)))
-          throw new AppError("not_found", "no such organization");
+        if (!(await lockTeam(t, teamId)))
+          throw new AppError("not_found", "no such team");
         const p = await t.projects.findUnique({
           where: { id: i.projectId },
           select: { next_issue_number: true },
@@ -1366,7 +1379,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           where: { id: i.projectId },
           data: { next_issue_number: number + 1 },
         });
-        await record(t, orgId, by, "issue.create", {
+        await record(t, teamId, by, "issue.create", {
           target: i.id,
           detail: { projectId: i.projectId, number },
         });
@@ -1395,8 +1408,8 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       run(() => prisma.issues.count({ where: { project_id: projectId } })),
     updateIssue: (projectId, number, patch, by) =>
       tx(async (t) => {
-        const orgId = await projectOrg(t, projectId);
-        if (!orgId || !(await lockOrg(t, orgId))) return false;
+        const teamId = await projectTeam(t, projectId);
+        if (!teamId || !(await lockTeam(t, teamId))) return false;
         const data: Record<string, unknown> = { updated_at: by.at };
         if (patch.title !== undefined) data.title = patch.title;
         if (patch.bodyMd !== undefined) data.body_md = patch.bodyMd;
@@ -1406,7 +1419,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
           data,
         });
         if (r.count === 0) return false;
-        await record(t, orgId, by, "issue.update", {
+        await record(t, teamId, by, "issue.update", {
           target: `${projectId}#${number}`,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -1414,8 +1427,8 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       }),
     setIssueStatus: (projectId, number, status, by) =>
       tx(async (t) => {
-        const orgId = await projectOrg(t, projectId);
-        if (!orgId || !(await lockOrg(t, orgId))) return false;
+        const teamId = await projectTeam(t, projectId);
+        if (!teamId || !(await lockTeam(t, teamId))) return false;
         const r = await t.issues.updateMany({
           where: {
             project_id: projectId,
@@ -1431,7 +1444,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
         if (r.count === 0) return false;
         await record(
           t,
-          orgId,
+          teamId,
           by,
           status === "closed" ? "issue.close" : "issue.reopen",
           { target: `${projectId}#${number}` },
@@ -1440,7 +1453,7 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       }),
     addIssueComment: (c, by) =>
       tx(async (t) => {
-        const i = await issueOrg(t, c.parentId);
+        const i = await issueTeam(t, c.parentId);
         if (!i) throw new AppError("not_found", "no such issue");
         await t.issue_comments.create({
           data: {
@@ -1490,14 +1503,14 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
     /* --- discussions --- */
     createDiscussion: (d, by) =>
       tx(async (t) => {
-        if (!(await lockOrg(t, d.orgId)))
+        if (!(await lockTeam(t, d.teamId)))
           throw new AppError("unavailable", "database error", {
             cause: new Error("prisma P2003"),
           });
         await t.discussions.create({
           data: {
             id: d.id,
-            org_id: d.orgId,
+            team_id: d.teamId,
             title: d.title,
             body_md: d.bodyMd,
             created_by: by.actorId,
@@ -1505,37 +1518,37 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
             updated_at: by.at,
           },
         });
-        await record(t, d.orgId, by, "discussion.create", { target: d.id });
+        await record(t, d.teamId, by, "discussion.create", { target: d.id });
       }),
     findDiscussion: (id) =>
       run(async () => {
         const r = await prisma.discussions.findUnique({ where: { id } });
         return r ? toDiscussion(r) : undefined;
       }),
-    listDiscussions: (orgId) =>
+    listDiscussions: (teamId) =>
       run(async () =>
         (
           await prisma.discussions.findMany({
-            where: { org_id: orgId },
+            where: { team_id: teamId },
             orderBy: [{ updated_at: "desc" }, { id: "desc" }],
           })
         ).map(toDiscussion),
       ),
-    countDiscussions: (orgId) =>
-      run(() => prisma.discussions.count({ where: { org_id: orgId } })),
+    countDiscussions: (teamId) =>
+      run(() => prisma.discussions.count({ where: { team_id: teamId } })),
     updateDiscussion: (id, patch, by) =>
       tx(async (t) => {
         const d = await t.discussions.findUnique({
           where: { id },
-          select: { org_id: true },
+          select: { team_id: true },
         });
-        if (!d || !(await lockOrg(t, d.org_id))) return false;
+        if (!d || !(await lockTeam(t, d.team_id))) return false;
         const data: Record<string, unknown> = { updated_at: by.at };
         if (patch.title !== undefined) data.title = patch.title;
         if (patch.bodyMd !== undefined) data.body_md = patch.bodyMd;
         const r = await t.discussions.updateMany({ where: { id }, data });
         if (r.count === 0) return false;
-        await record(t, d.org_id, by, "discussion.update", {
+        await record(t, d.team_id, by, "discussion.update", {
           target: id,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -1545,12 +1558,12 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
       tx(async (t) => {
         const d = await t.discussions.findUnique({
           where: { id },
-          select: { org_id: true },
+          select: { team_id: true },
         });
-        if (!d || !(await lockOrg(t, d.org_id))) return false;
+        if (!d || !(await lockTeam(t, d.team_id))) return false;
         const r = await t.discussions.deleteMany({ where: { id } });
         if (r.count === 0) return false;
-        await record(t, d.org_id, by, "discussion.delete", { target: id });
+        await record(t, d.team_id, by, "discussion.delete", { target: id });
         return true;
       }),
     addDiscussionComment: (c, by) =>
@@ -1656,14 +1669,18 @@ export function createOrgDb(prisma: PrismaClient, o: OrgDbOptions): OrgDb {
   }
 }
 
-const ROLE_ORDER: Record<OrgRole, number> = { owner: 0, member: 1, pending: 2 };
-const STATE_ORDER: Record<OrgMemberState, number> = {
+const ROLE_ORDER: Record<TeamRole, number> = {
+  owner: 0,
+  member: 1,
+  pending: 2,
+};
+const STATE_ORDER: Record<TeamMemberState, number> = {
   active: 0,
   declined: 1,
   kicked: 2,
 };
 
-function sortMembers(a: OrgMemberRow, b: OrgMemberRow): number {
+function sortMembers(a: TeamMemberRow, b: TeamMemberRow): number {
   return (
     STATE_ORDER[a.state] - STATE_ORDER[b.state] ||
     ROLE_ORDER[a.role] - ROLE_ORDER[b.role] ||
@@ -1676,28 +1693,28 @@ function sortMembers(a: OrgMemberRow, b: OrgMemberRow): number {
 /* In-memory fake                                                      */
 /* ------------------------------------------------------------------ */
 
-export interface MemoryOrgDbDeps {
+export interface MemoryTeamDbDeps {
   memberExists?: (id: string) => boolean;
   /** Link targets are foreign keys on the real table; the fake mirrors them when told how. */
   artifactExists?: (id: string) => boolean;
   bundleExists?: (id: string) => boolean;
   /** Resource rows still pointing at a project, for `deleteProject`'s guard. */
   countResources?: (projectId: string) => ProjectResourceCounts;
-  /** Resource rows carrying `org_id` (with or without a project), for `deleteOrg`. */
-  countOrgResources?: (orgId: string) => ProjectResourceCounts;
+  /** Resource rows carrying `team_id` (with or without a project), for `deleteTeam`. */
+  countTeamResources?: (teamId: string) => ProjectResourceCounts;
   newHistoryId?: (at: number) => string;
 }
 
 /**
- * In-memory `OrgDb`: same contract as the Prisma repository. Every mutation
+ * In-memory `TeamDb`: same contract as the Prisma repository. Every mutation
  * validates before it writes, and the ones that write several rows take a
  * snapshot first and restore it if anything throws, so a failed call leaves
  * the fake exactly as a rolled-back transaction leaves the database.
  */
-export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
-  orgs: Map<string, OrgRow>;
-  orgMembers: Map<string, OrgMemberRow>;
-  history: OrgHistoryRow[];
+export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
+  teams: Map<string, TeamRow>;
+  teamMembers: Map<string, TeamMemberRow>;
+  history: TeamHistoryRow[];
   projects: Map<string, ProjectRow>;
   versions: Map<string, VersionRow>;
   links: Map<string, VersionLinkRow>;
@@ -1712,15 +1729,15 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
   const bundleExists = deps.bundleExists ?? (() => true);
   const countResources =
     deps.countResources ?? (() => ({ channels: 0, apps: 0, bundles: 0 }));
-  const countOrgResources =
-    deps.countOrgResources ?? (() => ({ channels: 0, apps: 0, bundles: 0 }));
+  const countTeamResources =
+    deps.countTeamResources ?? (() => ({ channels: 0, apps: 0, bundles: 0 }));
   let seq = 0;
   const newHistoryId =
     deps.newHistoryId ?? (() => `h_${String(++seq).padStart(8, "0")}`);
 
-  const orgs = new Map<string, OrgRow>();
-  const orgMembers = new Map<string, OrgMemberRow>();
-  const history: OrgHistoryRow[] = [];
+  const teams = new Map<string, TeamRow>();
+  const teamMembers = new Map<string, TeamMemberRow>();
+  const history: TeamHistoryRow[] = [];
   const projects = new Map<string, ProjectRow>();
   const nextIssue = new Map<string, number>();
   const versions = new Map<string, VersionRow>();
@@ -1738,13 +1755,13 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
   const ci = (s: string) => s.trimEnd().toLowerCase();
   /** `utf8mb4_bin` is byte-exact but still PAD SPACE. */
   const bin = (s: string) => s.trimEnd();
-  const mk = (orgId: string, memberId: string) => `${orgId} ${memberId}`;
+  const mk = (teamId: string, memberId: string) => `${teamId} ${memberId}`;
 
   /** Snapshot/restore around multi-row writes: the fake's transaction. */
   const atomic = async <T>(fn: () => Promise<T> | T): Promise<T> => {
     const snap = {
-      orgs: new Map(orgs),
-      orgMembers: new Map(orgMembers),
+      teams: new Map(teams),
+      teamMembers: new Map(teamMembers),
       history: history.slice(),
       projects: new Map(projects),
       nextIssue: new Map(nextIssue),
@@ -1762,8 +1779,8 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
         m.clear();
         for (const [k, v] of s) m.set(k, v);
       };
-      restore(orgs, snap.orgs);
-      restore(orgMembers, snap.orgMembers);
+      restore(teams, snap.teams);
+      restore(teamMembers, snap.teamMembers);
       history.splice(0, history.length, ...snap.history);
       restore(projects, snap.projects);
       restore(nextIssue, snap.nextIssue);
@@ -1778,17 +1795,17 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
   };
 
   const record = (
-    orgId: string,
+    teamId: string,
     by: Actor,
-    action: OrgHistoryAction,
+    action: TeamHistoryAction,
     extra: Partial<
-      Pick<OrgHistoryRow, "subjectMemberId" | "target" | "detail">
+      Pick<TeamHistoryRow, "subjectMemberId" | "target" | "detail">
     > = {},
   ) => {
     if (!memberExists(by.actorId)) throw fk();
     history.push({
       id: newHistoryId(by.at),
-      orgId,
+      teamId,
       at: by.at,
       actorId: by.actorId,
       action,
@@ -1798,17 +1815,17 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
       detail:
         extra.detail === undefined
           ? undefined
-          : (JSON.parse(JSON.stringify(extra.detail)) as OrgHistoryDetail),
+          : (JSON.parse(JSON.stringify(extra.detail)) as TeamHistoryDetail),
     });
   };
 
-  /** The real table answers an unknown org with a foreign-key failure (503). */
-  const needOrg = (orgId: string) => {
-    if (!orgs.has(orgId)) throw fk();
+  /** The real table answers an unknown team with a foreign-key failure (503). */
+  const needTeam = (teamId: string) => {
+    if (!teams.has(teamId)) throw fk();
   };
-  const ownerCount = (orgId: string) =>
-    [...orgMembers.values()].filter(
-      (m) => m.orgId === orgId && m.role === "owner" && m.state === "active",
+  const ownerCount = (teamId: string) =>
+    [...teamMembers.values()].filter(
+      (m) => m.teamId === teamId && m.role === "owner" && m.state === "active",
     ).length;
   const projectOf = (id: string) => projects.get(id);
   const versionOf = (id: string) => {
@@ -1823,8 +1840,8 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
   };
 
   return {
-    orgs,
-    orgMembers,
+    teams,
+    teamMembers,
     history,
     projects,
     versions,
@@ -1835,13 +1852,13 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
     discussionComments,
     settings,
 
-    createOrg: (o, at) =>
+    createTeam: (o, at) =>
       atomic(() => {
-        if (orgs.has(o.id)) throw conflict("duplicate key");
-        if ([...orgs.values()].some((x) => ci(x.name) === ci(o.name)))
+        if (teams.has(o.id)) throw conflict("duplicate key");
+        if ([...teams.values()].some((x) => ci(x.name) === ci(o.name)))
           throw conflict("duplicate key");
         if (!memberExists(o.createdBy)) throw fk();
-        orgs.set(o.id, {
+        teams.set(o.id, {
           id: o.id,
           name: o.name,
           description: o.description ?? null,
@@ -1850,8 +1867,8 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           createdAt: o.createdAt,
           updatedAt: o.createdAt,
         });
-        orgMembers.set(mk(o.id, o.createdBy), {
-          orgId: o.id,
+        teamMembers.set(mk(o.id, o.createdBy), {
+          teamId: o.id,
           memberId: o.createdBy,
           role: "owner",
           state: "active",
@@ -1859,42 +1876,42 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           decidedAt: o.createdAt,
           decidedBy: o.createdBy,
         });
-        record(o.id, { actorId: o.createdBy, at }, "org.create", {
+        record(o.id, { actorId: o.createdBy, at }, "team.create", {
           subjectMemberId: o.createdBy,
           detail: { name: o.name },
         });
       }),
-    findOrg: async (id) => {
-      const r = orgs.get(id);
+    findTeam: async (id) => {
+      const r = teams.get(id);
       return r && { ...r };
     },
-    findOrgByName: async (name) => {
-      const r = [...orgs.values()].find((x) => ci(x.name) === ci(name));
+    findTeamByName: async (name) => {
+      const r = [...teams.values()].find((x) => ci(x.name) === ci(name));
       return r && { ...r };
     },
-    listOrgsForMember: async (memberId) =>
-      [...orgMembers.values()]
+    listTeamsForMember: async (memberId) =>
+      [...teamMembers.values()]
         .filter((m) => m.memberId === memberId)
-        .map((m) => ({ ...orgs.get(m.orgId)!, role: m.role, state: m.state }))
+        .map((m) => ({ ...teams.get(m.teamId)!, role: m.role, state: m.state }))
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
-    listAllOrgs: async () =>
-      [...orgs.values()]
+    listAllTeams: async () =>
+      [...teams.values()]
         .map((o) => ({ ...o }))
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
-    countOrgsCreatedBy: async (memberId) =>
-      [...orgs.values()].filter((o) => o.createdBy === memberId).length,
-    updateOrg: (id, patch, by) =>
+    countTeamsCreatedBy: async (memberId) =>
+      [...teams.values()].filter((o) => o.createdBy === memberId).length,
+    updateTeam: (id, patch, by) =>
       atomic(() => {
-        const o = orgs.get(id);
+        const o = teams.get(id);
         if (!o) return false;
         if (
           patch.name !== undefined &&
-          [...orgs.values()].some(
+          [...teams.values()].some(
             (x) => x.id !== id && ci(x.name) === ci(patch.name!),
           )
         )
           throw conflict("duplicate key");
-        orgs.set(id, {
+        teams.set(id, {
           ...o,
           ...(patch.name !== undefined ? { name: patch.name } : {}),
           ...(patch.description !== undefined
@@ -1902,33 +1919,33 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
             : {}),
           updatedAt: by.at,
         });
-        record(id, by, "org.update", {
+        record(id, by, "team.update", {
           detail: { fields: Object.keys(patch).sort() },
         });
         return true;
       }),
     setAdminLocked: (id, locked, by) =>
       atomic(() => {
-        const o = orgs.get(id);
+        const o = teams.get(id);
         if (!o) return false;
-        orgs.set(id, { ...o, adminLocked: locked, updatedAt: by.at });
-        record(id, by, "org.update", { detail: { fields: ["adminLocked"] } });
+        teams.set(id, { ...o, adminLocked: locked, updatedAt: by.at });
+        record(id, by, "team.update", { detail: { fields: ["adminLocked"] } });
         return true;
       }),
-    deleteOrg: async (id) => {
-      if (!orgs.has(id)) return false;
-      if ([...projects.values()].some((p) => p.orgId === id))
-        throw conflict("organization still has projects");
-      const c = countOrgResources(id);
+    deleteTeam: async (id) => {
+      if (!teams.has(id)) return false;
+      if ([...projects.values()].some((p) => p.teamId === id))
+        throw conflict("team still has projects");
+      const c = countTeamResources(id);
       if (c.channels + c.apps + c.bundles > 0)
-        throw conflict("organization still has resources");
-      orgs.delete(id);
-      for (const [k, m] of [...orgMembers])
-        if (m.orgId === id) orgMembers.delete(k);
+        throw conflict("team still has resources");
+      teams.delete(id);
+      for (const [k, m] of [...teamMembers])
+        if (m.teamId === id) teamMembers.delete(k);
       for (let i = history.length - 1; i >= 0; i--)
-        if (history[i]!.orgId === id) history.splice(i, 1);
+        if (history[i]!.teamId === id) history.splice(i, 1);
       for (const [k, d] of [...discussions])
-        if (d.orgId === id) {
+        if (d.teamId === id) {
           discussions.delete(k);
           for (const [ck, c] of [...discussionComments])
             if (c.parentId === k) discussionComments.delete(ck);
@@ -1936,32 +1953,31 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
       return true;
     },
 
-    findOrgMember: async (orgId, memberId) => {
-      const r = orgMembers.get(mk(orgId, memberId));
+    findTeamMember: async (teamId, memberId) => {
+      const r = teamMembers.get(mk(teamId, memberId));
       return r && { ...r };
     },
-    listOrgMembers: async (orgId) =>
-      [...orgMembers.values()]
-        .filter((m) => m.orgId === orgId)
+    listTeamMembers: async (teamId) =>
+      [...teamMembers.values()]
+        .filter((m) => m.teamId === teamId)
         .map((m) => ({ ...m }))
         .sort(sortMembers),
-    countActive: async (orgId) => {
-      const rows = [...orgMembers.values()].filter(
-        (m) => m.orgId === orgId && m.state === "active",
+    countActive: async (teamId) => {
+      const rows = [...teamMembers.values()].filter(
+        (m) => m.teamId === teamId && m.state === "active",
       );
-      const n = (role: OrgRole) => rows.filter((m) => m.role === role).length;
+      const n = (role: TeamRole) => rows.filter((m) => m.role === role).length;
       return {
         owners: n("owner"),
         members: n("member"),
         pending: n("pending"),
       };
     },
-    requestJoin: (orgId, memberId, at, cooldownSec) =>
+    requestJoin: (teamId, memberId, at, cooldownSec) =>
       atomic(() => {
-        if (!orgs.has(orgId))
-          throw new AppError("not_found", "no such organization");
+        if (!teams.has(teamId)) throw new AppError("not_found", "no such team");
         if (!memberExists(memberId)) throw fk();
-        const cur = orgMembers.get(mk(orgId, memberId));
+        const cur = teamMembers.get(mk(teamId, memberId));
         if (cur) {
           if (cur.state === "active") throw conflict("already a member");
           const since = cur.decidedAt ?? cur.requestedAt;
@@ -1970,8 +1986,8 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
               details: { retryAt: since + cooldownSec },
             });
         }
-        orgMembers.set(mk(orgId, memberId), {
-          orgId,
+        teamMembers.set(mk(teamId, memberId), {
+          teamId,
           memberId,
           role: "pending",
           state: "active",
@@ -1979,21 +1995,20 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           decidedAt: null,
           decidedBy: null,
         });
-        record(orgId, { actorId: memberId, at }, "member.request", {
+        record(teamId, { actorId: memberId, at }, "member.request", {
           subjectMemberId: memberId,
         });
       }),
-    addMember: (orgId, memberId, role, by) =>
+    addMember: (teamId, memberId, role, by) =>
       atomic(() => {
-        if (!orgs.has(orgId))
-          throw new AppError("not_found", "no such organization");
+        if (!teams.has(teamId)) throw new AppError("not_found", "no such team");
         if (!memberExists(memberId)) throw fk();
-        const cur = orgMembers.get(mk(orgId, memberId));
+        const cur = teamMembers.get(mk(teamId, memberId));
         if (cur?.state === "active" && cur.role !== "pending")
           throw conflict("already a member");
         const pending = cur?.state === "active" && cur.role === "pending";
-        orgMembers.set(mk(orgId, memberId), {
-          orgId,
+        teamMembers.set(mk(teamId, memberId), {
+          teamId,
           memberId,
           role,
           state: "active",
@@ -2001,59 +2016,59 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           decidedAt: by.at,
           decidedBy: by.actorId,
         });
-        record(orgId, by, pending ? "member.approve" : "member.add", {
+        record(teamId, by, pending ? "member.approve" : "member.add", {
           subjectMemberId: memberId,
           detail: { role },
         });
       }),
-    approveMember: (orgId, memberId, role, by) =>
+    approveMember: (teamId, memberId, role, by) =>
       atomic(() => {
-        const cur = orgMembers.get(mk(orgId, memberId));
+        const cur = teamMembers.get(mk(teamId, memberId));
         if (!cur || cur.role !== "pending" || cur.state !== "active")
           return false;
-        orgMembers.set(mk(orgId, memberId), {
+        teamMembers.set(mk(teamId, memberId), {
           ...cur,
           role,
           decidedAt: by.at,
           decidedBy: by.actorId,
         });
-        record(orgId, by, "member.approve", {
+        record(teamId, by, "member.approve", {
           subjectMemberId: memberId,
           detail: { role },
         });
         return true;
       }),
-    declineMember: (orgId, memberId, by) =>
+    declineMember: (teamId, memberId, by) =>
       atomic(() => {
-        const cur = orgMembers.get(mk(orgId, memberId));
+        const cur = teamMembers.get(mk(teamId, memberId));
         if (!cur || cur.role !== "pending" || cur.state !== "active")
           return false;
-        orgMembers.set(mk(orgId, memberId), {
+        teamMembers.set(mk(teamId, memberId), {
           ...cur,
           state: "declined",
           decidedAt: by.at,
           decidedBy: by.actorId,
         });
-        record(orgId, by, "member.decline", { subjectMemberId: memberId });
+        record(teamId, by, "member.decline", { subjectMemberId: memberId });
         return true;
       }),
-    setMemberRole: (orgId, memberId, role, by) =>
+    setMemberRole: (teamId, memberId, role, by) =>
       atomic(() => {
-        if (!orgs.has(orgId)) return false;
-        const cur = orgMembers.get(mk(orgId, memberId));
+        if (!teams.has(teamId)) return false;
+        const cur = teamMembers.get(mk(teamId, memberId));
         if (!cur || cur.state !== "active" || cur.role === "pending")
           return false;
         if (cur.role === role) return true;
-        if (cur.role === "owner" && ownerCount(orgId) <= 1)
+        if (cur.role === "owner" && ownerCount(teamId) <= 1)
           throw conflict("last owner");
-        orgMembers.set(mk(orgId, memberId), {
+        teamMembers.set(mk(teamId, memberId), {
           ...cur,
           role,
           decidedAt: by.at,
           decidedBy: by.actorId,
         });
         record(
-          orgId,
+          teamId,
           by,
           role === "owner" ? "member.promote" : "member.demote",
           {
@@ -2063,23 +2078,23 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
         );
         return true;
       }),
-    removeMember: (orgId, memberId, by) =>
+    removeMember: (teamId, memberId, by) =>
       atomic(() => {
-        if (!orgs.has(orgId)) return false;
-        const cur = orgMembers.get(mk(orgId, memberId));
+        if (!teams.has(teamId)) return false;
+        const cur = teamMembers.get(mk(teamId, memberId));
         if (!cur || cur.state !== "active") return false;
-        if (cur.role === "owner" && ownerCount(orgId) <= 1)
+        if (cur.role === "owner" && ownerCount(teamId) <= 1)
           throw conflict("last owner");
         const leaving = by.actorId === memberId;
-        if (leaving) orgMembers.delete(mk(orgId, memberId));
+        if (leaving) teamMembers.delete(mk(teamId, memberId));
         else
-          orgMembers.set(mk(orgId, memberId), {
+          teamMembers.set(mk(teamId, memberId), {
             ...cur,
             state: "kicked",
             decidedAt: by.at,
             decidedBy: by.actorId,
           });
-        record(orgId, by, leaving ? "member.leave" : "member.kick", {
+        record(teamId, by, leaving ? "member.leave" : "member.kick", {
           subjectMemberId: memberId,
           detail: { role: cur.role },
         });
@@ -2087,12 +2102,12 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
       }),
 
     appendHistory: async (h) => {
-      needOrg(h.orgId);
+      needTeam(h.teamId);
       if (history.some((x) => x.id === h.id)) throw conflict("duplicate key");
       if (h.actorId !== null && !memberExists(h.actorId)) throw fk();
       history.push({
         id: h.id,
-        orgId: h.orgId,
+        teamId: h.teamId,
         at: h.at,
         actorId: h.actorId,
         action: h.action,
@@ -2101,10 +2116,10 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
         detail:
           h.detail === undefined
             ? undefined
-            : (JSON.parse(JSON.stringify(h.detail)) as OrgHistoryDetail),
+            : (JSON.parse(JSON.stringify(h.detail)) as TeamHistoryDetail),
       });
     },
-    listHistory: async (orgId, opts = {}) => {
+    listHistory: async (teamId, opts = {}) => {
       const limit = historyLimit(opts.limit);
       const cursor = opts.cursor ? decodeHistoryCursor(opts.cursor) : undefined;
       if (opts.cursor && !cursor)
@@ -2112,7 +2127,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
       const all = history
         .filter(
           (h) =>
-            h.orgId === orgId &&
+            h.teamId === teamId &&
             (!cursor ||
               h.at < cursor.at ||
               (h.at === cursor.at && h.id < cursor.id)),
@@ -2129,17 +2144,17 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
 
     createProject: (p, by) =>
       atomic(() => {
-        needOrg(p.orgId);
+        needTeam(p.teamId);
         if (projects.has(p.id)) throw conflict("duplicate key");
         if (
           [...projects.values()].some(
-            (x) => x.orgId === p.orgId && ci(x.name) === ci(p.name),
+            (x) => x.teamId === p.teamId && ci(x.name) === ci(p.name),
           )
         )
           throw conflict("duplicate key");
         projects.set(p.id, {
           id: p.id,
-          orgId: p.orgId,
+          teamId: p.teamId,
           name: p.name,
           description: p.description ?? null,
           createdBy: by.actorId,
@@ -2147,7 +2162,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           updatedAt: by.at,
         });
         nextIssue.set(p.id, 1);
-        record(p.orgId, by, "project.create", {
+        record(p.teamId, by, "project.create", {
           target: p.id,
           detail: { name: p.name },
         });
@@ -2156,19 +2171,19 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
       const r = projects.get(id);
       return r && { ...r };
     },
-    findProjectByName: async (orgId, name) => {
+    findProjectByName: async (teamId, name) => {
       const r = [...projects.values()].find(
-        (x) => x.orgId === orgId && ci(x.name) === ci(name),
+        (x) => x.teamId === teamId && ci(x.name) === ci(name),
       );
       return r && { ...r };
     },
-    listProjects: async (orgId) =>
+    listProjects: async (teamId) =>
       [...projects.values()]
-        .filter((p) => p.orgId === orgId)
+        .filter((p) => p.teamId === teamId)
         .map((p) => ({ ...p }))
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
-    countProjects: async (orgId) =>
-      [...projects.values()].filter((p) => p.orgId === orgId).length,
+    countProjects: async (teamId) =>
+      [...projects.values()].filter((p) => p.teamId === teamId).length,
     updateProject: (id, patch, by) =>
       atomic(() => {
         const p = projects.get(id);
@@ -2178,7 +2193,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           [...projects.values()].some(
             (x) =>
               x.id !== id &&
-              x.orgId === p.orgId &&
+              x.teamId === p.teamId &&
               ci(x.name) === ci(patch.name!),
           )
         )
@@ -2191,7 +2206,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
             : {}),
           updatedAt: by.at,
         });
-        record(p.orgId, by, "project.update", {
+        record(p.teamId, by, "project.update", {
           target: id,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -2218,7 +2233,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
             for (const [ck, c2] of [...issueComments])
               if (c2.parentId === k) issueComments.delete(ck);
           }
-        record(p.orgId, by, "project.delete", { target: id });
+        record(p.teamId, by, "project.delete", { target: id });
         return true;
       }),
     countProjectResources: async (projectId) => countResources(projectId),
@@ -2243,7 +2258,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           createdBy: by.actorId,
           createdAt: by.at,
         });
-        record(p.orgId, by, "version.create", {
+        record(p.teamId, by, "version.create", {
           target: v.id,
           detail: { projectId: v.projectId, name: v.name },
         });
@@ -2265,7 +2280,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
         if (!v) return false;
         if (patch.note !== undefined)
           versions.set(id, { ...v.version, note: patch.note });
-        record(v.project.orgId, by, "version.update", {
+        record(v.project.teamId, by, "version.update", {
           target: id,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -2280,7 +2295,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           if (l.versionId === id) links.delete(k);
         for (const [k, i] of [...issues])
           if (i.versionId === id) issues.set(k, { ...i, versionId: null });
-        record(v.project.orgId, by, "version.delete", {
+        record(v.project.teamId, by, "version.delete", {
           target: id,
           detail: { projectId: v.project.id },
         });
@@ -2315,7 +2330,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           assetVersion: l.kind === "asset_version" ? l.assetVersion : null,
           createdAt: by.at,
         });
-        record(v.project.orgId, by, "version.link", {
+        record(v.project.teamId, by, "version.link", {
           target: l.versionId,
           detail: { kind: l.kind, link: target },
         });
@@ -2332,7 +2347,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
         const l = links.get(linkId);
         if (!l || l.versionId !== versionId) return false;
         links.delete(linkId);
-        record(v.project.orgId, by, "version.unlink", {
+        record(v.project.teamId, by, "version.unlink", {
           target: versionId,
           detail: { linkId },
         });
@@ -2369,7 +2384,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           closedAt: null,
         });
         nextIssue.set(i.projectId, number + 1);
-        record(p.orgId, by, "issue.create", {
+        record(p.teamId, by, "issue.create", {
           target: i.id,
           detail: { projectId: i.projectId, number },
         });
@@ -2410,7 +2425,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
             : {}),
           updatedAt: by.at,
         });
-        record(p.orgId, by, "issue.update", {
+        record(p.teamId, by, "issue.update", {
           target: `${projectId}#${number}`,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -2431,7 +2446,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           closedAt: status === "closed" ? by.at : null,
         });
         record(
-          p.orgId,
+          p.teamId,
           by,
           status === "closed" ? "issue.close" : "issue.reopen",
           {
@@ -2477,30 +2492,30 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
 
     createDiscussion: (d, by) =>
       atomic(() => {
-        needOrg(d.orgId);
+        needTeam(d.teamId);
         if (discussions.has(d.id)) throw conflict("duplicate key");
         discussions.set(d.id, {
           id: d.id,
-          orgId: d.orgId,
+          teamId: d.teamId,
           title: d.title,
           bodyMd: d.bodyMd,
           createdBy: by.actorId,
           createdAt: by.at,
           updatedAt: by.at,
         });
-        record(d.orgId, by, "discussion.create", { target: d.id });
+        record(d.teamId, by, "discussion.create", { target: d.id });
       }),
     findDiscussion: async (id) => {
       const r = discussions.get(id);
       return r && { ...r };
     },
-    listDiscussions: async (orgId) =>
+    listDiscussions: async (teamId) =>
       [...discussions.values()]
-        .filter((d) => d.orgId === orgId)
+        .filter((d) => d.teamId === teamId)
         .map((d) => ({ ...d }))
         .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id)),
-    countDiscussions: async (orgId) =>
-      [...discussions.values()].filter((d) => d.orgId === orgId).length,
+    countDiscussions: async (teamId) =>
+      [...discussions.values()].filter((d) => d.teamId === teamId).length,
     updateDiscussion: (id, patch, by) =>
       atomic(() => {
         const d = discussions.get(id);
@@ -2511,7 +2526,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
           ...(patch.bodyMd !== undefined ? { bodyMd: patch.bodyMd } : {}),
           updatedAt: by.at,
         });
-        record(d.orgId, by, "discussion.update", {
+        record(d.teamId, by, "discussion.update", {
           target: id,
           detail: { fields: Object.keys(patch).sort() },
         });
@@ -2524,7 +2539,7 @@ export function createMemoryOrgDb(deps: MemoryOrgDbDeps = {}): OrgDb & {
         discussions.delete(id);
         for (const [k, c] of [...discussionComments])
           if (c.parentId === id) discussionComments.delete(k);
-        record(d.orgId, by, "discussion.delete", { target: id });
+        record(d.teamId, by, "discussion.delete", { target: id });
         return true;
       }),
     addDiscussionComment: (c, by) =>

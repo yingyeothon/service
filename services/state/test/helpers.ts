@@ -30,7 +30,7 @@ const authChannel = (id: string, apiKey: string | undefined) => ({
   id,
   kind: "auth" as const,
   ownerId: "m1",
-  orgId: "org_1",
+  teamId: "team_1",
   projectId: "prj_1",
   name: id,
   config: {

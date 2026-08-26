@@ -5,7 +5,7 @@
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens or secrets.
 // GATEWAY_TOKEN enables the GET /gw/channels checks; it comes through the environment
 // rather than argv because argv is visible in `ps` (docs/secrets.md).
-import { ensureTeam } from "./_org.mjs";
+import { ensureTeam } from "./_team.mjs";
 
 const [base, debugKey, authBase] = process.argv.slice(2);
 const gatewayToken = process.env.GATEWAY_TOKEN ?? "";
@@ -67,7 +67,7 @@ const member = await login("smoke-member", "member", -1002);
 const pending = await login("smoke-pending", "pending", -1003);
 const as = (u, extra = {}) => ({ cookie: u.cookie, origin: base, ...extra });
 
-// Every channel lives in a project: the member's own `smoke-console` org.
+// Every channel lives in a project: the member's own `smoke-console` team.
 const req = (url, o) => call(url.replace(base, ""), o);
 const team = await ensureTeam(req, base, as(member), "smoke-console", check);
 const me = await call("/me", { headers: as(member) });
@@ -131,7 +131,7 @@ check(
     got.body?.secret === undefined &&
     got.body?.startUrl?.includes(chId) &&
     got.body?.projectId === team.prjId &&
-    got.body?.orgName === "smoke-console" &&
+    got.body?.teamName === "smoke-console" &&
     got.body?.createdBy === "smoke-member",
   got.text.slice(0, 200),
 );
@@ -345,9 +345,9 @@ try {
   await redisUser("DELETE").catch(() => undefined);
 }
 check(
-  // Admins may look at a channel of an org they are not in but never mint for
+  // Admins may look at a channel of a team they are not in but never mint for
   // it, the same line rotate-secret draws (docs/decisions.md).
-  "an admin cannot mint for another org's channel",
+  "an admin cannot mint for another team's channel",
   (
     await call(`/channels/${q.body?.id}/redis-user`, {
       method: "POST",
@@ -485,7 +485,7 @@ const approved = await call(`/members/${pending.id}/approve`, {
 });
 check("approve", approved.status === 200 && approved.body?.role === "member");
 check(
-  "an outsider cannot create in the org's project",
+  "an outsider cannot create in the team's project",
   (
     await call(`/projects/${team.prjId}/channels`, {
       method: "POST",
@@ -522,7 +522,7 @@ check(
   ).status === 201,
 );
 check(
-  "duplicate channel name in the org is 409",
+  "duplicate channel name in the team is 409",
   (
     await call(`/projects/${theirs.prjId}/channels`, {
       method: "POST",
@@ -531,11 +531,11 @@ check(
     })
   ).status === 409,
 );
-const hist = await call(`/orgs/${team.orgId}/history?limit=50`, {
+const hist = await call(`/teams/${team.teamId}/history?limit=50`, {
   headers: as(member),
 });
 check(
-  "org history records the channel writes",
+  "team history records the channel writes",
   hist.status === 200 &&
     (hist.body?.history ?? []).some((h) => h.action === "resource.create") &&
     (hist.body?.history ?? []).some((h) => h.action === "resource.rotate"),
@@ -580,7 +580,7 @@ check(
   "session gone",
   (await call("/me", { headers: as(member) })).status === 401,
 );
-// Residue on dev: the three `smoke-*` members, the `smoke-console{,-2}` orgs
+// Residue on dev: the three `smoke-*` members, the `smoke-console{,-2}` teams
 // (reused by the next run), soft-deleted channels, revoked tokens and audit
 // rows stay until the sweep; reruns reset the pending member's role through
 // the debug hook (it re-applies `role`).

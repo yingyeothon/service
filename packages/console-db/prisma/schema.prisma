@@ -29,10 +29,10 @@ model asset_bundles {
   owner_id              String?                 @db.VarChar(64)
   created_at            BigInt
   updated_at            BigInt
-  org_id                String?                 @db.VarChar(64)
+  team_id                String?                 @db.VarChar(64)
   project_id            String?                 @db.VarChar(64)
   members               members?                @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_owner")
-  organizations         organizations?          @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_org_fk")
+  teams         teams?          @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_team_fk")
   projects              projects?               @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_project_fk")
   asset_files           asset_files[]
   asset_pending_uploads asset_pending_uploads[]
@@ -40,7 +40,7 @@ model asset_bundles {
 
   @@index([owner_id], map: "asset_bundles_owner")
   @@index([project_id], map: "asset_bundles_project")
-  @@index([org_id, name], map: "asset_bundles_org_name")
+  @@index([team_id, name], map: "asset_bundles_team_name")
 }
 
 model asset_files {
@@ -122,12 +122,12 @@ model catalog_apps {
   keep_recent_versions    Int                       @default(3)
   created_at              BigInt
   updated_at              BigInt
-  org_id                  String?                   @db.VarChar(64)
+  team_id                  String?                   @db.VarChar(64)
   project_id              String?                   @db.VarChar(64)
   catalog_app_permissions catalog_app_permissions[]
   catalog_groups          catalog_groups?           @relation(fields: [group_id], references: [id], onUpdate: Restrict, map: "catalog_apps_group")
   members                 members?                  @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_owner")
-  organizations           organizations?            @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_org_fk")
+  teams           teams?            @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_team_fk")
   projects                projects?                 @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_project_fk")
   catalog_artifacts       catalog_artifacts[]
   catalog_pending_uploads catalog_pending_uploads[]
@@ -135,7 +135,7 @@ model catalog_apps {
   @@index([group_id], map: "catalog_apps_group")
   @@index([owner_id], map: "catalog_apps_owner")
   @@index([project_id], map: "catalog_apps_project")
-  @@index([org_id, name], map: "catalog_apps_org_name")
+  @@index([team_id, name], map: "catalog_apps_team_name")
 }
 
 model catalog_artifacts {
@@ -214,17 +214,17 @@ model channels {
   expires_at    BigInt
   disabled_at   BigInt?
   deleted_at    BigInt?
-  org_id        String?        @db.VarChar(64)
+  team_id        String?        @db.VarChar(64)
   project_id    String?        @db.VarChar(64)
   members       members        @relation(fields: [owner_id], references: [id], onUpdate: Restrict, map: "channels_owner")
-  organizations organizations? @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "channels_org_fk")
+  teams teams? @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "channels_team_fk")
   projects      projects?      @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "channels_project_fk")
   state_docs    state_docs[]
 
   @@index([kind, owner_id], map: "channels_kind_owner")
   @@index([owner_id], map: "channels_owner")
   @@index([project_id], map: "channels_project")
-  @@index([org_id, name], map: "channels_org_name")
+  @@index([team_id, name], map: "channels_team_name")
 }
 
 model events {
@@ -264,11 +264,11 @@ model members {
   events                    events[]
   proposals                 proposals[]
   votes                     votes[]
-  organizations_created     organizations[]             @relation("org_creator")
-  org_members               org_members[]               @relation("org_member")
-  org_members_decided       org_members[]               @relation("org_decider")
-  org_history_acted         org_history[]               @relation("history_actor")
-  org_history_subject       org_history[]               @relation("history_subject")
+  teams_created     teams[]             @relation("team_creator")
+  team_members               team_members[]               @relation("team_member")
+  team_members_decided       team_members[]               @relation("team_decider")
+  team_history_acted         team_history[]               @relation("history_actor")
+  team_history_subject       team_history[]               @relation("history_subject")
   discussions               discussions[]
   discussion_comments       discussion_comments[]
   projects                  projects[]
@@ -392,74 +392,74 @@ enum catalog_pending_uploads_status {
   failed
 }
 
-model organizations {
+model teams {
   id            String          @id @db.VarChar(64)
-  name          String          @unique(map: "organizations_name") @db.VarChar(255)
+  name          String          @unique(map: "teams_name") @db.VarChar(255)
   description   String?         @db.MediumText
   admin_locked  Boolean         @default(false)
   created_by    String          @db.VarChar(64)
   created_at    BigInt
   updated_at    BigInt
-  members       members         @relation("org_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "organizations_creator")
-  org_members   org_members[]
-  org_history   org_history[]
+  members       members         @relation("team_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "teams_creator")
+  team_members   team_members[]
+  team_history   team_history[]
   discussions   discussions[]
   projects      projects[]
   channels      channels[]
   catalog_apps  catalog_apps[]
   asset_bundles asset_bundles[]
 
-  @@index([created_by], map: "organizations_creator")
+  @@index([created_by], map: "teams_creator")
 }
 
-model org_members {
-  org_id        String            @db.VarChar(64)
+model team_members {
+  team_id        String            @db.VarChar(64)
   member_id     String            @db.VarChar(64)
-  role          org_members_role
-  state         org_members_state @default(active)
+  role          team_members_role
+  state         team_members_state @default(active)
   requested_at  BigInt
   decided_at    BigInt?
   decided_by    String?           @db.VarChar(64)
-  organizations organizations     @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "org_members_org")
-  members       members           @relation("org_member", fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_members_member_fk")
-  decider       members?          @relation("org_decider", fields: [decided_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_members_decider_fk")
+  teams teams     @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "team_members_team")
+  members       members           @relation("team_member", fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "team_members_member_fk")
+  decider       members?          @relation("team_decider", fields: [decided_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "team_members_decider_fk")
 
-  @@id([org_id, member_id])
-  @@index([member_id], map: "org_members_member")
-  @@index([decided_by], map: "org_members_decider")
+  @@id([team_id, member_id])
+  @@index([member_id], map: "team_members_member")
+  @@index([decided_by], map: "team_members_decider")
 }
 
-model org_history {
+model team_history {
   id                String        @id @db.VarChar(64)
-  org_id            String        @db.VarChar(64)
+  team_id            String        @db.VarChar(64)
   at                BigInt
   actor_id          String?       @db.VarChar(64)
   action            String        @db.VarChar(64)
   subject_member_id String?       @db.VarChar(64)
   target            String?       @db.VarChar(255)
   detail_json       String?       @db.MediumText
-  organizations     organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "org_history_org")
-  actor             members?      @relation("history_actor", fields: [actor_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_history_actor_fk")
-  subject           members?      @relation("history_subject", fields: [subject_member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "org_history_subject_fk")
+  teams     teams @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "team_history_team")
+  actor             members?      @relation("history_actor", fields: [actor_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "team_history_actor_fk")
+  subject           members?      @relation("history_subject", fields: [subject_member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "team_history_subject_fk")
 
-  @@index([org_id, at, id], map: "org_history_org_at")
-  @@index([actor_id], map: "org_history_actor")
-  @@index([subject_member_id], map: "org_history_subject")
+  @@index([team_id, at, id], map: "team_history_team_at")
+  @@index([actor_id], map: "team_history_actor")
+  @@index([subject_member_id], map: "team_history_subject")
 }
 
 model discussions {
   id                  String                @id @db.VarChar(64)
-  org_id              String                @db.VarChar(64)
+  team_id              String                @db.VarChar(64)
   title               String                @db.VarChar(255)
   body_md             String                @db.MediumText
   created_by          String                @db.VarChar(64)
   created_at          BigInt
   updated_at          BigInt
-  organizations       organizations         @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "discussions_org_fk")
+  teams       teams         @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "discussions_team_fk")
   members             members               @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "discussions_author_fk")
   discussion_comments discussion_comments[]
 
-  @@index([org_id, created_at], map: "discussions_org")
+  @@index([team_id, created_at], map: "discussions_team")
   @@index([created_by], map: "discussions_author")
 }
 
@@ -479,14 +479,14 @@ model discussion_comments {
 
 model projects {
   id                String             @id @db.VarChar(64)
-  org_id            String             @db.VarChar(64)
+  team_id            String             @db.VarChar(64)
   name              String             @db.VarChar(255)
   description       String?            @db.MediumText
   next_issue_number Int                @default(1)
   created_by        String             @db.VarChar(64)
   created_at        BigInt
   updated_at        BigInt
-  organizations     organizations      @relation(fields: [org_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "projects_org")
+  teams     teams      @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "projects_team")
   members           members            @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "projects_creator_fk")
   project_versions  project_versions[]
   issues            issues[]
@@ -494,7 +494,7 @@ model projects {
   catalog_apps      catalog_apps[]
   asset_bundles     asset_bundles[]
 
-  @@unique([org_id, name], map: "projects_org_name")
+  @@unique([team_id, name], map: "projects_team_name")
   @@index([created_by], map: "projects_creator")
 }
 
@@ -579,13 +579,13 @@ model platform_settings {
   @@index([updated_by], map: "platform_settings_updater")
 }
 
-enum org_members_role {
+enum team_members_role {
   owner
   member
   pending
 }
 
-enum org_members_state {
+enum team_members_state {
   active
   declined
   kicked

@@ -1,16 +1,16 @@
 import { ulid, type Logger } from "@yyt/core";
 import type {
   ConsoleDb,
-  OrgDb,
-  OrgHistoryAction,
-  OrgHistoryDetail,
+  TeamDb,
+  TeamHistoryAction,
+  TeamHistoryDetail,
 } from "@yyt/console-db";
 
 /*
  * Shared plumbing for the three project resources (channels, catalog apps,
- * asset bundles): the per-project caps, the org-unique name rule, the
- * breadcrumb names every resource view carries, and the best-effort org
- * history write (`docs/decisions.md` *Organizations and projects*).
+ * asset bundles): the per-project caps, the team-unique name rule, the
+ * breadcrumb names every resource view carries, and the best-effort team
+ * history write (`docs/decisions.md` *Teams and projects*).
  */
 
 /** Per project. Bytes and rows are bounded elsewhere; these bound sprawl. */
@@ -24,31 +24,31 @@ export function sameName(a: string, b: string): boolean {
 }
 
 /**
- * Best-effort org history for a resource write. Resource rows live in their
- * own repositories, so unlike org/member/project writes this cannot share the
+ * Best-effort team history for a resource write. Resource rows live in their
+ * own repositories, so unlike team/member/project writes this cannot share the
  * resource's transaction; a failed history row is logged, never a 5xx — the
  * global audit log (written by the same route) is the second record.
  */
 export type ResourceHistory = (
-  orgId: string | null,
+  teamId: string | null,
   actorId: string | null,
-  action: OrgHistoryAction,
+  action: TeamHistoryAction,
   target: string,
-  detail: OrgHistoryDetail,
+  detail: TeamHistoryDetail,
   at: number,
 ) => Promise<void>;
 
 export function createResourceHistory(
-  org: OrgDb,
+  team: TeamDb,
   logger: Logger,
 ): ResourceHistory {
-  return async (orgId, actorId, action, target, detail, at) => {
-    // A row still unmapped after the expand migration has no org to record on.
-    if (orgId === null) return;
+  return async (teamId, actorId, action, target, detail, at) => {
+    // A row still unmapped after the expand migration has no team to record on.
+    if (teamId === null) return;
     try {
-      await org.appendHistory({
+      await team.appendHistory({
         id: ulid(at * 1000),
-        orgId,
+        teamId,
         at,
         actorId,
         action,
@@ -56,8 +56,8 @@ export function createResourceHistory(
         detail,
       });
     } catch (e) {
-      logger.error("org history write failed", {
-        orgId,
+      logger.error("team history write failed", {
+        teamId,
         action,
         target,
         message: e instanceof Error ? e.message : String(e),
@@ -67,14 +67,14 @@ export function createResourceHistory(
 }
 
 export interface ResourceParents {
-  orgId: string | null;
+  teamId: string | null;
   projectId: string | null;
   ownerId: string | null;
 }
 
 export interface ResourceCrumbs {
-  orgId: string | null;
-  orgName: string | null;
+  teamId: string | null;
+  teamName: string | null;
   projectId: string | null;
   projectName: string | null;
   /** GitHub login of the creator; display only, never an authorization input. */
@@ -82,16 +82,16 @@ export interface ResourceCrumbs {
 }
 
 /**
- * Resolves the org/project names and creator logins a page of resource rows
- * needs for its breadcrumbs — one `findProject`/`findOrg` per *distinct* id
+ * Resolves the team/project names and creator logins a page of resource rows
+ * needs for its breadcrumbs — one `findProject`/`findTeam` per *distinct* id
  * and one `listMembers`, never one per row.
  */
 export function createCrumbResolver({
   db,
-  org,
+  team,
 }: {
   db: ConsoleDb;
-  org: OrgDb;
+  team: TeamDb;
 }) {
   return async function crumbs<T extends ResourceParents>(
     rows: T[],
@@ -100,19 +100,19 @@ export function createCrumbResolver({
       (await db.listMembers()).map((m) => [m.id, m.githubLogin]),
     );
     const projectNames = new Map<string, string | null>();
-    const orgNames = new Map<string, string | null>();
+    const teamNames = new Map<string, string | null>();
     for (const r of rows) {
       if (r.projectId !== null && !projectNames.has(r.projectId))
         projectNames.set(
           r.projectId,
-          (await org.findProject(r.projectId))?.name ?? null,
+          (await team.findProject(r.projectId))?.name ?? null,
         );
-      if (r.orgId !== null && !orgNames.has(r.orgId))
-        orgNames.set(r.orgId, (await org.findOrg(r.orgId))?.name ?? null);
+      if (r.teamId !== null && !teamNames.has(r.teamId))
+        teamNames.set(r.teamId, (await team.findTeam(r.teamId))?.name ?? null);
     }
     return (r) => ({
-      orgId: r.orgId,
-      orgName: r.orgId === null ? null : (orgNames.get(r.orgId) ?? null),
+      teamId: r.teamId,
+      teamName: r.teamId === null ? null : (teamNames.get(r.teamId) ?? null),
       projectId: r.projectId,
       projectName:
         r.projectId === null ? null : (projectNames.get(r.projectId) ?? null),

@@ -172,7 +172,7 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
     const a = await h.team("alice");
     const boss = await h.login("Boss", "admin");
     const mate = await h.login("mate", "member");
-    await h.seat(a, a.orgId, "mate");
+    await h.seat(a, a.teamId, "mate");
     const id = await authChannel(h, a);
     expect((await key(h, "GET", id, boss.cookie)).statusCode).toBe(200);
     expect((await key(h, "POST", id, boss.cookie)).statusCode).toBe(403);
@@ -256,7 +256,7 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
       id: "dbg_01seeded",
       kind: "auth",
       ownerId: a.id,
-      orgId: a.orgId,
+      teamId: a.teamId,
       projectId: a.prjId,
       name: "seeded",
       config: authConfig,

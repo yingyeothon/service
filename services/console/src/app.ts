@@ -16,7 +16,7 @@ import type {
   ChannelRow,
   ConsoleDb,
   EventsDb,
-  OrgDb,
+  TeamDb,
   StateDb,
 } from "@yyt/console-db";
 import {
@@ -59,8 +59,8 @@ import {
   deleteChannelDocs,
 } from "./channel-doc-key.js";
 import { createGatewayRoutes } from "./gateway.js";
-import { createOrgRoutes } from "./org.js";
-import { createOrgAccess } from "./org-access.js";
+import { createTeamRoutes } from "./team.js";
+import { createTeamAccess } from "./team-access.js";
 import {
   CHANNELS_PER_PROJECT,
   createCrumbResolver,
@@ -88,8 +88,8 @@ export interface ConsoleAppOptions {
   events: EventsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
-  /** Organizations, projects, versions, issues, discussions and platform settings. */
-  org: OrgDb;
+  /** Teams, projects, versions, issues, discussions and platform settings. */
+  team: TeamDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
@@ -140,7 +140,7 @@ const deviceTokenBody = z
 const channelsQuery = z
   .object({
     kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional(),
-    /** admin only: `all` lists every org's channels. */
+    /** admin only: `all` lists every team's channels. */
     scope: z.enum(["mine", "all"]).optional(),
   })
   .passthrough();
@@ -156,7 +156,7 @@ export function createConsoleApp({
   events,
   catalog,
   assets,
-  org,
+  team,
   posters,
   artifacts,
   cdnBaseUrl,
@@ -232,10 +232,10 @@ export function createConsoleApp({
     return { memberId, role, created };
   }
 
-  const access = createOrgAccess({ db, org, catalog, assets });
-  const { projectAccess, projectResource, memberOrgIds } = access;
-  const history = createResourceHistory(org, logger);
-  const crumbs = createCrumbResolver({ db, org });
+  const access = createTeamAccess({ db, team, catalog, assets });
+  const { projectAccess, projectResource, memberTeamIds } = access;
+  const history = createResourceHistory(team, logger);
+  const crumbs = createCrumbResolver({ db, team });
 
   /** The list/get shape: never `secret_json`, plus breadcrumb names. */
   async function views(rows: ChannelRow[]) {
@@ -248,9 +248,9 @@ export function createConsoleApp({
   }
   const view = async (row: ChannelRow) => (await views([row]))[0]!;
 
-  /** One org-history row per channel write, best-effort (`rules/data.md`). */
+  /** One team-history row per channel write, best-effort (`rules/data.md`). */
   const channelHistory = (
-    row: Pick<ChannelRow, "id" | "kind" | "name" | "orgId">,
+    row: Pick<ChannelRow, "id" | "kind" | "name" | "teamId">,
     actorId: string,
     action:
       | "resource.create"
@@ -260,7 +260,7 @@ export function createConsoleApp({
     fields?: string[],
   ) =>
     history(
-      row.orgId,
+      row.teamId,
       actorId,
       action,
       row.id,
@@ -291,17 +291,17 @@ export function createConsoleApp({
       );
   }
 
-  /** Names are unique within the org across every kind (`docs/decisions.md`). */
+  /** Names are unique within the team across every kind (`docs/decisions.md`). */
   async function requireFreeChannelName(
-    orgId: string,
+    teamId: string,
     name: string,
     exceptId?: string,
   ): Promise<void> {
-    const rows = await db.listChannels({ orgId });
+    const rows = await db.listChannels({ teamId });
     if (rows.some((c) => c.id !== exceptId && sameName(c.name, name)))
       throw new AppError(
         "conflict",
-        `a channel named "${name}" already exists in this organization`,
+        `a channel named "${name}" already exists in this team`,
       );
   }
 
@@ -676,11 +676,11 @@ export function createConsoleApp({
         const all = ctx.query.scope === "all";
         if (all && id.role !== "admin")
           throw new AppError("forbidden", "scope=all requires admin");
-        // "Mine" = every org the caller is seated in; an unmapped legacy row
-        // (no org) is visible to admins only, through `scope=all`.
-        const orgIds = all ? undefined : await memberOrgIds(id);
-        if (orgIds && orgIds.length === 0) return { channels: [] };
-        const rows = await db.listChannels({ kind: ctx.query.kind, orgIds });
+        // "Mine" = every team the caller is seated in; an unmapped legacy row
+        // (no team) is visible to admins only, through `scope=all`.
+        const teamIds = all ? undefined : await memberTeamIds(id);
+        if (teamIds && teamIds.length === 0) return { channels: [] };
+        const rows = await db.listChannels({ kind: ctx.query.kind, teamIds });
         return { channels: await views(rows) };
       },
     }),
@@ -715,7 +715,7 @@ export function createConsoleApp({
             "conflict",
             `too many channels (max ${CHANNELS_PER_PROJECT} per project)`,
           );
-        await requireFreeChannelName(a.org.id, name);
+        await requireFreeChannelName(a.team.id, name);
         const split = buildChannel(kind, config, channelOptions);
         if (kind !== "auth")
           await requireAuthChannel(a.project.id, split.config);
@@ -725,7 +725,7 @@ export function createConsoleApp({
           id: channelId,
           kind,
           ownerId: a.id.subject,
-          orgId: a.org.id,
+          teamId: a.team.id,
           projectId: a.project.id,
           name,
           config: split.config,
@@ -777,7 +777,7 @@ export function createConsoleApp({
         const {
           id,
           row,
-          org: o,
+          team: o,
           project,
         } = await projectResource(
           ctx,
@@ -934,7 +934,7 @@ export function createConsoleApp({
   const assetRoutes = createAssetRoutes({
     db,
     assets,
-    org,
+    team,
     access,
     crumbs,
     history,
@@ -945,9 +945,9 @@ export function createConsoleApp({
     audit,
   });
 
-  const orgRoutes = createOrgRoutes({
+  const teamRoutes = createTeamRoutes({
     db,
-    org,
+    team,
     catalog,
     assets,
     kv,
@@ -957,7 +957,7 @@ export function createConsoleApp({
 
   const catalogRoutes = createCatalogRoutes({
     catalog,
-    org,
+    team,
     access,
     crumbs,
     history,
@@ -974,7 +974,7 @@ export function createConsoleApp({
       ...routes,
       ...memberRoutes,
       ...eventRoutes,
-      ...orgRoutes,
+      ...teamRoutes,
       ...catalogRoutes,
       ...assetRoutes,
       ...channelRedisRoutes,

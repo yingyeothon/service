@@ -23,23 +23,23 @@ export type CatalogUploadStatus = (typeof CATALOG_UPLOAD_STATUSES)[number];
 /*
  * The catalog's own permission model (groups, per-app/per-group grants,
  * pending logins, owner transfer, `debug_only`) was withdrawn on 2026-08-26
- * (docs/decisions.md *Organizations and projects*): an app belongs to a
- * project and org membership is the only permission. The tables and columns
+ * (docs/decisions.md *Teams and projects*): an app belongs to a
+ * project and team membership is the only permission. The tables and columns
  * still exist until the contract migration drops them; nothing here reads or
  * writes them any more, and the Prisma inserts leave them at their defaults.
  */
 
 export interface CatalogAppRow {
   id: string;
-  /** Unique within the org (case-insensitive). */
+  /** Unique within the team (case-insensitive). */
   name: string;
   /** Artifact key prefix under the distribution bucket. */
   path: string;
   description: string | null;
-  /** Creator, kept for display; authorization is org membership (`orgId`). */
+  /** Creator, kept for display; authorization is team membership (`teamId`). */
   ownerId: string | null;
   /** Null only for rows created before migration `6_org_project` was mapped. */
-  orgId: string | null;
+  teamId: string | null;
   projectId: string | null;
   slackHookUrl: string | null;
   slackChannel: string | null;
@@ -55,8 +55,8 @@ export interface CatalogAppInput {
   path: string;
   description?: string | null;
   ownerId?: string | null;
-  /** The project must belong to the org; the writer asserts it. */
-  orgId: string;
+  /** The project must belong to the team; the writer asserts it. */
+  teamId: string;
   projectId: string;
   createdAt: number;
 }
@@ -129,7 +129,7 @@ export interface CatalogPendingUploadPatch {
 }
 
 /**
- * Binary catalog tables (migration v3, org-scoped since `6_org_project`).
+ * Binary catalog tables (migration v3, team-scoped since `6_org_project`).
  * Console is the only reader/writer. Deletes are hard: artifact rows mirror
  * S3 objects (the route deletes the object first), app deletion cascades
  * artifacts and uploads.
@@ -138,18 +138,18 @@ export interface CatalogDb {
   insertApp(a: CatalogAppInput): Promise<void>;
   findApp(id: string): Promise<CatalogAppRow | undefined>;
   /**
-   * Case-insensitive name lookup **within one org**. Until the contract
+   * Case-insensitive name lookup **within one team**. Until the contract
    * migration lands the database still carries the old global unique index,
-   * so a name can exist in one org only — a 409 on insert, not a lookup miss.
+   * so a name can exist in one team only — a 409 on insert, not a lookup miss.
    */
   findAppByName(
-    orgId: string,
+    teamId: string,
     name: string,
   ): Promise<CatalogAppRow | undefined>;
-  /** Name ascending; `orgId`/`orgIds`/`projectId` narrow. */
+  /** Name ascending; `teamId`/`teamIds`/`projectId` narrow. */
   listApps(filter?: {
-    orgId?: string;
-    orgIds?: string[];
+    teamId?: string;
+    teamIds?: string[];
     projectId?: string;
   }): Promise<CatalogAppRow[]>;
   updateApp(id: string, patch: CatalogAppPatch, at: number): Promise<boolean>;
@@ -199,7 +199,7 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
     path: string;
     description: string | null;
     owner_id: string | null;
-    org_id: string | null;
+    team_id: string | null;
     project_id: string | null;
     slack_hook_url: string | null;
     slack_channel: string | null;
@@ -213,7 +213,7 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
     path: r.path,
     description: r.description,
     ownerId: r.owner_id,
-    orgId: r.org_id,
+    teamId: r.team_id,
     projectId: r.project_id,
     slackHookUrl: r.slack_hook_url,
     slackChannel: r.slack_channel,
@@ -279,7 +279,7 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
             path: a.path,
             description: a.description ?? null,
             owner_id: a.ownerId ?? null,
-            org_id: a.orgId,
+            team_id: a.teamId,
             project_id: a.projectId,
             keep_recent_versions: 3,
             created_at: a.createdAt,
@@ -292,11 +292,11 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
         const r = await prisma.catalog_apps.findUnique({ where: { id } });
         return r ? toApp(r) : undefined;
       }),
-    findAppByName: (orgId, name) =>
+    findAppByName: (teamId, name) =>
       run(async () => {
         // `name` is `utf8mb4_unicode_ci`, so equality is already case-insensitive.
         const r = await prisma.catalog_apps.findFirst({
-          where: { org_id: orgId, name },
+          where: { team_id: teamId, name },
         });
         return r ? toApp(r) : undefined;
       }),
@@ -305,8 +305,8 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
         (
           await prisma.catalog_apps.findMany({
             where: {
-              ...(filter.orgId ? { org_id: filter.orgId } : {}),
-              ...(filter.orgIds ? { org_id: { in: filter.orgIds } } : {}),
+              ...(filter.teamId ? { team_id: filter.teamId } : {}),
+              ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
               ...(filter.projectId ? { project_id: filter.projectId } : {}),
             },
             orderBy: [{ name: "asc" }, { id: "asc" }],
@@ -454,8 +454,8 @@ export function createMemoryCatalogDb(
     a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
   /**
    * Mirrors the index that is actually deployed: `catalog_apps_name` is still
-   * global until the contract migration replaces it with `(org_id, name)`.
-   * Relax to an org-scoped check in the same commit as that migration.
+   * global until the contract migration replaces it with `(team_id, name)`.
+   * Relax to a team-scoped check in the same commit as that migration.
    */
   const nameTaken = (name: string, exceptId?: string) =>
     [...apps.values()].some((x) => x.id !== exceptId && eqI(x.name, name));
@@ -472,7 +472,7 @@ export function createMemoryCatalogDb(
         path: a.path,
         description: a.description ?? null,
         ownerId: a.ownerId ?? null,
-        orgId: a.orgId,
+        teamId: a.teamId,
         projectId: a.projectId,
         slackHookUrl: null,
         slackChannel: null,
@@ -486,9 +486,9 @@ export function createMemoryCatalogDb(
       const a = apps.get(id);
       return a && { ...a };
     },
-    findAppByName: async (orgId, name) => {
+    findAppByName: async (teamId, name) => {
       const a = [...apps.values()].find(
-        (x) => x.orgId === orgId && eqI(x.name, name),
+        (x) => x.teamId === teamId && eqI(x.name, name),
       );
       return a && { ...a };
     },
@@ -496,9 +496,9 @@ export function createMemoryCatalogDb(
       [...apps.values()]
         .filter(
           (a) =>
-            (!filter.orgId || a.orgId === filter.orgId) &&
-            (!filter.orgIds ||
-              (a.orgId !== null && filter.orgIds.includes(a.orgId))) &&
+            (!filter.teamId || a.teamId === filter.teamId) &&
+            (!filter.teamIds ||
+              (a.teamId !== null && filter.teamIds.includes(a.teamId))) &&
             (!filter.projectId || a.projectId === filter.projectId),
         )
         .map((a) => ({ ...a }))

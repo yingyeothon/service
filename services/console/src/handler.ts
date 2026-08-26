@@ -3,7 +3,7 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
-  createOrgDb,
+  createTeamDb,
   createPrismaClient,
   createStateDb,
   mysqlOptionsFromEnv,
@@ -11,7 +11,7 @@ import {
   type CatalogDb,
   type ConsoleDb,
   type EventsDb,
-  type OrgDb,
+  type TeamDb,
   type StateDb,
 } from "@yyt/console-db";
 import { systemClock, type Logger } from "@yyt/core";
@@ -37,7 +37,7 @@ import {
   runRedisUsageReport,
 } from "./expire.js";
 import { createGithubLogin } from "./github.js";
-import { historyId } from "./org.js";
+import { historyId } from "./team.js";
 import { createS3PosterStore } from "./poster.js";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
@@ -65,7 +65,7 @@ interface Deps {
   events: EventsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
-  org: OrgDb;
+  team: TeamDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
   kv: Kv;
@@ -104,7 +104,7 @@ function getDeps(): Promise<Deps> {
       events: createEventsDb(raw),
       catalog: createCatalogDb(raw),
       assets: createAssetsDb(raw),
-      org: createOrgDb(raw, { newHistoryId: historyId }),
+      team: createTeamDb(raw, { newHistoryId: historyId }),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
@@ -153,7 +153,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     catalog,
     assets,
-    org,
+    team,
     state,
     kv,
     redisAcl,
@@ -196,7 +196,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     catalog,
     assets,
-    org,
+    team,
     state,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
@@ -224,7 +224,7 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
 
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { stage, db, catalog, assets, org, state, redisAcl } = await getDeps();
+  const { stage, db, catalog, assets, team, state, redisAcl } = await getDeps();
   const artifacts = artifactStoreFromEnv();
   // Run every sweep even when one throws, then rethrow so the Errors alarm
   // still fires: chaining them bare meant a channel-expiry failure silently
@@ -232,7 +232,7 @@ export const expire = async (): Promise<void> => {
   const failures: unknown[] = [];
   for (const step of [
     async () => {
-      const { deleted } = await runExpire({ db, state, org, logger });
+      const { deleted } = await runExpire({ db, state, team, logger });
       // Hard-deleted channels take their participant credential with them.
       // Only `q` channels ever had one, and each revoke costs a round trip
       // (≈4s against an unreachable Redis), so the kind test is what keeps

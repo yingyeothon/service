@@ -148,10 +148,10 @@ export interface QChannel {
 export interface ChannelRow {
   id: string;
   kind: ChannelKind;
-  /** Creator, kept for display; authorization is org membership (`orgId`). */
+  /** Creator, kept for display; authorization is team membership (`teamId`). */
   ownerId: string;
   /** Null only for rows created before migration `6_org_project` was mapped. */
-  orgId: string | null;
+  teamId: string | null;
   projectId: string | null;
   name: string;
   configJson: string;
@@ -176,8 +176,8 @@ export interface InsertChannelInput {
   id: string;
   kind: ChannelKind;
   ownerId: string;
-  /** The project must belong to the org; the writer asserts it. */
-  orgId: string;
+  /** The project must belong to the team; the writer asserts it. */
+  teamId: string;
   projectId: string;
   name: string;
   config: unknown;
@@ -233,18 +233,18 @@ export interface ChannelPatch {
 
 export interface ChannelFilter {
   kind?: ChannelKind;
-  orgId?: string;
-  /** Every org the caller is seated in — one query, not one per org. */
-  orgIds?: string[];
+  teamId?: string;
+  /** Every team the caller is seated in — one query, not one per team. */
+  teamIds?: string[];
   projectId?: string;
 }
 
-/** A channel the sweep hard-deleted, with where it lived (for org history). */
+/** A channel the sweep hard-deleted, with where it lived (for team history). */
 export interface ExpiredChannel {
   id: string;
   kind: ChannelKind;
   name: string;
-  orgId: string | null;
+  teamId: string | null;
   projectId: string | null;
 }
 
@@ -383,7 +383,7 @@ type ChannelModel = {
   id: string;
   kind: string;
   owner_id: string;
-  org_id: string | null;
+  team_id: string | null;
   project_id: string | null;
   name: string;
   config_json: string;
@@ -399,7 +399,7 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
     id: r.id,
     kind: r.kind as ChannelKind,
     ownerId: r.owner_id,
-    orgId: r.org_id,
+    teamId: r.team_id,
     projectId: r.project_id,
     name: r.name,
     configJson: r.config_json,
@@ -526,8 +526,8 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
             where: {
               deleted_at: null,
               ...(filter.kind ? { kind: filter.kind } : {}),
-              ...(filter.orgId ? { org_id: filter.orgId } : {}),
-              ...(filter.orgIds ? { org_id: { in: filter.orgIds } } : {}),
+              ...(filter.teamId ? { team_id: filter.teamId } : {}),
+              ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
               ...(filter.projectId ? { project_id: filter.projectId } : {}),
             },
             orderBy: [{ created_at: "desc" }, { id: "desc" }],
@@ -587,7 +587,7 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
                   id: true,
                   kind: true,
                   name: true,
-                  org_id: true,
+                  team_id: true,
                   project_id: true,
                 },
               })
@@ -595,7 +595,7 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
               id: r.id,
               kind: r.kind,
               name: r.name,
-              orgId: r.org_id,
+              teamId: r.team_id,
               projectId: r.project_id,
             }));
             if (toDelete.length > 0)
@@ -647,7 +647,7 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
             id: c.id,
             kind: c.kind,
             owner_id: c.ownerId,
-            org_id: c.orgId,
+            team_id: c.teamId,
             project_id: c.projectId,
             name: c.name,
             config_json: JSON.stringify(c.config),

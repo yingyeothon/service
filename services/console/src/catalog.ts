@@ -12,7 +12,7 @@ import {
   type CatalogDb,
   type CatalogPendingUploadRow,
   type CatalogPlatform,
-  type OrgDb,
+  type TeamDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
@@ -30,8 +30,8 @@ import {
   manifestPlist,
   manifestUrlForPackageUrl,
 } from "./ios-dist.js";
-import { INSTALLER_APP_SETTING, resourceName } from "./org.js";
-import type { OrgAccessHelpers, ResourceAccess } from "./org-access.js";
+import { INSTALLER_APP_SETTING, resourceName } from "./team.js";
+import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
 import {
   APPS_PER_PROJECT,
   sameName,
@@ -58,7 +58,7 @@ const FORBIDDEN_APP_NAMES = new Set([
 
 // ---- validation ------------------------------------------------------------
 
-/** App names: the org-unique resource grammar (never id-shaped). */
+/** App names: the team-unique resource grammar (never id-shaped). */
 const name = resourceName;
 const description = z.string().max(2000);
 const appPath = z.string().trim().min(1).max(200);
@@ -216,10 +216,10 @@ export function finalObjectKey(
 
 export interface CatalogRoutesOptions {
   catalog: CatalogDb;
-  org: OrgDb;
+  team: TeamDb;
   access: Pick<
-    OrgAccessHelpers,
-    "projectAccess" | "projectResource" | "memberOrgIds"
+    TeamAccessHelpers,
+    "projectAccess" | "projectResource" | "memberTeamIds"
   >;
   crumbs: CrumbResolver;
   history: ResourceHistory;
@@ -241,7 +241,7 @@ export interface CatalogRoutesOptions {
 
 export function createCatalogRoutes({
   catalog,
-  org,
+  team,
   access,
   crumbs,
   history,
@@ -252,7 +252,7 @@ export function createCatalogRoutes({
   audit,
   fetchFn,
 }: CatalogRoutesOptions): AnyRoute[] {
-  const { projectAccess, projectResource, memberOrgIds } = access;
+  const { projectAccess, projectResource, memberTeamIds } = access;
 
   function requireStore(): ArtifactStore {
     if (!artifacts)
@@ -262,7 +262,7 @@ export function createCatalogRoutes({
 
   /**
    * `/catalog/apps/{app}` takes an id. For **one release** it also takes a
-   * name, resolved among the caller's orgs and only when exactly one app
+   * name, resolved among the caller's teams and only when exactly one app
    * matches: the installed installer app still addresses artifacts by name
    * (`docs/decisions.md` *Installer trust*). Remove the fallback in P10.
    */
@@ -272,9 +272,9 @@ export function createCatalogRoutes({
   ): Promise<string> {
     if (await catalog.findApp(ref)) return ref;
     const id = requireRole(ctx, "member");
-    const orgIds = await memberOrgIds(id);
-    if (orgIds.length === 0) return ref;
-    const hits = (await catalog.listApps({ orgIds })).filter((a) =>
+    const teamIds = await memberTeamIds(id);
+    if (teamIds.length === 0) return ref;
+    const hits = (await catalog.listApps({ teamIds })).filter((a) =>
       sameName(a.name, ref),
     );
     return hits.length === 1 ? hits[0]!.id : ref;
@@ -313,19 +313,19 @@ export function createCatalogRoutes({
     }
   }
 
-  /** Names are unique within the org (`docs/decisions.md`). */
+  /** Names are unique within the team (`docs/decisions.md`). */
   async function requireFreeName(
-    orgId: string,
+    teamId: string,
     appName: string,
     exceptId?: string,
   ): Promise<void> {
     if (FORBIDDEN_APP_NAMES.has(appName.toLowerCase()))
       throw new AppError("bad_request", `app name "${appName}" is reserved`);
-    const hit = await catalog.findAppByName(orgId, appName);
+    const hit = await catalog.findAppByName(teamId, appName);
     if (hit && hit.id !== exceptId)
       throw new AppError(
         "conflict",
-        `an app named "${appName}" already exists in this organization`,
+        `an app named "${appName}" already exists in this team`,
       );
   }
 
@@ -336,7 +336,7 @@ export function createCatalogRoutes({
     fields?: string[],
   ) =>
     history(
-      app.orgId,
+      app.teamId,
       actorId,
       action,
       app.id,
@@ -427,12 +427,12 @@ export function createCatalogRoutes({
       path: "/catalog/apps",
       auth: true,
       handler: async (ctx) => {
-        // Every app of every org the caller is seated in, flattened. Also the
+        // Every app of every team the caller is seated in, flattened. Also the
         // list the installed installer reads for one release.
         const id = requireRole(ctx, "member");
-        const orgIds = await memberOrgIds(id);
-        if (orgIds.length === 0) return { apps: [] };
-        return { apps: await appViews(await catalog.listApps({ orgIds })) };
+        const teamIds = await memberTeamIds(id);
+        if (teamIds.length === 0) return { apps: [] };
+        return { apps: await appViews(await catalog.listApps({ teamIds })) };
       },
     },
     {
@@ -463,7 +463,7 @@ export function createCatalogRoutes({
             "conflict",
             `too many apps (max ${APPS_PER_PROJECT} per project)`,
           );
-        await requireFreeName(a.org.id, ctx.body.name);
+        await requireFreeName(a.team.id, ctx.body.name);
         const appId = `ca_${randomHex(8)}`;
         await catalog.insertApp({
           id: appId,
@@ -471,7 +471,7 @@ export function createCatalogRoutes({
           path: ctx.body.path,
           description: ctx.body.description ?? null,
           ownerId: a.id.subject,
-          orgId: a.org.id,
+          teamId: a.team.id,
           projectId: a.project.id,
           createdAt: nowSec(clock),
         });
@@ -501,7 +501,7 @@ export function createCatalogRoutes({
       auth: true,
       body: appPatchBody,
       handler: async (ctx) => {
-        const { id, row: app, org: o } = await appWith(ctx, true);
+        const { id, row: app, team: o } = await appWith(ctx, true);
         const patch: Parameters<CatalogDb["updateApp"]>[1] = {};
         if (ctx.body.name !== undefined && ctx.body.name !== app.name) {
           await requireFreeName(o.id, ctx.body.name, app.id);
@@ -821,17 +821,17 @@ export function createCatalogRoutes({
       handler: async (ctx) => {
         requireRole(ctx, "member");
         // Which app is "the installer" is a platform setting, and it is served
-        // only while its org is admin-locked: every member of that org can push
+        // only while its team is admin-locked: every member of that team can push
         // an APK here, and this route hands it to every device.
-        const s = await org.getSetting(INSTALLER_APP_SETTING);
+        const s = await team.getSetting(INSTALLER_APP_SETTING);
         const appId = typeof s?.value === "string" ? s.value : null;
         const app = appId ? await catalog.findApp(appId) : undefined;
         if (!app) return { downloads: [] };
-        const o = app.orgId ? await org.findOrg(app.orgId) : undefined;
+        const o = app.teamId ? await team.findTeam(app.teamId) : undefined;
         if (!o?.adminLocked)
           throw new AppError(
             "unavailable",
-            "the installer app's organization is not admin-locked",
+            "the installer app's team is not admin-locked",
             { details: { reason: "installer_untrusted" } },
           );
         const rows = (await catalog.listArtifacts(app.id)).slice(

@@ -123,10 +123,10 @@ describe("channels", () => {
       parse(await h.app(ev("GET", "/channels", { headers: a.cookie })))
         .channels,
     ).toHaveLength(3);
-    // Breadcrumbs: every view names its org, project and creator.
+    // Breadcrumbs: every view names its team, project and creator.
     expect(get).toMatchObject({
-      orgId: a.orgId,
-      orgName: "alice-org",
+      teamId: a.teamId,
+      teamName: "alice-team",
       projectId: a.prjId,
       projectName: "game",
       createdBy: "alice",
@@ -144,13 +144,13 @@ describe("channels", () => {
     ).toEqual([m.id]);
   });
 
-  it("every org member reads and writes; a kicked creator loses everything", async () => {
+  it("every team member reads and writes; a kicked creator loses everything", async () => {
     const h = harness();
     const a = await h.team("alice");
     const mate = await h.login("mate", "member");
-    await h.seat(a, a.orgId, "mate");
+    await h.seat(a, a.teamId, "mate");
     const authId = await authFor(h, a);
-    // The teammate rotates and patches what alice created: org membership is
+    // The teammate rotates and patches what alice created: team membership is
     // the whole permission model.
     expect(
       (
@@ -178,14 +178,14 @@ describe("channels", () => {
     // Mate kicks alice out (mate was promoted to owner first).
     h.clock.tick(0.5);
     await h.app(
-      ev("PATCH", `/orgs/${a.orgId}/members/${mate.id}`, {
+      ev("PATCH", `/teams/${a.teamId}/members/${mate.id}`, {
         headers: a.cookie,
         body: { role: "owner" },
       }),
     );
     h.clock.tick(0.5);
     const kick = await h.app(
-      ev("DELETE", `/orgs/${a.orgId}/members/${a.id}`, {
+      ev("DELETE", `/teams/${a.teamId}/members/${a.id}`, {
         headers: mate.cookie,
       }),
     );
@@ -215,9 +215,9 @@ describe("channels", () => {
         .channels,
     ).toEqual([]);
     // History has the resource writes beside the membership changes.
-    const actions = (await h.org.listHistory(a.orgId, { limit: 50 })).rows.map(
-      (r) => r.action,
-    );
+    const actions = (
+      await h.teamDb.listHistory(a.teamId, { limit: 50 })
+    ).rows.map((r) => r.action);
     expect(actions).toContain("resource.create");
     expect(actions).toContain("resource.rotate");
     expect(actions).toContain("resource.update");
@@ -253,7 +253,7 @@ describe("channels", () => {
     // The former admin exception is withdrawn: an admin without a membership
     // cannot create in someone else's project at all (403, secrets are shown).
     expect(await post(adm, theirs, b.prjId)).toBe(403);
-    // A second channel with the same name in the org is refused, any kind.
+    // A second channel with the same name in the team is refused, any kind.
     expect(await post(a, mine, a.prjId, "base")).toBe(409);
     // auth channels cannot point at topic channels
     const topicId = parse(
@@ -406,7 +406,7 @@ describe("channels", () => {
       (await h.app(ev("GET", `/channels/${t.id}`, { headers: adm.cookie })))
         .statusCode,
     ).toBe(200);
-    // admins never touch secrets/config of others' channels (403: the org is
+    // admins never touch secrets/config of others' channels (403: the team is
     // already visible to them, so there is nothing to hide behind a 404)
     expect(
       (
@@ -734,7 +734,7 @@ describe("expire sweep", () => {
     h.clock.tick(30 * 86400 + 1);
     const gone = await runExpire({
       db: h.db,
-      org: h.org,
+      team: h.teamDb,
       clock: h.clock,
       logger: nullLogger,
     });
@@ -742,15 +742,15 @@ describe("expire sweep", () => {
     expect(gone.documents).toBe(0);
     expect(gone.deleted.map((d) => d.id).sort()).toEqual(swept.disabled.sort());
     expect(gone.deleted[0]).toMatchObject({
-      orgId: a.orgId,
+      teamId: a.teamId,
       projectId: a.prjId,
     });
     expect(h.db.channels.get(t.id)?.secretJson).toBe("{}");
     expect(
       h.db.audits.filter((x) => x.action === "channel.expire"),
     ).toHaveLength(2);
-    // The org's own record of the sweep.
-    const hist = await h.org.listHistory(a.orgId, { limit: 50 });
+    // The team's own record of the sweep.
+    const hist = await h.teamDb.listHistory(a.teamId, { limit: 50 });
     expect(
       hist.rows.filter((r) => r.action === "resource.expire"),
     ).toHaveLength(2);

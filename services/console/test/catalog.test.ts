@@ -36,19 +36,19 @@ describe("catalog apps", () => {
     const other = await h.team("other", "member", 9002);
     const admin = await h.login("Boss", "admin", 9003);
     const mate = await h.login("mate", "member", 9004);
-    await h.seat(owner, owner.orgId, "mate");
+    await h.seat(owner, owner.teamId, "mate");
     const app = await makeApp(h, owner);
     expect(app).toMatchObject({
       name: "myapp",
-      orgId: owner.orgId,
-      orgName: "owner-org",
+      teamId: owner.teamId,
+      teamName: "owner-team",
       projectId: owner.prjId,
       projectName: "game",
       createdBy: "owner",
     });
     expect((app as Record<string, unknown>).ownerLogin).toBeUndefined();
 
-    // Members of the org and admins see it; another org gets 404 and an
+    // Members of the team and admins see it; another team gets 404 and an
     // empty flattened list.
     for (const who of [owner, mate, admin])
       expect(
@@ -144,7 +144,7 @@ describe("catalog apps", () => {
     expect(view.slackHookUrl).toBeUndefined();
     expect(view.keepRecentVersions).toBeUndefined();
 
-    // Patch: name unique in the org, admins refused, unknown fields refused.
+    // Patch: name unique in the team, admins refused, unknown fields refused.
     expect(
       (
         await h.app(
@@ -202,7 +202,7 @@ describe("catalog apps", () => {
       ).statusCode,
     ).toBe(204);
     // History carries the resource writes, names only.
-    const hist = await h.org.listHistory(owner.orgId, { limit: 50 });
+    const hist = await h.teamDb.listHistory(owner.teamId, { limit: 50 });
     const resource = hist.rows.filter((r) => r.action.startsWith("resource."));
     expect(resource.map((r) => r.action)).toEqual(
       expect.arrayContaining([
@@ -214,7 +214,7 @@ describe("catalog apps", () => {
     expect(JSON.stringify(hist.rows)).not.toContain("hooks.slack.com");
   });
 
-  it("names: org-unique across kinds, id-shaped and reserved names refused, per-project cap", async () => {
+  it("names: team-unique across kinds, id-shaped and reserved names refused, per-project cap", async () => {
     const h = harness();
     const u = await h.team("plain");
     const post = (name: string, prjId = u.prjId) =>
@@ -231,11 +231,11 @@ describe("catalog apps", () => {
     expect((await post("ca_deadbeef")).statusCode).toBe(400);
     expect((await post("ok-app")).statusCode).toBe(201);
     expect((await post("OK-APP")).statusCode).toBe(409);
-    // A second project of the same org shares the name space.
+    // A second project of the same team shares the name space.
     h.clock.tick(0.5);
     const prj2 = j(
       await h.app(
-        ev("POST", `/orgs/${u.orgId}/projects`, {
+        ev("POST", `/teams/${u.teamId}/projects`, {
           body: { name: "other" },
           headers: u.cookie,
         }),
@@ -291,24 +291,27 @@ describe("catalog apps", () => {
       (await h.app(ev("GET", "/catalog/apps/tools", { headers: other.cookie })))
         .statusCode,
     ).toBe(404);
-    // Two orgs of alice's with the same app name: ambiguous → 404, the id works.
+    // Two teams of alice's with the same app name: ambiguous → 404, the id works.
     h.clock.tick(0.5);
-    const org2 = j(
+    const team2 = j(
       await h.app(
-        ev("POST", "/orgs", { body: { name: "alice-two" }, headers: u.cookie }),
+        ev("POST", "/teams", {
+          body: { name: "alice-two" },
+          headers: u.cookie,
+        }),
       ),
     ) as { id: string };
     h.clock.tick(0.5);
     const prj2 = j(
       await h.app(
-        ev("POST", `/orgs/${org2.id}/projects`, {
+        ev("POST", `/teams/${team2.id}/projects`, {
           body: { name: "game" },
           headers: u.cookie,
         }),
       ),
     ) as { id: string };
     // The global unique index survives until the contract migration, so the
-    // fake refuses the duplicate name across orgs exactly like MariaDB does.
+    // fake refuses the duplicate name across teams exactly like MariaDB does.
     const dup = await h.app(
       ev("POST", `/projects/${prj2.id}/catalog/apps`, {
         body: { name: "tools", path: "p" },
@@ -347,13 +350,13 @@ describe("catalog apps", () => {
     const h = harness();
     const owner = await h.team("owner");
     const mate = await h.login("mate", "member");
-    await h.seat(owner, owner.orgId, "mate", "owner");
+    await h.seat(owner, owner.teamId, "mate", "owner");
     const app = await makeApp(h, owner);
     h.clock.tick(0.5);
     expect(
       (
         await h.app(
-          ev("DELETE", `/orgs/${owner.orgId}/members/${owner.id}`, {
+          ev("DELETE", `/teams/${owner.teamId}/members/${owner.id}`, {
             headers: mate.cookie,
           }),
         )
@@ -553,7 +556,7 @@ describe("catalog uploads", () => {
     ).toBe(true);
   });
 
-  it("other orgs cannot start or commit uploads; admins cannot either", async () => {
+  it("other teams cannot start or commit uploads; admins cannot either", async () => {
     const h = harness();
     const owner = await h.team("owner");
     const stranger = await h.team("stranger");
@@ -799,7 +802,7 @@ describe("catalog sweep", () => {
       id: "a1",
       name: "app",
       path: "p",
-      orgId: "org_1",
+      teamId: "team_1",
       projectId: "prj_1",
       createdAt: NOW_SEC,
     });
@@ -850,7 +853,7 @@ describe("catalog sweep", () => {
 });
 
 describe("installer downloads", () => {
-  it("serves the configured app's two newest artifacts only while its org is admin-locked", async () => {
+  it("serves the configured app's two newest artifacts only while its team is admin-locked", async () => {
     const h = harness();
     const admin = await h.team("Boss", "admin");
     const member = await h.login("someone", "member");
@@ -876,7 +879,7 @@ describe("installer downloads", () => {
       );
     // Nothing configured: an empty list, not an error.
     expect(j(await downloads())).toEqual({ downloads: [] });
-    // The setting refuses an app whose org is not admin-locked.
+    // The setting refuses an app whose team is not admin-locked.
     h.clock.tick(0.5);
     expect(
       (
@@ -892,7 +895,7 @@ describe("installer downloads", () => {
     expect(
       (
         await h.app(
-          ev("PUT", `/orgs/${admin.orgId}/admin-lock`, {
+          ev("PUT", `/teams/${admin.teamId}/admin-lock`, {
             body: { locked: true },
             headers: admin.cookie,
           }),
@@ -915,11 +918,11 @@ describe("installer downloads", () => {
     };
     expect(r.downloads.map((d) => d.version)).toEqual(["i3", "i2"]);
     expect(r.downloads[0]!.filename).toBe("app.apk");
-    // Unlocking the org afterwards stops the route rather than serving a
+    // Unlocking the team afterwards stops the route rather than serving a
     // member-pushed APK to every device.
     h.clock.tick(0.5);
     await h.app(
-      ev("PUT", `/orgs/${admin.orgId}/admin-lock`, {
+      ev("PUT", `/teams/${admin.teamId}/admin-lock`, {
         body: { locked: false },
         headers: admin.cookie,
       }),

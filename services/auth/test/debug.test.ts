@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createMemoryConsoleDb, createMemoryOrgDb } from "@yyt/console-db";
+import { createMemoryConsoleDb, createMemoryTeamDb } from "@yyt/console-db";
 import { createChannelStore } from "../src/channels.js";
 import {
   createDebugRoutes,
-  DEBUG_ORG_ID,
+  DEBUG_TEAM_ID,
   DEBUG_PROJECT_ID,
 } from "../src/debug.js";
 import { ev, fakeClock, harness, parse } from "./helpers.js";
@@ -12,7 +12,7 @@ describe("debug routes + channel store", () => {
   it("seeds a channel through the console DB and mints a token for it", async () => {
     const clock = fakeClock();
     const consoleDb = createMemoryConsoleDb();
-    const orgDb = createMemoryOrgDb({
+    const teamDb = createMemoryTeamDb({
       memberExists: (id) => consoleDb.members.has(id),
     });
     const channels = createChannelStore(consoleDb);
@@ -22,7 +22,7 @@ describe("debug routes + channel store", () => {
         extraRoutes: createDebugRoutes({
           debugKey: "0123456789abcdef",
           consoleDb,
-          orgDb,
+          teamDb,
           channels,
           clock,
         }),
@@ -47,7 +47,7 @@ describe("debug routes + channel store", () => {
     const seeded = parse<{
       channelId: string;
       secret: string;
-      orgId: string;
+      teamId: string;
       projectId: string;
     }>(
       await h.app(
@@ -61,24 +61,24 @@ describe("debug routes + channel store", () => {
     expect(seeded.secret).toHaveLength(64);
     // Every channel lives in a project: the seeder's own `debug`/`smoke`.
     expect(seeded).toMatchObject({
-      orgId: DEBUG_ORG_ID,
+      teamId: DEBUG_TEAM_ID,
       projectId: DEBUG_PROJECT_ID,
     });
     expect(consoleDb.channels.get("dbg_1")).toMatchObject({
-      orgId: DEBUG_ORG_ID,
+      teamId: DEBUG_TEAM_ID,
       projectId: DEBUG_PROJECT_ID,
     });
-    expect((await orgDb.findOrg(DEBUG_ORG_ID))?.name).toBe("debug");
+    expect((await teamDb.findTeam(DEBUG_TEAM_ID))?.name).toBe("debug");
     // A second seed reuses them rather than failing on the unique name.
-    const again = parse<{ orgId: string }>(
+    const again = parse<{ teamId: string }>(
       await h.app(
         ev("POST", "/debug/channels", { body: { id: "dbg_2" }, headers: key }),
       ),
     );
-    expect(again.orgId).toBe(DEBUG_ORG_ID);
+    expect(again.teamId).toBe(DEBUG_TEAM_ID);
     // An explicit project places the channel there; an unknown one is 404.
-    await orgDb.createProject(
-      { id: "prj_mine", orgId: DEBUG_ORG_ID, name: "mine" },
+    await teamDb.createProject(
+      { id: "prj_mine", teamId: DEBUG_TEAM_ID, name: "mine" },
       { actorId: "debug", at: 1 },
     );
     expect(
@@ -147,7 +147,7 @@ describe("debug routes + channel store", () => {
       createDebugRoutes({
         debugKey: "short",
         consoleDb: {} as never,
-        orgDb: {} as never,
+        teamDb: {} as never,
         channels: {} as never,
         clock: fakeClock(),
       }),

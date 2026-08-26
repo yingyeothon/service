@@ -10,7 +10,7 @@
 //   clean: scripts/smoke/dungeon.mjs clean <debugKey> <consoleBaseUrl> <stateFile>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
 import { readFileSync, writeFileSync } from "node:fs";
-import { ensureTeam } from "./_org.mjs";
+import { ensureTeam } from "./_team.mjs";
 
 const [mode, ...args] = process.argv.slice(2);
 let failed = 0;

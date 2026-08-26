@@ -5,7 +5,7 @@ import {
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
-  createMemoryOrgDb,
+  createMemoryTeamDb,
   createMemoryStateDb,
 } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
@@ -14,7 +14,7 @@ import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import { createMemoryPosterStore } from "../src/poster.js";
-import { historyId } from "../src/org.js";
+import { historyId } from "../src/team.js";
 import { SESSION_COOKIE } from "../src/session.js";
 
 export const BASE = "https://console-dev.yyt.life";
@@ -62,19 +62,19 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const redisAcl = createMemoryAclAdmin();
   const state = createMemoryStateDb((id) => db.channels.has(id));
   const countIn = (
-    pick: (r: { orgId: string | null; projectId: string | null }) => boolean,
+    pick: (r: { teamId: string | null; projectId: string | null }) => boolean,
   ) => ({
     // Soft-deleted rows count: the FK is RESTRICT until the sweep purges them.
     channels: [...db.channels.values()].filter(pick).length,
     apps: [...catalog.apps.values()].filter(pick).length,
     bundles: [...assets.bundles.values()].filter(pick).length,
   });
-  const org = createMemoryOrgDb({
+  const teamDb = createMemoryTeamDb({
     memberExists: (id) => db.members.has(id),
     artifactExists: (id) => catalog.artifacts.has(id),
     bundleExists: (id) => assets.bundles.has(id),
     countResources: (projectId) => countIn((r) => r.projectId === projectId),
-    countOrgResources: (orgId) => countIn((r) => r.orgId === orgId),
+    countTeamResources: (teamId) => countIn((r) => r.teamId === teamId),
     newHistoryId: historyId,
   });
   const { agent, fetch } = mockAgent();
@@ -87,7 +87,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     catalog,
     assets,
-    org,
+    team: teamDb,
     posters,
     artifacts,
     cdnBaseUrl: CDN,
@@ -147,8 +147,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     };
   };
   /**
-   * A member with an org and a project of their own — what every resource
-   * route needs since todo/17 P3. Each recorded org write is rate-limited to
+   * A member with an team and a project of their own — what every resource
+   * route needs since todo/17 P3. Each recorded team write is rate-limited to
    * one per 500 ms per member, so the writes land in slots far from any the
    * test will use itself, and the clock is put back afterwards so `NOW_SEC`
    * arithmetic in the tests still holds.
@@ -161,31 +161,34 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     const u = await login(name, role, githubId);
     clock.tick(100);
     const o = await app(
-      ev("POST", "/orgs", { headers: u.cookie, body: { name: `${name}-org` } }),
+      ev("POST", "/teams", {
+        headers: u.cookie,
+        body: { name: `${name}-team` },
+      }),
     );
     expect(o.statusCode, o.body).toBe(201);
-    const orgId = parse(o).id as string;
+    const teamId = parse(o).id as string;
     clock.tick(100);
     const p = await app(
-      ev("POST", `/orgs/${orgId}/projects`, {
+      ev("POST", `/teams/${teamId}/projects`, {
         headers: u.cookie,
         body: { name: "game" },
       }),
     );
     expect(p.statusCode, p.body).toBe(201);
     clock.tick(-200);
-    return { ...u, orgId, prjId: parse(p).id as string };
+    return { ...u, teamId, prjId: parse(p).id as string };
   };
-  /** Seats `login` in `orgId` as `role` (the owner's cookie does the adding). */
+  /** Seats `login` in `teamId` as `role` (the owner's cookie does the adding). */
   const seat = async (
     owner: { cookie: Record<string, string> },
-    orgId: string,
+    teamId: string,
     login: string,
     role: "owner" | "member" = "member",
   ) => {
     clock.tick(300);
     const r = await app(
-      ev("POST", `/orgs/${orgId}/members`, {
+      ev("POST", `/teams/${teamId}/members`, {
         headers: owner.cookie,
         body: { login, role },
       }),
@@ -200,7 +203,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     catalog,
     assets,
-    org,
+    teamDb,
     posters,
     artifacts,
     redisAcl,

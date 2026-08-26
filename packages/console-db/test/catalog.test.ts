@@ -6,7 +6,7 @@ const app = (id: string, at = 1) => ({
   name: `a-${id}`,
   path: `apps/${id}`,
   ownerId: "m1",
-  orgId: "org_1",
+  teamId: "team_1",
   projectId: "prj_1",
   createdAt: at,
 });
@@ -22,9 +22,9 @@ const art = (id: string, appId: string, at = 1) => ({
   createdAt: at,
 });
 
-/** Behaviour shared by the fake and the real Prisma repository (`org_1`/`prj_1` seeded). */
+/** Behaviour shared by the fake and the real Prisma repository (`team_1`/`prj_1` seeded). */
 export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
-  it("apps: defaults, org/project narrow, org-scoped ci name, settings, delete cascades", async () => {
+  it("apps: defaults, team/project narrow, team-scoped ci name, settings, delete cascades", async () => {
     const db = await make();
     await db.insertApp(app("a1"));
     await db.insertApp(app("a2"));
@@ -39,19 +39,21 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
       keepRecentVersions: 3,
       slackHookUrl: null,
       ownerId: "m1",
-      orgId: "org_1",
+      teamId: "team_1",
       projectId: "prj_1",
     });
-    expect(await db.findAppByName("org_1", "A-A1")).toMatchObject({ id: "a1" });
-    expect(await db.findAppByName("org_other", "a-a1")).toBeUndefined();
+    expect(await db.findAppByName("team_1", "A-A1")).toMatchObject({
+      id: "a1",
+    });
+    expect(await db.findAppByName("team_other", "a-a1")).toBeUndefined();
     expect((await db.listApps()).map((a) => a.id)).toEqual(["a1", "a2"]);
-    expect((await db.listApps({ orgId: "org_1" })).map((a) => a.id)).toEqual([
+    expect((await db.listApps({ teamId: "team_1" })).map((a) => a.id)).toEqual([
       "a1",
       "a2",
     ]);
-    expect(await db.listApps({ orgIds: ["org_x"] })).toEqual([]);
+    expect(await db.listApps({ teamIds: ["team_x"] })).toEqual([]);
     expect(
-      (await db.listApps({ orgIds: ["org_1", "org_x"], projectId: "prj_1" }))
+      (await db.listApps({ teamIds: ["team_1", "team_x"], projectId: "prj_1" }))
         .length,
     ).toBe(2);
     expect(await db.listApps({ projectId: "prj_other" })).toEqual([]);

@@ -6,33 +6,33 @@ import type {
   CatalogDb,
   ChannelRow,
   ConsoleDb,
-  OrgDb,
-  OrgRole,
-  OrgRow,
+  TeamDb,
+  TeamRole,
+  TeamRow,
   ProjectRow,
 } from "@yyt/console-db";
 import type { RouteContext } from "@yyt/http";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 
 /*
- * The one place that decides who may touch an org, a project, or a resource
- * (docs/decisions.md *Organizations and projects*). Every route goes through
- * `orgAccess` / `projectAccess` / `projectResource`; nothing else compares
+ * The one place that decides who may touch an team, a project, or a resource
+ * (docs/decisions.md *Teams and projects*). Every route goes through
+ * `teamAccess` / `projectAccess` / `projectResource`; nothing else compares
  * member ids to rows.
  *
- * Standing in an org, from weakest to strongest:
- *   - none      → 404 (the org is not revealed)
- *   - pending   → may read the org's name and its own state, nothing else
+ * Standing in an team, from weakest to strongest:
+ *   - none      → 404 (the team is not revealed)
+ *   - pending   → may read the team's name and its own state, nothing else
  *   - member    → reads and writes every project and resource, secrets included
- *   - owner     → member + member management, org settings, deletion
+ *   - owner     → member + member management, team settings, deletion
  *   - "admin"   → a platform admin with *no* membership: reads everything,
- *                 may delete the org and appoint an owner, never sees a secret
+ *                 may delete the team and appoint an owner, never sees a secret
  * A platform admin who *is* a member is judged by the membership: an
- * `admin_locked` org is made entirely of admins and they run their channels
+ * `admin_locked` team is made entirely of admins and they run their channels
  * like anyone else. The override only fills in where no membership exists.
  */
 
-export type Standing = OrgRole | "admin";
+export type Standing = TeamRole | "admin";
 
 const STANDING_RANK: Record<Standing, number> = {
   pending: 0,
@@ -43,26 +43,26 @@ const STANDING_RANK: Record<Standing, number> = {
 
 export interface AccessOptions {
   /**
-   * Minimum standing. `pending` admits every row of the org (for the
+   * Minimum standing. `pending` admits every row of the team (for the
    * name-only view); `member` is the default; `owner` for management.
    */
   min?: "pending" | "member" | "owner";
   /**
    * The route reads or writes a secret/config: a platform admin without a
-   * membership is refused (403, the org is already known to exist).
+   * membership is refused (403, the team is already known to exist).
    */
   secret?: boolean;
-  /** Let the admin override satisfy `min: "owner"` (org delete, owner appointment). */
+  /** Let the admin override satisfy `min: "owner"` (team delete, owner appointment). */
   adminAsOwner?: boolean;
 }
 
-export interface OrgAccess {
+export interface TeamAccess {
   id: ConsoleIdentity;
-  org: OrgRow;
+  team: TeamRow;
   standing: Standing;
 }
 
-export interface ProjectAccess extends OrgAccess {
+export interface ProjectAccess extends TeamAccess {
   project: ProjectRow;
 }
 
@@ -77,20 +77,25 @@ export interface ResourceAccess<K extends ResourceKind> extends ProjectAccess {
   row: ResourceRowOf<K>;
 }
 
-export interface OrgAccessDeps {
+export interface TeamAccessDeps {
   db: ConsoleDb;
-  org: OrgDb;
+  team: TeamDb;
   catalog: CatalogDb;
   assets: AssetsDb;
 }
 
-export function createOrgAccess({ db, org, catalog, assets }: OrgAccessDeps) {
-  /** Standing of `id` in `orgRow`, or `undefined` when it has none and is not an admin. */
+export function createTeamAccess({
+  db,
+  team,
+  catalog,
+  assets,
+}: TeamAccessDeps) {
+  /** Standing of `id` in `teamRow`, or `undefined` when it has none and is not an admin. */
   async function standingOf(
     id: ConsoleIdentity,
-    orgRow: OrgRow,
+    teamRow: TeamRow,
   ): Promise<Standing | undefined> {
-    const row = await org.findOrgMember(orgRow.id, id.subject);
+    const row = await team.findTeamMember(teamRow.id, id.subject);
     if (row && row.state === "active") return row.role;
     // A declined/kicked row is not a standing; the cooldown is the join
     // route's business. Platform admins fall through to the override.
@@ -103,25 +108,25 @@ export function createOrgAccess({ db, org, catalog, assets }: OrgAccessDeps) {
       if (opts.secret)
         throw new AppError("forbidden", "admins cannot access secrets");
       if (min === "owner" && !opts.adminAsOwner)
-        throw new AppError("forbidden", "requires org owner");
+        throw new AppError("forbidden", "requires team owner");
       return;
     }
     if (STANDING_RANK[standing] < STANDING_RANK[min])
-      throw new AppError("forbidden", `requires org ${min}`);
+      throw new AppError("forbidden", `requires team ${min}`);
   }
 
-  async function orgAccess(
+  async function teamAccess(
     ctx: Pick<RouteContext, "requireIdentity">,
-    orgId: string,
+    teamId: string,
     opts: AccessOptions = {},
-  ): Promise<OrgAccess> {
+  ): Promise<TeamAccess> {
     const id = requireRole(ctx, "member");
-    const orgRow = await org.findOrg(orgId);
-    const standing = orgRow && (await standingOf(id, orgRow));
-    if (!orgRow || !standing)
-      throw new AppError("not_found", "organization not found");
+    const teamRow = await team.findTeam(teamId);
+    const standing = teamRow && (await standingOf(id, teamRow));
+    if (!teamRow || !standing)
+      throw new AppError("not_found", "team not found");
     check(standing, opts);
-    return { id, org: orgRow, standing };
+    return { id, team: teamRow, standing };
   }
 
   async function projectAccess(
@@ -130,14 +135,14 @@ export function createOrgAccess({ db, org, catalog, assets }: OrgAccessDeps) {
     opts: AccessOptions = {},
   ): Promise<ProjectAccess> {
     const id = requireRole(ctx, "member");
-    const project = await org.findProject(projectId);
-    const orgRow = project && (await org.findOrg(project.orgId));
-    const standing = orgRow && (await standingOf(id, orgRow));
+    const project = await team.findProject(projectId);
+    const teamRow = project && (await team.findTeam(project.teamId));
+    const standing = teamRow && (await standingOf(id, teamRow));
     // Pending members do not see projects at all.
-    if (!project || !orgRow || !standing || standing === "pending")
+    if (!project || !teamRow || !standing || standing === "pending")
       throw new AppError("not_found", "project not found");
     check(standing, opts);
-    return { id, org: orgRow, standing, project };
+    return { id, team: teamRow, standing, project };
   }
 
   async function findResource<K extends ResourceKind>(
@@ -155,7 +160,7 @@ export function createOrgAccess({ db, org, catalog, assets }: OrgAccessDeps) {
   }
 
   /**
-   * Resolves resource → project → org in two hops. A row that has not been
+   * Resolves resource → project → team in two hops. A row that has not been
    * assigned to a project yet (the expand window before the mapping script
    * ran) is invisible through this helper: nobody can claim it, which is the
    * safe direction.
@@ -178,24 +183,24 @@ export function createOrgAccess({ db, org, catalog, assets }: OrgAccessDeps) {
   }
 
   /**
-   * Ids of every org the caller is seated in (owner or member — pending does
+   * Ids of every team the caller is seated in (owner or member — pending does
    * not count). What "my channels / my apps" means; one query, so list routes
-   * can filter with `orgIds` instead of asking per org.
+   * can filter with `teamIds` instead of asking per team.
    */
-  async function memberOrgIds(id: ConsoleIdentity): Promise<string[]> {
-    const rows = await org.listOrgsForMember(id.subject);
+  async function memberTeamIds(id: ConsoleIdentity): Promise<string[]> {
+    const rows = await team.listTeamsForMember(id.subject);
     return rows
       .filter((o) => o.state === "active" && o.role !== "pending")
       .map((o) => o.id);
   }
 
   return {
-    orgAccess,
+    teamAccess,
     projectAccess,
     projectResource,
     standingOf,
-    memberOrgIds,
+    memberTeamIds,
   };
 }
 
-export type OrgAccessHelpers = ReturnType<typeof createOrgAccess>;
+export type TeamAccessHelpers = ReturnType<typeof createTeamAccess>;
