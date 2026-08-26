@@ -36,6 +36,14 @@ if (!stage || !mapPath) {
   process.exit(2);
 }
 const execute = executeFlag === "--execute";
+// The map is stage-specific (ids differ per stage); refuse a dev map against
+// prod before touching the database.
+if (!path.basename(mapPath).includes(`.${stage}.`)) {
+  console.error(
+    `map file ${mapPath} does not look like a ${stage} map (expected *.${stage}.json)`,
+  );
+  process.exit(2);
+}
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---- env (never sourced; parsed line by line per rules/security.md) --------

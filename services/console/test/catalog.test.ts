@@ -983,3 +983,20 @@ describe("upload metadata validation", () => {
     ).toThrow();
   });
 });
+
+describe("catalog apps: names across teams until the contract migration", () => {
+  it("explains the global unique index instead of a bare duplicate key", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const bob = await h.team("bob");
+    await makeApp(h, alice, "tools");
+    const r = await h.app(
+      ev("POST", `/projects/${bob.prjId}/catalog/apps`, {
+        body: { name: "tools", path: "life.yyt.tools" },
+        headers: bob.cookie,
+      }),
+    );
+    expect(r.statusCode).toBe(409);
+    expect(r.body).toContain("another team");
+  });
+});
