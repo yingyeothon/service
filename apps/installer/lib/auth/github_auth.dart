@@ -255,11 +255,13 @@ class GitHubAuthService {
       requestId: AuthDiagnosticLogger.newRequestId(),
       operation: 'validate_api_key',
       method: 'GET',
-      uri: Uri.parse(AuthConfig.appsUrl),
+      uri: Uri.parse(AuthConfig.meUrl),
       timestamp: DateTime.now(),
       attempt: 1,
     );
-    final uri = Uri.parse(AuthConfig.appsUrl);
+    // /me answers for any authenticated identity (even a pending member), so
+    // the probe checks the token itself rather than the caller's team seats.
+    final uri = Uri.parse(AuthConfig.meUrl);
     final response = await _getWithDiagnostics(
       context: context,
       uri: uri,
@@ -292,6 +294,30 @@ class GitHubAuthService {
         forceKind: AuthFailureKind.serverHttp,
         message: 'API key 검증 실패',
       );
+    }
+    // /me answers 200 for a pending member too; refuse here so the user is not
+    // logged in to a catalog that will answer 403.
+    final me = _decodeJsonObject(response.bodyBytes);
+    if (me?['role'] == 'pending') {
+      throw AuthDiagnosticLogger.createError(
+        context: context,
+        error: Exception('pending member'),
+        stackTrace: StackTrace.current,
+        httpStatus: response.statusCode,
+        responseHeaders: response.headers,
+        forceKind: AuthFailureKind.serverHttp,
+        message: '아직 승인되지 않은 계정입니다. 관리자 승인 후 다시 시도해주세요.',
+      );
+    }
+  }
+
+  Map<String, dynamic>? _decodeJsonObject(List<int> bodyBytes) {
+    if (bodyBytes.isEmpty) return null;
+    try {
+      final data = jsonDecode(utf8.decode(bodyBytes));
+      return data is Map<String, dynamic> ? data : null;
+    } catch (_) {
+      return null;
     }
   }
 

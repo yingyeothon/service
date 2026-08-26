@@ -30,6 +30,11 @@ Future<List<RemoteApp>> fetchRemoteApps({String? token}) async {
   if (appsResponse.statusCode == 401) {
     throw UnauthorizedException('인증이 만료되었습니다. 다시 로그인해주세요.');
   }
+  if (appsResponse.statusCode == 403) {
+    // /me accepts a pending member; the catalog does not. Say so instead of a
+    // bare status code.
+    throw Exception('아직 승인되지 않은 계정입니다. 관리자 승인 후 다시 시도해주세요.');
+  }
   if (appsResponse.statusCode != 200) {
     throw Exception('앱 목록 조회 실패: ${appsResponse.statusCode}');
   }
@@ -59,12 +64,12 @@ Future<List<RemoteApp>> fetchRemoteApps({String? token}) async {
 }
 
 Future<List<ArtifactInfo>> fetchAppArtifacts({
-  required String appName,
+  required String appId,
   required String token,
   String platform = 'android',
 }) async {
   final uri = Uri.parse(
-    '${AuthConfig.appArtifactsUrl(appName)}?platform=$platform',
+    '${AuthConfig.appArtifactsUrl(appId)}?platform=$platform',
   );
   final response = await http.get(
     uri,
@@ -93,14 +98,15 @@ Future<RemoteApp?> _toRemoteApp(
   Map<String, dynamic> appJson, {
   required String token,
 }) async {
+  final id = appJson['id'] as String?;
   final name = appJson['name'] as String?;
   final packageName = appJson['path'] as String?;
-  if (name == null || packageName == null) {
+  if (id == null || name == null || packageName == null) {
     return null;
   }
 
   final artifactsUri = Uri.parse(
-    '${AuthConfig.appArtifactsUrl(name)}?platform=android',
+    '${AuthConfig.appArtifactsUrl(id)}?platform=android',
   );
   final response = await http.get(
     artifactsUri,
@@ -143,6 +149,7 @@ Future<RemoteApp?> _toRemoteApp(
       }.toList();
 
   return RemoteApp(
+    id: id,
     name: name,
     package: packageName,
     description: (appJson['description'] as String?) ?? '',

@@ -52,4 +52,14 @@ void main() {
       expect(() => AuthConfig.apiBaseUrl, throwsStateError);
     },
   );
+
+  test('API urls: /me probe and id-keyed artifact routes', () {
+    AuthConfig.setServerUrl('console-dev.yyt.life');
+    expect(AuthConfig.meUrl, 'https://console-dev.yyt.life/me');
+    expect(AuthConfig.appsUrl, 'https://console-dev.yyt.life/catalog/apps');
+    expect(
+      AuthConfig.appArtifactUrl('ca_0123abcd', 'art 1'),
+      'https://console-dev.yyt.life/catalog/apps/ca_0123abcd/artifacts/art%201',
+    );
+  });
 }

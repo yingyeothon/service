@@ -10,6 +10,7 @@ void main() {
     final apps = await loadAppInfo(
       ({String? token}) async => [
         RemoteApp(
+          id: 'ca_demo',
           name: 'Demo',
           package: 'catalog-demo-record',
           description: 'Demo app',
@@ -45,6 +46,7 @@ void main() {
       final apps = await loadAppInfo(
         ({String? token}) async => [
           RemoteApp(
+            id: 'ca_demo',
             name: 'Demo',
             package: 'com.example.demo',
             description: 'Demo app',

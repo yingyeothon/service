@@ -11,6 +11,7 @@ void main() {
     tester,
   ) async {
     final app = AppInfo(
+      id: 'ca_demo',
       name: 'Demo',
       package: 'com.example.demo',
       description: 'Old description',

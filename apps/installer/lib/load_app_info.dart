@@ -22,6 +22,7 @@ Future<List<AppInfo>> loadAppInfo(
 
     infos.add(
       AppInfo(
+        id: remoteApp.id,
         name: remoteApp.name,
         package: remoteApp.package,
         description: remoteApp.description,

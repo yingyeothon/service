@@ -58,13 +58,15 @@ class AuthConfig {
 
   // Console API (services/console): the catalog lives under /catalog and the
   // device flow under /auth/device (docs/decisions.md "Binary catalog").
+  // Tokens are probed with /me; the app list is the flattened compatibility
+  // route (every app of every team the caller is seated in); artifact routes
+  // are keyed by app id (docs/decisions.md "Teams and projects").
+  static String get meUrl => '$apiBaseUrl/me';
   static String get appsUrl => '$apiBaseUrl/catalog/apps';
-  static String appArtifactsUrl(String appName) =>
-      '$apiBaseUrl/catalog/apps/${Uri.encodeComponent(appName)}/artifacts';
-  static String appArtifactUrl(String appName, String artifactId) =>
-      '${appArtifactsUrl(appName)}/${Uri.encodeComponent(artifactId)}';
-  static String appPermissionsUrl(String appName) =>
-      '$apiBaseUrl/catalog/apps/${Uri.encodeComponent(appName)}/permissions';
+  static String appArtifactsUrl(String appId) =>
+      '$apiBaseUrl/catalog/apps/${Uri.encodeComponent(appId)}/artifacts';
+  static String appArtifactUrl(String appId, String artifactId) =>
+      '${appArtifactsUrl(appId)}/${Uri.encodeComponent(artifactId)}';
 
   static String get authDeviceCodeUrl => '$apiBaseUrl/auth/device/start';
   static String get authDeviceTokenUrl => '$apiBaseUrl/auth/device/token';
