@@ -203,6 +203,119 @@ func TestDeployCreatesMissingApp(t *testing.T) {
 	}
 }
 
+// With only a team context the app is found across the team; a missing app
+// lands in the project named after the deploy directory, created on demand.
+func TestDeployWithTeamOnlyCreatesProjectFromDirectory(t *testing.T) {
+	prevDelay := verifyDelay
+	verifyDelay = time.Millisecond
+	t.Cleanup(func() { verifyDelay = prevDelay })
+	proj := makeFlutterProject(t, "1.0.0+1")
+	fakeBuild(t, func(dir string, _ []string) error {
+		p := filepath.Join(dir, "build", "app", "outputs", "flutter-apk")
+		_ = os.MkdirAll(p, 0o755)
+		return os.WriteFile(filepath.Join(p, "app-release.apk"), []byte("apk"), 0o644)
+	})
+	var committed []map[string]any
+	listCalls := 0
+	var f *fakeConsole
+	routes := deployRoutes(&f, &committed, &listCalls, 1)
+	routes["GET /teams/team_1/catalog/apps"] = func(recorded) (int, any) { return 200, map[string]any{"apps": []any{}} }
+	routes["GET /teams/team_1/projects"] = func(recorded) (int, any) { return 200, map[string]any{"projects": []any{sampleProject}} }
+	createdProject := ""
+	routes["POST /teams/team_1/projects"] = func(r recorded) (int, any) {
+		createdProject, _ = r.Body["name"].(string)
+		return 201, map[string]any{"id": "prj_2", "name": createdProject, "teamId": "team_1", "teamName": "dooroo"}
+	}
+	createdIn := ""
+	routes["POST /projects/prj_2/catalog/apps"] = func(r recorded) (int, any) {
+		createdIn = "prj_2"
+		return 201, map[string]any{"id": "ca_1", "name": "demo", "path": "life.yyt.demo", "projectId": "prj_2", "createdAt": 1, "updatedAt": 1}
+	}
+	f = newFake(t, routes)
+	t.Setenv("YYT_TEAM", "team_1")
+	_, stderr, err := run(t, f, "catalog", "deploy", "--project-path", proj, "--no-verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Base(proj); createdProject != want {
+		t.Fatalf("project created as %q, want the directory name %q", createdProject, want)
+	}
+	if createdIn != "prj_2" {
+		t.Fatal("app was not created in the new project")
+	}
+	for _, want := range []string{"deploying demo to team dooroo", "created project " + filepath.Base(proj)} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q lacks %q", stderr, want)
+		}
+	}
+}
+
+// A project already named like the deploy directory is reused, not recreated.
+func TestDeployWithTeamOnlyReusesProjectNamedLikeDirectory(t *testing.T) {
+	prevDelay := verifyDelay
+	verifyDelay = time.Millisecond
+	t.Cleanup(func() { verifyDelay = prevDelay })
+	proj := makeFlutterProject(t, "1.0.0+1")
+	fakeBuild(t, func(dir string, _ []string) error {
+		p := filepath.Join(dir, "build", "app", "outputs", "flutter-apk")
+		_ = os.MkdirAll(p, 0o755)
+		return os.WriteFile(filepath.Join(p, "app-release.apk"), []byte("apk"), 0o644)
+	})
+	var committed []map[string]any
+	listCalls := 0
+	var f *fakeConsole
+	routes := deployRoutes(&f, &committed, &listCalls, 1)
+	routes["GET /teams/team_1/catalog/apps"] = func(recorded) (int, any) { return 200, map[string]any{"apps": []any{}} }
+	existing := map[string]any{"id": "prj_7", "teamId": "team_1", "teamName": "dooroo", "name": filepath.Base(proj)}
+	routes["GET /teams/team_1/projects"] = func(recorded) (int, any) {
+		return 200, map[string]any{"projects": []any{sampleProject, existing}}
+	}
+	routes["POST /teams/team_1/projects"] = func(recorded) (int, any) {
+		t.Fatal("existing project recreated")
+		return 500, nil
+	}
+	routes["POST /projects/prj_7/catalog/apps"] = func(recorded) (int, any) {
+		return 201, map[string]any{"id": "ca_1", "name": "demo", "path": "life.yyt.demo", "projectId": "prj_7", "createdAt": 1, "updatedAt": 1}
+	}
+	f = newFake(t, routes)
+	t.Setenv("YYT_TEAM", "team_1")
+	if _, _, err := run(t, f, "catalog", "deploy", "--project-path", proj, "--no-verify"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With a project context, an app that lives in another project of the team
+// is reported by location instead of turning into a 409 on create.
+func TestDeployWithProjectPointsAtAppElsewhere(t *testing.T) {
+	proj := makeFlutterProject(t, "1.0.0+1")
+	routes := ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /projects/prj_1/catalog/apps": func(recorded) (int, any) { return 200, map[string]any{"apps": []any{}} },
+		"GET /teams/team_1/catalog/apps": func(recorded) (int, any) {
+			return 200, map[string]any{"apps": []any{map[string]any{"id": "ca_9", "name": "demo", "projectId": "prj_9"}}}
+		},
+	}, nil, nil, nil)
+	f := newFake(t, routes)
+	withProject(t)
+	_, _, err := run(t, f, "catalog", "deploy", "--project-path", proj, "--no-verify")
+	if err == nil || !strings.Contains(err.Error(), "under project prj_9") {
+		t.Fatalf("err = %v, want the app's location", err)
+	}
+	for _, r := range f.reqs {
+		if r.Method == "POST" {
+			t.Fatalf("unexpected write %s %s", r.Method, r.Path)
+		}
+	}
+}
+
+// Without any explicit context a write by name is refused before any request.
+func TestDeployWithoutTeamIsRefused(t *testing.T) {
+	proj := makeFlutterProject(t, "1.0.0+1")
+	f := newFake(t, ctxRoutes(nil, nil, nil, nil))
+	if _, _, err := run(t, f, "catalog", "deploy", "--project-path", proj, "--no-verify"); err == nil || !strings.Contains(err.Error(), "no team context") {
+		t.Fatalf("err = %v, want a team-context error", err)
+	}
+}
+
 func TestDeployVerifyFails(t *testing.T) {
 	prevDelay := verifyDelay
 	verifyDelay = time.Millisecond

@@ -46,7 +46,9 @@ Every channel, catalog app and asset bundle belongs to a **project**, and a proj
 4. the profile defaults set with `yyt team use <team>` / `yyt project use <project>` (`team use` clears the project default; both survive a `--token`/`YYT_TOKEN` override and a re-login)
 5. **read commands only**: auto-select when you sit in exactly one team / it has exactly one project.
 
-Each field is layered independently, with one guard: a project named at a *lower* layer than the team is dropped (a profile pin under `--team other` would otherwise satisfy the "explicit context" rule and land the write in the pinned team), and `--team`/`--project` given together must agree. `yyt whoami` prints the effective team/project and where each came from. **Write commands never auto-select** — `channels create`, `catalog app create`, `catalog deploy`, `artifact upload`, `asset create|upload|push`, `project create`, and every update/delete addressed by name fail with a hint when the context is not explicit, so a non-interactive script cannot start failing with "ambiguous" the day its author joins a second team. Reads by name (`catalog app get <name>`, `artifact list <name>`) *do* auto-select, which means a member of two teams needs the context for them as well — add `.yyt.json` to every repository whose scripts call the CLI. `--auth-channel` also takes the auth channel's name (same project). The resolved context is printed on stderr before `catalog deploy` creates anything.
+Each field is layered independently, with one guard: a project named at a *lower* layer than the team is dropped (a profile pin under `--team other` would otherwise satisfy the "explicit context" rule and land the write in the pinned team), and `--team`/`--project` given together must agree. `yyt whoami` prints the effective team/project and where each came from. **Write commands never auto-select** — `channels create`, `catalog app create`, `catalog deploy`, `artifact upload`, `asset create|upload|push`, `project create`, and every update/delete addressed by name fail with a hint when the context is not explicit, so a non-interactive script cannot start failing with "ambiguous" the day its author joins a second team. Reads by name (`catalog app get <name>`, `artifact list <name>`) *do* auto-select, which means a member of two teams needs the context for them as well. `--auth-channel` also takes the auth channel's name (same project). The resolved context is printed on stderr before `catalog deploy` creates anything.
+
+**Catalog apps need only the team.** An app name is unique within the team, so `catalog app get|settings <name>`, `catalog artifact list|upload <name>` and `catalog deploy` look the name up across the team's projects (`GET /teams/{team}/catalog/apps`) — one `YYT_TEAM=dooroo` in a shared deploy script serves every repository, with no per-repository `.yyt.json`. A project context, when set, narrows the lookup to that project. Only a **new** app needs a project: `catalog deploy` puts it in the project context if there is one, otherwise in the project named after the `--project-path` directory (our repository convention; created when missing) — pass `--project` for the exceptions.
 
 ```
 yyt team ls [--scope all]                       # your seats and pending requests (admins: every team)
@@ -104,7 +106,7 @@ OAuth client secrets may come from `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRE
 ### Binary catalog
 
 ```
-yyt catalog app list                                    # project context → that project; none → every team you sit in
+yyt catalog app list                                    # project context → that project; team only → that team; none → every team you sit in
 yyt catalog app create <name> --path <applicationId> [--description d]   # in the project context (explicit)
 yyt catalog app get|update|delete <app>                 # id or name
 yyt catalog app settings <app> [--slack-hook … --slack-channel … --template … --keep N]
@@ -117,7 +119,7 @@ yyt catalog artifact upload android <app> <file> --version v --application-id id
 yyt catalog artifact upload ios <app> <file> --version v --bundle-id id --build-number n \
     [--distribution-method ad-hoc --minimum-os-version 12.0 --stage s --changelog c]
 yyt catalog bump [--bump major|minor|patch] [--project-path .]          # pubspec only; git stays with your script
-yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|appbundle|aab|all]… \   # explicit context required
+yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|appbundle|aab|all]… \   # explicit team required
     [--description d] \
     [--split-per-abi] [--target-platform android-arm64] [--stage s] [--note changelog] \
     [--build n] [--commit h] [--min-sdk n] [--target-sdk n] [--abi a] [--tag k=v]… \
@@ -125,9 +127,9 @@ yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|
 yyt catalog installer
 ```
 
-`deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, resolves the project context (printing `deploying <app> to team … / project …`), finds the app by name in that project or creates it there, removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
+`deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, resolves the team (and project, if set) context (printing `deploying <app> to team …`), finds the app by name in the team or creates it (project: the context's, else the `--project-path` directory name, created when missing), removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
 
-`yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous). Since the team model (2026-08-26) `catalog group|permission`, `--group` and `--debug-only` are gone too — access is team membership — and every deploy script needs a context: add `.yyt.json` next to `pubspec.yaml` or export `YYT_TEAM`/`YYT_PROJECT`.
+`yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous). Since the team model (2026-08-26) `catalog group|permission`, `--group` and `--debug-only` are gone too — access is team membership — and every deploy script needs a team context: export `YYT_TEAM` (or add `.yyt.json` next to `pubspec.yaml`).
 
 ### Game assets
 

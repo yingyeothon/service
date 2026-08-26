@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,32 @@ func TestCatalogAppListAndGet(t *testing.T) {
 	}
 	if len(f.reqs) != 1 {
 		t.Fatalf("id lookup must be one request, got %d", len(f.reqs))
+	}
+}
+
+// A name resolves through the team route when only a team is in context.
+func TestCatalogAppGetByNameWithTeamOnly(t *testing.T) {
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /catalog/apps/ca_1": func(recorded) (int, any) { return 200, sampleApp },
+	}, nil, []any{sampleApp}, nil))
+	t.Setenv("YYT_TEAM", "dooroo")
+	if _, _, err := run(t, f, "catalog", "app", "get", "my-game"); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, r := range f.reqs {
+		paths = append(paths, r.Path)
+	}
+	if !slices.Contains(paths, "/teams/team_1/catalog/apps") || slices.Contains(paths, "/projects/prj_1/catalog/apps") {
+		t.Fatalf("paths = %v, want the team lookup and no project lookup", paths)
+	}
+	// `app ls` with a team lists the whole team.
+	f.reqs = nil
+	if _, _, err := run(t, f, "catalog", "app", "ls"); err != nil {
+		t.Fatal(err)
+	}
+	if last := f.reqs[len(f.reqs)-1].Path; last != "/teams/team_1/catalog/apps" {
+		t.Fatalf("app ls hit %s", last)
 	}
 }
 
