@@ -13,6 +13,7 @@ import (
 	"github.com/yingyeothon/service/cli/internal/api"
 	"github.com/yingyeothon/service/cli/internal/config"
 	"github.com/yingyeothon/service/cli/internal/output"
+	"github.com/yingyeothon/service/cli/internal/selfupdate"
 )
 
 // App holds the per-invocation state so tests can inject stdout and a fake API.
@@ -28,6 +29,8 @@ type App struct {
 	projectFlag string
 	// NewClient lets tests replace the HTTP client; nil → real client.
 	NewClient func(cfg config.Config) *api.Client
+	// Updater lets tests point `self update` at a fake GitHub; nil → real.
+	Updater *selfupdate.Updater
 }
 
 func (a *App) printer() output.Printer { return output.Printer{W: a.Out, JSON: a.jsonOut} }
@@ -94,6 +97,7 @@ func NewRoot(a *App) *cobra.Command {
 		newProfile(a),
 		newTeam(a), newProject(a),
 		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newCatalog(a), newAssets(a), newSmoke(a),
+		newSelf(a, a.Updater),
 	)
 	return root
 }
@@ -102,7 +106,11 @@ func NewRoot(a *App) *cobra.Command {
 func Execute() int {
 	a := &App{}
 	root := NewRoot(a)
+	selfupdate.RemoveStale()
 	if err := root.ExecuteContext(context.Background()); err != nil {
+		if errors.Is(err, ErrUpdateAvailable) {
+			return 7
+		}
 		fmt.Fprintln(a.Err, "error:", err)
 		var ce *ContextError
 		if errors.As(err, &ce) {

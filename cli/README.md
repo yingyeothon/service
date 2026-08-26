@@ -11,6 +11,8 @@ curl -fsSL https://raw.githubusercontent.com/yingyeothon/service/main/cli/instal
 # or: go install github.com/yingyeothon/service/cli/cmd/yyt@latest   (pin: YYT_VERSION=v1.2.0 for the script)
 ```
 
+`yyt self version` prints the installed version; `yyt self update` fetches the newest `cli/v*` GitHub release for this OS/arch, verifies it against the release's `checksums.txt`, and swaps the running binary in place (Windows: the running `yyt.exe` is moved to `yyt.exe.old` first and removed on the next run). `--check` only reports and exits **7** when an update exists (0 = up to date), `--version 1.2.0` pins a release even if older, `--json` prints `{current, latest, updateAvailable}`. A `dev` build or a `go install …@main` pseudo-version counts as older than every release (`go install …@latest` carries the release version and compares normally); the file that gets replaced is the resolved executable path, so a package-manager install should be updated through that manager instead. Set `GITHUB_TOKEN`/`GH_TOKEN` when the unauthenticated GitHub API rate limit (60/h per address) bites. Neither command touches the console API or the config file.
+
 ## Login
 
 1. Sign in to the console with GitHub, go to *account > API tokens*, create a token (`yyt_…`; shown once).
