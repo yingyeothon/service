@@ -16,6 +16,7 @@ import { ProjectPage } from "./pages/Project";
 import { TeamPage } from "./pages/Team";
 import { TeamsPage } from "./pages/Teams";
 import { TokensPage } from "./pages/Tokens";
+import { AppLoginPage } from "./pages/AppLogin";
 
 export interface AppRoute {
   path: string;
@@ -78,5 +79,6 @@ export const ROUTES: AppRoute[] = [
   { path: "/assets/:id", guard: "/assets", element: <AssetBundlePage /> },
   { path: "/installer", guard: "/installer", element: <InstallerPage /> },
   { path: "/tokens", guard: "/tokens", element: <TokensPage /> },
+  { path: "/app-login", guard: "/app-login", element: <AppLoginPage /> },
   { path: "/members", guard: "/members", element: <MembersPage /> },
 ];

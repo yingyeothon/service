@@ -1,0 +1,37 @@
+name: yyt_console
+description: 잉여톤 — yyt console companion app (catalog installer, project issues)
+publish_to: "none"
+version: 1.4.0+16
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  dio: ^5.8.0+1
+  flutter:
+    sdk: flutter
+  flutter_secure_storage: ^9.0.0
+  http: ^1.4.0
+  intl: ^0.19.0
+  mobile_scanner: ^6.0.7
+  open_filex: ^4.7.0
+  package_info_plus: ^8.0.2
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  permission_handler: ^12.0.0+1
+  pub_semver: ^2.2.0
+
+dev_dependencies:
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon.png
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  image_path: "assets/icon.png"
+  min_sdk_android: 21

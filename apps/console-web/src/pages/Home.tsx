@@ -30,6 +30,10 @@ export function CliInstallCard() {
             <Anchor component={Link} to="/tokens">
               an API token
             </Anchor>
+            . The phone app signs in from{" "}
+            <Anchor component={Link} to="/app-login">
+              App login
+            </Anchor>
             .
           </Text>
         </div>
