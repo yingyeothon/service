@@ -1,19 +1,27 @@
-# yyt catalog installer (`life.yyt.catalog`)
+# 잉여톤 — yyt console companion app (`life.yyt.catalog`)
 
-Android app that lists catalog apps and installs their APKs directly from the
-public CDN. Ported from the legacy catalog installer (docs/decisions.md
-"Binary catalog"); it talks only to the console API.
+Android app with two tabs: **앱** lists catalog apps and installs their APKs
+directly from the public CDN (the original installer role), **프로젝트** lists
+the member's teams and projects and lets them read, file, comment on, close
+and reopen project issues — the console's issue tracker on a phone. It talks
+only to the console API.
 
 - Sign in: GitHub device flow (`/auth/device/*`) or an API-key QR
   (`{"type":"yyt_api_key","apiKey":"yyt_…","server":"https://console.yyt.life"}`);
   tokens are probed with `GET /me`.
-- Apps: `GET /catalog/apps` (flattened over every team the user is seated in;
-  a compatibility route kept for one release), artifacts by app id
-  (`/catalog/apps/{id}/artifacts`). Permission is team membership only, so
-  the app has no permission screen.
+- Apps: `GET /teams` then `GET /teams/{id}/catalog/apps` for every seated
+  team (pending seats are skipped), deduplicated by app id; artifacts by app
+  id (`/catalog/apps/{id}/artifacts`). Permission is team membership only, so
+  the app has no permission screen. The flattened `GET /catalog/apps` is no
+  longer used (todo/17 P10 may drop it).
+- Projects: `GET /teams/{id}/projects`, `GET|POST /projects/{id}/issues`,
+  `GET /projects/{id}/issues/{n}` (with comments), `POST …/{n}/close|reopen`,
+  `POST …/{n}/comments`. Writes need a seat (`owner`/`member`); an unseated
+  platform admin reads only.
 - Server URL: enter the console host (e.g. `console.yyt.life`).
-- The legacy `me.hoppipolla.catalog` build is abandoned; users install this
-  package fresh (different applicationId + signing key).
+- The legacy build under the old vendor package name is abandoned; users
+  install this package fresh (different applicationId + signing key). The
+  launcher icon is `assets/icon.png` (`dart run flutter_launcher_icons`).
 
 ## Build
 

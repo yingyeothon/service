@@ -29,6 +29,11 @@ class AuthConfig {
     if (parsed.host.isEmpty) {
       throw const FormatException('호스트가 포함된 서버 주소를 입력해주세요.');
     }
+    if (parsed.userInfo.isNotEmpty) {
+      // `https://console.yyt.life@evil.example` would read as the real
+      // console while every token goes to `evil.example`.
+      throw const FormatException('사용자 정보(@)가 포함된 서버 주소는 사용할 수 없습니다.');
+    }
     if (parsed.query.isNotEmpty || parsed.fragment.isNotEmpty) {
       throw const FormatException('쿼리/프래그먼트가 없는 서버 주소를 입력해주세요.');
     }
@@ -40,7 +45,6 @@ class AuthConfig {
 
     return Uri(
       scheme: parsed.scheme,
-      userInfo: parsed.userInfo,
       host: parsed.host,
       port: parsed.hasPort ? parsed.port : null,
     ).toString();
@@ -58,11 +62,19 @@ class AuthConfig {
 
   // Console API (services/console): the catalog lives under /catalog and the
   // device flow under /auth/device (docs/decisions.md "Binary catalog").
-  // Tokens are probed with /me; the app list is the flattened compatibility
-  // route (every app of every team the caller is seated in); artifact routes
-  // are keyed by app id (docs/decisions.md "Teams and projects").
+  // Tokens are probed with /me; apps are listed per team (`/teams` then
+  // `/teams/{id}/catalog/apps`, the permanent routes); artifact routes are
+  // keyed by app id (docs/decisions.md "Teams and projects").
   static String get meUrl => '$apiBaseUrl/me';
-  static String get appsUrl => '$apiBaseUrl/catalog/apps';
+  static String get teamsUrl => '$apiBaseUrl/teams';
+  static String teamAppsUrl(String teamId) =>
+      '$apiBaseUrl/teams/${Uri.encodeComponent(teamId)}/catalog/apps';
+  static String teamProjectsUrl(String teamId) =>
+      '$apiBaseUrl/teams/${Uri.encodeComponent(teamId)}/projects';
+  static String projectIssuesUrl(String projectId) =>
+      '$apiBaseUrl/projects/${Uri.encodeComponent(projectId)}/issues';
+  static String projectIssueUrl(String projectId, int number) =>
+      '${projectIssuesUrl(projectId)}/$number';
   static String appArtifactsUrl(String appId) =>
       '$apiBaseUrl/catalog/apps/${Uri.encodeComponent(appId)}/artifacts';
   static String appArtifactUrl(String appId, String artifactId) =>

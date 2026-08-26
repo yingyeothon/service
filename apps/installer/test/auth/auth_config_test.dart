@@ -56,10 +56,27 @@ void main() {
   test('API urls: /me probe and id-keyed artifact routes', () {
     AuthConfig.setServerUrl('console-dev.yyt.life');
     expect(AuthConfig.meUrl, 'https://console-dev.yyt.life/me');
-    expect(AuthConfig.appsUrl, 'https://console-dev.yyt.life/catalog/apps');
+    expect(AuthConfig.teamsUrl, 'https://console-dev.yyt.life/teams');
+    expect(
+      AuthConfig.teamAppsUrl('team_1'),
+      'https://console-dev.yyt.life/teams/team_1/catalog/apps',
+    );
+    expect(
+      AuthConfig.projectIssueUrl('prj_1', 7),
+      'https://console-dev.yyt.life/projects/prj_1/issues/7',
+    );
     expect(
       AuthConfig.appArtifactUrl('ca_0123abcd', 'art 1'),
       'https://console-dev.yyt.life/catalog/apps/ca_0123abcd/artifacts/art%201',
+    );
+  });
+
+  test('rejects a server URL carrying userinfo', () {
+    expect(
+      () => AuthConfig.normalizeServerUrl(
+        'https://console.yyt.life@evil.example',
+      ),
+      throwsA(isA<FormatException>()),
     );
   });
 }

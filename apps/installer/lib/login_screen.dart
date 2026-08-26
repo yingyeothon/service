@@ -400,7 +400,7 @@ class _LoginScreenState extends State<LoginScreen> {
         _phase == _LoginPhase.validatingApiKey;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('앱 도우미 로그인')),
+      appBar: AppBar(title: const Text('잉여톤 로그인')),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
