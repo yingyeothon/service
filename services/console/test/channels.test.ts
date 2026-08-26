@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { runExpire } from "../src/expire.js";
 import { nullLogger } from "@yyt/core";
 import { ev, harness, NOW_SEC, parse, URLS, type Team } from "./helpers.js";
+import { CHANNELS_PER_PROJECT } from "../src/resources.js";
 
 const authCfg = {
   audience: "game-a",
@@ -754,5 +755,81 @@ describe("expire sweep", () => {
     expect(
       hist.rows.filter((r) => r.action === "resource.expire"),
     ).toHaveLength(2);
+  });
+});
+
+describe("channels: caps and history hygiene (todo/17 P7 review)", () => {
+  it("caps channels per project", async () => {
+    const h = harness();
+    const u = await h.team("alice");
+    const post = (name: string) =>
+      h.app(
+        ev("POST", `/projects/${u.prjId}/channels`, {
+          headers: u.cookie,
+          body: { kind: "auth", name, config: { audience: "x" } },
+        }),
+      );
+    for (let i = 0; i < CHANNELS_PER_PROJECT; i++)
+      expect((await post(`c-${i}`)).statusCode).toBe(201);
+    const over = await post("one-too-many");
+    expect(over.statusCode).toBe(409);
+    expect(over.body).toContain("too many channels");
+  });
+
+  it("never writes a secret or a config value into team history", async () => {
+    const h = harness();
+    const u = await h.team("alice");
+    const created = await h.app(
+      ev("POST", `/projects/${u.prjId}/channels`, {
+        headers: u.cookie,
+        body: { kind: "auth", name: "login", config: authCfg },
+      }),
+    );
+    expect(created.statusCode, created.body).toBe(201);
+    const { id, secret } = parse(created);
+    const rotated = await h.app(
+      ev("POST", `/channels/${id}/rotate-secret`, { headers: u.cookie }),
+    );
+    expect(rotated.statusCode, rotated.body).toBe(200);
+    const patched = await h.app(
+      ev("PATCH", `/channels/${id}`, {
+        headers: u.cookie,
+        body: {
+          config: {
+            ...authCfg,
+            audience: "game-b",
+            providers: {
+              github: { clientId: "gh_id", clientSecret: "gh-secret-b2" },
+            },
+          },
+        },
+      }),
+    );
+    expect(patched.statusCode, patched.body).toBe(200);
+    const hist = await h.app(
+      ev("GET", `/teams/${u.teamId}/history`, { headers: u.cookie }),
+    );
+    expect(hist.statusCode).toBe(200);
+    const actions = (parse(hist).history as { action: string }[]).map(
+      (r) => r.action,
+    );
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        "resource.create",
+        "resource.rotate",
+        "resource.update",
+      ]),
+    );
+    // Field names only: neither secret, nor any config value, ever lands.
+    for (const leak of [
+      secret,
+      parse(rotated).secret,
+      "gh-secret-zz",
+      "gh-secret-b2",
+      "game-a",
+      "game-b",
+      "https://game.example/play",
+    ])
+      expect(hist.body).not.toContain(leak);
   });
 });

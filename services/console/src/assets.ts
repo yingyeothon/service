@@ -25,6 +25,7 @@ import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
 import { resourceName } from "./team.js";
 import {
   BUNDLES_PER_PROJECT,
+  untilContractUnique,
   type CrumbResolver,
   type ResourceHistory,
 } from "./resources.js";
@@ -495,15 +496,18 @@ export function createAssetRoutes({
         await requireFreeName(a.team.id, ctx.body.name);
         const now = nowSec(clock);
         const bundleId = `ab_${randomHex(8)}`;
-        await assets.insertBundle({
-          id: bundleId,
-          name: ctx.body.name,
-          description: ctx.body.description ?? null,
-          ownerId: a.id.subject,
-          teamId: a.team.id,
-          projectId: a.project.id,
-          createdAt: now,
-        });
+        await untilContractUnique(
+          "bundle",
+          assets.insertBundle({
+            id: bundleId,
+            name: ctx.body.name,
+            description: ctx.body.description ?? null,
+            ownerId: a.id.subject,
+            teamId: a.team.id,
+            projectId: a.project.id,
+            createdAt: now,
+          }),
+        );
         await audit(a.id.subject, "asset.bundle.create", bundleId, {
           name: ctx.body.name,
           projectId: a.project.id,

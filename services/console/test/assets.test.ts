@@ -984,3 +984,20 @@ describe("asset deletion safety", () => {
     expect(parse(ok).objectKey).toBe(`assets/${id}/v1/map.json`);
   });
 });
+
+describe("asset bundles: names across teams until the contract migration", () => {
+  it("explains the global unique index instead of a bare duplicate key", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const bob = await h.team("bob");
+    await mkBundle(h, alice, "maps");
+    const r = await h.app(
+      ev("POST", `/projects/${bob.prjId}/assets/bundles`, {
+        body: { name: "maps" },
+        headers: bob.cookie,
+      }),
+    );
+    expect(r.statusCode).toBe(409);
+    expect(r.body).toContain("another team");
+  });
+});
