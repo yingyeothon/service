@@ -23,10 +23,13 @@ const DefaultAPI = "https://console.yyt.life"
 // DefaultProfile is the profile name used when none is configured.
 const DefaultProfile = "default"
 
-// Profile is one stored login.
+// Profile is one stored login plus its default team/project context
+// (`yyt team use`, `yyt project use`). Team and project ids are not secrets.
 type Profile struct {
-	API   string `json:"api"`
-	Token string `json:"token"`
+	API     string `json:"api"`
+	Token   string `json:"token"`
+	Team    string `json:"team,omitempty"`
+	Project string `json:"project,omitempty"`
 }
 
 // File is the on-disk config document.
@@ -40,6 +43,11 @@ type Config struct {
 	API     string
 	Token   string
 	Profile string // profile name the values came from ("" when purely flags/env)
+	// Default team/project of the selected profile. They survive a --token /
+	// YYT_TOKEN override (which blanks Profile): the credential changed, the
+	// working context the user chose did not.
+	Team    string
+	Project string
 }
 
 // Path returns the config file location. YYT_CONFIG overrides it (tests, CI).
@@ -129,11 +137,21 @@ func SaveFile(f File) error {
 	return os.Rename(tmp, p)
 }
 
-// SaveProfile stores one profile; the first stored profile becomes the default.
+// SaveProfile stores one profile's credentials, keeping the team/project
+// defaults already stored under that name (a re-login must not drop them);
+// the first stored profile becomes the default.
 func SaveProfile(name string, pr Profile) error {
 	f, err := LoadFile()
 	if err != nil {
 		return err
+	}
+	if old, ok := f.Profiles[name]; ok {
+		if pr.Team == "" {
+			pr.Team = old.Team
+		}
+		if pr.Project == "" {
+			pr.Project = old.Project
+		}
 	}
 	f.Profiles[name] = pr
 	// Only a sole profile auto-becomes the default; never silently steal it
@@ -190,6 +208,31 @@ func RenameProfile(oldName, newName string) error {
 	return SaveFile(f)
 }
 
+// SetContext stores the default team and/or project of an existing profile.
+// A nil pointer leaves that field alone; an empty string clears it. Setting
+// the team always clears the project: a project pin is only meaningful under
+// the team it was chosen in, and `yyt team use` is the user asking to start
+// over from the team.
+func SetContext(name string, team, project *string) error {
+	f, err := LoadFile()
+	if err != nil {
+		return err
+	}
+	pr, ok := f.Profiles[name]
+	if !ok {
+		return fmt.Errorf("unknown profile %q (known: %s)", name, knownNames(f))
+	}
+	if team != nil {
+		pr.Team = *team
+		pr.Project = ""
+	}
+	if project != nil {
+		pr.Project = *project
+	}
+	f.Profiles[name] = pr
+	return SaveFile(f)
+}
+
 // SetDefault marks an existing profile as the default.
 func SetDefault(name string) error {
 	f, err := LoadFile()
@@ -240,7 +283,7 @@ func Resolve(flagProfile, flagAPI, flagToken string) (Config, error) {
 	}
 	name, explicit := ProfileName(flagProfile, f)
 	pr, ok := f.Profiles[name]
-	c := Config{API: pr.API, Token: pr.Token, Profile: name}
+	c := Config{API: pr.API, Token: pr.Token, Profile: name, Team: pr.Team, Project: pr.Project}
 	if v := os.Getenv("YYT_API"); v != "" {
 		c.API = v
 	}

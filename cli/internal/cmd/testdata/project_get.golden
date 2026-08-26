@@ -1,0 +1,12 @@
+id:          prj_1
+name:        game
+team:        dooroo (team_1)
+description: -
+createdBy:   octo
+created:     2025-08-24T01:46:40Z
+updated:     2025-08-24T01:48:20Z
+channels:    3
+apps:        1
+bundles:     2
+versions:    4
+issues:      5

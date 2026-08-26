@@ -23,6 +23,9 @@ type App struct {
 	apiFlag  string
 	tokFlag  string
 	profFlag string
+	// Team/project context flags (see context.go).
+	teamFlag    string
+	projectFlag string
 	// NewClient lets tests replace the HTTP client; nil → real client.
 	NewClient func(cfg config.Config) *api.Client
 }
@@ -34,6 +37,10 @@ func (a *App) client() (*api.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	return a.clientFor(cfg)
+}
+
+func (a *App) clientFor(cfg config.Config) (*api.Client, error) {
 	if cfg.Token == "" {
 		return nil, errors.New("not logged in: run `yyt login --token <API token>` (console > account > API tokens) or set YYT_TOKEN")
 	}
@@ -41,6 +48,20 @@ func (a *App) client() (*api.Client, error) {
 		return a.NewClient(cfg), nil
 	}
 	return api.New(cfg.API, cfg.Token), nil
+}
+
+// group marks a command that only groups subcommands: it prints its help when
+// called bare and fails on an unknown subcommand instead of printing help and
+// exiting 0 (a script still calling a removed `catalog group …` must notice).
+func group(c *cobra.Command) *cobra.Command {
+	c.Args = cobra.ArbitraryArgs
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+		}
+		return cmd.Help()
+	}
+	return c
 }
 
 // NewRoot builds the command tree.
@@ -53,7 +74,7 @@ func NewRoot(a *App) *cobra.Command {
 	}
 	root := &cobra.Command{
 		Use:           "yyt",
-		Short:         "CLI for the yingyeothon service console (channels, tokens, members, events, catalog, assets)",
+		Short:         "CLI for the yingyeothon service console (teams, projects, channels, catalog, assets, events)",
 		Version:       api.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -65,10 +86,13 @@ func NewRoot(a *App) *cobra.Command {
 	pf.StringVar(&a.apiFlag, "api", "", "console base URL (default from config, YYT_API, or "+config.DefaultAPI+")")
 	pf.StringVar(&a.tokFlag, "token", "", "API token (overrides config and YYT_TOKEN)")
 	pf.StringVar(&a.profFlag, "profile", "", "config profile (default from YYT_PROFILE or the config file)")
+	pf.StringVar(&a.teamFlag, "team", "", "team context by name or id (default: YYT_TEAM, "+ContextFile+", or 'yyt team use')")
+	pf.StringVar(&a.projectFlag, "project", "", "project context by name or id (default: YYT_PROJECT, "+ContextFile+", or 'yyt project use')")
 
 	root.AddCommand(
 		newLogin(a), newLogout(a), newWhoami(a),
 		newProfile(a),
+		newTeam(a), newProject(a),
 		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newCatalog(a), newAssets(a), newSmoke(a),
 	)
 	return root
@@ -80,6 +104,10 @@ func Execute() int {
 	root := NewRoot(a)
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		fmt.Fprintln(a.Err, "error:", err)
+		var ce *ContextError
+		if errors.As(err, &ce) {
+			return 6
+		}
 		var ae *api.Error
 		if errors.As(err, &ae) {
 			switch ae.Status {
@@ -87,7 +115,7 @@ func Execute() int {
 				fmt.Fprintln(a.Err, "hint: the token is missing, revoked, or for another stage; run `yyt login`")
 				return 3
 			case 403:
-				fmt.Fprintln(a.Err, "hint: your account may still be pending (an admin runs `yyt members approve <id>`) or the action needs admin")
+				fmt.Fprintln(a.Err, "hint: your account may still be pending (an admin runs `yyt members approve <id>`), your team seat is pending, or the action needs a team owner/admin")
 				return 4
 			case 404:
 				return 5

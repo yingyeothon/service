@@ -13,16 +13,18 @@ Verified end to end on `dev` with `examples/sample-dungeon` (2026-08-23): auth J
 
 ```sh
 yyt login --api https://console.yyt.life --token <api-token>
+yyt team create teamA && yyt team use teamA           # or `yyt team join teamA` and wait for the owner
+yyt project create dungeon && yyt project use dungeon # channels live in a project; `use` pins the context
 yyt channels create --kind auth  --name teamA --audience teamA-dungeon \
     --github-client-id … --github-client-secret …        # prints secret ONCE
-yyt channels create --kind match --name teamA --auth-channel <auth-id> \
+yyt channels create --kind match --name teamA-match --auth-channel teamA \
     --party-size 2 --wait-timeout 60 --on-timeout partial \
     --callback-url https://example.invalid/match-callback # replaced in step 4; prints apiKey ONCE
 # optional, server-less rooms:
-yyt channels create --kind topic --name teamA --auth-channel <auth-id>   # prints apiKey ONCE
+yyt channels create --kind topic --name teamA-topic --auth-channel teamA   # prints apiKey ONCE
 ```
 
-Then set the OAuth app's callback to `https://auth.yyt.life/c/<auth-id>/github/callback` and allow the game's page: `yyt channels update <auth-id> --redirect https://<game-page>`. Smoke without a browser: `POST /c/<auth-id>/token {provider, accessToken}` (`docs/decisions.md`).
+Then set the OAuth app's callback to `https://auth.yyt.life/c/<auth-id>/github/callback` and allow the game's page: `yyt channels update teamA --redirect https://<game-page>`. (Names are unique within the team, so the three channels need different names; `--auth-channel` takes the auth channel's name.) Smoke without a browser: `POST /c/<auth-id>/token {provider, accessToken}` (`docs/decisions.md`).
 
 Check: `yyt channels list` shows all `active`.
 

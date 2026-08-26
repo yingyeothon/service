@@ -1,0 +1,9 @@
+id:        ver_1
+name:      1.0.0
+note:      first
+createdBy: octo
+created:   2025-08-24T01:46:40Z
+
+LINK   KIND           TARGET   CREATED
+lnk_1  artifact       art_1    2025-08-24T01:50:00Z
+lnk_2  asset_version  ab_1@v3  2025-08-24T01:51:40Z

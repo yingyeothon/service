@@ -263,10 +263,17 @@ func newWhoami(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			spec := a.contextSpec(contextStart(cmd), cfg)
 			if a.jsonOut {
 				out := map[string]any{"id": m.ID, "login": m.Login, "role": m.Role, "via": m.Via, "api": cl.Base}
 				if cfg.Profile != "" {
 					out["profile"] = cfg.Profile
+				}
+				if spec.Team != "" {
+					out["team"], out["teamSource"] = spec.Team, spec.TeamSource
+				}
+				if spec.Project != "" {
+					out["project"], out["projectSource"] = spec.Project, spec.ProjectSource
 				}
 				return a.printer().JSONValue(out)
 			}
@@ -274,7 +281,16 @@ func newWhoami(a *App) *cobra.Command {
 			if prof == "" {
 				prof = "(token from flag/env)"
 			}
-			return a.printer().KV([][2]string{{"id", m.ID}, {"login", m.Login}, {"role", m.Role}, {"profile", prof}, {"api", cl.Base}})
+			withSource := func(v, src string) string {
+				if v == "" {
+					return "(none; reads auto-select when unique)"
+				}
+				return v + " (from " + src + ")"
+			}
+			return a.printer().KV([][2]string{
+				{"id", m.ID}, {"login", m.Login}, {"role", m.Role}, {"profile", prof}, {"api", cl.Base},
+				{"team", withSource(spec.Team, spec.TeamSource)}, {"project", withSource(spec.Project, spec.ProjectSource)},
+			})
 		},
 	}
 }

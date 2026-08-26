@@ -17,6 +17,8 @@ Allowed in git: public service domains (`*.yyt.life`), the bucket name `yyt-serv
 
 Identifiers are treated as secrets because the stateful host is reachable from the internet; a leaked name is a target.
 
+Not secrets, on purpose: team, project and resource **ids** (`team_…`, `prj_…`, `ca_…`) and the CLI context file `.yyt.json` (`{"team","project"}`) that carries them. They only mean something to a logged-in member of that team, so they may sit in a game repository next to `pubspec.yaml`. Prefer **ids** in a committed `.yyt.json`: a team's name is also its join key (there is no team listing), so publishing it invites join spam.
+
 ## Where secrets live
 
 1. **`local/env/<service>.<stage>.env`** — one file per service × stage (`console|auth|topic|match` × `dev|prod`), layout in `local/env.example`, issued by `yyt-stateful`. Mode 600, directory 700.

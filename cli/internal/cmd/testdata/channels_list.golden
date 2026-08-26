@@ -1,2 +1,2 @@
-ID         KIND  NAME  STATUS  EXPIRES               OWNER
-auth_0123  auth  demo  active  2025-08-31T01:46:40Z  m_1
+ID         KIND  NAME  STATUS  EXPIRES               TEAM/PROJECT
+auth_0123  auth  demo  active  2025-08-31T01:46:40Z  dooroo/game

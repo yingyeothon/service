@@ -20,27 +20,20 @@ import (
 	"github.com/yingyeothon/service/cli/internal/output"
 )
 
-// Views mirror services/console/src/catalog.ts.
-type catalogGroup struct {
-	ID                string  `json:"id"`
-	Name              string  `json:"name"`
-	OwnerLogin        *string `json:"ownerLogin"`
-	PendingOwnerLogin *string `json:"pendingOwnerLogin"`
-	CreatedAt         int64   `json:"createdAt"`
-	UpdatedAt         int64   `json:"updatedAt"`
-}
-
+// Views mirror services/console/src/catalog.ts. Apps belong to a project;
+// who may write is the team membership, so there is no owner/group/permission.
 type catalogApp struct {
-	ID                string  `json:"id"`
-	Name              string  `json:"name"`
-	Path              string  `json:"path"`
-	DebugOnly         bool    `json:"debugOnly"`
-	Description       *string `json:"description"`
-	GroupID           *string `json:"groupId"`
-	OwnerLogin        *string `json:"ownerLogin"`
-	PendingOwnerLogin *string `json:"pendingOwnerLogin"`
-	CreatedAt         int64   `json:"createdAt"`
-	UpdatedAt         int64   `json:"updatedAt"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Path        string  `json:"path"`
+	Description *string `json:"description"`
+	TeamID      *string `json:"teamId"`
+	TeamName    *string `json:"teamName"`
+	ProjectID   *string `json:"projectId"`
+	ProjectName *string `json:"projectName"`
+	CreatedBy   *string `json:"createdBy"`
+	CreatedAt   int64   `json:"createdAt"`
+	UpdatedAt   int64   `json:"updatedAt"`
 }
 
 type catalogSettings struct {
@@ -64,14 +57,6 @@ type catalogArtifact struct {
 		ManifestURL string `json:"manifestUrl"`
 		InstallURL  string `json:"installUrl"`
 	} `json:"ios,omitempty"`
-}
-
-type catalogPermission struct {
-	ID        string  `json:"id"`
-	Login     *string `json:"login"`
-	Pending   bool    `json:"pending"`
-	Level     string  `json:"level"`
-	CreatedAt int64   `json:"createdAt"`
 }
 
 type uploadGrant struct {
@@ -123,8 +108,8 @@ func putPresigned(ctx context.Context, cl *api.Client, grant uploadGrant, body i
 	return nil
 }
 
-// uploadArtifact runs presign → PUT file → commit.
-func uploadArtifact(ctx context.Context, cl *api.Client, appName, filePath, platform string, tags map[string]string) (*catalogArtifact, error) {
+// uploadArtifact runs presign → PUT file → commit. appID is the app's id.
+func uploadArtifact(ctx context.Context, cl *api.Client, appID, filePath, platform string, tags map[string]string) (*catalogArtifact, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -135,7 +120,7 @@ func uploadArtifact(ctx context.Context, cl *api.Client, appName, filePath, plat
 		return nil, err
 	}
 	var grant uploadGrant
-	err = cl.Do(ctx, http.MethodPost, "/catalog/apps/"+api.PathID(appName)+"/artifacts", map[string]any{
+	err = cl.Do(ctx, http.MethodPost, "/catalog/apps/"+api.PathID(appID)+"/artifacts", map[string]any{
 		"platform": platform,
 		"filename": filepath.Base(filePath),
 		"size":     st.Size(),
@@ -158,15 +143,29 @@ func newCatalog(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:     "catalog",
 		Aliases: []string{"cata"}, // legacy cata CLI muscle memory
-		Short:   "Binary catalog: apps, groups, artifacts, permissions",
+		Short:   "Binary catalog: apps and their build artifacts (an app belongs to a project)",
+		Long: "Binary catalog: apps and their build artifacts. An app belongs to a project.\n\n" +
+			"<app> is an id (ca_…) or a name unique within the team; a name is looked up in\n" +
+			"the project context (--project, YYT_PROJECT, " + ContextFile + ", `yyt project use`).\n" +
+			"Uploads and `deploy` need an explicit project context.",
 	}
 	p := func() output.Printer { return a.printer() }
-	do := func(cmd *cobra.Command, method, path string, in, out any) error {
-		cl, err := a.client()
+	// appID resolves <app> (id or name); write=true refuses auto-selection.
+	appID := func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error) {
+		cc, err := a.ctxClient(cmd)
+		if err != nil {
+			return nil, "", err
+		}
+		id, err := cc.app(cmd.Context(), arg, write)
+		return cc, id, err
+	}
+	// appDo resolves <app> then issues one request on its id path.
+	appDo := func(cmd *cobra.Command, write bool, method, arg, suffix string, in, out any) error {
+		cc, id, err := appID(cmd, arg, write)
 		if err != nil {
 			return err
 		}
-		return cl.Do(cmd.Context(), method, path, in, out)
+		return cc.cl.Do(cmd.Context(), method, "/catalog/apps/"+api.PathID(id)+suffix, in, out)
 	}
 
 	printApp := func(v catalogApp) error {
@@ -175,20 +174,10 @@ func newCatalog(a *App) *cobra.Command {
 		}
 		return p().KV([][2]string{
 			{"id", v.ID}, {"name", v.Name}, {"path", v.Path},
-			{"debugOnly", fmt.Sprint(v.DebugOnly)},
+			{"project", crumb(v.TeamName, v.ProjectName)},
 			{"description", output.Str(v.Description)},
-			{"group", output.Str(v.GroupID)},
-			{"owner", output.Str(v.OwnerLogin)},
+			{"createdBy", output.Str(v.CreatedBy)},
 			{"created", output.Time(v.CreatedAt)}, {"updated", output.Time(v.UpdatedAt)},
-		})
-	}
-	printGroup := func(v catalogGroup) error {
-		if a.jsonOut {
-			return p().JSONValue(v)
-		}
-		return p().KV([][2]string{
-			{"id", v.ID}, {"name", v.Name}, {"owner", output.Str(v.OwnerLogin)},
-			{"created", output.Time(v.CreatedAt)},
 		})
 	}
 	printArtifact := func(v catalogArtifact) error {
@@ -210,33 +199,31 @@ func newCatalog(a *App) *cobra.Command {
 		}
 		return p().KV(pairs)
 	}
-	printPermissions := func(perms []catalogPermission) error {
-		if a.jsonOut {
-			return p().JSONValue(map[string]any{"permissions": perms})
-		}
-		rows := make([][]string, 0, len(perms))
-		for _, pm := range perms {
-			pending := ""
-			if pm.Pending {
-				pending = "yes"
-			}
-			rows = append(rows, []string{pm.ID, output.Str(pm.Login), pm.Level, pending})
-		}
-		return p().Table([]string{"ID", "LOGIN", "LEVEL", "PENDING"}, rows)
-	}
 
 	// ---- app ----------------------------------------------------------------
 	app := &cobra.Command{Use: "app", Short: "Catalog apps"}
 	app.AddCommand(&cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List apps you can see",
+		Short:   "List the apps of the project in context, or of every team you sit in",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			cc, err := a.ctxClient(cmd)
+			if err != nil {
+				return err
+			}
+			path := "/catalog/apps"
+			if cc.spec.explicitTeam() || cc.spec.explicitProject() {
+				r, err := cc.project(cmd.Context(), false)
+				if err != nil {
+					return err
+				}
+				path = "/projects/" + api.PathID(r.ProjectID) + "/catalog/apps"
+			}
 			var res struct {
 				Apps []catalogApp `json:"apps"`
 			}
-			if err := do(cmd, http.MethodGet, "/catalog/apps", nil, &res); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
 				return err
 			}
 			if a.jsonOut {
@@ -244,31 +231,32 @@ func newCatalog(a *App) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Apps))
 			for _, v := range res.Apps {
-				rows = append(rows, []string{v.Name, v.Path, output.Str(v.GroupID), output.Str(v.OwnerLogin), output.Time(v.UpdatedAt)})
+				rows = append(rows, []string{v.ID, v.Name, v.Path, crumb(v.TeamName, v.ProjectName), output.Time(v.UpdatedAt)})
 			}
-			return p().Table([]string{"NAME", "PATH", "GROUP", "OWNER", "UPDATED"}, rows)
+			return p().Table([]string{"ID", "NAME", "PATH", "TEAM/PROJECT", "UPDATED"}, rows)
 		},
 	})
 	{
-		var path, description, groupID string
-		var debugOnly bool
+		var path, description string
 		create := &cobra.Command{
-			Use:   "create <name>",
-			Short: "Create an app (you become the owner)",
+			Use:   "create <name> --path <applicationId>",
+			Short: "Create an app in the project context (explicit)",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
+				cc, err := a.ctxClient(cmd)
+				if err != nil {
+					return err
+				}
+				r, err := cc.project(cmd.Context(), true)
+				if err != nil {
+					return err
+				}
 				body := map[string]any{"name": args[0], "path": path}
 				if description != "" {
 					body["description"] = description
 				}
-				if groupID != "" {
-					body["groupId"] = groupID
-				}
-				if debugOnly {
-					body["debugOnly"] = true
-				}
 				var v catalogApp
-				if err := do(cmd, http.MethodPost, "/catalog/apps", body, &v); err != nil {
+				if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/projects/"+api.PathID(r.ProjectID)+"/catalog/apps", body, &v); err != nil {
 					return err
 				}
 				return printApp(v)
@@ -276,70 +264,58 @@ func newCatalog(a *App) *cobra.Command {
 		}
 		create.Flags().StringVar(&path, "path", "", "application id (e.g. life.yyt.my-game)")
 		create.Flags().StringVar(&description, "description", "", "description")
-		create.Flags().StringVar(&groupID, "group", "", "group id")
-		create.Flags().BoolVar(&debugOnly, "debug-only", false, "mark as a debug-only app")
 		_ = create.MarkFlagRequired("path")
 		app.AddCommand(create)
 	}
 	app.AddCommand(&cobra.Command{
-		Use:   "get <name>",
+		Use:   "get <app>",
 		Short: "Show one app",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var v catalogApp
-			if err := do(cmd, http.MethodGet, "/catalog/apps/"+api.PathID(args[0]), nil, &v); err != nil {
+			if err := appDo(cmd, false, http.MethodGet, args[0], "", nil, &v); err != nil {
 				return err
 			}
 			return printApp(v)
 		},
 	})
 	{
-		var description, groupID string
-		var noGroup, debugOnly, noDebugOnly bool
+		var name, path, description string
 		update := &cobra.Command{
-			Use:   "update <name>",
-			Short: "Update app fields (owner or admin)",
+			Use:   "update <app> [--name n] [--path p] [--description d]",
+			Short: "Update app fields; empty --description clears it",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				body := map[string]any{}
-				if cmd.Flags().Changed("description") {
-					body["description"] = description
+				if cmd.Flags().Changed("name") {
+					body["name"] = name
 				}
-				if noGroup {
-					body["groupId"] = nil
-				} else if groupID != "" {
-					body["groupId"] = groupID
+				if cmd.Flags().Changed("path") {
+					body["path"] = path
 				}
-				if debugOnly {
-					body["debugOnly"] = true
-				}
-				if noDebugOnly {
-					body["debugOnly"] = false
-				}
+				nullableDesc(cmd, "description", description, body, "description")
 				if len(body) == 0 {
-					return errors.New("nothing to update: pass --description/--group/--no-group/--debug-only/--no-debug-only")
+					return errors.New("nothing to update: pass --name, --path and/or --description")
 				}
 				var v catalogApp
-				if err := do(cmd, http.MethodPatch, "/catalog/apps/"+api.PathID(args[0]), body, &v); err != nil {
+				if err := appDo(cmd, true, http.MethodPatch, args[0], "", body, &v); err != nil {
 					return err
 				}
 				return printApp(v)
 			},
 		}
-		update.Flags().StringVar(&description, "description", "", "description")
-		update.Flags().StringVar(&groupID, "group", "", "group id")
-		update.Flags().BoolVar(&noGroup, "no-group", false, "detach from its group")
-		update.Flags().BoolVar(&debugOnly, "debug-only", false, "mark as debug-only")
-		update.Flags().BoolVar(&noDebugOnly, "no-debug-only", false, "clear debug-only")
+		update.Flags().StringVar(&name, "name", "", "new name (unique within the team)")
+		update.Flags().StringVar(&path, "path", "", "application id")
+		update.Flags().StringVar(&description, "description", "", "description (empty clears)")
 		app.AddCommand(update)
 	}
 	app.AddCommand(&cobra.Command{
-		Use:     "delete <name>",
+		Use:     "delete <app>",
 		Aliases: []string{"rm"},
 		Short:   "Delete an app (must have no artifacts)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := do(cmd, http.MethodDelete, "/catalog/apps/"+api.PathID(args[0]), nil, nil); err != nil {
+			if err := appDo(cmd, true, http.MethodDelete, args[0], "", nil, nil); err != nil {
 				return err
 			}
 			fmt.Fprintln(a.Out, "deleted")
@@ -350,8 +326,8 @@ func newCatalog(a *App) *cobra.Command {
 		var slackHook, slackChannel, template string
 		var keep int
 		settings := &cobra.Command{
-			Use:   "settings <name>",
-			Short: "Show or update app settings (owner or admin)",
+			Use:   "settings <app>",
+			Short: "Show or update app settings",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				body := map[string]any{}
@@ -370,9 +346,9 @@ func newCatalog(a *App) *cobra.Command {
 				var v catalogSettings
 				var err error
 				if len(body) > 0 {
-					err = do(cmd, http.MethodPatch, "/catalog/apps/"+api.PathID(args[0])+"/settings", body, &v)
+					err = appDo(cmd, true, http.MethodPatch, args[0], "/settings", body, &v)
 				} else {
-					err = do(cmd, http.MethodGet, "/catalog/apps/"+api.PathID(args[0])+"/settings", nil, &v)
+					err = appDo(cmd, false, http.MethodGet, args[0], "/settings", nil, &v)
 				}
 				if err != nil {
 					return err
@@ -397,13 +373,13 @@ func newCatalog(a *App) *cobra.Command {
 	{
 		var dryRun bool
 		cleanup := &cobra.Command{
-			Use:   "cleanup <name>",
-			Short: "Apply the app's retention policy (owner or admin)",
+			Use:   "cleanup <app>",
+			Short: "Apply the app's retention policy",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				path := "/catalog/apps/" + api.PathID(args[0]) + "/artifacts/cleanup"
+				suffix := "/artifacts/cleanup"
 				if dryRun {
-					path += "?dryRun=true"
+					suffix += "?dryRun=true"
 				}
 				var res struct {
 					DryRun   bool `json:"dryRun"`
@@ -420,7 +396,7 @@ func newCatalog(a *App) *cobra.Command {
 						} `json:"deletions"`
 					} `json:"preview"`
 				}
-				if err := do(cmd, http.MethodPost, path, map[string]any{}, &res); err != nil {
+				if err := appDo(cmd, !dryRun, http.MethodPost, args[0], suffix, map[string]any{}, &res); err != nil {
 					return err
 				}
 				if a.jsonOut {
@@ -446,101 +422,6 @@ func newCatalog(a *App) *cobra.Command {
 		app.AddCommand(cleanup)
 	}
 
-	// ---- group --------------------------------------------------------------
-	group := &cobra.Command{Use: "group", Short: "Catalog groups"}
-	group.AddCommand(&cobra.Command{
-		Use:     "list",
-		Aliases: []string{"ls"},
-		Short:   "List groups you can see",
-		Args:    cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			var res struct {
-				Groups []catalogGroup `json:"groups"`
-			}
-			if err := do(cmd, http.MethodGet, "/catalog/groups", nil, &res); err != nil {
-				return err
-			}
-			if a.jsonOut {
-				return p().JSONValue(res)
-			}
-			rows := make([][]string, 0, len(res.Groups))
-			for _, v := range res.Groups {
-				rows = append(rows, []string{v.ID, v.Name, output.Str(v.OwnerLogin), output.Time(v.CreatedAt)})
-			}
-			return p().Table([]string{"ID", "NAME", "OWNER", "CREATED"}, rows)
-		},
-	})
-	group.AddCommand(&cobra.Command{
-		Use:   "create <name>",
-		Short: "Create a group (you become the owner)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var v catalogGroup
-			if err := do(cmd, http.MethodPost, "/catalog/groups", map[string]any{"name": args[0]}, &v); err != nil {
-				return err
-			}
-			return printGroup(v)
-		},
-	})
-	group.AddCommand(&cobra.Command{
-		Use:   "get <id>",
-		Short: "Show one group",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var v catalogGroup
-			if err := do(cmd, http.MethodGet, "/catalog/groups/"+api.PathID(args[0]), nil, &v); err != nil {
-				return err
-			}
-			return printGroup(v)
-		},
-	})
-	group.AddCommand(&cobra.Command{
-		Use:   "rename <id> <name>",
-		Short: "Rename a group (owner or admin)",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var v catalogGroup
-			if err := do(cmd, http.MethodPatch, "/catalog/groups/"+api.PathID(args[0]), map[string]any{"name": args[1]}, &v); err != nil {
-				return err
-			}
-			return printGroup(v)
-		},
-	})
-	group.AddCommand(&cobra.Command{
-		Use:     "delete <id>",
-		Aliases: []string{"rm"},
-		Short:   "Delete a group (apps are detached, not deleted)",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := do(cmd, http.MethodDelete, "/catalog/groups/"+api.PathID(args[0]), nil, nil); err != nil {
-				return err
-			}
-			fmt.Fprintln(a.Out, "deleted")
-			return nil
-		},
-	})
-	group.AddCommand(&cobra.Command{
-		Use:   "apps <id>",
-		Short: "List the apps in a group",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var res struct {
-				Apps []catalogApp `json:"apps"`
-			}
-			if err := do(cmd, http.MethodGet, "/catalog/groups/"+api.PathID(args[0])+"/apps", nil, &res); err != nil {
-				return err
-			}
-			if a.jsonOut {
-				return p().JSONValue(res)
-			}
-			rows := make([][]string, 0, len(res.Apps))
-			for _, v := range res.Apps {
-				rows = append(rows, []string{v.Name, output.Str(v.OwnerLogin), output.Time(v.UpdatedAt)})
-			}
-			return p().Table([]string{"NAME", "OWNER", "UPDATED"}, rows)
-		},
-	})
-
 	// ---- artifact -----------------------------------------------------------
 	artifact := &cobra.Command{Use: "artifact", Short: "Build artifacts"}
 	{
@@ -556,7 +437,11 @@ func newCatalog(a *App) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("invalid --filter: %w", err)
 				}
-				arts, err := listArtifacts(cmd.Context(), a, args[0], platform, want)
+				cc, id, err := appID(cmd, args[0], false)
+				if err != nil {
+					return err
+				}
+				arts, err := listArtifacts(cmd.Context(), cc.cl, id, platform, want)
 				if err != nil {
 					return err
 				}
@@ -575,12 +460,12 @@ func newCatalog(a *App) *cobra.Command {
 		artifact.AddCommand(list)
 	}
 	artifact.AddCommand(&cobra.Command{
-		Use:   "get <app> <id>",
+		Use:   "get <app> <artifact-id>",
 		Short: "Show one artifact (with its CDN URL)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var v catalogArtifact
-			if err := do(cmd, http.MethodGet, "/catalog/apps/"+api.PathID(args[0])+"/artifacts/"+api.PathID(args[1]), nil, &v); err != nil {
+			if err := appDo(cmd, false, http.MethodGet, args[0], "/artifacts/"+api.PathID(args[1]), nil, &v); err != nil {
 				return err
 			}
 			return printArtifact(v)
@@ -594,16 +479,16 @@ func newCatalog(a *App) *cobra.Command {
 			Short: "Upload a file as a new artifact (presigned PUT + commit)",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				cl, err := a.client()
-				if err != nil {
-					return err
-				}
 				t, err := parseTags(tags)
 				if err != nil {
 					return err
 				}
 				t["version"] = version
-				v, err := uploadArtifact(cmd.Context(), cl, args[0], args[1], platform, t)
+				cc, id, err := appID(cmd, args[0], true)
+				if err != nil {
+					return err
+				}
+				v, err := uploadArtifact(cmd.Context(), cc.cl, id, args[1], platform, t)
 				if err != nil {
 					return err
 				}
@@ -615,16 +500,16 @@ func newCatalog(a *App) *cobra.Command {
 		up.Flags().StringArrayVar(&tags, "tag", nil, "extra tag key=value (repeatable)")
 		_ = up.MarkFlagRequired("platform")
 		_ = up.MarkFlagRequired("version")
-		up.AddCommand(newUploadAndroid(a), newUploadIOS(a))
+		up.AddCommand(newUploadAndroid(a, appID), newUploadIOS(a, appID))
 		artifact.AddCommand(up)
 	}
 	artifact.AddCommand(&cobra.Command{
-		Use:     "delete <app> <id>",
+		Use:     "delete <app> <artifact-id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete an artifact (removes the CDN object too)",
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := do(cmd, http.MethodDelete, "/catalog/apps/"+api.PathID(args[0])+"/artifacts/"+api.PathID(args[1]), nil, nil); err != nil {
+			if err := appDo(cmd, true, http.MethodDelete, args[0], "/artifacts/"+api.PathID(args[1]), nil, nil); err != nil {
 				return err
 			}
 			fmt.Fprintln(a.Out, "deleted")
@@ -632,95 +517,16 @@ func newCatalog(a *App) *cobra.Command {
 		},
 	})
 
-	// ---- permission ---------------------------------------------------------
-	permission := &cobra.Command{Use: "permission", Short: "App/group permissions (owner or admin)"}
-	permBase := func(cmd *cobra.Command, appName, groupID string) (string, error) {
-		if (appName == "") == (groupID == "") {
-			return "", errors.New("pass exactly one of --app <name> or --group <id>")
-		}
-		if appName != "" {
-			return "/catalog/apps/" + api.PathID(appName) + "/permissions", nil
-		}
-		return "/catalog/groups/" + api.PathID(groupID) + "/permissions", nil
-	}
-	{
-		var appName, groupID string
-		list := &cobra.Command{
-			Use:     "list",
-			Aliases: []string{"ls"},
-			Short:   "List permissions",
-			Args:    cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, _ []string) error {
-				base, err := permBase(cmd, appName, groupID)
-				if err != nil {
-					return err
-				}
-				var res struct {
-					Permissions []catalogPermission `json:"permissions"`
-				}
-				if err := do(cmd, http.MethodGet, base, nil, &res); err != nil {
-					return err
-				}
-				return printPermissions(res.Permissions)
-			},
-		}
-		list.Flags().StringVar(&appName, "app", "", "app name")
-		list.Flags().StringVar(&groupID, "group", "", "group id")
-		permission.AddCommand(list)
-	}
-	{
-		var appName, groupID string
-		grant := &cobra.Command{
-			Use:   "grant <login> <read|edit>",
-			Short: "Grant (or update) a member's permission; unknown logins become pending",
-			Args:  cobra.ExactArgs(2),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				base, err := permBase(cmd, appName, groupID)
-				if err != nil {
-					return err
-				}
-				var res struct {
-					Permissions []catalogPermission `json:"permissions"`
-				}
-				if err := do(cmd, http.MethodPost, base, map[string]any{"login": args[0], "level": args[1]}, &res); err != nil {
-					return err
-				}
-				return printPermissions(res.Permissions)
-			},
-		}
-		grant.Flags().StringVar(&appName, "app", "", "app name")
-		grant.Flags().StringVar(&groupID, "group", "", "group id")
-		permission.AddCommand(grant)
-	}
-	{
-		var appName, groupID string
-		revoke := &cobra.Command{
-			Use:   "revoke <permission-id>",
-			Short: "Revoke a permission by its id (see `permission list`)",
-			Args:  cobra.ExactArgs(1),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				base, err := permBase(cmd, appName, groupID)
-				if err != nil {
-					return err
-				}
-				if err := do(cmd, http.MethodDelete, base+"/"+api.PathID(args[0]), nil, nil); err != nil {
-					return err
-				}
-				fmt.Fprintln(a.Out, "revoked")
-				return nil
-			},
-		}
-		revoke.Flags().StringVar(&appName, "app", "", "app name")
-		revoke.Flags().StringVar(&groupID, "group", "", "group id")
-		permission.AddCommand(revoke)
-	}
-
 	// ---- installer ----------------------------------------------------------
 	c.AddCommand(&cobra.Command{
 		Use:   "installer",
 		Short: "Show the latest installer downloads",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			cl, err := a.client()
+			if err != nil {
+				return err
+			}
 			var res struct {
 				Downloads []struct {
 					URL       string  `json:"url"`
@@ -730,7 +536,7 @@ func newCatalog(a *App) *cobra.Command {
 					CreatedAt int64   `json:"createdAt"`
 				} `json:"downloads"`
 			}
-			if err := do(cmd, http.MethodGet, "/catalog/installer/downloads", nil, &res); err != nil {
+			if err := cl.Do(cmd.Context(), http.MethodGet, "/catalog/installer/downloads", nil, &res); err != nil {
 				return err
 			}
 			if a.jsonOut {
@@ -744,9 +550,12 @@ func newCatalog(a *App) *cobra.Command {
 		},
 	})
 
-	c.AddCommand(app, group, artifact, permission, newCatalogDeploy(a), newCatalogBump(a))
-	return c
+	c.AddCommand(group(app), group(artifact), newCatalogDeploy(a), newCatalogBump(a))
+	return group(c)
 }
+
+// appResolver turns <app> into an id; write=true means the command mutates.
+type appResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
 
 func valOr[T any](p *T, def T) T {
 	if p == nil {
@@ -855,12 +664,8 @@ func buildOutputs(projectPath, pr string, splitPerAbi bool) ([]buildOutput, erro
 
 // listArtifacts fetches an app's artifacts and applies a client-side tag filter
 // (the server only filters by platform).
-func listArtifacts(ctx context.Context, a *App, appName, platform string, want map[string]string) ([]catalogArtifact, error) {
-	cl, err := a.client()
-	if err != nil {
-		return nil, err
-	}
-	path := "/catalog/apps/" + api.PathID(appName) + "/artifacts"
+func listArtifacts(ctx context.Context, cl *api.Client, appID, platform string, want map[string]string) ([]catalogArtifact, error) {
+	path := "/catalog/apps/" + api.PathID(appID) + "/artifacts"
 	if platform != "" {
 		path += "?platform=" + url.QueryEscape(platform)
 	}
@@ -893,10 +698,10 @@ func listArtifacts(ctx context.Context, a *App, appName, platform string, want m
 // id shows up (ported from the legacy cata verifyUploadedArtifact; 5 attempts).
 // Matching by id — not by version tag — so artifacts from earlier deploys of
 // the same version can never satisfy the check.
-func verifyUploaded(ctx context.Context, a *App, appName string, ids []string) (int, error) {
+func verifyUploaded(ctx context.Context, cl *api.Client, appID string, ids []string) (int, error) {
 	got := 0
 	for attempt := 1; attempt <= 5; attempt++ {
-		arts, err := listArtifacts(ctx, a, appName, "", nil)
+		arts, err := listArtifacts(ctx, cl, appID, "", nil)
 		if err != nil {
 			return 0, fmt.Errorf("verify: %w", err)
 		}
@@ -936,9 +741,7 @@ func newCatalogDeploy(a *App) *cobra.Command {
 		name           string
 		projectPath    string
 		profiles       []string
-		groupID        string
 		description    string
-		debugOnly      bool
 		stage          string
 		changelog      string
 		bump           string
@@ -957,15 +760,13 @@ func newCatalogDeploy(a *App) *cobra.Command {
 		Use:   "deploy",
 		Short: "Build a Flutter Android app and upload the artifacts",
 		Long: `Reads pubspec.yaml / build.gradle from --project-path, ensures the app exists
-(creating it as you when missing), runs "flutter build" for each --profile,
-uploads the outputs with version/build_type/application_id tags, and verifies
-the upload by re-reading the artifact list.`,
+in the project context (creating it when missing; the context must be explicit:
+--team/--project, YYT_TEAM/YYT_PROJECT, ` + ContextFile + ` next to the project, or
+` + "`yyt project use`" + `), runs "flutter build" for each --profile, uploads the
+outputs with version/build_type/application_id tags, and verifies the upload by
+re-reading the artifact list.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cl, err := a.client()
-			if err != nil {
-				return err
-			}
 			ctx := cmd.Context()
 			if len(profiles) == 0 {
 				profiles = []string{"release"}
@@ -994,6 +795,21 @@ the upload by re-reading the artifact list.`,
 			if err != nil {
 				return err
 			}
+
+			// Resolve the context before touching pubspec so a missing context
+			// fails without a side effect, and say where the app will land
+			// before anything is created.
+			cc, err := a.ctxClient(cmd)
+			if err != nil {
+				return err
+			}
+			r, err := cc.project(ctx, true)
+			if err != nil {
+				return err
+			}
+			cl := cc.cl
+			fmt.Fprintf(a.Err, "deploying %s to %s\n", name, r)
+
 			if doBump {
 				b, err := flutter.ParseBump(bump)
 				if err != nil {
@@ -1010,26 +826,23 @@ the upload by re-reading the artifact list.`,
 				version = next
 			}
 
-			// Ensure the app exists; 404 → create it.
+			// Ensure the app exists in the project; not found → create it there.
 			var appRow catalogApp
-			err = cl.Do(ctx, http.MethodGet, "/catalog/apps/"+api.PathID(name), nil, &appRow)
+			appID, err := cc.app(ctx, name, true)
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) && apiErr.Status == 404 {
 				body := map[string]any{"name": name, "path": applicationID}
 				if description != "" {
 					body["description"] = description
 				}
-				if groupID != "" {
-					body["groupId"] = groupID
-				}
-				if debugOnly {
-					body["debugOnly"] = true
-				}
-				if err := cl.Do(ctx, http.MethodPost, "/catalog/apps", body, &appRow); err != nil {
+				if err := cl.Do(ctx, http.MethodPost, "/projects/"+api.PathID(r.ProjectID)+"/catalog/apps", body, &appRow); err != nil {
 					return err
 				}
-				fmt.Fprintf(a.Err, "created app %s\n", name)
+				appID = appRow.ID
+				fmt.Fprintf(a.Err, "created app %s (%s)\n", name, appID)
 			} else if err != nil {
+				return err
+			} else if err := cl.Do(ctx, http.MethodGet, "/catalog/apps/"+api.PathID(appID), nil, &appRow); err != nil {
 				return err
 			}
 
@@ -1086,7 +899,7 @@ the upload by re-reading the artifact list.`,
 						tags[k] = v
 					}
 					fmt.Fprintf(a.Err, "uploading %s…\n", filepath.Base(dst))
-					art, err := uploadArtifact(ctx, cl, name, dst, "android", tags)
+					art, err := uploadArtifact(ctx, cl, appID, dst, "android", tags)
 					if err != nil {
 						return err
 					}
@@ -1099,7 +912,7 @@ the upload by re-reading the artifact list.`,
 				for _, art := range uploaded {
 					ids = append(ids, art.ID)
 				}
-				verified, err = verifyUploaded(ctx, a, name, ids)
+				verified, err = verifyUploaded(ctx, cl, appID, ids)
 				if err != nil {
 					return err
 				}
@@ -1122,12 +935,10 @@ the upload by re-reading the artifact list.`,
 		},
 	}
 	f := c.Flags()
-	f.StringVar(&name, "name", "", "app name (default: last segment of the applicationId)")
-	f.StringVar(&projectPath, "project-path", ".", "Flutter project directory")
+	f.StringVar(&name, "name", "", "app name (default: last segment of the applicationId; pass one when that segment looks like an id, e.g. q_game)")
+	f.StringVar(&projectPath, "project-path", ".", "Flutter project directory (also where the "+ContextFile+" search starts)")
 	f.StringArrayVar(&profiles, "build-profile", nil, "debug|release|appbundle|aab|all (repeatable; default release)")
-	f.StringVar(&groupID, "group", "", "group id when creating the app")
 	f.StringVar(&description, "description", "", "description when creating the app")
-	f.BoolVar(&debugOnly, "debug-only", false, "mark the app debug-only when creating it")
 	f.StringVar(&stage, "stage", "", "stage tag (e.g. alpha, beta, prod)")
 	f.StringVar(&changelog, "note", "", "changelog tag")
 	f.StringVar(&bump, "bump", "patch", "version bump when --do-bump: major|minor|patch")
@@ -1135,7 +946,7 @@ the upload by re-reading the artifact list.`,
 	f.BoolVar(&splitPerAbi, "split-per-abi", false, "pass --split-per-abi to flutter build (APK profiles; uploads one artifact per ABI)")
 	f.StringVar(&targetPlatform, "target-platform", "", "pass --target-platform to flutter build (e.g. android-arm64)")
 	f.StringVar(&buildNo, "build", "", "build tag (build number)")
-	f.StringVar(&commit, "commit", "", "commit tag (e.g. from `git rev-parse --short HEAD`)")
+	f.StringVar(&commit, "commit", "", "commit tag (e.g. from 'git rev-parse --short HEAD')")
 	f.StringVar(&minSdk, "min-sdk", "", "min_sdk tag")
 	f.StringVar(&targetSdk, "target-sdk", "", "target_sdk tag")
 	f.StringVar(&abiTag, "abi", "", "abi tag (overridden per file when --split-per-abi)")
@@ -1182,7 +993,7 @@ func newCatalogBump(a *App) *cobra.Command {
 
 // typedUpload builds an upload subcommand with platform-specific tag flags
 // on top of the generic presign → PUT → commit flow.
-func typedUpload(a *App, platform string, tagFlags []struct{ flag, tag, usage string }, required []string) *cobra.Command {
+func typedUpload(a *App, appID appResolver, platform string, tagFlags []struct{ flag, tag, usage string }, required []string) *cobra.Command {
 	var version, stage, changelog string
 	var extraTags []string
 	values := make([]string, len(tagFlags))
@@ -1191,10 +1002,6 @@ func typedUpload(a *App, platform string, tagFlags []struct{ flag, tag, usage st
 		Short: "Upload a " + platform + " artifact with typed tag flags",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
-			if err != nil {
-				return err
-			}
 			tags, err := parseTags(extraTags)
 			if err != nil {
 				return err
@@ -1205,7 +1012,11 @@ func typedUpload(a *App, platform string, tagFlags []struct{ flag, tag, usage st
 			for i, tf := range tagFlags {
 				addTagIf(tags, tf.tag, values[i])
 			}
-			v, err := uploadArtifact(cmd.Context(), cl, args[0], args[1], platform, tags)
+			cc, id, err := appID(cmd, args[0], true)
+			if err != nil {
+				return err
+			}
+			v, err := uploadArtifact(cmd.Context(), cc.cl, id, args[1], platform, tags)
 			if err != nil {
 				return err
 			}
@@ -1231,8 +1042,8 @@ func typedUpload(a *App, platform string, tagFlags []struct{ flag, tag, usage st
 	return c
 }
 
-func newUploadAndroid(a *App) *cobra.Command {
-	return typedUpload(a, "android", []struct{ flag, tag, usage string }{
+func newUploadAndroid(a *App, appID appResolver) *cobra.Command {
+	return typedUpload(a, appID, "android", []struct{ flag, tag, usage string }{
 		{"application-id", "application_id", "Android applicationId"},
 		{"build-type", "build_type", "debug|release|appbundle"},
 		{"build", "build", "build number"},
@@ -1243,8 +1054,8 @@ func newUploadAndroid(a *App) *cobra.Command {
 	}, []string{"application-id", "build-type"})
 }
 
-func newUploadIOS(a *App) *cobra.Command {
-	return typedUpload(a, "ios", []struct{ flag, tag, usage string }{
+func newUploadIOS(a *App, appID appResolver) *cobra.Command {
+	return typedUpload(a, appID, "ios", []struct{ flag, tag, usage string }{
 		{"bundle-id", "bundle_id", "iOS bundle identifier"},
 		{"build-number", "build_number", "build number"},
 		{"distribution-method", "distribution_method", "ad-hoc|app-store|enterprise|development"},

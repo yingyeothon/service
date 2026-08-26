@@ -20,7 +20,10 @@ type channel struct {
 	ID           string            `json:"id"`
 	Kind         string            `json:"kind"`
 	Name         string            `json:"name"`
-	OwnerID      string            `json:"ownerId"`
+	TeamID       *string           `json:"teamId"`
+	TeamName     *string           `json:"teamName"`
+	ProjectID    *string           `json:"projectId"`
+	ProjectName  *string           `json:"projectName"`
 	Config       json.RawMessage   `json:"config"`
 	CreatedAt    int64             `json:"createdAt"`
 	ExpiresAt    int64             `json:"expiresAt"`
@@ -341,19 +344,37 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 var channelKinds = map[string]bool{"auth": true, "topic": true, "match": true, "lobby": true, "q": true}
 
 func newChannels(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "channels", Short: "Manage auth/topic/match/lobby/q channels"}
+	c := &cobra.Command{
+		Use:   "channels",
+		Short: "Manage auth/topic/match/lobby/q channels (a channel belongs to a project)",
+		Long: "Manage auth/topic/match/lobby/q channels. A channel belongs to a project.\n\n" +
+			"<channel> is an id (auth_…, match_…) or a name unique within the team; a name\n" +
+			"is looked up in the project context (--project, YYT_PROJECT, " + ContextFile + ",\n" +
+			"`yyt project use`). `create` needs an explicit project context.",
+	}
+
+	// channelID resolves <channel> (id or name). write=true refuses to
+	// auto-select the project a name is looked up in.
+	channelID := func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error) {
+		cc, err := a.ctxClient(cmd)
+		if err != nil {
+			return nil, "", err
+		}
+		id, err := cc.channel(cmd.Context(), arg, write)
+		return cc, id, err
+	}
 
 	var kind, scope string
 	list := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List your channels (admins: --scope all)",
+		Short:   "List the channels of the project in context, or of every team you sit in (admins: --scope all)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if kind != "" && !channelKinds[kind] {
 				return fmt.Errorf("--kind must be auth|topic|match|lobby|q (got %q)", kind)
 			}
-			cl, err := a.client()
+			cc, err := a.ctxClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -361,8 +382,17 @@ func newChannels(a *App) *cobra.Command {
 			if kind != "" {
 				qv.Set("kind", kind)
 			}
+			// A named context narrows to one project; otherwise the flat list
+			// across every seated team (and, for admins, --scope all).
+			path := "/channels"
 			if scope != "" {
 				qv.Set("scope", scope)
+			} else if cc.spec.explicitTeam() || cc.spec.explicitProject() {
+				r, err := cc.project(cmd.Context(), false)
+				if err != nil {
+					return err
+				}
+				path = "/projects/" + api.PathID(r.ProjectID) + "/channels"
 			}
 			q := ""
 			if len(qv) > 0 {
@@ -371,7 +401,7 @@ func newChannels(a *App) *cobra.Command {
 			var res struct {
 				Channels []channel `json:"channels"`
 			}
-			if err := cl.Do(cmd.Context(), http.MethodGet, "/channels"+q, nil, &res); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodGet, path+q, nil, &res); err != nil {
 				return err
 			}
 			if a.jsonOut {
@@ -379,20 +409,20 @@ func newChannels(a *App) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Channels))
 			for _, ch := range res.Channels {
-				rows = append(rows, []string{ch.ID, ch.Kind, ch.Name, ch.Status, output.Time(ch.ExpiresAt), ch.OwnerID})
+				rows = append(rows, []string{ch.ID, ch.Kind, ch.Name, ch.Status, output.Time(ch.ExpiresAt), crumb(ch.TeamName, ch.ProjectName)})
 			}
-			return a.printer().Table([]string{"ID", "KIND", "NAME", "STATUS", "EXPIRES", "OWNER"}, rows)
+			return a.printer().Table([]string{"ID", "KIND", "NAME", "STATUS", "EXPIRES", "TEAM/PROJECT"}, rows)
 		},
 	}
 	list.Flags().StringVar(&kind, "kind", "", "filter: auth|topic|match|lobby|q")
-	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin)")
+	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin; ignores the project context)")
 	c.AddCommand(list)
 
 	var cf configFlags
 	var ckind, cname string
 	create := &cobra.Command{
 		Use:   "create --kind <auth|topic|match|lobby|q> --name <name> [config flags]",
-		Short: "Create a channel; the secret/apiKey is printed once",
+		Short: "Create a channel in the project context (explicit); the secret/apiKey is printed once",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if cf.raw == "" && channelKinds[ckind] {
@@ -404,13 +434,20 @@ func newChannels(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cl, err := a.client()
+			cc, err := a.ctxClient(cmd)
 			if err != nil {
+				return err
+			}
+			r, err := cc.project(cmd.Context(), true)
+			if err != nil {
+				return err
+			}
+			if err := resolveAuthChannel(cmd, cc, cfg); err != nil {
 				return err
 			}
 			var ch channel
 			body := map[string]any{"kind": ckind, "name": cname, "config": cfg}
-			if err := cl.Do(cmd.Context(), http.MethodPost, "/channels", body, &ch); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/projects/"+api.PathID(r.ProjectID)+"/channels", body, &ch); err != nil {
 				return err
 			}
 			return a.showChannel(ch, true)
@@ -424,16 +461,16 @@ func newChannels(a *App) *cobra.Command {
 	c.AddCommand(create)
 
 	c.AddCommand(&cobra.Command{
-		Use:   "get <channel-id>",
+		Use:   "get <channel>",
 		Short: "Show a channel (secrets are never returned)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := channelID(cmd, args[0], false)
 			if err != nil {
 				return err
 			}
 			var ch channel
-			if err := cl.Do(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(args[0]), nil, &ch); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(id), nil, &ch); err != nil {
 				return err
 			}
 			return a.showChannel(ch, false)
@@ -443,14 +480,15 @@ func newChannels(a *App) *cobra.Command {
 	var pf configFlags
 	var pname string
 	update := &cobra.Command{
-		Use:   "update <channel-id> [--name ...] [config flags]",
-		Short: "Update name and/or config (owner only); only the given flags change",
+		Use:   "update <channel> [--name ...] [config flags]",
+		Short: "Update name and/or config; only the given flags change",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := channelID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
+			cl := cc.cl
 			body := map[string]any{}
 			if cmd.Flags().Changed("name") {
 				body["name"] = pname
@@ -462,7 +500,7 @@ func newChannels(a *App) *cobra.Command {
 			}
 			if anyCfg {
 				var cur channel
-				if err := cl.Do(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(args[0]), nil, &cur); err != nil {
+				if err := cl.Do(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(id), nil, &cur); err != nil {
 					return err
 				}
 				if err := rejectForeignFlags(cmd, cur.Kind); err != nil {
@@ -470,6 +508,9 @@ func newChannels(a *App) *cobra.Command {
 				}
 				cfg, err := pf.build(cmd, cur.Kind, true)
 				if err != nil {
+					return err
+				}
+				if err := resolveAuthChannel(cmd, cc, cfg); err != nil {
 					return err
 				}
 				// auth PATCH is a partial merge server-side; every other kind
@@ -498,7 +539,7 @@ func newChannels(a *App) *cobra.Command {
 				return errors.New("nothing to update")
 			}
 			var ch channel
-			if err := cl.Do(cmd.Context(), http.MethodPatch, "/channels/"+api.PathID(args[0]), body, &ch); err != nil {
+			if err := cl.Do(cmd.Context(), http.MethodPatch, "/channels/"+api.PathID(id), body, &ch); err != nil {
 				return err
 			}
 			return a.showChannel(ch, false)
@@ -509,60 +550,60 @@ func newChannels(a *App) *cobra.Command {
 	c.AddCommand(update)
 
 	c.AddCommand(&cobra.Command{
-		Use:   "extend <channel-id>",
+		Use:   "extend <channel>",
 		Short: "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := channelID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
 			var ch channel
-			if err := cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(args[0])+"/extend", nil, &ch); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(id)+"/extend", nil, &ch); err != nil {
 				return err
 			}
 			return a.showChannel(ch, false)
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:   "rotate-secret <channel-id>",
+		Use:   "rotate-secret <channel>",
 		Short: "Replace the channel secret/apiKey (owner only); the new value is printed once",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := channelID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
 			var ch channel
-			if err := cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(args[0])+"/rotate-secret", nil, &ch); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(id)+"/rotate-secret", nil, &ch); err != nil {
 				return err
 			}
 			return a.showChannel(ch, true)
 		},
 	})
-	c.AddCommand(a.channelRedisUserCmd())
-	c.AddCommand(a.channelDocKeyCmd())
+	c.AddCommand(a.channelRedisUserCmd(channelID))
+	c.AddCommand(a.channelDocKeyCmd(channelID))
 	c.AddCommand(&cobra.Command{
-		Use:     "delete <channel-id>",
+		Use:     "delete <channel>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a channel (soft delete; secrets are dropped immediately)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, err := a.client()
+			cc, id, err := channelID(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
-			if err := cl.Do(cmd.Context(), http.MethodDelete, "/channels/"+api.PathID(args[0]), nil, nil); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodDelete, "/channels/"+api.PathID(id), nil, nil); err != nil {
 				return err
 			}
 			if a.jsonOut {
-				return a.printer().JSONValue(map[string]any{"id": args[0], "deleted": true})
+				return a.printer().JSONValue(map[string]any{"id": id, "deleted": true})
 			}
-			fmt.Fprintf(a.Out, "deleted %s\n", args[0])
+			fmt.Fprintf(a.Out, "deleted %s\n", id)
 			return nil
 		},
 	})
-	return c
+	return group(c)
 }
 
 // kindConfigFlags is the config flags each kind understands. `update` uses the
@@ -649,23 +690,26 @@ func mergeCapabilities(current, incoming any) (map[string]any, bool) {
 // channelRedisUserCmd manages the scoped Redis account a `q` channel's game
 // Lambda logs in with. The account is not a channel secret — a `q` channel has
 // none — so this lives beside `rotate-secret` rather than inside it.
-func (a *App) channelRedisUserCmd() *cobra.Command {
+// channelResolver turns <channel> into an id; write=true means the command mutates.
+type channelResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
+
+func (a *App) channelRedisUserCmd(channelID channelResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:     "redis-user",
 		Aliases: []string{"redis"},
 		Short:   "Scoped Redis account for a `q` channel's game Lambda (owner issues; admins may read)",
 	}
-	call := func(cmd *cobra.Command, method, id string) (redisUser, error) {
-		cl, err := a.client()
+	call := func(cmd *cobra.Command, method, arg string) (redisUser, error) {
+		cc, id, err := channelID(cmd, arg, method != http.MethodGet)
 		if err != nil {
 			return redisUser{}, err
 		}
 		var u redisUser
-		err = cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/redis-user", nil, &u)
+		err = cc.cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/redis-user", nil, &u)
 		return u, err
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "show <channel-id>",
+		Use:   "show <channel>",
 		Short: "Show the connection block and whether an account has been issued",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -677,7 +721,7 @@ func (a *App) channelRedisUserCmd() *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:     "issue <channel-id>",
+		Use:     "issue <channel>",
 		Aliases: []string{"rotate"},
 		Short:   "Create or replace the account; the password is printed once",
 		Args:    cobra.ExactArgs(1),
@@ -695,7 +739,7 @@ func (a *App) channelRedisUserCmd() *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:     "revoke <channel-id>",
+		Use:     "revoke <channel>",
 		Aliases: []string{"rm", "delete"},
 		Short:   "Delete the account; the game Lambda stops being able to log in",
 		Args:    cobra.ExactArgs(1),
@@ -753,23 +797,23 @@ func (a *App) showRedisUser(u redisUser) error {
 // means anything inside the auth channel that derived it. Separate from
 // `rotate-secret` because rotating the signing key must not invalidate this
 // one, and the reverse.
-func (a *App) channelDocKeyCmd() *cobra.Command {
+func (a *App) channelDocKeyCmd(channelID channelResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:     "doc-key",
 		Aliases: []string{"doc"},
 		Short:   "Document API key for an `auth` channel (owner issues; admins may read)",
 	}
-	call := func(cmd *cobra.Command, method, id string) (docKey, error) {
-		cl, err := a.client()
+	call := func(cmd *cobra.Command, method, arg string) (docKey, error) {
+		cc, id, err := channelID(cmd, arg, method != http.MethodGet)
 		if err != nil {
 			return docKey{}, err
 		}
 		var k docKey
-		err = cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/doc-key", nil, &k)
+		err = cc.cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/doc-key", nil, &k)
 		return k, err
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "show <channel-id>",
+		Use:   "show <channel>",
 		Short: "Show the document endpoint and whether a key has been issued",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -781,7 +825,7 @@ func (a *App) channelDocKeyCmd() *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:     "issue <channel-id>",
+		Use:     "issue <channel>",
 		Aliases: []string{"rotate"},
 		Short:   "Create or replace the key; it is printed once",
 		Args:    cobra.ExactArgs(1),
@@ -795,7 +839,7 @@ func (a *App) channelDocKeyCmd() *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:     "revoke <channel-id>",
+		Use:     "revoke <channel>",
 		Aliases: []string{"rm", "delete"},
 		Short:   "Delete the key; documents are kept",
 		Args:    cobra.ExactArgs(1),
@@ -852,7 +896,8 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 	}
 	pairs := [][2]string{
 		{"id", ch.ID}, {"kind", ch.Kind}, {"name", ch.Name}, {"status", ch.Status},
-		{"owner", ch.OwnerID}, {"created", output.Time(ch.CreatedAt)}, {"expires", output.Time(ch.ExpiresAt)},
+		{"project", crumb(ch.TeamName, ch.ProjectName)},
+		{"created", output.Time(ch.CreatedAt)}, {"expires", output.Time(ch.ExpiresAt)},
 	}
 	if ch.DisabledAt != nil {
 		pairs = append(pairs, [2]string{"disabled", output.Time(*ch.DisabledAt)})
@@ -906,4 +951,29 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 		}
 	}
 	return a.printer().KV(pairs)
+}
+
+// crumb renders the team/project breadcrumb; legacy rows not yet mapped to a
+// project show "-".
+func crumb(team, project *string) string {
+	if team == nil || project == nil {
+		return "-"
+	}
+	return *team + "/" + *project
+}
+
+// resolveAuthChannel lets --auth-channel take a name: the auth channel must
+// live in the same project as the channel that references it, so the name
+// resolves in the project context. Ids pass through untouched.
+func resolveAuthChannel(cmd *cobra.Command, cc *ctxClient, cfg map[string]any) error {
+	v, ok := cfg["authChannelId"].(string)
+	if !ok || v == "" || IsID(v) {
+		return nil
+	}
+	id, err := cc.channel(cmd.Context(), v, true)
+	if err != nil {
+		return fmt.Errorf("--auth-channel: %w", err)
+	}
+	cfg["authChannelId"] = id
+	return nil
 }

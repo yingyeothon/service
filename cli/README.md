@@ -1,6 +1,6 @@
 # `yyt` — CLI for the yingyeothon service console
 
-Single Go binary that drives the console API (`https://console.yyt.life`): members, API tokens, auth/topic/match/lobby/q channels, hackathon events, plus WebSocket smoke helpers for the match and topic services.
+Single Go binary that drives the console API (`https://console.yyt.life`): teams and projects, auth/topic/match/lobby/q channels, the binary catalog, game asset bundles, members, API tokens, hackathon events, plus WebSocket smoke helpers for the match and topic services.
 
 ## Install
 
@@ -36,6 +36,37 @@ yyt --profile dev logout                         # removes only that profile
 
 `whoami` prints the active profile and API; tokens are never printed. `profile default` is a synonym of `profile use` (handy after removing the default profile); `rename` moves the default marker with the profile. Across all commands, `ls` aliases `list` and `rm` aliases `remove`/`delete`.
 
+## Teams, projects and the context
+
+Every channel, catalog app and asset bundle belongs to a **project**, and a project to a **team**; team membership is the whole permission model (owner/member write, a pending seat only sees the team name, a platform admin reads). Resource names are unique within the team, so a resource is addressed either by its **id** (`auth_…`, `ca_…`, `ab_…` — never needs a context) or by its **name**, which is looked up in the project context:
+
+1. `--team <name|id>` / `--project <name|id>` (global flags)
+2. `YYT_TEAM` / `YYT_PROJECT`
+3. `.yyt.json` — `{"team":"dooroo","project":"game"}` — found by walking up from the current directory (from `--project-path` for `catalog deploy|bump`), stopping at the git root, `$HOME`, or a world-writable directory. Team/project ids are not secrets; commit the file, preferably with ids (`{"team":"team_…","project":"prj_…"}`) — a team's name is also its join key.
+4. the profile defaults set with `yyt team use <team>` / `yyt project use <project>` (`team use` clears the project default; both survive a `--token`/`YYT_TOKEN` override and a re-login)
+5. **read commands only**: auto-select when you sit in exactly one team / it has exactly one project.
+
+Each field is layered independently, with one guard: a project named at a *lower* layer than the team is dropped (a profile pin under `--team other` would otherwise satisfy the "explicit context" rule and land the write in the pinned team), and `--team`/`--project` given together must agree. `yyt whoami` prints the effective team/project and where each came from. **Write commands never auto-select** — `channels create`, `catalog app create`, `catalog deploy`, `artifact upload`, `asset create|upload|push`, `project create`, and every update/delete addressed by name fail with a hint when the context is not explicit, so a non-interactive script cannot start failing with "ambiguous" the day its author joins a second team. Reads by name (`catalog app get <name>`, `artifact list <name>`) *do* auto-select, which means a member of two teams needs the context for them as well — add `.yyt.json` to every repository whose scripts call the CLI. `--auth-channel` also takes the auth channel's name (same project). The resolved context is printed on stderr before `catalog deploy` creates anything.
+
+```
+yyt team ls [--scope all]                       # your seats and pending requests (admins: every team)
+yyt team create <name> [--description md] | join <name>     # join asks by exact name; an owner approves
+yyt team get|update|delete|history|admin-lock [team]        # [team] defaults to the context
+yyt team use <team>
+yyt team members ls | add <github-login> [--role owner|member] | approve|promote|demote|kick <member-id> | leave
+yyt team discussion ls | create <title> --body md|@file | get|update|rm <id>
+yyt team discussion comment add <id> --body … | update <id> <cid> --body … | rm <id> <cid>
+
+yyt project ls | create <name> [--description md] | get|update|delete [project] | use <project>
+yyt project version ls | create <name> [--note md|@file] | bump [patch|minor|major] | get|update|rm <version>
+yyt project version link <version> --artifact <art-id> | --bundle <bundle> --asset-version <v>
+yyt project version unlink <version> <link-id>
+yyt project issue ls [--status open|closed] | create <title> [--body …] [--version v] | get|update|close|reopen <n>
+yyt project issue comment add <n> --body … | update <n> <cid> --body … | rm <n> <cid>
+```
+
+`members kick` and `members leave` print the channels whose credentials the departed member still knows — nothing is rotated automatically (that would kill a running game); rotate them with `channels rotate-secret` / `redis-user issue` / `doc-key issue`.
+
 ## Commands
 
 Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret`; `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
@@ -43,12 +74,12 @@ Every resource command maps 1:1 to a console route; `--json` prints the response
 ```
 yyt members list | approve <id> | promote <id> | demote <id>        # admin
 yyt tokens list | create --name <n> | revoke <id>
-yyt channels list [--kind auth|topic|match|lobby|q] [--scope all]
-yyt channels get|extend|rotate-secret|delete <id>
+yyt channels list [--kind auth|topic|match|lobby|q] [--scope all]   # project context → that project; none → every team you sit in
+yyt channels get|extend|rotate-secret|delete <channel>               # id or name (name → project context)
 yyt channels create --kind auth  --name n --audience aud [--token-ttl 86400] [--redirect https://…]… \
                     [--github-client-id id --github-client-secret s] [--google-client-id id --google-client-secret s]
-yyt channels create --kind topic --name n --auth-channel <auth-id>
-yyt channels create --kind match --name n --auth-channel <auth-id> --party-size 4 --callback-url https://… \
+yyt channels create --kind topic --name n --auth-channel <auth-id|name>
+yyt channels create --kind match --name n --auth-channel <auth-id|name> --party-size 4 --callback-url https://… \
                     [--wait-timeout 60] [--on-timeout partial|fail]
 yyt channels create --kind lobby --name n --auth-channel <auth-id> \
                     [--cap-say zone --cap-say party --cap-say user] [--cap-party=false] \
@@ -56,7 +87,7 @@ yyt channels create --kind lobby --name n --auth-channel <auth-id> \
                     [--cap-event=false] [--cap-debug] [--zone town] [--map-url https://…] \
                     [--flush-interval-ms 200] [--max-move-delta 4] [--rate-limit 30] [--party-size-max 4]
 yyt channels create --kind q     --name n --auth-channel <auth-id>   # prefixes are derived; `get` prints them
-yyt channels update <id> [--name n] [same config flags; only the given ones change — --config replaces the whole config]
+yyt channels update <channel> [--name n] [same config flags; only the given ones change — --config replaces the whole config]
 yyt channels create … --config '{…}' | --config @file.json        # raw config instead of flags
 
 yyt events list | get <id>                                       # anonymous: published/closed only
@@ -73,11 +104,11 @@ OAuth client secrets may come from `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRE
 ### Binary catalog
 
 ```
-yyt catalog app list | create <name> --path <applicationId> | get|update|delete <name>
-yyt catalog app settings <name> [--slack-hook … --slack-channel … --template … --keep N]
-yyt catalog app cleanup <name> [--dry-run]
-yyt catalog group list|create|get|rename|delete|apps
-yyt catalog permission list|grant|revoke --app <name>|--group <id>
+yyt catalog app list                                    # project context → that project; none → every team you sit in
+yyt catalog app create <name> --path <applicationId> [--description d]   # in the project context (explicit)
+yyt catalog app get|update|delete <app>                 # id or name
+yyt catalog app settings <app> [--slack-hook … --slack-channel … --template … --keep N]
+yyt catalog app cleanup <app> [--dry-run]
 yyt catalog artifact list <app> [--platform p] [--filter key=value]…   # tag filter is client-side
 yyt catalog artifact get|delete <app> <id>
 yyt catalog artifact upload <app> <file> --platform p --version v [--tag k=v]…
@@ -86,32 +117,33 @@ yyt catalog artifact upload android <app> <file> --version v --application-id id
 yyt catalog artifact upload ios <app> <file> --version v --bundle-id id --build-number n \
     [--distribution-method ad-hoc --minimum-os-version 12.0 --stage s --changelog c]
 yyt catalog bump [--bump major|minor|patch] [--project-path .]          # pubspec only; git stays with your script
-yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|appbundle|aab|all]… \
+yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|appbundle|aab|all]… \   # explicit context required
+    [--description d] \
     [--split-per-abi] [--target-platform android-arm64] [--stage s] [--note changelog] \
     [--build n] [--commit h] [--min-sdk n] [--target-sdk n] [--abi a] [--tag k=v]… \
     [--do-bump [--bump patch]] [--no-verify]
 yyt catalog installer
 ```
 
-`deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
+`deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, resolves the project context (printing `deploying <app> to team … / project …`), finds the app by name in that project or creates it there, removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
 
-`yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous).
+`yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous). Since the team model (2026-08-26) `catalog group|permission`, `--group` and `--debug-only` are gone too — access is team membership — and every deploy script needs a context: add `.yyt.json` next to `pubspec.yaml` or export `YYT_TEAM`/`YYT_PROJECT`.
 
 ### Game assets
 
 ```sh
-yyt asset list|create <name> [--description d]|get <name>
-yyt asset update <name> [--name n] [--description d] [--owner member-id]   # rename only while empty
-yyt asset delete <name>
-yyt asset files <name> <version>                       # public URLs of one version
-yyt asset upload <name> <version> <file> [--path inside/the/bundle.json]
-yyt asset push <name> <version> <dir>                  # a whole directory as one version
-yyt asset rm-version <name> <version>
+yyt asset list                                         # project context → that project; none → every team you sit in
+yyt asset create <name> [--description d]              # in the project context (explicit)
+yyt asset get|update|delete <bundle>                   # id or name; update: [--name n] [--description d]
+yyt asset files <bundle> <version>                     # public URLs of one version
+yyt asset upload <bundle> <version> <file> [--path inside/the/bundle.json]
+yyt asset push <bundle> <version> <dir>                # a whole directory as one version
+yyt asset rm-version <bundle> <version>
 ```
 
-`push` keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`, 2 MB per file and 20 MB per bundle.
+`push` searches `.yyt.json` from the current directory, not from `<dir>` (the directory is a payload, not a project). It keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`, 2 MB per file and 20 MB per bundle.
 
-Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending member or not admin), `5` not found.
+Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing/ambiguous context), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending platform member or team seat, or the action needs an owner/admin), `5` not found (including a team/project/resource name that does not resolve), `6` context missing or ambiguous (no request was made).
 
 ## Smoke helpers
 
