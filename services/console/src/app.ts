@@ -16,6 +16,7 @@ import type {
   ChannelRow,
   ConsoleDb,
   EventsDb,
+  OrgDb,
   StateDb,
 } from "@yyt/console-db";
 import {
@@ -58,6 +59,7 @@ import {
   deleteChannelDocs,
 } from "./channel-doc-key.js";
 import { createGatewayRoutes } from "./gateway.js";
+import { createOrgRoutes } from "./org.js";
 import type { GithubLogin } from "./github.js";
 import type { PosterStore } from "./poster.js";
 import {
@@ -83,6 +85,8 @@ export interface ConsoleAppOptions {
   events: EventsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
+  /** Organizations, projects, versions, issues, discussions and platform settings. */
+  org: OrgDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
@@ -146,6 +150,7 @@ export function createConsoleApp({
   events,
   catalog,
   assets,
+  org,
   posters,
   artifacts,
   cdnBaseUrl,
@@ -839,6 +844,16 @@ export function createConsoleApp({
     audit,
   });
 
+  const orgRoutes = createOrgRoutes({
+    db,
+    org,
+    catalog,
+    assets,
+    kv,
+    clock,
+    audit,
+  });
+
   const catalogRoutes = createCatalogRoutes({
     db,
     catalog,
@@ -855,6 +870,7 @@ export function createConsoleApp({
       ...routes,
       ...memberRoutes,
       ...eventRoutes,
+      ...orgRoutes,
       ...catalogRoutes,
       ...assetRoutes,
       ...channelRedisRoutes,
