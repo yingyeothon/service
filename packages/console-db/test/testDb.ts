@@ -63,12 +63,14 @@ export async function startTestDb(): Promise<TestDb> {
     const file = join(dir, entry, "migration.sql");
     if (!existsSync(file)) continue;
     const sql = await readFile(file, "utf8");
-    for (const stmt of sql.split(";")) {
-      const s = stmt
-        .split("\n")
-        .filter((l) => !l.trimStart().startsWith("--"))
-        .join("\n")
-        .trim();
+    // Comments come off *before* the split: a `;` inside one would otherwise
+    // cut the comment in half and feed its tail to the server as SQL.
+    const body = sql
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("--"))
+      .join("\n");
+    for (const stmt of body.split(";")) {
+      const s = stmt.trim();
       if (s) await client.$executeRawUnsafe(s);
     }
   }
@@ -96,6 +98,7 @@ const WIPE_ORDER = [
   "catalog_groups",
   "api_tokens",
   "audit_log",
+  "state_docs",
   "channels",
   "members",
 ] as const;

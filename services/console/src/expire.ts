@@ -1,10 +1,11 @@
 import { nowSec, systemClock, ulid, type Clock, type Logger } from "@yyt/core";
-import type { AssetsDb, CatalogDb, ConsoleDb } from "@yyt/console-db";
+import type { AssetsDb, CatalogDb, ConsoleDb, StateDb } from "@yyt/console-db";
 import type { RedisAclAdmin } from "@yyt/redis";
 import type { ArtifactStore } from "./artifact-store.js";
 import { ASSET_UPLOAD_KEY_PREFIX } from "./assets.js";
 import { planDeletions } from "./catalog-cleanup.js";
 import { deleteArtifactObjects } from "./catalog.js";
+import { deleteChannelDocs } from "./channel-doc-key.js";
 import { channelIdFromAclUsername } from "./channel-redis.js";
 import { CHANNEL_DELETE_GRACE_SEC } from "./channels.js";
 
@@ -14,15 +15,18 @@ export const UPLOAD_GARBAGE_GRACE_SEC = 24 * 3600;
 /** Daily sweep: `expires_at < now` → disabled; disabled 30 days → deleted with secrets wiped. */
 export async function runExpire({
   db,
+  state,
   clock = systemClock,
   logger,
   graceSec = CHANNEL_DELETE_GRACE_SEC,
 }: {
   db: ConsoleDb;
+  /** Present on a stage with a state stack; a deleted channel's documents go with it. */
+  state?: StateDb;
   clock?: Clock;
   logger: Logger;
   graceSec?: number;
-}): Promise<{ disabled: string[]; deleted: string[] }> {
+}): Promise<{ disabled: string[]; deleted: string[]; documents: number }> {
   const now = nowSec(clock);
   const r = await db.expireChannels(now, graceSec);
   if (r.disabled.length + r.deleted.length > 0) {
@@ -35,11 +39,22 @@ export async function runExpire({
       detail: r,
     });
   }
+  // Documents die with their channel — at deletion, not expiry, because
+  // extending revives an expired channel and would leave the owner with a live
+  // channel and no state. Deliberately *not* filtered by id prefix the way the
+  // Redis revoke in `handler.ts` is: this is one indexed DELETE on the
+  // documents table's leading key column rather than a network round trip, and
+  // a prefix test would be wrong anyway — auth's debug seeding hook mints
+  // channels as `dbg_{ulid}`, which an `auth_` test would skip for ever.
+  let documents = 0;
+  for (const id of r.deleted)
+    if (state) documents += await deleteChannelDocs(state, id, logger);
   logger.info("expire sweep", {
     disabled: r.disabled.length,
     deleted: r.deleted.length,
+    documents,
   });
-  return r;
+  return { ...r, documents };
 }
 
 /**

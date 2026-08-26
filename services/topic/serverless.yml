@@ -92,15 +92,16 @@ provider:
           Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:custom.stage}/*"
 
 # Connection budget (rules/data.md): every container holds one MySQL + one
-# Redis connection. ws 5 + authorizer 4 + http 3 = 12
-# (auth 10 + console 11 + match 24 + topic 12 = 57 of the host's 60).
+# Redis connection. ws 4 + authorizer 3 + http 2 = 9, cut from 12 on
+# 2026-08-26 to seat the state stack
+# (auth 10 + console 11 + match 18 + topic 9 + state 6 = 54 of the host's 60).
 functions:
   authorizer:
     handler: src/handler.authorizer
-    reservedConcurrency: 4
+    reservedConcurrency: 3
   ws:
     handler: src/handler.ws
-    reservedConcurrency: 5
+    reservedConcurrency: 4
     events:
       - websocket:
           route: $connect
@@ -114,7 +115,7 @@ functions:
           route: $default
   http:
     handler: src/handler.http
-    reservedConcurrency: 3
+    reservedConcurrency: 2
     events:
       - httpApi: "*"
 
@@ -187,6 +188,25 @@ resources:
         Dimensions:
           - Name: FunctionName
             Value: ${self:service}-${self:custom.stage}-http
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
+    # The authorizer runs before `ws`, so a throttle here refuses the handshake
+    # with nothing downstream to record it.
+    AuthorizerThrottlesAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-authorizer-throttles
+        Namespace: AWS/Lambda
+        MetricName: Throttles
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-authorizer
         Statistic: Sum
         Period: 300
         EvaluationPeriods: 1

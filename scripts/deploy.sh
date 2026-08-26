@@ -1,5 +1,7 @@
 #!/bin/bash
-# Usage: scripts/deploy.sh <auth|console|topic|match> <dev|prod> [extra serverless args, e.g. --param debugHooks=1]
+# Usage: scripts/deploy.sh <auth|console|topic|match|state> <dev|prod> [extra serverless args, e.g. --param debugHooks=1]
+# Deploy console before state when a change spans both: console owns every migration,
+# and `state` reads a table console's migration creates.
 set -euo pipefail
 SERVICE="${1:?service}"; STAGE="${2:?stage}"
 export AWS_PROFILE="${AWS_PROFILE:-yyt}"

@@ -1,13 +1,13 @@
 # yingyeothon/service
 
-Contest-support backend for the Yingyeothon hackathon: per-channel OAuth login (`auth`), operations console (`console`), WebSocket topic broadcast (`topic`), and FIFO matchmaker (`match`), deployed with Serverless Framework 4 on AWS `ap-northeast-2`. Game loops live in the sibling [`tslib`](https://github.com/yingyeothon/tslib) packages; this repo only has to stay compatible with their JWT/WebSocket contracts.
+Contest-support backend for the Yingyeothon hackathon: per-channel OAuth login (`auth`), operations console (`console`), WebSocket topic broadcast (`topic`), FIFO matchmaker (`match`), and versioned per-player documents (`state`), deployed with Serverless Framework 4 on AWS `ap-northeast-2`. Game loops live in the sibling [`tslib`](https://github.com/yingyeothon/tslib) packages; this repo only has to stay compatible with their JWT/WebSocket contracts.
 
 > **Public repository.** Secrets and infrastructure identifiers never enter git. Read [`docs/secrets.md`](docs/secrets.md) before committing — the git hooks and CI enforce it.
 
 ## Layout
 
 - `packages/*` — shared libraries (`core`, `redis`, `console-db`, `jwt`, `http`, `ws`)
-- `services/{auth,console,topic,match}` — one Serverless stack each
+- `services/{auth,console,topic,match,state}` — one Serverless stack each
 - `apps/console-web` — console SPA; `cli/` — Go CLI `yyt` (`cli/README.md`: install, login, commands, release)
 - `docs/` — decisions, contracts, secrets policy; `rules/` — engineering rules for contributors and agents
 - `local/` — machine-local config (gitignored); `todo/` — machine-local work tracker (gitignored)

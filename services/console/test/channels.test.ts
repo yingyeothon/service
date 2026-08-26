@@ -607,7 +607,7 @@ describe("expire sweep", () => {
     );
     expect(
       await runExpire({ db: h.db, clock: h.clock, logger: nullLogger }),
-    ).toEqual({ disabled: [], deleted: [] });
+    ).toEqual({ disabled: [], deleted: [], documents: 0 });
     h.clock.tick(7 * 86400 + 1);
     const swept = await runExpire({
       db: h.db,
@@ -627,7 +627,7 @@ describe("expire sweep", () => {
     h.clock.tick(30 * 86400 + 1);
     expect(
       await runExpire({ db: h.db, clock: h.clock, logger: nullLogger }),
-    ).toEqual({ disabled: [], deleted: swept.disabled });
+    ).toEqual({ disabled: [], deleted: swept.disabled, documents: 0 });
     expect(h.db.channels.get(t.id)?.secretJson).toBe("{}");
     expect(
       h.db.audits.filter((x) => x.action === "channel.expire"),

@@ -89,15 +89,21 @@ provider:
           Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:custom.stage}-worker"
 
 # Connection budget (rules/data.md): every container holds one MySQL + one
-# Redis connection. ws 10 + authorizer 8 + worker 4 + tick 1 + debug 1 = 24
-# (auth 10 + console 11 + match 24 = 45 of the host's 60).
+# Redis connection. ws 8 + authorizer 6 + worker 2 + tick 1 + debug 1 = 18,
+# cut from 24 on 2026-08-26 to seat the state stack. Cut here rather than in
+# auth because nothing pins these to a stated burst the way
+# `docs/auth-game-contract.md` pins auth's, and `worker` is the async
+# dispatcher, one invocation per formed match rather than one per player.
+# A throttle on `ws`/`authorizer` is **not** a Lambda Error and a WebSocket API
+# publishes no 5xx metric, so the Throttles alarms below are the only way any
+# of this is visible — see the same reasoning in services/topic.
 functions:
   authorizer:
     handler: src/handler.authorizer
-    reservedConcurrency: 8
+    reservedConcurrency: 6
   ws:
     handler: src/handler.ws
-    reservedConcurrency: 10
+    reservedConcurrency: 8
     events:
       - websocket:
           route: $connect
@@ -111,7 +117,7 @@ functions:
           route: $default
   worker:
     handler: src/handler.worker
-    reservedConcurrency: 4
+    reservedConcurrency: 2
     # Waits up to 6s for the socket, lock wait 4s, then dispatches while
     # remaining time ≥ 12s (one callback = 5s × 2 attempts + posts).
     timeout: 45
@@ -139,6 +145,61 @@ resources:
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
   Resources:
+    # A throttle is not an Error, and a WebSocket API publishes no 5xx metric, so
+    # without these a throttled connect is a 500 the player sees and nobody else
+    # does, and a throttled `worker` (invoked Event) silently becomes a retry
+    # minutes later — useless for a match with a 45s timeout.
+    WsThrottlesAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-ws-throttles
+        Namespace: AWS/Lambda
+        MetricName: Throttles
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-ws
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
+    AuthorizerThrottlesAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-authorizer-throttles
+        Namespace: AWS/Lambda
+        MetricName: Throttles
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-authorizer
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
+    WorkerThrottlesAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${self:custom.stage}-worker-throttles
+        Namespace: AWS/Lambda
+        MetricName: Throttles
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${self:custom.stage}-worker
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:
+          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
     WsErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:

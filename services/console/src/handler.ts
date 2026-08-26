@@ -4,11 +4,13 @@ import {
   createConsoleDb,
   createEventsDb,
   createPrismaClient,
+  createStateDb,
   mysqlOptionsFromEnv,
   type AssetsDb,
   type CatalogDb,
   type ConsoleDb,
   type EventsDb,
+  type StateDb,
 } from "@yyt/console-db";
 import { systemClock, type Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
@@ -60,6 +62,8 @@ interface Deps {
   events: EventsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
+  /** Console's own handle on the state service's table; the state stack owns the routes. */
+  state: StateDb;
   kv: Kv;
   /** Absent until the stage has an issuer account; the routes then answer 503. */
   redisAcl?: RedisAclAdmin;
@@ -96,6 +100,7 @@ function getDeps(): Promise<Deps> {
       events: createEventsDb(raw),
       catalog: createCatalogDb(raw),
       assets: createAssetsDb(raw),
+      state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
       redisEndpoint: { host: redis.host, port: redis.port },
@@ -120,6 +125,9 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       topic: env("TOPIC_BASE_URL"),
       topicWs: env("TOPIC_WS_URL"),
       match: env("MATCH_BASE_URL"),
+      // Empty until the state stack is deployed on this stage: the auth
+      // channel view then omits `docUrl`, same discipline as `gatewayWs`.
+      doc: process.env.DOC_BASE_URL ?? "",
       // Empty until the gateway is deployed: lobby/q views then omit `wsUrl`.
       gatewayWs: process.env.GATEWAY_WS_URL ?? "",
     },
@@ -134,8 +142,17 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     // Empty until the gateway ships: `GET /gw/channels/{id}` then answers 503.
     gatewayToken: process.env.GATEWAY_TOKEN ?? "",
   };
-  const { stage, db, events, catalog, assets, kv, redisAcl, redisEndpoint } =
-    await getDeps();
+  const {
+    stage,
+    db,
+    events,
+    catalog,
+    assets,
+    state,
+    kv,
+    redisAcl,
+    redisEndpoint,
+  } = await getDeps();
   const clock = systemClock;
   const posterBucket = process.env.POSTER_BUCKET ?? "";
   if (!posterBucket)
@@ -173,6 +190,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     catalog,
     assets,
+    state,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
       : undefined,
@@ -199,7 +217,7 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
 
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { stage, db, catalog, assets, redisAcl } = await getDeps();
+  const { stage, db, catalog, assets, state, redisAcl } = await getDeps();
   const artifacts = artifactStoreFromEnv();
   // Run every sweep even when one throws, then rethrow so the Errors alarm
   // still fires: chaining them bare meant a channel-expiry failure silently
@@ -207,7 +225,7 @@ export const expire = async (): Promise<void> => {
   const failures: unknown[] = [];
   for (const step of [
     async () => {
-      const { deleted } = await runExpire({ db, logger });
+      const { deleted } = await runExpire({ db, state, logger });
       // Hard-deleted channels take their participant credential with them.
       // Only `q` channels ever had one, and each revoke costs a round trip
       // (≈4s against an unreachable Redis), so the prefix test is what keeps

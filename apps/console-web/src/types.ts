@@ -115,6 +115,23 @@ export interface ChannelRedisUser {
   persisted?: boolean;
 }
 
+/**
+ * `auth` only: the server credential for the state service. `apiKey` exists on
+ * issue and nowhere else — the console shows it once and never reads it back.
+ */
+export interface ChannelDocKey {
+  channelId: string;
+  docUrl: string;
+  writePath: string;
+  issued: boolean;
+  /** Absent when the console has no handle on the document table — unknown, not zero. */
+  documents?: number;
+  /** Present on read and only when `false`: this stage has no state stack. */
+  configured?: boolean;
+  /** Present on issue only, once. */
+  apiKey?: string;
+}
+
 export interface Channel {
   id: string;
   kind: ChannelKind;
@@ -129,6 +146,8 @@ export interface Channel {
   issuer?: string;
   startUrl?: string;
   callbackUrls?: Record<string, string>;
+  /** Absent when the state stack is not deployed on this stage. */
+  docUrl?: string;
   // topic
   apiBase?: string;
   // topic / match / lobby / q

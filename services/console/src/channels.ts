@@ -10,6 +10,13 @@ import { z } from "zod";
 export interface ServiceUrls {
   auth: string;
   topic: string;
+  /**
+   * Base of the state service (`https://doc…`), which serves the **doc**
+   * storage shape. Empty until that stack is deployed on this stage — the auth
+   * channel view then omits `docUrl` rather than handing out a host that does
+   * not resolve, exactly as `gatewayWs` does below.
+   */
+  doc: string;
   /** WebSocket host of the topic stack (`wss://topic-ws…`); API Gateway cannot share one domain between HTTP and WebSocket APIs. */
   topicWs: string;
   match: string;
@@ -420,7 +427,15 @@ export function patchChannel(
         : cur.redirectAllowlist,
       providers,
     };
-    return { config, secret: { secret: sec.secret, providers: secrets } };
+    // `sec` first, so anything on the row this function does not model
+    // survives — the doc apiKey (`docs/decisions.md` *state service*) is
+    // stored here beside the signing secret and is not part of a config patch.
+    // Rebuilding the object from its known fields would silently drop it, and
+    // the owner's only symptom would be their game server going 401.
+    return {
+      config,
+      secret: { ...sec, secret: sec.secret, providers: secrets },
+    };
   }
   // Full replace for every non-auth kind: the shapes are small and defaulted,
   // so a partial patch would silently reset the fields it omits either way.
@@ -507,9 +522,13 @@ export function channelView(
     const configured = (["github", "google"] as const).filter(
       (p) => c.providers?.[p]?.clientId,
     );
+    const doc = trim(urls.doc ?? "");
     return {
       ...base,
       issuer: `yyt-auth/${row.id}`,
+      // The document namespace hangs off the auth channel, because `ownerId`
+      // only means anything inside it (`docs/decisions.md` *state service*).
+      ...(doc === "" ? {} : { docUrl: doc }),
       startUrl: `${trim(urls.auth)}/c/${id}/start`,
       callbackUrls: Object.fromEntries(
         configured.map((p) => [p, `${trim(urls.auth)}/c/${id}/${p}/callback`]),

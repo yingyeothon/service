@@ -76,6 +76,24 @@ type redisUser struct {
 	Revoked *bool `json:"revoked,omitempty"`
 }
 
+// docKey mirrors console's `/channels/{id}/doc-key`: the state service's
+// server credential, on the auth channel that owns the document namespace.
+// APIKey is present on issue only.
+type docKey struct {
+	ChannelID string `json:"channelId"`
+	DocURL    string `json:"docUrl"`
+	WritePath string `json:"writePath"`
+	APIKey    string `json:"apiKey,omitempty"`
+	// Absent on issue (it just became true).
+	Issued *bool `json:"issued,omitempty"`
+	// Absent when the console has no handle on the document table.
+	Documents *int `json:"documents,omitempty"`
+	// Present on read and only when false: this stage has no state stack.
+	Configured *bool `json:"configured,omitempty"`
+	// Absent on issue/show; `revoke` reports whether anything was removed.
+	Revoked *bool `json:"revoked,omitempty"`
+}
+
 // configFlags collects the kind-specific convenience flags; `--config` (JSON
 // string or @file) wins when given.
 type configFlags struct {
@@ -523,6 +541,7 @@ func newChannels(a *App) *cobra.Command {
 		},
 	})
 	c.AddCommand(a.channelRedisUserCmd())
+	c.AddCommand(a.channelDocKeyCmd())
 	c.AddCommand(&cobra.Command{
 		Use:     "delete <channel-id>",
 		Aliases: []string{"rm"},
@@ -726,6 +745,99 @@ func (a *App) showRedisUser(u redisUser) error {
 		[2]string{"awaiterKeyPrefix", u.AwaiterKeyPrefix},
 		[2]string{"channelPrefix", u.ChannelPrefix},
 	)
+	return a.printer().KV(pairs)
+}
+
+// channelDocKeyCmd manages the state service's server credential. It hangs off
+// the auth channel because the document namespace does — an `ownerId` only
+// means anything inside the auth channel that derived it. Separate from
+// `rotate-secret` because rotating the signing key must not invalidate this
+// one, and the reverse.
+func (a *App) channelDocKeyCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:     "doc-key",
+		Aliases: []string{"doc"},
+		Short:   "Document API key for an `auth` channel (owner issues; admins may read)",
+	}
+	call := func(cmd *cobra.Command, method, id string) (docKey, error) {
+		cl, err := a.client()
+		if err != nil {
+			return docKey{}, err
+		}
+		var k docKey
+		err = cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/doc-key", nil, &k)
+		return k, err
+	}
+	c.AddCommand(&cobra.Command{
+		Use:   "show <channel-id>",
+		Short: "Show the document endpoint and whether a key has been issued",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			k, err := call(cmd, http.MethodGet, args[0])
+			if err != nil {
+				return err
+			}
+			return a.showDocKey(k)
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use:     "issue <channel-id>",
+		Aliases: []string{"rotate"},
+		Short:   "Create or replace the key; it is printed once",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			k, err := call(cmd, http.MethodPost, args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(a.Err, "store the key now; it is not shown again")
+			return a.showDocKey(k)
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use:     "revoke <channel-id>",
+		Aliases: []string{"rm", "delete"},
+		Short:   "Delete the key; documents are kept",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			k, err := call(cmd, http.MethodDelete, args[0])
+			if err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return a.printer().JSONValue(k)
+			}
+			if k.Revoked != nil && *k.Revoked {
+				fmt.Fprintf(a.Out, "revoked the document key of %s\n", args[0])
+			} else {
+				fmt.Fprintf(a.Out, "%s had no document key\n", args[0])
+			}
+			return nil
+		},
+	})
+	return c
+}
+
+func (a *App) showDocKey(k docKey) error {
+	if a.jsonOut {
+		return a.printer().JSONValue(k)
+	}
+	pairs := [][2]string{
+		{"channel", k.ChannelID},
+		{"docUrl", k.DocURL},
+		{"path", k.WritePath},
+	}
+	if k.APIKey != "" {
+		pairs = append(pairs, [2]string{"apiKey", k.APIKey})
+	} else if k.Issued != nil {
+		pairs = append(pairs, [2]string{"issued", fmt.Sprintf("%t", *k.Issued)})
+	}
+	if k.Documents != nil {
+		pairs = append(pairs, [2]string{"documents", fmt.Sprintf("%d", *k.Documents)})
+	}
+	if k.Configured != nil && !*k.Configured {
+		pairs = append(pairs, [2]string{"configured", "false (no document service on this stage)"})
+	}
 	return a.printer().KV(pairs)
 }
 

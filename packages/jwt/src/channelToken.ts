@@ -1,5 +1,5 @@
 import { AppError, sha256Hex, systemClock, type Clock } from "@yyt/core";
-import { SignJWT, jwtVerify, errors as joseErrors } from "jose";
+import { SignJWT, decodeJwt, jwtVerify, errors as joseErrors } from "jose";
 
 /** `iss` as the game side pins it (`docs/auth-game-contract.md`). */
 export function channelIssuer(channelId: string): string {
@@ -74,6 +74,32 @@ export async function signChannelToken({
     .setExpirationTime(exp)
     .sign(keyOf(secret));
   return { token, exp, iat };
+}
+
+/** Every service accepts this shape as a channel id; `channelIssuer` embeds one verbatim. */
+const CHANNEL_ID = /^[a-z0-9_-]{3,40}$/;
+
+/**
+ * The channel a token claims to come from, read **without verifying it**.
+ *
+ * Only for picking which secret to verify against, when the channel is not in
+ * the path — the state service's routes are `/s/{ownerId}`. That is safe
+ * because nothing is trusted yet: the value selects a key, and
+ * `verifyChannelToken` then rejects the token unless it was really signed with
+ * that key and really carries this `iss`. Never use the result as identity.
+ */
+export function unverifiedChannelId(token: string): string | undefined {
+  let iss: unknown;
+  try {
+    iss = decodeJwt(token).iss;
+  } catch {
+    return undefined;
+  }
+  if (typeof iss !== "string") return undefined;
+  const prefix = channelIssuer("");
+  if (!iss.startsWith(prefix)) return undefined;
+  const id = iss.slice(prefix.length);
+  return CHANNEL_ID.test(id) ? id : undefined;
 }
 
 export interface VerifyChannelTokenOptions {

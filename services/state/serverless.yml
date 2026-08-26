@@ -1,8 +1,10 @@
-# auth.yyt.life — template for the other stacks (console/topic/match copy this).
-service: yyt-auth
+# doc.yyt.life — the **doc** storage shape: one versioned JSON document per
+# (auth channel, owner), every write conditional on the version it read.
+# Modelled on services/auth/serverless.yml; no Redis, no WebSocket, no schema
+# of its own — console owns every migration.
+service: yyt-state
 frameworkVersion: "4"
 
-# SF4 bundles its own esbuild; we keep serverless-esbuild for `exclude`/ESM banner control.
 build:
   esbuild: false
 
@@ -18,17 +20,11 @@ custom:
   domainSuffix:
     dev: "-dev"
     prod: ""
-  domain: auth${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  # Not `state{-dev}`: that name is already taken by an existing record (see
+  # the private ops repo). `doc` also says what the service actually serves.
+  domain: doc${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
   # Per-service credentials uploaded by scripts/bootstrap-ssm.sh from local/env/*.env.
-  ssm: /yyt-service/${self:custom.stage}/auth
-  # Console's dev writer account reaches the function only when the debug hooks are
-  # deployed (`--param debugHooks=1`); otherwise the variables are empty.
-  debugMysqlUser:
-    "1": ${ssm:${self:custom.ssm}/debug-mysql-user, ""}
-    "0": ""
-  debugMysqlPassword:
-    "1": ${ssm:${self:custom.ssm}/debug-mysql-password, ""}
-    "0": ""
+  ssm: /yyt-service/${self:custom.stage}/state
   esbuild:
     bundle: true
     minify: false
@@ -37,11 +33,11 @@ custom:
     platform: node
     format: esm
     outputFileExtension: .mjs
-    # AWS SDK v3 is already in the runtime; ioredis and the Prisma client (Rust-free, WASM query compiler inlined) are bundled.
+    # AWS SDK v3 is already in the runtime; the Prisma client (Rust-free, WASM query compiler inlined) is bundled.
     exclude:
       - "@aws-sdk/*"
     banner:
-      # ESM bundles lose `require`; ioredis and the mariadb driver are CJS, so the shim is required.
+      # ESM bundles lose `require`; the mariadb driver is CJS, so the shim is required.
       js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
   customDomain:
     domainName: ${self:custom.domain}
@@ -50,7 +46,6 @@ custom:
     certificateName: yyt.life
     createRoute53Record: true
     autoDomain: true
-  # Read by SF4's built-in pruning (serverless-prune-plugin is bundled since v4).
   prune:
     automatic: true
     number: 5
@@ -68,6 +63,15 @@ provider:
   httpApi:
     disableDefaultEndpoint: false
     metrics: true
+    # Resolving *any* bearer costs one MySQL SELECT before a body limit or an
+    # authorization check applies, so unauthenticated junk is what actually
+    # competes for `reservedConcurrency` — and through it for the shared box's
+    # connections. The design ceiling is 10 concurrent players writing a
+    # document per dungeon result, so this is far above real use and still
+    # keeps a flood from starving them.
+    defaultRouteSettings:
+      throttlingRateLimit: 20
+      throttlingBurstLimit: 40
   environment:
     STAGE: ${self:custom.stage}
     NODE_OPTIONS: --enable-source-maps
@@ -77,32 +81,14 @@ provider:
     MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
     MYSQL_USER: ${ssm:${self:custom.ssm}/mysql-user}
     MYSQL_PASSWORD: ${ssm:${self:custom.ssm}/mysql-password}
-    REDIS_HOST: ${ssm:${self:custom.ssm}/redis-host}
-    REDIS_PORT: ${ssm:${self:custom.ssm}/redis-port}
-    REDIS_USER: ${ssm:${self:custom.ssm}/redis-user}
-    REDIS_PASSWORD: ${ssm:${self:custom.ssm}/redis-password}
-    REDIS_KEY_PREFIX: ${ssm:${self:custom.ssm}/redis-key-prefix}
-    DEBUG_HOOKS: ${param:debugHooks, "0"}
-    DEBUG_KEY: ${ssm:/yyt-service/${self:custom.stage}/debug-key, ""}
-    # dev only: console's writer account for the debug seeding hook (absent on prod → hooks disabled).
-    DEBUG_MYSQL_HOST: ${ssm:${self:custom.ssm}/mysql-host}
-    DEBUG_MYSQL_PORT: ${ssm:${self:custom.ssm}/mysql-port}
-    DEBUG_MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
-    DEBUG_MYSQL_USER: ${self:custom.debugMysqlUser.${param:debugHooks, "0"}}
-    DEBUG_MYSQL_PASSWORD: ${self:custom.debugMysqlPassword.${param:debugHooks, "0"}}
 
 functions:
   api:
     handler: src/handler.handler
-    # Each container holds one MySQL + one Redis connection (two MySQL on dev
-    # with debug hooks); the stateful host allows ~60 MySQL connections across
-    # every stack, so cap containers per stack (rules/data.md).
-    # **Deliberately not cut** when the budget was rebalanced on 2026-08-26:
-    # `docs/auth-game-contract.md` pins this number to a concrete burst — the
-    # gateway's verify cache misses for every token at the start of an event,
-    # so an 8-player dungeon start issues 8 concurrent `GET /c/{ch}/verify`,
-    # and a throttle there is a 500 that refuses those players' sockets.
-    reservedConcurrency: 10
+    # One MySQL connection per container and no Redis one; the stateful host
+    # allows ~60 MySQL connections across every stack, so the reservation is
+    # this stack's share of that budget — see the table in rules/data.md.
+    reservedConcurrency: 6
     events:
       - httpApi: "*"
 

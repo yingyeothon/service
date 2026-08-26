@@ -2,9 +2,11 @@
 # Uploads machine-local credentials to SSM so serverless.yml can resolve
 # ${ssm:/yyt-service/<stage>/<service>/<key>}. Run once per stage (and again after rotation).
 #
-# Usage: scripts/bootstrap-ssm.sh <dev|prod> [service...]   (default: console auth topic match)
+# Usage: scripts/bootstrap-ssm.sh <dev|prod> [service...]   (default: console auth topic match state)
 # Input: local/env/<service>.<stage>.env (gitignored; layout in local/env.example).
 # Keys per service: mysql-{host,port,database,user,password} redis-{host,port,user,password} redis-key-prefix.
+#   `state` is the exception: it holds no Redis connection at all (a channel row carries secrets and
+#   rules/data.md forbids caching one), so only the mysql-* keys are read for it.
 # console only (optional): redis-acl-{user,password} — the account that mints per-channel
 #   participant Redis credentials (todo/16 §B). Absent = those routes answer 503.
 # Stage-wide keys (uploaded only when set): DEBUG_KEY (dev only; generated when absent), SESSION_SECRET,
@@ -24,7 +26,7 @@
 set -euo pipefail
 umask 077 # everything this script writes (logs, debug key, temp files) is owner-only
 STAGE="${1:?stage (dev|prod)}"; shift || true
-SERVICES=("$@"); [ ${#SERVICES[@]} -eq 0 ] && SERVICES=(console auth topic match)
+SERVICES=("$@"); [ ${#SERVICES[@]} -eq 0 ] && SERVICES=(console auth topic match state)
 export AWS_PROFILE="${AWS_PROFILE:-yyt}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-ap-northeast-2}"
 cd "$(dirname "$0")/.."
@@ -45,12 +47,18 @@ envval() { # file VAR — plain KEY=value parse; the file is never sourced as sh
 
 for svc in "${SERVICES[@]}"; do
   f="local/env/${svc}.${STAGE}.env"
+  # A stage without a state stack is a valid state — its MySQL account may not
+  # exist yet — so `state` is skipped rather than fatal. Every other service is
+  # load-bearing on every stage.
+  if [ ! -f "$f" ] && [ "$svc" = state ]; then log "skip state (no $f on this stage)"; continue; fi
   [ -f "$f" ] || { echo "missing $f (see local/README.md)" >&2; exit 1; }
   [ "$(envval "$f" STAGE)" = "$STAGE" ] || { echo "$f: STAGE mismatch" >&2; exit 1; }
-  for pair in mysql-host:MYSQL_HOST mysql-port:MYSQL_PORT mysql-database:MYSQL_DATABASE \
-              mysql-user:MYSQL_USER mysql-password:MYSQL_PASSWORD redis-host:REDIS_HOST \
-              redis-port:REDIS_PORT redis-user:REDIS_USER redis-password:REDIS_PASSWORD \
-              redis-key-prefix:REDIS_KEY_PREFIX; do
+  pairs=(mysql-host:MYSQL_HOST mysql-port:MYSQL_PORT mysql-database:MYSQL_DATABASE
+         mysql-user:MYSQL_USER mysql-password:MYSQL_PASSWORD)
+  # Every stack but `state` also holds a Redis connection.
+  [ "$svc" = state ] || pairs+=(redis-host:REDIS_HOST redis-port:REDIS_PORT redis-user:REDIS_USER
+                                redis-password:REDIS_PASSWORD redis-key-prefix:REDIS_KEY_PREFIX)
+  for pair in "${pairs[@]}"; do
     key="${pair%%:*}"; var="${pair##*:}"
     v="$(envval "$f" "$var")"
     [ -n "$v" ] || { echo "$f: $var is empty" >&2; exit 1; }
@@ -73,7 +81,12 @@ if [ "${STAGE}" = "dev" ]; then
   for var in MYSQL_USER MYSQL_PASSWORD; do
     v="$(envval local/env/console.dev.env "$var")"
     [ -n "$v" ] || { echo "console.dev.env: $var is empty" >&2; exit 1; }
-    put "auth/debug-mysql-$(echo "$var" | tr 'A-Z_' 'a-z-')" "$v"
+    # `MYSQL_USER` → `user`, i.e. `auth/debug-mysql-user`, which is the key
+    # services/auth/serverless.yml reads. Without stripping the prefix this
+    # wrote `debug-mysql-mysql-user`: a parameter nothing resolves, so a
+    # rotation of console's dev account would have left auth's debug seeding
+    # pointing at the old password with no error anywhere.
+    put "auth/debug-mysql-$(echo "${var#MYSQL_}" | tr 'A-Z_' 'a-z-')" "$v"
   done
 fi
 CONSOLE_ENV="local/env/console.${STAGE}.env"
@@ -135,6 +148,38 @@ log "gateway-token written to local/deploy/gateway-token.${STAGE} (hand it to th
 # gateway actually resolves:
 #   aws ssm put-parameter --name /yyt-service/<stage>/gateway-ws-url --type String --value wss://gw…
 # Until then it stays unset and lobby/q views omit `wsUrl` entirely.
+
+# The state service's public base URL, so console can show `docUrl` on an auth
+# channel. Not a secret, hence a plain String — and written only when this stage
+# actually has a state stack (its env file is the signal). Absent, console omits
+# `docUrl` entirely rather than printing a host that does not resolve, the same
+# discipline `gateway-ws-url` follows above.
+# Only when `state` was actually named (or defaulted) for this run. The signal
+# is a file on the operator's machine, and this block sits outside the
+# per-service loop, so without the guard `bootstrap-ssm.sh dev console` after a
+# password rotation would delete a stage-wide parameter for a service it was
+# never asked about — and the next console deploy would quietly stop
+# advertising `docUrl` for a reason unrelated to anything the operator did.
+DOC_DOMAIN="doc.yyt.life"; [ "$STAGE" = prod ] || DOC_DOMAIN="doc-dev.yyt.life"
+case " ${SERVICES[*]} " in *" state "*) DOC_TOUCH=1 ;; *) DOC_TOUCH=0 ;; esac
+if [ "$DOC_TOUCH" = 0 ]; then
+  log "skip /yyt-service/${STAGE}/doc-base-url (state not in this run)"
+elif [ -f "local/env/state.${STAGE}.env" ]; then
+  aws ssm put-parameter --name "/yyt-service/${STAGE}/doc-base-url" --type String \
+    --value "https://${DOC_DOMAIN}" --overwrite >/dev/null
+  log "put /yyt-service/${STAGE}/doc-base-url"
+else
+  # `put` never deletes, so clearing the env file alone would leave console
+  # advertising an endpoint this stage no longer serves. A missing parameter is
+  # the expected case; anything else (AccessDenied) must be visible, not
+  # swallowed into a stage that keeps advertising a decommissioned endpoint.
+  err="$(aws ssm delete-parameter --name "/yyt-service/${STAGE}/doc-base-url" 2>&1 >/dev/null)" && \
+    log "deleted /yyt-service/${STAGE}/doc-base-url (no state stack on this stage)" || \
+    case "$err" in
+      *ParameterNotFound*) : ;;
+      *) echo "failed to delete /yyt-service/${STAGE}/doc-base-url: $err" >&2; exit 1 ;;
+    esac
+fi
 
 # CloudFront (console SPA) needs the us-east-1 certificate covering *.yyt.life;
 # serverless.yml reads its ARN from SSM so no account-specific ARN lives in git.

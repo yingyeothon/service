@@ -68,6 +68,18 @@ export {
   type AssetUploadStatus,
 } from "./assets.js";
 export {
+  checkDocBody,
+  createMemoryStateDb,
+  createStateDb,
+  docBodyBytes,
+  MAX_DOC_BODY_BYTES,
+  type StateDb,
+  type StateDeleteResult,
+  type StateDocPut,
+  type StateDocRow,
+  type StatePutResult,
+} from "./state.js";
+export {
   CATALOG_PERMISSION_LEVELS,
   CATALOG_PLATFORMS,
   CATALOG_UPLOAD_STATUSES,

@@ -16,6 +16,7 @@ import type {
   ChannelRow,
   ConsoleDb,
   EventsDb,
+  StateDb,
 } from "@yyt/console-db";
 import {
   createHttpHandler,
@@ -52,6 +53,10 @@ import {
 } from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
 import { createEventRoutes } from "./events.js";
+import {
+  createChannelDocKeyRoutes,
+  deleteChannelDocs,
+} from "./channel-doc-key.js";
 import { createGatewayRoutes } from "./gateway.js";
 import type { GithubLogin } from "./github.js";
 import type { PosterStore } from "./poster.js";
@@ -100,6 +105,13 @@ export interface ConsoleAppOptions {
   redisAcl?: RedisAclAdmin;
   /** Where those credentials point. Host is an infra identifier — never a literal in this repo. */
   redisEndpoint?: { host: string; port: number };
+  /**
+   * The document table, through console's own connection — for the count shown
+   * beside an auth channel's doc key and for dropping a deleted channel's
+   * documents. Optional only so tests may leave it out; when it is absent the
+   * count is omitted rather than reported as zero.
+   */
+  state?: StateDb;
   /** Stage segment of the game Redis namespace and of nothing else here. */
   stage: string;
   clock?: Clock;
@@ -147,6 +159,7 @@ export function createConsoleApp({
   gatewayToken = "",
   redisAcl,
   redisEndpoint = { host: "", port: 6379 },
+  state,
   stage,
 }: ConsoleAppOptions): (event: HttpEvent) => Promise<HttpResult> {
   const base = baseUrl.replace(/\/+$/, "");
@@ -770,6 +783,10 @@ export function createConsoleApp({
         // revoke there would silently strip a credential the owner still holds.
         if (row.kind === "q")
           await revokeChannelRedis(redisAcl, row.id, stage, logger);
+        // Same lifecycle point, same reasoning: documents survive expiry
+        // because extending revives the channel, and do not survive deletion.
+        if (row.kind === "auth" && state)
+          await deleteChannelDocs(state, row.id, logger);
         await audit(id.subject, "channel.delete", row.id);
         return undefined;
       },
@@ -804,6 +821,14 @@ export function createConsoleApp({
     audit,
   });
 
+  const channelDocKeyRoutes = createChannelDocKeyRoutes({
+    db,
+    state,
+    docUrl: urls.doc,
+    clock,
+    audit,
+  });
+
   const assetRoutes = createAssetRoutes({
     db,
     assets,
@@ -833,6 +858,7 @@ export function createConsoleApp({
       ...catalogRoutes,
       ...assetRoutes,
       ...channelRedisRoutes,
+      ...channelDocKeyRoutes,
       ...gatewayRoutes,
     ],
     identity: createIdentityResolver({
