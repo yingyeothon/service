@@ -35,7 +35,19 @@ export const CHANNEL_MAX_AHEAD_SEC = 28 * 86400;
 export const CHANNEL_DELETE_GRACE_SEC = 30 * 86400;
 
 const ID = /^[a-z0-9_-]{3,40}$/;
-const name = z.string().trim().min(1).max(100);
+/**
+ * Free text, but never id-shaped: channel names are unique within the org and
+ * the CLI resolves a `{prefix}_…` argument as an id, so a name in that shape
+ * could never be addressed (`docs/decisions.md` *Organizations and projects*).
+ */
+const ID_LIKE =
+  /^(org|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+const name = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine((s) => !ID_LIKE.test(s), "channel name must not look like an id");
 const oauthApp = z
   .object({
     clientId: z.string().min(1).max(200),
@@ -510,7 +522,8 @@ export function channelView(
     id: row.id,
     kind: row.kind,
     name: row.name,
-    ownerId: row.ownerId,
+    orgId: row.orgId,
+    projectId: row.projectId,
     config,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,

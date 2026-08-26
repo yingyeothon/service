@@ -12,6 +12,8 @@ const channel = (id: string, over: Partial<{ expiresAt: number }> = {}) => ({
   id,
   kind: "topic" as const,
   ownerId: "m1",
+  orgId: "org_1",
+  projectId: "prj_1",
   name: id,
   config: { authChannelId: "a" },
   secret: { apiKey: "k" },
@@ -78,17 +80,28 @@ describe("memory console db: members/tokens/channels/audit", () => {
     await db.upsertMember({ ...member, id: "m2", githubId: 2 });
     await db.insertChannel(channel("c1"));
     await db.insertChannel({ ...channel("c2"), kind: "match", createdAt: 2 });
-    await db.insertChannel({ ...channel("c3"), ownerId: "m2" });
+    await db.insertChannel({
+      ...channel("c3"),
+      ownerId: "m2",
+      orgId: "org_2",
+      projectId: "prj_2",
+    });
     expect((await db.listChannels()).map((c) => c.id)).toEqual([
       "c2",
       "c3",
       "c1",
     ]);
     expect(
-      (await db.listChannels({ kind: "topic", ownerId: "m1" })).map(
+      (await db.listChannels({ kind: "topic", orgId: "org_1" })).map(
         (c) => c.id,
       ),
     ).toEqual(["c1"]);
+    expect(
+      (await db.listChannels({ orgIds: ["org_2", "org_x"] })).map((c) => c.id),
+    ).toEqual(["c3"]);
+    expect(
+      (await db.listChannels({ projectId: "prj_1" })).map((c) => c.id),
+    ).toEqual(["c2", "c1"]);
     expect(
       await db.updateChannel("c1", {
         name: "n",
@@ -110,7 +123,18 @@ describe("memory console db: members/tokens/channels/audit", () => {
     expect(await db.updateChannel("zz", { name: "x" })).toBe(false);
     // sweep: c1 disabled at 40 → deleted after grace; c2/c3 expire at 100
     const r1 = await db.expireChannels(101, 30);
-    expect(r1).toEqual({ disabled: ["c2", "c3"], deleted: ["c1"] });
+    expect(r1).toEqual({
+      disabled: ["c2", "c3"],
+      deleted: [
+        {
+          id: "c1",
+          kind: "topic",
+          name: "n",
+          orgId: "org_1",
+          projectId: "prj_1",
+        },
+      ],
+    });
     expect(await db.findChannelRow("c1")).toBeUndefined();
     expect(db.channels.get("c1")?.secretJson).toBe("{}");
     expect(await db.updateChannel("c1", { name: "x" })).toBe(false);

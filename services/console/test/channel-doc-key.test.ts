@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { docKeyChannelId, nullLogger } from "@yyt/core";
 import { runExpire } from "../src/expire.js";
-import { ev, harness, NOW_SEC, URLS } from "./helpers.js";
+import { ev, harness, NOW_SEC, URLS, type Team } from "./helpers.js";
 
 type H = ReturnType<typeof harness>;
 type Cookie = Record<string, string>;
@@ -13,10 +13,10 @@ const authConfig = {
   providers: {},
 };
 
-async function authChannel(h: H, cookie: Cookie): Promise<string> {
+async function authChannel(h: H, u: Team): Promise<string> {
   const r = await h.app(
-    ev("POST", "/channels", {
-      headers: cookie,
+    ev("POST", `/projects/${u.prjId}/channels`, {
+      headers: u.cookie,
       body: { kind: "auth", name: "a", config: authConfig },
     }),
   );
@@ -33,8 +33,8 @@ const parse = (r: { body?: string }) =>
 describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
   it("issues a self-identifying key once, then reports it as issued", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
 
     const before = parse(await key(h, "GET", id, a.cookie));
     expect(before).toMatchObject({
@@ -59,8 +59,8 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("rotates rather than stacking, and keeps the signing secret intact", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     const first = parse(await key(h, "POST", id, a.cookie)).apiKey as string;
     const second = parse(await key(h, "POST", id, a.cookie)).apiKey as string;
     expect(second).not.toBe(first);
@@ -76,8 +76,8 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("rotating the signing secret leaves the doc key alone, and the reverse", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     const apiKey = parse(await key(h, "POST", id, a.cookie)).apiKey as string;
     const rotated = await h.app(
       ev("POST", `/channels/${id}/rotate-secret`, { headers: a.cookie }),
@@ -94,8 +94,8 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("survives a config patch of the channel", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     const apiKey = parse(await key(h, "POST", id, a.cookie)).apiKey as string;
     const patched = await h.app(
       ev("PATCH", `/channels/${id}`, {
@@ -120,8 +120,8 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("revokes the key and leaves the documents in place", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     await key(h, "POST", id, a.cookie);
     await h.state.putDoc({
       channelId: id,
@@ -148,11 +148,11 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("is 404 for a channel of another kind and for someone else's", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const b = await h.login("bob", "member");
-    const authId = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const b = await h.team("bob");
+    const authId = await authChannel(h, a);
     const topic = await h.app(
-      ev("POST", "/channels", {
+      ev("POST", `/projects/${a.prjId}/channels`, {
         headers: a.cookie,
         body: {
           kind: "topic",
@@ -167,20 +167,26 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
     expect((await key(h, "POST", authId, b.cookie)).statusCode).toBe(404);
   });
 
-  it("lets an admin look but not mint", async () => {
+  it("lets an admin look but not mint; a teammate does both", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
+    const a = await h.team("alice");
     const boss = await h.login("Boss", "admin");
-    const id = await authChannel(h, a.cookie);
+    const mate = await h.login("mate", "member");
+    await h.seat(a, a.orgId, "mate");
+    const id = await authChannel(h, a);
     expect((await key(h, "GET", id, boss.cookie)).statusCode).toBe(200);
-    expect((await key(h, "POST", id, boss.cookie)).statusCode).toBe(404);
-    expect((await key(h, "DELETE", id, boss.cookie)).statusCode).toBe(404);
+    expect((await key(h, "POST", id, boss.cookie)).statusCode).toBe(403);
+    expect((await key(h, "DELETE", id, boss.cookie)).statusCode).toBe(403);
+    expect((await key(h, "POST", id, mate.cookie)).statusCode).toBe(200);
+    expect(parse(await key(h, "DELETE", id, mate.cookie))).toEqual({
+      revoked: true,
+    });
   });
 
   it("refuses to mint for a channel that is no longer active", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     await h.db.updateChannel(id, { disabledAt: NOW_SEC });
     const r = await key(h, "POST", id, a.cookie);
     expect(r.statusCode).toBe(409);
@@ -190,8 +196,8 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("refuses to mint on a stage with no document service, but still reads", async () => {
     const h = harness({ urls: { ...URLS, doc: "" } });
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     const posted = await key(h, "POST", id, a.cookie);
     expect(posted.statusCode).toBe(503);
     expect(parse(posted)).toMatchObject({
@@ -205,15 +211,15 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("trims a trailing slash off the base URL", async () => {
     const h = harness({ urls: { ...URLS, doc: `${URLS.doc}/` } });
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     expect(parse(await key(h, "GET", id, a.cookie)).docUrl).toBe(URLS.doc);
   });
 
   it("omits the count when there is no state handle", async () => {
     const h = harness({ state: undefined });
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     const r = parse(await key(h, "GET", id, a.cookie));
     expect(r.issued).toBe(false);
     // Unknown, not zero.
@@ -222,8 +228,8 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("deleting the channel takes its documents and its key", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     await key(h, "POST", id, a.cookie);
     await h.state.putDoc({
       channelId: id,
@@ -242,14 +248,16 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("the expiry sweep takes a deleted channel's documents, whatever its id looks like", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     // auth's debug seeding hook mints `dbg_{ulid}` rather than `auth_{random}`,
     // so anything that filtered the sweep by an `auth_` prefix would skip it.
     await h.db.insertChannel({
       id: "dbg_01seeded",
       kind: "auth",
       ownerId: a.id,
+      orgId: a.orgId,
+      projectId: a.prjId,
       name: "seeded",
       config: authConfig,
       secret: { secret: "s".repeat(64), providers: {} },
@@ -284,7 +292,9 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
       clock: h.clock,
       logger: nullLogger,
     });
-    expect(swept.deleted.sort()).toEqual([id, "dbg_01seeded"].sort());
+    expect(swept.deleted.map((d) => d.id).sort()).toEqual(
+      [id, "dbg_01seeded"].sort(),
+    );
     expect(swept.documents).toBe(2);
     expect(await h.state.countDocs(id)).toBe(0);
     expect(await h.state.countDocs("dbg_01seeded")).toBe(0);
@@ -292,16 +302,16 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
 
   it("shows docUrl on an auth channel only when the stack is deployed", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const id = await authChannel(h, a.cookie);
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
     const view = parse(
       await h.app(ev("GET", `/channels/${id}`, { headers: a.cookie })),
     );
     expect(view.docUrl).toBe(URLS.doc);
 
     const bare = harness({ urls: { ...URLS, doc: "" } });
-    const c = await bare.login("carol", "member");
-    const other = await authChannel(bare, c.cookie);
+    const c = await bare.team("carol");
+    const other = await authChannel(bare, c);
     const bareView = parse(
       await bare.app(ev("GET", `/channels/${other}`, { headers: c.cookie })),
     );

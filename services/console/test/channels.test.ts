@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { runExpire } from "../src/expire.js";
 import { nullLogger } from "@yyt/core";
-import { ev, harness, NOW_SEC, parse, URLS } from "./helpers.js";
+import { ev, harness, NOW_SEC, parse, URLS, type Team } from "./helpers.js";
 
 const authCfg = {
   audience: "game-a",
@@ -10,28 +10,28 @@ const authCfg = {
   providers: { github: { clientId: "gh_id", clientSecret: "gh-secret-zz" } },
 };
 
-/** Creates an auth channel for `cookie` and returns its id (topic/match must point at one). */
+/** Creates an auth channel in `u`'s project and returns its id (topic/match must point at one). */
 async function authFor(
   h: ReturnType<typeof harness>,
-  cookie: Record<string, string>,
+  u: Team,
+  name = "base",
 ): Promise<string> {
-  const r = parse(
-    await h.app(
-      ev("POST", "/channels", {
-        headers: cookie,
-        body: { kind: "auth", name: "base", config: { audience: "x" } },
-      }),
-    ),
+  const c = await h.app(
+    ev("POST", `/projects/${u.prjId}/channels`, {
+      headers: u.cookie,
+      body: { kind: "auth", name, config: { audience: "x" } },
+    }),
   );
-  return r.id as string;
+  expect(c.statusCode, c.body).toBe(201);
+  return parse(c).id as string;
 }
 
 describe("channels", () => {
   it("create/get/list per kind with URLs, secret shown once only", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
+    const a = await h.team("alice");
     const c = await h.app(
-      ev("POST", "/channels", {
+      ev("POST", `/projects/${a.prjId}/channels`, {
         headers: a.cookie,
         body: { kind: "auth", name: "My game", config: authCfg },
       }),
@@ -67,7 +67,7 @@ describe("channels", () => {
 
     const t = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: {
             kind: "topic",
@@ -84,7 +84,7 @@ describe("channels", () => {
     });
     const m = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: {
             kind: "match",
@@ -123,39 +123,145 @@ describe("channels", () => {
       parse(await h.app(ev("GET", "/channels", { headers: a.cookie })))
         .channels,
     ).toHaveLength(3);
+    // Breadcrumbs: every view names its org, project and creator.
+    expect(get).toMatchObject({
+      orgId: a.orgId,
+      orgName: "alice-org",
+      projectId: a.prjId,
+      projectName: "game",
+      createdBy: "alice",
+    });
+    expect(get.ownerId).toBeUndefined();
+    expect(
+      parse(
+        await h.app(
+          ev("GET", `/projects/${a.prjId}/channels`, {
+            headers: a.cookie,
+            query: { kind: "match" },
+          }),
+        ),
+      ).channels.map((x: { id: string }) => x.id),
+    ).toEqual([m.id]);
+  });
+
+  it("every org member reads and writes; a kicked creator loses everything", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const mate = await h.login("mate", "member");
+    await h.seat(a, a.orgId, "mate");
+    const authId = await authFor(h, a);
+    // The teammate rotates and patches what alice created: org membership is
+    // the whole permission model.
+    expect(
+      (
+        await h.app(
+          ev("POST", `/channels/${authId}/rotate-secret`, {
+            headers: mate.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await h.app(
+          ev("PATCH", `/channels/${authId}`, {
+            headers: mate.cookie,
+            body: { name: "renamed" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      parse(await h.app(ev("GET", "/channels", { headers: mate.cookie })))
+        .channels,
+    ).toHaveLength(1);
+    // Mate kicks alice out (mate was promoted to owner first).
+    h.clock.tick(0.5);
+    await h.app(
+      ev("PATCH", `/orgs/${a.orgId}/members/${mate.id}`, {
+        headers: a.cookie,
+        body: { role: "owner" },
+      }),
+    );
+    h.clock.tick(0.5);
+    const kick = await h.app(
+      ev("DELETE", `/orgs/${a.orgId}/members/${a.id}`, {
+        headers: mate.cookie,
+      }),
+    );
+    expect(kick.statusCode).toBe(200);
+    expect(parse(kick).rotate.map((c: { id: string }) => c.id)).toEqual([
+      authId,
+    ]);
+    // `owner_id` still names alice, and it buys her nothing: 404 everywhere.
+    for (const r of [
+      ev("GET", `/channels/${authId}`, { headers: a.cookie }),
+      ev("PATCH", `/channels/${authId}`, {
+        headers: a.cookie,
+        body: { name: "mine" },
+      }),
+      ev("POST", `/channels/${authId}/rotate-secret`, { headers: a.cookie }),
+      ev("POST", `/channels/${authId}/extend`, { headers: a.cookie }),
+      ev("POST", `/channels/${authId}/doc-key`, { headers: a.cookie }),
+      ev("DELETE", `/channels/${authId}`, { headers: a.cookie }),
+      ev("POST", `/projects/${a.prjId}/channels`, {
+        headers: a.cookie,
+        body: { kind: "auth", name: "again", config: { audience: "x" } },
+      }),
+    ])
+      expect((await h.app(r)).statusCode, r.rawPath).toBe(404);
+    expect(
+      parse(await h.app(ev("GET", "/channels", { headers: a.cookie })))
+        .channels,
+    ).toEqual([]);
+    // History has the resource writes beside the membership changes.
+    const actions = (await h.org.listHistory(a.orgId, { limit: 50 })).rows.map(
+      (r) => r.action,
+    );
+    expect(actions).toContain("resource.create");
+    expect(actions).toContain("resource.rotate");
+    expect(actions).toContain("resource.update");
+    expect(actions).toContain("member.kick");
   });
 
   it("topic/match must reference the caller's own auth channel", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const b = await h.login("bob", "member");
+    const a = await h.team("alice");
+    const b = await h.team("bob");
     const adm = await h.login("boss", "admin");
-    const mine = await authFor(h, a.cookie);
-    const theirs = await authFor(h, b.cookie);
+    const mine = await authFor(h, a);
+    const theirs = await authFor(h, b, "theirs");
     const post = async (
-      cookie: Record<string, string>,
+      who: { cookie: Record<string, string> },
       authChannelId: string,
+      prjId = a.prjId,
+      name = "t",
     ) =>
       (
         await h.app(
-          ev("POST", "/channels", {
-            headers: cookie,
-            body: { kind: "topic", name: "t", config: { authChannelId } },
+          ev("POST", `/projects/${prjId}/channels`, {
+            headers: who.cookie,
+            body: { kind: "topic", name, config: { authChannelId } },
           }),
         )
       ).statusCode;
-    expect(await post(a.cookie, mine)).toBe(201);
-    expect(await post(a.cookie, theirs)).toBe(400);
-    expect(await post(a.cookie, "nope_1")).toBe(400);
-    expect(await post(a.cookie, "abc")).toBe(400);
-    expect(await post(adm.cookie, theirs)).toBe(201);
+    expect(await post(a, mine)).toBe(201);
+    // Another project's auth channel — even inside the platform — is refused.
+    expect(await post(a, theirs, a.prjId, "t2")).toBe(400);
+    expect(await post(a, "nope_1", a.prjId, "t3")).toBe(400);
+    expect(await post(a, "abc", a.prjId, "t4")).toBe(400);
+    // The former admin exception is withdrawn: an admin without a membership
+    // cannot create in someone else's project at all (403, secrets are shown).
+    expect(await post(adm, theirs, b.prjId)).toBe(403);
+    // A second channel with the same name in the org is refused, any kind.
+    expect(await post(a, mine, a.prjId, "base")).toBe(409);
     // auth channels cannot point at topic channels
     const topicId = parse(
       await h.app(
         ev("GET", "/channels", { headers: a.cookie, query: { kind: "topic" } }),
       ),
     ).channels[0].id as string;
-    expect(await post(a.cookie, topicId)).toBe(400);
+    expect(await post(a, topicId, a.prjId, "t5")).toBe(400);
     // PATCH re-validates
     expect(
       (
@@ -179,11 +285,11 @@ describe("channels", () => {
 
   it("validates config per kind", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
+    const a = await h.team("alice");
     const bad = async (kind: string, config: unknown) =>
       (
         await h.app(
-          ev("POST", "/channels", {
+          ev("POST", `/projects/${a.prjId}/channels`, {
             headers: a.cookie,
             body: { kind, name: "x", config },
           }),
@@ -237,7 +343,7 @@ describe("channels", () => {
     expect(
       (
         await h.app(
-          ev("POST", "/channels", {
+          ev("POST", `/projects/${a.prjId}/channels`, {
             headers: a.cookie,
             body: { kind: "auth", name: "", config: { audience: "a" } },
           }),
@@ -248,14 +354,14 @@ describe("channels", () => {
 
   it("pending cannot mutate; owners and admins can see, others 404", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
-    const b = await h.login("bob", "member");
+    const a = await h.team("alice");
+    const b = await h.team("bob");
     const p = await h.login("newbie", "pending");
     const adm = await h.login("boss", "admin");
     expect(
       (
         await h.app(
-          ev("POST", "/channels", {
+          ev("POST", `/projects/${a.prjId}/channels`, {
             headers: p.cookie,
             body: {
               kind: "topic",
@@ -268,12 +374,12 @@ describe("channels", () => {
     ).toBe(403);
     const t = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: {
             kind: "topic",
             name: "t",
-            config: { authChannelId: await authFor(h, a.cookie) },
+            config: { authChannelId: await authFor(h, a) },
           },
         }),
       ),
@@ -300,7 +406,8 @@ describe("channels", () => {
       (await h.app(ev("GET", `/channels/${t.id}`, { headers: adm.cookie })))
         .statusCode,
     ).toBe(200);
-    // admins never touch secrets/config of others' channels
+    // admins never touch secrets/config of others' channels (403: the org is
+    // already visible to them, so there is nothing to hide behind a 404)
     expect(
       (
         await h.app(
@@ -309,7 +416,7 @@ describe("channels", () => {
           }),
         )
       ).statusCode,
-    ).toBe(404);
+    ).toBe(403);
     expect(
       (
         await h.app(
@@ -319,7 +426,7 @@ describe("channels", () => {
           }),
         )
       ).statusCode,
-    ).toBe(404);
+    ).toBe(403);
     expect(
       (
         await h.app(
@@ -362,10 +469,10 @@ describe("channels", () => {
 
   it("patch keeps provider secrets unless replaced/removed, replaces topic/match config", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
+    const a = await h.team("alice");
     const auth = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: { kind: "auth", name: "g", config: authCfg },
         }),
@@ -449,7 +556,7 @@ describe("channels", () => {
 
     const t = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: {
             kind: "topic",
@@ -485,15 +592,15 @@ describe("channels", () => {
 
   it("extend (+7d, cap now+28d), rotate-secret, delete wipes secrets", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
+    const a = await h.team("alice");
     const t = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: {
             kind: "topic",
             name: "t",
-            config: { authChannelId: await authFor(h, a.cookie) },
+            config: { authChannelId: await authFor(h, a) },
           },
         }),
       ),
@@ -551,7 +658,7 @@ describe("channels", () => {
 
     const auth = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: { kind: "auth", name: "g", config: authCfg },
         }),
@@ -592,15 +699,15 @@ describe("channels", () => {
 describe("expire sweep", () => {
   it("disables expired channels and deletes long-disabled ones", async () => {
     const h = harness();
-    const a = await h.login("alice", "member");
+    const a = await h.team("alice");
     const t = parse(
       await h.app(
-        ev("POST", "/channels", {
+        ev("POST", `/projects/${a.prjId}/channels`, {
           headers: a.cookie,
           body: {
             kind: "topic",
             name: "t",
-            config: { authChannelId: await authFor(h, a.cookie) },
+            config: { authChannelId: await authFor(h, a) },
           },
         }),
       ),
@@ -625,12 +732,27 @@ describe("expire sweep", () => {
         .status,
     ).toBe("disabled");
     h.clock.tick(30 * 86400 + 1);
-    expect(
-      await runExpire({ db: h.db, clock: h.clock, logger: nullLogger }),
-    ).toEqual({ disabled: [], deleted: swept.disabled, documents: 0 });
+    const gone = await runExpire({
+      db: h.db,
+      org: h.org,
+      clock: h.clock,
+      logger: nullLogger,
+    });
+    expect(gone.disabled).toEqual([]);
+    expect(gone.documents).toBe(0);
+    expect(gone.deleted.map((d) => d.id).sort()).toEqual(swept.disabled.sort());
+    expect(gone.deleted[0]).toMatchObject({
+      orgId: a.orgId,
+      projectId: a.prjId,
+    });
     expect(h.db.channels.get(t.id)?.secretJson).toBe("{}");
     expect(
       h.db.audits.filter((x) => x.action === "channel.expire"),
+    ).toHaveLength(2);
+    // The org's own record of the sweep.
+    const hist = await h.org.listHistory(a.orgId, { limit: 50 });
+    expect(
+      hist.rows.filter((r) => r.action === "resource.expire"),
     ).toHaveLength(2);
   });
 });

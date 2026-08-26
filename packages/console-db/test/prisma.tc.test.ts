@@ -18,6 +18,7 @@ import { stateContract } from "./state.test.js";
 import {
   dockerAvailable,
   resetTestDb,
+  seedOrgProject,
   startTestDb,
   type TestDb,
 } from "./testDb.js";
@@ -48,6 +49,7 @@ describe.skipIf(!dockerAvailable())(
     describe("catalog contract", () => {
       catalogContract(async () => {
         await resetTestDb(db.client);
+        await seedOrgProject(db.client);
         return createCatalogDb(db.client);
       });
     });
@@ -55,6 +57,7 @@ describe.skipIf(!dockerAvailable())(
     describe("assets contract", () => {
       assetsContract(async () => {
         await resetTestDb(db.client);
+        await seedOrgProject(db.client);
         return createAssetsDb(db.client);
       });
     });
@@ -64,12 +67,15 @@ describe.skipIf(!dockerAvailable())(
         await resetTestDb(db.client);
         // `state_docs.channel_id` is a foreign key, so the contract's channels
         // have to exist before any document can.
+        await seedOrgProject(db.client);
         for (const id of ["c1", "c2"])
           await db.client.channels.create({
             data: {
               id,
               kind: "q",
               owner_id: "m1",
+              org_id: "org_1",
+              project_id: "prj_1",
               name: id,
               config_json: "{}",
               secret_json: "{}",
@@ -93,9 +99,12 @@ describe.skipIf(!dockerAvailable())(
         },
         {
           bundle: async (id) => {
+            // The contract seeds `org_1`/`prj_1` itself before asking for a bundle.
             await createAssetsDb(db.client).insertBundle({
               id,
               name: id,
+              orgId: "org_1",
+              projectId: "prj_1",
               createdAt: 1,
             });
           },
@@ -188,21 +197,27 @@ describe.skipIf(!dockerAvailable())(
         ).rejects.toMatchObject({
           code: "conflict",
         });
-        // Rows from before the mapping (null parents) are still readable and listable.
-        await console.insertChannel({
-          id: "auth_3",
-          kind: "auth",
-          ownerId: "m1",
-          name: "legacy",
-          config: {},
-          secret: {},
-          createdAt: 3,
-          expiresAt: 1000,
+        // Rows from before the mapping (null parents) are still readable and
+        // listable — the repository no longer writes them, so insert raw.
+        await db.client.channels.create({
+          data: {
+            id: "auth_3",
+            kind: "auth",
+            owner_id: "m1",
+            name: "legacy",
+            config_json: "{}",
+            secret_json: "{}",
+            created_at: 3,
+            expires_at: 1000,
+          },
         });
         expect(await console.findChannelRow("auth_3")).toMatchObject({
           orgId: null,
           projectId: null,
         });
+        expect(
+          (await console.listChannels({ orgIds: ["org_1"] })).map((c) => c.id),
+        ).toEqual(["auth_1"]);
         // Artifact links cascade with the artifact; bundle links with the bundle.
         await catalog.insertArtifact({
           id: "art_1",
@@ -270,6 +285,8 @@ describe.skipIf(!dockerAvailable())(
         id,
         kind: "topic" as const,
         ownerId: "m1",
+        orgId: "org_1",
+        projectId: "prj_1",
         name: id,
         config: { authChannelId: "a" },
         secret: { apiKey: "k0-secret-zz" },
@@ -278,6 +295,7 @@ describe.skipIf(!dockerAvailable())(
       });
       const fresh = async (): Promise<ConsoleDb> => {
         await resetTestDb(db.client);
+        await seedOrgProject(db.client);
         return createConsoleDb(db.client);
       };
 
@@ -392,7 +410,7 @@ describe.skipIf(!dockerAvailable())(
         expect(await repo.findAuthChannel("t1")).toBeUndefined();
         expect(await repo.findMatchChannel("t1")).toBeUndefined();
         expect(
-          (await repo.listChannels({ kind: "topic", ownerId: "m1" })).map(
+          (await repo.listChannels({ kind: "topic", orgId: "org_1" })).map(
             (c) => c.id,
           ),
         ).toEqual(["t1"]);
@@ -441,7 +459,18 @@ describe.skipIf(!dockerAvailable())(
         const first = await repo.expireChannels(20, 30);
         expect(first).toEqual({ disabled: ["c1"], deleted: [] });
         const second = await repo.expireChannels(60, 30);
-        expect(second).toEqual({ disabled: [], deleted: ["c1"] });
+        expect(second).toEqual({
+          disabled: [],
+          deleted: [
+            {
+              id: "c1",
+              kind: "topic",
+              name: "c1",
+              orgId: "org_1",
+              projectId: "prj_1",
+            },
+          ],
+        });
         expect(await repo.findChannelRow("c1")).toBeUndefined();
         expect(await repo.findTopicChannel("c2")).toBeDefined();
         // Deleted rows have their secrets wiped, not just hidden.

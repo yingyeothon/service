@@ -177,7 +177,25 @@ export function createOrgAccess({ db, org, catalog, assets }: OrgAccessDeps) {
     }
   }
 
-  return { orgAccess, projectAccess, projectResource, standingOf };
+  /**
+   * Ids of every org the caller is seated in (owner or member — pending does
+   * not count). What "my channels / my apps" means; one query, so list routes
+   * can filter with `orgIds` instead of asking per org.
+   */
+  async function memberOrgIds(id: ConsoleIdentity): Promise<string[]> {
+    const rows = await org.listOrgsForMember(id.subject);
+    return rows
+      .filter((o) => o.state === "active" && o.role !== "pending")
+      .map((o) => o.id);
+  }
+
+  return {
+    orgAccess,
+    projectAccess,
+    projectResource,
+    standingOf,
+    memberOrgIds,
+  };
 }
 
 export type OrgAccessHelpers = ReturnType<typeof createOrgAccess>;

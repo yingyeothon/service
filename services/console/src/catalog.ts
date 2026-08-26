@@ -6,16 +6,13 @@ import {
   type Logger,
 } from "@yyt/core";
 import {
-  CATALOG_PERMISSION_LEVELS,
   CATALOG_PLATFORMS,
   type CatalogAppRow,
   type CatalogArtifactRow,
   type CatalogDb,
-  type CatalogGroupRow,
   type CatalogPendingUploadRow,
-  type CatalogPermissionRow,
   type CatalogPlatform,
-  type ConsoleDb,
+  type OrgDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
@@ -25,7 +22,7 @@ import {
   type ArtifactStore,
 } from "./artifact-store.js";
 import { buildPreview, planDeletions } from "./catalog-cleanup.js";
-import { requireRole, type ConsoleIdentity } from "./identity.js";
+import { requireRole } from "./identity.js";
 import {
   IOS_AD_HOC,
   installUrl,
@@ -33,52 +30,53 @@ import {
   manifestPlist,
   manifestUrlForPackageUrl,
 } from "./ios-dist.js";
+import { INSTALLER_APP_SETTING, resourceName } from "./org.js";
+import type { OrgAccessHelpers, ResourceAccess } from "./org-access.js";
+import {
+  APPS_PER_PROJECT,
+  sameName,
+  type CrumbResolver,
+  type ResourceHistory,
+} from "./resources.js";
 import { notifyNewArtifact } from "./slack.js";
 
-export const INSTALLER_APP_NAME = "installer";
 const INSTALLER_DOWNLOAD_LIMIT = 2;
 /**
- * An app name is the first key segment, so these would collide with prefixes
- * another owner already governs: `uploads` with the catalog staging prefix (the
- * sweep would delete its committed objects) and `assets`/`asset-uploads` with
- * the game-asset resource, whose objects no retention policy may touch.
- * `installer` is served to every member as the official installer, so only
- * admins may claim it.
+ * Legacy object keys start with the app *name*, so these would collide with
+ * prefixes another owner already governs: `uploads` with the catalog staging
+ * prefix (the sweep would delete its committed objects), `assets`/
+ * `asset-uploads` with the game-asset resource, whose objects no retention
+ * policy may touch, and `apps` with the id-based layout every new artifact
+ * uses. Kept until the last `{name}/…` object is gone.
  */
-const FORBIDDEN_APP_NAMES = new Set(["uploads", "assets", "asset-uploads"]);
+const FORBIDDEN_APP_NAMES = new Set([
+  "uploads",
+  "assets",
+  "asset-uploads",
+  "apps",
+]);
 
 // ---- validation ------------------------------------------------------------
 
-/** App/group names become S3 key prefixes and URL path segments. */
-const NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
-const name = z.string().regex(NAME, "letters, digits, ., _, - (max 64)");
+/** App names: the org-unique resource grammar (never id-shaped). */
+const name = resourceName;
 const description = z.string().max(2000);
 const appPath = z.string().trim().min(1).max(200);
 const keepRecent = z.number().int().min(1).max(100);
 
 export const appCreateBody = z
-  .object({
-    name,
-    path: appPath,
-    description: description.optional(),
-    debugOnly: z.boolean().optional(),
-    groupId: z.string().max(64).optional(),
-  })
+  .object({ name, path: appPath, description: description.optional() })
   .strict();
 export const appPatchBody = z
   .object({
     name: name.optional(),
     path: appPath.optional(),
     description: description.nullable().optional(),
-    debugOnly: z.boolean().optional(),
-    groupId: z.string().max(64).nullable().optional(),
-    /** Admin only: transfer ownership to another member. */
-    ownerId: z.string().max(64).optional(),
   })
   .strict();
 export const appSettingsBody = z
   .object({
-    // Host-pinned: a free-form URL would let any app owner aim a blind
+    // Host-pinned: a free-form URL would let any member aim a blind
     // server-side POST (SSRF) at internal hosts via the commit notifier.
     slackHookUrl: z
       .string()
@@ -90,17 +88,6 @@ export const appSettingsBody = z
     slackChannel: z.string().max(100).nullable().optional(),
     messageTemplate: z.string().max(500).nullable().optional(),
     keepRecentVersions: keepRecent.optional(),
-  })
-  .strict();
-export const groupCreateBody = z.object({ name }).strict();
-export const groupPatchBody = z
-  .object({ name: name.optional(), ownerId: z.string().max(64).optional() })
-  .strict();
-export const permissionBody = z
-  .object({
-    /** GitHub login; unknown logins become a pending mapping. */
-    login: z.string().trim().min(1).max(100),
-    level: z.enum(CATALOG_PERMISSION_LEVELS),
   })
   .strict();
 
@@ -213,17 +200,29 @@ function uploadObjectKey(uploadId: string, filename: string): string {
   return `uploads/${uploadId}/${filename}`;
 }
 
-function finalObjectKey(
-  app: CatalogAppRow,
+/**
+ * `apps/{appId}/{uploadId}/{filename}`: id-based, so renaming an app leaves
+ * every stored URL valid, and the **whole** upload id, so two uploads can
+ * never share a key (an 8-hex slice collided often enough to matter).
+ * Rows from before 2026-08-26 keep their `{name}/{short}/{filename}` keys.
+ */
+export function finalObjectKey(
+  app: Pick<CatalogAppRow, "id">,
   uploadId: string,
   filename: string,
-) {
-  return `${app.name}/${uploadId.slice(0, 8)}/${filename}`;
+): string {
+  return `apps/${app.id}/${uploadId}/${filename}`;
 }
 
 export interface CatalogRoutesOptions {
-  db: ConsoleDb;
   catalog: CatalogDb;
+  org: OrgDb;
+  access: Pick<
+    OrgAccessHelpers,
+    "projectAccess" | "projectResource" | "memberOrgIds"
+  >;
+  crumbs: CrumbResolver;
+  history: ResourceHistory;
   /** `undefined` = artifact storage not configured (upload routes answer 503). */
   artifacts?: ArtifactStore;
   /** `https://dev-d.yyt.life` — public CDN in front of the artifact bucket. */
@@ -240,11 +239,12 @@ export interface CatalogRoutesOptions {
   fetchFn?: typeof fetch;
 }
 
-type Access = "edit" | "read";
-
 export function createCatalogRoutes({
-  db,
   catalog,
+  org,
+  access,
+  crumbs,
+  history,
   artifacts,
   cdnBaseUrl,
   clock,
@@ -252,125 +252,117 @@ export function createCatalogRoutes({
   audit,
   fetchFn,
 }: CatalogRoutesOptions): AnyRoute[] {
+  const { projectAccess, projectResource, memberOrgIds } = access;
+
   function requireStore(): ArtifactStore {
     if (!artifacts)
       throw new AppError("unavailable", "artifact storage is not configured");
     return artifacts;
   }
 
-  async function loginsById(): Promise<Map<string, string>> {
-    return new Map((await db.listMembers()).map((m) => [m.id, m.githubLogin]));
+  /**
+   * `/catalog/apps/{app}` takes an id. For **one release** it also takes a
+   * name, resolved among the caller's orgs and only when exactly one app
+   * matches: the installed installer app still addresses artifacts by name
+   * (`docs/decisions.md` *Installer trust*). Remove the fallback in P10.
+   */
+  async function resolveAppId(
+    ctx: Pick<RouteContext, "requireIdentity">,
+    ref: string,
+  ): Promise<string> {
+    if (await catalog.findApp(ref)) return ref;
+    const id = requireRole(ctx, "member");
+    const orgIds = await memberOrgIds(id);
+    if (orgIds.length === 0) return ref;
+    const hits = (await catalog.listApps({ orgIds })).filter((a) =>
+      sameName(a.name, ref),
+    );
+    return hits.length === 1 ? hits[0]!.id : ref;
   }
 
-  async function memberByLogin(login: string) {
-    const l = login.toLowerCase();
-    return (await db.listMembers()).find(
-      (m) => m.githubLogin.toLowerCase() === l,
+  /** The app behind `{app}` plus the caller's standing; 404 hides everything else. */
+  async function appWith(
+    ctx: RouteContext,
+    write: boolean,
+  ): Promise<ResourceAccess<"app">> {
+    const appId = await resolveAppId(ctx, ctx.params.app!);
+    return projectResource(
+      ctx,
+      { kind: "app", id: appId },
+      write ? { secret: true } : {},
     );
   }
 
-  /** Highest access `id` has on `app` (owner/admin = edit), or undefined. */
-  async function appAccess(
-    id: ConsoleIdentity,
+  /** The app an upload belongs to; 404 rather than 403 so ids are not probeable. */
+  async function uploadWith(
+    ctx: RouteContext,
+  ): Promise<ResourceAccess<"app"> & { upload: CatalogPendingUploadRow }> {
+    const upload = await catalog.findPendingUpload(ctx.params.id!);
+    if (!upload) throw new AppError("not_found", "upload not found");
+    try {
+      const a = await projectResource(
+        ctx,
+        { kind: "app", id: upload.appId },
+        { secret: true },
+      );
+      return { ...a, upload };
+    } catch (e) {
+      if (e instanceof AppError && e.code === "not_found")
+        throw new AppError("not_found", "upload not found");
+      throw e;
+    }
+  }
+
+  /** Names are unique within the org (`docs/decisions.md`). */
+  async function requireFreeName(
+    orgId: string,
+    appName: string,
+    exceptId?: string,
+  ): Promise<void> {
+    if (FORBIDDEN_APP_NAMES.has(appName.toLowerCase()))
+      throw new AppError("bad_request", `app name "${appName}" is reserved`);
+    const hit = await catalog.findAppByName(orgId, appName);
+    if (hit && hit.id !== exceptId)
+      throw new AppError(
+        "conflict",
+        `an app named "${appName}" already exists in this organization`,
+      );
+  }
+
+  const appHistory = (
     app: CatalogAppRow,
-  ): Promise<Access | undefined> {
-    if (id.role === "admin" || app.ownerId === id.subject) return "edit";
-    let access: Access | undefined;
-    const ap = await catalog.findAppPermission(app.id, id.subject);
-    if (ap) access = ap.level;
-    if (access !== "edit" && app.groupId) {
-      const g = await catalog.findGroup(app.groupId);
-      if (g?.ownerId === id.subject) return "edit";
-      const gp = await catalog.findGroupPermission(app.groupId, id.subject);
-      if (gp && (gp.level === "edit" || access === undefined))
-        access = gp.level === "edit" ? "edit" : (access ?? gp.level);
-    }
-    return access;
-  }
-
-  function groupAccess(
-    id: ConsoleIdentity,
-    group: CatalogGroupRow,
-    perm: CatalogPermissionRow | undefined,
-  ): Access | undefined {
-    if (id.role === "admin" || group.ownerId === id.subject) return "edit";
-    return perm?.level;
-  }
-
-  /** 404 when the app is missing or invisible; 403 below `min`. */
-  async function appWith(
-    ctx: RouteContext,
-    min: Access,
-    opts: { modifyOnly?: boolean } = {},
-  ): Promise<{ id: ConsoleIdentity; app: CatalogAppRow }> {
-    const id = requireRole(ctx, "member");
-    const app = await catalog.findAppByName(ctx.params.name!);
-    if (!app) throw new AppError("not_found", "app not found");
-    // Owner/admin-only surfaces (settings, cleanup, permissions).
-    if (opts.modifyOnly) {
-      if (id.role !== "admin" && app.ownerId !== id.subject) {
-        if (!(await appAccess(id, app)))
-          throw new AppError("not_found", "app not found");
-        throw new AppError("forbidden", "requires the app owner or an admin");
-      }
-      return { id, app };
-    }
-    const access = await appAccess(id, app);
-    if (!access) throw new AppError("not_found", "app not found");
-    if (min === "edit" && access !== "edit")
-      throw new AppError("forbidden", "requires edit permission");
-    return { id, app };
-  }
-
-  async function groupWith(
-    ctx: RouteContext,
-    min: Access,
-    opts: { modifyOnly?: boolean } = {},
-  ): Promise<{ id: ConsoleIdentity; group: CatalogGroupRow }> {
-    const id = requireRole(ctx, "member");
-    const group = await catalog.findGroup(ctx.params.id!);
-    if (!group) throw new AppError("not_found", "group not found");
-    const perm = await catalog.findGroupPermission(group.id, id.subject);
-    const access = groupAccess(id, group, perm);
-    // Owner/admin-only surfaces: an "edit" group permission is not ownership.
-    if (
-      opts.modifyOnly &&
-      id.role !== "admin" &&
-      group.ownerId !== id.subject
-    ) {
-      if (!access) throw new AppError("not_found", "group not found");
-      throw new AppError("forbidden", "requires the group owner or an admin");
-    }
-    if (!access) throw new AppError("not_found", "group not found");
-    if (min === "edit" && access !== "edit")
-      throw new AppError("forbidden", "requires edit permission");
-    return { id, group };
-  }
+    actorId: string,
+    action: "resource.create" | "resource.update" | "resource.delete",
+    fields?: string[],
+  ) =>
+    history(
+      app.orgId,
+      actorId,
+      action,
+      app.id,
+      {
+        resource: { kind: "app", id: app.id, name: app.name },
+        ...(fields ? { fields } : {}),
+      },
+      nowSec(clock),
+    );
 
   // ---- views ---------------------------------------------------------------
 
-  const groupView = (g: CatalogGroupRow, logins: Map<string, string>) => ({
-    id: g.id,
-    name: g.name,
-    ownerLogin: (g.ownerId && logins.get(g.ownerId)) ?? null,
-    pendingOwnerLogin: g.pendingOwnerLogin,
-    createdAt: g.createdAt,
-    updatedAt: g.updatedAt,
-  });
-
-  const appView = (a: CatalogAppRow, logins: Map<string, string>) => ({
-    id: a.id,
-    name: a.name,
-    path: a.path,
-    debugOnly: a.debugOnly,
-    description: a.description,
-    groupId: a.groupId,
-    ownerLogin: (a.ownerId && logins.get(a.ownerId)) ?? null,
-    pendingOwnerLogin: a.pendingOwnerLogin,
-    createdAt: a.createdAt,
-    updatedAt: a.updatedAt,
-    // Slack settings and retention stay behind /settings (owner/admin only).
-  });
+  async function appViews(rows: CatalogAppRow[]) {
+    const crumb = await crumbs(rows);
+    return rows.map((a) => ({
+      id: a.id,
+      name: a.name,
+      path: a.path,
+      description: a.description,
+      ...crumb(a),
+      createdAt: a.createdAt,
+      updatedAt: a.updatedAt,
+      // Slack settings and retention stay behind /settings (members only).
+    }));
+  }
+  const appView = async (a: CatalogAppRow) => (await appViews([a]))[0]!;
 
   // The hook URL is a bearer credential: always answered with no-store.
   const settingsResult = (a: CatalogAppRow) => ({
@@ -415,18 +407,6 @@ export function createCatalogRoutes({
     };
   }
 
-  const permissionView = (
-    p: CatalogPermissionRow,
-    logins: Map<string, string>,
-  ) => ({
-    id: p.id,
-    login:
-      (p.memberId && logins.get(p.memberId)) ?? p.pendingGithubLogin ?? null,
-    pending: p.memberId === null,
-    level: p.level,
-    createdAt: p.createdAt,
-  });
-
   const uploadView = (u: CatalogPendingUploadRow) => ({
     id: u.id,
     appId: u.appId,
@@ -438,311 +418,118 @@ export function createCatalogRoutes({
     expiresAt: u.expiresAt,
   });
 
-  function requireAllowedAppName(id: ConsoleIdentity, appName: string): void {
-    const lower = appName.toLowerCase();
-    if (FORBIDDEN_APP_NAMES.has(lower))
-      throw new AppError("bad_request", `app name "${appName}" is reserved`);
-    if (lower === INSTALLER_APP_NAME && id.role !== "admin")
-      throw new AppError(
-        "forbidden",
-        `only admins may manage the "${INSTALLER_APP_NAME}" app`,
-      );
-  }
-
-  async function requireGroupAssignable(
-    id: ConsoleIdentity,
-    groupId: string,
-  ): Promise<void> {
-    const group = await catalog.findGroup(groupId);
-    if (!group) throw new AppError("bad_request", "group not found");
-    const perm = await catalog.findGroupPermission(groupId, id.subject);
-    if (!groupAccess(id, group, perm))
-      throw new AppError("bad_request", "group not found");
-  }
-
   // ---- routes --------------------------------------------------------------
 
   return [
-    // ---- groups ------------------------------------------------------------
-    {
-      method: "GET",
-      path: "/catalog/groups",
-      auth: true,
-      handler: async (ctx) => {
-        const id = requireRole(ctx, "member");
-        const logins = await loginsById();
-        let rows = await catalog.listGroups();
-        if (id.role !== "admin") {
-          const mine = await catalog.listMemberPermissions(id.subject);
-          const permitted = new Set(mine.groups.map((p) => p.groupId));
-          rows = rows.filter(
-            (g) => g.ownerId === id.subject || permitted.has(g.id),
-          );
-        }
-        return { groups: rows.map((g) => groupView(g, logins)) };
-      },
-    },
-    defineRoute({
-      method: "POST",
-      path: "/catalog/groups",
-      auth: true,
-      body: groupCreateBody,
-      handler: async (ctx) => {
-        const id = requireRole(ctx, "member");
-        const groupId = `cg_${randomHex(8)}`;
-        await catalog.insertGroup({
-          id: groupId,
-          name: ctx.body.name,
-          ownerId: id.subject,
-          createdAt: nowSec(clock),
-        });
-        await audit(id.subject, "catalog.group.create", groupId);
-        const g = await catalog.findGroup(groupId);
-        if (!g) throw new AppError("unavailable", "group vanished");
-        return {
-          statusCode: 201,
-          headers: { "content-type": "application/json; charset=utf-8" },
-          body: JSON.stringify(groupView(g, await loginsById())),
-        };
-      },
-    }),
-    {
-      method: "GET",
-      path: "/catalog/groups/{id}",
-      auth: true,
-      handler: async (ctx) => {
-        const { group } = await groupWith(ctx, "read");
-        return groupView(group, await loginsById());
-      },
-    },
-    defineRoute({
-      method: "PATCH",
-      path: "/catalog/groups/{id}",
-      auth: true,
-      body: groupPatchBody,
-      handler: async (ctx) => {
-        const { id, group } = await groupWith(ctx, "edit", {
-          modifyOnly: true,
-        });
-        const patch: Parameters<CatalogDb["updateGroup"]>[1] = {};
-        if (ctx.body.name !== undefined) patch.name = ctx.body.name;
-        if (ctx.body.ownerId !== undefined) {
-          if (id.role !== "admin")
-            throw new AppError("forbidden", "only admins transfer ownership");
-          if (!(await db.findMember(ctx.body.ownerId)))
-            throw new AppError("bad_request", "owner member not found");
-          patch.ownerId = ctx.body.ownerId;
-          patch.pendingOwnerLogin = null;
-        }
-        await catalog.updateGroup(group.id, patch, nowSec(clock));
-        await audit(id.subject, "catalog.group.update", group.id, {
-          fields: Object.keys(patch),
-        });
-        const after = (await catalog.findGroup(group.id)) ?? group;
-        return groupView(after, await loginsById());
-      },
-    }),
-    {
-      method: "DELETE",
-      path: "/catalog/groups/{id}",
-      auth: true,
-      handler: async (ctx) => {
-        const { id, group } = await groupWith(ctx, "edit", {
-          modifyOnly: true,
-        });
-        // Apps in the group survive (group_id detaches); artifacts untouched.
-        await catalog.deleteGroup(group.id);
-        await audit(id.subject, "catalog.group.delete", group.id);
-        return undefined;
-      },
-    },
-    {
-      method: "GET",
-      path: "/catalog/groups/{id}/apps",
-      auth: true,
-      handler: async (ctx) => {
-        const { group } = await groupWith(ctx, "read");
-        const logins = await loginsById();
-        return {
-          apps: (await catalog.listApps({ groupId: group.id })).map((a) =>
-            appView(a, logins),
-          ),
-        };
-      },
-    },
-    // ---- group permissions -------------------------------------------------
-    {
-      method: "GET",
-      path: "/catalog/groups/{id}/permissions",
-      auth: true,
-      handler: async (ctx) => {
-        const { group } = await groupWith(ctx, "edit", { modifyOnly: true });
-        const logins = await loginsById();
-        return {
-          permissions: (await catalog.listGroupPermissions(group.id)).map((p) =>
-            permissionView(p, logins),
-          ),
-        };
-      },
-    },
-    defineRoute({
-      method: "POST",
-      path: "/catalog/groups/{id}/permissions",
-      auth: true,
-      body: permissionBody,
-      handler: async (ctx) => {
-        const { id, group } = await groupWith(ctx, "edit", {
-          modifyOnly: true,
-        });
-        const member = await memberByLogin(ctx.body.login);
-        await catalog.upsertGroupPermission(group.id, {
-          id: `cp_${randomHex(8)}`,
-          memberId: member?.id ?? null,
-          pendingGithubLogin: member ? null : ctx.body.login.toLowerCase(),
-          level: ctx.body.level,
-          createdAt: nowSec(clock),
-        });
-        await audit(id.subject, "catalog.group.permission", group.id, {
-          level: ctx.body.level,
-          pending: !member,
-        });
-        const logins = await loginsById();
-        return {
-          permissions: (await catalog.listGroupPermissions(group.id)).map((p) =>
-            permissionView(p, logins),
-          ),
-        };
-      },
-    }),
-    {
-      method: "DELETE",
-      path: "/catalog/groups/{id}/permissions/{pid}",
-      auth: true,
-      handler: async (ctx) => {
-        const { id, group } = await groupWith(ctx, "edit", {
-          modifyOnly: true,
-        });
-        if (!(await catalog.deleteGroupPermission(group.id, ctx.params.pid!)))
-          throw new AppError("not_found", "permission not found");
-        await audit(id.subject, "catalog.group.permission.delete", group.id);
-        return undefined;
-      },
-    },
     // ---- apps --------------------------------------------------------------
     {
       method: "GET",
       path: "/catalog/apps",
       auth: true,
       handler: async (ctx) => {
+        // Every app of every org the caller is seated in, flattened. Also the
+        // list the installed installer reads for one release.
         const id = requireRole(ctx, "member");
-        const logins = await loginsById();
-        let rows = await catalog.listApps();
-        if (id.role !== "admin") {
-          const mine = await catalog.listMemberPermissions(id.subject);
-          const appIds = new Set(mine.apps.map((p) => p.appId));
-          const groupIds = new Set(mine.groups.map((p) => p.groupId));
-          const ownedGroups = new Set(
-            (await catalog.listGroups())
-              .filter((g) => g.ownerId === id.subject)
-              .map((g) => g.id),
-          );
-          rows = rows.filter(
-            (a) =>
-              a.ownerId === id.subject ||
-              appIds.has(a.id) ||
-              (a.groupId !== null &&
-                (groupIds.has(a.groupId) || ownedGroups.has(a.groupId))),
-          );
-        }
-        return { apps: rows.map((a) => appView(a, logins)) };
+        const orgIds = await memberOrgIds(id);
+        if (orgIds.length === 0) return { apps: [] };
+        return { apps: await appViews(await catalog.listApps({ orgIds })) };
+      },
+    },
+    {
+      method: "GET",
+      path: "/projects/{prj}/catalog/apps",
+      auth: true,
+      handler: async (ctx) => {
+        const a = await projectAccess(ctx, ctx.params.prj!);
+        return {
+          apps: await appViews(
+            await catalog.listApps({ projectId: a.project.id }),
+          ),
+        };
       },
     },
     defineRoute({
       method: "POST",
-      path: "/catalog/apps",
+      path: "/projects/{prj}/catalog/apps",
       auth: true,
       body: appCreateBody,
       handler: async (ctx) => {
-        const id = requireRole(ctx, "member");
-        requireAllowedAppName(id, ctx.body.name);
-        if (ctx.body.groupId !== undefined)
-          await requireGroupAssignable(id, ctx.body.groupId);
+        const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
+        if (
+          (await catalog.listApps({ projectId: a.project.id })).length >=
+          APPS_PER_PROJECT
+        )
+          throw new AppError(
+            "conflict",
+            `too many apps (max ${APPS_PER_PROJECT} per project)`,
+          );
+        await requireFreeName(a.org.id, ctx.body.name);
         const appId = `ca_${randomHex(8)}`;
         await catalog.insertApp({
           id: appId,
           name: ctx.body.name,
           path: ctx.body.path,
-          debugOnly: ctx.body.debugOnly ?? false,
           description: ctx.body.description ?? null,
-          groupId: ctx.body.groupId ?? null,
-          ownerId: id.subject,
+          ownerId: a.id.subject,
+          orgId: a.org.id,
+          projectId: a.project.id,
           createdAt: nowSec(clock),
         });
-        await audit(id.subject, "catalog.app.create", appId, {
+        await audit(a.id.subject, "catalog.app.create", appId, {
           name: ctx.body.name,
+          projectId: a.project.id,
         });
-        const a = await catalog.findApp(appId);
-        if (!a) throw new AppError("unavailable", "app vanished");
+        const app = await catalog.findApp(appId);
+        if (!app) throw new AppError("unavailable", "app vanished");
+        await appHistory(app, a.id.subject, "resource.create");
         return {
           statusCode: 201,
           headers: { "content-type": "application/json; charset=utf-8" },
-          body: JSON.stringify(appView(a, await loginsById())),
+          body: JSON.stringify(await appView(app)),
         };
       },
     }),
     {
       method: "GET",
-      path: "/catalog/apps/{name}",
+      path: "/catalog/apps/{app}",
       auth: true,
-      handler: async (ctx) => {
-        const { app } = await appWith(ctx, "read");
-        return appView(app, await loginsById());
-      },
+      handler: async (ctx) => appView((await appWith(ctx, false)).row),
     },
     defineRoute({
       method: "PATCH",
-      path: "/catalog/apps/{name}",
+      path: "/catalog/apps/{app}",
       auth: true,
       body: appPatchBody,
       handler: async (ctx) => {
-        const { id, app } = await appWith(ctx, "edit", { modifyOnly: true });
+        const { id, row: app, org: o } = await appWith(ctx, true);
         const patch: Parameters<CatalogDb["updateApp"]>[1] = {};
-        if (ctx.body.name !== undefined) {
-          requireAllowedAppName(id, ctx.body.name);
+        if (ctx.body.name !== undefined && ctx.body.name !== app.name) {
+          await requireFreeName(o.id, ctx.body.name, app.id);
           patch.name = ctx.body.name;
         }
         if (ctx.body.path !== undefined) patch.path = ctx.body.path;
         if (ctx.body.description !== undefined)
           patch.description = ctx.body.description;
-        if (ctx.body.debugOnly !== undefined)
-          patch.debugOnly = ctx.body.debugOnly;
-        if (ctx.body.groupId !== undefined) {
-          if (ctx.body.groupId !== null)
-            await requireGroupAssignable(id, ctx.body.groupId);
-          patch.groupId = ctx.body.groupId;
-        }
-        if (ctx.body.ownerId !== undefined) {
-          if (id.role !== "admin")
-            throw new AppError("forbidden", "only admins transfer ownership");
-          if (!(await db.findMember(ctx.body.ownerId)))
-            throw new AppError("bad_request", "owner member not found");
-          patch.ownerId = ctx.body.ownerId;
-          patch.pendingOwnerLogin = null;
-        }
         await catalog.updateApp(app.id, patch, nowSec(clock));
         await audit(id.subject, "catalog.app.update", app.id, {
           fields: Object.keys(patch),
         });
+        await appHistory(
+          app,
+          id.subject,
+          "resource.update",
+          Object.keys(patch),
+        );
         const after = (await catalog.findApp(app.id)) ?? app;
-        return appView(after, await loginsById());
+        return appView(after);
       },
     }),
     {
       method: "DELETE",
-      path: "/catalog/apps/{name}",
+      path: "/catalog/apps/{app}",
       auth: true,
       handler: async (ctx) => {
-        const { id, app } = await appWith(ctx, "edit", { modifyOnly: true });
+        const { id, row: app } = await appWith(ctx, true);
         if ((await catalog.listArtifacts(app.id)).length > 0)
           throw new AppError(
             "conflict",
@@ -752,25 +539,23 @@ export function createCatalogRoutes({
         await audit(id.subject, "catalog.app.delete", app.id, {
           name: app.name,
         });
+        await appHistory(app, id.subject, "resource.delete");
         return undefined;
       },
     },
     {
       method: "GET",
-      path: "/catalog/apps/{name}/settings",
+      path: "/catalog/apps/{app}/settings",
       auth: true,
-      handler: async (ctx) => {
-        const { app } = await appWith(ctx, "edit", { modifyOnly: true });
-        return settingsResult(app);
-      },
+      handler: async (ctx) => settingsResult((await appWith(ctx, true)).row),
     },
     defineRoute({
       method: "PATCH",
-      path: "/catalog/apps/{name}/settings",
+      path: "/catalog/apps/{app}/settings",
       auth: true,
       body: appSettingsBody,
       handler: async (ctx) => {
-        const { id, app } = await appWith(ctx, "edit", { modifyOnly: true });
+        const { id, row: app } = await appWith(ctx, true);
         const patch: Parameters<CatalogDb["updateApp"]>[1] = {};
         if (ctx.body.slackHookUrl !== undefined)
           patch.slackHookUrl = ctx.body.slackHookUrl;
@@ -781,76 +566,28 @@ export function createCatalogRoutes({
         if (ctx.body.keepRecentVersions !== undefined)
           patch.keepRecentVersions = ctx.body.keepRecentVersions;
         await catalog.updateApp(app.id, patch, nowSec(clock));
-        // Never log the hook URL itself.
+        // Never log the hook URL itself; history carries field names only.
         await audit(id.subject, "catalog.app.settings", app.id, {
           fields: Object.keys(patch),
         });
+        await appHistory(
+          app,
+          id.subject,
+          "resource.update",
+          Object.keys(patch),
+        );
         const after = (await catalog.findApp(app.id)) ?? app;
         return settingsResult(after);
       },
     }),
-    // ---- app permissions ---------------------------------------------------
-    {
-      method: "GET",
-      path: "/catalog/apps/{name}/permissions",
-      auth: true,
-      handler: async (ctx) => {
-        const { app } = await appWith(ctx, "edit", { modifyOnly: true });
-        const logins = await loginsById();
-        return {
-          permissions: (await catalog.listAppPermissions(app.id)).map((p) =>
-            permissionView(p, logins),
-          ),
-        };
-      },
-    },
-    defineRoute({
-      method: "POST",
-      path: "/catalog/apps/{name}/permissions",
-      auth: true,
-      body: permissionBody,
-      handler: async (ctx) => {
-        const { id, app } = await appWith(ctx, "edit", { modifyOnly: true });
-        const member = await memberByLogin(ctx.body.login);
-        await catalog.upsertAppPermission(app.id, {
-          id: `cp_${randomHex(8)}`,
-          memberId: member?.id ?? null,
-          pendingGithubLogin: member ? null : ctx.body.login.toLowerCase(),
-          level: ctx.body.level,
-          createdAt: nowSec(clock),
-        });
-        await audit(id.subject, "catalog.app.permission", app.id, {
-          level: ctx.body.level,
-          pending: !member,
-        });
-        const logins = await loginsById();
-        return {
-          permissions: (await catalog.listAppPermissions(app.id)).map((p) =>
-            permissionView(p, logins),
-          ),
-        };
-      },
-    }),
-    {
-      method: "DELETE",
-      path: "/catalog/apps/{name}/permissions/{pid}",
-      auth: true,
-      handler: async (ctx) => {
-        const { id, app } = await appWith(ctx, "edit", { modifyOnly: true });
-        if (!(await catalog.deleteAppPermission(app.id, ctx.params.pid!)))
-          throw new AppError("not_found", "permission not found");
-        await audit(id.subject, "catalog.app.permission.delete", app.id);
-        return undefined;
-      },
-    },
     // ---- artifacts ---------------------------------------------------------
     defineRoute({
       method: "GET",
-      path: "/catalog/apps/{name}/artifacts",
+      path: "/catalog/apps/{app}/artifacts",
       auth: true,
       query: artifactsQuery,
       handler: async (ctx) => {
-        const { app } = await appWith(ctx, "read");
+        const { row: app } = await appWith(ctx, false);
         let rows = await catalog.listArtifacts(app.id, {
           platform: ctx.query.platform,
         });
@@ -860,10 +597,10 @@ export function createCatalogRoutes({
     }),
     {
       method: "GET",
-      path: "/catalog/apps/{name}/artifacts/{id}",
+      path: "/catalog/apps/{app}/artifacts/{id}",
       auth: true,
       handler: async (ctx) => {
-        const { app } = await appWith(ctx, "read");
+        const { row: app } = await appWith(ctx, false);
         const a = await catalog.findArtifact(ctx.params.id!);
         if (!a || a.appId !== app.id)
           throw new AppError("not_found", "artifact not found");
@@ -872,11 +609,11 @@ export function createCatalogRoutes({
     },
     defineRoute({
       method: "POST",
-      path: "/catalog/apps/{name}/artifacts",
+      path: "/catalog/apps/{app}/artifacts",
       auth: true,
       body: uploadBody,
       handler: async (ctx) => {
-        const { id, app } = await appWith(ctx, "edit");
+        const { id, row: app } = await appWith(ctx, true);
         const store = requireStore();
         validateUploadMetadata(
           ctx.body.platform,
@@ -927,28 +664,15 @@ export function createCatalogRoutes({
       method: "GET",
       path: "/catalog/uploads/{id}",
       auth: true,
-      handler: async (ctx) => {
-        const id = requireRole(ctx, "member");
-        const upload = await catalog.findPendingUpload(ctx.params.id!);
-        if (!upload) throw new AppError("not_found", "upload not found");
-        const app = await catalog.findApp(upload.appId);
-        if (!app || (await appAccess(id, app)) !== "edit")
-          throw new AppError("not_found", "upload not found");
-        return uploadView(upload);
-      },
+      handler: async (ctx) => uploadView((await uploadWith(ctx)).upload),
     },
     {
       method: "POST",
       path: "/catalog/uploads/{id}/commit",
       auth: true,
       handler: async (ctx) => {
-        const id = requireRole(ctx, "member");
+        const { id, row: app, upload } = await uploadWith(ctx);
         const store = requireStore();
-        const upload = await catalog.findPendingUpload(ctx.params.id!);
-        if (!upload) throw new AppError("not_found", "upload not found");
-        const app = await catalog.findApp(upload.appId);
-        if (!app || (await appAccess(id, app)) !== "edit")
-          throw new AppError("not_found", "upload not found");
         // Idempotent: a duplicate commit returns the existing artifact.
         if (upload.status === "completed" && upload.artifactId) {
           const existing = await catalog.findArtifact(upload.artifactId);
@@ -965,27 +689,14 @@ export function createCatalogRoutes({
         if (obj.contentLength <= 0 || obj.contentLength > ARTIFACT_MAX_BYTES)
           throw new AppError("bad_request", "uploaded file has a bad size");
         const finalKey = finalObjectKey(app, upload.id, upload.filename);
-        await store.copy(stagingKey, finalKey);
         const url = artifactUrl(cdnBaseUrl, finalKey);
         const tags = upload.tags ?? {};
-        let manifest: string | null = null;
-        if (
-          upload.platform === "ios" &&
-          tags.distribution_method === IOS_AD_HOC
-        ) {
-          manifest = manifestKey(finalKey);
-          await store.put(
-            manifest,
-            manifestPlist({
-              packageUrl: url,
-              bundleId: tags.bundle_id ?? "",
-              bundleVersion: tags.build_number ?? "",
-              title: app.name,
-            }),
-            "text/xml",
-          );
-        }
-        const artifactId = `art_${upload.id.slice(0, 8)}`;
+        // The whole upload id: `art_{uploadId}` is a global primary key, and
+        // the key it names carries the same id, so row and object agree.
+        const artifactId = `art_${upload.id}`;
+        // THE ROW IS THE CLAIM, taken before the object is written (the
+        // assets rule, `rules/data.md`): a lost race then cannot overwrite a
+        // live object, and the rollback is a row delete, not an orphan.
         try {
           await catalog.insertArtifact({
             id: artifactId,
@@ -999,23 +710,44 @@ export function createCatalogRoutes({
             createdAt: now,
           });
         } catch (e) {
-          // A concurrent or crashed-then-retried commit of the SAME upload
-          // already inserted this deterministic id: heal instead of rolling
-          // back, which would delete the live object the winner points at.
+          // The id is derived from this upload, so a conflict is our own
+          // earlier attempt that died between the claim and the copy: resume
+          // it below rather than fail. Anything else is a real error.
           const existing = await catalog.findArtifact(artifactId);
-          if (existing && existing.appId === app.id) {
-            await catalog.updatePendingUpload(upload.id, {
-              status: "completed",
-              objectKey: finalKey,
-              etag: obj.etag,
-              artifactId,
-            });
-            return artifactView(existing);
+          if (!existing || existing.appId !== app.id) throw e;
+        }
+        let manifest: string | null = null;
+        try {
+          await store.copy(stagingKey, finalKey);
+          if (
+            upload.platform === "ios" &&
+            tags.distribution_method === IOS_AD_HOC
+          ) {
+            manifest = manifestKey(finalKey);
+            await store.put(
+              manifest,
+              manifestPlist({
+                packageUrl: url,
+                bundleId: tags.bundle_id ?? "",
+                bundleVersion: tags.build_number ?? "",
+                title: app.name,
+              }),
+              "text/xml",
+            );
           }
-          // Genuine failure: roll the copies back to leave no orphan objects.
-          await store.delete(finalKey).catch(() => undefined);
+        } catch (e) {
+          // A storage error is retryable, so the upload stays `pending` and
+          // the same commit can be repeated. The claim is dropped only when
+          // the object really is missing: a copy that succeeded before the
+          // manifest write failed must keep its row, or the object under
+          // `apps/` (which nothing sweeps) would be orphaned.
+          const landed = await store.head(finalKey).catch(() => undefined);
+          if (!landed)
+            await catalog.deleteArtifact(artifactId).catch(() => undefined);
           if (manifest) await store.delete(manifest).catch(() => undefined);
-          throw e;
+          throw new AppError("unavailable", "artifact storage error", {
+            cause: e,
+          });
         }
         await catalog.updatePendingUpload(upload.id, {
           status: "completed",
@@ -1035,10 +767,10 @@ export function createCatalogRoutes({
     },
     {
       method: "DELETE",
-      path: "/catalog/apps/{name}/artifacts/{id}",
+      path: "/catalog/apps/{app}/artifacts/{id}",
       auth: true,
       handler: async (ctx) => {
-        const { id, app } = await appWith(ctx, "edit");
+        const { id, row: app } = await appWith(ctx, true);
         const store = requireStore();
         const a = await catalog.findArtifact(ctx.params.id!);
         if (!a || a.appId !== app.id)
@@ -1055,12 +787,12 @@ export function createCatalogRoutes({
     },
     defineRoute({
       method: "POST",
-      path: "/catalog/apps/{name}/artifacts/cleanup",
+      path: "/catalog/apps/{app}/artifacts/cleanup",
       auth: true,
       query: cleanupQuery,
       handler: async (ctx) => {
-        // Owner/admin only, dry-run included: the preview reveals ids/versions.
-        const { id, app } = await appWith(ctx, "edit", { modifyOnly: true });
+        // Members only, dry-run included: the preview reveals ids/versions.
+        const { id, row: app } = await appWith(ctx, true);
         const store = requireStore();
         const rows = await catalog.listArtifacts(app.id);
         const planned = planDeletions(rows, app.keepRecentVersions);
@@ -1088,8 +820,20 @@ export function createCatalogRoutes({
       auth: true,
       handler: async (ctx) => {
         requireRole(ctx, "member");
-        const app = await catalog.findAppByName(INSTALLER_APP_NAME);
+        // Which app is "the installer" is a platform setting, and it is served
+        // only while its org is admin-locked: every member of that org can push
+        // an APK here, and this route hands it to every device.
+        const s = await org.getSetting(INSTALLER_APP_SETTING);
+        const appId = typeof s?.value === "string" ? s.value : null;
+        const app = appId ? await catalog.findApp(appId) : undefined;
         if (!app) return { downloads: [] };
+        const o = app.orgId ? await org.findOrg(app.orgId) : undefined;
+        if (!o?.adminLocked)
+          throw new AppError(
+            "unavailable",
+            "the installer app's organization is not admin-locked",
+            { details: { reason: "installer_untrusted" } },
+          );
         const rows = (await catalog.listArtifacts(app.id)).slice(
           0,
           INSTALLER_DOWNLOAD_LIMIT,

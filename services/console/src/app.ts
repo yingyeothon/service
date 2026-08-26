@@ -60,13 +60,16 @@ import {
 } from "./channel-doc-key.js";
 import { createGatewayRoutes } from "./gateway.js";
 import { createOrgRoutes } from "./org.js";
+import { createOrgAccess } from "./org-access.js";
+import {
+  CHANNELS_PER_PROJECT,
+  createCrumbResolver,
+  createResourceHistory,
+  sameName,
+} from "./resources.js";
 import type { GithubLogin } from "./github.js";
 import type { PosterStore } from "./poster.js";
-import {
-  createIdentityResolver,
-  requireRole,
-  type ConsoleIdentity,
-} from "./identity.js";
+import { createIdentityResolver, requireRole } from "./identity.js";
 import {
   createSessionStore,
   NONCE_COOKIE,
@@ -137,9 +140,12 @@ const deviceTokenBody = z
 const channelsQuery = z
   .object({
     kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional(),
-    /** admin only: `all` lists every owner's channels. */
+    /** admin only: `all` lists every org's channels. */
     scope: z.enum(["mine", "all"]).optional(),
   })
+  .passthrough();
+const projectChannelsQuery = z
+  .object({ kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional() })
   .passthrough();
 
 export function createConsoleApp({
@@ -223,59 +229,79 @@ export function createConsoleApp({
     // (use /members/{id}/promote) and a demoted admin stays demoted.
     const role: Role = (await db.findMember(memberId))?.role ?? "pending";
     if (created) await audit(memberId, "member.signup", memberId, { role });
-    // Claim catalog rows imported for this GitHub login before signup.
-    try {
-      const claimed = await catalog.resolvePendingLogin(user.login, memberId);
-      if (claimed > 0)
-        await audit(memberId, "catalog.pending.claim", memberId, { claimed });
-    } catch (e) {
-      // Login must not fail on a catalog hiccup; the next login retries.
-      logger.error("catalog pending claim failed", {
-        memberId,
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
     return { memberId, role, created };
   }
 
-  const view = (row: ChannelRow) =>
-    channelView(row, urls, nowSec(clock), stage);
+  const access = createOrgAccess({ db, org, catalog, assets });
+  const { projectAccess, projectResource, memberOrgIds } = access;
+  const history = createResourceHistory(org, logger);
+  const crumbs = createCrumbResolver({ db, org });
+
+  /** The list/get shape: never `secret_json`, plus breadcrumb names. */
+  async function views(rows: ChannelRow[]) {
+    const crumb = await crumbs(rows);
+    const now = nowSec(clock);
+    return rows.map((row) => ({
+      ...channelView(row, urls, now, stage),
+      ...crumb(row),
+    }));
+  }
+  const view = async (row: ChannelRow) => (await views([row]))[0]!;
+
+  /** One org-history row per channel write, best-effort (`rules/data.md`). */
+  const channelHistory = (
+    row: Pick<ChannelRow, "id" | "kind" | "name" | "orgId">,
+    actorId: string,
+    action:
+      | "resource.create"
+      | "resource.update"
+      | "resource.delete"
+      | "resource.rotate",
+    fields?: string[],
+  ) =>
+    history(
+      row.orgId,
+      actorId,
+      action,
+      row.id,
+      {
+        resource: { kind: `channel:${row.kind}`, id: row.id, name: row.name },
+        ...(fields ? { fields } : {}),
+      },
+      nowSec(clock),
+    );
 
   /**
-   * Owner (or admin when `adminToo`); 404 otherwise so other owners' ids are
-   * not revealed. Admins may view/extend/delete but never read or change
-   * secrets (docs/decisions.md "Console permission model").
+   * topic/match/lobby/q must point at an auth channel **in the same project**
+   * (`docs/decisions.md` *Console permission model*; the former admin
+   * exception is withdrawn). 400 rather than 404: the caller already proved
+   * membership of the project, so naming a wrong id reveals nothing.
    */
-  async function ownedChannel(
-    ctx: Pick<RouteContext, "requireIdentity" | "params">,
-    adminToo = true,
-  ): Promise<{ id: ConsoleIdentity; row: ChannelRow }> {
-    const id = requireRole(ctx, "member");
-    const row = await db.findChannelRow(ctx.params.id!);
-    if (
-      !row ||
-      (row.ownerId !== id.subject && !(adminToo && id.role === "admin"))
-    )
-      throw new AppError("not_found", "channel not found");
-    return { id, row };
-  }
-
-  /** topic/match must point at an auth channel the caller owns (admins: any). */
   async function requireAuthChannel(
-    id: ConsoleIdentity,
+    projectId: string,
     config: unknown,
   ): Promise<void> {
     const authId = (config as { authChannelId?: string }).authChannelId;
     if (!authId) return;
     const row = await db.findChannelRow(authId);
-    if (
-      !row ||
-      row.kind !== "auth" ||
-      (row.ownerId !== id.subject && id.role !== "admin")
-    )
+    if (!row || row.kind !== "auth" || row.projectId !== projectId)
       throw new AppError(
         "bad_request",
-        "authChannelId is not your auth channel",
+        "authChannelId is not an auth channel of this project",
+      );
+  }
+
+  /** Names are unique within the org across every kind (`docs/decisions.md`). */
+  async function requireFreeChannelName(
+    orgId: string,
+    name: string,
+    exceptId?: string,
+  ): Promise<void> {
+    const rows = await db.listChannels({ orgId });
+    if (rows.some((c) => c.id !== exceptId && sameName(c.name, name)))
+      throw new AppError(
+        "conflict",
+        `a channel named "${name}" already exists in this organization`,
       );
   }
 
@@ -650,29 +676,57 @@ export function createConsoleApp({
         const all = ctx.query.scope === "all";
         if (all && id.role !== "admin")
           throw new AppError("forbidden", "scope=all requires admin");
+        // "Mine" = every org the caller is seated in; an unmapped legacy row
+        // (no org) is visible to admins only, through `scope=all`.
+        const orgIds = all ? undefined : await memberOrgIds(id);
+        if (orgIds && orgIds.length === 0) return { channels: [] };
+        const rows = await db.listChannels({ kind: ctx.query.kind, orgIds });
+        return { channels: await views(rows) };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/projects/{prj}/channels",
+      auth: true,
+      query: projectChannelsQuery,
+      handler: async (ctx) => {
+        const a = await projectAccess(ctx, ctx.params.prj!);
         const rows = await db.listChannels({
           kind: ctx.query.kind,
-          ownerId: all ? undefined : id.subject,
+          projectId: a.project.id,
         });
-        return { channels: rows.map(view) };
+        return { channels: await views(rows) };
       },
     }),
     defineRoute({
       method: "POST",
-      path: "/channels",
+      path: "/projects/{prj}/channels",
       auth: true,
       body: createBody,
       handler: async (ctx) => {
-        const id = requireRole(ctx, "member");
+        // `secret: true`: creation reveals the secret, so no admin override.
+        const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
         const { kind, name, config } = ctx.body;
+        if (
+          (await db.listChannels({ projectId: a.project.id })).length >=
+          CHANNELS_PER_PROJECT
+        )
+          throw new AppError(
+            "conflict",
+            `too many channels (max ${CHANNELS_PER_PROJECT} per project)`,
+          );
+        await requireFreeChannelName(a.org.id, name);
         const split = buildChannel(kind, config, channelOptions);
-        if (kind !== "auth") await requireAuthChannel(id, split.config);
+        if (kind !== "auth")
+          await requireAuthChannel(a.project.id, split.config);
         const now = nowSec(clock);
         const channelId = newChannelId(kind);
         await db.insertChannel({
           id: channelId,
           kind,
-          ownerId: id.subject,
+          ownerId: a.id.subject,
+          orgId: a.org.id,
+          projectId: a.project.id,
           name,
           config: split.config,
           secret: split.secret,
@@ -681,7 +735,11 @@ export function createConsoleApp({
         });
         const row = await db.findChannelRow(channelId);
         if (!row) throw new AppError("unavailable", "channel vanished");
-        await audit(id.subject, "channel.create", channelId, { kind });
+        await audit(a.id.subject, "channel.create", channelId, {
+          kind,
+          projectId: a.project.id,
+        });
+        await channelHistory(row, a.id.subject, "resource.create");
         const shown =
           kind === "auth"
             ? { secret: (split.secret as { secret: string }).secret }
@@ -695,7 +753,7 @@ export function createConsoleApp({
             "content-type": "application/json; charset=utf-8",
             "cache-control": "no-store",
           },
-          body: JSON.stringify({ ...view(row), ...shown }),
+          body: JSON.stringify({ ...(await view(row)), ...shown }),
         } satisfies HttpResult;
       },
     }),
@@ -703,7 +761,11 @@ export function createConsoleApp({
       method: "GET",
       path: "/channels/{id}",
       auth: true,
-      handler: async (ctx) => view((await ownedChannel(ctx)).row),
+      handler: async (ctx) =>
+        view(
+          (await projectResource(ctx, { kind: "channel", id: ctx.params.id! }))
+            .row,
+        ),
     },
     defineRoute({
       method: "PATCH",
@@ -711,13 +773,26 @@ export function createConsoleApp({
       auth: true,
       body: patchBody,
       handler: async (ctx) => {
-        // Config carries provider secrets: owner only.
-        const { id, row } = await ownedChannel(ctx, false);
+        // Config carries provider secrets: members only, never the admin override.
+        const {
+          id,
+          row,
+          org: o,
+          project,
+        } = await projectResource(
+          ctx,
+          { kind: "channel", id: ctx.params.id! },
+          { secret: true },
+        );
         const patch: Parameters<ConsoleDb["updateChannel"]>[1] = {};
-        if (ctx.body.name !== undefined) patch.name = ctx.body.name;
+        if (ctx.body.name !== undefined && ctx.body.name !== row.name) {
+          await requireFreeChannelName(o.id, ctx.body.name, row.id);
+          patch.name = ctx.body.name;
+        }
         if (ctx.body.config !== undefined) {
           const split = patchChannel(row, ctx.body.config, channelOptions);
-          if (row.kind !== "auth") await requireAuthChannel(id, split.config);
+          if (row.kind !== "auth")
+            await requireAuthChannel(project.id, split.config);
           patch.config = split.config;
           patch.secret = split.secret;
         }
@@ -726,6 +801,12 @@ export function createConsoleApp({
         await audit(id.subject, "channel.update", row.id, {
           fields: Object.keys(patch),
         });
+        await channelHistory(
+          row,
+          id.subject,
+          "resource.update",
+          Object.keys(patch),
+        );
         const after = await db.findChannelRow(row.id);
         return after && view(after);
       },
@@ -735,7 +816,10 @@ export function createConsoleApp({
       path: "/channels/{id}/extend",
       auth: true,
       handler: async (ctx) => {
-        const { id, row } = await ownedChannel(ctx);
+        const { id, row } = await projectResource(ctx, {
+          kind: "channel",
+          id: ctx.params.id!,
+        });
         const now = nowSec(clock);
         const from = Math.max(row.expiresAt, now);
         const expiresAt = Math.min(
@@ -748,6 +832,7 @@ export function createConsoleApp({
         // 30-day deletion, after which it is gone for good).
         await db.updateChannel(row.id, { expiresAt, disabledAt: null });
         await audit(id.subject, "channel.extend", row.id, { expiresAt });
+        await channelHistory(row, id.subject, "resource.update", ["expiresAt"]);
         return view({ ...row, expiresAt, disabledAt: null });
       },
     },
@@ -756,17 +841,22 @@ export function createConsoleApp({
       path: "/channels/{id}/rotate-secret",
       auth: true,
       handler: async (ctx) => {
-        const { id, row } = await ownedChannel(ctx, false);
+        const { id, row } = await projectResource(
+          ctx,
+          { kind: "channel", id: ctx.params.id! },
+          { secret: true },
+        );
         const { secret, shown } = rotateSecret(row);
         await db.updateChannel(row.id, { secret });
         await audit(id.subject, "channel.rotate", row.id);
+        await channelHistory(row, id.subject, "resource.rotate");
         return {
           statusCode: 200,
           headers: {
             "content-type": "application/json; charset=utf-8",
             "cache-control": "no-store",
           },
-          body: JSON.stringify({ ...view(row), ...shown }),
+          body: JSON.stringify({ ...(await view(row)), ...shown }),
         } satisfies HttpResult;
       },
     },
@@ -775,7 +865,10 @@ export function createConsoleApp({
       path: "/channels/{id}",
       auth: true,
       handler: async (ctx) => {
-        const { id, row } = await ownedChannel(ctx);
+        const { id, row } = await projectResource(ctx, {
+          kind: "channel",
+          id: ctx.params.id!,
+        });
         const now = nowSec(clock);
         // Secrets go with the row: a soft-deleted channel must not keep a usable key.
         await db.updateChannel(row.id, {
@@ -793,6 +886,7 @@ export function createConsoleApp({
         if (row.kind === "auth" && state)
           await deleteChannelDocs(state, row.id, logger);
         await audit(id.subject, "channel.delete", row.id);
+        await channelHistory(row, id.subject, "resource.delete");
         return undefined;
       },
     },
@@ -817,26 +911,33 @@ export function createConsoleApp({
   });
 
   const channelRedisRoutes = createChannelRedisRoutes({
-    db,
+    access,
     admin: redisAcl,
     kv,
     endpoint: redisEndpoint,
     stage,
     clock,
     audit,
+    history,
   });
 
   const channelDocKeyRoutes = createChannelDocKeyRoutes({
+    access,
     db,
     state,
     docUrl: urls.doc,
     clock,
     audit,
+    history,
   });
 
   const assetRoutes = createAssetRoutes({
     db,
     assets,
+    org,
+    access,
+    crumbs,
+    history,
     artifacts,
     cdnBaseUrl: cdn,
     clock,
@@ -855,8 +956,11 @@ export function createConsoleApp({
   });
 
   const catalogRoutes = createCatalogRoutes({
-    db,
     catalog,
+    org,
+    access,
+    crumbs,
+    history,
     artifacts,
     cdnBaseUrl: cdn,
     clock,

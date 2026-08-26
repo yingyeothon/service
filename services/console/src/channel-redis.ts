@@ -1,23 +1,26 @@
 import { AppError, nowSec, type Clock, type Logger } from "@yyt/core";
-import type { ChannelRow, ConsoleDb } from "@yyt/console-db";
+import type { ChannelRow } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import { channelStatus, gatewayRedis } from "./channels.js";
-import { requireRole, type ConsoleIdentity } from "./identity.js";
+import type { ConsoleIdentity } from "./identity.js";
+import type { OrgAccessHelpers } from "./org-access.js";
+import type { ResourceHistory } from "./resources.js";
 
 /**
- * One issue per member per this many seconds. Every `POST` runs `ACL SETUSER`
- * **and `ACL SAVE`**, and `ACL SAVE` rewrites the whole `aclfile` on Redis'
- * single main thread — on the box that serves auth, topic, match and console
- * across both stages. Without a limit, any member owning one `q` channel can
- * loop this route and turn a channel-owner credential into a noisy neighbour
- * for every other service. Issuing is a once-per-team action, so a cooldown
- * this short is invisible to real use.
+ * One issue per member **and per channel** per this many seconds. Every
+ * `POST` runs `ACL SETUSER` **and `ACL SAVE`**, and `ACL SAVE` rewrites the
+ * whole `aclfile` on Redis' single main thread — on the box that serves auth,
+ * topic, match and console across both stages. Without a limit, any member of
+ * an org holding one `q` channel can loop this route and turn a member-level
+ * credential into a noisy neighbour for every other service; the per-channel
+ * half closes the "N members each issue once" variant. Issuing is a
+ * once-per-team action, so a cooldown this short is invisible to real use.
  */
 export const REDIS_ISSUE_COOLDOWN_SEC = 10;
 
 export interface ChannelRedisRoutesOptions {
-  db: ConsoleDb;
+  access: Pick<OrgAccessHelpers, "projectResource">;
   /** `undefined` = the stage has no issuer account; the routes answer 503. */
   admin?: RedisAclAdmin;
   /** Backs the per-member issue cooldown. */
@@ -33,6 +36,7 @@ export interface ChannelRedisRoutesOptions {
     target: string | null,
     detail?: unknown,
   ) => Promise<void>;
+  history: ResourceHistory;
 }
 
 /**
@@ -70,13 +74,14 @@ export function channelRedisBlock(
  * "issue again", never "read it back".
  */
 export function createChannelRedisRoutes({
-  db,
+  access,
   admin,
   kv,
   endpoint,
   stage,
   clock,
   audit,
+  history,
 }: ChannelRedisRoutesOptions): AnyRoute[] {
   function requireAdmin(): RedisAclAdmin {
     if (!admin)
@@ -93,22 +98,35 @@ export function createChannelRedisRoutes({
   }
 
   /**
-   * `q` only, and only the owner may mint (admins may look, like every other
-   * secret-shaped surface — `docs/decisions.md` "Console permission model").
-   * A non-`q` channel is 404 rather than 400: this must not become a way to
-   * probe which ids exist under another kind.
+   * `q` only, and only an org member may mint (an admin without a membership
+   * may look, like every other secret-shaped surface — `docs/decisions.md`
+   * "Console permission model"). A non-`q` channel is 404 rather than 400:
+   * this must not become a way to probe which ids exist under another kind.
    */
   async function qChannel(
     ctx: Pick<RouteContext, "requireIdentity" | "params">,
     write: boolean,
   ): Promise<{ id: ConsoleIdentity; row: ChannelRow }> {
-    const id = requireRole(ctx, "member");
-    const row = await db.findChannelRow(ctx.params.id ?? "");
-    const mine = row?.ownerId === id.subject;
-    if (!row || row.kind !== "q" || !(mine || (!write && id.role === "admin")))
-      throw new AppError("not_found", "channel not found");
+    const { id, row } = await access.projectResource(
+      ctx,
+      { kind: "channel", id: ctx.params.id ?? "" },
+      write ? { secret: true } : {},
+    );
+    if (row.kind !== "q") throw new AppError("not_found", "channel not found");
     return { id, row };
   }
+  const credentialHistory = (row: ChannelRow, actorId: string, what: string) =>
+    history(
+      row.orgId,
+      actorId,
+      "resource.credential",
+      row.id,
+      {
+        resource: { kind: "channel:q", id: row.id, name: row.name },
+        fields: [what],
+      },
+      nowSec(clock),
+    );
 
   return [
     defineRoute({
@@ -144,17 +162,33 @@ export function createChannelRedisRoutes({
           throw new AppError("conflict", `channel is ${status}`);
         const issuer = requireAdmin();
         // Taken before the work, so a caller that hammers the route is stopped
-        // before it reaches `ACL SAVE` rather than after.
-        const fresh = await kv.set(
-          `aclissue:${id.subject}`,
-          String(nowSec(clock)),
-          { nx: true, ex: REDIS_ISSUE_COOLDOWN_SEC },
-        );
-        if (!fresh)
-          throw new AppError(
+        // before it reaches `ACL SAVE` rather than after. Two keys: the channel
+        // (many members, one channel) and the member (one person, many
+        // channels) — every org member may mint, so either alone leaves a loop.
+        // Channel first, and the member key is released if the channel one
+        // was the blocker: otherwise a teammate probing a just-issued channel
+        // would lock themselves out of every other channel for 10 s.
+        const limited = () =>
+          new AppError(
             "rate_limited",
             `wait ${REDIS_ISSUE_COOLDOWN_SEC}s between credential issues`,
           );
+        const chKey = `aclissue:ch:${row.id}`;
+        const memberKey = `aclissue:${id.subject}`;
+        const at = String(nowSec(clock));
+        if (
+          !(await kv.set(chKey, at, { nx: true, ex: REDIS_ISSUE_COOLDOWN_SEC }))
+        )
+          throw limited();
+        if (
+          !(await kv.set(memberKey, at, {
+            nx: true,
+            ex: REDIS_ISSUE_COOLDOWN_SEC,
+          }))
+        ) {
+          await kv.del(chKey);
+          throw limited();
+        }
         const gw = gatewayRedis(row.id, stage);
         const { password, persisted } = await issuer.issue({
           username: gw.aclUsername,
@@ -166,6 +200,7 @@ export function createChannelRedisRoutes({
           username: gw.aclUsername,
           ...(persisted ? {} : { persisted: false }),
         });
+        await credentialHistory(row, id.subject, "redis.issue");
         return {
           statusCode: 200,
           headers: {
@@ -193,10 +228,12 @@ export function createChannelRedisRoutes({
         const { id, row } = await qChannel(ctx, true);
         const gw = gatewayRedis(row.id, stage);
         const revoked = await requireAdmin().revoke(gw.aclUsername);
-        if (revoked)
+        if (revoked) {
           await audit(id.subject, "channel.redis.revoke", row.id, {
             username: gw.aclUsername,
           });
+          await credentialHistory(row, id.subject, "redis.revoke");
+        }
         return { revoked };
       },
     }),

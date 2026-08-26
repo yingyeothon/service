@@ -5,6 +5,8 @@
 // and watch a short-lived topic expire.
 // Usage: scripts/smoke/topic.mjs <topicHttpUrl> <debugKey> <authBaseUrl> <consoleBaseUrl>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
+import { ensureTeam } from "./_org.mjs";
+
 const [topicBase, debugKey, authBase, consoleBase] = process.argv.slice(2);
 if (!topicBase || !debugKey || !authBase || !consoleBase) {
   console.error(
@@ -31,11 +33,19 @@ const json = async (url, { method = "GET", headers = {}, body } = {}) => {
 const dbg = { "x-debug-key": debugKey };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 1. auth channel + tokens
+// 1. console login + a project of our own, then the auth channel seeded into it
+const login = await json(`${consoleBase}/debug/login`, {
+  method: "POST",
+  headers: dbg,
+  body: { login: "smoke-topic-admin", githubId: -1005, role: "admin" },
+});
+check("console debug login", login.status === 200);
+const cookie = { cookie: login.body?.cookie, origin: consoleBase };
+const team = await ensureTeam(json, consoleBase, cookie, "smoke-topic", check);
 const seeded = await json(`${authBase}/debug/channels`, {
   method: "POST",
   headers: dbg,
-  body: { audience: "topic-smoke" },
+  body: { audience: "topic-smoke", projectId: team.prjId },
 });
 check("seed auth channel", seeded.status === 200, seeded.body?.channelId);
 const authId = seeded.body.channelId;
@@ -48,18 +58,15 @@ const mint = async (userId) =>
     })
   ).body?.jwt;
 
-// 2. topic channel via console (admin may reference any auth channel)
-const login = await json(`${consoleBase}/debug/login`, {
-  method: "POST",
-  headers: dbg,
-  body: { login: "smoke-topic-admin", githubId: -1005, role: "admin" },
-});
-check("console debug login", login.status === 200);
-const cookie = { cookie: login.body?.cookie, origin: consoleBase };
-const ch = await json(`${consoleBase}/channels`, {
+// 2. topic channel in the same project
+const ch = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: cookie,
-  body: { kind: "topic", name: "smoke", config: { authChannelId: authId } },
+  body: {
+    kind: "topic",
+    name: `smoke-${Date.now().toString(36)}`,
+    config: { authChannelId: authId },
+  },
 });
 check(
   "create topic channel",

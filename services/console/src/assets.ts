@@ -11,6 +11,7 @@ import type {
   AssetsDb,
   AssetUploadRow,
   ConsoleDb,
+  OrgDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
@@ -19,7 +20,14 @@ import {
   type ArtifactStore,
 } from "./artifact-store.js";
 import { artifactUrl } from "./catalog.js";
-import { requireRole, type ConsoleIdentity } from "./identity.js";
+import { requireRole } from "./identity.js";
+import type { OrgAccessHelpers, ResourceAccess } from "./org-access.js";
+import { resourceName } from "./org.js";
+import {
+  BUNDLES_PER_PROJECT,
+  type CrumbResolver,
+  type ResourceHistory,
+} from "./resources.js";
 
 /** Committed asset objects; never touched by the catalog retention sweep. */
 export const ASSET_KEY_PREFIX = "assets/";
@@ -39,8 +47,8 @@ export const ASSET_MAX_BUNDLE_BYTES = 20 * 1024 * 1024;
 export const ASSET_MAX_FILES_PER_VERSION = 200;
 /** Per bundle. Bytes alone bound cost, not row count: 1-byte files are legal. */
 export const ASSET_MAX_VERSIONS = 50;
-/** Per member (admins exempt). Without it, N bundles x 20 MB bounds nothing. */
-export const ASSET_MAX_BUNDLES_PER_OWNER = 20;
+/** Per project (`resources.ts`); re-exported under the name the tests use. */
+export const ASSET_MAX_BUNDLES_PER_PROJECT = BUNDLES_PER_PROJECT;
 
 /**
  * Extension → `Content-Type`, signed into the presigned PUT. The caller never
@@ -64,18 +72,20 @@ export const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".csv": "text/csv; charset=utf-8",
 };
 
-/** Bundle names and versions become object-key and URL path segments. */
+/** Versions become object-key and URL path segments. */
 const SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 /**
  * No dot: the bundle name is also a SPA route segment (`/ui/assets/{name}`) and
  * CloudFront's SPA rewrite treats any last-segment dot as a static file, so
  * `maps.v2` would resolve against the SPA's own `ui/assets/` chunk directory
- * instead of rendering the page.
+ * instead of rendering the page. On top of that, the org-unique resource rule
+ * (never id-shaped).
  */
 const BUNDLE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
-const bundleName = z
-  .string()
-  .regex(BUNDLE_NAME, "letters, digits, _, - (max 64)");
+const bundleName = resourceName.refine(
+  (s) => BUNDLE_NAME.test(s),
+  "letters, digits, _, - (max 64)",
+);
 const version = z.string().regex(SEGMENT, "letters, digits, ., _, - (max 64)");
 const description = z.string().max(2000);
 
@@ -106,8 +116,6 @@ export const bundlePatchBody = z
   .object({
     name: bundleName.optional(),
     description: description.nullable().optional(),
-    /** Admin only: transfer ownership to another member. */
-    ownerId: z.string().max(64).optional(),
   })
   .strict();
 export const assetUploadBody = z
@@ -127,17 +135,50 @@ export function assetStagingKey(uploadId: string, path: string): string {
   return `${ASSET_UPLOAD_KEY_PREFIX}${uploadId}/${path}`;
 }
 
+/**
+ * `assets/{bundleId}/{version}/{path}`: id-based since 2026-08-26, so a bundle
+ * can be renamed while it holds files. Rows committed before that keep their
+ * `assets/{name}/…` keys, which is why reference checks derive prefixes from
+ * the stored `object_key`s rather than from the current name.
+ */
 export function assetObjectKey(
-  bundle: Pick<AssetBundleRow, "name">,
+  bundle: Pick<AssetBundleRow, "id">,
   v: string,
   path: string,
 ): string {
-  return `${ASSET_KEY_PREFIX}${bundle.name}/${v}/${path}`;
+  return `${ASSET_KEY_PREFIX}${bundle.id}/${v}/${path}`;
+}
+
+/** `assets/{x}/{version}/` for each distinct `{x}` the files were stored under. */
+export function versionPrefixes(files: Pick<AssetFileRow, "objectKey">[]) {
+  const out = new Set<string>();
+  for (const f of files) {
+    const parts = f.objectKey.split("/");
+    if (parts.length >= 3) out.add(`${parts[0]}/${parts[1]}/${parts[2]}/`);
+  }
+  return [...out];
+}
+
+/** `assets/{x}/` for each distinct `{x}` the files were stored under. */
+export function bundlePrefixes(files: Pick<AssetFileRow, "objectKey">[]) {
+  const out = new Set<string>();
+  for (const f of files) {
+    const parts = f.objectKey.split("/");
+    if (parts.length >= 2) out.add(`${parts[0]}/${parts[1]}/`);
+  }
+  return [...out];
 }
 
 export interface AssetRoutesOptions {
   db: ConsoleDb;
   assets: AssetsDb;
+  org: OrgDb;
+  access: Pick<
+    OrgAccessHelpers,
+    "projectAccess" | "projectResource" | "memberOrgIds"
+  >;
+  crumbs: CrumbResolver;
+  history: ResourceHistory;
   /** `undefined` = artifact storage not configured (upload routes answer 503). */
   artifacts?: ArtifactStore;
   /** `https://dev-d.yyt.life` — public CDN in front of the artifact bucket. */
@@ -155,65 +196,106 @@ export interface AssetRoutesOptions {
 export function createAssetRoutes({
   db,
   assets,
+  org,
+  access,
+  crumbs,
+  history,
   artifacts,
   cdnBaseUrl,
   clock,
   logger,
   audit,
 }: AssetRoutesOptions): AnyRoute[] {
+  const { projectAccess, projectResource, memberOrgIds } = access;
+
   function requireStore(): ArtifactStore {
     if (!artifacts)
       throw new AppError("unavailable", "artifact storage is not configured");
     return artifacts;
   }
 
-  async function loginsById(): Promise<Map<string, string>> {
-    return new Map((await db.listMembers()).map((m) => [m.id, m.githubLogin]));
-  }
-
   /**
    * Asset **content** is public (the CDN serves it unauthenticated, which is
    * the point — a game client holds no GitHub account). The management API is
-   * not: every member may read it, only the bundle owner or an admin may
-   * write. That is the whole permission model — deliberately not the catalog's
-   * per-app/per-group grid, which is what made assets a separate resource.
+   * not: every member of the bundle's org reads and writes it; a platform
+   * admin without a membership may read (`docs/decisions.md` *Organizations
+   * and projects*).
    */
   async function bundleWith(
     ctx: RouteContext,
     write: boolean,
-  ): Promise<{ id: ConsoleIdentity; bundle: AssetBundleRow }> {
-    const id = requireRole(ctx, "member");
-    const bundle = await assets.findBundleByName(ctx.params.name!);
-    if (!bundle) throw new AppError("not_found", "asset bundle not found");
-    if (write && id.role !== "admin" && bundle.ownerId !== id.subject)
-      throw new AppError("forbidden", "requires the bundle owner or an admin");
-    return { id, bundle };
+  ): Promise<ResourceAccess<"bundle">> {
+    return projectResource(
+      ctx,
+      { kind: "bundle", id: ctx.params.bundle! },
+      write ? { secret: true } : {},
+    );
   }
 
-  async function uploadWith(ctx: RouteContext): Promise<{
-    id: ConsoleIdentity;
-    upload: AssetUploadRow;
-    bundle: AssetBundleRow;
-  }> {
-    const id = requireRole(ctx, "member");
+  /** 404 rather than 403: an upload id must not be distinguishable from one that never existed. */
+  async function uploadWith(
+    ctx: RouteContext,
+  ): Promise<ResourceAccess<"bundle"> & { upload: AssetUploadRow }> {
     const upload = await assets.findUpload(ctx.params.id!);
     if (!upload) throw new AppError("not_found", "upload not found");
-    const bundle = await assets.findBundle(upload.bundleId);
-    // 404 rather than 403: an upload id belonging to someone else's bundle
-    // must not be distinguishable from one that never existed.
-    if (!bundle || (id.role !== "admin" && bundle.ownerId !== id.subject))
-      throw new AppError("not_found", "upload not found");
-    return { id, upload, bundle };
+    try {
+      const a = await projectResource(
+        ctx,
+        { kind: "bundle", id: upload.bundleId },
+        { secret: true },
+      );
+      return { ...a, upload };
+    } catch (e) {
+      if (e instanceof AppError && e.code === "not_found")
+        throw new AppError("not_found", "upload not found");
+      throw e;
+    }
   }
 
-  const bundleView = (b: AssetBundleRow, logins: Map<string, string>) => ({
-    id: b.id,
-    name: b.name,
-    description: b.description,
-    ownerLogin: (b.ownerId && logins.get(b.ownerId)) ?? null,
-    createdAt: b.createdAt,
-    updatedAt: b.updatedAt,
-  });
+  /** Names are unique within the org across every kind (`docs/decisions.md`). */
+  async function requireFreeName(
+    orgId: string,
+    name: string,
+    exceptId?: string,
+  ): Promise<void> {
+    const hit = await assets.findBundleByName(orgId, name);
+    if (hit && hit.id !== exceptId)
+      throw new AppError(
+        "conflict",
+        `a bundle named "${name}" already exists in this organization`,
+      );
+  }
+
+  const bundleHistory = (
+    b: AssetBundleRow,
+    actorId: string,
+    action: "resource.create" | "resource.update" | "resource.delete",
+    fields?: string[],
+  ) =>
+    history(
+      b.orgId,
+      actorId,
+      action,
+      b.id,
+      {
+        resource: { kind: "bundle", id: b.id, name: b.name },
+        ...(fields ? { fields } : {}),
+      },
+      nowSec(clock),
+    );
+
+  async function bundleViews(rows: AssetBundleRow[]) {
+    const crumb = await crumbs(rows);
+    return rows.map((b) => ({
+      id: b.id,
+      name: b.name,
+      description: b.description,
+      ...crumb(b),
+      createdAt: b.createdAt,
+      updatedAt: b.updatedAt,
+    }));
+  }
+  const bundleView = async (b: AssetBundleRow) => (await bundleViews([b]))[0]!;
 
   const fileView = (f: AssetFileRow) => ({
     id: f.id,
@@ -322,14 +404,23 @@ export function createAssetRoutes({
   }
 
   /**
-   * Lobby channels whose `mapUrl` points inside `prefix`. Deleting what a
-   * channel still serves is not a degraded game but one that cannot load at
-   * all, and the URL is cached `immutable`, so this is checked before the
-   * delete rather than repaired after it.
+   * Lobby channels whose `mapUrl` points inside any of `prefixes`. Deleting
+   * what a channel still serves is not a degraded game but one that cannot
+   * load at all, and the URL is cached `immutable`, so this is checked before
+   * the delete rather than repaired after it. The scan is **global** — the
+   * CDN is public, so another org pointing at these files is legitimate —
+   * but the ids named in the 409 are only those the caller can see.
    */
-  async function referencingChannels(prefix: string): Promise<string[]> {
+  async function referencingChannels(
+    prefixes: string[],
+    visibleOrgId: string | null,
+  ): Promise<{ count: number; visible: string[] }> {
+    // `artifactUrl` trims the trailing slash; put it back so `maps` does not
+    // match `maps2` and version `1.0` does not match `1.0.1`.
+    const urls = prefixes.map((p) => `${artifactUrl(cdnBaseUrl, p)}/`);
     const rows = await db.listChannels({ kind: "lobby" });
-    const out: string[] = [];
+    let count = 0;
+    const visible: string[] = [];
     for (const row of rows) {
       let mapUrl: unknown;
       try {
@@ -337,18 +428,24 @@ export function createAssetRoutes({
       } catch {
         continue; // unparseable config cannot be pointing anywhere
       }
-      if (typeof mapUrl === "string" && mapUrl.startsWith(prefix))
-        out.push(row.id);
+      if (typeof mapUrl !== "string" || !urls.some((u) => mapUrl.startsWith(u)))
+        continue;
+      count++;
+      if (row.orgId !== null && row.orgId === visibleOrgId)
+        visible.push(row.id);
     }
-    return out;
+    return { count, visible };
   }
 
-  function assertUnreferenced(channels: string[], what: string): void {
-    if (channels.length === 0) return;
+  function assertUnreferenced(
+    refs: { count: number; visible: string[] },
+    what: string,
+  ): void {
+    if (refs.count === 0) return;
     throw new AppError(
       "conflict",
-      `${what} is still the map of ${channels.length} lobby channel(s); re-point them first`,
-      { details: { channels } },
+      `${what} is still the map of ${refs.count} lobby channel(s); re-point them first`,
+      { details: { channels: refs.visible } },
     );
   }
 
@@ -358,62 +455,78 @@ export function createAssetRoutes({
       path: "/assets/bundles",
       auth: true,
       handler: async (ctx) => {
-        requireRole(ctx, "member");
-        const logins = await loginsById();
+        // Every bundle of every org the caller is seated in, flattened.
+        const id = requireRole(ctx, "member");
+        const orgIds = await memberOrgIds(id);
+        if (orgIds.length === 0) return { bundles: [] };
         return {
-          bundles: (await assets.listBundles()).map((b) =>
-            bundleView(b, logins),
+          bundles: await bundleViews(await assets.listBundles({ orgIds })),
+        };
+      },
+    },
+    {
+      method: "GET",
+      path: "/projects/{prj}/assets/bundles",
+      auth: true,
+      handler: async (ctx) => {
+        const a = await projectAccess(ctx, ctx.params.prj!);
+        return {
+          bundles: await bundleViews(
+            await assets.listBundles({ projectId: a.project.id }),
           ),
         };
       },
     },
     defineRoute({
       method: "POST",
-      path: "/assets/bundles",
+      path: "/projects/{prj}/assets/bundles",
       auth: true,
       body: bundleCreateBody,
       handler: async (ctx) => {
-        const id = requireRole(ctx, "member");
-        if (id.role !== "admin") {
-          const mine = (await assets.listBundles()).filter(
-            (b) => b.ownerId === id.subject,
+        const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
+        if (
+          (await assets.listBundles({ projectId: a.project.id })).length >=
+          BUNDLES_PER_PROJECT
+        )
+          throw new AppError(
+            "conflict",
+            `too many asset bundles (max ${BUNDLES_PER_PROJECT} per project)`,
           );
-          if (mine.length >= ASSET_MAX_BUNDLES_PER_OWNER)
-            throw new AppError(
-              "conflict",
-              `you already own ${ASSET_MAX_BUNDLES_PER_OWNER} asset bundles`,
-            );
-        }
+        await requireFreeName(a.org.id, ctx.body.name);
         const now = nowSec(clock);
         const bundleId = `ab_${randomHex(8)}`;
         await assets.insertBundle({
           id: bundleId,
           name: ctx.body.name,
           description: ctx.body.description ?? null,
-          ownerId: id.subject,
+          ownerId: a.id.subject,
+          orgId: a.org.id,
+          projectId: a.project.id,
           createdAt: now,
         });
-        await audit(id.subject, "asset.bundle.create", bundleId, {
+        await audit(a.id.subject, "asset.bundle.create", bundleId, {
           name: ctx.body.name,
+          projectId: a.project.id,
         });
         const b = await assets.findBundle(bundleId);
         if (!b) throw new AppError("unavailable", "bundle vanished");
+        await bundleHistory(b, a.id.subject, "resource.create");
         return {
           statusCode: 201,
           headers: { "content-type": "application/json; charset=utf-8" },
-          body: JSON.stringify(bundleView(b, await loginsById())),
+          body: JSON.stringify(await bundleView(b)),
         };
       },
     }),
     {
       method: "GET",
-      path: "/assets/bundles/{name}",
+      path: "/assets/bundles/{bundle}",
       auth: true,
       handler: async (ctx) => {
-        const { bundle } = await bundleWith(ctx, false);
+        const { row: bundle } = await bundleWith(ctx, false);
         const files = await assets.listFiles(bundle.id);
         return {
-          ...bundleView(bundle, await loginsById()),
+          ...(await bundleView(bundle)),
           versions: versionsOf(files),
           bytes: files.reduce((n, f) => n + f.size, 0),
         };
@@ -421,61 +534,45 @@ export function createAssetRoutes({
     },
     defineRoute({
       method: "PATCH",
-      path: "/assets/bundles/{name}",
+      path: "/assets/bundles/{bundle}",
       auth: true,
       body: bundlePatchBody,
       handler: async (ctx) => {
-        const { id, bundle } = await bundleWith(ctx, true);
-        if (ctx.body.ownerId !== undefined && id.role !== "admin")
-          throw new AppError("forbidden", "only an admin transfers ownership");
-        if (
-          ctx.body.ownerId !== undefined &&
-          !(await db.findMember(ctx.body.ownerId))
-        )
-          throw new AppError("bad_request", "ownerId is not a member");
-        // The name is a live object-key segment: renaming a bundle that holds
-        // files would leave every committed URL pointing at a key nothing can
-        // reproduce, and the stored `url` rows would 404.
-        if (
-          ctx.body.name !== undefined &&
-          ctx.body.name !== bundle.name &&
-          (await assets.listFiles(bundle.id)).length > 0
-        )
-          throw new AppError(
-            "conflict",
-            "a bundle that holds files cannot be renamed",
-          );
-        const ok = await assets.updateBundle(
-          bundle.id,
-          {
-            ...(ctx.body.name !== undefined ? { name: ctx.body.name } : {}),
-            ...(ctx.body.description !== undefined
-              ? { description: ctx.body.description }
-              : {}),
-            ...(ctx.body.ownerId !== undefined
-              ? { ownerId: ctx.body.ownerId }
-              : {}),
-          },
-          nowSec(clock),
-        );
+        const { id, row: bundle, org: o } = await bundleWith(ctx, true);
+        const patch: { name?: string; description?: string | null } = {};
+        // Renaming is fine even with files: keys are id-based now, and rows
+        // from before that keep the `url` they were committed with.
+        if (ctx.body.name !== undefined && ctx.body.name !== bundle.name) {
+          await requireFreeName(o.id, ctx.body.name, bundle.id);
+          patch.name = ctx.body.name;
+        }
+        if (ctx.body.description !== undefined)
+          patch.description = ctx.body.description;
+        const ok = await assets.updateBundle(bundle.id, patch, nowSec(clock));
         if (!ok) throw new AppError("not_found", "asset bundle not found");
-        await audit(id.subject, "asset.bundle.update", bundle.id);
+        await audit(id.subject, "asset.bundle.update", bundle.id, {
+          fields: Object.keys(patch),
+        });
+        await bundleHistory(
+          bundle,
+          id.subject,
+          "resource.update",
+          Object.keys(patch),
+        );
         const b = await assets.findBundle(bundle.id);
         if (!b) throw new AppError("not_found", "asset bundle not found");
-        return bundleView(b, await loginsById());
+        return bundleView(b);
       },
     }),
     {
       method: "DELETE",
-      path: "/assets/bundles/{name}",
+      path: "/assets/bundles/{bundle}",
       auth: true,
       handler: async (ctx) => {
-        const { id, bundle } = await bundleWith(ctx, true);
+        const { id, row: bundle } = await bundleWith(ctx, true);
         const files = await assets.listFiles(bundle.id);
         assertUnreferenced(
-          await referencingChannels(
-            artifactUrl(cdnBaseUrl, `${ASSET_KEY_PREFIX}${bundle.name}/`),
-          ),
+          await referencingChannels(bundlePrefixes(files), bundle.orgId),
           `bundle "${bundle.name}"`,
         );
         // An empty bundle is just a row: it must stay deletable even when no
@@ -485,15 +582,16 @@ export function createAssetRoutes({
         await audit(id.subject, "asset.bundle.delete", bundle.id, {
           name: bundle.name,
         });
+        await bundleHistory(bundle, id.subject, "resource.delete");
         return undefined;
       },
     },
     {
       method: "GET",
-      path: "/assets/bundles/{name}/versions/{version}",
+      path: "/assets/bundles/{bundle}/versions/{version}",
       auth: true,
       handler: async (ctx) => {
-        const { bundle } = await bundleWith(ctx, false);
+        const { row: bundle } = await bundleWith(ctx, false);
         const files = await assets.listFiles(bundle.id, {
           version: ctx.params.version!,
         });
@@ -501,6 +599,7 @@ export function createAssetRoutes({
           throw new AppError("not_found", "version not found");
         return {
           bundle: bundle.name,
+          bundleId: bundle.id,
           // The stored spelling, not the caller's: these are S3 key segments.
           version: files[0]!.version,
           files: files.map(fileView),
@@ -509,10 +608,10 @@ export function createAssetRoutes({
     },
     {
       method: "DELETE",
-      path: "/assets/bundles/{name}/versions/{version}",
+      path: "/assets/bundles/{bundle}/versions/{version}",
       auth: true,
       handler: async (ctx) => {
-        const { id, bundle } = await bundleWith(ctx, true);
+        const { id, row: bundle } = await bundleWith(ctx, true);
         const store = requireStore();
         const files = await assets.listFiles(bundle.id, {
           version: ctx.params.version!,
@@ -520,29 +619,30 @@ export function createAssetRoutes({
         if (files.length === 0)
           throw new AppError("not_found", "version not found");
         assertUnreferenced(
-          await referencingChannels(
-            artifactUrl(
-              cdnBaseUrl,
-              `${ASSET_KEY_PREFIX}${bundle.name}/${ctx.params.version!}/`,
-            ),
-          ),
+          await referencingChannels(versionPrefixes(files), bundle.orgId),
           `version "${ctx.params.version!}"`,
         );
         await deleteFiles(store, files);
+        // A project version pointing at this asset version now dangles; the
+        // link table only cascades on the bundle, so drop those rows here.
+        await org.removeAssetVersionLinks(bundle.id, files[0]!.version);
         await audit(id.subject, "asset.version.delete", bundle.id, {
           version: ctx.params.version!,
           files: files.length,
         });
+        await bundleHistory(bundle, id.subject, "resource.update", [
+          `version:${files[0]!.version}:delete`,
+        ]);
         return undefined;
       },
     },
     defineRoute({
       method: "POST",
-      path: "/assets/bundles/{name}/files",
+      path: "/assets/bundles/{bundle}/files",
       auth: true,
       body: assetUploadBody,
       handler: async (ctx) => {
-        const { id, bundle } = await bundleWith(ctx, true);
+        const { id, row: bundle } = await bundleWith(ctx, true);
         const store = requireStore();
         const contentType = assetContentType(ctx.body.path);
         const now = nowSec(clock);
@@ -642,7 +742,7 @@ export function createAssetRoutes({
       path: "/assets/uploads/{id}/commit",
       auth: true,
       handler: async (ctx) => {
-        const { id, upload, bundle } = await uploadWith(ctx);
+        const { id, upload, row: bundle } = await uploadWith(ctx);
         const store = requireStore();
         // Idempotent: a duplicate commit returns the existing file.
         if (upload.status === "completed" && upload.fileId) {

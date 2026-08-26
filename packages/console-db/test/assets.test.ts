@@ -5,6 +5,8 @@ const bundle = (id: string, at = 1) => ({
   id,
   name: `b-${id}`,
   ownerId: "m1",
+  orgId: "org_1",
+  projectId: "prj_1",
   createdAt: at,
 });
 
@@ -59,12 +61,12 @@ export function assetsContract(make: () => AssetsDb | Promise<AssetsDb>) {
       db.insertBundle({ ...bundle("x1"), name: "B-Z1" }),
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await db.listBundles()).map((b) => b.id)).toEqual(["a1", "z1"]);
-    expect(await db.findBundleByName("b-a1")).toMatchObject({
+    expect(await db.findBundleByName("org_1", "b-a1")).toMatchObject({
       id: "a1",
       ownerId: "m1",
       description: null,
     });
-    expect(await db.findBundleByName("nope")).toBeUndefined();
+    expect(await db.findBundleByName("org_1", "nope")).toBeUndefined();
 
     expect(
       await db.updateBundle("a1", { description: "maps", name: "renamed" }, 9),
@@ -212,10 +214,6 @@ describe("memory assets repository", () => {
     const db = createMemoryAssetsDb((id) => id === "m1");
     await expect(
       db.insertBundle({ ...bundle("b1"), ownerId: "ghost" }),
-    ).rejects.toMatchObject({ code: "unavailable" });
-    await db.insertBundle(bundle("b1"));
-    await expect(
-      db.updateBundle("b1", { ownerId: "ghost" }, 2),
     ).rejects.toMatchObject({ code: "unavailable" });
   });
   it("refuses to rename a bundle onto another bundle's name", async () => {

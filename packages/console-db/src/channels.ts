@@ -176,9 +176,9 @@ export interface InsertChannelInput {
   id: string;
   kind: ChannelKind;
   ownerId: string;
-  /** Both or neither; the project must belong to the org (asserted by the writer). */
-  orgId?: string;
-  projectId?: string;
+  /** The project must belong to the org; the writer asserts it. */
+  orgId: string;
+  projectId: string;
   name: string;
   config: unknown;
   secret: unknown;
@@ -233,9 +233,19 @@ export interface ChannelPatch {
 
 export interface ChannelFilter {
   kind?: ChannelKind;
-  ownerId?: string;
   orgId?: string;
+  /** Every org the caller is seated in — one query, not one per org. */
+  orgIds?: string[];
   projectId?: string;
+}
+
+/** A channel the sweep hard-deleted, with where it lived (for org history). */
+export interface ExpiredChannel {
+  id: string;
+  kind: ChannelKind;
+  name: string;
+  orgId: string | null;
+  projectId: string | null;
 }
 
 /**
@@ -297,7 +307,7 @@ export interface ConsoleDb {
   expireChannels(
     now: number,
     graceSec: number,
-  ): Promise<{ disabled: string[]; deleted: string[] }>;
+  ): Promise<{ disabled: string[]; deleted: ExpiredChannel[] }>;
 
   insertAudit(a: AuditInput): Promise<void>;
 }
@@ -516,8 +526,8 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
             where: {
               deleted_at: null,
               ...(filter.kind ? { kind: filter.kind } : {}),
-              ...(filter.ownerId ? { owner_id: filter.ownerId } : {}),
               ...(filter.orgId ? { org_id: filter.orgId } : {}),
+              ...(filter.orgIds ? { org_id: { in: filter.orgIds } } : {}),
               ...(filter.projectId ? { project_id: filter.projectId } : {}),
             },
             orderBy: [{ created_at: "desc" }, { id: "desc" }],
@@ -573,12 +583,27 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
                   deleted_at: null,
                   disabled_at: { not: null, lt: cutoff },
                 },
-                select: { id: true },
+                select: {
+                  id: true,
+                  kind: true,
+                  name: true,
+                  org_id: true,
+                  project_id: true,
+                },
               })
-            ).map((r) => r.id);
+            ).map((r): ExpiredChannel => ({
+              id: r.id,
+              kind: r.kind,
+              name: r.name,
+              orgId: r.org_id,
+              projectId: r.project_id,
+            }));
             if (toDelete.length > 0)
               await tx.channels.updateMany({
-                where: { id: { in: toDelete }, deleted_at: null },
+                where: {
+                  id: { in: toDelete.map((r) => r.id) },
+                  deleted_at: null,
+                },
                 data: { deleted_at: now, secret_json: "{}" },
               });
             return { disabled: toDisable, deleted: toDelete };
@@ -622,8 +647,8 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
             id: c.id,
             kind: c.kind,
             owner_id: c.ownerId,
-            org_id: c.orgId ?? null,
-            project_id: c.projectId ?? null,
+            org_id: c.orgId,
+            project_id: c.projectId,
             name: c.name,
             config_json: JSON.stringify(c.config),
             secret_json: JSON.stringify(c.secret),

@@ -22,6 +22,7 @@ export {
   type ChannelPatch,
   type ChannelRow,
   type ConsoleDb,
+  type ExpiredChannel,
   type InsertChannelInput,
   type LobbyCapabilities,
   type LobbyChannel,
@@ -128,7 +129,6 @@ export {
   type StatePutResult,
 } from "./state.js";
 export {
-  CATALOG_PERMISSION_LEVELS,
   CATALOG_PLATFORMS,
   CATALOG_UPLOAD_STATUSES,
   createCatalogDb,
@@ -139,15 +139,9 @@ export {
   type CatalogArtifactInput,
   type CatalogArtifactRow,
   type CatalogDb,
-  type CatalogGroupInput,
-  type CatalogGroupPatch,
-  type CatalogGroupRow,
   type CatalogPendingUploadInput,
   type CatalogPendingUploadPatch,
   type CatalogPendingUploadRow,
-  type CatalogPermissionInput,
-  type CatalogPermissionLevel,
-  type CatalogPermissionRow,
   type CatalogPlatform,
   type CatalogUploadStatus,
 } from "./catalog.js";

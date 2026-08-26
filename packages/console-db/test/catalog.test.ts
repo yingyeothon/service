@@ -1,16 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createMemoryCatalogDb, type CatalogDb } from "../src/index.js";
 
-const grp = (id: string, at = 1) => ({
-  id,
-  name: `g-${id}`,
-  ownerId: "m1",
-  createdAt: at,
-});
 const app = (id: string, at = 1) => ({
   id,
   name: `a-${id}`,
   path: `apps/${id}`,
+  ownerId: "m1",
+  orgId: "org_1",
+  projectId: "prj_1",
   createdAt: at,
 });
 const art = (id: string, appId: string, at = 1) => ({
@@ -25,52 +22,43 @@ const art = (id: string, appId: string, at = 1) => ({
   createdAt: at,
 });
 
-/** Behaviour shared by the fake (and, via routes, the real repository). */
+/** Behaviour shared by the fake and the real Prisma repository (`org_1`/`prj_1` seeded). */
 export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
-  it("groups: insert, unique name, list sorted, update, delete", async () => {
+  it("apps: defaults, org/project narrow, org-scoped ci name, settings, delete cascades", async () => {
     const db = await make();
-    await db.insertGroup(grp("g2"));
-    await db.insertGroup(grp("g1"));
-    await expect(db.insertGroup(grp("g2"))).rejects.toMatchObject({
-      code: "conflict",
-    });
-    expect((await db.listGroups()).map((g) => g.id)).toEqual(["g1", "g2"]);
-    expect(await db.findGroupByName("g-g1")).toMatchObject({
-      id: "g1",
-      ownerId: "m1",
-      pendingOwnerLogin: null,
-    });
-    expect(await db.updateGroup("g1", { name: "z" }, 5)).toBe(true);
-    expect(await db.findGroup("g1")).toMatchObject({ name: "z", updatedAt: 5 });
-    expect(await db.updateGroup("nope", { name: "q" }, 5)).toBe(false);
-    expect(await db.deleteGroup("g1")).toBe(true);
-    expect(await db.deleteGroup("g1")).toBe(false);
-    expect(await db.findGroup("g1")).toBeUndefined();
-  });
-
-  it("apps: defaults, group narrow, update settings, delete cascades", async () => {
-    const db = await make();
-    await db.insertGroup(grp("g1"));
-    await db.insertApp({ ...app("a1"), groupId: "g1" });
+    await db.insertApp(app("a1"));
     await db.insertApp(app("a2"));
     await expect(db.insertApp(app("a1"))).rejects.toMatchObject({
       code: "conflict",
     });
+    // Names compare case-insensitively (utf8mb4 default collation).
+    await expect(
+      db.insertApp({ ...app("a9"), name: "A-A1" }),
+    ).rejects.toMatchObject({ code: "conflict" });
     expect(await db.findApp("a1")).toMatchObject({
-      debugOnly: false,
       keepRecentVersions: 3,
       slackHookUrl: null,
-      groupId: "g1",
+      ownerId: "m1",
+      orgId: "org_1",
+      projectId: "prj_1",
     });
+    expect(await db.findAppByName("org_1", "A-A1")).toMatchObject({ id: "a1" });
+    expect(await db.findAppByName("org_other", "a-a1")).toBeUndefined();
     expect((await db.listApps()).map((a) => a.id)).toEqual(["a1", "a2"]);
-    expect((await db.listApps({ groupId: "g1" })).map((a) => a.id)).toEqual([
+    expect((await db.listApps({ orgId: "org_1" })).map((a) => a.id)).toEqual([
       "a1",
+      "a2",
     ]);
+    expect(await db.listApps({ orgIds: ["org_x"] })).toEqual([]);
+    expect(
+      (await db.listApps({ orgIds: ["org_1", "org_x"], projectId: "prj_1" }))
+        .length,
+    ).toBe(2);
+    expect(await db.listApps({ projectId: "prj_other" })).toEqual([]);
     expect(
       await db.updateApp(
         "a1",
         {
-          debugOnly: true,
           slackHookUrl: "https://hooks.example/x",
           keepRecentVersions: 5,
           description: "d",
@@ -79,21 +67,19 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
       ),
     ).toBe(true);
     expect(await db.findApp("a1")).toMatchObject({
-      debugOnly: true,
       slackHookUrl: "https://hooks.example/x",
       keepRecentVersions: 5,
       updatedAt: 7,
     });
+    await expect(db.updateApp("a1", { name: "a-a2" }, 8)).rejects.toMatchObject(
+      { code: "conflict" },
+    );
+    expect(await db.updateApp("a1", { name: "a-a1" }, 8)).toBe(true);
+    expect(await db.updateApp("nope", { name: "q" }, 8)).toBe(false);
     await db.insertArtifact(art("f1", "a1"));
-    await db.upsertAppPermission("a1", {
-      id: "p1",
-      memberId: "m2",
-      level: "read",
-      createdAt: 1,
-    });
     expect(await db.deleteApp("a1")).toBe(true);
+    expect(await db.deleteApp("a1")).toBe(false);
     expect(await db.findArtifact("f1")).toBeUndefined();
-    expect(await db.listAppPermissions("a1")).toEqual([]);
   });
 
   it("artifacts: newest first, platform narrow, tags roundtrip", async () => {
@@ -124,148 +110,6 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
     });
     expect(await db.deleteArtifact("f1")).toBe(true);
     expect(await db.deleteArtifact("f1")).toBe(false);
-  });
-
-  it("permissions: upsert level, one subject only, delete scoped to parent", async () => {
-    const db = await make();
-    await db.insertApp(app("a1"));
-    await db.insertGroup(grp("g1"));
-    await expect(
-      db.upsertAppPermission("a1", {
-        id: "p0",
-        memberId: "m1",
-        pendingGithubLogin: "x",
-        level: "read",
-        createdAt: 1,
-      }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-    await expect(
-      db.upsertAppPermission("a1", { id: "p0", level: "read", createdAt: 1 }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-    await db.upsertAppPermission("a1", {
-      id: "p1",
-      memberId: "m2",
-      level: "read",
-      createdAt: 1,
-    });
-    await db.upsertAppPermission("a1", {
-      id: "p2",
-      memberId: "m2",
-      level: "edit",
-      createdAt: 2,
-    });
-    const perms = await db.listAppPermissions("a1");
-    expect(perms).toHaveLength(1);
-    expect(perms[0]).toMatchObject({ id: "p1", level: "edit" });
-    expect(await db.findAppPermission("a1", "m2")).toMatchObject({
-      level: "edit",
-    });
-    expect(await db.findAppPermission("a1", "zz")).toBeUndefined();
-    expect(await db.deleteAppPermission("other", "p1")).toBe(false);
-    expect(await db.deleteAppPermission("a1", "p1")).toBe(true);
-    await db.upsertGroupPermission("g1", {
-      id: "q1",
-      pendingGithubLogin: "legacy",
-      level: "read",
-      createdAt: 1,
-    });
-    expect(await db.listGroupPermissions("g1")).toHaveLength(1);
-    expect(await db.deleteGroupPermission("g1", "q1")).toBe(true);
-  });
-
-  it("names and pending logins compare case-insensitively (utf8mb4 ci)", async () => {
-    const db = await make();
-    await db.insertGroup(grp("g1"));
-    await expect(
-      db.insertGroup({ ...grp("g9"), name: "G-G1" }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect(await db.findGroupByName("G-G1")).toMatchObject({ id: "g1" });
-    await db.insertApp({ ...app("a1"), pendingOwnerLogin: "Lee" });
-    expect(await db.resolvePendingLogin("lee", "m1")).toBe(1);
-    expect(await db.findApp("a1")).toMatchObject({ ownerId: "m1" });
-  });
-
-  it("listMemberPermissions returns both scopes in one call", async () => {
-    const db = await make();
-    await db.insertApp(app("a1"));
-    await db.insertGroup(grp("g1"));
-    await db.upsertAppPermission("a1", {
-      id: "p1",
-      memberId: "m2",
-      level: "edit",
-      createdAt: 1,
-    });
-    await db.upsertGroupPermission("g1", {
-      id: "q1",
-      memberId: "m2",
-      level: "read",
-      createdAt: 2,
-    });
-    await db.upsertAppPermission("a1", {
-      id: "p9",
-      pendingGithubLogin: "other",
-      level: "read",
-      createdAt: 3,
-    });
-    const mine = await db.listMemberPermissions("m2");
-    expect(mine.apps).toEqual([
-      expect.objectContaining({ id: "p1", appId: "a1", level: "edit" }),
-    ]);
-    expect(mine.groups).toEqual([
-      expect.objectContaining({ id: "q1", groupId: "g1", level: "read" }),
-    ]);
-    expect(await db.listMemberPermissions("zz")).toEqual({
-      apps: [],
-      groups: [],
-    });
-  });
-
-  it("resolvePendingLogin claims permissions and owners; explicit wins", async () => {
-    const db = await make();
-    await db.insertGroup({
-      ...grp("g1"),
-      ownerId: null,
-      pendingOwnerLogin: "lee",
-    });
-    await db.insertApp({
-      ...app("a1"),
-      ownerId: null,
-      pendingOwnerLogin: "lee",
-    });
-    await db.insertApp(app("a2"));
-    await db.upsertAppPermission("a2", {
-      id: "p1",
-      pendingGithubLogin: "lee",
-      level: "edit",
-      createdAt: 1,
-    });
-    await db.upsertAppPermission("a1", {
-      id: "p2",
-      memberId: "m9",
-      level: "read",
-      createdAt: 1,
-    });
-    await db.upsertAppPermission("a1", {
-      id: "p3",
-      pendingGithubLogin: "lee",
-      level: "edit",
-      createdAt: 2,
-    });
-    expect(await db.resolvePendingLogin("lee", "m9")).toBe(4);
-    expect(await db.findGroup("g1")).toMatchObject({
-      ownerId: "m9",
-      pendingOwnerLogin: null,
-    });
-    expect(await db.findApp("a1")).toMatchObject({ ownerId: "m9" });
-    // a1 already had an explicit permission for m9 → pending p3 was dropped
-    expect((await db.listAppPermissions("a1")).map((p) => p.id)).toEqual([
-      "p2",
-    ]);
-    expect(await db.findAppPermission("a2", "m9")).toMatchObject({
-      level: "edit",
-      pendingGithubLogin: null,
-    });
-    expect(await db.resolvePendingLogin("lee", "m9")).toBe(0);
   });
 
   it("pending uploads: lifecycle and expiry sweep", async () => {
@@ -331,22 +175,14 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
 
 describe("memory catalog db", () => {
   catalogContract(() => createMemoryCatalogDb());
-  it("rejects an unknown member/group like a foreign key would", async () => {
+  it("rejects an unknown member like a foreign key would", async () => {
     const db = createMemoryCatalogDb((id) => id === "m1");
     await expect(
-      db.insertGroup({ ...grp("g1"), ownerId: "ghost" }),
-    ).rejects.toMatchObject({ code: "unavailable" });
-    await expect(
-      db.insertApp({ ...app("a1"), groupId: "ghost" }),
+      db.insertApp({ ...app("a1"), ownerId: "ghost" }),
     ).rejects.toMatchObject({ code: "unavailable" });
     await db.insertApp(app("a1"));
-    await expect(
-      db.upsertAppPermission("a1", {
-        id: "p1",
-        memberId: "ghost",
-        level: "read",
-        createdAt: 1,
-      }),
-    ).rejects.toMatchObject({ code: "unavailable" });
+    await expect(db.insertArtifact(art("f1", "ghost"))).rejects.toMatchObject({
+      code: "unavailable",
+    });
   });
 });

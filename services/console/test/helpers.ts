@@ -146,6 +146,53 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
       cookie: { cookie: `${SESSION_COOKIE}=${sid}`, origin: BASE },
     };
   };
+  /**
+   * A member with an org and a project of their own — what every resource
+   * route needs since todo/17 P3. Each recorded org write is rate-limited to
+   * one per 500 ms per member, so the writes land in slots far from any the
+   * test will use itself, and the clock is put back afterwards so `NOW_SEC`
+   * arithmetic in the tests still holds.
+   */
+  const team = async (
+    name: string,
+    role: "admin" | "member" = "member",
+    githubId?: number,
+  ) => {
+    const u = await login(name, role, githubId);
+    clock.tick(100);
+    const o = await app(
+      ev("POST", "/orgs", { headers: u.cookie, body: { name: `${name}-org` } }),
+    );
+    expect(o.statusCode, o.body).toBe(201);
+    const orgId = parse(o).id as string;
+    clock.tick(100);
+    const p = await app(
+      ev("POST", `/orgs/${orgId}/projects`, {
+        headers: u.cookie,
+        body: { name: "game" },
+      }),
+    );
+    expect(p.statusCode, p.body).toBe(201);
+    clock.tick(-200);
+    return { ...u, orgId, prjId: parse(p).id as string };
+  };
+  /** Seats `login` in `orgId` as `role` (the owner's cookie does the adding). */
+  const seat = async (
+    owner: { cookie: Record<string, string> },
+    orgId: string,
+    login: string,
+    role: "owner" | "member" = "member",
+  ) => {
+    clock.tick(300);
+    const r = await app(
+      ev("POST", `/orgs/${orgId}/members`, {
+        headers: owner.cookie,
+        body: { login, role },
+      }),
+    );
+    expect(r.statusCode, r.body).toBe(201);
+    clock.tick(-300);
+  };
   return {
     app,
     kv,
@@ -162,8 +209,12 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     agent,
     login,
     githubLogin,
+    team,
+    seat,
   };
 }
+
+export type Team = Awaited<ReturnType<ReturnType<typeof harness>["team"]>>;
 
 export function cookieOf(r: HttpResult, name: string): string {
   const c = (r.cookies ?? []).find((x) => x.startsWith(`${name}=`));

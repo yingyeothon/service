@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ensureTeam } from "./_org.mjs";
 // Smoke test for the state stack on dev: create an auth channel (console debug
 // login) → issue its doc key → write, read and delete documents with enforced
 // compare-and-set → check that a player's token reads only its own row and
@@ -51,8 +52,9 @@ const login = await call(`${consoleBase}/debug/login`, {
 });
 check("console debug login", login.status === 200, String(login.status));
 const cookie = { cookie: login.body?.cookie, origin: consoleBase };
+const team = await ensureTeam(call, consoleBase, cookie, "smoke-state", check);
 
-const ch = await call(`${consoleBase}/channels`, {
+const ch = await call(`${consoleBase}/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: cookie,
   body: {
