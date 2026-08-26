@@ -1,14 +1,14 @@
 import 'package:yyt_console/app_theme.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/format_time.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
 import 'package:yyt_console/projects/issue_detail_screen.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 String formatIssueTime(DateTime t) =>
-    DateFormat('yyyy-MM-dd HH:mm').format(t.toLocal());
+    formatLocalTime(t, pattern: 'yyyy-MM-dd HH:mm');
 
 /// Issues of one project with an open/closed filter and a create button.
 class IssuesScreen extends StatefulWidget {

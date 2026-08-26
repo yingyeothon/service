@@ -157,6 +157,15 @@ export interface CatalogDb {
     appId: string,
     filter?: { platform?: CatalogPlatform },
   ): Promise<CatalogArtifactRow[]>;
+  /**
+   * Artifacts of many apps in one query, newest first within each app (the
+   * app order is unspecified). Lets a list view embed per-app summaries
+   * without one round trip per app.
+   */
+  listArtifactsOf(
+    appIds: string[],
+    filter?: { platform?: CatalogPlatform },
+  ): Promise<CatalogArtifactRow[]>;
   deleteArtifact(id: string): Promise<boolean>;
 
   /**
@@ -367,6 +376,24 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
           })
         ).map(toArtifact),
       ),
+    listArtifactsOf: (appIds, filter = {}) =>
+      run(async () =>
+        appIds.length === 0
+          ? []
+          : (
+              await prisma.catalog_artifacts.findMany({
+                where: {
+                  app_id: { in: appIds },
+                  ...(filter.platform ? { platform: filter.platform } : {}),
+                },
+                orderBy: [
+                  { app_id: "asc" },
+                  { created_at: "desc" },
+                  { id: "desc" },
+                ],
+              })
+            ).map(toArtifact),
+      ),
     deleteArtifact: (id) =>
       run(async () => {
         const r = await prisma.catalog_artifacts.deleteMany({ where: { id } });
@@ -548,6 +575,20 @@ export function createMemoryCatalogDb(
         )
         .map((a) => ({ ...a, tags: { ...a.tags } }))
         .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),
+    listArtifactsOf: async (appIds, filter = {}) =>
+      [...artifacts.values()]
+        .filter(
+          (a) =>
+            appIds.includes(a.appId) &&
+            (!filter.platform || a.platform === filter.platform),
+        )
+        .map((a) => ({ ...a, tags: { ...a.tags } }))
+        .sort(
+          (a, b) =>
+            a.appId.localeCompare(b.appId) ||
+            b.createdAt - a.createdAt ||
+            b.id.localeCompare(a.id),
+        ),
     deleteArtifact: async (id) => artifacts.delete(id),
 
     insertPendingUpload: async (u) => {

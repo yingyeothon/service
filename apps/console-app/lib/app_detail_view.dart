@@ -13,6 +13,7 @@ import 'package:yyt_console/download_install_launch.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
 import 'package:yyt_console/install_progress_dialog.dart';
+import 'package:yyt_console/project_issues_button.dart';
 import 'package:flutter/material.dart';
 
 class AppDetailView extends StatefulWidget {
@@ -405,7 +406,9 @@ class _AppDetailViewState extends State<AppDetailView>
       latestArtifact: latestArtifact ?? widget.app.latestArtifact,
       installedVersion: heroInstalledVersion,
       needsUpdate: checkIfNeedToUpdate(latestVersion, heroInstalledVersion),
+      home: widget.app.home,
     );
+    final home = widget.app.home;
 
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(
@@ -417,6 +420,14 @@ class _AppDetailViewState extends State<AppDetailView>
           app: currentApp,
           state: state,
           installedVersion: heroInstalledVersion,
+          // Straight to the app's project issues — the app *is* the project.
+          action:
+              home == null
+                  ? null
+                  : ProjectIssuesButton(
+                    authState: widget.authState,
+                    home: home,
+                  ),
           extraChips: [
             CatalogStateChip(
               label: state == AppInstallState.latest ? '최신' : '최신 아님',

@@ -1,3 +1,4 @@
+import 'package:yyt_console/app_home.dart';
 import 'package:yyt_console/artifact_info.dart';
 
 class AppInfo {
@@ -10,6 +11,9 @@ class AppInfo {
   final String? installedVersion;
   final bool needsUpdate;
 
+  /// Team + project of the app, when known (see [AppHome]).
+  final AppHome? home;
+
   AppInfo({
     required this.id,
     required this.name,
@@ -18,6 +22,7 @@ class AppInfo {
     required this.latestArtifact,
     required this.installedVersion,
     required this.needsUpdate,
+    this.home,
   });
 
   String get version => latestArtifact.version;

@@ -191,6 +191,124 @@ void main() {
     expect(apps.map((a) => a['id']), ['ca_1', 'ca_2']);
   });
 
+  test('fetchRemoteApps builds the list from the summary view alone', () async {
+    final paths = <String>[];
+    final client = MockClient((req) async {
+      paths.add(req.url.path);
+      switch (req.url.path) {
+        case '/teams':
+          return _json({
+            'teams': [
+              {'id': 'team_a', 'name': 'a', 'role': 'owner'},
+            ],
+          });
+        case '/teams/team_a/catalog/apps':
+          expect(req.url.queryParameters, {
+            'artifacts': 'summary',
+            'platform': 'android',
+          });
+          return _json({
+            'apps': [
+              {
+                'id': 'ca_1',
+                'name': 'one',
+                'path': 'p.one',
+                'teamId': 'team_a',
+                'teamName': 'a',
+                'projectId': 'prj_1',
+                'projectName': 'one',
+                'latestArtifact': {
+                  'id': 'art_1',
+                  'url': 'https://cdn.example/one.apk',
+                  'platform': 'android',
+                  'size': 1,
+                  'tags': {'version': '1.0.0', 'application_id': 'p.one'},
+                  'createdAt': 1700000000,
+                },
+                'applicationIds': ['p.one', 'p.one.debug'],
+              },
+              {
+                'id': 'ca_2',
+                'name': 'two',
+                'path': 'p.two',
+                'latestArtifact': null,
+                'applicationIds': <String>[],
+              },
+            ],
+          });
+      }
+      fail('unexpected ${req.url.path}');
+    });
+    final apps = await fetchRemoteApps(token: 'tok', client: client);
+    // No per-app /artifacts round trip.
+    expect(paths, ['/teams', '/teams/team_a/catalog/apps']);
+    expect(apps.map((a) => a.id), ['ca_1']);
+    expect(apps.single.version, '1.0.0');
+    expect(apps.single.installCheckApplicationIds, ['p.one', 'p.one.debug']);
+    expect(apps.single.latestArtifact.createdAt.isUtc, isTrue);
+    // Breadcrumb + the caller's seat feed the detail screen's issues button.
+    final home = apps.single.home!;
+    expect(home.team.id, 'team_a');
+    expect(home.team.role, 'owner');
+    expect(home.project.id, 'prj_1');
+    expect(home.project.name, 'one');
+  });
+
+  test(
+    'fetchRemoteApps walks /artifacts for a server without the summary',
+    () async {
+      final paths = <String>[];
+      final client = MockClient((req) async {
+        paths.add(req.url.path);
+        switch (req.url.path) {
+          case '/teams':
+            return _json({
+              'teams': [
+                {'id': 'team_a', 'name': 'a', 'role': 'member'},
+              ],
+            });
+          case '/teams/team_a/catalog/apps':
+            // Older console: no `latestArtifact` key at all.
+            return _json({
+              'apps': [
+                {'id': 'ca_1', 'name': 'one', 'path': 'p.one'},
+                {'id': 'ca_2', 'name': 'two', 'path': 'p.two'},
+              ],
+            });
+          case '/catalog/apps/ca_1/artifacts':
+            return _json({
+              'artifacts': [
+                {
+                  'id': 'art_new',
+                  'url': 'https://cdn.example/one.apk',
+                  'platform': 'android',
+                  'size': 1,
+                  'tags': {'version': '2.0.0', 'application_id': 'p.one'},
+                  'createdAt': 1700000100,
+                },
+                {
+                  'id': 'art_old',
+                  'url': 'https://cdn.example/one-debug.apk',
+                  'platform': 'android',
+                  'size': 1,
+                  'tags': {'version': '1.0.0', 'application_id': 'p.one.debug'},
+                  'createdAt': 1700000000,
+                },
+              ],
+            });
+          case '/catalog/apps/ca_2/artifacts':
+            return http.Response('', 500); // one failure hides only itself
+        }
+        fail('unexpected ${req.url.path}');
+      });
+      final apps = await fetchRemoteApps(token: 'tok', client: client);
+      expect(apps.map((a) => a.id), ['ca_1']);
+      expect(apps.single.version, '2.0.0');
+      expect(apps.single.installCheckApplicationIds, ['p.one', 'p.one.debug']);
+      expect(paths, contains('/catalog/apps/ca_1/artifacts'));
+    },
+  );
+
   test('empty single-entity responses are reported, not cast errors', () async {
     final api = ProjectsApi(
       token: 'tok',

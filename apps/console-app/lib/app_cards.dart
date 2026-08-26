@@ -2,9 +2,9 @@ import 'package:yyt_console/app_info.dart';
 import 'package:yyt_console/app_install_state.dart';
 import 'package:yyt_console/app_theme.dart';
 import 'package:yyt_console/artifact_info.dart';
+import 'package:yyt_console/format_time.dart';
 import 'package:yyt_console/artifact_version_group.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 class AppSummaryCard extends StatelessWidget {
   const AppSummaryCard({
@@ -169,9 +169,7 @@ class ArtifactReleaseCard extends StatelessWidget {
       artifact.version,
       latestVersion,
     );
-    final publishedAt = DateFormat(
-      'yyyy.MM.dd HH:mm',
-    ).format(artifact.createdAt);
+    final publishedAt = formatLocalTime(artifact.createdAt);
 
     return Material(
       color: Colors.transparent,
@@ -372,9 +370,7 @@ class ArtifactVersionGroupCard extends StatelessWidget {
         installedVersionForArtifact(artifact),
       ),
     );
-    final publishedAt = DateFormat(
-      'yyyy.MM.dd HH:mm',
-    ).format(topArtifact.createdAt);
+    final publishedAt = formatLocalTime(topArtifact.createdAt);
 
     return Material(
       color: Colors.transparent,
