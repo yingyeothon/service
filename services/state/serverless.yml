@@ -98,8 +98,11 @@ package:
 resources:
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
+    # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
+    IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
     ApiErrorsAlarm:
+      Condition: IsProd
       Type: AWS::CloudWatch::Alarm
       Properties:
         AlarmName: ${self:service}-${self:custom.stage}-lambda-errors
@@ -108,23 +111,6 @@ resources:
         Dimensions:
           - Name: FunctionName
             Value: ${self:service}-${self:custom.stage}-api
-        Statistic: Sum
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 5
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-        AlarmActions:
-          !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
-    Api5xxAlarm:
-      Type: AWS::CloudWatch::Alarm
-      Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-5xx
-        Namespace: AWS/ApiGateway
-        MetricName: 5xx
-        Dimensions:
-          - Name: ApiId
-            Value: !Ref HttpApi
         Statistic: Sum
         Period: 300
         EvaluationPeriods: 1

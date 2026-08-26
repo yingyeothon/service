@@ -25,6 +25,6 @@ The server never closes sockets; the client closes after a terminal message (idl
 
 - Functions: `authorizer` (8), `ws` (10), `worker` (4, 45s), `tick` (1, 60s, `rate(1 minute)`), `debug` (1, dev only). Numbers are `reservedConcurrency`; each container holds one MySQL + one Redis connection.
 - `$connect` enqueues and invokes `worker` asynchronously (a socket cannot be posted to from inside its own `$connect`); the worker waits ≤6s for `GetConnection`, takes the per-channel lock (30s TTL, 4s wait; yields quietly when held) and dispatches while ≥12s remain. `tick` skips channels whose lock is held and logs `tick incomplete` when it runs out of time.
-- Alarms: `ws-errors`, `worker-errors`, `tick-errors` (Lambda Errors), `authorize-errors` (log metric on `"m":"authorize error"` — Redis/MySQL unreachable from the authorizer, which otherwise only denies), `message-count` (cost guard). Worker/tick have `maximumRetryAttempts: 0`; the next tick is the retry.
+- Alarms (account-wide 10-alarm free-tier budget, `rules/serverless-aws.md`): `ws-errors` (both stages), `tick-errors` (prod only). Worker errors, throttles, the authorizer log metric and the message-count guard were removed on 2026-08-26; check those metrics by hand. Worker/tick have `maximumRetryAttempts: 0`; the next tick is the retry.
 - Redis keys under `match:{stage}:` all carry TTLs; `result:{matchId}` (10 min) records who was dispatched and the outcome, never the callback payload.
 - Channel config is cached 60s, so disabling a channel takes effect within a minute.

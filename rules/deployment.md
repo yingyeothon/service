@@ -49,4 +49,4 @@
 
 ## Alarms
 
-- Every stack's CloudWatch alarms take `AlarmActions` from the optional stage-wide SSM `alarm-topic-arn` (CloudFormation condition `HasAlarmTopic`); without it the alarms exist but notify nobody. `scripts/bootstrap-alarms.sh <stage> <email>` creates `yyt-service-<stage>-alarms`, subscribes the address (confirm the email) and stores the ARN; then redeploy all four stacks of that stage.
+- Every stack's CloudWatch alarms take `AlarmActions` from the optional stage-wide SSM `alarm-topic-arn` (CloudFormation condition `HasAlarmTopic`); without it the alarms exist but notify nobody. `scripts/bootstrap-alarms.sh <stage> <email>` creates `yyt-service-<stage>-alarms`, subscribes the address (confirm the email) and stores the ARN; then redeploy every stack of that stage. Both stages have a confirmed-or-pending email subscription (prod subscribed 2026-08-26). The alarm inventory is capped at the free tier — `rules/serverless-aws.md`.

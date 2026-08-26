@@ -1,6 +1,20 @@
 # AWS Cost Optimization: CloudWatch Alarms and S3
 
-Status: planned; no AWS resource or source configuration has been changed.
+Status: **A applied 2026-08-26** (10-alarm design, dev + prod auth/topic/match;
+console/state prod follow the state-prod prerequisites) and **B-1 applied to the
+dev bucket**; prod bucket, B-2 and C are open.
+
+Revision 2026-08-26: the user chose a stricter target than section A below —
+**stay inside the 10-alarm account free tier, $0/month**, with the minimum
+signal set: prod 8 (`auth`/`console`/`state` Lambda `Errors`, console
+`expire-errors`, match `tick-errors`, topic `authorize-errors`, match+topic
+`ws-errors`) + dev 2 (match/topic `ws-errors`). Any 11th alarm needs a user
+decision (`rules/serverless-aws.md`). The baseline below was also stale: 40
+alarms existed, not 34 (a fifth `state` stack, throttle alarms deployed to dev
+only, `authorizer-throttles` on topic), and the prod SNS topic had no
+subscription at all (subscribed 2026-08-26, confirmation pending). Section A's
+15-alarm table is kept as the analysis that ranked the signals; the retained
+set is the top of that ranking.
 
 Last reviewed: 2026-08-25 KST. All cost figures are USD/month estimates for
 `ap-northeast-2`. Recheck Cost Explorer after a complete billing month because
@@ -141,34 +155,34 @@ combined expression is harder to diagnose.
 
 ### Alarm implementation checklist
 
-- [ ] Confirm the prod SNS subscription before approving the alarm design. If the
+- [x] Confirm the prod SNS subscription before approving the alarm design (subscribed 2026-08-26; user confirms the email). If the
       email cannot be confirmed, choose a real owner/channel or explicitly remove
       alarms that nobody will act on.
-- [ ] Add stage-aware alarm conditions to all four service templates.
-- [ ] Remove the two message-count alarms and their obsolete rule/README text.
-- [ ] For each service, run `AWS_PROFILE=yyt pnpm --dir "services/$service" exec serverless package --stage dev`.
-- [ ] Confirm each of the 15 alarm resources has `Condition: AlarmsEnabled` and
+- [x] Add stage-aware alarm conditions to all five service templates (`Condition: IsProd`).
+- [x] Remove the two message-count alarms and their obsolete rule/README text.
+- [x] For each service, run `AWS_PROFILE=yyt pnpm --dir "services/$service" exec serverless package --stage dev`.
+- [x] Confirm each retained alarm resource has `Condition: IsProd` (implemented instead of the `alarmsEnabled` map sketched above; the two dev `ws-errors` alarms carry no condition) and
       the rendered dev condition is false; a CloudFormation condition does not
       remove it from the package.
 
-- [ ] Package prod for all four services and confirm exactly 15 guarded alarms with
+- [x] Package prod for all five services and confirm exactly 8 guarded alarms with
       a true prod condition remain, with the expected logical IDs, dimensions,
       thresholds, and alarm actions.
-- [ ] Create/review CloudFormation change sets. Expected destructive diff: remove
-      17 dev alarms and two prod alarms; no Lambda/API/data resource replacement.
-- [ ] Obtain explicit approval for the observability reduction before deployment.
-- [ ] Deploy dev first and verify no alarms are recreated.
-- [ ] Deploy prod only on explicit request; verify 15 alarms are `OK` and all point
+- [x] Create/review CloudFormation change sets. Expected destructive diff: remove
+      30 alarms (40 → 10); no Lambda/API/data resource replacement.
+- [x] Obtain explicit approval for the observability reduction before deployment (2026-08-26).
+- [x] Deploy dev first and verify only the two dev `ws-errors` alarms remain.
+- [ ] Deploy prod (auth/topic/match done 2026-08-26; console/state after the state-prod prerequisites); verify 8 alarms are `OK` and all point
       to the confirmed prod notification topic.
 - [ ] Recheck Cost Explorer after one complete month for
-      `CW:AlarmMonitorUsage`; verify 15 alarm metrics exist and that free-tier
+      `CW:AlarmMonitorUsage`; verify 10 alarm metrics exist and that free-tier
       application produces the expected net cost instead of assuming the usage
       quantity itself will be five.
 
 ### Alarm acceptance criteria
 
 - Dev stacks contain no CloudWatch alarms.
-- Prod contains exactly the 15 alarms listed above.
+- Prod contains exactly the 8 alarms in the 2026-08-26 revision note (the 15-alarm table is the superseded ranking).
 - There is a confirmed, owned prod notification destination.
 - With explicit approval, use `cloudwatch set-alarm-state` on one retained alarm
   to test AlarmActions without changing its CloudFormation-owned threshold;
@@ -218,20 +232,20 @@ that can fail adoption or introduce unintended deletion/replacement semantics.
 
 ### Intelligent-Tiering checklist
 
-- [ ] Export the current lifecycle configuration for both buckets; absence is an
+- [x] Export the current lifecycle configuration for both buckets (none); absence is an
       expected valid state.
-- [ ] Record bucket versioning, Object Lock, replication, and existing rule-filter
+- [x] Record bucket versioning, Object Lock, replication (all absent), and existing rule-filter
       state before designing the merged policy.
-- [ ] Prepare lifecycle JSON that transitions all binary objects to
+- [x] Prepare lifecycle JSON that transitions (`scripts/s3-intelligent-tiering.sh`) all binary objects to
       `INTELLIGENT_TIERING` and contains no expiration action.
-- [ ] Confirm whether temporary `uploads/` objects are already cleaned by the
+- [x] Confirm whether temporary `uploads/` objects (console `expire` sweeps them; no lifecycle expiration added) are already cleaned by the
       application sweep; do not create a conflicting lifecycle expiration.
-- [ ] Re-read the live lifecycle immediately before apply. Because PUT replaces
+- [x] Re-read the live lifecycle immediately before apply (the script refuses foreign rules). Because PUT replaces
       the entire configuration, merge existing rules and abort if live state
       differs from the reviewed baseline.
-- [ ] Review the exact lifecycle diff and estimate transition-request plus
+- [x] Review the exact lifecycle diff and estimate (≈950 objects → monitoring ≈$0.003/month, one-time transition ≈$0.01) transition-request plus
       monitoring fees for the measured object count; obtain approval.
-- [ ] Apply dev first, then prod on explicit approval.
+- [ ] Apply dev first (done 2026-08-26), then prod (`scripts/s3-intelligent-tiering.sh yyt-binary-dist --apply`).
 - [ ] Verify lifecycle attachment without expecting immediate tier movement.
 - [ ] Observe for at least 30 days, then record the actual Frequent/Infrequent
       bytes using S3 Storage Lens or daily CloudWatch storage metrics plus Cost
