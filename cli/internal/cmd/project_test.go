@@ -66,8 +66,8 @@ func TestProjectListGetCreateUpdateDelete(t *testing.T) {
 func TestProjectVersions(t *testing.T) {
 	var body map[string]any
 	var lastPath string
-	v1 := map[string]any{"id": "ver_1", "projectId": "prj_1", "name": "1.0.0", "note": "first", "createdBy": "octo", "createdAt": 1756000000}
-	v2 := map[string]any{"id": "ver_2", "projectId": "prj_1", "name": "1.0.1", "note": nil, "createdBy": "octo", "createdAt": 1756000100}
+	v1 := map[string]any{"id": "ver_1", "projectId": "prj_1", "name": "1.0.0", "note": "first", "createdBy": "octo", "createdAt": 1756000000, "artifactCount": 1, "assetCount": 1}
+	v2 := map[string]any{"id": "ver_2", "projectId": "prj_1", "name": "1.0.1", "note": nil, "createdBy": "octo", "createdAt": 1756000100, "artifactCount": 0, "assetCount": 0}
 	detail := map[string]any{}
 	for k, v := range v1 {
 		detail[k] = v

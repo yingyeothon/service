@@ -31,8 +31,15 @@ async function seedProject(db: TeamDb, teamId: string, id = "prj_1") {
  */
 export function teamContract(
   make: () => TeamDb | Promise<TeamDb>,
-  seed: { bundle: (id: string) => Promise<void> } = {
+  seed: {
+    bundle: (id: string) => Promise<void>;
+    /** Creates artifact `id`; `deleteArtifact` must cascade its version links. */
+    artifact: (id: string) => Promise<void>;
+    deleteArtifact: (id: string) => Promise<void>;
+  } = {
     bundle: async () => undefined,
+    artifact: async () => undefined,
+    deleteArtifact: async () => undefined,
   },
 ) {
   describe("teams", () => {
@@ -702,6 +709,46 @@ export function teamContract(
         artifactId: null,
         createdAt: 40,
       });
+      // The list and the single lookup carry live link counts per kind.
+      expect(
+        (await db.listVersions("prj_1")).map((v) => [
+          v.id,
+          v.artifactCount,
+          v.assetCount,
+        ]),
+      ).toEqual([
+        ["ver_2", 0, 1],
+        ["ver_1", 0, 2],
+      ]);
+      expect(await db.findVersion("ver_1")).toMatchObject({
+        artifactCount: 0,
+        assetCount: 2,
+      });
+      // An artifact link counts while the artifact lives; deleting the
+      // artifact cascades the link (the fake mirrors it through `artifactExists`).
+      await seed.artifact("art_1");
+      await db.addVersionLink(
+        {
+          id: "lnk_5",
+          versionId: "ver_1",
+          kind: "artifact",
+          artifactId: "art_1",
+        },
+        by(M1, 43),
+      );
+      expect(await db.findVersion("ver_1")).toMatchObject({
+        artifactCount: 1,
+        assetCount: 2,
+      });
+      await seed.deleteArtifact("art_1");
+      expect(await db.findVersion("ver_1")).toMatchObject({
+        artifactCount: 0,
+        assetCount: 2,
+      });
+      expect((await db.listVersionLinks("ver_1")).map((l) => l.id)).toEqual([
+        "lnk_1",
+        "lnk_4",
+      ]);
       // A link id from another version cannot be removed through this one.
       expect(await db.removeVersionLink("ver_1", "lnk_3", by(M1, 45))).toBe(
         false,
@@ -709,6 +756,7 @@ export function teamContract(
       expect(await db.removeVersionLink("ver_1", "lnk_1", by(M1, 46))).toBe(
         true,
       );
+      expect((await db.findVersion("ver_1"))?.assetCount).toBe(1);
       expect(await db.removeVersionLink("ver_1", "lnk_1", by(M1, 47))).toBe(
         false,
       );
@@ -746,6 +794,7 @@ export function teamContract(
         ),
       ).toEqual([
         "version.unlink",
+        "version.link",
         "version.link",
         "version.link",
         "version.link",
@@ -1037,11 +1086,25 @@ export function teamContract(
 }
 
 describe("memory team db", () => {
-  teamContract(() =>
-    createMemoryTeamDb({
-      memberExists: (id) => ["m1", "m2", "m3", "m9"].includes(id),
-      bundleExists: (id) => id === "ab_1",
-    }),
+  const artifacts = new Set<string>();
+  teamContract(
+    () => {
+      artifacts.clear();
+      return createMemoryTeamDb({
+        memberExists: (id) => ["m1", "m2", "m3", "m9"].includes(id),
+        bundleExists: (id) => id === "ab_1",
+        artifactExists: (id) => artifacts.has(id),
+      });
+    },
+    {
+      bundle: async () => undefined,
+      artifact: async (id) => {
+        artifacts.add(id);
+      },
+      deleteArtifact: async (id) => {
+        artifacts.delete(id);
+      },
+    },
   );
 
   it("refuses to delete a project that still has resources", async () => {

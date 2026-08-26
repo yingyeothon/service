@@ -166,6 +166,9 @@ export interface Version {
   note: string | null;
   createdBy: string | null;
   createdAt: number;
+  /** Live links per kind; an artifact removed by the retention policy drops out. */
+  artifactCount: number;
+  assetCount: number;
 }
 
 export type VersionLinkKind = "artifact" | "asset_version";

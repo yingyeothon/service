@@ -1,6 +1,8 @@
 id:        ver_1
 name:      1.0.0
 note:      first
+artifacts: 1
+assets:    1
 createdBy: octo
 created:   2025-08-24T01:46:40Z
 
