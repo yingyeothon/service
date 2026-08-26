@@ -128,7 +128,7 @@ export function teamContract(
       expect(h.rows.filter((r) => r.action === "team.update")).toHaveLength(2);
     });
 
-    it("deletes an team without projects, cascading members and history", async () => {
+    it("deletes a team without projects, cascading members and history", async () => {
       const db = await make();
       await seedTeam(db);
       await seedProject(db, "team_1");

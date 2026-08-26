@@ -1,8 +1,8 @@
 -- "Organization" is renamed to "team" everywhere (docs/decisions.md *Teams and
 -- projects*). Pure rename of the objects `6_org_project` created — no rows
 -- change, and every foreign key keeps its referential action. Foreign keys
--- cannot be renamed in MariaDB, so each is dropped and re-added under its new
--- name inside the same statement.
+-- cannot be renamed in MariaDB, so each is dropped, the column renamed, and the
+-- key re-added under its new name.
 
 -- Tables
 RENAME TABLE `organizations` TO `teams`;

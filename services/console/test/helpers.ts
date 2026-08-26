@@ -147,7 +147,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     };
   };
   /**
-   * A member with an team and a project of their own — what every resource
+   * A member with a team and a project of their own — what every resource
    * route needs since todo/17 P3. Each recorded team write is rate-limited to
    * one per 500 ms per member, so the writes land in slots far from any the
    * test will use itself, and the clock is put back afterwards so `NOW_SEC`
