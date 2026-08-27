@@ -205,6 +205,25 @@ func (c *Client) GetRaw(ctx context.Context, key string) ([]byte, error) {
 	return c.get(ctx, key)
 }
 
+// GetRawMany reads several unprefixed keys in one round trip; a missing key
+// is a nil entry.
+func (c *Client) GetRawMany(ctx context.Context, keys ...string) ([][]byte, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	vals, err := c.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis: %w", sanitize(err))
+	}
+	out := make([][]byte, len(vals))
+	for i, v := range vals {
+		if s, ok := v.(string); ok {
+			out[i] = []byte(s)
+		}
+	}
+	return out, nil
+}
+
 // Push RPUSHes an envelope to an unprefixed queue key, re-applies the TTL and
 // returns the new depth. Depth is free here (`RPUSH` replies with it), which
 // is what makes actor-death detection cheap.

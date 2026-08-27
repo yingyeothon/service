@@ -29,6 +29,10 @@ type Counters struct {
 	Aborts              atomic.Int64 `json:"aborts"`
 	SessionsReplaced    atomic.Int64 `json:"sessionsReplaced"`
 	RedisErrors         atomic.Int64 `json:"redisErrors"`
+	// `GET /parties/{id}`: answered rosters and refusals, so an operator can
+	// see whether a game's entry API reaches the gateway at all.
+	PartyReads    atomic.Int64 `json:"partyReads"`
+	PartyRejected atomic.Int64 `json:"partyRejected"`
 	// Rejected handshakes by HTTP status, so a 401 flood and a 502 storm
 	// look different.
 	Rejected401   atomic.Int64
@@ -162,6 +166,8 @@ func (r *Registry) snapshot(channels bool) snapshot {
 			"aborts":              c.Aborts.Load(),
 			"sessionsReplaced":    c.SessionsReplaced.Load(),
 			"redisErrors":         c.RedisErrors.Load(),
+			"partyReads":          c.PartyReads.Load(),
+			"partyRejected":       c.PartyRejected.Load(),
 			"rejected401":         c.Rejected401.Load(),
 			"rejected403":         c.Rejected403.Load(),
 			"rejected404":         c.Rejected404.Load(),
