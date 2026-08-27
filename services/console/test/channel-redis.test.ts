@@ -343,19 +343,19 @@ describe("participant redis credentials", () => {
     // counted into this stage's report.
     h.redisAcl.keys.add(`game:prod:q_busy:k0`);
     h.redisAcl.keys.add(`console:${STAGE}:sess:abc`);
-    h.redisAcl.memory = { usedBytes: 10, maxBytes: 100 };
+    h.redisAcl.memory = { usedBytes: 10, maxBytes: 100, evictedKeys: 3 };
 
     const r = await runRedisUsageReport({
       admin: h.redisAcl,
       stage: STAGE,
       logger: nullLogger,
-      warnAbove: 5,
     });
     expect(r.gameKeys).toBe(8);
     expect(r.channels).toBe(2);
     expect(r.top[0]).toEqual({ channelId: "q_busy", keys: 7 });
     expect(r.usedBytes).toBe(10);
     expect(r.maxBytes).toBe(100);
+    expect(r.evictedKeys).toBe(3);
   });
 
   it("usage report is a no-op when the stage has no issuer", async () => {

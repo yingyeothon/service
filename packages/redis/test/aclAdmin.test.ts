@@ -3,6 +3,7 @@ import { isAppError } from "@yyt/core";
 import {
   createMemoryAclAdmin,
   createRedisAclAdmin,
+  parseServerMemory,
   redisAclOptionsFromEnv,
   type RedisAclCommands,
 } from "../src/index.js";
@@ -271,5 +272,23 @@ describe("createMemoryAclAdmin", () => {
     // The user really is gone despite the throw — a fake that rolled it back
     // would make "a failed revoke leaves the credential" green and wrong.
     expect(a.users.size).toBe(0);
+  });
+});
+
+describe("parseServerMemory", () => {
+  it("reads both sections of one INFO reply", () => {
+    const info =
+      "# Memory\r\nused_memory:1901680\r\nused_memory_human:1.81M\r\nmaxmemory:134217728\r\n\r\n# Stats\r\ntotal_connections_received:5\r\nevicted_keys:12\r\n";
+    expect(parseServerMemory(info)).toEqual({
+      usedBytes: 1901680,
+      maxBytes: 134217728,
+      evictedKeys: 12,
+    });
+  });
+
+  it("refuses a reply without the stats section instead of reporting zero evictions", () => {
+    expect(() =>
+      parseServerMemory("# Memory\r\nused_memory:1\r\nmaxmemory:0\r\n"),
+    ).toThrow(/stats section/);
   });
 });

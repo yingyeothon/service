@@ -15,6 +15,7 @@ export {
 export {
   ACL_USERNAME_RE,
   createRedisAclAdmin,
+  parseServerMemory,
   redisAclMissing,
   redisAclOptionsFromEnv,
   type RedisAclAdmin,
