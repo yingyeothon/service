@@ -112,7 +112,7 @@ One deployment per participant makes a single env var sufficient; no key lookup 
 
 ## Platform gateway path (added 2026-08-25)
 
-The self-hosted WebSocket gateway (`todo/14-websocket-gateway.md`, `docs/decisions.md` _Realtime gateway_) replaces the API Gateway authorizer for `lobby` and `q` channels. The **token contract is unchanged** — that is the whole point of writing this doc around the token rather than the authorizer — but three things differ:
+The self-hosted WebSocket gateway (`docs/realtime-gateway-design.md`, `docs/decisions.md` _Realtime gateway_) replaces the API Gateway authorizer for `lobby` and `q` channels. The **token contract is unchanged** — that is the whole point of writing this doc around the token rather than the authorizer — but three things differ:
 
 - **Verification is a call, not a key.** The gateway is platform-operated and serves every participant's channels, so it must never hold a channel secret. It verifies with `GET /c/{authChannelId}/verify` (Bearer) and caches the answer keyed by a hash of the token until the JWT's `exp`. `authChannelId` comes from the gateway channel's config, not from the client: `verifyChannelToken` pins `channelId`, so a token signed for one auth channel is rejected everywhere else.
 - **One token, both sockets.** A player uses the same JWT for the lobby socket and the dungeon (`q`) socket, because both channels point at the same auth channel. Nothing is re-signed at any point, exactly as in the match path above. Consequence: the verify cache has a high hit rate, which is why it is load-bearing — auth's `reservedConcurrency` is 10 and an 8-player dungeon start would otherwise burst 8 verifies.

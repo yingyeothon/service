@@ -21,7 +21,7 @@ contract is a wire format documented here.
 | `GATEWAY_MAX_CONNECTIONS`              | no       | live socket cap, default 64 (the design ceiling is 10 players)                                   |
 | `GATEWAY_LOG_LEVEL`                    | no       | `debug` / `info` / `warn` / `error`                                                              |
 
-The Redis account must span two namespaces (`todo/14` §5):
+The Redis account must span two namespaces (`docs/realtime-gateway-design.md`, key table):
 `resetkeys ~gateway:{stage}:* ~game:{stage}:* resetchannels &game:out:{stage}:*`,
 plus `-@dangerous` like every service account. It is created in the private
 `yyt-stateful` repo, never here.
@@ -79,7 +79,7 @@ Close codes the gateway sends:
 | code   | meaning                                                     | client should                                                                    |
 | ------ | ----------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `4000` | replaced by a newer socket of the same user on this channel | stop; the other tab won                                                          |
-| `4001` | `q`: the actor stopped consuming (abort, `todo/14` §2.5)    | show "server stopped responding", return to lobby; retry with a **new** `gameId` |
+| `4001` | `q`: the actor stopped consuming (abort)                    | show "server stopped responding", return to lobby; retry with a **new** `gameId` |
 | `4002` | idle: no pong within 75 s                                   | reconnect                                                                        |
 | `4003` | policy: 50 refused messages on one socket                   | fix the client                                                                   |
 | `4004` | the channel expired or was disabled                         | stop                                                                             |
@@ -242,7 +242,7 @@ One socket per `(kind, channel, user)`: a newer one replaces the older
 (`4000`). A lobby socket and a q socket may coexist. The binding is mirrored to
 `gateway:{stage}:session:{kind}:{channelId}:{userId} -> connectionId` (15 min,
 compare-and-delete on release) so the game's HTTP API can see who is online.
-Every key the gateway writes has a TTL; the layout is the `todo/14` §5 table.
+Every key the gateway writes has a TTL; the layout is the key table in `docs/realtime-gateway-design.md`.
 
 ## Build, run, release
 
@@ -299,7 +299,7 @@ curl -s http://127.0.0.1:8080/livez
 the same box as a systemd service. One container per stage (`dev` on 8080,
 `prod` on 8081, say). Measured footprint: **8.7 MiB RSS** (Go heap 2.3 MB,
 runtime 13 MB reserved) while the smoke drives it, so `--memory 64m` for dev
-and `128m` for prod are generous — the 256 MB in `todo/14` was a ceiling,
+and `128m` for prod are generous — the 256 MB in the original design was a ceiling,
 not a need. `GOMEMLIMIT` at ~75 % of the cap makes the GC work harder
 before the kernel OOM-kills; TLS terminates in front of it (Caddy/nginx with Let's
 Encrypt for `gw{-dev}.yyt.life`, proxying `/` as a WebSocket upgrade) or in

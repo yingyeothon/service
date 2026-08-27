@@ -47,6 +47,7 @@
 - Console sessions: the cookie value is a 32-byte random id and Redis stores it under `sess:{sha256(id)}`, so a Redis read never yields a usable cookie. `next` after login must match a relative path (`/…`, not `//host` or `/\host`); everything else falls back to `/`.
 - Console bootstrap admins are keyed by GitHub login (`ADMIN_GITHUB_LOGINS`) and re-checked on every login; member rows are keyed by the immutable `github_id`. Treat the list as a bootstrap aid, not as the permission store — promote real admins in the DB and keep the list short.
 - The `yyt-env-credential` gitleaks rule also matches `const token = someCall(...)`; name such locals `bearer`/`jwt` instead of `token`, and use only the `0123456789abcdef…`/`abcdef0123456789…` fixture strings (a `fedcba…` hex string trips `generic-api-key`). The same rule matches a Go struct literal `Token: "…"` in tests — bind the fixture to a local first (`wrong := strings.Repeat("abcdef0123456789", 4)`; `Token: wrong`).
+- Do not copy files from a legacy working tree that carries live `.env`/config secrets into this repo — port logic only, then rotate the exposed credentials once the legacy stack is retired.
 
 ## Catalog / user-named resources (2026-08-24)
 
@@ -61,6 +62,7 @@
 - Secret-bearing GET/PATCH responses (Slack hook URLs, minted tokens) always return an explicit `HttpResult` with `cache-control: no-store` — plain object returns skip the header.
 - GitHub device flow: keep the `device_code` server-side (Redis under an opaque handle), enforce the poll interval with a Redis `nx` gate, and mint the API token only after GitHub confirms the user.
 - gitleaks `[rules.allowlist]` matches the captured **secret group** by default; identifier-fed assignments (`keyPassword = keystoreProperties[...]`, Dart `cancelToken: controller?.token`) need `regexTarget = "line"` on the allowlist. After any allowlist change, prove a literal credential still trips the rule and re-run `gitleaks detect` over the full history.
+- Validate user-supplied path segments against the column width, not only against a character regex (the asset path regex admitted 519 characters into a 200-wide column and produced a 503), and forbid `.` in resource names that become path segments under the SPA host — the CloudFront SPA rewrite treats `maps.v2` as a static file and the page never opens.
 
 ## Public CDN assets (2026-08-25)
 
