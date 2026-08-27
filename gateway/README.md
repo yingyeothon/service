@@ -235,6 +235,57 @@ repo pulls and runs it (restart policy, 256 MB limit, TLS at its proxy or via
 `GATEWAY_TLS_*`), sets SSM `gateway-ws-url` so console renders `wsUrl`, and
 points `gw{-dev}.yyt.life` at the box.
 
+## Consuming the image
+
+Published on every `gateway/vX.Y.Z` tag as `ghcr.io/yingyeothon/yyt-gateway`
+with three tags: `:X.Y.Z` (immutable), `:main` (always the newest release —
+what the box pulls) and `:latest` (same as `:main`). Public, multi-arch
+(`linux/amd64`, `linux/arm64`), no login needed:
+
+```
+docker pull ghcr.io/yingyeothon/yyt-gateway:main
+```
+
+Minimal run (secrets as files so they never show in `docker inspect`; the
+Redis user is the gateway's own ACL account, see _Configuration_):
+
+```
+install -d -m 700 /etc/yyt-gateway
+printf '%s' "$GATEWAY_TOKEN" > /etc/yyt-gateway/token            # SSM /yyt-service/dev/gateway-token
+printf 'redis://<gateway-redis-user>:%s@127.0.0.1:6379/0' "$PW" > /etc/yyt-gateway/redis-url
+chmod 600 /etc/yyt-gateway/*
+
+docker run -d --name yyt-gateway-dev --restart unless-stopped \
+  --network host --memory 256m --memory-swap 256m --read-only \
+  -v /etc/yyt-gateway:/run/secrets:ro \
+  -e GATEWAY_STAGE=dev \
+  -e GATEWAY_CONSOLE_URL=https://console-dev.yyt.life \
+  -e GATEWAY_TOKEN_FILE=/run/secrets/token \
+  -e GATEWAY_REDIS_URL_FILE=/run/secrets/redis-url \
+  -e GATEWAY_LISTEN=:8080 \
+  ghcr.io/yingyeothon/yyt-gateway:main
+curl -s http://127.0.0.1:8080/livez
+```
+
+`--network host` is what lets `127.0.0.1:6379` reach the Redis that runs on
+the same box as a systemd service. One container per stage (`dev` on 8080,
+`prod` on 8081, say); TLS terminates in front of it (Caddy/nginx with Let's
+Encrypt for `gw{-dev}.yyt.life`, proxying `/` as a WebSocket upgrade) or in
+process with `GATEWAY_TLS_CERT`/`GATEWAY_TLS_KEY` mounted the same way.
+
+Upgrade = pull `:main` and recreate the container; every player is
+disconnected with `1001`, so do it before an event, never during:
+
+```
+docker pull ghcr.io/yingyeothon/yyt-gateway:main
+docker rm -f yyt-gateway-dev && docker run … (as above)
+```
+
+The step-by-step box setup lives in the private `yyt-stateful` repo
+(`todo-gateway.md`): ACL user, secret files, container, proxy, DNS, and the
+console's `gateway-ws-url` parameter that makes `wsUrl` appear on channel
+pages.
+
 Smoke against dev: `scripts/smoke/gateway.mjs <gatewayWsUrl> <debugKey> <authBaseUrl> <consoleBaseUrl>`.
 
 Never log tokens: the `Sec-WebSocket-Protocol` header carries the credential,
