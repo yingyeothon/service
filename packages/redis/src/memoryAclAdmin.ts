@@ -70,7 +70,7 @@ export function createMemoryAclAdmin(): MemoryAclAdmin {
     users,
     extraUsers,
     keys,
-    memory: { usedBytes: 1_000_000, maxBytes: 268_435_456 },
+    memory: { usedBytes: 1_000_000, maxBytes: 268_435_456, evictedKeys: 0 },
     failNext: (method, when = "before") => failing.set(method, when),
     issue: async ({ username, keyPattern, channelPattern }) => {
       check(username);

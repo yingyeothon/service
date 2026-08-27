@@ -37,6 +37,10 @@ import {
   runRedisUsageReport,
 } from "./expire.js";
 import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
+import {
+  createCloudWatchUsageMetrics,
+  runUsageDigest,
+} from "./usage-digest.js";
 import { createGithubLogin } from "./github.js";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { historyId } from "./team.js";
@@ -226,7 +230,8 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
 
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { stage, db, catalog, assets, team, state, redisAcl } = await getDeps();
+  const { stage, db, catalog, assets, team, state, redisAcl, kv } =
+    await getDeps();
   const artifacts = artifactStoreFromEnv();
   // Run every sweep even when one throws, then rethrow so the Errors alarm
   // still fires: chaining them bare meant a channel-expiry failure silently
@@ -250,7 +255,23 @@ export const expire = async (): Promise<void> => {
     () => runRedisAclReconcile({ admin: redisAcl, db, stage, logger }),
     // Redis has no per-account memory quota, so this is the whole defence:
     // see who is growing before `allkeys-lru` starts evicting someone else.
-    () => runRedisUsageReport({ admin: redisAcl, stage, logger }),
+    // The digest turns that report plus the S3/CloudFront metrics into one
+    // alarm-topic message when a line is crossed (no CloudWatch alarm slot).
+    async () => {
+      const redis = redisAcl
+        ? await runRedisUsageReport({ admin: redisAcl, stage, logger })
+        : undefined;
+      await runUsageDigest({
+        stage,
+        redis,
+        metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
+        bucket: process.env.ARTIFACT_BUCKET || undefined,
+        distributionId: process.env.ARTIFACT_CDN_DISTRIBUTION_ID || undefined,
+        kv,
+        notify: alarmNotify(),
+        logger,
+      });
+    },
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),
   ]) {
@@ -266,8 +287,25 @@ export const expire = async (): Promise<void> => {
   if (failures.length > 0) throw failures[0];
 };
 
-let probeKv: Kv | undefined;
 let sns: SNSClient | undefined;
+
+/** Publisher for the stage's alarm topic; `undefined` when the stage has none. */
+function alarmNotify():
+  ((subject: string, message: string) => Promise<void>) | undefined {
+  const topic = process.env.ALARM_TOPIC_ARN ?? "";
+  if (!topic) return undefined;
+  sns ??= new SNSClient({});
+  return async (subject, message) => {
+    await sns!.send(
+      new PublishCommand({
+        TopicArn: topic,
+        Subject: subject,
+        Message: message,
+      }),
+    );
+  };
+}
+let probeKv: Kv | undefined;
 const probeMemory: GatewayProbeMemory = { announcedWithoutState: false };
 
 /**
@@ -279,26 +317,14 @@ const probeMemory: GatewayProbeMemory = { announcedWithoutState: false };
  */
 export const gatewayProbe = async (): Promise<void> => {
   const stage = env("STAGE");
-  const topic = process.env.ALARM_TOPIC_ARN ?? "";
   try {
     probeKv ??= createRedisKv(redisOptionsFromEnv());
-    sns ??= new SNSClient({});
     const r = await runGatewayProbe({
       wsUrl: process.env.GATEWAY_WS_URL ?? "",
       kv: probeKv,
       memory: probeMemory,
       logger,
-      notify: topic
-        ? async (subject, message) => {
-            await sns!.send(
-              new PublishCommand({
-                TopicArn: topic,
-                Subject: subject,
-                Message: message,
-              }),
-            );
-          }
-        : undefined,
+      notify: alarmNotify(),
     });
     logger.info("gateway probe", { stage, ...r });
   } catch (e) {

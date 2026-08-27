@@ -124,6 +124,9 @@ provider:
     POSTER_BUCKET: !Ref PosterBucket
     ARTIFACT_BUCKET: ${self:custom.artifactBucket.${self:custom.stage}}
     ARTIFACT_CDN_URL: ${self:custom.artifactCdn.${self:custom.stage}}
+    # CloudFront distribution id of ARTIFACT_CDN_URL, for the daily usage
+    # digest's traffic metric; plain SSM String set by hand, empty = no CDN metric.
+    ARTIFACT_CDN_DISTRIBUTION_ID: ${ssm:${self:custom.stageSsm}/cdn-distribution-id, ""}
   iam:
     role:
       statements:
@@ -165,8 +168,13 @@ provider:
           Condition:
             StringEquals:
               kms:ViaService: s3.${aws:region}.amazonaws.com
-        # Gateway probe → the stage's alarm topic. The topic is created by
-        # scripts/bootstrap-alarms.sh, so only its ARN is known here.
+        # Daily usage digest reads the S3 storage and CloudFront traffic
+        # metrics (reads only; no new alarm — 10-alarm free-tier cap).
+        - Effect: Allow
+          Action: cloudwatch:GetMetricStatistics
+          Resource: "*"
+        # Gateway probe and usage digest → the stage's alarm topic. The topic
+        # is created by scripts/bootstrap-alarms.sh, so only its ARN is known here.
         - !If
           - HasAlarmTopic
           - Effect: Allow

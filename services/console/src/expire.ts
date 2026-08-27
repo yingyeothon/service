@@ -323,6 +323,17 @@ export async function runRedisAclReconcile({
  */
 export const REDIS_CHANNEL_KEY_WARN = 5000;
 
+/** Raw numbers only; `runUsageDigest` judges them against the thresholds. */
+export interface RedisUsageReport {
+  usedBytes: number;
+  maxBytes: number;
+  /** Server-wide `evicted_keys` counter, shared by every stage on the host. */
+  evictedKeys: number;
+  gameKeys: number;
+  channels: number;
+  top: { channelId: string; keys: number }[];
+}
+
 /**
  * Daily usage report for the shared Redis instance.
  *
@@ -341,25 +352,18 @@ export async function runRedisUsageReport({
   admin,
   stage,
   logger,
-  warnAbove = REDIS_CHANNEL_KEY_WARN,
 }: {
   admin?: RedisAclAdmin;
   stage: string;
   logger: Logger;
-  warnAbove?: number;
-}): Promise<{
-  usedBytes: number;
-  maxBytes: number;
-  gameKeys: number;
-  channels: number;
-  top: { channelId: string; keys: number }[];
-}> {
-  const empty = {
+}): Promise<RedisUsageReport> {
+  const empty: RedisUsageReport = {
     usedBytes: 0,
     maxBytes: 0,
+    evictedKeys: 0,
     gameKeys: 0,
     channels: 0,
-    top: [] as { channelId: string; keys: number }[],
+    top: [],
   };
   if (!admin) return empty;
   const memory = await admin.serverMemory();
@@ -377,23 +381,14 @@ export async function runRedisUsageReport({
     .map(([channelId, keys]) => ({ channelId, keys }))
     .sort((a, b) => b.keys - a.keys)
     .slice(0, 5);
-  const report = {
+  const report: RedisUsageReport = {
     usedBytes: memory.usedBytes,
     maxBytes: memory.maxBytes,
+    evictedKeys: memory.evictedKeys,
     gameKeys: scanned,
     channels: counts.size,
     top,
   };
   logger.info("redis usage", { ...report, truncated });
-  // 80% of the ceiling: past that, LRU eviction is close enough that the next
-  // thing to disappear is somebody else's data.
-  if (memory.maxBytes > 0 && memory.usedBytes > memory.maxBytes * 0.8)
-    logger.warn("redis memory is near the ceiling", {
-      usedBytes: memory.usedBytes,
-      maxBytes: memory.maxBytes,
-    });
-  for (const t of top)
-    if (t.keys >= warnAbove)
-      logger.warn("channel is holding an unusual number of redis keys", t);
   return report;
 }

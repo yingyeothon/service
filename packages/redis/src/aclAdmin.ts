@@ -60,10 +60,35 @@ export interface RedisAclAdmin {
   close(): Promise<void>;
 }
 
+/**
+ * Parses `INFO memory stats` (both sections in one call; Redis 7+/Valkey
+ * syntax). A response without `evicted_keys` means the server ignored the
+ * second section — that is an error, not zero evictions.
+ */
+export function parseServerMemory(info: string): RedisServerMemory {
+  const field = (name: string): number | undefined => {
+    const m = new RegExp(`^${name}:(\\d+)`, "m").exec(info);
+    return m ? Number(m[1]) : undefined;
+  };
+  const evictedKeys = field("evicted_keys");
+  if (evictedKeys === undefined)
+    throw new Error("INFO stats section missing (Redis 7+ or Valkey required)");
+  return {
+    usedBytes: field("used_memory") ?? 0,
+    maxBytes: field("maxmemory") ?? 0,
+    evictedKeys,
+  };
+}
+
 export interface RedisServerMemory {
   usedBytes: number;
   /** 0 when `maxmemory` is unset, i.e. bounded only by the host. */
   maxBytes: number;
+  /**
+   * `INFO stats` `evicted_keys`: a counter since the server started, so only
+   * its growth between two readings means eviction happened in between.
+   */
+  evictedKeys: number;
 }
 
 export interface RedisKeyCounts {
@@ -322,17 +347,9 @@ export function createRedisAclAdmin({
         return Array.isArray(r) ? r.map(String) : [];
       }),
     serverMemory: async () =>
-      guard(async () => {
-        const info = String(await redis.call("INFO", "memory"));
-        const field = (name: string): number => {
-          const m = new RegExp(`^${name}:(\\d+)`, "m").exec(info);
-          return m ? Number(m[1]) : 0;
-        };
-        return {
-          usedBytes: field("used_memory"),
-          maxBytes: field("maxmemory"),
-        };
-      }),
+      guard(async () =>
+        parseServerMemory(String(await redis.call("INFO", "memory", "stats"))),
+      ),
     countKeys: async (match, group) =>
       guard(async () => {
         const counts = new Map<string, number>();
