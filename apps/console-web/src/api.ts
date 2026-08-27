@@ -285,6 +285,13 @@ export function createApiClient({
     removeVersionLink: (prj: string, ver: string, id: string) =>
       del(`${projectPath(prj)}/versions/${enc(ver)}/links/${enc(id)}`),
 
+    teamIssues: (
+      team: string,
+      q: { status?: IssueStatus; limit?: number } = {},
+    ) =>
+      get<{ issues: Issue[] }>(
+        `${teamPath(team)}/issues${qs({ status: q.status, limit: q.limit === undefined ? undefined : String(q.limit) })}`,
+      ).then((r) => r.issues),
     issues: (prj: string, status?: IssueStatus) =>
       get<{ issues: Issue[] }>(
         `${projectPath(prj)}/issues${qs({ status })}`,

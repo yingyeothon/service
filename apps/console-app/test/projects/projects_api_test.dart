@@ -75,6 +75,75 @@ void main() {
     expect(calls.last, 'GET /projects/prj_1/issues?status=open');
   });
 
+  test('listTeamIssues passes status and limit as query parameters', () async {
+    final calls = <String>[];
+    final client = MockClient((req) async {
+      calls.add('${req.url.path}?${req.url.query}');
+      return _json({
+        'issues': [
+          {
+            'id': 'iss_1',
+            'projectId': 'prj_2',
+            'number': 1,
+            'title': 't',
+            'status': 'open',
+            'createdBy': 'me',
+            'createdAt': 1,
+            'updatedAt': 2,
+          },
+        ],
+      });
+    });
+    final api = ProjectsApi(token: 'tok', client: client);
+    final all = await api.listTeamIssues('team a');
+    expect(all.single.projectId, 'prj_2');
+    await api.listTeamIssues('team a', status: 'open', limit: 5);
+    expect(calls, [
+      '/teams/team%20a/issues?',
+      '/teams/team%20a/issues?status=open&limit=5',
+    ]);
+  });
+
+  test(
+    'listTeamIssuesCompat walks the projects when the route is missing',
+    () async {
+      Map<String, dynamic> issue(String prj, int n, int at) => {
+        'id': '${prj}_$n',
+        'projectId': prj,
+        'number': n,
+        'title': 't',
+        'status': 'open',
+        'createdBy': 'me',
+        'createdAt': 1,
+        'updatedAt': at,
+      };
+      final client = MockClient((req) async {
+        switch (req.url.path) {
+          case '/teams/team_a/issues':
+            return _json({
+              'error': {'code': 'not_found', 'message': 'route not found'},
+            }, 404);
+          case '/projects/p1/issues':
+            return _json({
+              'issues': [issue('p1', 1, 5), issue('p1', 2, 1)],
+            });
+          case '/projects/p2/issues':
+            return _json({
+              'issues': [issue('p2', 1, 3)],
+            });
+        }
+        return http.Response('', 500);
+      });
+      final api = ProjectsApi(token: 'tok', client: client);
+      final projects = [
+        const Project(id: 'p1', teamId: 'team_a', name: 'a', description: ''),
+        const Project(id: 'p2', teamId: 'team_a', name: 'b', description: ''),
+      ];
+      final got = await api.listTeamIssuesCompat('team_a', projects, limit: 2);
+      expect(got.map((i) => i.id), ['p1_1', 'p2_1']);
+    },
+  );
+
   test('posts issue, comment and status changes', () async {
     final bodies = <String, String>{};
     final client = MockClient((req) async {

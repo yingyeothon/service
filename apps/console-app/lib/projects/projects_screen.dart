@@ -7,30 +7,34 @@ import 'package:yyt_console/projects/issues_screen.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/profile_menu.dart';
 import 'package:yyt_console/projects/projects_api.dart';
+import 'package:yyt_console/projects/team_expansion_store.dart';
+import 'package:yyt_console/projects/team_issues_screen.dart';
 import 'package:flutter/material.dart';
 
-/// How many discussions the tab shows before "전체 보기".
+/// How many discussions each team shows before "전체 보기".
 const recentDiscussionCount = 3;
 
-/// How many issues each project accordion shows.
+/// How many of a team's issues (across its projects) the accordion shows.
 const recentIssueCount = 5;
 
-/// Newest activity first, capped to [recentIssueCount].
-List<Issue> recentIssues(List<Issue> issues) =>
-    (issues.toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)))
-        .take(recentIssueCount)
-        .toList();
-
-/// Teams the member is seated in. Per team, two sections: the team's
-/// discussions plus one accordion per project with its latest issues (the
-/// first project starts open), then the plain project list.
+/// Teams the member is seated in, one accordion per team: the team's
+/// discussions, its five most recently touched issues across every project,
+/// then the project list. The first team starts open, the rest closed;
+/// what the user toggles is kept on the device.
 class ProjectsScreen extends StatefulWidget {
-  const ProjectsScreen({super.key, required this.authState, this.api});
+  const ProjectsScreen({
+    super.key,
+    required this.authState,
+    this.api,
+    this.expansionStore = const SecureTeamExpansionStore(),
+  });
 
   final AuthState authState;
 
   /// Test seam; the screen builds and owns its own client otherwise.
   final ProjectsApi? api;
+
+  final TeamExpansionStore expansionStore;
 
   @override
   State<ProjectsScreen> createState() => _ProjectsScreenState();
@@ -41,16 +45,12 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   Map<String, List<Project>> _projects = const {};
   Map<String, List<Discussion>> _discussions = const {};
 
-  /// Per project: `null` while loading, an empty list when nothing came back.
+  /// Per team: `null` while loading, an empty list when nothing came back.
   final Map<String, List<Issue>?> _recent = {};
-
-  /// Projects whose accordion is open; a refresh refetches exactly these.
-  final Set<String> _expanded = {};
-
-  /// Teams whose first project was auto-expanded once; a later refresh
-  /// respects what the user collapsed.
-  final Set<String> _seenTeams = {};
   final Map<String, String> _recentErrors = {};
+
+  /// Persisted accordion state; teams missing here use the default.
+  Map<String, bool>? _expanded;
   String? _error;
   bool _loading = false;
 
@@ -69,9 +69,20 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     super.dispose();
   }
 
+  /// Sorted teams: the first is open unless the device remembers otherwise.
+  bool _isExpanded(Team team, int index) => _expanded?[team.id] ?? (index == 0);
+
+  Future<void> _setExpanded(Team team, bool open) async {
+    final next = {...?_expanded, team.id: open};
+    setState(() => _expanded = next);
+    if (open && team.canRead) _loadRecent(team);
+    await widget.expansionStore.write(next);
+  }
+
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
+      _expanded ??= await widget.expansionStore.read();
       final teams =
           (await _api.listTeams()).toList()
             ..sort((a, b) => a.name.compareTo(b.name));
@@ -109,25 +120,10 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
         _recentErrors.clear();
         _error = null;
       });
-      // The first project of every team starts expanded (the ExpansionTile
-      // keeps its open state across rebuilds, so `_expanded` remembers the
-      // rest); every open accordion refetches, the others load when opened.
-      final known = <String>{};
-      for (final team in teams) {
-        final list = projects[team.id] ?? const <Project>[];
-        for (final project in list) {
-          known.add(project.id);
-        }
-        final first = list.firstOrNull;
-        if (first != null && !_seenTeams.contains(team.id)) {
-          _expanded.add(first.id);
-        }
-        _seenTeams.add(team.id);
-      }
-      _expanded.retainAll(known);
-      for (final team in teams) {
-        for (final project in projects[team.id] ?? const <Project>[]) {
-          if (_expanded.contains(project.id)) _loadRecent(project);
+      // Open accordions refetch their issues; closed ones load when opened.
+      for (var i = 0; i < teams.length; i += 1) {
+        if (teams[i].canRead && _isExpanded(teams[i], i)) {
+          _loadRecent(teams[i]);
         }
       }
     } on UnauthorizedException {
@@ -140,28 +136,41 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     }
   }
 
-  Future<void> _loadRecent(Project project, {bool force = false}) async {
-    if (!force && _recent.containsKey(project.id)) return;
+  Future<void> _loadRecent(Team team, {bool force = false}) async {
+    if (!force && _recent.containsKey(team.id)) return;
     setState(() {
-      _recent[project.id] = null;
-      _recentErrors.remove(project.id);
+      _recent[team.id] = null;
+      _recentErrors.remove(team.id);
     });
     try {
-      final issues = recentIssues(await _api.listIssues(project.id));
+      final issues = await _api.listTeamIssuesCompat(
+        team.id,
+        _projects[team.id] ?? const [],
+        limit: recentIssueCount,
+      );
       if (!mounted) return;
-      setState(() => _recent[project.id] = issues);
+      setState(() => _recent[team.id] = issues);
     } on UnauthorizedException {
       if (mounted) await widget.authState.invalidate(_api.token);
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _recent[project.id] = const [];
-        _recentErrors[project.id] = e.toString();
+        _recent[team.id] = const [];
+        _recentErrors[team.id] = e.toString();
       });
     }
   }
 
-  Future<void> _openIssue(Team team, Project project, Issue issue) async {
+  Project? _projectOf(Team team, Issue issue) =>
+      (_projects[team.id] ?? const <Project>[])
+          .where((p) => p.id == issue.projectId)
+          .firstOrNull;
+
+  Future<void> _openIssue(Team team, Issue issue) async {
+    // The project list may have failed or changed since; the detail route
+    // only needs the id, so a stub keeps the row tappable.
+    final project =
+        _projectOf(team, issue) ?? projectStub(team, issue.projectId);
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder:
@@ -173,7 +182,22 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
             ),
       ),
     );
-    if (mounted) await _loadRecent(project, force: true);
+    if (mounted) await _loadRecent(team, force: true);
+  }
+
+  Future<void> _openTeamIssues(Team team) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder:
+            (_) => TeamIssuesScreen(
+              authState: widget.authState,
+              team: team,
+              projects: _projects[team.id] ?? const [],
+              api: _api,
+            ),
+      ),
+    );
+    if (mounted) await _loadRecent(team, force: true);
   }
 
   Future<void> _openIssues(Team team, Project project) async {
@@ -187,7 +211,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
             ),
       ),
     );
-    if (mounted) await _loadRecent(project, force: true);
+    if (mounted) await _loadRecent(team, force: true);
   }
 
   Future<void> _openDiscussions(Team team) async {
@@ -261,6 +285,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     if (_teams == null && _error == null) {
       return const Center(child: CircularProgressIndicator());
     }
+    final teams = _teams ?? const <Team>[];
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
@@ -272,83 +297,81 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
               icon: Icons.cloud_off_rounded,
               text: '프로젝트를 불러오지 못했습니다.\n$_error',
             )
-          else if (_teams!.isEmpty)
+          else if (teams.isEmpty)
             const _Message(
               icon: Icons.groups_outlined,
               text: '속한 팀이 없습니다. 콘솔에서 팀에 참여한 뒤 다시 시도해주세요.',
             )
           else
-            for (final team in _teams!) ..._teamSection(team),
+            for (var i = 0; i < teams.length; i += 1)
+              _teamAccordion(teams[i], expanded: _isExpanded(teams[i], i)),
         ],
       ),
     );
   }
 
-  List<Widget> _teamSection(Team team) {
+  Widget _teamAccordion(Team team, {required bool expanded}) {
     final projects = _projects[team.id] ?? const <Project>[];
-    return [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
-        child: Row(
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          // The store is read before the first tile exists, so
+          // `initiallyExpanded` already carries the saved state.
+          key: PageStorageKey<String>('team-${team.id}'),
+          initiallyExpanded: expanded,
+          onExpansionChanged: (open) => _setExpanded(team, open),
+          tilePadding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
+          childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+          title: Text(
+            team.name,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text(
+            teamRoleLabel(team.role),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
           children: [
-            Expanded(
-              child: Text(
-                team.name,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
-              ),
-            ),
-            Chip(
-              label: Text(teamRoleLabel(team.role)),
-              visualDensity: VisualDensity.compact,
-            ),
+            if (!team.canRead)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                child: Text('팀 소유자의 승인을 기다리는 중입니다.'),
+              )
+            else ...[
+              _discussionCard(team),
+              _recentIssuesCard(team),
+              _sectionLabel('프로젝트'),
+              if (projects.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                  child: Text('프로젝트가 없습니다.'),
+                )
+              else
+                for (final project in projects)
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      title: Text(project.name),
+                      subtitle:
+                          project.description.isEmpty
+                              ? null
+                              : Text(
+                                project.description,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => _openIssues(team, project),
+                    ),
+                  ),
+            ],
           ],
         ),
       ),
-      if (!team.canRead)
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-          child: Text('팀 소유자의 승인을 기다리는 중입니다.'),
-        )
-      else ...[
-        // Section 1: discussions + the latest issues per project.
-        _discussionCard(team),
-        if (projects.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-            child: Text('프로젝트가 없습니다.'),
-          )
-        else ...[
-          _sectionLabel('최근 이슈'),
-          for (var i = 0; i < projects.length; i += 1)
-            _projectAccordion(
-              team,
-              projects[i],
-              initiallyExpanded: _expanded.contains(projects[i].id),
-            ),
-          // Section 2: the project list.
-          _sectionLabel('프로젝트'),
-          for (final project in projects)
-            Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                title: Text(project.name),
-                subtitle:
-                    project.description.isEmpty
-                        ? null
-                        : Text(
-                          project.description,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => _openIssues(team, project),
-              ),
-            ),
-        ],
-      ],
-    ];
+    );
   }
 
   Widget _sectionLabel(String text) => Padding(
@@ -420,39 +443,35 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     );
   }
 
-  Widget _projectAccordion(
-    Team team,
-    Project project, {
-    required bool initiallyExpanded,
-  }) {
-    final issues = _recent[project.id];
-    final error = _recentErrors[project.id];
+  Widget _recentIssuesCard(Team team) {
+    final issues = _recent[team.id];
+    final error = _recentErrors[team.id];
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          key: PageStorageKey<String>('recent-${project.id}'),
-          initiallyExpanded: initiallyExpanded,
-          onExpansionChanged: (open) {
-            if (open) {
-              _expanded.add(project.id);
-              _loadRecent(project);
-            } else {
-              _expanded.remove(project.id);
-            }
-          },
-          tilePadding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
-          childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-          title: Text(project.name),
-          subtitle:
-              issues == null
-                  ? null
-                  : Text(
-                    issues.isEmpty ? '이슈 없음' : '최근 이슈 ${issues.length}개',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    size: 18,
+                    color: CatalogPalette.mint,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '최근 이슈',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
             if (issues == null)
               const Padding(
                 padding: EdgeInsets.all(12),
@@ -466,36 +485,30 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
               )
             else if (error != null)
               Padding(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
                 child: Text('이슈를 불러오지 못했습니다.\n$error'),
               )
             else if (issues.isEmpty)
               const Padding(
-                padding: EdgeInsets.all(12),
+                padding: EdgeInsets.fromLTRB(12, 4, 12, 8),
                 child: Text('이슈가 없습니다.'),
               )
             else
               for (final issue in issues)
-                ListTile(
+                TeamIssueTile(
+                  issue: issue,
+                  projectName: _projectOf(team, issue)?.name,
                   dense: true,
-                  leading: IssueStatusIcon(open: issue.isOpen),
-                  title: Text(
-                    '#${issue.number} ${issue.title}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    '${issue.createdBy} · ${formatIssueTime(issue.updatedAt)}',
-                  ),
-                  onTap: () => _openIssue(team, project, issue),
+                  onTap: () => _openIssue(team, issue),
                 ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => _openIssues(team, project),
-                child: const Text('전체 이슈'),
+            if (issues != null && error == null && issues.isNotEmpty)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => _openTeamIssues(team),
+                  child: const Text('더보기'),
+                ),
               ),
-            ),
           ],
         ),
       ),

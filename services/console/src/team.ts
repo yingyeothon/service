@@ -40,6 +40,8 @@ export const PENDING_PER_TEAM = 50;
 export const DISCUSSIONS_PER_TEAM = 500;
 export const VERSIONS_PER_PROJECT = 500;
 export const ISSUES_PER_PROJECT = 2000;
+/** Cap (and default) of `GET /teams/{team}/issues?limit=`. */
+export const TEAM_ISSUE_FEED_MAX = 200;
 export const COMMENTS_PER_PARENT = 500;
 export const LINKS_PER_VERSION = 200;
 export const MD_BODY_MAX = 20_000;
@@ -139,6 +141,12 @@ const issuePatchBody = z
   .strict();
 const issuesQuery = z
   .object({ status: z.enum(ISSUE_STATUSES).optional() })
+  .passthrough();
+const teamIssuesQuery = z
+  .object({
+    status: z.enum(ISSUE_STATUSES).optional(),
+    limit: z.coerce.number().int().min(1).max(TEAM_ISSUE_FEED_MAX).optional(),
+  })
   .passthrough();
 const commentBody = z.object({ bodyMd: commentMd }).strict();
 const discussionCreateBody = z
@@ -749,6 +757,25 @@ export function createTeamRoutes({
   }
 
   const discussionRoutes: AnyRoute[] = [
+    defineRoute({
+      method: "GET",
+      path: "/teams/{team}/issues",
+      auth: true,
+      query: teamIssuesQuery,
+      handler: async (ctx) => {
+        const a = await teamAccess(ctx, ctx.params.team!);
+        const logins = await loginMap();
+        return {
+          issues: (
+            await team.listTeamIssues(a.team.id, {
+              status: ctx.query.status,
+              // The feed spans up to 20 × 2000 issues; never ship it whole.
+              limit: ctx.query.limit ?? TEAM_ISSUE_FEED_MAX,
+            })
+          ).map((i) => issueView(i, logins)),
+        };
+      },
+    }),
     {
       method: "GET",
       path: "/teams/{team}/discussions",

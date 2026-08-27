@@ -1048,6 +1048,38 @@ describe("issues and discussions", () => {
     );
     expect(c.statusCode, c.body).toBe(201);
     const cid = parse(c).id as string;
+    // Team-wide feed: the commented issue was touched last, then p2's issue,
+    // then issue 2; `limit` and `status` narrow it; guests get 403.
+    const feed = parse(
+      await h.app(
+        ev("GET", `/teams/${team.id}/issues`, { headers: member.cookie }),
+      ),
+    );
+    expect(feed.issues.map((i: Json) => [i.projectId, i.number])).toEqual([
+      [project.id, 1],
+      [project2.id, 1],
+      [project.id, 2],
+    ]);
+    expect(
+      parse(
+        await h.app(
+          ev("GET", `/teams/${team.id}/issues`, {
+            query: { limit: "1", status: "open" },
+            headers: member.cookie,
+          }),
+        ),
+      ).issues.map((i: Json) => i.number),
+    ).toEqual([1]);
+    expect(
+      (
+        await h.app(
+          ev("GET", `/teams/${team.id}/issues`, {
+            query: { limit: "0" },
+            headers: member.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(400);
     // Edit: author only. Delete: author or owner.
     h.clock.tick(1);
     expect(
