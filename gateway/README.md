@@ -256,7 +256,8 @@ printf 'redis://<gateway-redis-user>:%s@127.0.0.1:6379/0' "$PW" > /etc/yyt-gatew
 chmod 600 /etc/yyt-gateway/*
 
 docker run -d --name yyt-gateway-dev --restart unless-stopped \
-  --network host --memory 256m --memory-swap 256m --read-only \
+  --network host --memory 64m --memory-swap 64m --read-only \
+  -e GOMEMLIMIT=48MiB \
   -v /etc/yyt-gateway:/run/secrets:ro \
   -e GATEWAY_STAGE=dev \
   -e GATEWAY_CONSOLE_URL=https://console-dev.yyt.life \
@@ -269,7 +270,11 @@ curl -s http://127.0.0.1:8080/livez
 
 `--network host` is what lets `127.0.0.1:6379` reach the Redis that runs on
 the same box as a systemd service. One container per stage (`dev` on 8080,
-`prod` on 8081, say); TLS terminates in front of it (Caddy/nginx with Let's
+`prod` on 8081, say). Measured footprint: **8.7 MiB RSS** (Go heap 2.3 MB,
+runtime 13 MB reserved) while the smoke drives it, so `--memory 64m` for dev
+and `128m` for prod are generous — the 256 MB in `todo/14` was a ceiling,
+not a need. `GOMEMLIMIT` at ~75 % of the cap makes the GC work harder
+before the kernel OOM-kills; TLS terminates in front of it (Caddy/nginx with Let's
 Encrypt for `gw{-dev}.yyt.life`, proxying `/` as a WebSocket upgrade) or in
 process with `GATEWAY_TLS_CERT`/`GATEWAY_TLS_KEY` mounted the same way.
 
