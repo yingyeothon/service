@@ -50,6 +50,17 @@ client ──JWT──▶ match WS ──party──▶ POST /match-callback (si
 3. `pnpm install` (see below) and `scripts/deploy.sh <env-file> dev`. The output prints the `CallbackUrl`; set it as the match channel's `callbackUrl` (full config replace on PATCH).
 4. Smoke from the service repo: `scripts/smoke/dungeon.mjs` (`setup` → deploy → `run` → `clean`), which does steps 1–3 against `dev` with the debug hooks.
 
+### Gateway mode (sockets in the yyt realtime gateway)
+
+The same stack can terminate the party's sockets in the platform's realtime gateway (`gateway/README.md`, _q protocol_) instead of its own WebSocket API — the shape a contest game is expected to use:
+
+1. Create a **`q` channel** on the same auth channel in the console; its page shows `wsUrl` (`wss://gw.yyt.life/?channel=<id>`) and issues a **participant Redis credential** (shown once) scoped to `game:<stage>:<id>:*` / `game:out:<stage>:<id>:*`.
+2. In the env file set `GATEWAY_WS_URL` to that `wsUrl` and `REDIS_HOST/PORT/USER/PASSWORD` to the credential, with `REDIS_KEY_PREFIX=game:<stage>:<id>:` (the four tslib prefixes derive from it in `src/env.ts` and match what the console shows; the outbound pub/sub prefix `game:out:<stage>:<id>:` is derived too, never typed in).
+3. Deploy as above. The match callback now returns the gateway `wsUrl`; the client opens `${wsUrl}&gameId=${gameId}` with the same `["bearer", jwt]` subprotocol. The `ws`/`authorizer` functions and `WS_URL` stay deployed but are never invoked; the actor publishes `GatewayCommand`s over Redis pub/sub (`createRedisPubSubTransport`) and the gateway fans them out.
+4. Refusals arrive as HTTP handshake statuses (`401`/`403`/`404`/`410`), not as a socket that opens and closes. Close codes: `1000` = the game dropped you (normal finish), `4001` = the actor stopped consuming (retry with a new game), `4000` = replaced by a newer socket of the same user — table in `gateway/README.md`.
+
+Smoke: `scripts/smoke/dungeon.mjs setup … <outEnvFile> <outStateFile> gateway` creates the `q` channel and credential and writes them into the env file; `run` detects the mode from the callback's `wsUrl`. Never commit that env file (`local/` is gitignored).
+
 Sizing: `actor` timeout (180 s) ≥ `gameWaitingSeconds + gameRunningSeconds + LIFETIME_MARGIN_SECONDS` in `src/actor.ts`; the start event TTL uses the same sum. Set `maximumRetryAttempts: 0` on the actor — a retried game would replay from the start.
 
 ## Copying this directory

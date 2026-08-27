@@ -52,6 +52,12 @@ provider:
     WS_ENDPOINT: !Sub "https://${WebsocketsApi}.execute-api.${AWS::Region}.amazonaws.com/${self:custom.stage}"
     WS_URL: !Sub "wss://${WebsocketsApi}.execute-api.${AWS::Region}.amazonaws.com/${self:custom.stage}"
     GAME_ACTOR_LAMBDA_NAME: ${self:service}-${self:custom.stage}-actor
+    # Optional: terminate sockets in the yyt realtime gateway instead of the
+    # WebSocket API above (the `wsUrl` of a console `q` channel; REDIS_* then
+    # hold that channel's participant credential and REDIS_KEY_PREFIX its
+    # `game:<stage>:<channelId>:`). The ws/authorizer functions stay deployed
+    # but idle.
+    GATEWAY_WS_URL: ${env:GATEWAY_WS_URL, ""}
     # Optional: server-less rooms via the topic service (POST /match-callback-topic).
     TOPIC_BASE_URL: ${env:TOPIC_BASE_URL, ""}
     TOPIC_API_KEY: ${env:TOPIC_API_KEY, ""}
