@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "id": "zone001",
+  "version": "2026-08-27-1",
+  "size": { "w": 20, "h": 10 },
+  "origin": { "x": 0, "y": 0 },
+  "blocked": "x",
+  "start": { "x": 1, "y": 1 },
+  "rows": [
+    "xxxxxxxxxxxxxxxxxxxx",
+    "x....a.............x",
+    "x..........xx......x",
+    "x....a.....xx..b...x",
+    "x..................x",
+    "x......xx..........x",
+    "x......xx..........x",
+    "x..................x",
+    "x..a...............x",
+    "xxxxxxxxxxxxxxxxxxxx"
+  ],
+  "npcs": [
+    {
+      "mark": "a",
+      "kind": "monster",
+      "templateId": "slime",
+      "stats": { "maxHp": 20, "attack": 4, "defence": 1 },
+      "spawn": { "initial": 1, "max": 2, "ratePerSec": 0.1 },
+      "exp": 10,
+      "drops": [{ "itemId": "slime_jelly", "probability": 0.5 }]
+    },
+    {
+      "mark": "b",
+      "kind": "monster",
+      "templateId": "boss",
+      "stats": { "maxHp": 60, "attack": 6, "defence": 2 },
+      "spawn": { "initial": 1, "max": 1, "ratePerSec": 0 },
+      "exp": 100,
+      "drops": [{ "itemId": "boss_horn", "probability": 1 }]
+    }
+  ],
+  "quests": [{ "id": "jelly_hunt", "templateId": "slime", "count": 3 }],
+  "clear": { "kind": "kill", "templateId": "boss" }
+}
