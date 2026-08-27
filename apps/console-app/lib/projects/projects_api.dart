@@ -57,6 +57,50 @@ class ProjectsApi {
     return _list(body['issues']).map(Issue.fromJson).toList();
   }
 
+  /// Every project of the team, most recently touched first (server order);
+  /// [limit] caps the page. A console older than the route answers 404
+  /// `not_found`; [listTeamIssuesCompat] walks the projects instead.
+  Future<List<Issue>> listTeamIssues(
+    String teamId, {
+    String? status,
+    int? limit,
+  }) async {
+    final query = {
+      if (status != null) 'status': status,
+      if (limit != null) 'limit': '$limit',
+    };
+    final base = AuthConfig.teamIssuesUrlOf(baseUrl, teamId);
+    final url =
+        query.isEmpty
+            ? base
+            : Uri.parse(base).replace(queryParameters: query).toString();
+    final body = await _get(url);
+    return _list(body['issues']).map(Issue.fromJson).toList();
+  }
+
+  /// [listTeamIssues], falling back to one `/projects/{id}/issues` call per
+  /// project (sorted here by `updatedAt`) when the server predates the
+  /// team route, so a new app against an old console still shows the feed.
+  Future<List<Issue>> listTeamIssuesCompat(
+    String teamId,
+    List<Project> projects, {
+    String? status,
+    int? limit,
+  }) async {
+    try {
+      return await listTeamIssues(teamId, status: status, limit: limit);
+    } on ApiException catch (e) {
+      if (e.status != 404) rethrow;
+    }
+    final perProject = await Future.wait([
+      for (final p in projects) listIssues(p.id, status: status),
+    ]);
+    final all =
+        perProject.expand((l) => l).toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return limit == null ? all : all.take(limit).toList();
+  }
+
   Future<Issue> getIssue(String projectId, int number) async => Issue.fromJson(
     _object(
       await _get(AuthConfig.projectIssueUrlOf(baseUrl, projectId, number)),

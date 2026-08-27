@@ -440,6 +440,11 @@ export interface TeamDb {
     filter?: { status?: IssueStatus },
   ): Promise<IssueRow[]>;
   countIssues(projectId: string): Promise<number>;
+  /** Every project of the team, most recently touched first (edit, status change, or new comment). */
+  listTeamIssues(
+    teamId: string,
+    filter?: { status?: IssueStatus; limit?: number },
+  ): Promise<IssueRow[]>;
   updateIssue(
     projectId: string,
     number: number,
@@ -1441,6 +1446,19 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
       ),
     countIssues: (projectId) =>
       run(() => prisma.issues.count({ where: { project_id: projectId } })),
+    listTeamIssues: (teamId, filter = {}) =>
+      run(async () =>
+        (
+          await prisma.issues.findMany({
+            where: {
+              projects: { team_id: teamId },
+              ...(filter.status ? { status: filter.status } : {}),
+            },
+            orderBy: [{ updated_at: "desc" }, { id: "desc" }],
+            ...(filter.limit ? { take: filter.limit } : {}),
+          })
+        ).map(toIssue),
+      ),
     updateIssue: (projectId, number, patch, by) =>
       tx(async (t) => {
         const teamId = await projectTeam(t, projectId);
@@ -2459,6 +2477,17 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
         .sort((a, b) => b.number - a.number),
     countIssues: async (projectId) =>
       [...issues.values()].filter((i) => i.projectId === projectId).length,
+    listTeamIssues: async (teamId, filter = {}) => {
+      const rows = [...issues.values()]
+        .filter(
+          (i) =>
+            projectOf(i.projectId)?.teamId === teamId &&
+            (!filter.status || i.status === filter.status),
+        )
+        .map((i) => ({ ...i }))
+        .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id));
+      return filter.limit ? rows.slice(0, filter.limit) : rows;
+    },
     updateIssue: (projectId, number, patch, by) =>
       atomic(() => {
         const p = projectOf(projectId);

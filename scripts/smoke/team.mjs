@@ -224,7 +224,9 @@ try {
     body: { title: "two" },
   });
   check("issue #2", i2.body?.number === 2, i2.text);
-  await new Promise((r) => setTimeout(r, 600));
+  // `updated_at` is second-precision and the tie-break is a random id: the
+  // feed check below needs the close to land in a later second than issue 2.
+  await new Promise((r) => setTimeout(r, 1100));
   const c = await call(`/projects/${prjId}/issues/1/comments`, {
     method: "POST",
     headers: as(owner),
@@ -245,6 +247,25 @@ try {
       detail.body?.comments[0]?.createdBy === owner.login &&
       detail.body?.createdBy === mate.login,
     detail.text.slice(0, 200),
+  );
+
+  // Team feed: issue 1 was closed last (after its comment), so it leads;
+  // `limit=1` keeps only it and `status=open` leaves issue 2.
+  const feed = await call(`/teams/${teamId}/issues`, { headers: as(mate) });
+  check(
+    "team issue feed, latest activity first",
+    feed.status === 200 &&
+      feed.body?.issues?.map((i) => i.number).join(",") === "1,2" &&
+      feed.body?.issues[0]?.projectId === prjId,
+    feed.text.slice(0, 200),
+  );
+  const feedOpen = await call(`/teams/${teamId}/issues?status=open&limit=1`, {
+    headers: as(mate),
+  });
+  check(
+    "team issue feed filters",
+    feedOpen.body?.issues?.map((i) => i.number).join(",") === "2",
+    feedOpen.text.slice(0, 200),
   );
 
   // ---- discussion + rate limit --------------------------------------

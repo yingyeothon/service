@@ -877,6 +877,17 @@ export function teamContract(
         3, 2, 1,
       ]);
       expect(await db.countIssues("prj_1")).toBe(3);
+      // Team-wide: latest activity first across projects, capped by limit.
+      expect((await db.listTeamIssues("team_1")).map((i) => i.id)).toEqual([
+        "iss_4",
+        "iss_3",
+        "iss_2",
+        "iss_1",
+      ]);
+      expect(
+        (await db.listTeamIssues("team_1", { limit: 2 })).map((i) => i.id),
+      ).toEqual(["iss_4", "iss_3"]);
+      expect(await db.listTeamIssues("team_none")).toEqual([]);
       expect(
         await db.updateIssue(
           "prj_1",
@@ -903,6 +914,15 @@ export function teamContract(
         status: "closed",
         closedAt: 52,
       });
+      // A status change counts as activity.
+      expect(
+        (await db.listTeamIssues("team_1", { limit: 1 })).map((i) => i.id),
+      ).toEqual(["iss_1"]);
+      expect(
+        (await db.listTeamIssues("team_1", { status: "open" })).map(
+          (i) => i.id,
+        ),
+      ).toEqual(["iss_4", "iss_3", "iss_2"]);
       expect(
         (await db.listIssues("prj_1", { status: "open" })).map((i) => i.number),
       ).toEqual([3, 2]);

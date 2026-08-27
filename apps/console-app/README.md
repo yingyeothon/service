@@ -37,11 +37,14 @@ only to the console API.
   as "not completed" instead of staying in progress when the user cancelled,
   missed the prompt, denied the unknown-sources permission or the installer
   failed. Waiting for the installer to return at all is capped at 10 min.
-- Projects tab: per team, the team discussions (`GET|POST
+- Projects tab: one accordion per team. Inside: the team discussions (`GET|POST
   /teams/{id}/discussions`, `GET …/{did}` with comments, `POST …/{did}/comments`;
-  latest 3 inline, the rest behind "전체 보기") and one accordion per project
-  with its 5 most recently updated issues (the first project starts open;
-  tapping an issue opens its detail), then the plain project list.
+  latest 3 inline, the rest behind "전체 보기"), the team's 5 most recently
+  touched issues across every project (`GET /teams/{id}/issues?limit=5`;
+  `updatedAt` moves on edit, status change and new comment; "더보기" opens the
+  full team list with an open/closed filter), then the plain project list.
+  The first team (by name) starts open, the rest closed; toggles are kept in
+  secure storage (`projects_expanded_teams`) and restored on the next launch.
 - Projects: `GET /teams/{id}/projects`, `GET|POST /projects/{id}/issues`,
   `GET /projects/{id}/issues/{n}` (with comments), `POST …/{n}/close|reopen`,
   `POST …/{n}/comments`. Writes need a seat (`owner`/`member`); an unseated
