@@ -39,6 +39,9 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=yyt realtime WebSocket gateway (lobby/q)
             org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+          # `:X.Y.Z` is immutable; `:main` and `:latest` always follow the
+          # newest tag (the box pulls `:main`).
           tags: |
             ghcr.io/${{ github.repository_owner }}/yyt-gateway:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/yyt-gateway:main
             ghcr.io/${{ github.repository_owner }}/yyt-gateway:latest
