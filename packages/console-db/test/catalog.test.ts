@@ -114,6 +114,77 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
     expect(await db.deleteArtifact("f1")).toBe(false);
   });
 
+  it("summarizeArtifacts: newest per app, distinct application ids, platform narrow", async () => {
+    const db = await make();
+    await db.insertApp(app("s1"));
+    await db.insertApp(app("s2"));
+    await db.insertApp(app("s3"));
+    await db.insertArtifact({
+      ...art("g1", "s1", 1),
+      tags: { version: "1", application_id: "id.debug" },
+    });
+    await db.insertArtifact({
+      ...art("g2", "s1", 2),
+      tags: { version: "2", application_id: "id.release" },
+    });
+    await db.insertArtifact({ ...art("g3", "s1", 2), tags: { version: "2" } }); // same second, higher id
+    await db.insertArtifact({
+      ...art("g4", "s1", 3),
+      platform: "ios",
+      tags: { version: "3", application_id: "id.ios" },
+    });
+    await db.insertArtifact({ ...art("g5", "s2", 1), tags: {} });
+    // Same second as g2/g3: ties break on the artifact id, ids are
+    // case-sensitive, and an empty id is not an id.
+    await db.insertArtifact({
+      ...art("g0", "s1", 2),
+      tags: { version: "2", application_id: "ID.RELEASE" },
+    });
+    await db.insertArtifact({
+      ...art("g6", "s2", 2),
+      tags: { version: "2", application_id: "" },
+    });
+    // A same-second tie breaks on the id of each application id's *newest*
+    // artifact: `id.debug` newest is g1b (t=2, sorts below g2) although it
+    // also shipped as g9 (older, greatest id) — so it lands after `id.release`.
+    await db.insertArtifact({
+      ...art("g9", "s1", 1),
+      tags: { version: "1", application_id: "id.debug" },
+    });
+    await db.insertArtifact({
+      ...art("g1b", "s1", 2),
+      tags: { version: "2", application_id: "id.debug" },
+    });
+    const byApp = async (filter?: { platform?: "android" | "ios" }) =>
+      new Map(
+        (await db.summarizeArtifacts(["s1", "s2", "s3"], filter)).map((s) => [
+          s.appId,
+          s,
+        ]),
+      );
+    const all = await byApp();
+    expect([...all.keys()].sort()).toEqual(["s1", "s2"]);
+    expect(all.get("s1")?.latest.id).toBe("g4");
+    expect(all.get("s1")?.applicationIds).toEqual([
+      "id.ios",
+      "id.release",
+      "id.debug",
+      "ID.RELEASE",
+    ]);
+    expect(all.get("s2")).toMatchObject({
+      latest: { id: "g6" },
+      applicationIds: [],
+    });
+    const android = await byApp({ platform: "android" });
+    expect(android.get("s1")?.latest.id).toBe("g3");
+    expect(android.get("s1")?.applicationIds).toEqual([
+      "id.release",
+      "id.debug",
+      "ID.RELEASE",
+    ]);
+    expect(await db.summarizeArtifacts([])).toEqual([]);
+  });
+
   it("pending uploads: lifecycle and expiry sweep", async () => {
     const db = await make();
     await db.insertApp(app("a1"));

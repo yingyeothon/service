@@ -138,6 +138,7 @@ export {
   type CatalogAppRow,
   type CatalogArtifactInput,
   type CatalogArtifactRow,
+  type CatalogArtifactSummary,
   type CatalogDb,
   type CatalogPendingUploadInput,
   type CatalogPendingUploadPatch,
