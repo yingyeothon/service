@@ -13,6 +13,12 @@ custom:
   # Optional stage-wide SNS topic for every alarm (scripts/bootstrap-alarms.sh);
   # empty means alarms exist but notify nobody.
   alarmTopic: ${ssm:/yyt-service/${self:custom.stage}/alarm-topic-arn, ""}
+  # The gateway liveness probe runs on a schedule only where the gateway is
+  # expected to be up around the clock; the dev container is stopped outside
+  # test windows and would page every 5 minutes.
+  gatewayProbeEnabled:
+    dev: false
+    prod: true
   domainSuffix:
     dev: "-dev"
     prod: ""
@@ -112,6 +118,9 @@ provider:
     # Shared secret the gateway presents on GET /gw/channels/{id}; empty until
     # the gateway ships, and the route answers 503 while it is.
     GATEWAY_TOKEN: ${ssm:${self:custom.stageSsm}/gateway-token, ""}
+    # Where the gateway probe publishes its down/recovered edges (no CloudWatch
+    # alarm involved). Empty means the probe logs and notifies nobody.
+    ALARM_TOPIC_ARN: ${self:custom.alarmTopic}
     POSTER_BUCKET: !Ref PosterBucket
     ARTIFACT_BUCKET: ${self:custom.artifactBucket.${self:custom.stage}}
     ARTIFACT_CDN_URL: ${self:custom.artifactCdn.${self:custom.stage}}
@@ -156,6 +165,14 @@ provider:
           Condition:
             StringEquals:
               kms:ViaService: s3.${aws:region}.amazonaws.com
+        # Gateway probe → the stage's alarm topic. The topic is created by
+        # scripts/bootstrap-alarms.sh, so only its ARN is known here.
+        - !If
+          - HasAlarmTopic
+          - Effect: Allow
+            Action: sns:Publish
+            Resource: ${self:custom.alarmTopic}
+          - !Ref AWS::NoValue
 
 functions:
   api:
@@ -176,6 +193,19 @@ functions:
     events:
       # 03:00 KST daily; a fixed time so operators can predict when channels flip.
       - schedule: cron(0 18 * * ? *)
+
+  gatewayProbe:
+    handler: src/handler.gatewayProbe
+    reservedConcurrency: 1
+    memorySize: 128
+    timeout: 20
+    events:
+      # docs/decisions.md *Realtime gateway* → Monitoring: GET /livez on the
+      # self-hosted gateway, SNS on the down/recovered edge only. A 5-minute
+      # blind spot is accepted; the alternative was an 11th CloudWatch alarm.
+      - schedule:
+          rate: rate(5 minutes)
+          enabled: ${self:custom.gatewayProbeEnabled.${self:custom.stage}, false}
 
 package:
   individually: true

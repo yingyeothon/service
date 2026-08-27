@@ -36,7 +36,9 @@ import {
   runRedisAclReconcile,
   runRedisUsageReport,
 } from "./expire.js";
+import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 import { createGithubLogin } from "./github.js";
+import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { historyId } from "./team.js";
 import { createS3PosterStore } from "./poster.js";
 
@@ -262,4 +264,47 @@ export const expire = async (): Promise<void> => {
     }
   }
   if (failures.length > 0) throw failures[0];
+};
+
+let probeKv: Kv | undefined;
+let sns: SNSClient | undefined;
+const probeMemory: GatewayProbeMemory = { announcedWithoutState: false };
+
+/**
+ * EventBridge every 5 minutes (prod only by schedule; the function exists on
+ * every stage so `aws lambda invoke` can run it by hand on dev). Its own Redis
+ * connection and no MariaDB: it must not share `getDeps()` with the API, whose
+ * cold start would otherwise pay for a Prisma client the probe never queries.
+ * Never throws — it has no Errors alarm (`rules/serverless-aws.md`).
+ */
+export const gatewayProbe = async (): Promise<void> => {
+  const stage = env("STAGE");
+  const topic = process.env.ALARM_TOPIC_ARN ?? "";
+  try {
+    probeKv ??= createRedisKv(redisOptionsFromEnv());
+    sns ??= new SNSClient({});
+    const r = await runGatewayProbe({
+      wsUrl: process.env.GATEWAY_WS_URL ?? "",
+      kv: probeKv,
+      memory: probeMemory,
+      logger,
+      notify: topic
+        ? async (subject, message) => {
+            await sns!.send(
+              new PublishCommand({
+                TopicArn: topic,
+                Subject: subject,
+                Message: message,
+              }),
+            );
+          }
+        : undefined,
+    });
+    logger.info("gateway probe", { stage, ...r });
+  } catch (e) {
+    logger.error("gateway probe crashed", {
+      stage,
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
 };
