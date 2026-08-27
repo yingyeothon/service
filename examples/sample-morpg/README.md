@@ -85,7 +85,7 @@ gateway's `/parties` route).
 Treat it as a verification harness written in prose. Every section ends with
 what it would reveal about the platform if it turns out to be hard.
 
-Companion documents: `todo/14-websocket-gateway.md` (the platform side of the
+Companion documents: `docs/realtime-gateway-design.md` (the platform side of the
 same plan) and `tslib/todo-fix.md` (the library side). This file never repeats
 them; it references them.
 
@@ -158,7 +158,7 @@ lobby (persistent, hours)                     dungeon (instanced, <=12 min)
 
 ### 3.1 Lobby protocol
 
-Specified in `todo/14-websocket-gateway.md` §2.3. The game depends on:
+Specified in `docs/realtime-gateway-design.md` §2.3. The game depends on:
 
 - `hello` as the first frame — `{ userId, tick, mapUrl, capabilities, zone }`.
   The client holds no content and no configuration of its own; it downloads the
@@ -193,7 +193,7 @@ silently instead of returning a typed error, the flag validation was skipped.
 
 ### 3.2 Dungeon channel
 
-Specified in `todo/14-websocket-gateway.md` §2.4-2.5. The game depends on:
+Specified in `docs/realtime-gateway-design.md` §2.4-2.5. The game depends on:
 
 - Connection authorization against `GameActorStartEvent.members`, so a client
   cannot join another party's dungeon by guessing a `gameId`.
@@ -304,7 +304,7 @@ Then: reward, `onGameEnd`, and back to the lobby.
 ### 4.6 Map bundle format
 
 This is a **platform contract, not a game detail**: the client, the dungeon
-lambda and the future map editor all parse it, and `todo/15-static-assets.md`
+lambda and the future map editor all parse it, and `docs/decisions.md` _Storage shapes_
 defers the definition here. Settle it before either side is written.
 
 **What mmo101 has today** (`GameLogic/GameData.cs:96-113,158-197`): three files
@@ -363,12 +363,12 @@ Constraints that fall out of the platform, not the game:
 
 - **Self-contained and immutable.** A new map is a new URL, delivered in the
   next `hello` (§3.1). Never mutate a published bundle — clients cache it
-  forever by design (`todo/15` G-C/G-D).
+  forever by design (decided 2026-08-25).
 - **The dungeon lambda parses the same document** and derives collision from the
   same `rows`. If the client and the server ever disagree about what is walkable,
   the server wins — but they must not disagree by construction, which is why
   there is one document and not two.
-- **Size cap.** It is a public asset paid for per byte (`todo/15` G-F). A
+- **Size cap.** It is a public asset paid for per byte (observation is open in todo/15). A
   100x100 grid is ~10 KB of JSON; keep the tileset separate so a re-published
   map does not re-ship art.
 - Everything under `npcs[].stats` / `spawn` is **game schema** — yyt stores and

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Moves every object of a pre-existing bucket to S3 Intelligent-Tiering via a
-# lifecycle rule (todo-aws-cost-optimization.md B). Deliberately non-destructive:
+# lifecycle rule (rules/serverless-aws.md, S3 section). Deliberately non-destructive:
 # the rule has no expiration, and the optional asynchronous Archive Access /
 # Deep Archive Access tiers are NOT configured (no bucket-level
 # intelligent-tiering configuration is created), so every tier the bucket can
