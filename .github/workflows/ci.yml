@@ -39,6 +39,16 @@ jobs:
         run: cd cli && go vet ./... && go test ./... && go build ./...
       - if: steps.cli.outputs.present == 'true'
         run: cli/scripts/build-release.sh 0.0.0-ci
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gateway/go.mod
+          cache-dependency-path: gateway/go.sum
+      - run: cd gateway && go vet ./... && go test -race ./... && CGO_ENABLED=0 go build ./...
+      - run: docker build --build-arg VERSION=0.0.0-ci gateway/
   secrets-scan:
     runs-on: ubuntu-latest
     steps:

@@ -24,3 +24,5 @@ todo/
 packages/console-db/src/generated/
 # Local `go build ./...` output of the CLI binary.
 cli/yyt
+# Local `go build` output of the gateway binary.
+gateway/gateway
