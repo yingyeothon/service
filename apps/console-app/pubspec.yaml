@@ -1,7 +1,7 @@
 name: yyt_console
 description: 잉여톤 — yyt console companion app (catalog installer, project issues)
 publish_to: "none"
-version: 1.5.1+20
+version: 1.5.2+21
 environment:
   sdk: ^3.7.0
 
