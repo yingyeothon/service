@@ -300,7 +300,7 @@ export function createRedisAclAdmin({
       checkName(name);
       return guard(async () => {
         const r = await redis.call("ACL", "GETUSER", name);
-        // Redis 6.2 over RESP2 answers `$-1` for an unknown user, which ioredis
+        // Redis 6.2 / Valkey 8 over RESP2 answer `$-1` for an unknown user, which ioredis
         // gives back as `null`. RESP3 and later versions may answer with an
         // empty map or array instead, and a bare `!== null` would then report
         // every channel as issued for ever — a UI that offers "Re-issue" and
