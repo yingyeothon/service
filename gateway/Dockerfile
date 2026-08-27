@@ -18,6 +18,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -
 # GET /livez from the host), non-root, CA roots present for the https calls
 # to console and auth.
 FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/yingyeothon/service"
 COPY --from=build /out/gateway /gateway
 EXPOSE 8080
 USER nonroot:nonroot

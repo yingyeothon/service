@@ -44,8 +44,12 @@ Endpoints:
   (`x-game-id` is accepted as an alias of `gameId`).
 
 The image is distroless (no shell), so there is no Docker `HEALTHCHECK`; the
-host probes `/livez`. The GHCR package is private on first push — make it
-public or give the box a read token.
+host probes `/livez`. The image carries
+`org.opencontainers.image.source` pointing at this repository, so GHCR links
+the package to it and gives it the repository's (public) visibility on first
+publish — provided the organisation allows members to create public packages
+(`Settings → Packages`). If it still comes out private, flip it once in the
+package settings.
 
 ## Connect
 
