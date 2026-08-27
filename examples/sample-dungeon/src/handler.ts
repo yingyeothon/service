@@ -3,6 +3,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { createJwtRequestAuthorizer } from "@yingyeothon/lambda-authorizer-jwt";
 import {
   createGamebaseContext,
+  createRedisPubSubTransport,
   gamebaseOptionsFromEnv,
   handleConnect,
   handleDisconnect,
@@ -90,6 +91,16 @@ export async function actor(event: GameActorStartEvent): Promise<void> {
     context,
     logger,
     redisKeyPrefix: env.redisKeyPrefix,
+    // Gateway mode: outbound frames go to the gateway over pub/sub on
+    // `{channelPrefix}{gameId}`; it holds the sockets and does the fan-out.
+    transport: env.gateway
+      ? createRedisPubSubTransport({
+          connection: context.getRedisConnection(),
+          channelPrefix: env.gateway.channelPrefix,
+          gameId: event.gameId,
+          logger,
+        })
+      : undefined,
   });
 }
 
@@ -99,7 +110,8 @@ const startEventTtlSeconds =
 
 export const matchCallback = createLobbyHandler({
   matchApiKey: env.matchApiKey,
-  wsUrl: env.wsUrl,
+  // Gateway mode hands out the `q` channel URL; the client appends `&gameId=`.
+  wsUrl: env.gateway?.wsUrl ?? env.wsUrl,
   log: (m, meta) => logger.info(m, meta),
   saveStartEvent: (startEvent) =>
     saveActorStartEvent({

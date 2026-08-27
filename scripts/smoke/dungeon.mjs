@@ -2,9 +2,12 @@
 // End-to-end smoke for examples/sample-dungeon on dev: auth JWT → match WS → signed
 // callback into the dungeon → party plays on the dungeon WS until the boss dies.
 //
-//   setup: scripts/smoke/dungeon.mjs setup <debugKey> <authBaseUrl> <consoleBaseUrl> <topicBaseUrl> <redisEnvFile> <outEnvFile> <outStateFile>
+//   setup: scripts/smoke/dungeon.mjs setup <debugKey> <authBaseUrl> <consoleBaseUrl> <topicBaseUrl> <redisEnvFile> <outEnvFile> <outStateFile> [gateway]
 //          seeds an auth channel + a match channel and writes the dungeon deploy env
 //          (JWT_*/MATCH_API_KEY + the Redis lines of <redisEnvFile>) and the channel ids.
+//          With `gateway`: also a `q` channel whose participant Redis credential replaces
+//          the Redis lines, plus GATEWAY_WS_URL — the stack then terminates sockets in
+//          the realtime gateway (gateway/README.md) and `run` plays through it.
 //   run:   scripts/smoke/dungeon.mjs run <debugKey> <authBaseUrl> <consoleBaseUrl> <matchWssUrl> <stateFile> <dungeonCallbackUrl>
 //          points the match channel at the deployed dungeon, then plays a full match.
 //   clean: scripts/smoke/dungeon.mjs clean <debugKey> <consoleBaseUrl> <stateFile>
@@ -53,8 +56,10 @@ if (mode === "setup") {
     redisEnv,
     outEnv,
     outState,
+    gatewayFlag,
   ] = args;
   if (!outState) usage();
+  const gateway = gatewayFlag === "gateway";
   const dbg = { "x-debug-key": debugKey };
   const cookie = await login(consoleBase, debugKey);
   const team = await ensureTeam(
@@ -123,10 +128,49 @@ if (mode === "setup") {
     chTopic.status === 201,
     chTopic.body?.id,
   );
+  // Gateway mode: a `q` channel on the same auth channel; its participant
+  // credential is the Redis the dungeon uses, scoped to that channel's keys.
+  let q, cred;
+  if (gateway) {
+    q = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
+      method: "POST",
+      headers: cookie,
+      body: {
+        kind: "q",
+        name: `sample-dungeon smoke ${stamp} (gateway)`,
+        config: { authChannelId: seeded.body.channelId },
+      },
+    });
+    check(
+      "create q channel with wsUrl",
+      q.status === 201 && typeof q.body?.wsUrl === "string",
+      q.body?.wsUrl ? q.body.id : JSON.stringify(q.body),
+    );
+    cred = await json(`${consoleBase}/channels/${q.body?.id}/redis-user`, {
+      method: "POST",
+      headers: cookie,
+    });
+    check(
+      "issue participant Redis credential",
+      cred.status === 200 && typeof cred.body?.password === "string",
+      String(cred.status),
+    );
+  }
   if (failed) finish();
-  const redisLines = readFileSync(redisEnv, "utf8")
-    .split("\n")
-    .filter((l) => /^REDIS_/.test(l));
+  const redisLines = gateway
+    ? [
+        `REDIS_HOST=${cred.body.host}`,
+        `REDIS_PORT=${cred.body.port}`,
+        `REDIS_USER=${cred.body.username}`,
+        `REDIS_PASSWORD=${cred.body.password}`,
+        // `game:<stage>:<channelId>:` — the credential's key scope; the four
+        // tslib prefixes derive from it (src/env.ts) and match the console's.
+        `REDIS_KEY_PREFIX=${cred.body.queueKeyPrefix.replace(/queue:$/, "")}`,
+        `GATEWAY_WS_URL=${q.body.wsUrl}`,
+      ]
+    : readFileSync(redisEnv, "utf8")
+        .split("\n")
+        .filter((l) => /^REDIS_/.test(l));
   writeFileSync(
     outEnv,
     [
@@ -150,6 +194,7 @@ if (mode === "setup") {
       matchChannelId: ch.body.id,
       topicChannelId: topicCh.body.id,
       topicMatchChannelId: chTopic.body.id,
+      ...(gateway ? { qChannelId: q.body.id } : {}),
     }),
     { mode: 0o600 },
   );
@@ -166,6 +211,7 @@ if (mode === "clean") {
     state.matchChannelId,
     state.topicMatchChannelId,
     state.topicChannelId,
+    state.qChannelId,
   ].filter(Boolean)) {
     const r = await fetch(`${consoleBase}/channels/${id}`, {
       method: "DELETE",
@@ -312,7 +358,16 @@ check(
   JSON.stringify(result),
 );
 if (failed) finish();
-const dungeonUrl = `${result.wsUrl}?x-game-id=${result.gameId}`;
+// API Gateway mode: `wss://…/dev?x-game-id=`; gateway mode: `wss://gw…/?channel=q_…&gameId=`.
+const viaGateway = /[?&]channel=/.test(result.wsUrl);
+const gameUrl = (gameId) =>
+  viaGateway
+    ? `${result.wsUrl}&gameId=${gameId}`
+    : `${result.wsUrl}?x-game-id=${gameId}`;
+const dungeonUrl = gameUrl(result.gameId);
+console.log(
+  `     playing via ${viaGateway ? "realtime gateway" : "API Gateway"}`,
+);
 
 // 4. dungeon: outsiders and bad tokens are refused at $connect
 check("bad token rejected by dungeon", await rejected(dungeonUrl, "x.y.z"));
@@ -320,10 +375,7 @@ check(
   "non-member rejected by dungeon",
   await rejected(dungeonUrl, await mint("dungeon-outsider")),
 );
-check(
-  "unknown game rejected",
-  await rejected(`${result.wsUrl}?x-game-id=nope`, tokenA),
-);
+check("unknown game rejected", await rejected(gameUrl("nope"), tokenA));
 
 // 5. the party enters; the same auth JWT is reused unchanged
 const a = await connect(dungeonUrl, tokenA);
@@ -441,7 +493,7 @@ finish();
 
 function usage() {
   console.error(
-    "usage: dungeon.mjs setup <debugKey> <authBase> <consoleBase> <topicBase> <redisEnvFile> <outEnvFile> <outStateFile>\n" +
+    "usage: dungeon.mjs setup <debugKey> <authBase> <consoleBase> <topicBase> <redisEnvFile> <outEnvFile> <outStateFile> [gateway]\n" +
       "       dungeon.mjs run <debugKey> <authBase> <consoleBase> <matchWss> <stateFile> <callbackUrl>\n" +
       "       dungeon.mjs clean <debugKey> <consoleBase> <stateFile>",
   );

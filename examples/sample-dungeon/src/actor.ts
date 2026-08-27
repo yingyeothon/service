@@ -6,6 +6,7 @@ import {
   reply,
   type GamebaseContext,
   type GameActorStartEvent,
+  type Transport,
 } from "@yingyeothon/lambda-gamebase";
 import type { Logger } from "@yingyeothon/logger";
 import { keyPrefixes } from "./env.js";
@@ -21,6 +22,11 @@ export interface DungeonActorOptions {
   event: GameActorStartEvent;
   context: GamebaseContext;
   redisKeyPrefix: string;
+  /**
+   * Where the clients' sockets live. Absent = API Gateway through `context`;
+   * in gateway mode it is `createRedisPubSubTransport` on the `q` channel.
+   */
+  transport?: Transport;
   logger: Logger;
   /** Wait for the party, then play. Keep the sum under the Lambda timeout. */
   gameWaitingSeconds?: number;
@@ -36,12 +42,13 @@ export async function runDungeonActor({
   event,
   context,
   redisKeyPrefix,
+  transport,
   logger,
   gameWaitingSeconds = DEFAULT_WAITING_SECONDS,
   gameRunningSeconds = DEFAULT_RUNNING_SECONDS,
 }: DungeonActorOptions): Promise<void> {
   const prefixes = keyPrefixes(redisKeyPrefix);
-  const network = { context };
+  const network = transport ? { transport } : { context };
   await handleActor<DungeonMessage>({
     event,
     context,
