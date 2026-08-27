@@ -27,6 +27,16 @@
 - Games reuse the auth JWT unchanged (`docs/auth-game-contract.md` "Reusing the auth service token"); the callback response is `{wsUrl, gameId}` with no token. `members[].memberId` must be the auth `userId` byte-for-byte.
 - tslib changes that this repo needs land in `~/git/yyt.life/tslib` as separate commits (the user pushes/releases): Redis ACL `username` (`REDIS_USER`), `runGameAllTogether.endDropDelayMillis`.
 
+## Sample MORPG stack (`examples/sample-morpg`)
+
+- The second sample: lobby on a gateway `lobby` channel, instanced dungeon on a `q` channel (tslib actor, fixed 200 ms tick, one self-contained `frame` per tick), character sheets in the doc store. Same standalone pnpm root + tslib `overrides` as sample-dungeon; `scripts/local-api.mjs` serves the `http` handler locally from an esbuild bundle written under the project (`.esbuild/local/`, gitignored — a bundle in `/tmp` cannot resolve the externalised AWS SDK).
+- **The entry API reads the roster from the gateway, never from the client**: `GET /parties/{partyId}?channel={lobbyId}` with the caller's own JWT. A participant's Redis credential is scoped to `game:{stage}:{qId}:*` and cannot see `gateway:*`, and Redis 6.2 has no read-only ACL patterns, so the platform serves the read. The route answers 404 for unknown _and_ non-member alike.
+- **tslib `readyCall` accepts exactly HTTP 200** — a `204` from the readyCall sink makes the actor throw before the game loop and the party gets a `wsUrl` nobody listens on. Answer `200` with a body.
+- **The dungeon only returns a delta** (`{exp, items, consumed, questProgress}`); `applyResult` is idempotent by `gameId` (`appliedGames`, bounded) and `commitResult` is read → apply → `PUT If-Match`, retried on 409. Members who never entered or earned nothing are `skipped` (no doc write, no version bump); the commit phase runs members in parallel under a 10 s deadline, and anything `failed`/`pending` is parked at `{prefix}pendingcommit:{gameId}:{memberId}` (24 h) with the delta in the log — the `result` frame and the socket drop must never wait on the doc store.
+- A setup failure (map fetch, sheet read) still runs the loop with no world so the party receives `result {reason:"error"}` and is dropped; the map bundle is cached per container by URL (immutable by contract).
+- One dungeon per party: `SET NX` enter lock (15 s) closes the race between two `enter` calls, and the party → gameId key is checked against the actor's lock key, so a finished or crashed game can be replaced but a live one answers `409 party_in_dungeon`.
+- Owner ids handed to the doc store are validated against the store's grammar before they reach a URL: the apiKey is privileged and a `sub` is whatever the auth channel minted.
+
 ## Go CLI (`cli/`)
 
 - Config is per-profile (`~/.config/yyt/config.json`, `{"profiles":{name:{api,token}},"default":name}`); resolution is `--profile` > `YYT_PROFILE` > file default, and `--api`/`--token`/`YYT_API`/`YYT_TOKEN` override the resolved profile field-wise. A legacy flat file auto-migrates on load; the re-save failure is tolerated (read-only config dirs). When a token override is in effect, `Config.Profile` is blanked so `whoami` never claims a profile it is not using.

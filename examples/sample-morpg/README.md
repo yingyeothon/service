@@ -1,11 +1,86 @@
-# mmo101 on yyt — game-side blueprint
+# sample-morpg — a MORPG loop on the yyt realtime gateway
+
+The second sample game, built on top of `examples/sample-dungeon`: a persistent
+**lobby** on the platform's `lobby` channel (movement, chat, party, an opaque
+`dungeon.offer` event), an instanced **dungeon** on a `q` channel driven by a
+tslib actor at 5 Hz, and **character sheets** in the doc store. It is the
+implementation of the blueprint that follows it in this file (§1–§8, kept as
+the design record) and the reference consumer of the gateway's
+`GET /parties/{partyId}` route.
+
+```
+client ──JWT──▶ gateway lobby (pos / say / party / event)
+   │  leader: POST /dungeon/enter {partyId}      ──▶ game http Lambda
+   │                                                  ├─ GET gateway /parties/{partyId} (same JWT)  ← roster, never the client's
+   │                                                  ├─ save GameActorStartEvent + invoke actor
+   │                                                  └─ wait readyCall (PUT /dungeon/ready/{gameId}/{secret}) → {wsUrl, gameId}
+   └──────── same JWT ──▶ gateway q channel ◀──Redis list / pub-sub──▶ actor: map → sim → frames → result delta
+                                                                          └─ commit per member: doc GET → apply once by gameId → PUT If-Match
+```
+
+## Layout
+
+| File                          | Role                                                                                                                              |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `src/handler.ts`              | Lambda entry points `http` (entry API, readyCall sink, character read) and `actor`; the only module reading env.                  |
+| `src/env.ts`                  | Env contract; derives the pub/sub prefix and the gateway HTTP base from the `q` channel URL.                                      |
+| `src/entry.ts`                | `POST /dungeon/enter`, `PUT /dungeon/ready/{gameId}/{secret}`, `GET /character` — pure of AWS, every side effect injected.        |
+| `src/actor.ts`                | `handleActor` + `runGameAllTogether` with a fixed 200 ms tick, one world frame per tick, commit-then-result at the end.           |
+| `src/sim.ts`                  | Pure dungeon simulation: mmo101 rules (retaliatory aggro, leash 5, 30 %/s melee, projectile skill, drops, quests, death/respawn). |
+| `src/map.ts`                  | The map bundle format (§4.6) — parser, collision, spawn marks, data-driven clear conditions (`kill` / `device` / `item`).         |
+| `src/character.ts`            | The character sheet schema, leveling, `applyResult` (idempotent by `gameId`), stat allocation.                                    |
+| `src/doc.ts`, `src/commit.ts` | Doc store client (`ETag` / `If-Match`) and the read → apply-once → conditional-write commit with 409 retries.                     |
+| `assets/zone001.json`         | The sample map bundle (20×10, slimes + a boss, one quest, `clear: kill boss`).                                                    |
+| `scripts/local-api.mjs`       | Runs the `http` handler on localhost (esbuild bundle) against dev — pair it with a local gateway to iterate without redeploying.  |
+| `serverless.yml`              | httpApi (3 routes) + the actor (timeout 900 s, no retries). No WebSocket API: the sockets live in the gateway.                    |
+
+## Protocol
+
+Lobby: exactly the gateway's `lobby` protocol (`gateway/README.md`); the game adds two `event` names, `dungeon.offer` and `dungeon.accept`, both `scope: "party"`, which the gateway relays unread.
+
+HTTP (`Authorization: Bearer <channel JWT>`):
+
+| Route                                  | Answer                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /dungeon/enter {partyId}`        | leader only (`403 not_leader`); roster from the gateway (`404 party_not_found` for unknown _and_ non-member); one dungeon per party (`409 party_in_dungeon {gameId}` while the actor's lock lives, `409 entering` while another call is in flight); `200 {gameId, wsUrl, members}` once the actor's readyCall landed, `504 actor_not_ready` after 8 s (the party is freed; a retry allocates a new `gameId`) |
+| `PUT /dungeon/ready/{gameId}/{secret}` | the actor's readyCall; `200` with the secret the entry issued, `404` otherwise                                                                                                                                                                                                                                                                                                                               |
+| `GET /character`                       | `{userId, version, sheet}` — the caller's own sheet (a fresh one at version 0)                                                                                                                                                                                                                                                                                                                               |
+
+Dungeon (`q` channel, `wsUrl` + `&gameId=`):
+
+| Direction | Message                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| client →  | `move {x,y}` (one adjacent walkable cell, 100 ms cooldown), `attack {uid}` (adjacent, 400 ms), `skill {dir}` (projectile, 3 s), `use {itemId}`, `operate`                                                                                                                                                                                                                                                 |
+| server →  | `hello {gameId, mapId, mapVersion, you}` then a `frame` on enter/reconnect; `enter {memberId}`; `stage`; `refused {command, code}`                                                                                                                                                                                                                                                                        |
+| server →  | `frame {time, cleared, players[], monsters[], projectiles[], events[]}` every tick (self-contained; `events` are the hits/kills/drops/deaths since the last one)                                                                                                                                                                                                                                          |
+| server →  | `result {reason, cleared, rewards:{memberId: {exp, items, consumed, questProgress}}, committed:{memberId: applied\|duplicate\|skipped\|failed\|pending}}` then close `1000` — `skipped` = never entered or nothing earned; `failed`/`pending` = the delta is parked in Redis (`{prefix}pendingcommit:{gameId}:{memberId}`, 24 h) for an operator to replay, since `applyResult` is idempotent by `gameId` |
+
+## Deploy and verify
+
+1. `scripts/smoke/morpg.mjs setup <debugKey> https://auth-dev.yyt.life https://console-dev.yyt.life https://doc-dev.yyt.life <outEnv> <outState>` (from the service repo) seeds an auth channel, a lobby + a `q` channel with its participant Redis credential, the doc apiKey and the map bundle asset, points the lobby's `mapUrl` at it, and writes the deploy env.
+2. `pnpm install && pnpm typecheck && pnpm test`, then `scripts/deploy.sh <outEnv> dev` — the output's `ApiUrl` is the stack's HTTP base.
+3. `scripts/smoke/morpg.mjs run <debugKey> <authBase> <consoleBase> wss://gw-dev.yyt.life <outState> <ApiUrl>` plays the whole loop with two synthetic players (bots walk to the boss), then `clean`.
+
+The dev gateway must run an image that has the `/parties` route. To iterate locally: run the gateway on `127.0.0.1:8089` (`rules/manual-verification.md`), then `set -a; . <outEnv>; set +a; GATEWAY_WS_URL="ws://127.0.0.1:8089/?channel=<qId>" CALLBACK_BASE_URL=<ApiUrl> GAME_ACTOR_LAMBDA_NAME=yyt-sample-morpg-dev-actor node scripts/local-api.mjs 8090` and point `run` at `ws://127.0.0.1:8089` / `http://127.0.0.1:8090`. The actor still runs in Lambda; only the sockets and the entry API are local.
+
+Sizing: `GAME_RUNNING_SECONDS` (default 600) + 20 s wait + 20 s margin must stay under the actor's 900 s timeout; `MAX_RUNNING_SECONDS` in `src/actor.ts` enforces it at cold start. The commit phase at the end is bounded by `DEFAULT_COMMIT_DEADLINE_MILLIS` (10 s, members in parallel) so a slow doc store cannot eat the margin: whatever has not landed is `pending` and parked, and the party still gets its `result` and its close. A setup failure (map or sheets unreachable) also ends in a `result {reason:"error"}` rather than a hanging socket. The map bundle is cached per Lambda container (immutable per URL).
+
+## Blueprint status (§7 checklist, verified on dev 2026-08-27)
+
+1–6 lobby relay / leave / retained position / scope routing / party / offer-decline: **pass** (`scripts/smoke/gateway.mjs` + `morpg.mjs`). 7–8 party authorized, outsider rejected: **pass**. 9–10 reward persisted, replay not duplicated: **pass** (`test/commit.test.ts` for the replay; the smoke checks `appliedGames` holds the `gameId` once). 11 actor death → `4001`: gateway-side, covered by its own tests. 12 reconnect resync from one frame: implemented (`onMemberEntered` replays `hello` + `frame`), not yet smoke-tested. 13 gateway restart mid-dungeon, 14 single-session rule, 15 full-length run: not yet exercised.
+
+---
+
+# mmo101 on yyt — game-side blueprint (design record)
 
 ## Why this document exists
 
-`examples/sample-dungeon` proves the platform wiring works. This one is the
-opposite direction: it describes a **real game** that does not exist yet, so
-that once `service` and `tslib` are built, someone can implement mmo101 against
-them and **discover what the platform still gets wrong**.
+`examples/sample-dungeon` proves the platform wiring works. This one was the
+opposite direction: it described a **real game** before it existed, so that
+implementing mmo101 against `service` and `tslib` would **discover what the
+platform still gets wrong**. The implementation above is the result; the first
+thing it found was that the entry API had no way to read a roster (fixed by the
+gateway's `/parties` route).
 
 Treat it as a verification harness written in prose. Every section ends with
 what it would reveal about the platform if it turns out to be hard.
