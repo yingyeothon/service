@@ -182,8 +182,10 @@ client. Leadership passes to the next member when the leader leaves.
 ## Party roster for games
 
 A game's dungeon-entry API must know who is in a party without believing the
-client that named it, and a participant's Redis credential cannot read the
-gateway's keys. So the gateway serves the roster it mirrored:
+client that named it, and a participant's Redis credential (as issued today)
+cannot read the gateway's keys. So the gateway serves the roster it mirrored
+(the store now supports read-only ACL selectors, so a direct Redis read may
+become an option — `todo/16`; this route stays regardless):
 
 ```
 GET /parties/{partyId}?channel={lobbyChannelId}

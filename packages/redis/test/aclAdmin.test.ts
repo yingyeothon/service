@@ -167,7 +167,7 @@ describe("createRedisAclAdmin", () => {
 
   it("reports existence from ACL GETUSER, empty replies included", async () => {
     for (const [reply, want] of [
-      // Redis 6.2 over RESP2 for an unknown user.
+      // Redis 6.2 / Valkey 8 over RESP2 for an unknown user.
       [null, false],
       [undefined, false],
       // RESP3 or a future version could answer empty instead of nil; a bare
