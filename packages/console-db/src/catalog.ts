@@ -1,5 +1,6 @@
 import { AppError } from "@yyt/core";
 import { num, nul, run, type PrismaClient } from "./prisma.js";
+import { Prisma } from "./generated/prisma/client.js";
 
 export const CATALOG_PLATFORMS = [
   "android",
@@ -84,6 +85,13 @@ export interface CatalogArtifactRow {
   createdAt: number;
 }
 
+export interface CatalogArtifactSummary {
+  appId: string;
+  latest: CatalogArtifactRow;
+  /** Distinct `application_id` tags, ordered by their newest artifact. */
+  applicationIds: string[];
+}
+
 export interface CatalogArtifactInput {
   id: string;
   appId: string;
@@ -158,14 +166,16 @@ export interface CatalogDb {
     filter?: { platform?: CatalogPlatform },
   ): Promise<CatalogArtifactRow[]>;
   /**
-   * Artifacts of many apps in one query, newest first within each app (the
-   * app order is unspecified). Lets a list view embed per-app summaries
-   * without one round trip per app.
+   * Per app (only apps that have at least one matching artifact): the newest
+   * artifact and the distinct `application_id` tags, newest first. Lets a
+   * list view embed per-app summaries without one round trip per app, and
+   * without reading every artifact of the team into the Lambda: the MySQL
+   * repository answers with a window function plus a grouped query.
    */
-  listArtifactsOf(
+  summarizeArtifacts(
     appIds: string[],
     filter?: { platform?: CatalogPlatform },
-  ): Promise<CatalogArtifactRow[]>;
+  ): Promise<CatalogArtifactSummary[]>;
   deleteArtifact(id: string): Promise<boolean>;
 
   /**
@@ -376,24 +386,58 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
           })
         ).map(toArtifact),
       ),
-    listArtifactsOf: (appIds, filter = {}) =>
-      run(async () =>
-        appIds.length === 0
-          ? []
-          : (
-              await prisma.catalog_artifacts.findMany({
-                where: {
-                  app_id: { in: appIds },
-                  ...(filter.platform ? { platform: filter.platform } : {}),
-                },
-                orderBy: [
-                  { app_id: "asc" },
-                  { created_at: "desc" },
-                  { id: "desc" },
-                ],
-              })
-            ).map(toArtifact),
-      ),
+    summarizeArtifacts: (appIds, filter = {}) =>
+      run(async () => {
+        if (appIds.length === 0) return [];
+        const where = Prisma.sql`app_id in (${Prisma.join(appIds)})${
+          filter.platform
+            ? Prisma.sql` and platform = ${filter.platform}`
+            : Prisma.empty
+        }`;
+        // Newest per app: the same (created_at desc, id desc) order
+        // `listArtifacts` uses. The derived table carries ids only so the
+        // window sort never spools `tags_json` into a temp table; the join
+        // then reads the winners by primary key.
+        const latest = await prisma.$queryRaw<
+          Parameters<typeof toArtifact>[0][]
+        >`select a.id, a.app_id, a.platform, a.url, a.object_key, a.size, a.hash,
+                 a.tags_json, a.created_at
+          from (select id, row_number() over (
+                  partition by app_id order by created_at desc, id desc) as rn
+                from catalog_artifacts where ${where}) t
+          join catalog_artifacts a on a.id = t.id
+          where t.rn = 1`;
+        // Distinct `application_id` per app, each represented by its newest
+        // artifact and ordered by that artifact — what the fake computes by
+        // walking the rows newest first. Partitioning on the bytes keeps ids
+        // case-sensitive (Android application ids are; a `char` expression
+        // would collate `_ci`); the `char` cast keeps the driver from
+        // returning the JSON scalar as a Buffer. A `tags_json` that is not a
+        // JSON object yields NULL here (MariaDB warns rather than errors).
+        const ids = await prisma.$queryRaw<
+          { app_id: string; application_id: string }[]
+        >`select app_id, application_id
+          from (select app_id, created_at, id,
+                  cast(json_unquote(json_extract(tags_json, '$.application_id'))
+                       as char character set utf8mb4) as application_id,
+                  row_number() over (
+                    partition by app_id,
+                      cast(json_unquote(json_extract(tags_json, '$.application_id')) as binary)
+                    order by created_at desc, id desc) as rn
+                from catalog_artifacts where ${where}) t
+          where rn = 1 and application_id is not null and application_id <> ''
+          order by created_at desc, id desc`;
+        const byApp = new Map<string, CatalogArtifactSummary>();
+        for (const r of latest)
+          byApp.set(r.app_id, {
+            appId: r.app_id,
+            latest: toArtifact(r),
+            applicationIds: [],
+          });
+        for (const r of ids)
+          byApp.get(r.app_id)?.applicationIds.push(r.application_id);
+        return [...byApp.values()];
+      }),
     deleteArtifact: (id) =>
       run(async () => {
         const r = await prisma.catalog_artifacts.deleteMany({ where: { id } });
@@ -575,20 +619,30 @@ export function createMemoryCatalogDb(
         )
         .map((a) => ({ ...a, tags: { ...a.tags } }))
         .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),
-    listArtifactsOf: async (appIds, filter = {}) =>
-      [...artifacts.values()]
+    summarizeArtifacts: async (appIds, filter = {}) => {
+      const rows = [...artifacts.values()]
         .filter(
           (a) =>
             appIds.includes(a.appId) &&
             (!filter.platform || a.platform === filter.platform),
         )
-        .map((a) => ({ ...a, tags: { ...a.tags } }))
-        .sort(
-          (a, b) =>
-            a.appId.localeCompare(b.appId) ||
-            b.createdAt - a.createdAt ||
-            b.id.localeCompare(a.id),
-        ),
+        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+      const byApp = new Map<string, CatalogArtifactSummary>();
+      for (const a of rows) {
+        let s = byApp.get(a.appId);
+        if (!s) {
+          s = {
+            appId: a.appId,
+            latest: { ...a, tags: { ...a.tags } },
+            applicationIds: [],
+          };
+          byApp.set(a.appId, s);
+        }
+        const id = a.tags.application_id;
+        if (id && !s.applicationIds.includes(id)) s.applicationIds.push(id);
+      }
+      return [...byApp.values()];
+    },
     deleteArtifact: async (id) => artifacts.delete(id),
 
     insertPendingUpload: async (u) => {

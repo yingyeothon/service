@@ -413,34 +413,6 @@ export function createCatalogRoutes({
     };
   }
 
-  /**
-   * Per app: the newest artifact (`created_at`, then id — the order
-   * `listArtifactsOf` returns) and the distinct `application_id` tags, both
-   * over the rows given (so `platform` narrows them together). Build variants
-   * install under different ids, so an installer must probe them all. Cost is
-   * O(artifacts of the team), not O(apps): move to a window-function query
-   * once per-app artifact counts grow (`todo/index.md` 2026-08-27).
-   */
-  function artifactSummaries(rows: CatalogArtifactRow[]) {
-    const out = new Map<
-      string,
-      {
-        latestArtifact: ReturnType<typeof artifactView>;
-        applicationIds: string[];
-      }
-    >();
-    for (const a of rows) {
-      let s = out.get(a.appId);
-      if (!s) {
-        s = { latestArtifact: artifactView(a), applicationIds: [] };
-        out.set(a.appId, s);
-      }
-      const id = a.tags.application_id;
-      if (id && !s.applicationIds.includes(id)) s.applicationIds.push(id);
-    }
-    return out;
-  }
-
   const uploadView = (u: CatalogPendingUploadRow) => ({
     id: u.id,
     appId: u.appId,
@@ -486,11 +458,21 @@ export function createCatalogRoutes({
         // `artifacts=summary` embeds what a list screen needs per app in one
         // query instead of one `/artifacts` round trip per app: the newest
         // artifact (`platform` narrows) and every distinct `application_id`.
-        const summary = artifactSummaries(
-          await catalog.listArtifactsOf(
-            rows.map((r) => r.id),
-            ctx.query.platform ? { platform: ctx.query.platform } : {},
-          ),
+        // Build variants install under different ids, so an installer must
+        // probe every `application_id` the app ever shipped.
+        const summary = new Map(
+          (
+            await catalog.summarizeArtifacts(
+              rows.map((r) => r.id),
+              ctx.query.platform ? { platform: ctx.query.platform } : {},
+            )
+          ).map((s) => [
+            s.appId,
+            {
+              latestArtifact: artifactView(s.latest),
+              applicationIds: s.applicationIds,
+            },
+          ]),
         );
         return {
           apps: apps.map((app) => ({
