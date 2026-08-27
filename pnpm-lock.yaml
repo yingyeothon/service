@@ -220,6 +220,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1115.0
         version: 3.1115.0
+      '@aws-sdk/client-sns':
+        specifier: ^3.1115.0
+        version: 3.1118.0
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1116.0
         version: 3.1116.0
@@ -388,6 +391,10 @@ packages:
 
   '@aws-sdk/client-s3@3.1115.0':
     resolution: {integrity: sha512-oeniaXZCRrKMaffnyjOSxp1xJNsuiku2SxyzVI1Bi1Gycpck/dRTVsloSa5E+nBKz1c5y5eMfbK4GAhGUCCC2Q==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-sns@3.1118.0':
+    resolution: {integrity: sha512-dK03e/Q0mT6rzCpfnIdxpjdU4Ze01YSQ8wRrr3lWO0mTePsKu8n7E820gtyoOxB9si+0m9QyAcfKS7A1jvD1Vw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.977.8':
@@ -4344,9 +4351,9 @@ snapshots:
 
   '@aws-sdk/client-acm@3.1115.0':
     dependencies:
-      '@aws-sdk/core': 3.977.8
-      '@aws-sdk/credential-provider-node': 3.972.80
-      '@aws-sdk/types': 3.974.4
+      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-node': 3.972.81
+      '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.7.2
       '@smithy/node-http-handler': 4.11.3
@@ -4355,10 +4362,10 @@ snapshots:
 
   '@aws-sdk/client-api-gateway@3.1115.0':
     dependencies:
-      '@aws-sdk/core': 3.977.8
-      '@aws-sdk/credential-provider-node': 3.972.80
+      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-node': 3.972.81
       '@aws-sdk/middleware-sdk-api-gateway': 3.972.28
-      '@aws-sdk/types': 3.974.4
+      '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.7.2
       '@smithy/node-http-handler': 4.11.3
@@ -4378,9 +4385,9 @@ snapshots:
 
   '@aws-sdk/client-apigatewayv2@3.1115.0':
     dependencies:
-      '@aws-sdk/core': 3.977.8
-      '@aws-sdk/credential-provider-node': 3.972.80
-      '@aws-sdk/types': 3.974.4
+      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-node': 3.972.81
+      '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.7.2
       '@smithy/node-http-handler': 4.11.3
@@ -4389,9 +4396,9 @@ snapshots:
 
   '@aws-sdk/client-cloudformation@3.1115.0':
     dependencies:
-      '@aws-sdk/core': 3.977.8
-      '@aws-sdk/credential-provider-node': 3.972.80
-      '@aws-sdk/types': 3.974.4
+      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-node': 3.972.81
+      '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.7.2
       '@smithy/node-http-handler': 4.11.3
@@ -4411,10 +4418,10 @@ snapshots:
 
   '@aws-sdk/client-route-53@3.1115.0':
     dependencies:
-      '@aws-sdk/core': 3.977.8
-      '@aws-sdk/credential-provider-node': 3.972.80
+      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-node': 3.972.81
       '@aws-sdk/middleware-sdk-route53': 3.972.25
-      '@aws-sdk/types': 3.974.4
+      '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.7.2
       '@smithy/node-http-handler': 4.11.3
@@ -4428,6 +4435,17 @@ snapshots:
       '@aws-sdk/credential-provider-node': 3.972.81
       '@aws-sdk/middleware-sdk-s3': 3.972.74
       '@aws-sdk/signature-v4-multi-region': 3.996.46
+      '@aws-sdk/types': 3.974.5
+      '@smithy/core': 3.33.3
+      '@smithy/fetch-http-handler': 5.7.2
+      '@smithy/node-http-handler': 4.11.3
+      '@smithy/types': 4.17.2
+      tslib: 2.8.1
+
+  '@aws-sdk/client-sns@3.1118.0':
+    dependencies:
+      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-node': 3.972.81
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.7.2
@@ -4635,18 +4653,18 @@ snapshots:
 
   '@aws-sdk/credential-providers@3.1115.0':
     dependencies:
-      '@aws-sdk/core': 3.977.8
+      '@aws-sdk/core': 3.977.9
       '@aws-sdk/credential-provider-cognito-identity': 3.972.68
       '@aws-sdk/credential-provider-env': 3.972.69
       '@aws-sdk/credential-provider-http': 3.972.71
       '@aws-sdk/credential-provider-ini': 3.973.14
       '@aws-sdk/credential-provider-login': 3.972.76
-      '@aws-sdk/credential-provider-node': 3.972.80
+      '@aws-sdk/credential-provider-node': 3.972.81
       '@aws-sdk/credential-provider-process': 3.972.69
       '@aws-sdk/credential-provider-sso': 3.973.13
       '@aws-sdk/credential-provider-web-identity': 3.972.75
       '@aws-sdk/nested-clients': 3.997.43
-      '@aws-sdk/types': 3.974.4
+      '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/credential-provider-imds': 4.5.2
       '@smithy/types': 4.17.2
