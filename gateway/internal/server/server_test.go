@@ -371,3 +371,83 @@ func TestHealthAndMetrics(t *testing.T) {
 		t.Fatal("livez must not depend on redis")
 	}
 }
+
+func TestPartyRoute(t *testing.T) {
+	f := newFixture(t)
+	get := func(path, bearer string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest("GET", f.srv.URL+path, nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var m map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&m)
+		return res.StatusCode, m
+	}
+	lobbyQ := "?channel=lobby_0123456789abcdef"
+	if st, _ := get("/parties/pty_0123456789abcdef", ""); st != 400 {
+		t.Fatalf("no channel: %d", st)
+	}
+	if st, _ := get("/parties/pty_0123456789abcdef"+lobbyQ, ""); st != 401 {
+		t.Fatalf("no bearer with channel: %d", st)
+	}
+	if st, _ := get("/parties/pty_0123456789abcdef"+lobbyQ, jwtBad); st != 401 {
+		t.Fatalf("bad token: %d", st)
+	}
+	if st, _ := get("/parties/pty_0123456789abcdef?channel=q_0123456789abcdef", jwtUA); st != 404 {
+		t.Fatalf("q channel: %d", st)
+	}
+	if st, _ := get("/parties/pty_0123456789abcdef"+lobbyQ, jwtUA); st != 404 {
+		t.Fatalf("unknown party: %d", st)
+	}
+	// Form a party over the socket, then read it back over HTTP.
+	a, _, err := f.dial(t, lobbyQ, "bearer", jwtUA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, a)
+	_ = a.WriteJSON(map[string]any{"type": "party.create"})
+	roster := readUntil(t, a, "party")
+	pid := roster["partyId"].(string)
+	b, _, err := f.dial(t, lobbyQ, "bearer", jwtUB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, b)
+	// ub is not a member yet: same 404 as an unknown party.
+	if st, _ := get("/parties/"+pid+lobbyQ, jwtUB); st != 404 {
+		t.Fatalf("non-member: %d", st)
+	}
+	_ = a.WriteJSON(map[string]any{"type": "party.invite", "userId": "ub"})
+	readUntil(t, b, "party.invite")
+	_ = b.WriteJSON(map[string]any{"type": "party.accept", "partyId": pid})
+	readUntil(t, b, "party")
+	st, m := get("/parties/"+pid+lobbyQ, jwtUB)
+	if st != 200 || m["partyId"] != pid || m["leaderId"] != "ua" {
+		t.Fatalf("roster: %d %v", st, m)
+	}
+	members := m["members"].([]any)
+	if len(members) != 2 || members[0].(map[string]any)["online"] != true {
+		t.Fatalf("members: %v", members)
+	}
+	if _, ok := m["invited"]; ok {
+		t.Fatalf("invited must not be exposed: %v", m)
+	}
+	_ = b.Close()
+	time.Sleep(100 * time.Millisecond)
+	_, m = get("/parties/"+pid+lobbyQ, jwtUA)
+	for _, mm := range m["members"].([]any) {
+		e := mm.(map[string]any)
+		if e["userId"] == "ub" && e["online"] != false {
+			t.Fatalf("ub should be offline: %v", m)
+		}
+	}
+	if c := &f.server.reg.Counters; c.PartyReads.Load() != 2 || c.PartyRejected.Load() != 6 {
+		t.Fatalf("party counters: reads=%d rejected=%d", c.PartyReads.Load(), c.PartyRejected.Load())
+	}
+}

@@ -179,6 +179,33 @@ pending. The game's entry API reads the roster JSON from Redis
 (`{"id","leaderId","members":[…],"invited":[…]}`) rather than believing a
 client. Leadership passes to the next member when the leader leaves.
 
+## Party roster for games
+
+A game's dungeon-entry API must know who is in a party without believing the
+client that named it, and a participant's Redis credential cannot read the
+gateway's keys. So the gateway serves the roster it mirrored:
+
+```
+GET /parties/{partyId}?channel={lobbyChannelId}
+Authorization: Bearer <jwt>
+```
+
+The bearer is a **member's** channel JWT (the game's HTTP API forwards the
+caller's own token); it is verified the same way a handshake is, and cached
+the same way. The answer is the `party` frame shape —
+`{ "type":"party", "partyId", "leaderId", "members":[{ "userId","online" }],
+"invited":[…] }` — with `online` derived from the lobby session keys, so it
+is correct across a gateway restart. Refusals: `400` no `channel`; `401` no
+or rejected bearer; `404` unknown channel, a non-`lobby` channel, **an
+unknown party, or a party the bearer is not a member of** (one code, so
+party ids cannot be probed); `410` expired/disabled channel; `429` the same
+per-address bucket as handshakes; `502` console/auth/Redis unreachable. The
+route reads Redis only (one `GET` + one `MGET`) — it never touches the
+in-memory hub — and has its own per-address bucket, so a game's Lambda egress
+address and the players behind one NAT do not spend each other's budget.
+`/metrics` counts it as `partyReads` / `partyRejected`.
+`examples/sample-morpg/src/entry.ts` is the reference consumer.
+
 ## `q` protocol
 
 The bridge to a tslib actor (`@yingyeothon/lambda-gamebase`), replacing

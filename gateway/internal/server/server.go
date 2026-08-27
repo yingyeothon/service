@@ -135,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /{$}", s.websocket)
+	mux.HandleFunc("GET /parties/{partyId}", s.party)
 	return mux
 }
 
@@ -439,6 +440,85 @@ func itoa(n int) string {
 }
 
 // hubFor returns the live hub of a lobby channel, or nil while draining.
+// party answers `GET /parties/{partyId}?channel={lobbyId}` with the roster the
+// gateway mirrored to Redis, to the bearer of a member's JWT only. It is the
+// read a game's dungeon-entry API needs: the client names the party, the
+// gateway proves who is in it (`README.md`, "Party roster for games").
+func (s *Server) party(w http.ResponseWriter, r *http.Request) {
+	reject := func(status int, msg string) {
+		s.reg.Counters.PartyRejected.Add(1)
+		writeJSON(w, status, map[string]any{"error": http.StatusText(status), "message": msg})
+	}
+	// Its own bucket: a game's Lambda egress address must not spend the
+	// handshake budget of the players behind the same NAT, nor vice versa.
+	if !s.allowHandshake("party:" + clientAddr(r)) {
+		reject(http.StatusTooManyRequests, "too many requests")
+		return
+	}
+	channelID := r.URL.Query().Get("channel")
+	if channelID == "" {
+		reject(http.StatusBadRequest, "channel query parameter is required")
+		return
+	}
+	if !console.ValidID(channelID) {
+		reject(http.StatusNotFound, "channel not found")
+		return
+	}
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if bearer == "" || bearer == r.Header.Get("Authorization") {
+		reject(http.StatusUnauthorized, "Authorization: Bearer <jwt> is required")
+		return
+	}
+	ctx := r.Context()
+	ch, err := s.console.Get(ctx, channelID)
+	if err != nil {
+		switch {
+		case errors.Is(err, console.ErrNotFound):
+			reject(http.StatusNotFound, "channel not found")
+		case errors.Is(err, console.ErrGone):
+			reject(http.StatusGone, "channel is expired or disabled")
+		case errors.Is(err, console.ErrNotConfigured), errors.Is(err, console.ErrUnauthorized):
+			s.throttledLog("console-refused", slog.LevelError, "console refuses gateway reads", "err", err.Error())
+			reject(http.StatusServiceUnavailable, "gateway is not configured")
+		default:
+			s.throttledLog("console-down", slog.LevelWarn, "console unreachable", "err", err.Error())
+			reject(http.StatusBadGateway, "cannot read channel configuration")
+		}
+		return
+	}
+	if ch.Kind != console.KindLobby {
+		reject(http.StatusNotFound, "channel not found")
+		return
+	}
+	id, err := s.verifier.Verify(ctx, ch.AuthVerifyURL, bearer)
+	if err != nil {
+		switch {
+		case errors.Is(err, authn.ErrUnauthorized):
+			reject(http.StatusUnauthorized, "token rejected")
+		case errors.Is(err, authn.ErrBusy):
+			reject(http.StatusServiceUnavailable, "too many verifications in flight")
+		default:
+			s.throttledLog("auth-down", slog.LevelWarn, "auth unreachable", "channel", channelID, "err", err.Error())
+			reject(http.StatusBadGateway, "cannot verify token")
+		}
+		return
+	}
+	roster, err := lobby.ReadRoster(ctx, s.rdb, channelID, r.PathValue("partyId"), id.UserID)
+	if err != nil {
+		if errors.Is(err, lobby.ErrPartyNotFound) {
+			// One code for "no such party" and "not yours": no probing.
+			reject(http.StatusNotFound, "party not found")
+			return
+		}
+		s.reg.Counters.RedisErrors.Add(1)
+		s.throttledLog("party-redis", slog.LevelWarn, "party read failed", "channel", channelID, "err", err.Error())
+		reject(http.StatusBadGateway, "cannot read the party")
+		return
+	}
+	s.reg.Counters.PartyReads.Add(1)
+	writeJSON(w, http.StatusOK, roster)
+}
+
 func (s *Server) hubFor(ch *console.Channel) *lobby.Hub {
 	s.mu.Lock()
 	defer s.mu.Unlock()
