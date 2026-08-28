@@ -1,12 +1,18 @@
 /*
- * The map bundle (README §4.6): one self-contained JSON document parsed by the
- * client, the dungeon actor and, later, the map editor. Rows are top-down.
+ * The map bundle (README §4.6, format 2): one self-contained JSON document
+ * parsed by the client, the dungeon actor and, later, the map editor. Rows are
+ * top-down. `templates` (items, quests, NPCs, zones) make the world bundle —
+ * the one behind the lobby's `hello.mapUrl`; a zone's own bundle may leave
+ * them out and is then just a grid with monsters (a field).
  */
+import {
+  isId,
+  parseTemplates,
+  type Cell,
+  type Templates,
+} from "./templates.js";
 
-export interface Cell {
-  x: number;
-  y: number;
-}
+export type { Cell };
 
 export interface NpcTemplate {
   mark: string;
@@ -19,19 +25,13 @@ export interface NpcTemplate {
   drops: Array<{ itemId: string; probability: number }>;
 }
 
-export interface Quest {
-  id: string;
-  templateId: string;
-  count: number;
-}
-
 export type ClearCondition =
   | { kind: "kill"; templateId: string }
   | { kind: "device"; at: Cell }
   | { kind: "item"; itemId: string; at: Cell };
 
 export interface MapBundle {
-  format: 1;
+  format: 2;
   id: string;
   version: string;
   size: { w: number; h: number };
@@ -40,11 +40,14 @@ export interface MapBundle {
   start: Cell;
   rows: string[];
   npcs: NpcTemplate[];
-  quests: Quest[];
   clear: ClearCondition;
+  templates: Templates;
 }
 
 export const MAX_MAP_SIDE = 200;
+
+const isCellIn = (c: Cell, w: number, h: number) =>
+  c.x >= 0 && c.x < w && c.y >= 0 && c.y < h;
 
 function isCell(v: unknown, w: number, h: number): v is Cell {
   if (typeof v !== "object" || v === null) return false;
@@ -61,17 +64,21 @@ function isCell(v: unknown, w: number, h: number): v is Cell {
 
 const isPositive = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v) && v >= 0;
-const isName = (v: unknown): v is string =>
-  typeof v === "string" && /^[a-z0-9_-]{1,32}$/.test(v);
+const isName = isId;
 
-/** Validates a parsed bundle; throws with the failing field. */
-export function parseMapBundle(raw: unknown): MapBundle {
+/**
+ * Validates a parsed bundle; throws with the failing field. `baseUrl` (the
+ * bundle's own URL) resolves relative `templates.zones[].mapUrl`.
+ */
+export function parseMapBundle(raw: unknown, baseUrl?: string): MapBundle {
   const fail = (what: string): never => {
     throw new Error(`map bundle: ${what}`);
   };
   if (typeof raw !== "object" || raw === null) return fail("not an object");
   const b = raw as Record<string, unknown>;
-  if (b.format !== 1) return fail("unsupported format");
+  // Format 1 (no `templates`, a kill-only `quests` array) still parses so a
+  // code deploy and a bundle publish need not land in the same instant.
+  if (b.format !== 1 && b.format !== 2) return fail("unsupported format");
   if (!isName(b.id)) return fail("id");
   if (typeof b.version !== "string" || b.version === "") return fail("version");
   const size = b.size as Record<string, unknown> | undefined;
@@ -151,49 +158,75 @@ export function parseMapBundle(raw: unknown): MapBundle {
       drops,
     });
   }
-  const templates = new Set(npcs.map((n) => n.templateId));
-  if (templates.size !== npcs.length) return fail("duplicate templateId");
-  const quests: Quest[] = [];
-  for (const q of Array.isArray(b.quests) ? (b.quests as unknown[]) : []) {
-    const qq = q as Record<string, unknown>;
-    if (
-      !isName(qq.id) ||
-      !isName(qq.templateId) ||
-      !templates.has(qq.templateId)
-    )
-      return fail("quest");
-    if (!Number.isInteger(qq.count) || (qq.count as number) < 1)
-      return fail("quest count");
-    quests.push({
-      id: qq.id,
-      templateId: qq.templateId,
-      count: qq.count as number,
-    });
-  }
+  const monsterIds = new Set(npcs.map((n) => n.templateId));
+  if (monsterIds.size !== npcs.length) return fail("duplicate templateId");
   const c = b.clear as Record<string, unknown> | undefined;
   let clear: ClearCondition;
-  if (c?.kind === "kill" && isName(c.templateId) && templates.has(c.templateId))
+  if (
+    c?.kind === "kill" &&
+    isName(c.templateId) &&
+    monsterIds.has(c.templateId)
+  )
     clear = { kind: "kill", templateId: c.templateId };
   else if (c?.kind === "device" && isCell(c.at, W, H))
     clear = { kind: "device", at: c.at };
   else if (c?.kind === "item" && isName(c.itemId) && isCell(c.at, W, H))
     clear = { kind: "item", itemId: c.itemId, at: c.at };
   else return fail("clear");
+  const rowsStr = rows as string[];
+  const walkable = (c: Cell) => rowsStr[c.y]?.[c.x] !== b.blocked;
+  const templates = parseTemplates(
+    b.format === 1 ? legacyQuests(b.quests, monsterIds, fail) : b.templates,
+    {
+      zoneId: b.id,
+      size: { w: W, h: H },
+      usedMarks: new Set([b.blocked, ...marks]),
+      isWalkable: (c) => isCellIn(c, W, H) && walkable(c),
+      ...(baseUrl === undefined ? {} : { baseUrl }),
+    },
+  );
   const map: MapBundle = {
-    format: 1,
+    format: 2,
     id: b.id,
     version: b.version,
     size: { w: W, h: H },
     origin,
     blocked: b.blocked,
     start: b.start,
-    rows: rows as string[],
+    rows: rowsStr,
     npcs,
-    quests,
     clear,
+    templates,
   };
   if (!isWalkable(map, map.start)) return fail("start is blocked");
   return map;
+}
+
+/** Format 1's `quests: [{id, templateId, count}]` as format 2 kill quests (repeatable, like the old sample). */
+function legacyQuests(
+  raw: unknown,
+  monsterIds: ReadonlySet<string>,
+  fail: (what: string) => never,
+): unknown {
+  const quests: Record<string, unknown> = {};
+  for (const q of Array.isArray(raw) ? (raw as unknown[]) : []) {
+    const qq = q as Record<string, unknown>;
+    if (
+      !isName(qq.id) ||
+      !isName(qq.templateId) ||
+      !monsterIds.has(qq.templateId)
+    )
+      return fail("quest");
+    if (!Number.isInteger(qq.count) || (qq.count as number) < 1)
+      return fail("quest count");
+    quests[qq.id] = {
+      kind: "kill",
+      templateId: qq.templateId,
+      count: qq.count,
+      repeatable: true,
+    };
+  }
+  return { quests };
 }
 
 export function cellAt(map: MapBundle, c: Cell): string | undefined {

@@ -34,6 +34,12 @@ export type DungeonMessage =
   | { type: "enter"; connectionId: string; memberId: string }
   | { type: "leave"; connectionId: string };
 
+/** The start event `POST /dungeon/enter` writes: tslib's plus the field to play. */
+export type DungeonStartEvent = GameActorStartEvent & {
+  /** The field's bundle URL (the leader's zone); the deploy's `MAP_URL` when absent. */
+  mapUrl?: string;
+};
+
 export type CommitStatus =
   "applied" | "duplicate" | "failed" | "pending" | "skipped";
 
@@ -46,13 +52,14 @@ export interface ResultPayload {
 }
 
 export interface DungeonActorOptions {
-  event: GameActorStartEvent;
+  event: DungeonStartEvent;
   context: GamebaseContext;
   redisKeyPrefix: string;
   /** The `q` channel transport (`createRedisPubSubTransport`). */
   transport: Transport;
   logger: Logger;
-  loadMap: () => Promise<MapBundle>;
+  /** Fetches a bundle: the world one without an argument, the field's for `event.mapUrl`. */
+  loadMap: (url?: string) => Promise<MapBundle>;
   loadCharacter: (memberId: string) => Promise<CharacterSheet | undefined>;
   /** Commits one member's delta; returns whether it was applied or a duplicate. */
   commit: (
@@ -71,6 +78,21 @@ export interface DungeonActorOptions {
   /** The commit phase must fit the lifetime margin; slower commits are parked as `pending`. */
   commitDeadlineMillis?: number;
   rng?: () => number;
+}
+
+/**
+ * The bundles a run needs: the world (templates — quests are counted against
+ * it) and the field named by the start event, which is the world itself when
+ * the entry named none. One fetch when they coincide.
+ */
+export async function resolveBundles(
+  loadMap: DungeonActorOptions["loadMap"],
+  event: DungeonStartEvent,
+): Promise<{ world: MapBundle; field: MapBundle }> {
+  const world = await loadMap();
+  const field =
+    event.mapUrl === undefined ? world : await loadMap(event.mapUrl);
+  return { world, field };
 }
 
 export const DEFAULT_WAITING_SECONDS = 20;
@@ -188,14 +210,14 @@ export async function runDungeonActor({
       let sim: Sim | undefined;
       let setupError: string | undefined;
       try {
-        const map = await loadMap();
+        const { world, field } = await resolveBundles(loadMap, event);
         const members = await Promise.all(
           options.members.map(async (m) => ({
             id: m.memberId,
             sheet: (await loadCharacter(m.memberId)) ?? newCharacter(),
           })),
         );
-        sim = createSim(map, members, rng);
+        sim = createSim(field, members, rng, world.templates);
       } catch (e) {
         setupError = e instanceof Error ? e.message : String(e);
         logger.error("dungeon setup failed", {
@@ -258,6 +280,8 @@ export async function runDungeonActor({
                 gameId: options.gameId,
                 mapId: sim.map.id,
                 mapVersion: sim.map.version,
+                // The field's bundle, for a client whose town bundle differs.
+                ...(event.mapUrl === undefined ? {} : { mapUrl: event.mapUrl }),
                 you: memberId,
               },
             },

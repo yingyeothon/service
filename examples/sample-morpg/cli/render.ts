@@ -1,6 +1,7 @@
 /* State → screen lines at a fixed width/height. `ansi: false` yields plain text (tests). */
 import { EQUIP_SLOTS, expForLevel } from "../src/character.js";
-import type { MapBundle } from "../src/map.js";
+import { isWalkable, type MapBundle } from "../src/map.js";
+import type { Templates } from "../src/templates.js";
 import { isLeader, selfPlayer, shortId, type AppState } from "./state.js";
 
 export interface RenderOptions {
@@ -9,6 +10,8 @@ export interface RenderOptions {
   ansi: boolean;
   /** Epoch millis for buff countdowns; defaults to the wall clock. */
   now?: number;
+  /** The world bundle's templates (quests, NPCs); defaults to `map.templates`. */
+  templates?: Templates;
 }
 
 export const MIN_WIDTH = 60;
@@ -22,6 +25,7 @@ const COLORS: Record<string, string> = {
   peer: "\x1b[36m",
   monster: "\x1b[31m",
   boss: "\x1b[1;31m",
+  npc: "\x1b[1;32m",
   projectile: "\x1b[35m",
   wall: "\x1b[90m",
   dim: "\x1b[90m",
@@ -52,12 +56,18 @@ export function render(
     o.ansi && COLORS[kind] ? `${COLORS[kind]}${text}${RESET}` : text;
 
   const maxTop = height - BELOW_TOP;
+  const templates = o.templates ?? map?.templates;
   const mapLines = (
-    map ? renderMap(state, map, paint) : [paint("dim", "(map not loaded)")]
+    map
+      ? renderMap(state, map, templates, paint)
+      : [paint("dim", "(map not loaded)")]
   ).slice(0, maxTop);
   const mapWidth = map ? map.size.w : visibleWidth(mapLines[0] ?? "");
   const sideWidth = Math.max(SIDE_MIN, width - mapWidth - 2);
-  const side = renderSide(state, map, sideWidth, paint, now).slice(0, maxTop);
+  const side = renderSide(state, templates, sideWidth, paint, now).slice(
+    0,
+    maxTop,
+  );
 
   const top: string[] = [];
   const rows = Math.max(mapLines.length, side.length);
@@ -86,7 +96,21 @@ function hint(state: AppState): string {
     : "wasd move · / command · ? help";
 }
 
-function renderMap(state: AppState, map: MapBundle, paint: Paint): string[] {
+/** Town NPCs standing in `zone`. */
+export function npcsIn(
+  templates: Templates | undefined,
+  zone: string | undefined,
+): Array<[string, Templates["npcs"][string]]> {
+  if (!templates || !zone) return [];
+  return Object.entries(templates.npcs).filter(([, n]) => n.zone === zone);
+}
+
+function renderMap(
+  state: AppState,
+  map: MapBundle,
+  templates: Templates | undefined,
+  paint: Paint,
+): string[] {
   const grid = map.rows.map((r) => r.split(""));
   const kinds: string[][] = map.rows.map((r) =>
     r.split("").map((c) => (c === map.blocked ? "wall" : "")),
@@ -116,6 +140,9 @@ function renderMap(state: AppState, map: MapBundle, paint: Paint): string[] {
     const me = selfPlayer(d);
     if (me) put(me.x, me.y, me.alive ? "@" : "x", "self");
   } else {
+    // An NPC placed in another zone's bundle is not bounds-checked by the parser.
+    for (const [, n] of npcsIn(templates, state.lobby.zone))
+      if (isWalkable(map, n.at)) put(n.at.x, n.at.y, n.mark, "npc");
     for (const p of Object.values(state.lobby.peers))
       put(p.x, p.y, "P", "peer");
     put(state.lobby.self.x, state.lobby.self.y, "@", "self");
@@ -132,7 +159,7 @@ function renderMap(state: AppState, map: MapBundle, paint: Paint): string[] {
 
 function renderSide(
   state: AppState,
-  map: MapBundle | undefined,
+  templates: Templates | undefined,
   width: number,
   paint: Paint,
   now: number,
@@ -206,14 +233,32 @@ function renderSide(
       );
     }
   } else line("party: none", "dim");
-  if (map && map.quests.length > 0) {
-    line("quests:", "title");
-    for (const q of map.quests) {
-      const st = s?.quests[q.id];
-      const mark = st?.active ? "" : st && st.completed > 0 ? " done" : " -";
+  if (state.mode === "lobby") {
+    const npcs = npcsIn(templates, state.lobby.zone);
+    if (npcs.length > 0)
       line(
-        `  ${q.id}: ${st?.active ? st.progress : 0}/${q.count} ${q.templateId}${mark}`,
+        `npcs: ${npcs.map(([id, n]) => `${id}(${n.mark}) @${n.at.x},${n.at.y}`).join(" ")}`,
+        "dim",
       );
+  }
+  // Inside a run only the quests being worked on, so the result box stays visible.
+  const quests = Object.entries(templates?.quests ?? {}).filter(
+    ([id]) => state.mode === "lobby" || s?.quests[id]?.active,
+  );
+  if (quests.length > 0) {
+    line("quests:", "title");
+    for (const [id, q] of quests) {
+      const st = s?.quests[id];
+      const mark = st?.active ? "" : st && st.completed > 0 ? " done" : " -";
+      // A collect quest counts what the bag holds; a kill quest what the field reported.
+      const have =
+        q.kind === "kill"
+          ? st?.active
+            ? st.progress
+            : 0
+          : (s?.items[q.itemId] ?? 0);
+      const what = q.kind === "kill" ? q.templateId : `${q.itemId} (collect)`;
+      line(`  ${id}: ${have}/${q.count} ${what}${mark}`);
     }
   }
   const items = Object.entries(s?.items ?? {}).filter(([, n]) => n > 0);

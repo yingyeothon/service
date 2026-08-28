@@ -12,6 +12,8 @@ export interface DungeonHello {
   gameId: string;
   mapId: string;
   mapVersion: string;
+  /** The field's bundle when it is not the town bundle (README §4.6 zones). */
+  mapUrl?: string;
   you: string;
 }
 

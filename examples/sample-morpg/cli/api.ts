@@ -36,11 +36,12 @@ export interface EnterFailed {
 export type SheetOk = CharacterRow & {
   ok: true;
   /** `POST /npc/{id}/interact` */
-  action?: "accepted" | "completed";
+  action?: "accepted" | "completed" | "teleported";
   questId?: string;
-  /** `POST /zone/{id}` */
+  /** `POST /zone/{id}` and a teleport NPC: the new zone, where to stand, and its own bundle if any */
   zone?: string;
   start?: { x: number; y: number };
+  mapUrl?: string;
 };
 export interface SheetFailed {
   ok: false;
@@ -141,11 +142,14 @@ export function createGameApi(o: GameApiOptions): GameApi {
       effective: stats(j.effective, sheet),
       ...(j.action === "accepted" || j.action === "completed"
         ? { action: j.action, questId: str(j.questId) }
-        : {}),
+        : j.action === "teleported"
+          ? { action: j.action }
+          : {}),
       ...(typeof j.zone === "string" ? { zone: j.zone } : {}),
       ...(Number.isInteger(start?.x) && Number.isInteger(start?.y)
         ? { start: { x: start!.x as number, y: start!.y as number } }
         : {}),
+      ...(typeof j.mapUrl === "string" ? { mapUrl: j.mapUrl } : {}),
     };
   };
   const seg = encodeURIComponent;

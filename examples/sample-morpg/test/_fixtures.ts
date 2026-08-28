@@ -1,12 +1,26 @@
 import { readFileSync } from "node:fs";
 import { parseMapBundle, type MapBundle } from "../src/map.js";
 
-export function loadZone(): MapBundle {
+/** Where the shipped bundles would live once published; relative zone URLs resolve against it. */
+export const BUNDLE_BASE = "https://cdn.test/assets/v1/";
+
+export function loadBundle(file: string): MapBundle {
   return parseMapBundle(
     JSON.parse(
-      readFileSync(new URL("../assets/zone001.json", import.meta.url), "utf8"),
+      readFileSync(new URL(`../assets/${file}`, import.meta.url), "utf8"),
     ),
+    `${BUNDLE_BASE}${file}`,
   );
+}
+
+/** The world bundle (town + slime field). */
+export function loadZone(): MapBundle {
+  return loadBundle("zone001.json");
+}
+
+/** The forest field a teleport leads to (no templates of its own). */
+export function loadZone2(): MapBundle {
+  return loadBundle("zone002.json");
 }
 
 /** Deterministic RNG (mulberry32). */

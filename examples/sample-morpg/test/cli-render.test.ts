@@ -46,7 +46,8 @@ describe("render", () => {
     expect(render(s, map, opts).join("\n")).toContain(
       "jelly_hunt: 0/3 slime -",
     );
-    expect(lines[1]?.slice(0, map.size.w)).toBe("x@.P" + map.rows[1]?.slice(4));
+    // Town NPCs are drawn at their cell (the elder at 17,1); a peer covers the hunter at 3,1.
+    expect(lines[1]?.slice(0, map.size.w)).toBe("x@.P.a...........E.x");
     expect(lines.every((l) => l.length <= 80)).toBe(true);
     const side = lines.map((l) => l.slice(map.size.w + 2));
     expect(side[0]).toBe("LOBBY  idle");
@@ -54,7 +55,12 @@ describe("render", () => {
     expect(side[2]).toBe("zone: zone001  @1,1");
     expect(side[3]).toBe("lv 1  exp 0/100  pts 0");
     expect(side).toContain("party: none");
+    expect(side).toContain(
+      "npcs: hunter(H) @3,1 elder(E) @17,1 forest_gate(G) @18,8",
+    );
     expect(side).toContain("  jelly_hunt: 1/3 slime");
+    // A collect quest counts the bag; the pending marks say not accepted.
+    expect(side).toContain("  jelly_gather: 2/2 slime_jelly (collect) -");
     expect(side).toContain("  slime_jelly x2");
     expect(lines.at(-2)).toBe("bbbbbbbb: hi");
     expect(lines.at(-1)).toContain("wasd move");

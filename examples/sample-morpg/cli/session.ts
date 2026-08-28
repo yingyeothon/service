@@ -9,6 +9,7 @@ import type {
   StoppedEvent,
 } from "@yingyeothon/gamebase-client";
 import { parseMapBundle, distance, type MapBundle } from "../src/map.js";
+import { own, type Templates } from "../src/templates.js";
 import type { Dir } from "../src/sim.js";
 import type { GameApi, SheetAnswer } from "./api.js";
 import { HELP, type Action } from "./commands.js";
@@ -49,6 +50,8 @@ export interface SessionOptions {
   posIntervalMs?: number;
   /** Auto-return to town this long after a run ends. */
   returnDelayMs?: number;
+  /** Fetches a zone/field bundle by URL (the world bundle comes through the SDK's `map()`). */
+  fetchJson?: (url: string) => Promise<unknown>;
 }
 
 /** The gateway refuses a `pos` further than this from the last one. */
@@ -57,7 +60,10 @@ export const DEFAULT_POS_INTERVAL_MS = 200;
 export const DEFAULT_RETURN_DELAY_MS = 8000;
 
 export interface Session {
+  /** The bundle to draw: the current town zone's, or the field's inside a run. */
   readonly map: MapBundle | undefined;
+  /** The world bundle's templates (quests, NPCs, zones), once the lobby said hello. */
+  readonly templates: Templates | undefined;
   start(): Promise<void>;
   dispatch(action: Action): void;
   /** Any key while a run has ended returns to town. */
@@ -71,7 +77,40 @@ export function createSession(o: SessionOptions): Session {
   const returnDelay = o.returnDelayMs ?? DEFAULT_RETURN_DELAY_MS;
   let lobby: GatewayLobbyClient | undefined;
   let game: GatewayGameClient | undefined;
-  let map: MapBundle | undefined;
+  /** The world bundle (`hello.mapUrl`): templates plus the default zone's grid. */
+  let world: MapBundle | undefined;
+  let townMap: MapBundle | undefined;
+  let fieldMap: MapBundle | undefined;
+  const bundles = new Map<string, Promise<MapBundle>>();
+  const fetchJson =
+    o.fetchJson ??
+    (async (url: string) => {
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`bundle ${res.status}`);
+      return res.json();
+    });
+  /** Bundles are immutable per URL: one fetch each for the session. */
+  const loadBundle = (url: string): Promise<MapBundle> => {
+    let p = bundles.get(url);
+    if (!p) {
+      p = fetchJson(url).then((raw) => parseMapBundle(raw, url));
+      p.catch(() => bundles.delete(url));
+      bundles.set(url, p);
+    }
+    return p;
+  };
+  /** The grid of a town zone: its own bundle, or the world's. */
+  const zoneMap = async (zone: string): Promise<MapBundle> => {
+    const url = world?.templates.zones[zone]?.mapUrl;
+    if (world && (url === undefined || url === worldUrl)) return world;
+    if (!url) throw new Error("world bundle not loaded");
+    return loadBundle(url);
+  };
+  let worldUrl: string | undefined;
+  /** The zone the player is in — survives a lobby reconnect (`hello.zone` is only the channel default). */
+  let currentZone: string | undefined;
+  /** Sheet transitions run one after another: answers apply in order, so two in flight cannot cross. */
+  let queue: Promise<void> = Promise.resolve();
   let lastSent: { x: number; y: number } | undefined;
   let posTimer: ReturnType<typeof setTimeout> | undefined;
   let returnTimer: ReturnType<typeof setTimeout> | undefined;
@@ -125,11 +164,25 @@ export function createSession(o: SessionOptions): Session {
       if (state.mode !== "lobby") state.conn = conn; // the side panel shows the socket of the current mode
       void (async () => {
         try {
-          if (!map) {
-            map = parseMapBundle(await l.map());
-            state.lobby.self.x = map.start.x;
-            state.lobby.self.y = map.start.y;
+          if (!townMap) {
+            worldUrl = hello.mapUrl;
+            world = parseMapBundle(await l.map(), hello.mapUrl);
+            // The sheet remembers the zone a teleport left the player in; the
+            // gateway only knows the channel's default.
+            const remembered = state.sheet?.sheet.zone;
+            const zone =
+              remembered !== undefined && own(world.templates.zones, remembered)
+                ? remembered
+                : hello.zone;
+            townMap = await zoneMap(zone);
+            const start =
+              own(world.templates.zones, zone)?.start ?? townMap.start;
+            currentZone = zone;
+            state.lobby.self.x = start.x;
+            state.lobby.self.y = start.y;
           }
+          // The reducer took `hello.zone`; a reconnect must keep the zone we are in.
+          if (currentZone) state.lobby.zone = currentZone;
           lastSent = undefined;
           if (state.mode === "lobby") sendPos(); // in a dungeon, `returnToLobby` re-announces
         } catch (e) {
@@ -217,11 +270,23 @@ export function createSession(o: SessionOptions): Session {
         case "hello": {
           const h = payload as DungeonHello;
           reduceDungeon(state, { t: "hello", payload: h });
-          if (map && h.mapId !== map.id)
-            log(
-              "error",
-              `dungeon map ${h.mapId} differs from the lobby bundle ${map.id}`,
-            );
+          // The field's grid: the named bundle, else the town's (same map).
+          void (async () => {
+            try {
+              // No `mapUrl` means the actor took its default: the world bundle.
+              const m = h.mapUrl ? await loadBundle(h.mapUrl) : world;
+              if (game !== g) return;
+              fieldMap = m;
+              if (m && h.mapId !== m.id)
+                log(
+                  "error",
+                  `dungeon map ${h.mapId} differs from the bundle ${m.id}`,
+                );
+            } catch (e) {
+              log("error", `field map: ${message(e)}`);
+            }
+            changed();
+          })();
           break;
         }
         case "enter":
@@ -317,6 +382,7 @@ export function createSession(o: SessionOptions): Session {
     game = undefined;
     if (g && g.state !== "closed") g.close();
     state.dungeon = undefined;
+    fieldMap = undefined;
     state.mode = "lobby";
     state.conn = { state: lobby?.state ?? "closed" };
     changed();
@@ -349,7 +415,15 @@ export function createSession(o: SessionOptions): Session {
   };
 
   /** One lobby HTTP transition: the answer's row replaces the sheet, refusals are logged. */
-  const sheetAction = async (
+  const sheetAction = (
+    what: string,
+    run: () => Promise<SheetAnswer>,
+    onOk?: (r: Extract<SheetAnswer, { ok: true }>) => void,
+  ): Promise<void> => {
+    queue = queue.then(() => sheetActionNow(what, run, onOk));
+    return queue;
+  };
+  const sheetActionNow = async (
     what: string,
     run: () => Promise<SheetAnswer>,
     onOk?: (r: Extract<SheetAnswer, { ok: true }>) => void,
@@ -373,6 +447,32 @@ export function createSession(o: SessionOptions): Session {
     changed();
   };
 
+  /** The game decided the zone; the client draws its grid and re-announces `pos` there (README). */
+  const moveToZone = async (r: {
+    zone?: string;
+    start?: { x: number; y: number };
+  }): Promise<void> => {
+    if (!r.zone) return;
+    try {
+      townMap = await zoneMap(r.zone);
+    } catch (e) {
+      // The sheet already says the new zone; only the grid is missing.
+      return log(
+        "error",
+        `zone ${r.zone}: ${message(e)} — the sheet is there already, /zone ${r.zone} to retry`,
+      );
+    }
+    currentZone = r.zone;
+    state.lobby.zone = r.zone;
+    const start = r.start ?? townMap.start;
+    state.lobby.self.x = start.x;
+    state.lobby.self.y = start.y;
+    state.lobby.peers = {};
+    lastSent = undefined;
+    sendPos();
+    log("sys", `now in ${r.zone}`);
+  };
+
   // ---------------------------------------------------------- actions
 
   const withLobby = (f: (l: GatewayLobbyClient) => void): void => {
@@ -391,14 +491,15 @@ export function createSession(o: SessionOptions): Session {
     if (state.mode === "dungeon") {
       const d = state.dungeon;
       const me = selfPlayer(d);
+      const map = fieldMap;
       if (!map || !d?.frame || !me || !me.alive) return;
       state.lobby.self.dir = dir;
       const next = dungeonStep(map, d.frame, me, dir);
       if (next) sendGame({ type: "move", x: next.x, y: next.y });
       return;
     }
-    if (state.mode !== "lobby" || !map) return;
-    if (stepLobby(state, map, dir)) schedulePos();
+    if (state.mode !== "lobby" || !townMap) return;
+    if (stepLobby(state, townMap, dir)) schedulePos();
     changed();
   };
 
@@ -455,28 +556,20 @@ export function createSession(o: SessionOptions): Session {
         void sheetAction(
           `talk ${action.npcId}`,
           () => api.interactNpc(action.npcId, action.questId),
-          (r) =>
+          (r) => {
+            if (r.action === "teleported") return void moveToZone(r);
             log(
               "sys",
               `${action.npcId}: quest ${r.questId ?? "?"} ${r.action ?? ""}`,
-            ),
+            );
+          },
         );
         return;
       case "zone":
         void sheetAction(
           `zone ${action.zoneId}`,
           () => api.teleport(action.zoneId),
-          (r) => {
-            // The game decided the zone; the client re-announces `pos` there (README).
-            if (r.zone) state.lobby.zone = r.zone;
-            if (r.start) {
-              state.lobby.self.x = r.start.x;
-              state.lobby.self.y = r.start.y;
-            }
-            lastSent = undefined;
-            sendPos();
-            log("sys", `now in ${r.zone ?? action.zoneId}`);
-          },
+          (r) => void moveToZone(r),
         );
         return;
       case "operate":
@@ -606,12 +699,17 @@ export function createSession(o: SessionOptions): Session {
 
   return {
     get map() {
-      return map;
+      return state.mode === "lobby" ? townMap : (fieldMap ?? townMap);
+    },
+    get templates() {
+      return world?.templates;
     },
     async start() {
+      // The sheet first: `connected` picks the remembered zone from it.
+      await refreshSheet();
       lobby = o.createLobby();
       wireLobby(lobby);
-      await Promise.all([lobby.connect(), refreshSheet()]);
+      await lobby.connect();
     },
     dispatch,
     dismissResult() {

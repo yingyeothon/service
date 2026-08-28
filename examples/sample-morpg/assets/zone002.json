@@ -1,0 +1,48 @@
+{
+  "format": 2,
+  "id": "zone002",
+  "version": "2026-08-29-1",
+  "size": { "w": 20, "h": 10 },
+  "origin": { "x": 0, "y": 0 },
+  "blocked": "x",
+  "start": { "x": 1, "y": 1 },
+  "rows": [
+    "xxxxxxxxxxxxxxxxxxxx",
+    "x......x...........x",
+    "x......x..w........x",
+    "x..x...x......xx...x",
+    "x..x..........xx...x",
+    "x..x...w.......k...x",
+    "x......xxx.........x",
+    "x.w....x......xx...x",
+    "x......x...w..xx...x",
+    "xxxxxxxxxxxxxxxxxxxx"
+  ],
+  "npcs": [
+    {
+      "mark": "w",
+      "kind": "monster",
+      "templateId": "wolf",
+      "stats": { "maxHp": 35, "attack": 7, "defence": 2 },
+      "spawn": { "initial": 2, "max": 4, "ratePerSec": 0.1 },
+      "exp": 25,
+      "drops": [
+        { "itemId": "wolf_fang", "probability": 0.6 },
+        { "itemId": "hp_potion", "probability": 0.3 }
+      ]
+    },
+    {
+      "mark": "k",
+      "kind": "monster",
+      "templateId": "alpha_wolf",
+      "stats": { "maxHp": 120, "attack": 10, "defence": 4 },
+      "spawn": { "initial": 1, "max": 1, "ratePerSec": 0 },
+      "exp": 250,
+      "drops": [
+        { "itemId": "leather_armor", "probability": 1 },
+        { "itemId": "wolf_fang", "probability": 1 }
+      ]
+    }
+  ],
+  "clear": { "kind": "kill", "templateId": "alpha_wolf" }
+}

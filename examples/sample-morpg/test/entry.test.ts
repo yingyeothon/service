@@ -1,7 +1,7 @@
+import type { DungeonStartEvent } from "../src/actor.js";
 import { readFile } from "node:fs/promises";
 import jwt from "jsonwebtoken";
 import { describe, expect, it } from "vitest";
-import type { GameActorStartEvent } from "@yingyeothon/lambda-gamebase";
 import {
   newCharacter,
   parseCharacter,
@@ -24,8 +24,8 @@ const token = (sub: string) =>
 const PARTY = "pty_0123456789abcdef";
 
 function harness(over: Partial<EntryOptions> = {}) {
-  const events: GameActorStartEvent[] = [];
-  const started: GameActorStartEvent[] = [];
+  const events: DungeonStartEvent[] = [];
+  const started: DungeonStartEvent[] = [];
   const secrets = new Map<string, string>();
   const ready = new Set<string>();
   const docs = new Map<string, { doc: unknown; version: number }>();
@@ -191,6 +191,29 @@ describe("POST /dungeon/enter", () => {
       `https://api.example/dungeon/ready/${out.gameId as string}/${h.secrets.get(out.gameId as string)!}`,
     );
     expect(h.started).toEqual(h.events);
+    // No world bundle configured: the actor falls back to its own MAP_URL.
+    expect(h.events[0]!).not.toHaveProperty("mapUrl");
+  });
+  it("the leader's zone picks the field: its own bundle, else the world's", async () => {
+    const h = harness({
+      templates: async () => TEMPLATES,
+      mapUrl: "https://cdn/world.json",
+    });
+    const body = JSON.stringify({ partyId: PARTY });
+    const enter = () =>
+      h.handle(
+        h.req("POST", "/dungeon/enter", `Bearer ${token("leader")}`, body),
+      );
+    expect((await enter()).statusCode).toBe(200);
+    expect(h.events[0]!.mapUrl).toBe("https://cdn/world.json");
+    h.docs.set("leader", { doc: { format: 2, zone: "town2" }, version: 1 });
+    h.parties.clear();
+    expect((await enter()).statusCode).toBe(200);
+    expect(h.events[1]!.mapUrl).toBe("https://cdn/town2.json");
+    h.docs.set("leader", { doc: { format: 2, zone: "town" }, version: 2 });
+    h.parties.clear();
+    expect((await enter()).statusCode).toBe(200);
+    expect(h.events[2]!.mapUrl).toBe("https://cdn/world.json");
   });
   it("answers 504 when the actor never calls back, with a fresh id each try", async () => {
     const h = harness({ startActor: async () => undefined });
@@ -333,8 +356,20 @@ const TEMPLATES: Templates = {
   quests: {
     hunt: { kind: "kill", templateId: "slime", count: 3, repeatable: true },
   },
-  npcs: { elder: { quests: ["hunt"] } },
-  zones: { town2: { start: { x: 3, y: 4 } } },
+  npcs: {
+    elder: { zone: "town", at: { x: 1, y: 1 }, mark: "E", quests: ["hunt"] },
+    gate: {
+      zone: "town",
+      at: { x: 2, y: 1 },
+      mark: "G",
+      quests: [],
+      teleport: "town2",
+    },
+  },
+  zones: {
+    town: { start: { x: 1, y: 1 } },
+    town2: { start: { x: 3, y: 4 }, mapUrl: "https://cdn/town2.json" },
+  },
 };
 
 /**
@@ -527,6 +562,26 @@ describe("lobby transitions", () => {
     });
     expect(h.writes()).toBe(1);
     expect((await h.call("POST", "/zone/nowhere")).statusCode).toBe(404);
+    // A zone with its own bundle says so; the world's zone does not.
+    expect(parse(first).mapUrl).toBe("https://cdn/town2.json");
+    expect(parse(await h.call("POST", "/zone/town"))).not.toHaveProperty(
+      "mapUrl",
+    );
+  });
+  it("a teleport NPC moves the player like the zone route", async () => {
+    const h = sheetHarness();
+    const r = parse(await h.call("POST", "/npc/gate/interact", {}));
+    expect(r).toMatchObject({
+      action: "teleported",
+      zone: "town2",
+      start: { x: 3, y: 4 },
+      mapUrl: "https://cdn/town2.json",
+      sheet: { zone: "town2" },
+    });
+    expect(
+      (await h.call("POST", "/npc/gate/interact", { questId: "hunt" }))
+        .statusCode,
+    ).toBe(404);
   });
   it("without templates every named thing is refused but points still work", async () => {
     const h = sheetHarness({ templates: undefined });
