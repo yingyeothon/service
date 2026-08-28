@@ -7,6 +7,7 @@ import { Crumbs } from "../components/Crumbs";
 import {
   Badge,
   Confirm,
+  CopyBlock,
   CopyField,
   Notice,
   SecretOnce,
@@ -542,11 +543,16 @@ function QDetails({ c }: { c: Channel }) {
       <CopyField label="Auth channel" value={cfg.authChannelId} />
       {r && (
         <>
-          <CopyField label="Event key prefix" value={r.eventKeyPrefix} />
-          <CopyField label="Queue key prefix" value={r.queueKeyPrefix} />
-          <CopyField label="Lock key prefix" value={r.lockKeyPrefix} />
-          <CopyField label="Awaiter key prefix" value={r.awaiterKeyPrefix} />
-          <CopyField label="Pub/sub channel prefix" value={r.channelPrefix} />
+          <CopyBlock
+            label="tslib prefixes (copy as one block)"
+            lines={[
+              ["eventKeyPrefix", r.eventKeyPrefix],
+              ["queueKeyPrefix", r.queueKeyPrefix],
+              ["lockKeyPrefix", r.lockKeyPrefix],
+              ["awaiterKeyPrefix", r.awaiterKeyPrefix],
+              ["channelPrefix", r.channelPrefix],
+            ]}
+          />
           <CopyField label="Redis ACL key pattern" value={r.aclKeyPattern} />
           <CopyField
             label="Redis ACL channel pattern"
@@ -558,9 +564,8 @@ function QDetails({ c }: { c: Channel }) {
       <Text size="sm" c="dimmed">
         Your entry API allocates the game id and writes the start event; player
         sockets then connect with <Code>?gameId=…</Code> appended to the
-        WebSocket URL. Copy{" "}
-        <strong>all four key prefixes and the channel prefix</strong> into your
-        tslib actor configuration unchanged: the Redis account issued for this
+        WebSocket URL. Copy the <strong>prefix block above</strong> and set each
+        tslib prefix option from it unchanged: the Redis account issued for this
         channel is scoped to <Code>{r?.aclKeyPattern}</Code>, so a prefix you
         invent lands outside it, and one that merely differs is a silent no-op
         rather than an error. Pass them to the prefix options directly — a
