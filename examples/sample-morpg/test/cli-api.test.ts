@@ -104,6 +104,28 @@ describe("game api: sheet routes", () => {
       start: { x: 1, y: 2 },
       effective: { maxHp: 60, attack: 15, defence: 2 },
     });
+    // A gate NPC: `teleported` carries no questId, and the zone's own bundle comes along.
+    const gate = api(
+      200,
+      JSON.stringify({
+        userId: "u",
+        version: 5,
+        sheet: { ...newCharacter(), zone: "z2" },
+        action: "teleported",
+        zone: "z2",
+        start: { x: 1, y: 2 },
+        mapUrl: "https://cdn/z2.json",
+        effective: { maxHp: 50, attack: 10, defence: 2 },
+      }),
+      [],
+    );
+    expect(await gate.interactNpc("gate")).toMatchObject({
+      ok: true,
+      action: "teleported",
+      zone: "z2",
+      mapUrl: "https://cdn/z2.json",
+    });
+    expect(await gate.interactNpc("gate")).not.toHaveProperty("questId");
     await a.statsUp("attack", 2);
     await a.useItem("tonic");
     await a.equipItem("sword");

@@ -1,6 +1,7 @@
 import { nullLogger } from "@yingyeothon/logger";
 import { describe, expect, it } from "vitest";
-import { commitAll } from "../src/actor.js";
+import { commitAll, resolveBundles } from "../src/actor.js";
+import { loadZone, loadZone2 } from "./_fixtures.js";
 import type { ResultDelta } from "../src/character.js";
 
 const d = (exp: number): ResultDelta => ({
@@ -8,6 +9,27 @@ const d = (exp: number): ResultDelta => ({
   items: {},
   consumed: {},
   questProgress: {},
+});
+
+describe("resolveBundles", () => {
+  it("loads the world once and the field only when the start event names one", async () => {
+    const world = loadZone();
+    const forest = loadZone2();
+    const urls: Array<string | undefined> = [];
+    const loadMap = async (url?: string) => {
+      urls.push(url);
+      return url === undefined ? world : forest;
+    };
+    const event = { gameId: "g_1", members: [] };
+    expect(await resolveBundles(loadMap, event)).toEqual({
+      world,
+      field: world,
+    });
+    expect(
+      await resolveBundles(loadMap, { ...event, mapUrl: "https://cdn/f.json" }),
+    ).toEqual({ world, field: forest });
+    expect(urls).toEqual([undefined, undefined, "https://cdn/f.json"]);
+  });
 });
 
 describe("commitAll", () => {

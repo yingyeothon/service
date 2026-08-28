@@ -11,7 +11,7 @@ import {
   results,
   step,
 } from "../src/sim.js";
-import { loadZone, seeded } from "./_fixtures.js";
+import { loadZone, loadZone2, seeded } from "./_fixtures.js";
 
 const dt = TICK_MILLIS / 1000;
 const party = () => [
@@ -62,9 +62,10 @@ describe("dungeon sim", () => {
     // 60 hp / (10 attack - 2 defence) = 8 swings.
     expect(swings).toBe(8);
     expect(sim.cleared).toBe(true);
+    // The boss always drops its horn and the sword; the scroll is a 50 % roll this seed wins.
     expect(results(sim).a).toEqual({
       exp: 100,
-      items: { boss_horn: 1 },
+      items: { boss_horn: 1, wooden_sword: 1, rage_scroll: 1 },
       consumed: {},
       questProgress: {},
     });
@@ -81,6 +82,19 @@ describe("dungeon sim", () => {
     expect(events).toContain("kill");
     expect(events).toContain("drop");
     expect(events).toContain("cleared");
+  });
+  it("kill quests are counted against the world's templates, not the field's", () => {
+    const world = loadZone();
+    const forest = loadZone2();
+    expect(forest.templates.quests).toEqual({});
+    const sim = createSim(forest, party(), seeded(3), world.templates);
+    const wolf = sim.monsters.find((m) => m.templateId === "wolf")!;
+    const a = sim.players.a!;
+    a.x = wolf.x;
+    a.y = wolf.y + 1;
+    a.attack = 100;
+    handle(sim, "a", { type: "attack", uid: wolf.uid });
+    expect(results(sim).a!.questProgress).toEqual({ wolf_hunt: 1 });
   });
   it("a slime kill counts toward the quest", () => {
     const sim = createSim(loadZone(), party(), seeded(3));

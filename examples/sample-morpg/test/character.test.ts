@@ -35,10 +35,30 @@ const T: Templates = {
     ghost: { kind: "kill", templateId: "ghost", count: 1, repeatable: false },
   },
   npcs: {
-    elder: { quests: ["hunt", "gather"] },
-    hermit: { quests: ["missing"] },
+    elder: {
+      zone: "town",
+      at: { x: 1, y: 1 },
+      mark: "E",
+      quests: ["hunt", "gather"],
+    },
+    hermit: {
+      zone: "town",
+      at: { x: 2, y: 1 },
+      mark: "M",
+      quests: ["missing"],
+    },
+    gate: {
+      zone: "town",
+      at: { x: 3, y: 1 },
+      mark: "G",
+      quests: [],
+      teleport: "town2",
+    },
   },
-  zones: { town2: { start: { x: 3, y: 4 } } },
+  zones: {
+    town: { start: { x: 1, y: 1 } },
+    town2: { start: { x: 3, y: 4 }, mapUrl: "https://cdn/town2.json" },
+  },
 };
 const NOW = 1_700_000_000_000;
 const ok = (r: { ok: boolean; sheet?: CharacterSheet }): CharacterSheet => {
@@ -452,6 +472,21 @@ describe("town NPCs and zones", () => {
       reason: "nothing_to_do",
     });
     expect(interactNpc(newCharacter(), "hermit", T, "missing")).toEqual({
+      ok: false,
+      reason: "unknown_quest",
+    });
+  });
+  it("a teleport NPC answers the zone, its start and bundle; named quests are refused", () => {
+    const r = interactNpc(newCharacter(), "gate", T);
+    expect(r).toMatchObject({
+      ok: true,
+      action: "teleported",
+      zone: "town2",
+      start: { x: 3, y: 4 },
+      mapUrl: "https://cdn/town2.json",
+    });
+    expect(ok(r).zone).toBe("town2");
+    expect(interactNpc(newCharacter(), "gate", T, "hunt")).toEqual({
       ok: false,
       reason: "unknown_quest",
     });

@@ -11,10 +11,13 @@
 //          apiKey and the map bundle asset, then writes the stack's deploy env and the ids.
 //   run:   scripts/smoke/morpg.mjs run <debugKey> <authBaseUrl> <consoleBaseUrl> <gatewayWsUrl> <stateFile> <apiBaseUrl>
 //          plays a full loop with two synthetic players (gatewayWsUrl e.g. wss://gw-dev.yyt.life).
+//   publish-map: scripts/smoke/morpg.mjs publish-map <debugKey> <consoleBaseUrl> <stateFile> <envFile> <version>
+//          uploads every assets/*.json as a new immutable version of the existing bundle, points the
+//          lobby channel at the new world bundle and rewrites MAP_URL / state.mapUrl (redeploy afterwards).
 //   clean: scripts/smoke/morpg.mjs clean <debugKey> <consoleBaseUrl> <stateFile>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import {
@@ -71,10 +74,66 @@ const login = async (consoleBase, debugKey) => {
   check("console debug login", r.status === 200);
   return { cookie: r.body?.cookie, origin: consoleBase };
 };
-const MAP_FILE = new URL(
-  "../../examples/sample-morpg/assets/zone001.json",
+const ASSETS_DIR = new URL(
+  "../../examples/sample-morpg/assets/",
   import.meta.url,
 );
+/** The world bundle (README §4.6): the lobby's `mapUrl` and the stack's `MAP_URL`. */
+const WORLD_FILE = "zone001.json";
+
+/**
+ * Uploads every `assets/*.json` under one immutable version of the bundle and
+ * returns the world bundle's URL (zone bundles sit beside it, so the world's
+ * relative `zones[].mapUrl` resolve).
+ */
+async function publishAssets(consoleBase, cookie, bundleId, version) {
+  let worldUrl = "";
+  const files = readdirSync(ASSETS_DIR).filter((f) => f.endsWith(".json"));
+  for (const file of files) {
+    const payload = readFileSync(new URL(file, ASSETS_DIR), "utf8");
+    const up = await json(`${consoleBase}/assets/bundles/${bundleId}/files`, {
+      method: "POST",
+      headers: cookie,
+      body: { version, path: file, size: Buffer.byteLength(payload) },
+    });
+    check(`presign ${file} upload`, up.status === 201, String(up.status));
+    if (up.status !== 201) continue;
+    const put = await fetch(up.body.url, {
+      method: "PUT",
+      headers: up.body.headers,
+      body: payload,
+    });
+    check(`PUT ${file} to S3`, put.ok, String(put.status));
+    const commit = await json(
+      `${consoleBase}/assets/uploads/${up.body.uploadId}/commit`,
+      { method: "POST", headers: cookie },
+    );
+    check(
+      `commit ${file} upload`,
+      commit.status === 200 && typeof commit.body?.url === "string",
+      String(commit.status),
+    );
+    if (file === WORLD_FILE) worldUrl = commit.body?.url ?? "";
+  }
+  return worldUrl;
+}
+
+/** Points the lobby channel at a world bundle URL. */
+async function pointLobbyAt(consoleBase, cookie, lobbyId, mapUrl) {
+  const cur = await json(`${consoleBase}/channels/${lobbyId}`, {
+    headers: cookie,
+  });
+  const patched = await json(`${consoleBase}/channels/${lobbyId}`, {
+    method: "PATCH",
+    headers: cookie,
+    body: { config: { ...cur.body?.config, mapUrl } },
+  });
+  check(
+    "lobby channel mapUrl",
+    patched.status === 200 && patched.body?.config?.mapUrl === mapUrl,
+    String(patched.status),
+  );
+}
 
 if (mode === "setup") {
   const [debugKey, authBase, consoleBase, docBase, outEnv, outState] = args;
@@ -166,54 +225,14 @@ if (mode === "setup") {
     },
   );
   check("create asset bundle", bundle.status === 201, String(bundle.status));
-  const payload = readFileSync(MAP_FILE, "utf8");
-  const up = await json(
-    `${consoleBase}/assets/bundles/${bundle.body?.id}/files`,
-    {
-      method: "POST",
-      headers: cookie,
-      body: {
-        version: "v1",
-        path: "zone001.json",
-        size: Buffer.byteLength(payload),
-      },
-    },
+  const mapUrl = await publishAssets(
+    consoleBase,
+    cookie,
+    bundle.body?.id,
+    "v1",
   );
-  check("presign map upload", up.status === 201, String(up.status));
-  let mapUrl = "";
-  if (up.status === 201) {
-    const put = await fetch(up.body.url, {
-      method: "PUT",
-      headers: up.body.headers,
-      body: payload,
-    });
-    check("PUT map to S3", put.ok, String(put.status));
-    const commit = await json(
-      `${consoleBase}/assets/uploads/${up.body.uploadId}/commit`,
-      { method: "POST", headers: cookie },
-    );
-    check(
-      "commit map upload",
-      commit.status === 200 && typeof commit.body?.url === "string",
-      String(commit.status),
-    );
-    mapUrl = commit.body?.url ?? "";
-  }
-  if (mapUrl) {
-    const cur = await json(`${consoleBase}/channels/${lobby.body?.id}`, {
-      headers: cookie,
-    });
-    const patched = await json(`${consoleBase}/channels/${lobby.body?.id}`, {
-      method: "PATCH",
-      headers: cookie,
-      body: { config: { ...cur.body?.config, mapUrl } },
-    });
-    check(
-      "lobby channel mapUrl",
-      patched.status === 200 && patched.body?.config?.mapUrl === mapUrl,
-      String(patched.status),
-    );
-  }
+  check("world bundle url", mapUrl !== "", mapUrl);
+  if (mapUrl) await pointLobbyAt(consoleBase, cookie, lobby.body?.id, mapUrl);
   if (failed) finish();
   writeFileSync(
     outEnv,
@@ -246,12 +265,42 @@ if (mode === "setup") {
       qChannelId: q.body.id,
       qWsUrl: q.body.wsUrl,
       bundleId: bundle.body.id,
+      versions: ["v1"],
       mapUrl,
       docBaseUrl: docUrl,
     }),
     { mode: 0o600 },
   );
   console.log(`wrote ${outEnv} and ${outState}`);
+  finish();
+}
+
+if (mode === "publish-map") {
+  const [debugKey, consoleBase, stateFile, envFile, version] = args;
+  if (!version || !/^[a-z0-9._-]{1,32}$/.test(version)) usage();
+  const state = JSON.parse(readFileSync(stateFile, "utf8"));
+  const cookie = await login(consoleBase, debugKey);
+  const mapUrl = await publishAssets(
+    consoleBase,
+    cookie,
+    state.bundleId,
+    version,
+  );
+  check("world bundle url", mapUrl !== "", mapUrl);
+  if (failed) finish();
+  await pointLobbyAt(consoleBase, cookie, state.lobbyChannelId, mapUrl);
+  // Nothing is rewritten unless the lobby announces the new world too.
+  if (failed) finish();
+  const versions = [...new Set([...(state.versions ?? ["v1"]), version])];
+  writeFileSync(stateFile, JSON.stringify({ ...state, versions, mapUrl }), {
+    mode: 0o600,
+  });
+  const env = readFileSync(envFile, "utf8")
+    .split("\n")
+    .map((l) => (l.startsWith("MAP_URL=") ? `MAP_URL=${mapUrl}` : l))
+    .join("\n");
+  writeFileSync(envFile, env, { mode: 0o600 });
+  console.log(`updated ${stateFile} and ${envFile}; redeploy the stack`);
   finish();
 }
 
@@ -272,22 +321,27 @@ if (mode === "clean") {
     );
   }
   if (state.bundleId) {
-    const v = await fetch(
-      `${consoleBase}/assets/bundles/${state.bundleId}/versions/v1`,
-      { method: "DELETE", headers: cookie },
-    );
+    const statuses = [];
+    for (const version of state.versions ?? ["v1"]) {
+      const v = await fetch(
+        `${consoleBase}/assets/bundles/${state.bundleId}/versions/${version}`,
+        { method: "DELETE", headers: cookie },
+      );
+      statuses.push(v.status);
+    }
     const b = await fetch(`${consoleBase}/assets/bundles/${state.bundleId}`, {
       method: "DELETE",
       headers: cookie,
     });
+    statuses.push(b.status);
     check(
       "delete map bundle",
-      [204, 404].includes(v.status) && [204, 404].includes(b.status),
-      `${v.status}/${b.status}`,
+      statuses.every((st) => [204, 404].includes(st)),
+      statuses.join("/"),
     );
   }
-  // The seeded auth channel expires by itself (6 h ttl from setup); its doc
-  // apiKey and the synthetic character rows die with it.
+  // The seeded auth channel expires by itself (auth's debug channel ttl); its
+  // doc apiKey and the synthetic character rows die with it.
   console.log(
     "morpg stack stays deployed; remove with `serverless remove --stage dev` in examples/sample-morpg",
   );
@@ -464,7 +518,7 @@ check(
 const map = await a.map().catch(() => null);
 check(
   "map bundle fetched from the CDN through the SDK",
-  map?.format === 1 && Array.isArray(map.rows),
+  map?.format === 2 && Array.isArray(map.rows),
   JSON.stringify(map?.id),
 );
 a.pos({ zone: "zone001", x: map.start.x, y: map.start.y });

@@ -5,8 +5,8 @@
  * transform from character.ts. Pure of AWS: every side effect is injected.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import type { GameActorStartEvent } from "@yingyeothon/lambda-gamebase";
 import jwt from "jsonwebtoken";
+import type { DungeonStartEvent } from "./actor.js";
 import {
   allocateStat,
   effectiveStats,
@@ -29,6 +29,7 @@ import {
   type Templates,
 } from "./character.js";
 import { updateSheet } from "./commit.js";
+import { own } from "./templates.js";
 import type { DocClient } from "./doc.js";
 
 export interface Roster {
@@ -64,10 +65,10 @@ export interface EntryOptions {
     bearer: string,
   ) => Promise<Roster | "not_found" | "unauthorized">;
   saveStartEvent: (
-    event: GameActorStartEvent,
+    event: DungeonStartEvent,
     ttlSeconds: number,
   ) => Promise<unknown>;
-  startActor: (event: GameActorStartEvent) => Promise<unknown>;
+  startActor: (event: DungeonStartEvent) => Promise<unknown>;
   /** Ready handshake state, keyed by gameId (Redis in production). */
   ready: {
     setSecret: (
@@ -96,8 +97,14 @@ export interface EntryOptions {
     isLive: (gameId: string) => Promise<boolean>;
   };
   doc: DocClient;
-  /** Item/quest/NPC/zone templates (the bundle, phase 4); `NO_TEMPLATES` refuses everything named. */
+  /** The world bundle's templates (`MAP_URL`); `NO_TEMPLATES` refuses everything named. */
   templates?: () => Promise<Templates>;
+  /**
+   * The world bundle's URL. A party plays the field of the leader's zone
+   * (`templates.zones[zone].mapUrl`), falling back to this one; the start
+   * event carries no `mapUrl` when unset (the actor then uses its own default).
+   */
+  mapUrl?: string;
   now?: () => number;
   startEventTtlSeconds: number;
   /** How long `POST /dungeon/enter` waits for the actor's readyCall. */
@@ -197,6 +204,17 @@ export function createHttpHandler(
   const readyTimeout = o.readyTimeoutMillis ?? 8000;
   const readyPoll = o.readyPollMillis ?? 250;
 
+  const templates = o.templates ?? (async () => NO_TEMPLATES);
+  const now = o.now ?? Date.now;
+
+  /** The field a leader standing in `zone` enters (README §4.6 zones). */
+  const fieldFor = async (leaderId: string): Promise<string | undefined> => {
+    const [current, t] = await Promise.all([o.doc.read(leaderId), templates()]);
+    const zone = current ? parseCharacter(current.doc).zone : undefined;
+    const zoneUrl = zone === undefined ? undefined : own(t.zones, zone)?.mapUrl;
+    return zoneUrl ?? o.mapUrl;
+  };
+
   const enter = async (req: HttpRequest): Promise<HttpResponse> => {
     const user = verifyUser(req.headers.authorization, o);
     if (!user) return json(401, { error: "unauthorized" });
@@ -229,7 +247,8 @@ export function createHttpHandler(
       // A fresh id every time: a crashed actor's lock outlives it (README §4.1 #2).
       const gameId = `g_${randomBytes(8).toString("hex")}`;
       const secret = randomBytes(16).toString("hex");
-      const event: GameActorStartEvent = {
+      const mapUrl = await fieldFor(user.userId);
+      const event: DungeonStartEvent = {
         gameId,
         members: members.map((memberId) => ({
           memberId,
@@ -237,6 +256,7 @@ export function createHttpHandler(
           email: "",
         })),
         callbackUrl: `${o.callbackBaseUrl}/dungeon/ready/${gameId}/${secret}`,
+        ...(mapUrl === undefined ? {} : { mapUrl }),
       };
       await o.ready.setSecret(gameId, secret, READY_TTL_SECONDS);
       await o.party.set(partyId, gameId, o.startEventTtlSeconds);
@@ -279,9 +299,6 @@ export function createHttpHandler(
     // tslib's `readyCall` accepts exactly 200, not any 2xx.
     return json(200, { ok: true });
   };
-
-  const templates = o.templates ?? (async () => NO_TEMPLATES);
-  const now = o.now ?? Date.now;
 
   /** The row every sheet route answers: base sheet plus what gear and buffs make of it. */
   const row = (
@@ -428,7 +445,14 @@ export function createHttpHandler(
     if (!isId(zoneId)) return json(404, { error: "not_found" });
     return transition(user, `zone ${zoneId}`, (sheet, t) => {
       const r = teleport(sheet, zoneId, t);
-      return r.ok ? { ...r, zone: zoneId, start: t.zones[zoneId]?.start } : r;
+      if (!r.ok) return r;
+      const z = own(t.zones, zoneId);
+      return {
+        ...r,
+        zone: zoneId,
+        start: z?.start,
+        ...(z?.mapUrl === undefined ? {} : { mapUrl: z.mapUrl }),
+      };
     });
   };
 

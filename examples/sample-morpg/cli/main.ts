@@ -77,7 +77,14 @@ async function main(): Promise<void> {
     if (!dirty) return;
     dirty = false;
     const { width, height } = term.size();
-    term.paint(render(state, session.map, { width, height, ansi: true }));
+    term.paint(
+      render(state, session.map, {
+        width,
+        height,
+        ansi: true,
+        templates: session.templates,
+      }),
+    );
   };
   const timer = setInterval(paint, PAINT_INTERVAL_MS);
   term.onResize(() => (dirty = true));

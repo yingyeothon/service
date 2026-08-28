@@ -9,13 +9,14 @@ import type { EnterFailed, EnterOk, GameApi, SheetAnswer } from "../cli/api.js";
 import { createSession, type Session } from "../cli/session.js";
 import { newState, type AppState } from "../cli/state.js";
 import { newCharacter } from "../src/character.js";
-import { loadZone } from "./_fixtures.js";
+import { loadZone, loadZone2 } from "./_fixtures.js";
 
 const ME = "a".repeat(32);
 const PEER = "b".repeat(32);
 const GAME = "g_0123456789abcdef";
 const PTY = "pty_0123456789abcdef";
 const zone = loadZone();
+const forest = loadZone2();
 const hello: Hello = {
   type: "hello",
   userId: ME,
@@ -160,9 +161,12 @@ interface Harness {
   games: ReturnType<typeof fakeGame>[];
   api: { calls: string[]; enter: EnterOk | EnterFailed; sheet: SheetAnswer };
   quit: string[];
+  fetched: string[];
 }
 
-async function start(opts: { connectFails?: boolean } = {}): Promise<Harness> {
+async function start(
+  opts: { connectFails?: boolean; zone?: string } = {},
+): Promise<Harness> {
   const state = newState(ME, "alice");
   const lobby = fakeLobby();
   const games: ReturnType<typeof fakeGame>[] = [];
@@ -192,7 +196,9 @@ async function start(opts: { connectFails?: boolean } = {}): Promise<Harness> {
       return {
         userId: ME,
         version: api.calls.length,
-        sheet: newCharacter(),
+        sheet: opts.zone
+          ? { ...newCharacter(), zone: opts.zone }
+          : newCharacter(),
         effective: { maxHp: 50, attack: 10, defence: 2 },
       };
     },
@@ -209,8 +215,15 @@ async function start(opts: { connectFails?: boolean } = {}): Promise<Harness> {
     teleport: (zoneId) => sheetCall(`zone ${zoneId}`),
   };
   const quit: string[] = [];
+  const fetched: string[] = [];
   const session = createSession({
     state,
+    fetchJson: async (url) => {
+      fetched.push(url);
+      if (url.endsWith("/zone002.json"))
+        return JSON.parse(JSON.stringify(forest)) as unknown;
+      throw new Error("404");
+    },
     createLobby: () => lobby.client,
     createGame: (gameId) => {
       const g = fakeGame(gameId, opts.connectFails);
@@ -223,7 +236,7 @@ async function start(opts: { connectFails?: boolean } = {}): Promise<Harness> {
   });
   await session.start();
   await vi.advanceTimersByTimeAsync(0);
-  return { state, session, lobby, games, api, quit };
+  return { state, session, lobby, games, api, quit, fetched };
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -372,6 +385,140 @@ describe("session: lobby", () => {
       y: 6,
       dir: "s",
     });
+    // The zone's own bundle is drawn from now on; fetched once.
+    expect(h.session.map?.id).toBe("zone002");
+    expect(h.fetched).toEqual([zone.templates.zones.zone002!.mapUrl]);
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.fetched).toHaveLength(1);
+    expect(h.session.templates?.zones.zone002).toBeDefined();
+  });
+  it("a dungeon hello naming a field bundle fetches it and draws it until the run ends", async () => {
+    const h = await start();
+    h.lobby.setRoster({
+      type: "party",
+      partyId: PTY,
+      leaderId: ME,
+      members: [{ userId: ME, online: true }],
+      invited: [],
+      max: 4,
+    });
+    h.session.dispatch({ kind: "enter" });
+    await vi.advanceTimersByTimeAsync(0);
+    const g = h.games[0]!;
+    g.emit("frame", {
+      type: "hello",
+      payload: {
+        gameId: GAME,
+        mapId: "zone002",
+        mapVersion: "v1",
+        mapUrl: zone.templates.zones.zone002!.mapUrl,
+        you: ME,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.fetched).toEqual([zone.templates.zones.zone002!.mapUrl]);
+    expect(h.session.map?.id).toBe("zone002");
+    expect(h.state.log.some((l) => l.text.includes("differs"))).toBe(false);
+    g.emit("finished", { reason: "cleared" });
+    expect(h.session.dismissResult()).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.session.map?.id).toBe("zone001");
+  });
+  it("a lobby reconnect keeps the zone the player is in", async () => {
+    const h = await start();
+    h.api.sheet = {
+      ok: true,
+      userId: ME,
+      version: 2,
+      sheet: { ...newCharacter(), zone: "zone002" },
+      effective: { maxHp: 50, attack: 10, defence: 2 },
+      zone: "zone002",
+      start: { x: 1, y: 1 },
+    };
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    await vi.advanceTimersByTimeAsync(0);
+    h.session.dispatch({ kind: "move", dir: "e" });
+    h.lobby.sent.length = 0;
+    h.lobby.emit("connected", hello); // hello.zone is the channel default, zone001
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.lobby.zone).toBe("zone002");
+    expect(h.lobby.sent).toEqual([
+      { type: "pos", zone: "zone002", x: 2, y: 1, dir: "e" },
+    ]);
+    expect(h.session.map?.id).toBe("zone002");
+  });
+  it("sheet actions run in order: a zone change queued behind another lands last", async () => {
+    const h = await start();
+    const answer = (zone: string, start: { x: number; y: number }) =>
+      ({
+        ok: true,
+        userId: ME,
+        version: 2,
+        sheet: { ...newCharacter(), zone },
+        effective: { maxHp: 50, attack: 10, defence: 2 },
+        zone,
+        start,
+      }) as const;
+    h.api.sheet = answer("zone002", { x: 1, y: 1 });
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    h.api.sheet = answer("zone001", { x: 1, y: 1 });
+    h.session.dispatch({ kind: "zone", zoneId: "zone001" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.slice(-2)).toEqual(["zone zone002", "zone zone001"]);
+    expect(h.state.lobby.zone).toBe("zone001");
+    expect(h.session.map?.id).toBe("zone001");
+  });
+  it("a dungeon hello without mapUrl draws the world bundle even from another zone", async () => {
+    const h = await start({ zone: "zone002" });
+    expect(h.session.map?.id).toBe("zone002");
+    h.lobby.setRoster({
+      type: "party",
+      partyId: PTY,
+      leaderId: ME,
+      members: [{ userId: ME, online: true }],
+      invited: [],
+      max: 4,
+    });
+    h.session.dispatch({ kind: "enter" });
+    await vi.advanceTimersByTimeAsync(0);
+    h.games[0]!.emit("frame", {
+      type: "hello",
+      payload: { gameId: GAME, mapId: "zone001", mapVersion: "v1", you: ME },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.session.map?.id).toBe("zone001");
+  });
+  it("a teleport NPC answers like a zone change", async () => {
+    const h = await start();
+    h.api.sheet = {
+      ok: true,
+      userId: ME,
+      version: 2,
+      sheet: { ...newCharacter(), zone: "zone002" },
+      effective: { maxHp: 50, attack: 10, defence: 2 },
+      action: "teleported",
+      zone: "zone002",
+      start: { x: 1, y: 1 },
+    };
+    h.session.dispatch({ kind: "talk", npcId: "forest_gate" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.at(-1)).toBe("talk forest_gate -");
+    expect(h.state.lobby.zone).toBe("zone002");
+    expect(h.session.map?.id).toBe("zone002");
+    expect(h.lobby.sent.at(-1)).toMatchObject({ type: "pos", zone: "zone002" });
+  });
+  it("a remembered zone wins over the channel default on connect", async () => {
+    const h = await start({ zone: "zone002" });
+    expect(h.state.lobby.zone).toBe("zone002");
+    expect(h.session.map?.id).toBe("zone002");
+    expect(h.lobby.sent[0]).toEqual({
+      type: "pos",
+      zone: "zone002",
+      x: 1,
+      y: 1,
+      dir: "s",
+    });
   });
   it("a stopped lobby quits with the replaced explanation on 4000", async () => {
     const h = await start();
@@ -403,6 +550,9 @@ describe("session: dungeon", () => {
       type: "hello",
       payload: { gameId: GAME, mapId: "zone001", mapVersion: "v1", you: ME },
     });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.session.map?.id).toBe("zone001");
+    expect(h.fetched).toEqual([]);
     g.emit("frame", { type: "stage", payload: { stage: "running" } });
     g.emit("frame", {
       type: "frame",

@@ -27,10 +27,12 @@ client ──JWT──▶ gateway lobby (pos / say / party / event)
 | `src/entry.ts`                | `POST /dungeon/enter`, `PUT /dungeon/ready/{gameId}/{secret}`, `GET /character` and the sheet routes (stats-up, inventory, equipment, npc, zone) — pure of AWS, every side effect injected.                             |
 | `src/actor.ts`                | `handleActor` + `runGameAllTogether` with a fixed 200 ms tick, one world frame per tick, commit-then-result at the end.                                                                                                 |
 | `src/sim.ts`                  | Pure dungeon simulation: mmo101 rules (retaliatory aggro, leash 5, 30 %/s melee, projectile skill, drops, quests, death/respawn).                                                                                       |
-| `src/map.ts`                  | The map bundle format (§4.6) — parser, collision, spawn marks, data-driven clear conditions (`kill` / `device` / `item`).                                                                                               |
+| `src/map.ts`                  | The map bundle format (§4.6, format 2) — parser, collision, spawn marks, data-driven clear conditions (`kill` / `device` / `item`); hands `templates` to `templates.ts`.                                                |
+| `src/templates.ts`            | The world bundle's game templates (items, abnormalities, quests, town NPCs, zones): types, the shared id grammar, a validating parser that resolves relative zone bundle URLs.                                          |
 | `src/character.ts`            | The character sheet (format 2: stats, inventory + equip slots, quest states, timed abnormalities), leveling, `applyResult` (idempotent by `gameId`), pure transitions (equip/use/quest/stat points), `effectiveStats`.  |
 | `src/doc.ts`, `src/commit.ts` | Doc store client (`ETag` / `If-Match`) and `updateSheet`: read → pure transform → conditional write, retried on 409; `commitResult` (apply-once by `gameId`) is one transform. Every lobby transition goes through it.  |
-| `assets/zone001.json`         | The sample map bundle (20×10, slimes + a boss, one quest, `clear: kill boss`).                                                                                                                                          |
+| `assets/zone001.json`         | The world bundle (20×10 town + slime field, `clear: kill boss`) with every template: 7 items, the `rage` buff, 4 quests, 4 town NPCs (two quest givers, two gates), 2 zones.                                            |
+| `assets/zone002.json`         | The forest field zone002 teleports to (wolves + an alpha, `clear: kill alpha_wolf`); no templates of its own — a field-only bundle.                                                                                     |
 | `scripts/local-api.mjs`       | Runs the `http` handler on localhost (esbuild bundle) against dev — pair it with a local gateway to iterate without redeploying.                                                                                        |
 | `cli/`                        | The terminal client (`pnpm play`): `session.ts` drives the lobby and `q` SDK clients, `state.ts`/`render.ts` are the pure model and screen, `commands.ts` the keys and slash commands, `terminal.ts` the only TTY code. |
 | `scripts/play.mjs`            | Bundles `cli/main.ts` with esbuild (`.esbuild/cli/`) and runs it; the client imports `src/map.ts`, `src/sim.ts`, `src/character.ts` types directly.                                                                     |
@@ -42,32 +44,32 @@ Lobby: exactly the gateway's `lobby` protocol (`gateway/README.md`); the game ad
 
 HTTP (`Authorization: Bearer <channel JWT>`):
 
-| Route                                      | Answer                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `POST /dungeon/enter {partyId}`            | leader only (`403 not_leader`); roster from the gateway (`404 party_not_found` for unknown _and_ non-member); one dungeon per party (`409 party_in_dungeon {gameId}` while the actor's lock lives, `409 entering` while another call is in flight); `200 {gameId, wsUrl, members}` once the actor's readyCall landed, `504 actor_not_ready` after 8 s (the party is freed; a retry allocates a new `gameId`) |
-| `PUT /dungeon/ready/{gameId}/{secret}`     | the actor's readyCall; `200` with the secret the entry issued, `404` otherwise                                                                                                                                                                                                                                                                                                                               |
-| `GET /character`                           | `{userId, version, sheet}` — the caller's own sheet (a fresh one at version 0)                                                                                                                                                                                                                                                                                                                               |
-| `POST /character/stats-up {stat, points?}` | spends stat points (`maxHp`/`attack`/`defence`, 1 point per unit, as mmo101); `400 no_points`, `400 bad_stat`/`bad_points`                                                                                                                                                                                                                                                                                   |
-| `POST /inventory/{itemId}/use`             | uses one item in town: a `buff` starts or extends its abnormality, weapons/armor equip; `409 no_item`/`not_usable`/`field_only` (potions)/`too_many_buffs`, `404 unknown_item`, `502 unknown_template` (a bundle hole)                                                                                                                                                                                       |
-| `POST /inventory/{itemId}/equip`           | puts an owned weapon/armor in its slot; `409 no_item`/`not_equippable`, `404 unknown_item`; re-equipping the slot's item writes nothing                                                                                                                                                                                                                                                                      |
-| `DELETE /equipment/{slot}`                 | `weapon`/`armor`; `409 not_equipped`                                                                                                                                                                                                                                                                                                                                                                         |
-| `POST /npc/{id}/interact {questId?}`       | talks to a town NPC (mmo101 quest interaction): a ready quest is turned in first (`action: completed`), otherwise the next acceptable one is accepted (`action: accepted`); `questId` narrows the choice; `404 unknown_npc`, `409 quest_incomplete` (`go`), `409 nothing_to_do` (`nothing`), `409 not_repeatable`, `404 unknown_quest`                                                                       |
-| `POST /zone/{id}`                          | the game decides zone changes: records the zone in the sheet and answers `{zone, start}` — the client re-announces `pos` there; `404 unknown_zone`                                                                                                                                                                                                                                                           |
+| Route                                      | Answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /dungeon/enter {partyId}`            | plays the field of the leader's zone (`templates.zones[zone].mapUrl`, else the world bundle) — the start event carries that `mapUrl`; leader only (`403 not_leader`); roster from the gateway (`404 party_not_found` for unknown _and_ non-member); one dungeon per party (`409 party_in_dungeon {gameId}` while the actor's lock lives, `409 entering` while another call is in flight); `200 {gameId, wsUrl, members}` once the actor's readyCall landed, `504 actor_not_ready` after 8 s (the party is freed; a retry allocates a new `gameId`) |
+| `PUT /dungeon/ready/{gameId}/{secret}`     | the actor's readyCall; `200` with the secret the entry issued, `404` otherwise                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `GET /character`                           | `{userId, version, sheet}` — the caller's own sheet (a fresh one at version 0)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `POST /character/stats-up {stat, points?}` | spends stat points (`maxHp`/`attack`/`defence`, 1 point per unit, as mmo101); `400 no_points`, `400 bad_stat`/`bad_points`                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `POST /inventory/{itemId}/use`             | uses one item in town: a `buff` starts or extends its abnormality, weapons/armor equip; `409 no_item`/`not_usable`/`field_only` (potions)/`too_many_buffs`, `404 unknown_item`, `502 unknown_template` (a bundle hole)                                                                                                                                                                                                                                                                                                                             |
+| `POST /inventory/{itemId}/equip`           | puts an owned weapon/armor in its slot; `409 no_item`/`not_equippable`, `404 unknown_item`; re-equipping the slot's item writes nothing                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `DELETE /equipment/{slot}`                 | `weapon`/`armor`; `409 not_equipped`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `POST /npc/{id}/interact {questId?}`       | talks to a town NPC (mmo101 quest interaction): a ready quest is turned in first (`action: completed`), otherwise the next acceptable one is accepted (`action: accepted`); `questId` narrows the choice; a gate NPC (`teleport`) answers `action: teleported` with the zone route's extras (`questId` is then `404 unknown_quest`); `404 unknown_npc`, `409 quest_incomplete` (`go`), `409 nothing_to_do` (`nothing`), `409 not_repeatable`, `404 unknown_quest`                                                                                  |
+| `POST /zone/{id}`                          | the game decides zone changes: records the zone in the sheet and answers `{zone, start, mapUrl?}` (`mapUrl` when the zone has its own bundle) — the client draws that grid and re-announces `pos` there; `404 unknown_zone`                                                                                                                                                                                                                                                                                                                        |
 
-Every sheet route answers the `GET /character` row (`{userId, version, sheet, effective}` plus the route's extras; `effective` = base + equipped bonuses + live buffs, from the server's templates) after one CAS write (`updateSheet`); a refusal writes nothing. A slot, verb or id outside the grammar (`[a-z0-9_-]{1,32}`) is a route-level `404 not_found` before any read. Item/quest/NPC/zone templates are injected (`EntryOptions.templates`); until bundle format v2 lands the handler passes `NO_TEMPLATES`, so on dev only `stats-up` and `DELETE /equipment` do work and every named thing is refused.
+Every sheet route answers the `GET /character` row (`{userId, version, sheet, effective}` plus the route's extras; `effective` = base + equipped bonuses + live buffs, from the server's templates) after one CAS write (`updateSheet`); a refusal writes nothing. A slot, verb or id outside the grammar (`[a-z0-9_-]{1,32}`) is a route-level `404 not_found` before any read. Item/quest/NPC/zone templates are the world bundle's `templates` (`MAP_URL`, fetched once per container and injected as `EntryOptions.templates`); a bundle without them refuses every named thing and leaves `stats-up` / `DELETE /equipment` working.
 
 Dungeon (`q` channel, `wsUrl` + `&gameId=`):
 
 | Direction | Message                                                                                                                                                                                                                                                                                                                                                                                                   |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| client →  | `move {x,y}` (one adjacent walkable cell, 100 ms cooldown), `attack {uid}` (adjacent, 400 ms), `skill {dir}` (projectile, 3 s), `use {itemId}`, `operate`                                                                                                                                                                                                                                                 |
-| server →  | `hello {gameId, mapId, mapVersion, you}` then a `frame` on enter/reconnect; `enter {memberId}`; `stage`; `refused {command, code}`                                                                                                                                                                                                                                                                        |
+| client →  | `move {x,y}` (one adjacent walkable cell, 100 ms cooldown), `attack {uid}` (adjacent, 400 ms), `skill {dir}` (projectile, 3 s), `use {itemId}` (today only the `clear: item` key; potions are phase 5), `operate`                                                                                                                                                                                         |
+| server →  | `hello {gameId, mapId, mapVersion, mapUrl?, you}` (`mapUrl` = the field's bundle when the entry chose one) then a `frame` on enter/reconnect; `enter {memberId}`; `stage`; `refused {command, code}`                                                                                                                                                                                                      |
 | server →  | `frame {time, cleared, players[], monsters[], projectiles[], events[]}` every tick (self-contained; `events` are the hits/kills/drops/deaths since the last one)                                                                                                                                                                                                                                          |
 | server →  | `result {reason, cleared, rewards:{memberId: {exp, items, consumed, questProgress}}, committed:{memberId: applied\|duplicate\|skipped\|failed\|pending}}` then close `1000` — `skipped` = never entered or nothing earned; `failed`/`pending` = the delta is parked in Redis (`{prefix}pendingcommit:{gameId}:{memberId}`, 24 h) for an operator to replay, since `applyResult` is idempotent by `gameId` |
 
 ### The character sheet (format 2)
 
-One JSON document per player in the doc store, the game's own schema (`src/character.ts`): `level/exp/statPoints`, base `maxHp/attack/defence`, `items` (itemId → count; loot lands here directly), `equipment` (`weapon`/`armor` → itemId, the item stays in `items`), `quests` (questId → `{active, progress, completed}`; kill progress from a run counts only while accepted, turn-in resets it and bumps `completed`, `repeatable` gates re-accepting), `abnormalities` (`{templateId, endsAt}` epoch ms; using the same buff again adds its duration; expired ones are ignored by `effectiveStats` and dropped on the next buff use), `appliedGames`. Item/abnormality/quest templates come from the bundle (`Templates`); `effectiveStats(sheet, templates, now)` = base + equipped bonuses + live buffs. Format 1 documents are upgraded on read (numeric quest counts become accepted quests). Potions are refused in the lobby (`field_only`): HP exists only inside a run.
+One JSON document per player in the doc store, the game's own schema (`src/character.ts`): `level/exp/statPoints`, base `maxHp/attack/defence`, `items` (itemId → count; loot lands here directly), `equipment` (`weapon`/`armor` → itemId, the item stays in `items`), `quests` (questId → `{active, progress, completed}`; kill progress from a run counts only while accepted, turn-in resets it and bumps `completed`, `repeatable` gates re-accepting), `abnormalities` (`{templateId, endsAt}` epoch ms; using the same buff again adds its duration; expired ones are ignored by `effectiveStats` and dropped on the next buff use), `appliedGames`. Item/abnormality/quest templates come from the world bundle (`Templates`, §4.6); `effectiveStats(sheet, templates, now)` = base + equipped bonuses + live buffs. Format 1 documents are upgraded on read (numeric quest counts become accepted quests). Potions are refused in the lobby (`field_only`): HP exists only inside a run — and the run's `use` does not heal yet (phase 5), so `hp_potion` only accumulates for now.
 
 ## Play (terminal client)
 
@@ -87,7 +89,7 @@ One JSON document per player in the doc store, the game's own schema (`src/chara
    `--user <name>` becomes a stable 32-hex id (a hash of the name); flags override env vars override the file (`cli/config.ts` `USAGE`).
 
 2. Two terminals, two names: `pnpm play -- --config ../../local/deploy/morpg-cli.dev.env --user alice` and `--user bob`. The same name twice ends the older socket with close `4000` (the gateway's single-session rule); the client says so and exits.
-3. Town: `wasd`/arrows/`hjkl` move (applied locally, `pos` at most every 200 ms and at once after 3 cells, the gateway's `maxMoveDelta`), plain text or `/say` for zone chat, `/p` party chat, `/w <user> <text>` whisper, `/party create|invite <user>|accept|decline|leave|list`.
+3. Town: `wasd`/arrows/`hjkl` move (applied locally, `pos` at most every 200 ms and at once after 3 cells, the gateway's `maxMoveDelta`), plain text or `/say` for zone chat, `/p` party chat, `/w <user> <text>` whisper, `/party create|invite <user>|accept|decline|leave|list`. Town NPCs are drawn from the world bundle's templates at their cell (the side panel lists `npcs: hunter(H) @3,1 …`); `/talk <npcId>` accepts or turns in that NPC's quests, `/talk forest_gate` walks through the gate into zone002 (its own grid, its own field; the sheet remembers the zone across sessions), `/talk town_gate` comes back. Talking checks the sheet, not the player's cell: the gateway owns positions and the game never sees them (§4.3), so adjacency to an NPC is not enforced.
 4. Dungeon: the leader runs `/offer`, members `/accept`, the leader `/enter` (`POST /dungeon/enter`, then `dungeon.start` to the party); everyone joins the `q` channel. `wasd` sends one `move` per adjacent cell, `f`/space attacks the weakest adjacent monster, `q` fires the skill in the facing direction, `/use <itemId>`, `/operate`. Back in town the sheet routes are `/stats <maxHp|attack|defence> [n]`, `/use <itemId>` (buffs, gear), `/equip <itemId>`, `/unequip weapon|armor`, `/talk <npcId> [questId]` and `/zone <zoneId>`; each answer replaces the side panel's sheet. The `result` frame shows the rewards; any key (or 8 s) returns to town, reloads the sheet and re-announces `pos`.
 5. Runs last `GAME_RUNNING_SECONDS` (the smoke's env writes 120 s; raise it before deploying for a human party). The SDK reconnects both sockets with backoff; the side panel shows `reconnecting #n` and the actor replays `hello` + `frame` on re-entry.
 
@@ -95,7 +97,7 @@ The client is ANSI/raw-mode only (no Windows console support), needs at least 60
 
 ## Deploy and verify
 
-1. `scripts/smoke/morpg.mjs setup <debugKey> https://auth-dev.yyt.life https://console-dev.yyt.life https://doc-dev.yyt.life <outEnv> <outState>` (from the service repo) seeds an auth channel, a lobby + a `q` channel with its participant Redis credential, the doc apiKey and the map bundle asset, points the lobby's `mapUrl` at it, and writes the deploy env.
+1. `scripts/smoke/morpg.mjs setup <debugKey> https://auth-dev.yyt.life https://console-dev.yyt.life https://doc-dev.yyt.life <outEnv> <outState>` (from the service repo) seeds an auth channel, a lobby + a `q` channel with its participant Redis credential, the doc apiKey and the asset bundle (every `assets/*.json` under `v1`), points the lobby's `mapUrl` at the world bundle, and writes the deploy env. After editing a bundle: `scripts/smoke/morpg.mjs publish-map <debugKey> <consoleBase> <outState> <outEnv> <version>` uploads a new immutable version, repoints the lobby and rewrites `MAP_URL` — then redeploy (step 2).
 2. `pnpm install && pnpm typecheck && pnpm test`, then `scripts/deploy.sh <outEnv> dev` — the output's `ApiUrl` is the stack's HTTP base.
 3. `scripts/smoke/morpg.mjs run <debugKey> <authBase> <consoleBase> wss://gw-dev.yyt.life <outState> <ApiUrl>` plays the whole loop with two synthetic players (bots walk to the boss), then `clean`.
 
@@ -369,35 +371,107 @@ than carried:
    point of the asset is that one fetch is enough, so **NPC definitions are
    inlined** in the bundle.
 
-**Target: one self-contained JSON document**, fetched by URL, parsed by all
-three consumers:
+**Target: one self-contained JSON document** (format 2), fetched by URL, parsed
+by all three consumers (`src/map.ts` + `src/templates.ts`; `assets/*.json` are
+the shipped ones):
 
 ```jsonc
 {
-  "format": 1, // bump on a breaking change
-  "id": "zone001",
-  "version": "2026-08-25-1",
-  "size": { "w": 100, "h": 100 },
-  "origin": { "x": 50, "y": 50 }, // grid cell of world (0,0)
-  "rows": ["....x....", "..."], // top-down, h strings of length w
+  "format": 2, // bump on a breaking change
+  "id": "zone001", // = the gateway zone string the client announces in `pos`
+  "version": "2026-08-29-1",
+  "size": { "w": 20, "h": 10 },
+  "origin": { "x": 0, "y": 0 }, // grid cell of world (0,0)
   "blocked": "x", // the non-movable char
-  "tileset": "tiles.png", // relative to the bundle URL
+  "start": { "x": 1, "y": 1 },
+  "rows": ["xxxx…", "x..a…"], // top-down, h strings of length w
   "npcs": [
-    // inlined; the mark links to the grid
+    // monsters, inlined; the mark links to the grid (spawn area)
     {
       "mark": "a",
       "kind": "monster",
       "templateId": "slime",
-      "stats": { "maxHp": 20, "attack": 5, "defence": 1 },
-      "spawn": { "ratePerSec": 0.1, "max": 8 },
+      "stats": { "maxHp": 20, "attack": 4, "defence": 1 },
+      "spawn": { "initial": 1, "max": 2, "ratePerSec": 0.1 },
+      "exp": 10,
+      "drops": [{ "itemId": "slime_jelly", "probability": 0.5 }],
     },
   ],
-  "links": [
-    // zone jumps, if kept (§6 decision)
-    { "mark": "t", "toZone": "zone002", "toPos": { "x": 3, "y": 4 } },
-  ],
+  "clear": { "kind": "kill", "templateId": "boss" },
+  "templates": {
+    // the game's data, once, for the client and the sheet routes (optional: a
+    // bundle without it is a field-only grid)
+    "items": { "wooden_sword": { "kind": "weapon", "bonus": { "attack": 5 } } },
+    "abnormalities": { "rage": { "bonus": { "attack": 10 }, "seconds": 300 } },
+    "quests": {
+      "jelly_hunt": {
+        "kind": "kill",
+        "templateId": "slime",
+        "count": 3,
+        "repeatable": true,
+      },
+      "horn_trophy": {
+        "kind": "collect",
+        "itemId": "boss_horn",
+        "count": 1,
+        "repeatable": false,
+      },
+    },
+    "npcs": {
+      // town NPCs: drawn by the client at `at` in `zone` (default: this bundle's id)
+      "hunter": {
+        "at": { "x": 3, "y": 1 },
+        "mark": "H",
+        "quests": ["jelly_hunt"],
+      },
+      "forest_gate": {
+        "at": { "x": 18, "y": 8 },
+        "mark": "G",
+        "quests": [],
+        "teleport": "zone002",
+      },
+      "town_gate": {
+        "zone": "zone002",
+        "at": { "x": 1, "y": 2 },
+        "mark": "G",
+        "quests": [],
+        "teleport": "zone001",
+      },
+    },
+    "zones": {
+      "zone001": { "start": { "x": 1, "y": 1 } }, // this bundle
+      "zone002": { "start": { "x": 1, "y": 1 }, "mapUrl": "zone002.json" }, // its own bundle, relative to this URL
+    },
+  },
 }
 ```
+
+Rules the parser enforces (`parseMapBundle` / `parseTemplates`, each failure
+names its field): ids are `[a-z0-9_-]{1,32}` and never a prototype slot; a buff
+item names an abnormality, a collect quest an item, an NPC its quests and its
+zone, a teleport its zone (and a gate has no quests); NPC marks are unique per
+zone and, in this bundle's zone, distinct from the grid's own chars; NPC cells
+and zone starts in this bundle's zone must be walkable; `zones` must include
+the bundle's own id; a zone's `mapUrl` must be `http(s)` and a relative one
+resolves against the bundle's URL (so `yyt asset push` of the whole directory
+keeps them together). A kill quest's `templateId` is not checked against this
+bundle's monsters — the wolf lives in zone002's field; the actor counts kills
+against the _world's_ quests, whichever field it runs. Format 1 bundles still
+parse (their `quests` array becomes repeatable kill quests, no other templates)
+so a code deploy and a bundle publish need not land in the same instant — the
+http Lambda otherwise answers `502` on every route while `MAP_URL` and the code
+disagree. Leveling stays the `expForLevel` formula (no table); MP is dropped on
+purpose (§6). A death respawns at 1 HP with no heal available yet, so the
+alpha wolf is a one-life fight for a level-1 sheet.
+
+**World bundle vs. field bundle.** The bundle behind the lobby channel's
+`mapUrl` (= the stack's `MAP_URL`) is the _world_: its `templates` are what
+`GET /character`, the sheet routes and the client read, and its grid is the
+default zone's town. Every other zone in `templates.zones` has its own bundle:
+the client fetches it on teleport (once per URL) and draws that zone's NPCs
+from the world's templates; `POST /dungeon/enter` sends the party to the field
+of the leader's zone (`mapUrl` in the start event, `hello.mapUrl` to the
+clients), so a town and its field share one grid and one document.
 
 Constraints that fall out of the platform, not the game:
 
@@ -526,16 +600,16 @@ what the new structure absorbs. Grouped by where it plausibly lands.
 
 ### Needs a decision — no obvious home
 
-| Feature                    | Detail                                                                                                                                                                                                                   | Why it is awkward                                                                                                                                                                               |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Town NPCs**              | static, never move; interaction types `Drop` / `Quest` / `Teleport`                                                                                                                                                      | Lobby content, but today they are `GameObject`s inside the zone simulation. The new lobby gateway knows no NPCs, so they become the game's HTTP API plus client-side rendering from `GameData`. |
-| **`Bookmark` NPC type**    | a third `NpcType` beside `Monster` and `Town`                                                                                                                                                                            | Declared at `GameData.cs:296` and never used anywhere. Decide whether it was a planned feature or dead code.                                                                                    |
-| **Teleport / zone jump**   | stepping on a teleport NPC's tile moves you to the linked NPC's position in another zone                                                                                                                                 | Server-side map logic a rule-free relay cannot do. See §2.3 of the gateway plan.                                                                                                                |
-| **`uiText`**               | rich text as `terms[{ text, id }]` — clickable spans referencing entity ids                                                                                                                                              | A genuinely good primitive with no equivalent in the new protocol. Carry it as a game-defined `event` payload.                                                                                  |
-| **`effect`**               | `{ fromId, toId, attack\|equip\|unequip }`, purely visual, zone-broadcast                                                                                                                                                | Trivial, but it is the only "something just happened here" channel. Fold into the dungeon snapshot and the lobby `event`.                                                                       |
-| **Admin commands (18)**    | `/init /item /maxhp /maxmp /attack /defence /hp /mp /statpoint /resetstat /exp /teleport /startquest /finishquest /startab /endab /dead /skill`, parsed out of ordinary chat with **no authorization check of any kind** | Indispensable for demoing at a contest, and simultaneously a complete cheat menu shipped to every player. Keep them, behind an explicit debug flag on the channel.                              |
-| **`interaction` overload** | one message means use-item, complete-quest, attack-monster or talk-to-NPC, resolved by target type                                                                                                                       | Convenient for a terminal client, ambiguous as a protocol. Consider splitting by intent when redefining the wire format.                                                                        |
-| **Content pipeline**       | the Unity editor authors content, `ZoneExporter.cs` writes TSV, both client and server load the same files; ids are 32-char GUID hex                                                                                     | It works, but it binds content authoring to the Unity project. Decide whether the new game keeps it.                                                                                            |
+| Feature                    | Detail                                                                                                                                                                                                                   | Why it is awkward                                                                                                                                                                                                                                                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Town NPCs**              | static, never move; interaction types `Drop` / `Quest` / `Teleport`                                                                                                                                                      | Lobby content, but today they are `GameObject`s inside the zone simulation. The new lobby gateway knows no NPCs, so they become the game's HTTP API plus client-side rendering from `GameData`. **Resolved (2026-08-29):** `templates.npcs` in the world bundle + `POST /npc/{id}/interact`; `Drop` is not carried (loot lands in the bag). |
+| **`Bookmark` NPC type**    | a third `NpcType` beside `Monster` and `Town`                                                                                                                                                                            | Declared at `GameData.cs:296` and never used anywhere. Decide whether it was a planned feature or dead code.                                                                                                                                                                                                                                |
+| **Teleport / zone jump**   | stepping on a teleport NPC's tile moves you to the linked NPC's position in another zone                                                                                                                                 | Server-side map logic a rule-free relay cannot do. See §2.3 of the gateway plan. **Resolved (2026-08-29):** a gate NPC with `teleport` → `POST /npc/{id}/interact` records the zone in the sheet and answers `{zone, start, mapUrl}`; the client re-announces `pos` (talking, not stepping).                                                |
+| **`uiText`**               | rich text as `terms[{ text, id }]` — clickable spans referencing entity ids                                                                                                                                              | A genuinely good primitive with no equivalent in the new protocol. Carry it as a game-defined `event` payload.                                                                                                                                                                                                                              |
+| **`effect`**               | `{ fromId, toId, attack\|equip\|unequip }`, purely visual, zone-broadcast                                                                                                                                                | Trivial, but it is the only "something just happened here" channel. Fold into the dungeon snapshot and the lobby `event`.                                                                                                                                                                                                                   |
+| **Admin commands (18)**    | `/init /item /maxhp /maxmp /attack /defence /hp /mp /statpoint /resetstat /exp /teleport /startquest /finishquest /startab /endab /dead /skill`, parsed out of ordinary chat with **no authorization check of any kind** | Indispensable for demoing at a contest, and simultaneously a complete cheat menu shipped to every player. Keep them, behind an explicit debug flag on the channel.                                                                                                                                                                          |
+| **`interaction` overload** | one message means use-item, complete-quest, attack-monster or talk-to-NPC, resolved by target type                                                                                                                       | Convenient for a terminal client, ambiguous as a protocol. Consider splitting by intent when redefining the wire format.                                                                                                                                                                                                                    |
+| **Content pipeline**       | the Unity editor authors content, `ZoneExporter.cs` writes TSV, both client and server load the same files; ids are 32-char GUID hex                                                                                     | It works, but it binds content authoring to the Unity project. Decide whether the new game keeps it.                                                                                                                                                                                                                                        |
 
 ### Deliberately not carried over
 

@@ -6,8 +6,21 @@
  * idempotently by gameId.
  *
  * Everything here is pure: the sheet in, a new sheet (or a refusal) out.
- * Templates (items, abnormalities, quests) come from the map bundle.
+ * Templates (items, abnormalities, quests, NPCs, zones) come from the world
+ * bundle (templates.ts).
  */
+import {
+  NO_TEMPLATES,
+  isId,
+  own,
+  type AbnormalityTemplate,
+  type ItemTemplate,
+  type QuestTemplate,
+  type StatBonus,
+  type Templates,
+  type TownNpcTemplate,
+  type ZoneTemplate,
+} from "./templates.js";
 
 export type EquipSlot = "weapon" | "armor";
 export const EQUIP_SLOTS: readonly EquipSlot[] = ["weapon", "armor"];
@@ -60,57 +73,18 @@ export interface ResultDelta {
   questProgress: Record<string, number>;
 }
 
-/* ---- Templates (bundle v2 inlines these; the client reads the same) ---- */
+/* ---- Templates live in templates.ts (bundle format 2); re-exported for callers ---- */
 
-export interface StatBonus {
-  maxHp?: number;
-  attack?: number;
-  defence?: number;
-}
-
-export type ItemTemplate =
-  | { kind: "goods" }
-  | { kind: "weapon"; bonus: StatBonus }
-  | { kind: "armor"; bonus: StatBonus }
-  /** Restores HP; usable only inside a field (HP is dungeon state). */
-  | { kind: "potion"; heal: number }
-  /** Starts or extends the linked abnormality; consumed on use. */
-  | { kind: "buff"; abnormalityId: string };
-
-export interface AbnormalityTemplate {
-  bonus: StatBonus;
-  seconds: number;
-}
-
-export type QuestTemplate =
-  | { kind: "kill"; templateId: string; count: number; repeatable: boolean }
-  | { kind: "collect"; itemId: string; count: number; repeatable: boolean };
-
-/** A town NPC: static, talks about its quests (mmo101 `Quest` interaction). */
-export interface TownNpcTemplate {
-  /** Quest ids it gives and takes back, in offer order. */
-  quests: string[];
-}
-
-/** A town zone a teleport can target; `start` is where the client re-announces `pos`. */
-export interface ZoneTemplate {
-  start: { x: number; y: number };
-}
-
-export interface Templates {
-  items: Record<string, ItemTemplate>;
-  abnormalities: Record<string, AbnormalityTemplate>;
-  quests: Record<string, QuestTemplate>;
-  npcs: Record<string, TownNpcTemplate>;
-  zones: Record<string, ZoneTemplate>;
-}
-
-export const NO_TEMPLATES: Templates = {
-  items: {},
-  abnormalities: {},
-  quests: {},
-  npcs: {},
-  zones: {},
+export {
+  NO_TEMPLATES,
+  isId,
+  type AbnormalityTemplate,
+  type ItemTemplate,
+  type QuestTemplate,
+  type StatBonus,
+  type Templates,
+  type TownNpcTemplate,
+  type ZoneTemplate,
 };
 
 export const MAX_LEVEL = 100;
@@ -162,15 +136,6 @@ export function isEmptyDelta(d: ResultDelta): boolean {
 /* ---- Parsing ---- */
 
 const ITEM_ID = /^[a-z0-9_-]{1,32}$/;
-
-/** The id grammar shared by items, quests, abnormalities, NPCs and zones. */
-export const isId = (v: unknown): v is string =>
-  typeof v === "string" && ITEM_ID.test(v);
-
-/** Own-property lookup: `constructor`/`__proto__` pass ITEM_ID but are inherited. */
-function own<T>(r: Record<string, T>, key: string): T | undefined {
-  return Object.hasOwn(r, key) ? r[key] : undefined;
-}
 const finite = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v);
 
@@ -547,7 +512,7 @@ export function questAcceptable(
   return !q || q.completed === 0 || t.repeatable;
 }
 
-export type NpcAction = "accepted" | "completed";
+export type NpcAction = "accepted" | "completed" | "teleported";
 
 /**
  * Talks to a town NPC (mmo101 `Quest` interaction): a ready quest is turned in
@@ -555,16 +520,37 @@ export type NpcAction = "accepted" | "completed";
  * choice to one of the NPC's quests. `questNpc` states map to the refusals:
  * `nothing` = `nothing_to_do`, `go` = `quest_incomplete`. mmo101 NPCs carry
  * exactly one quest and map exactly; the finish → new → go precedence for a
- * multi-quest NPC is this sample's own choice.
+ * multi-quest NPC is this sample's own choice. A teleport NPC (mmo101's
+ * `Teleport` interaction) moves the player instead: `zone`/`start` answer
+ * like `POST /zone/{id}`.
  */
 export function interactNpc(
   sheet: CharacterSheet,
   npcId: string,
   templates: Templates,
   questId?: string,
-): SheetResult & { action?: NpcAction; questId?: string } {
+): SheetResult & {
+  action?: NpcAction;
+  questId?: string;
+  zone?: string;
+  start?: { x: number; y: number };
+  mapUrl?: string;
+} {
   const npc = own(templates.npcs, npcId);
   if (!npc) return refuse("unknown_npc");
+  if (npc.teleport !== undefined) {
+    if (questId !== undefined) return refuse("unknown_quest");
+    const r = teleport(sheet, npc.teleport, templates);
+    if (!r.ok) return r;
+    const z = own(templates.zones, npc.teleport);
+    return {
+      ...r,
+      action: "teleported",
+      zone: npc.teleport,
+      start: z?.start,
+      ...(z?.mapUrl === undefined ? {} : { mapUrl: z.mapUrl }),
+    };
+  }
   if (questId !== undefined && !npc.quests.includes(questId))
     return refuse("unknown_quest");
   const candidates = questId === undefined ? npc.quests : [questId];

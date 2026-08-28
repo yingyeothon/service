@@ -24,7 +24,7 @@ import {
   LIFETIME_MARGIN_SECONDS,
   runDungeonActor,
 } from "./actor.js";
-import { NO_TEMPLATES, parseCharacter } from "./character.js";
+import { parseCharacter } from "./character.js";
 import { commitResult } from "./commit.js";
 import { createDocClient } from "./doc.js";
 import { createHttpHandler, createRosterFetcher } from "./entry.js";
@@ -45,7 +45,7 @@ function loadMap(url: string): Promise<MapBundle> {
     cached = (async () => {
       const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) throw new Error(`map ${res.status}`);
-      return parseMapBundle(await res.json());
+      return parseMapBundle(await res.json(), url);
     })();
     cached.catch(() => mapCache.delete(url));
     mapCache.set(url, cached);
@@ -68,7 +68,7 @@ export async function actor(event: GameActorStartEvent): Promise<void> {
       gameId: event.gameId,
       logger,
     }),
-    loadMap: () => loadMap(env.mapUrl),
+    loadMap: (url) => loadMap(url ?? env.mapUrl),
     loadCharacter: async (memberId) => {
       const current = await doc.read(memberId);
       return current ? parseCharacter(current.doc) : undefined;
@@ -157,9 +157,9 @@ const handle = createHttpHandler({
       (await redisExists(redis(), `${prefixes.lockKeyPrefix}${gameId}`)) > 0,
   },
   doc,
-  // Bundle format v2 (phase 4) supplies the templates; until then every named
-  // item/quest/NPC/zone is refused and only stats-up / unequip do work.
-  templates: async () => NO_TEMPLATES,
+  // The world bundle (`MAP_URL`) carries the templates and names the fields.
+  templates: async () => (await loadMap(env.mapUrl)).templates,
+  mapUrl: env.mapUrl,
   startEventTtlSeconds,
   log: (m, meta) => logger.info(m, meta),
 });

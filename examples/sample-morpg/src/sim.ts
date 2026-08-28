@@ -16,6 +16,7 @@ import {
   type CharacterSheet,
   type ResultDelta,
 } from "./character.js";
+import { killQuests, type Templates } from "./templates.js";
 
 export const TICK_MILLIS = 200;
 /** mmo101 `MonsterResetDistance`: beyond it a monster drops its target. */
@@ -92,6 +93,8 @@ export type SimEvent =
 
 export interface Sim {
   map: MapBundle;
+  /** The world bundle's templates (quests to count); a field bundle carries none of its own. */
+  templates: Templates;
   players: Record<string, Player>;
   monsters: Monster[];
   projectiles: Projectile[];
@@ -133,9 +136,11 @@ export function createSim(
   map: MapBundle,
   members: Array<{ id: string; sheet: CharacterSheet }>,
   rng: () => number = Math.random,
+  templates: Templates = map.templates,
 ): Sim {
   const sim: Sim = {
     map,
+    templates,
     players: {},
     monsters: [],
     projectiles: [],
@@ -221,7 +226,8 @@ function killMonster(sim: Sim, m: Monster, by: Player): void {
       by.items[d.itemId] = (by.items[d.itemId] ?? 0) + 1;
       sim.events.push({ name: "drop", to: by.id, itemId: d.itemId });
     }
-  for (const q of sim.map.quests)
+  // Collect quests count on turn-in from the inventory; only kills land here.
+  for (const q of killQuests(sim.templates))
     if (q.templateId === m.templateId)
       by.delta.questProgress[q.id] = (by.delta.questProgress[q.id] ?? 0) + 1;
   if (
