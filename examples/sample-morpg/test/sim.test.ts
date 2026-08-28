@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { newCharacter } from "../src/character.js";
+import {
+  acceptQuest,
+  applyResult,
+  completeQuest,
+  newCharacter,
+} from "../src/character.js";
 import {
   PLAYER_ATTACK_COOLDOWN,
   PROJECTILE_ATTACK,
@@ -239,6 +244,120 @@ describe("dungeon sim", () => {
     );
     expect(frame(sim).payload.events.length).toBeGreaterThan(0);
     expect(frame(sim).payload.events).toEqual([]);
+  });
+  it("a member enters with effective stats: gear plus live buffs, expired ones ignored", () => {
+    const now = 1_000_000;
+    const sheet = {
+      ...newCharacter(),
+      items: { wooden_sword: 1, leather_armor: 1 },
+      equipment: { weapon: "wooden_sword" as const },
+      abnormalities: [
+        { templateId: "rage", endsAt: now + 1 },
+        { templateId: "rage", endsAt: now - 1 },
+      ],
+    };
+    const base = newCharacter();
+    const sim = createSim(
+      loadZone(),
+      [{ id: "a", sheet }],
+      seeded(1),
+      undefined,
+      now,
+    );
+    // Sword +5, one live rage +10; the armor is owned but not equipped.
+    expect(sim.players.a).toMatchObject({
+      attack: base.attack + 15,
+      defence: base.defence,
+      hp: base.maxHp,
+      maxHp: base.maxHp,
+    });
+  });
+  it("a potion heals in the field, is consumed, and is refused at full hp", () => {
+    const sim = createSim(
+      loadZone(),
+      [
+        {
+          id: "a",
+          sheet: { ...newCharacter(), items: { hp_potion: 2, slime_jelly: 1 } },
+        },
+      ],
+      seeded(1),
+    );
+    const a = sim.players.a!;
+    expect(handle(sim, "a", { type: "use", itemId: "hp_potion" })).toBe(
+      "full_hp",
+    );
+    expect(handle(sim, "a", { type: "use", itemId: "slime_jelly" })).toBe(
+      "nothing_happens",
+    );
+    a.hp = a.maxHp - 20;
+    expect(
+      handle(sim, "a", { type: "use", itemId: "hp_potion" }),
+    ).toBeUndefined();
+    // heal 30, capped at maxHp (only 20 missing).
+    expect(a.hp).toBe(a.maxHp);
+    expect(a.items.hp_potion).toBe(1);
+    const heal = frame(sim).payload.events.find((e) => e.name === "heal");
+    expect(heal).toEqual({
+      name: "heal",
+      id: "a",
+      itemId: "hp_potion",
+      amount: 20,
+      hp: a.maxHp,
+    });
+    a.hp = 1;
+    expect(
+      handle(sim, "a", { type: "use", itemId: "hp_potion" }),
+    ).toBeUndefined();
+    expect(handle(sim, "a", { type: "use", itemId: "hp_potion" })).toBe(
+      "no_item",
+    );
+    expect(results(sim).a!.consumed).toEqual({ hp_potion: 2 });
+    expect(results(sim).a!.items).toEqual({});
+  });
+  it("a collect quest is fed by field drops: result → sheet → turn-in", () => {
+    const world = loadZone();
+    const t = world.templates;
+    const accepted = acceptQuest(newCharacter(), "jelly_gather", t);
+    if (!accepted.ok) throw new Error(accepted.reason);
+    const sim = createSim(
+      world,
+      [{ id: "a", sheet: accepted.sheet }],
+      seeded(3),
+    );
+    const a = sim.players.a!;
+    a.attack = 100;
+    let kills = 0;
+    let steps = 0;
+    // Farm slimes (they respawn) until two jellies dropped; the cap names a
+    // starved seed instead of a silent timeout.
+    while ((a.items.slime_jelly ?? 0) < 2 && steps < 500) {
+      const slime = sim.monsters.find((m) => m.templateId === "slime");
+      if (slime) {
+        a.x = slime.x + 1;
+        a.y = slime.y;
+        handle(sim, "a", { type: "attack", uid: slime.uid });
+      }
+      step(sim, dt);
+      steps++;
+      kills += sim.events.filter((e) => e.name === "kill").length;
+      sim.events = [];
+    }
+    expect(steps).toBeLessThan(500);
+    expect(kills).toBeGreaterThanOrEqual(2);
+    const delta = results(sim).a!;
+    expect(delta.items.slime_jelly).toBeGreaterThanOrEqual(2);
+    const applied = applyResult(accepted.sheet, "g1", delta);
+    expect(applied.applied).toBe(true);
+    const done = completeQuest(applied.sheet, "jelly_gather", t);
+    if (!done.ok) throw new Error(done.reason);
+    expect(done.sheet.quests.jelly_gather).toMatchObject({
+      active: false,
+      completed: 1,
+    });
+    expect(done.sheet.items.slime_jelly ?? 0).toBe(
+      delta.items.slime_jelly! - 2,
+    );
   });
   it("admits only well-formed client commands", () => {
     expect(isClientCommand({ type: "move", x: 1, y: 2 })).toBe(true);

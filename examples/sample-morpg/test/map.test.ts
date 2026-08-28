@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   distance,
   isWalkable,
@@ -133,5 +134,13 @@ describe("map bundle", () => {
     >;
     mutate(raw);
     expect(() => parseMapBundle(raw)).toThrow(what);
+  });
+  it("ignores a client-only `view` section (todo/21: presentation data)", () => {
+    const raw = JSON.parse(
+      readFileSync(new URL("../assets/zone002.json", import.meta.url), "utf8"),
+    ) as Record<string, unknown>;
+    const withView = parseMapBundle({ ...raw, view: { tilesets: {} } });
+    expect(withView).toEqual(parseMapBundle(raw));
+    expect("view" in withView).toBe(false);
   });
 });

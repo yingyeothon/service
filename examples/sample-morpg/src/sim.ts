@@ -12,11 +12,12 @@ import {
   type NpcTemplate,
 } from "./map.js";
 import {
+  effectiveStats,
   emptyDelta,
   type CharacterSheet,
   type ResultDelta,
 } from "./character.js";
-import { killQuests, type Templates } from "./templates.js";
+import { killQuests, own, type Templates } from "./templates.js";
 
 export const TICK_MILLIS = 200;
 /** mmo101 `MonsterResetDistance`: beyond it a monster drops its target. */
@@ -86,6 +87,7 @@ export type SimEvent =
   | { name: "hit"; from: string; to: string; dealt: number; hp: number }
   | { name: "kill"; by: string; uid: number; templateId: string; exp: number }
   | { name: "drop"; to: string; itemId: string }
+  | { name: "heal"; id: string; itemId: string; amount: number; hp: number }
   | { name: "death"; id: string }
   | { name: "respawn"; id: string }
   | { name: "spawn"; uid: number; templateId: string }
@@ -132,11 +134,19 @@ export function isClientCommand(m: unknown): m is ClientCommand {
   }
 }
 
+/**
+ * Builds the run. A member enters with their *effective* stats — base plus
+ * equipped gear plus the abnormalities still live at `now` (mmo101
+ * `CalculateAndSendStats`) — frozen for the run: a buff that expires mid-run
+ * keeps working until the result is committed, which is the price of not
+ * letting the dungeon read the sheet twice (README §4.3).
+ */
 export function createSim(
   map: MapBundle,
   members: Array<{ id: string; sheet: CharacterSheet }>,
   rng: () => number = Math.random,
   templates: Templates = map.templates,
+  now: number = Date.now(),
 ): Sim {
   const sim: Sim = {
     map,
@@ -151,14 +161,15 @@ export function createSim(
     rng,
   };
   for (const { id, sheet } of members) {
+    const stats = effectiveStats(sheet, templates, now);
     sim.players[id] = {
       id,
       x: map.start.x,
       y: map.start.y,
-      hp: sheet.maxHp,
-      maxHp: sheet.maxHp,
-      attack: sheet.attack,
-      defence: sheet.defence,
+      hp: stats.maxHp,
+      maxHp: stats.maxHp,
+      attack: stats.attack,
+      defence: stats.defence,
       alive: true,
       respawnIn: 0,
       attackCooldown: 0,
@@ -222,8 +233,8 @@ function killMonster(sim: Sim, m: Monster, by: Player): void {
   });
   for (const d of t?.drops ?? [])
     if (sim.rng() < d.probability) {
-      by.delta.items[d.itemId] = (by.delta.items[d.itemId] ?? 0) + 1;
-      by.items[d.itemId] = (by.items[d.itemId] ?? 0) + 1;
+      by.delta.items[d.itemId] = (own(by.delta.items, d.itemId) ?? 0) + 1;
+      by.items[d.itemId] = (own(by.items, d.itemId) ?? 0) + 1;
       sim.events.push({ name: "drop", to: by.id, itemId: d.itemId });
     }
   // Collect quests count on turn-in from the inventory; only kills land here.
@@ -322,13 +333,31 @@ export function handle(
       return undefined;
     }
     case "use": {
-      if ((p.items[cmd.itemId] ?? 0) < 1) return "no_item";
+      if ((own(p.items, cmd.itemId) ?? 0) < 1) return "no_item";
+      // Potions heal here and only here (the lobby refuses them: `field_only`),
+      // and win over a `clear: item` key of the same id so a bundle cannot
+      // make a potion undrinkable. Gear and buffs are lobby matters; the
+      // run's stats were frozen at entry.
+      const t = own(sim.templates.items, cmd.itemId);
+      if (t?.kind === "potion") {
+        if (p.hp >= p.maxHp) return "full_hp";
+        const amount = Math.min(t.heal, p.maxHp - p.hp);
+        p.hp += amount;
+        consume(p, cmd.itemId);
+        sim.events.push({
+          name: "heal",
+          id: p.id,
+          itemId: cmd.itemId,
+          amount,
+          hp: p.hp,
+        });
+        return undefined;
+      }
       const c = sim.map.clear;
       if (c.kind !== "item" || c.itemId !== cmd.itemId)
         return "nothing_happens";
       if (distance(p, c.at) > 1) return "wrong_place";
-      p.items[cmd.itemId] = p.items[cmd.itemId]! - 1;
-      p.delta.consumed[cmd.itemId] = (p.delta.consumed[cmd.itemId] ?? 0) + 1;
+      consume(p, cmd.itemId);
       clear(sim, p.id);
       return undefined;
     }
@@ -340,6 +369,12 @@ export function handle(
       return undefined;
     }
   }
+}
+
+/** Takes one item out of the player's bag and records it for the result delta. */
+function consume(p: Player, itemId: string): void {
+  p.items[itemId] = (own(p.items, itemId) ?? 0) - 1;
+  p.delta.consumed[itemId] = (own(p.delta.consumed, itemId) ?? 0) + 1;
 }
 
 function stepToward(sim: Sim, m: Monster, to: Cell): void {

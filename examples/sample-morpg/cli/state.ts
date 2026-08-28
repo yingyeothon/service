@@ -372,6 +372,8 @@ export function describeEvent(e: SimEvent, you: string | undefined): string {
       return `${who(e.by, you)} killed ${e.templateId} (+${e.exp} exp)`;
     case "drop":
       return `${who(e.to, you)} got ${e.itemId}`;
+    case "heal":
+      return `${who(e.id, you)} used ${e.itemId} +${e.amount} (hp ${e.hp})`;
     case "death":
       return `${who(e.id, you)} died`;
     case "respawn":
@@ -380,6 +382,12 @@ export function describeEvent(e: SimEvent, you: string | undefined): string {
       return `${e.templateId} appeared`;
     case "cleared":
       return `dungeon cleared by ${who(e.by, you)}`;
+    default: {
+      // An actor newer than this build may emit events this union lacks;
+      // show them rather than crash the frame handler.
+      const unknown: never = e;
+      return `event ${(unknown as { name: string }).name}`;
+    }
   }
 }
 
