@@ -4,13 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@yingyeothon/gamebase-all-together': link:../../../tslib/packages/gamebase-all-together
-  '@yingyeothon/lambda-authorizer-jwt': link:../../../tslib/packages/lambda-authorizer-jwt
-  '@yingyeothon/lambda-gamebase': link:../../../tslib/packages/lambda-gamebase
-  '@yingyeothon/logger': link:../../../tslib/packages/logger
-  '@yingyeothon/naive-redis': link:../../../tslib/packages/naive-redis
-
 importers:
 
   .:
@@ -19,20 +12,20 @@ importers:
         specifier: ^3.864.0
         version: 3.1116.0
       '@yingyeothon/gamebase-all-together':
-        specifier: link:../../../tslib/packages/gamebase-all-together
-        version: link:../../../tslib/packages/gamebase-all-together
+        specifier: ^2.0.0
+        version: 2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
       '@yingyeothon/lambda-authorizer-jwt':
-        specifier: link:../../../tslib/packages/lambda-authorizer-jwt
-        version: link:../../../tslib/packages/lambda-authorizer-jwt
+        specifier: ^2.0.0
+        version: 2.0.0
       '@yingyeothon/lambda-gamebase':
-        specifier: link:../../../tslib/packages/lambda-gamebase
-        version: link:../../../tslib/packages/lambda-gamebase
+        specifier: ^2.0.0
+        version: 2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
       '@yingyeothon/logger':
-        specifier: link:../../../tslib/packages/logger
-        version: link:../../../tslib/packages/logger
+        specifier: ^2.0.0
+        version: 2.0.0
       '@yingyeothon/naive-redis':
-        specifier: link:../../../tslib/packages/naive-redis
-        version: link:../../../tslib/packages/naive-redis
+        specifier: ^2.0.0
+        version: 2.0.0
     devDependencies:
       '@aws-sdk/client-apigatewaymanagementapi':
         specifier: ^3.864.0
@@ -824,6 +817,12 @@ packages:
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
+  '@types/jsonwebtoken@9.0.10':
+    resolution: {integrity: sha512-asx5hIG9Qmf/1oStypjanR7iKTv0gXQ1Ov/jfrX6kS/EO0OFni8orbmGCn0672NHR3kXHwpAwR+B368ZGN/2rA==}
+
+  '@types/ms@2.1.0':
+    resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
+
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
@@ -914,6 +913,49 @@ packages:
 
   '@vitest/utils@3.2.7':
     resolution: {integrity: sha512-x6BDOd7dyo3PFLY3I9/HJ25X/6OurhGXk2/B9gOZNPF7XDVjeBK4k01lQE5uvDpbuheErh91qYuE1E2OEjK3Rw==}
+
+  '@yingyeothon/actor-system-redis@2.0.0':
+    resolution: {integrity: sha512-t0knli0gS2Mvtq0c4UHjPip/SijoBJpWLz/zMPQAnWQ/ZWRsgAgWIB0hc5jWWPv/pjXOVPjK28M9XUsjL98eXg==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/actor-system@2.0.0':
+    resolution: {integrity: sha512-IcN6bezgYHTzUO2drbIuXOqwa2Fu5u/MTd4Ky+PceXbugBH0bW2WrPbzUFPIPIlpvahDrbxgjV/Xdy3erohfyA==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/codec@2.0.0':
+    resolution: {integrity: sha512-WmiBZCYMFAhCBkWSMuRSB0qdA0YplUdWSQY79l69ZjDiELKg775Jw9YLiOrlm8fMPo817fSbVP7zkFOW6i7+vg==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/gamebase-all-together@2.0.0':
+    resolution: {integrity: sha512-kiffofhggbZUdLSZA5IMMOKra1bI82K//ZBHOUwXu4elQCxkH+yUrK12f99lKMwomyieCtTi+1s6Cf8LnUNe6Q==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/lambda-authorizer-jwt@2.0.0':
+    resolution: {integrity: sha512-6dCiAvh0TCoMEPGkh1RvLPn4RpZR6MwDX4j3Wp9AhgALLhwKlMcxfjlS3StqoPwpUOMHqOMEmwnXyqlw2JT+4A==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/lambda-authorizer@2.0.0':
+    resolution: {integrity: sha512-OwoO+rBMUd1m4QZT/YcBSfEOKUpPrx2Uy2IIWofqMRRQyo1BvcvX/B4Dht2lCzF/Yo3TBxp7kwk6B+xsyvYc6g==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/lambda-gamebase@2.0.0':
+    resolution: {integrity: sha512-/L0D2yjQq3lapD+WydC6hgYH8uuPGVYhs4gdPK96RJpffYC/rUBPA/af/1b8TH26EaThmQcPcxxou0P+wcfMVg==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@aws-sdk/client-apigatewaymanagementapi': ^3.879.0
+      '@aws-sdk/client-lambda': ^3.879.0
+
+  '@yingyeothon/logger@2.0.0':
+    resolution: {integrity: sha512-K+H60CjzVXNyqKwSk31vtWh8s6gEFf+IXZnNyU0VeIpCFlxccm0OC5ZAwYymEZtZLQNyPNSfttZyn+j2W2MYIg==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/naive-redis@2.0.0':
+    resolution: {integrity: sha512-WY/jA6ZrlPiCmiYzyEezXN/0aUb6MF0FzOnmAzPM0tmBZEZu3qzqPtgSIMmqHMNZ/3/DVyq3nHlhqCl/Vizqeg==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/naive-socket@2.0.0':
+    resolution: {integrity: sha512-IQGC81MGwFnq5s4R0IZAzwEalzqKv3NznrLCz4bAIHRAYpOcMQExVuuLInbxbEmVS4mBZddkWzotYccouO1MhA==}
+    engines: {node: '>=20'}
 
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
@@ -1085,6 +1127,9 @@ packages:
     resolution: {integrity: sha512-Db1SbgBS/fg/392AblrMJk97KggmvYhr4pB5ZIMTWtaivCPMWLkmb7m21cJvpvgK+J3nsU2CmmixNBZx4vFj/w==}
     engines: {node: '>=8.0.0'}
 
+  buffer-equal-constant-time@1.0.1:
+    resolution: {integrity: sha512-zRpUiDwd/xk6ADqPMATG8vc9VPrkck7T07OIx0gnjmJAnHnTVXNQG3vfvWNuiZIkwu9KrKdA1iJKfsfTVxE6NA==}
+
   buffer@5.7.1:
     resolution: {integrity: sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==}
 
@@ -1186,6 +1231,9 @@ packages:
 
   eastasianwidth@0.2.0:
     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
+
+  ecdsa-sig-formatter@1.0.11:
+    resolution: {integrity: sha512-nagl3RYrbNv6kQkeJIpt6NJZy8twLB/2vtz6yN9Z4vRKHN4/QZJIEbqohALSgwKdnksuY3k5Addp5lg8sVoVcQ==}
 
   effect@3.22.1:
     resolution: {integrity: sha512-TNoXushmPOBAjJlthF5d2QwnX2xBPEtcNJr5XKNKbRLbDvBcOYkXlYDfvGfSA0zriwLFuCll5MDtNMAdZL17PQ==}
@@ -1500,6 +1548,16 @@ packages:
   jsonfile@6.2.1:
     resolution: {integrity: sha512-zwOTdL3rFQ/lRdBnntKVOX6k5cKJwEc1HdilT71BWEu7J41gXIB2MRp+vxduPSwZJPWBxEzv4yH1wYLJGUHX4Q==}
 
+  jsonwebtoken@9.0.3:
+    resolution: {integrity: sha512-MT/xP0CrubFRNLNKvxJ2BYfy53Zkm++5bX9dtuPbqAeQpTVe0MQTFhao8+Cp//EmJp244xt6Drw/GVEGCUj40g==}
+    engines: {node: '>=12', npm: '>=6'}
+
+  jwa@2.0.1:
+    resolution: {integrity: sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==}
+
+  jws@4.0.1:
+    resolution: {integrity: sha512-EKI/M/yqPncGUUh44xz0PxSidXFr/+r0pA70+gIYhjv+et7yxM+s29Y+VGDkovRofQem0fs7Uvf4+YmAdyRduA==}
+
   keyv@4.5.4:
     resolution: {integrity: sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==}
 
@@ -1524,11 +1582,29 @@ packages:
   lodash.flatten@4.4.0:
     resolution: {integrity: sha512-C5N2Z3DgnnKr0LOpv/hKCgKdb7ZZwafIrsesve6lmzvZIRZRGaZ/l6Q8+2W7NaT+ZwO3fFlSCzCzrDCFdJfZ4g==}
 
+  lodash.includes@4.3.0:
+    resolution: {integrity: sha512-W3Bx6mdkRTGtlJISOvVD/lbqjTlPPUDTMnlXZFnVwi9NKJ6tiAk6LVdlhZMm17VZisqhKcgzpO5Wz91PCt5b0w==}
+
+  lodash.isboolean@3.0.3:
+    resolution: {integrity: sha512-Bz5mupy2SVbPHURB98VAcw+aHh4vRV5IPNhILUCsOzRmsTmSQ17jIuqopAentWoehktxGd9e/hbIXq980/1QJg==}
+
+  lodash.isinteger@4.0.4:
+    resolution: {integrity: sha512-DBwtEWN2caHQ9/imiNeEA5ys1JoRtRfY3d7V9wkqtbycnAmTvRRmbHKDV4a0EYc678/dia0jrte4tjYwVBaZUA==}
+
+  lodash.isnumber@3.0.3:
+    resolution: {integrity: sha512-QYqzpfwO3/CWf3XP+Z+tkQsfaLL/EnUlXWVkIk5FUPc4sBdTehEqZONuyRt2P67PXAk+NXmTBcc97zw9t1FQrw==}
+
   lodash.isplainobject@4.0.6:
     resolution: {integrity: sha512-oSXzaWypCMHkPC3NvBEaPHf0KsA5mvPrOPgQWDsbg8n7orZ290M0BmC/jgRZ4vcJ6DTAhjrsSYgdsW/F+MFOBA==}
 
+  lodash.isstring@4.0.1:
+    resolution: {integrity: sha512-0wJxfxH1wgO3GrbuP+dTTk7op+6L41QCXbGINEmD+ny/G/eCqGzxyCsh7159S+mgDDcoarnBw6PC1PS5+wUGgw==}
+
   lodash.merge@4.6.2:
     resolution: {integrity: sha512-0KpjqXRVvrYyCsX1swR/XTK0va6VQkQM6MNo7PqW77ByjAhoARA8EfrP1N4+KlKj8YS0ZUCtRT/YUuhyYDujIQ==}
+
+  lodash.once@4.1.1:
+    resolution: {integrity: sha512-Sb487aTOCr9drQVL8pIxOzVhafOjZN9UU54hiN8PU3uAiSV7lx1yYNpbNmex2PK6dSJoNTSJUUswT651yww3Mg==}
 
   lodash.union@4.6.0:
     resolution: {integrity: sha512-c4pB2CdGrGdjMKYLA+XiRDO7Y0PRQbm/Gzg8qMj+QH+pFVAoTp5sBpO0odL3FjoPCGjK96p6qsP+yQoiLoOBcw==}
@@ -2679,6 +2755,13 @@ snapshots:
 
   '@types/json-schema@7.0.15': {}
 
+  '@types/jsonwebtoken@9.0.10':
+    dependencies:
+      '@types/ms': 2.1.0
+      '@types/node': 24.13.3
+
+  '@types/ms@2.1.0': {}
+
   '@types/node@24.13.3':
     dependencies:
       undici-types: 7.18.2
@@ -2815,6 +2898,62 @@ snapshots:
       '@vitest/pretty-format': 3.2.7
       loupe: 3.2.1
       tinyrainbow: 2.0.0
+
+  '@yingyeothon/actor-system-redis@2.0.0':
+    dependencies:
+      '@yingyeothon/actor-system': 2.0.0
+      '@yingyeothon/codec': 2.0.0
+      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/naive-redis': 2.0.0
+
+  '@yingyeothon/actor-system@2.0.0':
+    dependencies:
+      '@yingyeothon/logger': 2.0.0
+
+  '@yingyeothon/codec@2.0.0': {}
+
+  '@yingyeothon/gamebase-all-together@2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)':
+    dependencies:
+      '@yingyeothon/lambda-gamebase': 2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
+      '@yingyeothon/logger': 2.0.0
+    transitivePeerDependencies:
+      - '@aws-sdk/client-apigatewaymanagementapi'
+      - '@aws-sdk/client-lambda'
+
+  '@yingyeothon/lambda-authorizer-jwt@2.0.0':
+    dependencies:
+      '@types/aws-lambda': 8.10.162
+      '@types/jsonwebtoken': 9.0.10
+      '@yingyeothon/lambda-authorizer': 2.0.0
+      '@yingyeothon/logger': 2.0.0
+      jsonwebtoken: 9.0.3
+
+  '@yingyeothon/lambda-authorizer@2.0.0':
+    dependencies:
+      '@types/aws-lambda': 8.10.162
+      '@yingyeothon/logger': 2.0.0
+
+  '@yingyeothon/lambda-gamebase@2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)':
+    dependencies:
+      '@aws-sdk/client-apigatewaymanagementapi': 3.1116.0
+      '@aws-sdk/client-lambda': 3.1116.0
+      '@types/aws-lambda': 8.10.162
+      '@yingyeothon/actor-system': 2.0.0
+      '@yingyeothon/actor-system-redis': 2.0.0
+      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/naive-redis': 2.0.0
+
+  '@yingyeothon/logger@2.0.0': {}
+
+  '@yingyeothon/naive-redis@2.0.0':
+    dependencies:
+      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/naive-socket': 2.0.0
+
+  '@yingyeothon/naive-socket@2.0.0':
+    dependencies:
+      '@types/node': 24.13.3
+      '@yingyeothon/logger': 2.0.0
 
   abort-controller@3.0.0:
     dependencies:
@@ -3004,6 +3143,8 @@ snapshots:
 
   buffer-crc32@1.0.0: {}
 
+  buffer-equal-constant-time@1.0.1: {}
+
   buffer@5.7.1:
     dependencies:
       base64-js: 1.5.1
@@ -3113,6 +3254,10 @@ snapshots:
       path-type: 4.0.0
 
   eastasianwidth@0.2.0: {}
+
+  ecdsa-sig-formatter@1.0.11:
+    dependencies:
+      safe-buffer: 5.2.1
 
   effect@3.22.1:
     dependencies:
@@ -3478,6 +3623,30 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
+  jsonwebtoken@9.0.3:
+    dependencies:
+      jws: 4.0.1
+      lodash.includes: 4.3.0
+      lodash.isboolean: 3.0.3
+      lodash.isinteger: 4.0.4
+      lodash.isnumber: 3.0.3
+      lodash.isplainobject: 4.0.6
+      lodash.isstring: 4.0.1
+      lodash.once: 4.1.1
+      ms: 2.1.3
+      semver: 7.8.5
+
+  jwa@2.0.1:
+    dependencies:
+      buffer-equal-constant-time: 1.0.1
+      ecdsa-sig-formatter: 1.0.11
+      safe-buffer: 5.2.1
+
+  jws@4.0.1:
+    dependencies:
+      jwa: 2.0.1
+      safe-buffer: 5.2.1
+
   keyv@4.5.4:
     dependencies:
       json-buffer: 3.0.1
@@ -3501,9 +3670,21 @@ snapshots:
 
   lodash.flatten@4.4.0: {}
 
+  lodash.includes@4.3.0: {}
+
+  lodash.isboolean@3.0.3: {}
+
+  lodash.isinteger@4.0.4: {}
+
+  lodash.isnumber@3.0.3: {}
+
   lodash.isplainobject@4.0.6: {}
 
+  lodash.isstring@4.0.1: {}
+
   lodash.merge@4.6.2: {}
+
+  lodash.once@4.1.1: {}
 
   lodash.union@4.6.0: {}
 

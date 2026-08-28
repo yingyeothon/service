@@ -2,7 +2,9 @@
 // End-to-end smoke for examples/sample-morpg on dev: lobby (party + dungeon offer over
 // the realtime gateway) → POST /dungeon/enter (roster read back from the gateway) →
 // the party plays the instanced dungeon on the `q` channel until the boss dies →
-// the reward is committed to the doc store exactly once.
+// the reward is committed to the doc store exactly once. Sockets go through
+// @yingyeothon/gamebase-client (the lobby and `q` clients); only the handshake
+// refusals use a raw upgrade request, because the SDK cannot observe an HTTP status.
 //
 //   setup: scripts/smoke/morpg.mjs setup <debugKey> <authBaseUrl> <consoleBaseUrl> <docBaseUrl> <outEnvFile> <outStateFile>
 //          seeds an auth channel, a lobby + a q channel (participant Redis credential), a doc
@@ -15,6 +17,11 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import {
+  buildGatewayUrl,
+  createGatewayGameClient,
+  createGatewayLobbyClient,
+} from "@yingyeothon/gamebase-client";
 import { ensureTeam } from "./_team.mjs";
 
 const [mode, ...args] = process.argv.slice(2);
@@ -35,17 +42,21 @@ const json = async (url, { method = "GET", headers = {}, body } = {}) => {
   });
   return { status: res.status, body: await res.json().catch(() => null) };
 };
-// Every socket `connect` opens, closed on any exit so a failed run never hangs.
+// Every SDK client `connect` opens, closed on any exit so a failed run never hangs.
 const sockets = [];
 const finish = () => {
   for (const ws of sockets) ws.close();
   console.log(failed === 0 ? "ALL OK" : `${failed} FAILED`);
   process.exit(failed === 0 ? 0 : 1);
 };
-process.on("unhandledRejection", (e) => {
+// A rejected top-level await is an uncaughtException on Node >= 22, not an
+// unhandledRejection; handle both so a crash still prints the summary.
+const crashed = (e) => {
   check("unexpected error", false, e instanceof Error ? e.message : String(e));
   finish();
-});
+};
+process.on("unhandledRejection", crashed);
+process.on("uncaughtException", crashed);
 const usage = () => {
   console.error("usage: see the header of scripts/smoke/morpg.mjs");
   process.exit(2);
@@ -310,69 +321,88 @@ check(
 );
 const bearer = (t) => ({ authorization: `Bearer ${t}` });
 
-// websocket helper (Node 22+ global WebSocket)
-const connect = (url, token) =>
-  new Promise((resolve, reject) => {
-    const ws = new WebSocket(url, ["bearer", token]);
-    const messages = [];
-    const waiters = [];
-    let closeCode = null;
-    const handshake = setTimeout(() => {
-      ws.close();
-      reject(new Error("ws handshake timeout"));
-    }, 15000);
-    ws.addEventListener("open", () => {
-      clearTimeout(handshake);
-      sockets.push(ws);
-      resolve(client);
-    });
-    ws.addEventListener("error", () => {
-      clearTimeout(handshake);
-      reject(new Error("ws error"));
-    });
-    ws.addEventListener("message", (e) => {
-      const m = JSON.parse(e.data);
-      if (waiters.length > 0) waiters.splice(0).forEach((w) => w(m));
-      else messages.push(m);
-    });
-    ws.addEventListener("close", (e) => {
-      closeCode = e.code;
-      waiters.splice(0).forEach((w) => w(null));
-    });
-    const client = {
-      send: (m) => ws.send(JSON.stringify(m)),
-      close: () => ws.close(),
-      code: () => closeCode,
-      next: (ms = 10000) =>
-        new Promise((r) => {
-          if (messages.length > 0) return r(messages.shift());
-          if (closeCode !== null) return r(null);
-          const t = setTimeout(() => r(null), ms);
-          waiters.push((m) => {
-            clearTimeout(t);
-            r(m);
-          });
-        }),
-      until: async (pred, ms = 15000) => {
-        const end = Date.now() + ms;
-        while (Date.now() < end) {
-          const m = await client.next(end - Date.now());
-          if (m === null) return null;
-          if (pred(m)) return m;
-        }
-        return null;
-      },
-      waitClose: (ms = 10000) =>
-        new Promise((r) => {
-          if (closeCode !== null) return r(closeCode);
-          const t = setTimeout(() => r(null), ms);
-          ws.addEventListener("close", (e) => {
-            clearTimeout(t);
-            r(e.code);
-          });
-        }),
-    };
+// SDK clients wrapped in a frame queue so the checks below stay sequential.
+// `backoff.maxAttempts: 0` keeps a smoke failure visible instead of retried.
+const inbox = (client, subscribe) => {
+  const messages = [];
+  const waiters = [];
+  let closeCode = null;
+  const push = (m) => {
+    if (waiters.length > 0) waiters.splice(0).forEach((w) => w(m));
+    else messages.push(m);
+  };
+  subscribe(push);
+  client.on("disconnected", (e) => {
+    closeCode = e.code;
+    waiters.splice(0).forEach((w) => w(null));
   });
+  sockets.push(client);
+  const box = {
+    close: () => client.close(),
+    code: () => closeCode,
+    next: (ms = 10000) =>
+      new Promise((r) => {
+        if (messages.length > 0) return r(messages.shift());
+        if (closeCode !== null) return r(null);
+        const t = setTimeout(() => r(null), ms);
+        waiters.push((m) => {
+          clearTimeout(t);
+          r(m);
+        });
+      }),
+    until: async (pred, ms = 15000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        const m = await box.next(end - Date.now());
+        if (m === null) return null;
+        if (pred(m)) return m;
+      }
+      return null;
+    },
+    waitClose: (ms = 10000) =>
+      new Promise((r) => {
+        if (closeCode !== null) return r(closeCode);
+        const t = setTimeout(() => r(null), ms);
+        client.on("disconnected", (e) => {
+          clearTimeout(t);
+          r(e.code);
+        });
+      }),
+  };
+  return box;
+};
+const noRetry = { backoff: { maxAttempts: 0 }, maxHandshakeFailures: 1 };
+const withTimeout = (p, ms, what) =>
+  Promise.race([
+    p,
+    new Promise((_, rej) =>
+      setTimeout(() => rej(new Error(`${what} timeout`)), ms),
+    ),
+  ]);
+const connectLobby = async (token) => {
+  const lobby = createGatewayLobbyClient({
+    url: gwBase,
+    channelId: state.lobbyChannelId,
+    token,
+    ...noRetry,
+  });
+  // Every frame after `hello`, verbatim, so the checks read the wire shape.
+  const box = inbox(lobby, (push) => lobby.on("frame", push));
+  const hello = await withTimeout(lobby.connect(), 15000, "lobby connect");
+  return { lobby, box, hello };
+};
+const connectGame = async (gameId, token) => {
+  const game = createGatewayGameClient({
+    url: gwBase,
+    channelId: state.qChannelId,
+    gameId,
+    token,
+    ...noRetry,
+  });
+  const box = inbox(game, (push) => game.on("frame", push));
+  await withTimeout(game.connect(), 15000, "game connect");
+  return { game, box };
+};
 const refused = (url, protocols) =>
   new Promise((resolve) => {
     const u = new URL(url);
@@ -403,6 +433,10 @@ const refused = (url, protocols) =>
       resolve(res.statusCode);
     });
     req.on("error", () => resolve(0));
+    req.setTimeout(15000, () => {
+      req.destroy();
+      resolve(0);
+    });
     req.end();
   });
 
@@ -421,64 +455,57 @@ check(
 );
 
 // 2. lobby: hello with the map, positions, a party, the dungeon offer as an opaque event
-const lobbyUrl = `${gwBase}/?channel=${state.lobbyChannelId}`;
-const a = await connect(lobbyUrl, tokenA);
-const helloA = await a.next();
+const { lobby: a, box: ax, hello: helloA } = await connectLobby(tokenA);
 check(
   "lobby hello carries mapUrl + zone",
-  helloA?.type === "hello" &&
-    helloA.mapUrl === state.mapUrl &&
-    helloA.zone === "zone001",
+  helloA?.mapUrl === state.mapUrl && helloA?.zone === "zone001",
   JSON.stringify(helloA),
 );
-const mapRes = await fetch(helloA?.mapUrl ?? state.mapUrl);
-const map = await mapRes.json().catch(() => null);
+const map = await a.map().catch(() => null);
 check(
-  "map bundle fetched from the CDN",
-  mapRes.ok && map?.format === 1 && Array.isArray(map.rows),
-  String(mapRes.status),
+  "map bundle fetched from the CDN through the SDK",
+  map?.format === 1 && Array.isArray(map.rows),
+  JSON.stringify(map?.id),
 );
-a.send({ type: "pos", zone: "zone001", x: map.start.x, y: map.start.y });
-await a.until((m) => m.type === "snapshot");
-const b = await connect(lobbyUrl, tokenB);
-await b.next();
-b.send({ type: "pos", zone: "zone001", x: map.start.x, y: map.start.y });
-const snapB = await b.until((m) => m.type === "snapshot");
+a.pos({ zone: "zone001", x: map.start.x, y: map.start.y });
+await ax.until((m) => m.type === "snapshot");
+const { lobby: b, box: bx } = await connectLobby(tokenB);
+b.pos({ zone: "zone001", x: map.start.x, y: map.start.y });
+await bx.until((m) => m.type === "snapshot");
 check(
-  "newcomer sees the leader",
-  snapB?.peers?.some((p) => p.userId === userA),
+  "newcomer sees the leader in the SDK peer map",
+  b.peers.get(userA) !== undefined,
+  JSON.stringify(b.peers.all().map((p) => p.userId)),
 );
-a.send({ type: "party.create" });
-const roster = await a.until((m) => m.type === "party");
+a.party.create();
+const roster = await ax.until((m) => m.type === "party");
 check(
   "party created",
-  roster?.leaderId === userA && roster.members?.length === 1,
+  roster?.leaderId === userA &&
+    roster.members?.length === 1 &&
+    a.partyId === roster?.partyId,
 );
-a.send({ type: "party.invite", userId: userB });
-const invite = await b.until((m) => m.type === "party.invite");
+a.party.invite(userB);
+const invite = await bx.until((m) => m.type === "party.invite");
 check("invite delivered", invite?.partyId === roster?.partyId);
-b.send({ type: "party.accept", partyId: invite?.partyId });
+b.party.accept(invite?.partyId);
 check(
   "accept → roster of 2",
-  (await b.until((m) => m.type === "party"))?.members?.length === 2,
+  (await bx.until((m) => m.type === "party"))?.members?.length === 2 &&
+    b.roster?.members?.length === 2,
 );
-a.send({
-  type: "event",
-  scope: "party",
-  name: "dungeon.offer",
-  payload: { map: map.id },
-});
-const offer = await b.until(
+a.event({ scope: "party", name: "dungeon.offer", payload: { map: map.id } });
+const offer = await bx.until(
   (m) => m.type === "event" && m.name === "dungeon.offer",
 );
 check(
   "dungeon offer relayed to the party",
   offer?.from === userA && offer.payload?.map === map.id,
 );
-b.send({ type: "event", scope: "party", name: "dungeon.accept", payload: {} });
+b.event({ scope: "party", name: "dungeon.accept", payload: {} });
 check(
   "acceptance relayed back",
-  (await a.until((m) => m.type === "event" && m.name === "dungeon.accept"))
+  (await ax.until((m) => m.type === "event" && m.name === "dungeon.accept"))
     ?.from === userB,
 );
 
@@ -517,12 +544,23 @@ check(
     entered.body?.members?.length === 2,
   JSON.stringify(entered.body),
 );
-if (failed) {
-  a.close();
-  b.close();
-  finish();
-}
+if (failed) finish();
 const { gameId, wsUrl } = entered.body;
+const sameUrl = (x, y) => {
+  const [u, v] = [new URL(x), new URL(y)];
+  return (
+    u.origin === v.origin &&
+    u.pathname === v.pathname &&
+    ["channel", "gameId"].every(
+      (k) => u.searchParams.get(k) === v.searchParams.get(k),
+    )
+  );
+};
+check(
+  "entry wsUrl matches the SDK's URL form",
+  sameUrl(wsUrl, buildGatewayUrl(gwBase, state.qChannelId, gameId)),
+  wsUrl,
+);
 
 // 4. the q channel: outsiders are refused, members get hello + a world frame
 check(
@@ -536,8 +574,8 @@ check(
     tokenA,
   ])) === 403,
 );
-const qa = await connect(wsUrl, tokenA);
-const helloQ = await qa.until((m) => m.type === "hello");
+const { game: qa, box: qax } = await connectGame(gameId, tokenA);
+const helloQ = await qax.until((m) => m.type === "hello");
 check(
   "dungeon hello",
   helloQ?.payload?.gameId === gameId &&
@@ -545,23 +583,23 @@ check(
     helloQ.payload.mapId === map.id,
   JSON.stringify(helloQ),
 );
-const frame0 = await qa.until((m) => m.type === "frame");
+const frame0 = await qax.until((m) => m.type === "frame");
 check(
   "first frame has both players at the start and the boss",
   frame0?.payload?.players?.length === 2 &&
     frame0.payload.monsters.some((m) => m.templateId === "boss"),
   JSON.stringify(frame0?.payload?.monsters),
 );
-const qb = await connect(wsUrl, tokenB);
-await qb.until((m) => m.type === "frame");
+const { game: qb, box: qbx } = await connectGame(gameId, tokenB);
+await qbx.until((m) => m.type === "frame");
 check(
   "enter broadcast",
-  (await qa.until(
+  (await qax.until(
     (m) => m.type === "enter" && m.payload?.memberId === userB,
     5000,
   )) !== null,
 );
-const running = await qa.until(
+const running = await qax.until(
   (m) => m.type === "stage" && m.payload?.stage === "running",
   40000,
 );
@@ -590,31 +628,35 @@ const stepToward = (me, target, monsters) => {
     }
   return best;
 };
-const bot = async (client, me, pickTarget) => {
+const bot = async (game, box, me, pickTarget) => {
   let result = null;
   let frames = 0;
+  // Gateway refusals reach the SDK's `error` event, not `frame`.
   let refusals = 0;
+  const offError = game.on("error", () => refusals++);
   for (;;) {
-    const m = await client.next(20000);
+    const m = await box.next(20000);
     if (m === null) break;
     if (m.type === "result") {
       result = m.payload;
       break;
     }
-    if (m.type === "refused") refusals++;
     if (m.type !== "frame") continue;
     frames++;
     const self = m.payload.players.find((p) => p.id === me);
     if (!self?.alive || m.payload.cleared) continue;
     const target = pickTarget(m.payload.monsters);
     if (!target) continue;
-    if (dist(self, target) <= 1)
-      client.send({ type: "attack", uid: target.uid });
+    // A frame can be queued ahead of the close that ends the run; the SDK
+    // throws on send after close, so only act while still connected.
+    if (game.state !== "connected") continue;
+    if (dist(self, target) <= 1) game.send({ type: "attack", uid: target.uid });
     else {
       const next = stepToward(self, target, m.payload.monsters);
-      if (next) client.send({ type: "move", x: next.x, y: next.y });
+      if (next) game.send({ type: "move", x: next.x, y: next.y });
     }
   }
+  offError();
   return { result, frames, refusals };
 };
 const boss = (monsters) => monsters.find((m) => m.templateId === "boss");
@@ -625,9 +667,13 @@ const nearestThenBoss = (self) => (monsters) => {
     : boss(monsters);
 };
 const started = Date.now();
+// `finished` (close 1000) is the SDK's "the game dropped you" signal.
+const ended = { a: null, b: null };
+qa.on("finished", (e) => (ended.a = e.code));
+qb.on("finished", (e) => (ended.b = e.code));
 const [ra, rb] = await Promise.all([
-  bot(qa, userA, boss),
-  bot(qb, userB, nearestThenBoss({ x: map.start.x, y: map.start.y })),
+  bot(qa, qax, userA, boss),
+  bot(qb, qbx, userB, nearestThenBoss({ x: map.start.x, y: map.start.y })),
 ]);
 console.log(
   `     dungeon took ${((Date.now() - started) / 1000).toFixed(1)}s, frames a=${ra.frames} b=${rb.frames}, refusals a=${ra.refusals} b=${rb.refusals}`,
@@ -663,9 +709,12 @@ check(
   JSON.stringify(ra.result?.committed),
 );
 check(
-  "sockets dropped with 1000 after the result",
-  (await qa.waitClose()) === 1000 && (await qb.waitClose()) === 1000,
-  `${qa.code()}/${qb.code()}`,
+  "sockets dropped with 1000 after the result → SDK `finished`",
+  (await qax.waitClose()) === 1000 &&
+    (await qbx.waitClose()) === 1000 &&
+    ended.a === 1000 &&
+    ended.b === 1000,
+  `${qax.code()}/${qbx.code()} finished=${ended.a}/${ended.b}`,
 );
 
 // 6. persisted exactly once — a member with nothing earned keeps a fresh sheet

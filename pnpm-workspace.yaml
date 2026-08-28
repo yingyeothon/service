@@ -12,3 +12,6 @@ allowBuilds:
   protobufjs: false
   serverless: false
   ssh2: false
+# @yingyeothon/* is our own library; skip pnpm's release-age gate for it.
+minimumReleaseAgeExclude:
+  - "@yingyeothon/*"
