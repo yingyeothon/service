@@ -20,23 +20,25 @@ client ──JWT──▶ gateway lobby (pos / say / party / event)
 
 ## Layout
 
-| File                          | Role                                                                                                                              |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `src/handler.ts`              | Lambda entry points `http` (entry API, readyCall sink, character read) and `actor`; the only module reading env.                  |
-| `src/env.ts`                  | Env contract; derives the pub/sub prefix and the gateway HTTP base from the `q` channel URL.                                      |
-| `src/entry.ts`                | `POST /dungeon/enter`, `PUT /dungeon/ready/{gameId}/{secret}`, `GET /character` — pure of AWS, every side effect injected.        |
-| `src/actor.ts`                | `handleActor` + `runGameAllTogether` with a fixed 200 ms tick, one world frame per tick, commit-then-result at the end.           |
-| `src/sim.ts`                  | Pure dungeon simulation: mmo101 rules (retaliatory aggro, leash 5, 30 %/s melee, projectile skill, drops, quests, death/respawn). |
-| `src/map.ts`                  | The map bundle format (§4.6) — parser, collision, spawn marks, data-driven clear conditions (`kill` / `device` / `item`).         |
-| `src/character.ts`            | The character sheet schema, leveling, `applyResult` (idempotent by `gameId`), stat allocation.                                    |
-| `src/doc.ts`, `src/commit.ts` | Doc store client (`ETag` / `If-Match`) and the read → apply-once → conditional-write commit with 409 retries.                     |
-| `assets/zone001.json`         | The sample map bundle (20×10, slimes + a boss, one quest, `clear: kill boss`).                                                    |
-| `scripts/local-api.mjs`       | Runs the `http` handler on localhost (esbuild bundle) against dev — pair it with a local gateway to iterate without redeploying.  |
-| `serverless.yml`              | httpApi (3 routes) + the actor (timeout 900 s, no retries). No WebSocket API: the sockets live in the gateway.                    |
+| File                          | Role                                                                                                                                                                                                                    |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/handler.ts`              | Lambda entry points `http` (entry API, readyCall sink, character read) and `actor`; the only module reading env.                                                                                                        |
+| `src/env.ts`                  | Env contract; derives the pub/sub prefix and the gateway HTTP base from the `q` channel URL.                                                                                                                            |
+| `src/entry.ts`                | `POST /dungeon/enter`, `PUT /dungeon/ready/{gameId}/{secret}`, `GET /character` — pure of AWS, every side effect injected.                                                                                              |
+| `src/actor.ts`                | `handleActor` + `runGameAllTogether` with a fixed 200 ms tick, one world frame per tick, commit-then-result at the end.                                                                                                 |
+| `src/sim.ts`                  | Pure dungeon simulation: mmo101 rules (retaliatory aggro, leash 5, 30 %/s melee, projectile skill, drops, quests, death/respawn).                                                                                       |
+| `src/map.ts`                  | The map bundle format (§4.6) — parser, collision, spawn marks, data-driven clear conditions (`kill` / `device` / `item`).                                                                                               |
+| `src/character.ts`            | The character sheet schema, leveling, `applyResult` (idempotent by `gameId`), stat allocation.                                                                                                                          |
+| `src/doc.ts`, `src/commit.ts` | Doc store client (`ETag` / `If-Match`) and the read → apply-once → conditional-write commit with 409 retries.                                                                                                           |
+| `assets/zone001.json`         | The sample map bundle (20×10, slimes + a boss, one quest, `clear: kill boss`).                                                                                                                                          |
+| `scripts/local-api.mjs`       | Runs the `http` handler on localhost (esbuild bundle) against dev — pair it with a local gateway to iterate without redeploying.                                                                                        |
+| `cli/`                        | The terminal client (`pnpm play`): `session.ts` drives the lobby and `q` SDK clients, `state.ts`/`render.ts` are the pure model and screen, `commands.ts` the keys and slash commands, `terminal.ts` the only TTY code. |
+| `scripts/play.mjs`            | Bundles `cli/main.ts` with esbuild (`.esbuild/cli/`) and runs it; the client imports `src/map.ts`, `src/sim.ts`, `src/character.ts` types directly.                                                                     |
+| `serverless.yml`              | httpApi (3 routes) + the actor (timeout 900 s, no retries). No WebSocket API: the sockets live in the gateway.                                                                                                          |
 
 ## Protocol
 
-Lobby: exactly the gateway's `lobby` protocol (`gateway/README.md`); the game adds two `event` names, `dungeon.offer` and `dungeon.accept`, both `scope: "party"`, which the gateway relays unread.
+Lobby: exactly the gateway's `lobby` protocol (`gateway/README.md`); the game adds three `event` names, all `scope: "party"` and relayed unread by the gateway: `dungeon.offer` / `dungeon.accept` (the party agreeing to go) and `dungeon.start {gameId}` (the leader telling the members which run to join — only the caller of `POST /dungeon/enter` learns the `gameId`; a member honours it only from the current leader, and the `q` channel still admits only the start event's members).
 
 HTTP (`Authorization: Bearer <channel JWT>`):
 
@@ -54,6 +56,30 @@ Dungeon (`q` channel, `wsUrl` + `&gameId=`):
 | server →  | `hello {gameId, mapId, mapVersion, you}` then a `frame` on enter/reconnect; `enter {memberId}`; `stage`; `refused {command, code}`                                                                                                                                                                                                                                                                        |
 | server →  | `frame {time, cleared, players[], monsters[], projectiles[], events[]}` every tick (self-contained; `events` are the hits/kills/drops/deaths since the last one)                                                                                                                                                                                                                                          |
 | server →  | `result {reason, cleared, rewards:{memberId: {exp, items, consumed, questProgress}}, committed:{memberId: applied\|duplicate\|skipped\|failed\|pending}}` then close `1000` — `skipped` = never entered or nothing earned; `failed`/`pending` = the delta is parked in Redis (`{prefix}pendingcommit:{gameId}:{memberId}`, 24 h) for an operator to replay, since `applyResult` is idempotent by `gameId` |
+
+## Play (terminal client)
+
+`cli/` is a two-terminal MORPG client on `@yingyeothon/gamebase-client`: an ASCII map from the bundle, chat, party, dungeon frames at 5 Hz, and the character sheet from `GET /character`. It is the proof that the platform is enough — no Unity, no C# SDK.
+
+1. Config: `pnpm install` (the client and esbuild are dev dependencies), then a gitignored env file (`local/deploy/morpg-cli.<stage>.env` in the service repo, or anywhere):
+
+   ```
+   MORPG_API_BASE=https://<the stack's ApiUrl>
+   MORPG_GATEWAY_WS_URL=wss://gw-dev.yyt.life
+   MORPG_STATE_FILE=/path/to/state.json      # {"authChannelId":"ch_…","lobbyChannelId":"ch_…","qChannelId":"ch_…"} — the smoke's state file works as is
+   MORPG_TOKEN=<a channel JWT, used verbatim>   # or, dev only, mint one per --user from a debug key:
+   MORPG_AUTH_BASE=https://auth-dev.yyt.life
+   MORPG_DEBUG_KEY_FILE=/path/to/debug-key
+   ```
+
+   `--user <name>` becomes a stable 32-hex id (a hash of the name); flags override env vars override the file (`cli/config.ts` `USAGE`).
+
+2. Two terminals, two names: `pnpm play -- --config ../../local/deploy/morpg-cli.dev.env --user alice` and `--user bob`. The same name twice ends the older socket with close `4000` (the gateway's single-session rule); the client says so and exits.
+3. Town: `wasd`/arrows/`hjkl` move (applied locally, `pos` at most every 200 ms and at once after 3 cells, the gateway's `maxMoveDelta`), plain text or `/say` for zone chat, `/p` party chat, `/w <user> <text>` whisper, `/party create|invite <user>|accept|decline|leave|list`.
+4. Dungeon: the leader runs `/offer`, members `/accept`, the leader `/enter` (`POST /dungeon/enter`, then `dungeon.start` to the party); everyone joins the `q` channel. `wasd` sends one `move` per adjacent cell, `f`/space attacks the weakest adjacent monster, `q` fires the skill in the facing direction, `/use <itemId>`, `/operate`. The `result` frame shows the rewards; any key (or 8 s) returns to town, reloads the sheet and re-announces `pos`.
+5. Runs last `GAME_RUNNING_SECONDS` (the smoke's env writes 120 s; raise it before deploying for a human party). The SDK reconnects both sockets with backoff; the side panel shows `reconnecting #n` and the actor replays `hello` + `frame` on re-entry.
+
+The client is ANSI/raw-mode only (no Windows console support), needs at least 60×16 and refuses to start without a TTY. Peer text is stripped of control characters before it reaches the screen. Everything except `terminal.ts`/`main.ts` is pure or injected and covered by `test/cli-*.test.ts`.
 
 ## Deploy and verify
 
