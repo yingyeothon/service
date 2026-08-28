@@ -5,6 +5,7 @@ import {
   Code,
   Group,
   Loader,
+  Stack,
   Text,
 } from "@mantine/core";
 import {
@@ -13,7 +14,7 @@ import {
   IconInfoCircle,
   IconX,
 } from "@tabler/icons-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 
 const NOTICE: Record<
   "info" | "error" | "success" | "warn",
@@ -52,41 +53,6 @@ export function Spinner({ label = "Loading…" }: { label?: string }) {
       <Text size="sm" c="dimmed">
         {label}
       </Text>
-    </Group>
-  );
-}
-
-/** Read-only value with a copy button (with a manual fallback when the clipboard API fails). */
-export function CopyField({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
-  useEffect(() => {
-    if (copied === "no") return;
-    const t = setTimeout(() => setCopied("no"), 2000);
-    return () => clearTimeout(t);
-  }, [copied]);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied("yes");
-    } catch {
-      setCopied("failed");
-    }
-  };
-  return (
-    <Group gap="xs" wrap="nowrap" my={4}>
-      <Text size="sm" c="dimmed" w={140} style={{ flexShrink: 0 }}>
-        {label}
-      </Text>
-      <Code style={{ overflowWrap: "anywhere", userSelect: "all" }}>
-        {value}
-      </Code>
-      <Button size="compact-xs" variant="default" onClick={() => void copy()}>
-        {copied === "yes"
-          ? "Copied"
-          : copied === "failed"
-            ? "Select & copy manually"
-            : "Copy"}
-      </Button>
     </Group>
   );
 }
@@ -183,5 +149,103 @@ export function Confirm({
         Cancel
       </Button>
     </Group>
+  );
+}
+
+/** Read-only value with a copy button (with a manual fallback when the clipboard API fails). */
+export function CopyField({ label, value }: { label: string; value: string }) {
+  return (
+    <Group gap="xs" wrap="nowrap" my={4}>
+      <Text size="sm" c="dimmed" w={140} style={{ flexShrink: 0 }}>
+        {label}
+      </Text>
+      <Code style={{ overflowWrap: "anywhere", userSelect: "all" }}>
+        {value}
+      </Code>
+      <CopyButton value={value} idle="Copy" aria={`Copy ${label}`} />
+    </Group>
+  );
+}
+
+/** Multi-line read-only block with one copy button; lines are `name=value`. */
+export function CopyBlock({
+  label,
+  lines,
+}: {
+  label: string;
+  lines: readonly (readonly [string, string])[];
+}) {
+  const value = lines.map(([k, v]) => `${k}=${v}`).join("\n");
+  const id = useId();
+  return (
+    <Stack gap={4} my={4}>
+      <Text size="sm" c="dimmed" id={id}>
+        {label}
+      </Text>
+      <Code
+        block
+        aria-labelledby={id}
+        style={{
+          userSelect: "all",
+          whiteSpace: "pre-wrap",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {value}
+      </Code>
+      <Group>
+        <CopyButton value={value} idle="Copy all" aria={`Copy ${label}`} />
+      </Group>
+    </Stack>
+  );
+}
+
+function CopyButton({
+  value,
+  idle,
+  aria,
+}: {
+  value: string;
+  idle: string;
+  aria: string;
+}) {
+  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
+  useEffect(() => {
+    if (copied === "no") return;
+    const t = setTimeout(() => setCopied("no"), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied("yes");
+    } catch {
+      setCopied("failed");
+    }
+  };
+  const text =
+    copied === "yes"
+      ? "Copied"
+      : copied === "failed"
+        ? "Select & copy manually"
+        : idle;
+  return (
+    <>
+      <Button
+        size="compact-xs"
+        variant="default"
+        aria-label={aria}
+        onClick={() => void copy()}
+      >
+        {text}
+      </Button>
+      <span
+        role="status"
+        aria-live="polite"
+        style={{ position: "absolute", left: -9999 }}
+      >
+        {copied === "no" ? "" : text}
+      </span>
+    </>
   );
 }

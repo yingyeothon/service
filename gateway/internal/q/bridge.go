@@ -450,7 +450,10 @@ func (b *Bridge) push(ctx context.Context, g *game, from *client, item []byte) e
 	return nil
 }
 
-// abort is §2.5 in order: close with 4001, DEL the queue, UNSUBSCRIBE, alarm.
+// abort is §2.5 in order: close with 4001, DEL the queue, alarm. The
+// The UNSUBSCRIBE is a consequence of the closes, not something abort ensures:
+// each closed socket's read loop reaches Leave, and whichever call sees the
+// last connection go runs dropGameLocked, which closes the subscription.
 func (b *Bridge) abort(ctx context.Context, g *game, depth int64, why string) {
 	b.mu.Lock()
 	if g.aborted {

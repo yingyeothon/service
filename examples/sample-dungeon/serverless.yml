@@ -72,11 +72,18 @@ provider:
           Action: lambda:InvokeFunction
           Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:custom.stage}-actor"
 
+# reservedConcurrency is a ceiling that refuses work past it (throttles are silent:
+# not Lambda Errors), so size it to the flow's peak, never to "small". It costs
+# nothing (provisioned concurrency is what bills) and bounds a runaway fan-out in
+# your own account. A dungeon start bursts one uncached authorizer + `$connect`
+# per member (partySize up to 16), so those two stay above that burst.
 functions:
   authorizer:
     handler: src/handler.authorizer
+    reservedConcurrency: 20
   ws:
     handler: src/handler.ws
+    reservedConcurrency: 20
     events:
       - websocket:
           route: $connect
@@ -92,17 +99,20 @@ functions:
           route: $default
   actor:
     handler: src/handler.actor
+    reservedConcurrency: 10
     # Must exceed waiting + running + margin (src/actor.ts).
     timeout: 180
     maximumRetryAttempts: 0
   matchCallback:
     handler: src/handler.matchCallback
+    reservedConcurrency: 5
     events:
       - httpApi:
           method: POST
           path: /match-callback
   matchCallbackTopic:
     handler: src/handler.matchCallbackTopic
+    reservedConcurrency: 5
     events:
       - httpApi:
           method: POST

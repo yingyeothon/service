@@ -80,3 +80,5 @@ Prerequisites: Node ≥ 22, pnpm, Serverless Framework v4 CLI (`npm i -g serverl
 ## Checks
 
 `pnpm typecheck && pnpm lint && pnpm test` — unit tests cover the signature, the lobby handlers (with fakes) and the rules. The game loop itself is tslib's; the dev smoke is the integration test.
+
+Every function in `serverless.yml` carries a `reservedConcurrency`; it is a free ceiling that silently throttles past its number, so raise it with your party size and player count rather than removing it.

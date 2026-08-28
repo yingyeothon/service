@@ -121,6 +121,16 @@ describe("q channel redis account", () => {
 
     const issue = await screen.findByRole("button", { name: "Issue" });
     expect(screen.getByText(/Not issued yet/)).toBeInTheDocument();
+    // The five tslib prefixes are one copyable block (docs/decisions.md,
+    // participant credentials): a prefix typed by hand is a silent no-op.
+    expect(
+      screen.getByText(
+        /eventKeyPrefix=game:dev:q_0123:event:.*queueKeyPrefix=.*lockKeyPrefix=.*awaiterKeyPrefix=.*channelPrefix=game:out:dev:q_0123:/s,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: /Copy tslib prefixes/ }),
+    ).toHaveLength(1);
     // Nothing to revoke before anything was issued.
     expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
 
@@ -181,8 +191,8 @@ describe("q channel redis account", () => {
     ).toBeInTheDocument();
     // The prefixes are still the ones the Lambda must use, so the block stays.
     expect(
-      screen.getAllByText("game:dev:q_0123:queue:").length,
-    ).toBeGreaterThan(0);
+      screen.getByText(/queueKeyPrefix=game:dev:q_0123:queue:/),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Issue" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Re-issue" })).toBeNull();
   });

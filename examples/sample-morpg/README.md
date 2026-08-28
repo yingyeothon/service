@@ -65,6 +65,8 @@ The dev gateway must run an image that has the `/parties` route. To iterate loca
 
 Sizing: `GAME_RUNNING_SECONDS` (default 600) + 20 s wait + 20 s margin must stay under the actor's 900 s timeout; `MAX_RUNNING_SECONDS` in `src/actor.ts` enforces it at cold start. The commit phase at the end is bounded by `DEFAULT_COMMIT_DEADLINE_MILLIS` (10 s, members in parallel) so a slow doc store cannot eat the margin: whatever has not landed is `pending` and parked, and the party still gets its `result` and its close. A setup failure (map or sheets unreachable) also ends in a `result {reason:"error"}` rather than a hanging socket. The map bundle is cached per Lambda container (immutable per URL).
 
+Every function in `serverless.yml` carries a `reservedConcurrency`; it is a free ceiling that silently throttles past its number, so raise it with your party size and player count rather than removing it.
+
 ## Blueprint status (§7 checklist, verified on dev 2026-08-27)
 
 1–6 lobby relay / leave / retained position / scope routing / party / offer-decline: **pass** (`scripts/smoke/gateway.mjs` + `morpg.mjs`). 7–8 party authorized, outsider rejected: **pass**. 9–10 reward persisted, replay not duplicated: **pass** (`test/commit.test.ts` for the replay; the smoke checks `appliedGames` holds the `gameId` once). 11 actor death → `4001`: gateway-side, covered by its own tests. 12 reconnect resync from one frame: implemented (`onMemberEntered` replays `hello` + `frame`), not yet smoke-tested. 13 gateway restart mid-dungeon, 14 single-session rule, 15 full-length run: not yet exercised.

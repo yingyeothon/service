@@ -17,3 +17,8 @@
 - A fake that backs a `utf8mb4_bin` column must sort like it: `localeCompare` puts `map.json` before `MAP.json`, MariaDB binary collation the reverse, and a contract test that passes only against the fake is lying about the database.
 - When a route can answer with a status instead of a value, assert the status too. "A re-issue returns a different password" kept passing after a 429 was added because `undefined` is `not.toBe` the old password.
 - Test a cron/sweep step through the function the handler calls, not by re-implementing the wiring in the test: with the wiring re-implemented, deleting the line in `handler.ts` kept the suite green. Extract the step (`runRedisAclReconcile` pattern) and call it directly.
+
+## Golden-review lessons (2026-08-28)
+
+- An invariant stated as "every X has Y" (every Redis key a TTL, every Lambda a `reservedConcurrency`, nothing logs a credential) is enforced by review, not by a test: there is no lint that enumerates write sites or `serverless.yml` functions. When such an invariant is reviewed, grep the whole tree **including `examples/*`** — that is where the 2026-08-28 review found the only violation (seven example functions without `reservedConcurrency`) — outside the MariaDB budget the rule was written for, but copied verbatim by participants, so the knob and a peak-sized number (`rules/serverless-aws.md`) matter there too.
+- The q bridge's "opaque payload" is field-level, not byte-level (it re-encodes the object to strip `memberId`); tests assert untouched fields, not identical bytes. Keep it that way — a byte-level promise would need a streaming rewriter for no gain.

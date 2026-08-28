@@ -62,9 +62,15 @@ provider:
           Action: lambda:InvokeFunction
           Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:custom.stage}-actor"
 
+# reservedConcurrency is a ceiling that refuses work past it (throttles are silent:
+# not Lambda Errors), so size it to the flow's peak, never to "small". It costs
+# nothing (provisioned concurrency is what bills) and bounds a runaway fan-out in
+# your own account. `http` serves both `enter` (waits up to 8 s) and the actor's
+# `ready` callback from one pool: keep it well above the parties entering at once.
 functions:
   http:
     handler: src/handler.http
+    reservedConcurrency: 20
     # Worst case: roster 3 s + invoke + the 8 s ready poll; the API Gateway cap is 30 s.
     timeout: 25
     events:
@@ -79,6 +85,7 @@ functions:
           path: /character
   actor:
     handler: src/handler.actor
+    reservedConcurrency: 10
     # Must exceed waiting + running + margin (src/actor.ts); 900 s is the Lambda ceiling.
     timeout: 900
     maximumRetryAttempts: 0
