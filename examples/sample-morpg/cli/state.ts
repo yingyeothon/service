@@ -78,7 +78,12 @@ export interface AppState {
   mode: Mode;
   lobby: LobbyState;
   dungeon?: DungeonState;
-  sheet?: { version: number; sheet: CharacterSheet };
+  sheet?: {
+    version: number;
+    sheet: CharacterSheet;
+    /** Server-computed base + gear + buffs; absent = show the base. */
+    effective?: { maxHp: number; attack: number; defence: number };
+  };
   log: LogLine[];
   conn: ConnStatus;
   /** Line being typed; `undefined` means keys act directly. */

@@ -65,8 +65,10 @@ provider:
 # reservedConcurrency is a ceiling that refuses work past it (throttles are silent:
 # not Lambda Errors), so size it to the flow's peak, never to "small". It costs
 # nothing (provisioned concurrency is what bills) and bounds a runaway fan-out in
-# your own account. `http` serves both `enter` (waits up to 8 s) and the actor's
-# `ready` callback from one pool: keep it well above the parties entering at once.
+# your own account. `http` serves `enter` (waits up to 8 s), the actor's `ready`
+# callback and every lobby sheet route (/stats, /equip, /talk, … one short CAS
+# write each) from one pool: keep it well above the parties entering at once
+# plus the players clicking through town at the same moment.
 functions:
   http:
     handler: src/handler.http
@@ -83,6 +85,21 @@ functions:
       - httpApi:
           method: GET
           path: /character
+      - httpApi:
+          method: POST
+          path: /character/stats-up
+      - httpApi:
+          method: POST
+          path: /inventory/{itemId}/{verb}
+      - httpApi:
+          method: DELETE
+          path: /equipment/{slot}
+      - httpApi:
+          method: POST
+          path: /npc/{id}/interact
+      - httpApi:
+          method: POST
+          path: /zone/{id}
   actor:
     handler: src/handler.actor
     reservedConcurrency: 10

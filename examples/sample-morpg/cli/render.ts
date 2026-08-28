@@ -168,7 +168,12 @@ function renderSide(
     line(
       `lv ${s.level}  exp ${s.exp}/${expForLevel(s.level + 1)}  pts ${s.statPoints}`,
     );
-    line(`hp ${s.maxHp}  atk ${s.attack}  def ${s.defence}`);
+    const e = state.sheet?.effective;
+    const stat = (base: number, eff: number | undefined) =>
+      eff === undefined || eff === base ? `${base}` : `${eff}(${base})`;
+    line(
+      `hp ${stat(s.maxHp, e?.maxHp)}  atk ${stat(s.attack, e?.attack)}  def ${stat(s.defence, e?.defence)}`,
+    );
     const gear = EQUIP_SLOTS.filter((slot) => s.equipment[slot]).map(
       (slot) => `${slot}=${s.equipment[slot]}`,
     );

@@ -6,6 +6,47 @@ import { newState } from "../cli/state.js";
 const HEX = "0123456789abcdef0123456789abcdef";
 
 describe("parseCommand", () => {
+  it("sheet commands validate ids, slots and stats", () => {
+    expect(parseCommand("/equip sword")).toEqual({
+      kind: "equip",
+      itemId: "sword",
+    });
+    expect(parseCommand("/equip Bad Id").kind).toBe("unknown");
+    expect(parseCommand("/use Sword").kind).toBe("unknown");
+    expect(parseCommand("/unequip armor")).toEqual({
+      kind: "unequip",
+      slot: "armor",
+    });
+    expect(parseCommand("/unequip hat").kind).toBe("unknown");
+    expect(parseCommand("/stats attack")).toEqual({
+      kind: "stats",
+      stat: "attack",
+      points: 1,
+    });
+    expect(parseCommand("/stats maxHp 3")).toEqual({
+      kind: "stats",
+      stat: "maxHp",
+      points: 3,
+    });
+    expect(parseCommand("/stats hp 1").kind).toBe("unknown");
+    expect(parseCommand("/stats attack 0").kind).toBe("unknown");
+    expect(parseCommand("/stats attack -1").kind).toBe("unknown");
+    expect(parseCommand("/talk elder")).toEqual({
+      kind: "talk",
+      npcId: "elder",
+      questId: undefined,
+    });
+    expect(parseCommand("/talk elder hunt")).toEqual({
+      kind: "talk",
+      npcId: "elder",
+      questId: "hunt",
+    });
+    expect(parseCommand("/talk").kind).toBe("unknown");
+    expect(parseCommand("/zone zone002")).toEqual({
+      kind: "zone",
+      zoneId: "zone002",
+    });
+  });
   it("plain text is zone chat; /say and /p route by scope", () => {
     expect(parseCommand("hello there")).toEqual({
       kind: "say",

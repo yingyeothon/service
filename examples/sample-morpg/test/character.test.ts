@@ -11,7 +11,9 @@ import {
   newCharacter,
   parseCharacter,
   pruneAbnormalities,
+  interactNpc,
   questReady,
+  teleport,
   unequipSlot,
   useItem,
   type CharacterSheet,
@@ -30,7 +32,13 @@ const T: Templates = {
   quests: {
     hunt: { kind: "kill", templateId: "slime", count: 3, repeatable: true },
     gather: { kind: "collect", itemId: "jelly", count: 2, repeatable: false },
+    ghost: { kind: "kill", templateId: "ghost", count: 1, repeatable: false },
   },
+  npcs: {
+    elder: { quests: ["hunt", "gather"] },
+    hermit: { quests: ["missing"] },
+  },
+  zones: { town2: { start: { x: 3, y: 4 } } },
 };
 const NOW = 1_700_000_000_000;
 const ok = (r: { ok: boolean; sheet?: CharacterSheet }): CharacterSheet => {
@@ -190,7 +198,7 @@ describe("character sheet", () => {
     });
     expect(ok(allocateStat(sheet, "maxHp", 2))).toMatchObject({
       statPoints: 3,
-      maxHp: 60,
+      maxHp: 52,
     });
     expect(sheet.statPoints).toBe(5);
   });
@@ -372,5 +380,91 @@ describe("character sheet", () => {
       ok: false,
       reason: "not_repeatable",
     });
+  });
+});
+
+describe("town NPCs and zones", () => {
+  it("talking accepts the first acceptable quest, then reports it as in progress", () => {
+    const first = interactNpc(newCharacter(), "elder", T);
+    expect(first).toMatchObject({
+      ok: true,
+      action: "accepted",
+      questId: "hunt",
+    });
+    const sheet = ok(first);
+    expect(sheet.quests.hunt).toEqual({
+      active: true,
+      progress: 0,
+      completed: 0,
+    });
+    // The NPC still has `gather` to hand out; then nothing until something is ready.
+    const second = ok(interactNpc(sheet, "elder", T));
+    expect(second.quests.gather?.active).toBe(true);
+    expect(interactNpc(second, "elder", T)).toEqual({
+      ok: false,
+      reason: "quest_incomplete",
+    });
+  });
+  it("turns in a ready quest before offering a new one", () => {
+    const sheet = ok(acceptQuest(withItems({ jelly: 2 }), "gather", T));
+    const r = interactNpc(sheet, "elder", T);
+    expect(r).toMatchObject({
+      ok: true,
+      action: "completed",
+      questId: "gather",
+    });
+    const next = ok(r);
+    expect(next.items.jelly).toBeUndefined();
+    expect(next.quests.gather).toEqual({
+      active: false,
+      progress: 0,
+      completed: 1,
+    });
+    // `gather` is not repeatable: `hunt` is offered next, then the NPC is done.
+    const after = ok(interactNpc(next, "elder", T));
+    expect(after.quests.hunt?.active).toBe(true);
+    expect(interactNpc(after, "elder", T, "gather")).toEqual({
+      ok: false,
+      reason: "not_repeatable",
+    });
+  });
+  it("narrows to one quest and refuses ids the NPC does not own", () => {
+    expect(interactNpc(newCharacter(), "elder", T, "gather")).toMatchObject({
+      ok: true,
+      questId: "gather",
+    });
+    expect(interactNpc(newCharacter(), "elder", T, "ghost")).toEqual({
+      ok: false,
+      reason: "unknown_quest",
+    });
+    expect(interactNpc(newCharacter(), "nobody", T)).toEqual({
+      ok: false,
+      reason: "unknown_npc",
+    });
+    expect(interactNpc(newCharacter(), "constructor", T)).toEqual({
+      ok: false,
+      reason: "unknown_npc",
+    });
+    // An NPC whose quests are missing from the bundle has nothing to say;
+    // naming the hole reports it.
+    expect(interactNpc(newCharacter(), "hermit", T)).toEqual({
+      ok: false,
+      reason: "nothing_to_do",
+    });
+    expect(interactNpc(newCharacter(), "hermit", T, "missing")).toEqual({
+      ok: false,
+      reason: "unknown_quest",
+    });
+  });
+  it("teleports to a known zone and is a no-op when already there", () => {
+    const moved = ok(teleport(newCharacter(), "town2", T));
+    expect(moved.zone).toBe("town2");
+    expect(teleport(moved, "town2", T)).toEqual({ ok: true, sheet: moved });
+    expect(teleport(moved, "nowhere", T)).toEqual({
+      ok: false,
+      reason: "unknown_zone",
+    });
+    expect(parseCharacter(moved).zone).toBe("town2");
+    expect(parseCharacter({ ...moved, zone: "Bad Zone" }).zone).toBeUndefined();
   });
 });

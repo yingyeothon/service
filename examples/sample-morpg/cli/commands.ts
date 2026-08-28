@@ -1,6 +1,13 @@
 /* Input → actions: slash commands typed on the line and single keys in keys mode. Pure. */
 import { resolveUserId } from "./auth.js";
 import type { AppState } from "./state.js";
+import {
+  EQUIP_SLOTS,
+  isId,
+  STAT_TYPES,
+  type EquipSlot,
+  type StatType,
+} from "../src/character.js";
 import type { Dir } from "../src/sim.js";
 
 export const SAY_MAX_BYTES = 1024;
@@ -16,6 +23,11 @@ export type Action =
   | { kind: "enter" }
   | { kind: "char" }
   | { kind: "use"; itemId: string }
+  | { kind: "equip"; itemId: string }
+  | { kind: "unequip"; slot: EquipSlot }
+  | { kind: "stats"; stat: StatType; points: number }
+  | { kind: "talk"; npcId: string; questId?: string }
+  | { kind: "zone"; zoneId: string }
   | { kind: "operate" }
   | { kind: "move"; dir: Dir }
   | { kind: "attack" }
@@ -28,7 +40,9 @@ export const HELP = [
   "keys: wasd/arrows/hjkl move · f/space attack · q skill (facing) · / type a command · Esc back",
   "/say <text> (or plain text) · /p <text> party chat · /w <user> <text> whisper",
   "/party create|invite <user>|accept|decline|leave|list · /offer · /accept · /enter",
-  "/char reload sheet · /use <itemId> · /operate · /help · /quit",
+  "/char reload sheet · /use <itemId> (town: buffs/gear, field: potions) · /operate",
+  "/equip <itemId> · /unequip weapon|armor · /stats maxHp|attack|defence [n]",
+  "/talk <npcId> [questId] · /zone <zoneId> · /help · /quit",
 ];
 
 const PARTY_ID = /^pty_[0-9a-f]{16}$/;
@@ -92,8 +106,40 @@ export function parseCommand(line: string): Action {
       return { kind: "char" };
     case "use": {
       const itemId = rest[0];
-      if (!itemId || itemId.length > 32) return { kind: "unknown", line };
+      if (!isId(itemId)) return { kind: "unknown", line };
       return { kind: "use", itemId };
+    }
+    case "equip": {
+      const itemId = rest[0];
+      if (!isId(itemId)) return { kind: "unknown", line };
+      return { kind: "equip", itemId };
+    }
+    case "unequip": {
+      const slot = rest[0];
+      if (!EQUIP_SLOTS.includes(slot as EquipSlot))
+        return { kind: "unknown", line };
+      return { kind: "unequip", slot: slot as EquipSlot };
+    }
+    case "stats": {
+      const [stat, n = "1"] = rest;
+      const points = Number(n);
+      if (!STAT_TYPES.includes(stat as StatType))
+        return { kind: "unknown", line };
+      if (!/^[0-9]{1,3}$/.test(n) || points < 1)
+        return { kind: "unknown", line };
+      return { kind: "stats", stat: stat as StatType, points };
+    }
+    case "talk": {
+      const [npcId, questId] = rest;
+      if (!isId(npcId)) return { kind: "unknown", line };
+      if (questId !== undefined && !isId(questId))
+        return { kind: "unknown", line };
+      return { kind: "talk", npcId, questId };
+    }
+    case "zone": {
+      const zoneId = rest[0];
+      if (!isId(zoneId)) return { kind: "unknown", line };
+      return { kind: "zone", zoneId };
     }
     case "operate":
       return { kind: "operate" };

@@ -1,11 +1,34 @@
 /*
  * The HTTP side of the game: dungeon entry (README §4.1), the readyCall sink,
- * and the character sheet read. Pure of AWS: every side effect is injected.
+ * the character sheet read, and the lobby transitions (stat points, inventory,
+ * equipment, NPC quests, zone teleports) — each one `updateSheet` with a pure
+ * transform from character.ts. Pure of AWS: every side effect is injected.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { GameActorStartEvent } from "@yingyeothon/lambda-gamebase";
 import jwt from "jsonwebtoken";
-import { newCharacter, parseCharacter } from "./character.js";
+import {
+  allocateStat,
+  effectiveStats,
+  EQUIP_SLOTS,
+  equipItem,
+  interactNpc,
+  isId,
+  newCharacter,
+  NO_TEMPLATES,
+  parseCharacter,
+  STAT_TYPES,
+  teleport,
+  unequipSlot,
+  useItem,
+  type CharacterSheet,
+  type EquipSlot,
+  type SheetRefusal,
+  type SheetResult,
+  type StatType,
+  type Templates,
+} from "./character.js";
+import { updateSheet } from "./commit.js";
 import type { DocClient } from "./doc.js";
 
 export interface Roster {
@@ -73,6 +96,9 @@ export interface EntryOptions {
     isLive: (gameId: string) => Promise<boolean>;
   };
   doc: DocClient;
+  /** Item/quest/NPC/zone templates (the bundle, phase 4); `NO_TEMPLATES` refuses everything named. */
+  templates?: () => Promise<Templates>;
+  now?: () => number;
   startEventTtlSeconds: number;
   /** How long `POST /dungeon/enter` waits for the actor's readyCall. */
   readyTimeoutMillis?: number;
@@ -91,6 +117,23 @@ export const GAME_ID = /^g_[0-9a-f]{16}$/;
 export const SECRET = /^[0-9a-f]{32}$/;
 export const PARTY_ID = /^pty_[0-9a-f]{16}$/;
 export const READY_TTL_SECONDS = 120;
+
+/** Sheet refusals → HTTP: a bad request 400, a name the bundle lacks 404, state 409, a broken bundle 502. */
+export function statusFor(reason: SheetRefusal): number {
+  switch (reason) {
+    case "no_points":
+      return 400;
+    case "unknown_item":
+    case "unknown_quest":
+    case "unknown_npc":
+    case "unknown_zone":
+      return 404;
+    case "unknown_template":
+      return 502;
+    default:
+      return 409;
+  }
+}
 /** Bounds the window between two `enter` calls racing for the same party. */
 export const ENTER_LOCK_SECONDS = 15;
 
@@ -117,6 +160,33 @@ export function verifyUser(
   } catch {
     return undefined;
   }
+}
+
+type SheetRoute =
+  | { kind: "stats-up" }
+  | { kind: "inventory"; itemId: string; verb: string }
+  | { kind: "unequip"; slot: string }
+  | { kind: "npc"; npcId: string }
+  | { kind: "zone"; zoneId: string };
+
+/** The lobby-transition routes; ids are validated by the route itself (404). */
+export function matchSheetRoute(
+  method: string,
+  path: string,
+): SheetRoute | undefined {
+  if (method === "POST" && path === "/character/stats-up")
+    return { kind: "stats-up" };
+  const [head = "", a = "", b = "", ...rest] = path.split("/").slice(1);
+  if (rest.length > 0 || a === "" || path.endsWith("/")) return undefined;
+  if (method === "POST" && head === "inventory" && b !== "")
+    return { kind: "inventory", itemId: a, verb: b };
+  if (method === "DELETE" && head === "equipment" && b === "")
+    return { kind: "unequip", slot: a };
+  if (method === "POST" && head === "npc" && b === "interact")
+    return { kind: "npc", npcId: a };
+  if (method === "POST" && head === "zone" && b === "")
+    return { kind: "zone", zoneId: a };
+  return undefined;
 }
 
 export function createHttpHandler(
@@ -210,14 +280,155 @@ export function createHttpHandler(
     return json(200, { ok: true });
   };
 
+  const templates = o.templates ?? (async () => NO_TEMPLATES);
+  const now = o.now ?? Date.now;
+
+  /** The row every sheet route answers: base sheet plus what gear and buffs make of it. */
+  const row = (
+    userId: string,
+    version: number,
+    sheet: CharacterSheet,
+    t: Templates,
+  ) => ({
+    userId,
+    version,
+    sheet,
+    effective: effectiveStats(sheet, t, now()),
+  });
+
   const character = async (req: HttpRequest): Promise<HttpResponse> => {
     const user = verifyUser(req.headers.authorization, o);
     if (!user) return json(401, { error: "unauthorized" });
-    const current = await o.doc.read(user.userId);
+    const [current, t] = await Promise.all([
+      o.doc.read(user.userId),
+      templates(),
+    ]);
+    return json(
+      200,
+      row(
+        user.userId,
+        current?.version ?? 0,
+        current ? parseCharacter(current.doc) : newCharacter(),
+        t,
+      ),
+    );
+  };
+
+  const body = (req: HttpRequest): Record<string, unknown> | undefined => {
+    try {
+      const v: unknown = JSON.parse(req.body || "{}");
+      return typeof v === "object" && v !== null && !Array.isArray(v)
+        ? (v as Record<string, unknown>)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * One lobby transition: authenticate, run the pure transform under CAS,
+   * answer the row like `GET /character` (plus `extra`) or the refusal.
+   */
+  const transition = async (
+    user: { userId: string },
+    what: string,
+    run: (
+      sheet: CharacterSheet,
+      t: Templates,
+    ) => SheetResult & Record<string, unknown>,
+  ): Promise<HttpResponse> => {
+    const t = await templates();
+    const out = await updateSheet<
+      | { ok: true; extra: Record<string, unknown> }
+      | { ok: false; reason: SheetRefusal }
+    >({
+      doc: o.doc,
+      ownerId: user.userId,
+      what,
+      log,
+      transform: (sheet) => {
+        const r = run(sheet, t);
+        if (!r.ok) return { sheet: undefined, result: r };
+        const { sheet: next } = r;
+        const extra = Object.fromEntries(
+          Object.entries(r).filter(([k]) => k !== "ok" && k !== "sheet"),
+        );
+        // A transform that hands back the same object changed nothing: skip the write.
+        return {
+          sheet: next === sheet ? undefined : next,
+          result: { ok: true, extra },
+        };
+      },
+    });
+    if (!out.result.ok)
+      return json(statusFor(out.result.reason), { error: out.result.reason });
     return json(200, {
-      userId: user.userId,
-      version: current?.version ?? 0,
-      sheet: current ? parseCharacter(current.doc) : newCharacter(),
+      ...out.result.extra,
+      ...row(user.userId, out.version, out.sheet, t),
+    });
+  };
+
+  type User = { userId: string };
+  const statsUp = async (
+    req: HttpRequest,
+    user: User,
+  ): Promise<HttpResponse> => {
+    const b = body(req);
+    if (!b) return json(400, { error: "bad_body" });
+    const stat = b.stat;
+    const points = b.points === undefined ? 1 : b.points;
+    if (!STAT_TYPES.includes(stat as StatType))
+      return json(400, { error: "bad_stat" });
+    if (!Number.isInteger(points) || (points as number) < 1)
+      return json(400, { error: "bad_points" });
+    return transition(user, "stats-up", (sheet) =>
+      allocateStat(sheet, stat as StatType, points as number),
+    );
+  };
+
+  const inventory = async (
+    user: User,
+    itemId: string,
+    verb: string,
+  ): Promise<HttpResponse> => {
+    if (!isId(itemId) || (verb !== "use" && verb !== "equip"))
+      return json(404, { error: "not_found" });
+    return transition(user, `${verb} ${itemId}`, (sheet, t) =>
+      verb === "use"
+        ? useItem(sheet, itemId, t, now())
+        : equipItem(sheet, itemId, t),
+    );
+  };
+
+  const unequip = async (user: User, slot: string): Promise<HttpResponse> => {
+    if (!EQUIP_SLOTS.includes(slot as EquipSlot))
+      return json(404, { error: "not_found" });
+    return transition(user, `unequip ${slot}`, (sheet) =>
+      unequipSlot(sheet, slot as EquipSlot),
+    );
+  };
+
+  const npc = async (
+    req: HttpRequest,
+    user: User,
+    npcId: string,
+  ): Promise<HttpResponse> => {
+    if (!isId(npcId)) return json(404, { error: "not_found" });
+    const b = body(req);
+    if (!b) return json(400, { error: "bad_body" });
+    const questId = b.questId;
+    if (questId !== undefined && !isId(questId))
+      return json(400, { error: "bad_quest_id" });
+    return transition(user, `npc ${npcId}`, (sheet, t) =>
+      interactNpc(sheet, npcId, t, questId),
+    );
+  };
+
+  const zone = async (user: User, zoneId: string): Promise<HttpResponse> => {
+    if (!isId(zoneId)) return json(404, { error: "not_found" });
+    return transition(user, `zone ${zoneId}`, (sheet, t) => {
+      const r = teleport(sheet, zoneId, t);
+      return r.ok ? { ...r, zone: zoneId, start: t.zones[zoneId]?.start } : r;
     });
   };
 
@@ -229,7 +440,22 @@ export function createHttpHandler(
         return await ready(req);
       if (req.method === "GET" && req.path === "/character")
         return await character(req);
-      return json(404, { error: "not_found" });
+      const sheetRoute = matchSheetRoute(req.method, req.path);
+      if (!sheetRoute) return json(404, { error: "not_found" });
+      const user = verifyUser(req.headers.authorization, o);
+      if (!user) return json(401, { error: "unauthorized" });
+      switch (sheetRoute.kind) {
+        case "stats-up":
+          return await statsUp(req, user);
+        case "inventory":
+          return await inventory(user, sheetRoute.itemId, sheetRoute.verb);
+        case "unequip":
+          return await unequip(user, sheetRoute.slot);
+        case "npc":
+          return await npc(req, user, sheetRoute.npcId);
+        case "zone":
+          return await zone(user, sheetRoute.zoneId);
+      }
     } catch (e) {
       log("request failed", {
         path: req.path,

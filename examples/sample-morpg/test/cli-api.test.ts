@@ -31,6 +31,8 @@ describe("game api", () => {
       userId: "u",
       version: 3,
       sheet: { level: 2, items: { potion: 1 } },
+      // No `effective` in the answer: the base stats stand in.
+      effective: { maxHp: 50, attack: 10, defence: 2 },
     });
     expect(calls[0]).toEqual([
       "https://api.example/character",
@@ -71,6 +73,73 @@ describe("game api", () => {
       ok: false,
       status: 200,
       code: "bad_response",
+    });
+  });
+});
+
+describe("game api: sheet routes", () => {
+  it("answers the row plus the route's extras, and encodes ids", async () => {
+    const calls: unknown[] = [];
+    const a = api(
+      200,
+      JSON.stringify({
+        userId: "u",
+        version: 4,
+        sheet: newCharacter(),
+        action: "accepted",
+        questId: "hunt",
+        zone: "z2",
+        start: { x: 1, y: 2 },
+        effective: { maxHp: 60, attack: 15, defence: 2 },
+      }),
+      calls,
+    );
+    const r = await a.interactNpc("elder/x", "hunt");
+    expect(r).toMatchObject({
+      ok: true,
+      version: 4,
+      action: "accepted",
+      questId: "hunt",
+      zone: "z2",
+      start: { x: 1, y: 2 },
+      effective: { maxHp: 60, attack: 15, defence: 2 },
+    });
+    await a.statsUp("attack", 2);
+    await a.useItem("tonic");
+    await a.equipItem("sword");
+    await a.unequip("armor");
+    await a.teleport("z2");
+    expect(
+      calls.map((c) =>
+        (c as unknown[]).slice(0, 2).concat((c as unknown[])[3]),
+      ),
+    ).toEqual([
+      [
+        "https://api.example/npc/elder%2Fx/interact",
+        "POST",
+        '{"questId":"hunt"}',
+      ],
+      [
+        "https://api.example/character/stats-up",
+        "POST",
+        '{"stat":"attack","points":2}',
+      ],
+      ["https://api.example/inventory/tonic/use", "POST", undefined],
+      ["https://api.example/inventory/sword/equip", "POST", undefined],
+      ["https://api.example/equipment/armor", "DELETE", undefined],
+      ["https://api.example/zone/z2", "POST", undefined],
+    ]);
+  });
+  it("carries refusals as codes", async () => {
+    expect(await api(409, '{"error":"no_item"}').equipItem("axe")).toEqual({
+      ok: false,
+      status: 409,
+      code: "no_item",
+    });
+    expect(await api(502, "nope").teleport("z")).toEqual({
+      ok: false,
+      status: 502,
+      code: "http_502",
     });
   });
 });

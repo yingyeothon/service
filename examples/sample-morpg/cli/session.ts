@@ -10,7 +10,7 @@ import type {
 } from "@yingyeothon/gamebase-client";
 import { parseMapBundle, distance, type MapBundle } from "../src/map.js";
 import type { Dir } from "../src/sim.js";
-import type { GameApi } from "./api.js";
+import type { GameApi, SheetAnswer } from "./api.js";
 import { HELP, type Action } from "./commands.js";
 import {
   dungeonStep,
@@ -337,9 +337,38 @@ export function createSession(o: SessionOptions): Session {
   const refreshSheet = async (): Promise<void> => {
     try {
       const row = await api.getCharacter();
-      state.sheet = { version: row.version, sheet: row.sheet };
+      state.sheet = {
+        version: row.version,
+        sheet: row.sheet,
+        effective: row.effective,
+      };
     } catch (e) {
       log("error", `character: ${message(e)}`);
+    }
+    changed();
+  };
+
+  /** One lobby HTTP transition: the answer's row replaces the sheet, refusals are logged. */
+  const sheetAction = async (
+    what: string,
+    run: () => Promise<SheetAnswer>,
+    onOk?: (r: Extract<SheetAnswer, { ok: true }>) => void,
+  ): Promise<void> => {
+    if (state.mode !== "lobby") return log("error", `${what} works in town`);
+    try {
+      const r = await run();
+      if (!r.ok) {
+        log("error", `${what}: ${r.code} (${r.status})`);
+      } else {
+        state.sheet = {
+          version: r.version,
+          sheet: r.sheet,
+          effective: r.effective,
+        };
+        onOk?.(r);
+      }
+    } catch (e) {
+      log("error", `${what}: ${message(e)}`);
     }
     changed();
   };
@@ -391,7 +420,65 @@ export function createSession(o: SessionOptions): Session {
       case "use":
         if (state.mode === "dungeon")
           return sendGame({ type: "use", itemId: action.itemId });
-        return log("error", "/use works inside a dungeon");
+        void sheetAction(
+          `use ${action.itemId}`,
+          () => api.useItem(action.itemId),
+          () => log("sys", `used ${action.itemId}`),
+        );
+        return;
+      case "equip":
+        void sheetAction(
+          `equip ${action.itemId}`,
+          () => api.equipItem(action.itemId),
+          () => log("sys", `equipped ${action.itemId}`),
+        );
+        return;
+      case "unequip":
+        void sheetAction(
+          `unequip ${action.slot}`,
+          () => api.unequip(action.slot),
+          () => log("sys", `unequipped ${action.slot}`),
+        );
+        return;
+      case "stats":
+        void sheetAction(
+          `stats ${action.stat}`,
+          () => api.statsUp(action.stat, action.points),
+          (r) =>
+            log(
+              "sys",
+              `${action.stat} +${action.points} → ${r.sheet[action.stat]} (${r.sheet.statPoints} points left)`,
+            ),
+        );
+        return;
+      case "talk":
+        void sheetAction(
+          `talk ${action.npcId}`,
+          () => api.interactNpc(action.npcId, action.questId),
+          (r) =>
+            log(
+              "sys",
+              `${action.npcId}: quest ${r.questId ?? "?"} ${r.action ?? ""}`,
+            ),
+        );
+        return;
+      case "zone":
+        void sheetAction(
+          `zone ${action.zoneId}`,
+          () => api.teleport(action.zoneId),
+          (r) => {
+            // The game decided the zone; the client re-announces `pos` there (README).
+            if (r.zone) state.lobby.zone = r.zone;
+            if (r.start) {
+              state.lobby.self.x = r.start.x;
+              state.lobby.self.y = r.start.y;
+            }
+            lastSent = undefined;
+            sendPos();
+            log("sys", `now in ${r.zone ?? action.zoneId}`);
+          },
+        );
+        return;
       case "operate":
         return sendGame({ type: "operate" });
       case "say":
