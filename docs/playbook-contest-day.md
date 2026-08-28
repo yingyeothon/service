@@ -33,8 +33,7 @@ Check: `yyt channels list` shows all `active`.
 ```sh
 rsync -a --exclude node_modules --exclude .serverless examples/sample-dungeon/ ~/teamA-server/ && cd ~/teamA-server
 sed -i 's/^service: .*/service: teamA-dungeon/' serverless.yml
-sed -i 's#link:../../../tslib#link:/abs/path/to/tslib#' pnpm-workspace.yaml   # or delete `overrides` once tslib is on npm
-pnpm install && pnpm typecheck && pnpm test   # typecheck is the check: install succeeds even with dangling links
+pnpm install && pnpm typecheck && pnpm test
 ```
 
 ## 3. Env + deploy (10 min)

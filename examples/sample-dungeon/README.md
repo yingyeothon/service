@@ -65,13 +65,13 @@ Sizing: `actor` timeout (180 s) ≥ `gameWaitingSeconds + gameRunningSeconds + L
 
 ## Copying this directory
 
-`git archive`/`rsync --exclude node_modules --exclude .serverless` it (never `cp -r` with `node_modules/` and `.serverless/` — the latter holds the previous account's deploy state). The tsconfig is self-contained; the only path that must be fixed after copying is the tslib `overrides` below. Then `pnpm install && pnpm typecheck` — **a clean `pnpm install` does not prove the links resolve**; only `typecheck` does.
+`git archive`/`rsync --exclude node_modules --exclude .serverless` it (never `cp -r` with `node_modules/` and `.serverless/` — the latter holds the previous account's deploy state). The tsconfig is self-contained. Then `pnpm install && pnpm typecheck`.
 
 Prerequisites: Node ≥ 22, pnpm, Serverless Framework v4 CLI (`npm i -g serverless`, logged in or `SERVERLESS_ACCESS_KEY`), an AWS profile.
 
 ## tslib resolution
 
-`@yingyeothon/*` is not on npm yet. `pnpm-workspace.yaml` makes this directory its own pnpm root and `overrides` the packages to `link:../../../tslib/packages/*` (the sibling checkout, built with `pnpm build` there). After copying, point them at your tslib checkout (absolute paths are fine); delete the `overrides` block once the packages are published.
+`@yingyeothon/*` 2.0.0 is on npm; `pnpm-workspace.yaml` only makes this directory its own pnpm root. To test an unpublished tslib change, add `overrides: {"@yingyeothon/<pkg>": "link:/abs/path/to/tslib/packages/<pkg>"}` there (built with `pnpm build` in tslib) — a clean `pnpm install` does not prove such links resolve, only `pnpm typecheck` does.
 
 ## Logs
 
