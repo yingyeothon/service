@@ -24,7 +24,7 @@
     "@types/aws-lambda": "^8.10.152",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.3.0",
-    "@yingyeothon/gamebase-client": "^2.0.0",
+    "@yingyeothon/gamebase-client": "^2.0.1",
     "esbuild": "^0.25.9",
     "eslint": "^9.34.0",
     "globals": "^17.11.0",

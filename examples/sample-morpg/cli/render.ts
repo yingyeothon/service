@@ -168,25 +168,21 @@ function renderSide(
   }
   const r = state.lobby.roster;
   if (r) {
-    // `invited`/`max` are omitempty on the wire (gateway `Roster`), whatever the SDK type says.
-    const members = (r.members ?? [])
+    const members = r.members
       .map(
         (m) =>
           `${shortId(m.userId)}${m.userId === r.leaderId ? "*" : ""}${m.online ? "" : "(off)"}`,
       )
       .join(" ");
     line(
-      `party ${(r.members ?? []).length}/${r.max ?? "?"}${isLeader(state) ? " (you lead)" : ""}: ${members}`,
+      `party ${r.members.length}/${r.max}${isLeader(state) ? " (you lead)" : ""}: ${members}`,
       "party",
     );
-    const invited = r.invited ?? [];
-    if (invited.length > 0)
-      line(`invited: ${invited.map(shortId).join(" ")}`, "dim");
+    if (r.invited.length > 0)
+      line(`invited: ${r.invited.map(shortId).join(" ")}`, "dim");
     const offer = state.lobby.offer;
     if (offer) {
-      const others = (r.members ?? []).filter(
-        (m) => m.userId !== offer.from,
-      ).length;
+      const others = r.members.filter((m) => m.userId !== offer.from).length;
       line(
         `offer by ${shortId(offer.from)}: ${offer.accepted.length}/${others} accepted`,
         "event",

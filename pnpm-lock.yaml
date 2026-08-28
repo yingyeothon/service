@@ -21,8 +21,8 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(supports-color@7.2.0)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(jiti@2.7.0)(jsdom@26.1.0(supports-color@7.2.0))(sugarss@5.0.1(postcss@8.5.26))(supports-color@7.2.0)(yaml@2.9.0))
       '@yingyeothon/gamebase-client':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.0.1
+        version: 2.0.1
       aws-sdk-client-mock:
         specifier: ^4.1.0
         version: 4.1.0
@@ -1932,16 +1932,16 @@ packages:
   '@vitest/utils@3.2.7':
     resolution: {integrity: sha512-x6BDOd7dyo3PFLY3I9/HJ25X/6OurhGXk2/B9gOZNPF7XDVjeBK4k01lQE5uvDpbuheErh91qYuE1E2OEjK3Rw==}
 
-  '@yingyeothon/codec@2.0.0':
-    resolution: {integrity: sha512-WmiBZCYMFAhCBkWSMuRSB0qdA0YplUdWSQY79l69ZjDiELKg775Jw9YLiOrlm8fMPo817fSbVP7zkFOW6i7+vg==}
+  '@yingyeothon/codec@2.0.1':
+    resolution: {integrity: sha512-BGw2DxiU24OAlfLDVkCuVd+uT8jQMgcn49biiBTMdQYRpSv6LWkc7Kj+uVqRlCing9IN7XTnvOmrSCEd4jGj9Q==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/gamebase-client@2.0.0':
-    resolution: {integrity: sha512-thuX2c2pSZTyhx1Yi+wuDQY50+fKwRJHDpQrV8YpAaTMikCURextHhxPfstKm1JyakT9hWQ+zz3nikTtQZvkvA==}
+  '@yingyeothon/gamebase-client@2.0.1':
+    resolution: {integrity: sha512-Kcj8Sv3OuDerAxx5r44ZICRIeSVroI/6utLEoJjDm/14x4PnYKtc+riknqdkUciYbCBcLIHQ/29CRiFfFiIHJw==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/logger@2.0.0':
-    resolution: {integrity: sha512-K+H60CjzVXNyqKwSk31vtWh8s6gEFf+IXZnNyU0VeIpCFlxccm0OC5ZAwYymEZtZLQNyPNSfttZyn+j2W2MYIg==}
+  '@yingyeothon/logger@2.0.1':
+    resolution: {integrity: sha512-GgsLtQ1mfCpw1AzeZ2cuCuc43JdAniSVXGwGH5h3LSHxbWlyNBzwFFqKlqBJ5F7N/1IEBARrcpa//INiHOmKHg==}
     engines: {node: '>=20'}
 
   abort-controller@3.0.0:
@@ -6171,14 +6171,14 @@ snapshots:
       loupe: 3.2.1
       tinyrainbow: 2.0.0
 
-  '@yingyeothon/codec@2.0.0': {}
+  '@yingyeothon/codec@2.0.1': {}
 
-  '@yingyeothon/gamebase-client@2.0.0':
+  '@yingyeothon/gamebase-client@2.0.1':
     dependencies:
-      '@yingyeothon/codec': 2.0.0
-      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/codec': 2.0.1
+      '@yingyeothon/logger': 2.0.1
 
-  '@yingyeothon/logger@2.0.0': {}
+  '@yingyeothon/logger@2.0.1': {}
 
   abort-controller@3.0.0:
     dependencies:

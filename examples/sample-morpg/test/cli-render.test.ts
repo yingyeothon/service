@@ -13,7 +13,7 @@ describe("render", () => {
     const map = loadZone();
     const s = newState(ME, "alice");
     s.lobby.zone = "zone001";
-    s.lobby.self = { x: 1, y: 1, dir: 2 };
+    s.lobby.self = { x: 1, y: 1, dir: "s" };
     s.lobby.peers[PEER] = { userId: PEER, x: 3, y: 1 };
     s.sheet = {
       version: 0,
@@ -97,16 +97,19 @@ describe("render", () => {
     expect(plain.every((l) => l.length <= 60)).toBe(true);
     expect(colored.some((l) => l.includes("\x1b["))).toBe(true);
   });
-  it("survives a wire roster without invited/max (omitempty)", () => {
+  it("renders the roster the SDK normalises (gamebase-client 2.0.1 fills invited/max)", () => {
     const s = newState(ME, "alice");
     s.lobby.roster = {
       type: "party",
       partyId: "pty_0123456789abcdef",
       leaderId: ME,
       members: [{ userId: ME, online: true }],
-    } as never;
+      invited: [],
+      max: 4,
+    };
     const lines = render(s, loadZone(), opts);
-    expect(lines.some((l) => l.includes("party 1/? (you lead)"))).toBe(true);
+    expect(lines.some((l) => l.includes("party 1/4 (you lead)"))).toBe(true);
+    expect(lines.some((l) => l.includes("invited:"))).toBe(false);
   });
   it("never exceeds the terminal: small sizes, tall side panels, wide characters", () => {
     const map = loadZone();
