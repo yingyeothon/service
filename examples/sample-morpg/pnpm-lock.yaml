@@ -43,8 +43,8 @@ importers:
         specifier: ^24.3.0
         version: 24.13.3
       '@yingyeothon/gamebase-client':
-        specifier: ^2.0.0
-        version: 2.0.0
+        specifier: ^2.0.1
+        version: 2.0.1
       esbuild:
         specifier: ^0.25.9
         version: 0.25.12
@@ -932,12 +932,16 @@ packages:
     resolution: {integrity: sha512-WmiBZCYMFAhCBkWSMuRSB0qdA0YplUdWSQY79l69ZjDiELKg775Jw9YLiOrlm8fMPo817fSbVP7zkFOW6i7+vg==}
     engines: {node: '>=20'}
 
+  '@yingyeothon/codec@2.0.1':
+    resolution: {integrity: sha512-BGw2DxiU24OAlfLDVkCuVd+uT8jQMgcn49biiBTMdQYRpSv6LWkc7Kj+uVqRlCing9IN7XTnvOmrSCEd4jGj9Q==}
+    engines: {node: '>=20'}
+
   '@yingyeothon/gamebase-all-together@2.0.0':
     resolution: {integrity: sha512-kiffofhggbZUdLSZA5IMMOKra1bI82K//ZBHOUwXu4elQCxkH+yUrK12f99lKMwomyieCtTi+1s6Cf8LnUNe6Q==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/gamebase-client@2.0.0':
-    resolution: {integrity: sha512-thuX2c2pSZTyhx1Yi+wuDQY50+fKwRJHDpQrV8YpAaTMikCURextHhxPfstKm1JyakT9hWQ+zz3nikTtQZvkvA==}
+  '@yingyeothon/gamebase-client@2.0.1':
+    resolution: {integrity: sha512-Kcj8Sv3OuDerAxx5r44ZICRIeSVroI/6utLEoJjDm/14x4PnYKtc+riknqdkUciYbCBcLIHQ/29CRiFfFiIHJw==}
     engines: {node: '>=20'}
 
   '@yingyeothon/lambda-gamebase@2.0.0':
@@ -949,6 +953,10 @@ packages:
 
   '@yingyeothon/logger@2.0.0':
     resolution: {integrity: sha512-K+H60CjzVXNyqKwSk31vtWh8s6gEFf+IXZnNyU0VeIpCFlxccm0OC5ZAwYymEZtZLQNyPNSfttZyn+j2W2MYIg==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/logger@2.0.1':
+    resolution: {integrity: sha512-GgsLtQ1mfCpw1AzeZ2cuCuc43JdAniSVXGwGH5h3LSHxbWlyNBzwFFqKlqBJ5F7N/1IEBARrcpa//INiHOmKHg==}
     engines: {node: '>=20'}
 
   '@yingyeothon/naive-redis@2.0.0':
@@ -2914,6 +2922,8 @@ snapshots:
 
   '@yingyeothon/codec@2.0.0': {}
 
+  '@yingyeothon/codec@2.0.1': {}
+
   '@yingyeothon/gamebase-all-together@2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1118.0)(@aws-sdk/client-lambda@3.1118.0)':
     dependencies:
       '@yingyeothon/lambda-gamebase': 2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1118.0)(@aws-sdk/client-lambda@3.1118.0)
@@ -2922,10 +2932,10 @@ snapshots:
       - '@aws-sdk/client-apigatewaymanagementapi'
       - '@aws-sdk/client-lambda'
 
-  '@yingyeothon/gamebase-client@2.0.0':
+  '@yingyeothon/gamebase-client@2.0.1':
     dependencies:
-      '@yingyeothon/codec': 2.0.0
-      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/codec': 2.0.1
+      '@yingyeothon/logger': 2.0.1
 
   '@yingyeothon/lambda-gamebase@2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1118.0)(@aws-sdk/client-lambda@3.1118.0)':
     dependencies:
@@ -2938,6 +2948,8 @@ snapshots:
       '@yingyeothon/naive-redis': 2.0.0
 
   '@yingyeothon/logger@2.0.0': {}
+
+  '@yingyeothon/logger@2.0.1': {}
 
   '@yingyeothon/naive-redis@2.0.0':
     dependencies:

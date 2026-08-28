@@ -193,13 +193,13 @@ describe("stepLobby", () => {
   it("moves one cell, turns even into a wall, stays inside the map", () => {
     const map = loadZone();
     const s = newState(ME, "me");
-    s.lobby.self = { x: map.start.x, y: map.start.y, dir: 2 };
-    expect(stepLobby(s, map, 0)).toBe(false); // wall above the start
-    expect(s.lobby.self).toMatchObject({ x: 1, y: 1, dir: 0 });
-    expect(stepLobby(s, map, 1)).toBe(true);
-    expect(s.lobby.self).toMatchObject({ x: 2, y: 1, dir: 1 });
-    s.lobby.self = { x: 0, y: 0, dir: 0 };
-    expect(stepLobby(s, map, 3)).toBe(false);
+    s.lobby.self = { x: map.start.x, y: map.start.y, dir: "s" };
+    expect(stepLobby(s, map, "n")).toBe(false); // wall above the start
+    expect(s.lobby.self).toMatchObject({ x: 1, y: 1, dir: "n" });
+    expect(stepLobby(s, map, "e")).toBe(true);
+    expect(s.lobby.self).toMatchObject({ x: 2, y: 1, dir: "e" });
+    s.lobby.self = { x: 0, y: 0, dir: "n" };
+    expect(stepLobby(s, map, "w")).toBe(false);
   });
 });
 
@@ -298,9 +298,9 @@ describe("dungeon", () => {
     );
     expect(nearestAdjacentMonster(f, me)?.uid).toBe(2);
     expect(nearestAdjacentMonster(f, { x: 10, y: 8 })).toBeUndefined();
-    expect(dungeonStep(map, f, me, 1)).toBeUndefined(); // peer at 3,2
-    expect(dungeonStep(map, f, me, 2)).toEqual({ x: 2, y: 3 });
-    expect(dungeonStep(map, f, { x: 1, y: 2 }, 0)).toBeUndefined(); // monster at 1,1
-    expect(dungeonStep(map, f, { x: 1, y: 1 }, 3)).toBeUndefined(); // wall
+    expect(dungeonStep(map, f, me, "e")).toBeUndefined(); // peer at 3,2
+    expect(dungeonStep(map, f, me, "s")).toEqual({ x: 2, y: 3 });
+    expect(dungeonStep(map, f, { x: 1, y: 2 }, "n")).toBeUndefined(); // monster at 1,1
+    expect(dungeonStep(map, f, { x: 1, y: 1 }, "w")).toBeUndefined(); // wall
   });
 });

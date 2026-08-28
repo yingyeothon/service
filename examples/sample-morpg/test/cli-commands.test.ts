@@ -86,9 +86,9 @@ describe("parseCommand", () => {
 describe("handleKey", () => {
   it("keys mode: movement, attack, skill, and entering line mode", () => {
     const s = newState(HEX, "a");
-    expect(handleKey(s, { name: "w" })).toEqual({ kind: "move", dir: 0 });
-    expect(handleKey(s, { name: "right" })).toEqual({ kind: "move", dir: 1 });
-    expect(handleKey(s, { name: "j" })).toEqual({ kind: "move", dir: 2 });
+    expect(handleKey(s, { name: "w" })).toEqual({ kind: "move", dir: "n" });
+    expect(handleKey(s, { name: "right" })).toEqual({ kind: "move", dir: "e" });
+    expect(handleKey(s, { name: "j" })).toEqual({ kind: "move", dir: "s" });
     expect(handleKey(s, { name: "space" })).toEqual({ kind: "attack" });
     expect(handleKey(s, { name: "q" })).toEqual({ kind: "skill" });
     expect(handleKey(s, { name: "z" })).toBeUndefined();

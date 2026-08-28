@@ -1,6 +1,7 @@
 /* Input → actions: slash commands typed on the line and single keys in keys mode. Pure. */
 import { resolveUserId } from "./auth.js";
-import type { AppState, Facing } from "./state.js";
+import type { AppState } from "./state.js";
+import type { Dir } from "../src/sim.js";
 
 export const SAY_MAX_BYTES = 1024;
 
@@ -16,7 +17,7 @@ export type Action =
   | { kind: "char" }
   | { kind: "use"; itemId: string }
   | { kind: "operate" }
-  | { kind: "move"; dir: Facing }
+  | { kind: "move"; dir: Dir }
   | { kind: "attack" }
   | { kind: "skill" }
   | { kind: "help" }
@@ -125,19 +126,19 @@ export interface Key {
   meta?: boolean;
 }
 
-const MOVES: Record<string, Facing> = {
-  w: 0,
-  k: 0,
-  up: 0,
-  d: 1,
-  l: 1,
-  right: 1,
-  s: 2,
-  j: 2,
-  down: 2,
-  a: 3,
-  h: 3,
-  left: 3,
+const MOVES: Record<string, Dir> = {
+  w: "n",
+  k: "n",
+  up: "n",
+  d: "e",
+  l: "e",
+  right: "e",
+  s: "s",
+  j: "s",
+  down: "s",
+  a: "w",
+  h: "w",
+  left: "w",
 };
 
 /**
@@ -180,7 +181,7 @@ export function handleKey(state: AppState, key: Key): Action | undefined {
   if (name === "f" || name === "space") return { kind: "attack" };
   if (name === "q") return { kind: "skill" };
   if (name === "?") return { kind: "help" };
-  const dir = MOVES[name];
+  const dir = Object.hasOwn(MOVES, name) ? MOVES[name] : undefined;
   if (dir !== undefined) return { kind: "move", dir };
   return undefined;
 }

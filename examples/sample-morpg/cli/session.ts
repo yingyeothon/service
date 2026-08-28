@@ -9,10 +9,10 @@ import type {
   StoppedEvent,
 } from "@yingyeothon/gamebase-client";
 import { parseMapBundle, distance, type MapBundle } from "../src/map.js";
+import type { Dir } from "../src/sim.js";
 import type { GameApi } from "./api.js";
 import { HELP, type Action } from "./commands.js";
 import {
-  FACING_DIR,
   dungeonStep,
   isLeader,
   nearestAdjacentMonster,
@@ -25,7 +25,6 @@ import {
   stepLobby,
   type AppState,
   type ConnStatus,
-  type Facing,
   type LobbyEffect,
 } from "./state.js";
 import {
@@ -94,9 +93,7 @@ export function createSession(o: SessionOptions): Session {
     if (!lobby || lobby.state !== "connected" || !state.lobby.zone) return;
     const s = state.lobby.self;
     try {
-      // `dir` stays local: the gateway takes it as an opaque string (≤16 chars)
-      // while the SDK types it as a number; sending either shape as-is fails.
-      lobby.pos({ zone: state.lobby.zone, x: s.x, y: s.y });
+      lobby.pos({ zone: state.lobby.zone, x: s.x, y: s.y, dir: s.dir });
       lastSent = { x: s.x, y: s.y };
     } catch (e) {
       log("error", `pos: ${message(e)}`);
@@ -361,7 +358,7 @@ export function createSession(o: SessionOptions): Session {
     }
   };
 
-  const move = (dir: Facing): void => {
+  const move = (dir: Dir): void => {
     if (state.mode === "dungeon") {
       const d = state.dungeon;
       const me = selfPlayer(d);
@@ -390,10 +387,7 @@ export function createSession(o: SessionOptions): Session {
         return;
       }
       case "skill":
-        return sendGame({
-          type: "skill",
-          dir: FACING_DIR[state.lobby.self.dir] ?? "n",
-        });
+        return sendGame({ type: "skill", dir: state.lobby.self.dir });
       case "use":
         if (state.mode === "dungeon")
           return sendGame({ type: "use", itemId: action.itemId });

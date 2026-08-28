@@ -28,15 +28,13 @@ import {
   type SimEvent,
 } from "./types.js";
 
-/** Facing as the lobby `dir` integer: 0 n, 1 e, 2 s, 3 w. */
-export type Facing = 0 | 1 | 2 | 3;
-export const FACING_DIR: readonly Dir[] = ["n", "e", "s", "w"];
-export const FACING_DELTA: readonly Cell[] = [
-  { x: 0, y: -1 },
-  { x: 1, y: 0 },
-  { x: 0, y: 1 },
-  { x: -1, y: 0 },
-];
+/** One step per facing; the same `Dir` goes on the wire as the lobby `dir` string. */
+export const FACING_DELTA: Readonly<Record<Dir, Cell>> = {
+  n: { x: 0, y: -1 },
+  e: { x: 1, y: 0 },
+  s: { x: 0, y: 1 },
+  w: { x: -1, y: 0 },
+};
 
 export type LogKind = "sys" | "chat" | "party" | "whisper" | "event" | "error";
 export interface LogLine {
@@ -47,7 +45,7 @@ export const LOG_KEPT = 200;
 
 export interface LobbyState {
   zone?: string;
-  self: Cell & { dir: Facing };
+  self: Cell & { dir: Dir };
   /** Peers in the zone, excluding self. */
   peers: Record<string, Peer>;
   roster?: PartyFrame;
@@ -92,7 +90,7 @@ export function newState(userId: string, name: string): AppState {
     userId,
     name,
     mode: "lobby",
-    lobby: { self: { x: 0, y: 0, dir: 2 }, peers: {}, invites: [] },
+    lobby: { self: { x: 0, y: 0, dir: "s" }, peers: {}, invites: [] },
     log: [],
     conn: { state: "idle" },
   };
@@ -191,7 +189,7 @@ export function reduceLobby(state: AppState, ev: LobbyEvent): LobbyEffect[] {
         "sys",
         ev.frame.partyId === ""
           ? "party: none"
-          : `party ${(ev.frame.members ?? []).length}/${ev.frame.max ?? "?"}, leader ${shortId(ev.frame.leaderId)}`,
+          : `party ${ev.frame.members.length}/${ev.frame.max}, leader ${shortId(ev.frame.leaderId)}`,
       );
       return [];
     case "partyInvite":
@@ -261,14 +259,10 @@ function reduceEvent(state: AppState, f: EventBroadcastFrame): LobbyEffect[] {
 }
 
 /** Client-authoritative town movement: one cell, walls from the bundle. Returns whether the position changed. */
-export function stepLobby(
-  state: AppState,
-  map: MapBundle,
-  dir: Facing,
-): boolean {
+export function stepLobby(state: AppState, map: MapBundle, dir: Dir): boolean {
   const self = state.lobby.self;
   self.dir = dir;
-  const d = FACING_DELTA[dir] ?? { x: 0, y: 0 };
+  const d = FACING_DELTA[dir];
   const next = { x: self.x + d.x, y: self.y + d.y };
   if (!isWalkable(map, next)) return false;
   self.x = next.x;
@@ -408,9 +402,9 @@ export function dungeonStep(
   map: MapBundle,
   frame: FrameView,
   self: Cell,
-  dir: Facing,
+  dir: Dir,
 ): Cell | undefined {
-  const d = FACING_DELTA[dir] ?? { x: 0, y: 0 };
+  const d = FACING_DELTA[dir];
   const next = { x: self.x + d.x, y: self.y + d.y };
   if (!isWalkable(map, next)) return undefined;
   if (frame.monsters.some((m) => m.x === next.x && m.y === next.y))

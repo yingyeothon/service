@@ -212,7 +212,7 @@ describe("session: lobby", () => {
     expect(h.session.map?.id).toBe("zone001");
     expect(h.state.lobby.self).toMatchObject(zone.start);
     expect(h.lobby.sent).toEqual([
-      { type: "pos", zone: "zone001", x: 1, y: 1 },
+      { type: "pos", zone: "zone001", x: 1, y: 1, dir: "s" },
     ]);
     expect(h.state.sheet?.sheet.level).toBe(1);
     expect(h.api.calls).toEqual(["character"]);
@@ -220,22 +220,22 @@ describe("session: lobby", () => {
   it("moves are applied locally and flushed at most every 200 ms, or at once after 3 cells", async () => {
     const h = await start();
     h.lobby.sent.length = 0;
-    h.session.dispatch({ kind: "move", dir: 1 });
-    h.session.dispatch({ kind: "move", dir: 1 });
-    expect(h.state.lobby.self).toMatchObject({ x: 3, y: 1, dir: 1 });
+    h.session.dispatch({ kind: "move", dir: "e" });
+    h.session.dispatch({ kind: "move", dir: "e" });
+    expect(h.state.lobby.self).toMatchObject({ x: 3, y: 1, dir: "e" });
     expect(h.lobby.sent).toEqual([]);
     await vi.advanceTimersByTimeAsync(200);
     expect(h.lobby.sent).toEqual([
-      { type: "pos", zone: "zone001", x: 3, y: 1 },
+      { type: "pos", zone: "zone001", x: 3, y: 1, dir: "e" },
     ]);
-    for (let i = 0; i < 3; i++) h.session.dispatch({ kind: "move", dir: 1 });
+    for (let i = 0; i < 3; i++) h.session.dispatch({ kind: "move", dir: "e" });
     expect(h.lobby.sent).toHaveLength(2);
     expect(h.lobby.sent[1]).toMatchObject({ x: 6 });
     // walking into a wall turns but sends nothing
-    h.session.dispatch({ kind: "move", dir: 0 });
+    h.session.dispatch({ kind: "move", dir: "n" });
     await vi.advanceTimersByTimeAsync(300);
     expect(h.lobby.sent).toHaveLength(2);
-    expect(h.state.lobby.self.dir).toBe(0);
+    expect(h.state.lobby.self.dir).toBe("n");
   });
   it("chat, whisper and party commands map onto the SDK; party chat needs a party", async () => {
     const h = await start();
@@ -336,8 +336,8 @@ describe("session: dungeon", () => {
       },
     });
     h.session.dispatch({ kind: "attack" });
-    h.session.dispatch({ kind: "move", dir: 1 });
-    h.session.dispatch({ kind: "move", dir: 2 }); // (1,2): free
+    h.session.dispatch({ kind: "move", dir: "e" });
+    h.session.dispatch({ kind: "move", dir: "s" }); // (1,2): free
     h.session.dispatch({ kind: "skill" });
     h.session.dispatch({ kind: "use", itemId: "potion" });
     expect(g.sent).toEqual([
@@ -437,7 +437,7 @@ describe("session: dungeon", () => {
     await h.lobby.client.connect();
     await vi.advanceTimersByTimeAsync(0);
     expect(h.lobby.sent).toEqual([
-      { type: "pos", zone: "zone001", x: 1, y: 1 },
+      { type: "pos", zone: "zone001", x: 1, y: 1, dir: "s" },
     ]);
     expect(h.state.conn.state).toBe("connected");
     // in a dungeon the lobby socket's status and pos stay out of the way
