@@ -217,7 +217,7 @@ export async function runDungeonActor({
             sheet: (await loadCharacter(m.memberId)) ?? newCharacter(),
           })),
         );
-        sim = createSim(field, members, rng, world.templates);
+        sim = createSim(field, members, rng, world.templates, Date.now());
       } catch (e) {
         setupError = e instanceof Error ? e.message : String(e);
         logger.error("dungeon setup failed", {
