@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newCharacter } from "../src/character.js";
-import { commitResult } from "../src/commit.js";
+import { commitResult, updateSheet } from "../src/commit.js";
 import type { DocClient } from "../src/doc.js";
 
 /** In-memory doc store with real CAS semantics. */
@@ -67,5 +67,29 @@ describe("commitResult", () => {
     await expect(
       commitResult({ doc, ownerId: "u", gameId: "g_3", delta }),
     ).rejects.toThrow("lost 3 races");
+  });
+});
+
+describe("updateSheet", () => {
+  it("writes a transformed sheet and skips the write on a refusal", async () => {
+    const f = fakeDocs();
+    const written = await updateSheet({
+      doc: f.client,
+      ownerId: "u",
+      transform: (sheet) => ({
+        sheet: { ...sheet, items: { jelly: 1 } },
+        result: "yes",
+      }),
+    });
+    expect(written).toMatchObject({ version: 1, result: "yes" });
+    expect(f.writes()).toBe(1);
+    const refused = await updateSheet({
+      doc: f.client,
+      ownerId: "u",
+      transform: () => ({ sheet: undefined, result: "no" }),
+    });
+    expect(refused).toMatchObject({ version: 1, result: "no" });
+    expect(refused.sheet.items).toEqual({ jelly: 1 });
+    expect(f.writes()).toBe(1);
   });
 });

@@ -28,8 +28,8 @@ client ──JWT──▶ gateway lobby (pos / say / party / event)
 | `src/actor.ts`                | `handleActor` + `runGameAllTogether` with a fixed 200 ms tick, one world frame per tick, commit-then-result at the end.                                                                                                 |
 | `src/sim.ts`                  | Pure dungeon simulation: mmo101 rules (retaliatory aggro, leash 5, 30 %/s melee, projectile skill, drops, quests, death/respawn).                                                                                       |
 | `src/map.ts`                  | The map bundle format (§4.6) — parser, collision, spawn marks, data-driven clear conditions (`kill` / `device` / `item`).                                                                                               |
-| `src/character.ts`            | The character sheet schema, leveling, `applyResult` (idempotent by `gameId`), stat allocation.                                                                                                                          |
-| `src/doc.ts`, `src/commit.ts` | Doc store client (`ETag` / `If-Match`) and the read → apply-once → conditional-write commit with 409 retries.                                                                                                           |
+| `src/character.ts`            | The character sheet (format 2: stats, inventory + equip slots, quest states, timed abnormalities), leveling, `applyResult` (idempotent by `gameId`), pure transitions (equip/use/quest/stat points), `effectiveStats`.  |
+| `src/doc.ts`, `src/commit.ts` | Doc store client (`ETag` / `If-Match`) and `updateSheet`: read → pure transform → conditional write, retried on 409; `commitResult` (apply-once by `gameId`) is one transform. Every lobby transition goes through it.  |
 | `assets/zone001.json`         | The sample map bundle (20×10, slimes + a boss, one quest, `clear: kill boss`).                                                                                                                                          |
 | `scripts/local-api.mjs`       | Runs the `http` handler on localhost (esbuild bundle) against dev — pair it with a local gateway to iterate without redeploying.                                                                                        |
 | `cli/`                        | The terminal client (`pnpm play`): `session.ts` drives the lobby and `q` SDK clients, `state.ts`/`render.ts` are the pure model and screen, `commands.ts` the keys and slash commands, `terminal.ts` the only TTY code. |
@@ -56,6 +56,10 @@ Dungeon (`q` channel, `wsUrl` + `&gameId=`):
 | server →  | `hello {gameId, mapId, mapVersion, you}` then a `frame` on enter/reconnect; `enter {memberId}`; `stage`; `refused {command, code}`                                                                                                                                                                                                                                                                        |
 | server →  | `frame {time, cleared, players[], monsters[], projectiles[], events[]}` every tick (self-contained; `events` are the hits/kills/drops/deaths since the last one)                                                                                                                                                                                                                                          |
 | server →  | `result {reason, cleared, rewards:{memberId: {exp, items, consumed, questProgress}}, committed:{memberId: applied\|duplicate\|skipped\|failed\|pending}}` then close `1000` — `skipped` = never entered or nothing earned; `failed`/`pending` = the delta is parked in Redis (`{prefix}pendingcommit:{gameId}:{memberId}`, 24 h) for an operator to replay, since `applyResult` is idempotent by `gameId` |
+
+### The character sheet (format 2)
+
+One JSON document per player in the doc store, the game's own schema (`src/character.ts`): `level/exp/statPoints`, base `maxHp/attack/defence`, `items` (itemId → count; loot lands here directly), `equipment` (`weapon`/`armor` → itemId, the item stays in `items`), `quests` (questId → `{active, progress, completed}`; kill progress from a run counts only while accepted, turn-in resets it and bumps `completed`, `repeatable` gates re-accepting), `abnormalities` (`{templateId, endsAt}` epoch ms; using the same buff again adds its duration, expired ones are pruned on read), `appliedGames`. Item/abnormality/quest templates come from the bundle (`Templates`); `effectiveStats(sheet, templates, now)` = base + equipped bonuses + live buffs. Format 1 documents are upgraded on read (numeric quest counts become accepted quests). Potions are refused in the lobby (`field_only`): HP exists only inside a run.
 
 ## Play (terminal client)
 
@@ -309,7 +313,7 @@ messages. The code's own TODO at `User.cs:456` anticipates this.
 > **The dungeon owns combat simulation only. It returns a result delta and never
 > writes character state. The lobby is the single writer to the game's store.**
 
-Result delta: `{ exp, items[], questProgress[] }`, committed **idempotently by
+Result delta: `{ exp, items, consumed, questProgress }`, committed **idempotently by
 `gameId`**. The actor queue is at-least-once on one path and at-most-once on the
 other (`tslib/todo-fix.md` 5), and mmo101's EXP and drop grants are not
 idempotent — a replay duplicates loot.
