@@ -9,15 +9,24 @@
 //   setup: scripts/smoke/morpg.mjs setup <debugKey> <authBaseUrl> <consoleBaseUrl> <docBaseUrl> <outEnvFile> <outStateFile>
 //          seeds an auth channel, a lobby + a q channel (participant Redis credential), a doc
 //          apiKey and the map bundle asset, then writes the stack's deploy env and the ids.
-//   run:   scripts/smoke/morpg.mjs run <debugKey> <authBaseUrl> <consoleBaseUrl> <gatewayWsUrl> <stateFile> <apiBaseUrl>
-//          plays a full loop with two synthetic players (gatewayWsUrl e.g. wss://gw-dev.yyt.life).
+//   run:   scripts/smoke/morpg.mjs run <debugKey> <authBaseUrl> <consoleBaseUrl> <gatewayWsUrl> <stateFile> <apiBaseUrl> [deployEnvFile]
+//          plays a full loop with two synthetic players (gatewayWsUrl e.g. wss://gw-dev.yyt.life):
+//          the sheet routes (`/character/stats-up`, `/inventory`, `/equipment`, `/npc`, `/zone`), the dungeon,
+//          a mid-run reconnect (§7 item 12) and the lobby's single-session rule (item 14). With the
+//          deploy env file (its DOC_API_KEY) player b is seeded with potions so the field `use`
+//          heal and the consumed delta are checked too; without it those checks print `skip`.
+//   timeout: scripts/smoke/morpg.mjs timeout <debugKey> <authBaseUrl> <consoleBaseUrl> <gatewayWsUrl> <stateFile> <apiBaseUrl> [deployEnvFile]
+//          enters a solo run and idles until the running stage times out (§7 item 15): expects a
+//          `result {reason: "timeout"}` and a clean close 1000, not a cut-off socket. Takes the
+//          GAME_RUNNING_SECONDS the stack was deployed with (setup writes 120 s); the env file, when
+//          given, bounds the wait to that value + 90 s instead of the code's 15 min maximum.
 //   publish-map: scripts/smoke/morpg.mjs publish-map <debugKey> <consoleBaseUrl> <stateFile> <envFile> <version>
 //          uploads every assets/*.json as a new immutable version of the existing bundle, points the
 //          lobby channel at the new world bundle and rewrites MAP_URL / state.mapUrl (redeploy afterwards).
 //   clean: scripts/smoke/morpg.mjs clean <debugKey> <consoleBaseUrl> <stateFile>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
 import { randomBytes } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import {
@@ -348,9 +357,20 @@ if (mode === "clean") {
   finish();
 }
 
-if (mode !== "run") usage();
-const [debugKey, authBase, _consoleBase, gwArg, stateFile, apiArg] = args;
+if (mode !== "run" && mode !== "timeout") usage();
+const [debugKey, authBase, _consoleBase, gwArg, stateFile, apiArg, envArg] =
+  args;
 if (!apiArg) usage();
+if (envArg && !existsSync(envArg)) usage();
+/** One value out of the deploy env file (never the whole file: it holds every credential). */
+const envValue = (name) =>
+  envArg
+    ? readFileSync(envArg, "utf8")
+        .split("\n")
+        .find((l) => l.startsWith(`${name}=`))
+        ?.slice(name.length + 1)
+        .trim()
+    : undefined;
 const gwBase = gwArg.replace(/\/+$/, "");
 const apiBase = apiArg.replace(/\/+$/, "");
 const state = JSON.parse(readFileSync(stateFile, "utf8"));
@@ -381,7 +401,10 @@ const inbox = (client, subscribe) => {
   const messages = [];
   const waiters = [];
   let closeCode = null;
+  // `hooks.peek` sees every frame as it arrives, ahead of the sequential reader.
+  const hooks = { peek: null };
   const push = (m) => {
+    hooks.peek?.(m);
     if (waiters.length > 0) waiters.splice(0).forEach((w) => w(m));
     else messages.push(m);
   };
@@ -392,6 +415,7 @@ const inbox = (client, subscribe) => {
   });
   sockets.push(client);
   const box = {
+    hooks,
     close: () => client.close(),
     code: () => closeCode,
     next: (ms = 10000) =>
@@ -416,9 +440,13 @@ const inbox = (client, subscribe) => {
     waitClose: (ms = 10000) =>
       new Promise((r) => {
         if (closeCode !== null) return r(closeCode);
-        const t = setTimeout(() => r(null), ms);
-        client.on("disconnected", (e) => {
+        const t = setTimeout(() => {
+          off();
+          r(null);
+        }, ms);
+        const off = client.on("disconnected", (e) => {
           clearTimeout(t);
+          off();
           r(e.code);
         });
       }),
@@ -494,6 +522,79 @@ const refused = (url, protocols) =>
     req.end();
   });
 
+const sheetOf = (token) =>
+  json(`${apiBase}/character`, { headers: bearer(token) });
+const post = (token, path, body = {}) =>
+  json(`${apiBase}${path}`, { method: "POST", headers: bearer(token), body });
+const del = (token, path) =>
+  json(`${apiBase}${path}`, { method: "DELETE", headers: bearer(token) });
+const refusal = (label, r, status, error) =>
+  check(
+    label,
+    r.status === status && r.body?.error === error,
+    `${r.status} ${r.body?.error ?? ""}`,
+  );
+/** Waits for the result frame of a run nobody plays; the SDK's `finished` is close 1000. */
+const awaitResult = async (game, box, ms) => {
+  let finished = null;
+  game.on("finished", (e) => (finished = e.code));
+  const result = await box.until((m) => m.type === "result", ms);
+  const code = await box.waitClose(10000);
+  return { result: result?.payload ?? null, code, finished };
+};
+
+if (mode === "timeout") {
+  // §7 item 15: a run that nobody clears ends by the running-stage timeout,
+  // with a result and a normal close — never by the Lambda being cut off.
+  const { lobby: solo, box: sx } = await connectLobby(tokenA);
+  solo.party.create();
+  const soloRoster = await sx.until((m) => m.type === "party");
+  const soloEntered = await post(tokenA, "/dungeon/enter", {
+    partyId: soloRoster?.partyId,
+  });
+  check(
+    "solo leader enters",
+    soloEntered.status === 200,
+    JSON.stringify(soloEntered.body),
+  );
+  if (failed) finish();
+  const { game, box } = await connectGame(soloEntered.body.gameId, tokenA);
+  const runningAt = await box.until(
+    (m) => m.type === "stage" && m.payload?.stage === "running",
+    40000,
+  );
+  check("solo run starts", runningAt !== null);
+  if (failed) finish();
+  const t0 = Date.now();
+  // The running length is whatever the stack was deployed with; the env file
+  // (when given) bounds the wait, otherwise the code's maximum applies.
+  const runningSeconds = Number(envValue("GAME_RUNNING_SECONDS"));
+  const bound = runningSeconds > 0 ? (runningSeconds + 90) * 1000 : 15 * 60000;
+  const { result, code, finished } = await awaitResult(game, box, bound);
+  console.log(
+    `     idle run ended after ${((Date.now() - t0) / 1000).toFixed(0)}s`,
+  );
+  check(
+    "idle run ends with result {reason: timeout, cleared: false}",
+    result?.reason === "timeout" && result?.cleared === false,
+    JSON.stringify(result),
+  );
+  check(
+    "nothing earned → commit skipped, sheet untouched",
+    result?.committed?.[userA] === "skipped" &&
+      (await sheetOf(tokenA)).body?.version === 0,
+    JSON.stringify(result?.committed),
+  );
+  check(
+    "socket closed 1000 after the timeout result",
+    code === 1000 && finished === 1000,
+    `${code}/${finished}`,
+  );
+  solo.close();
+  await sleep(200);
+  finish();
+}
+
 // 1. a fresh character
 const sheetA0 = await json(`${apiBase}/character`, { headers: bearer(tokenA) });
 check(
@@ -507,6 +608,196 @@ check(
   "GET /character without token → 401",
   (await json(`${apiBase}/character`)).status === 401,
 );
+
+// Sheet routes on a fresh sheet: every refusal writes nothing, every
+// success bumps the version by one (README "Protocol").
+refusal(
+  "stats-up with no points → 400 no_points",
+  await post(tokenA, "/character/stats-up", { stat: "attack" }),
+  400,
+  "no_points",
+);
+refusal(
+  "stats-up of an unknown stat → 400 bad_stat",
+  await post(tokenA, "/character/stats-up", { stat: "luck" }),
+  400,
+  "bad_stat",
+);
+refusal(
+  "use of an item not owned → 409 no_item",
+  await post(tokenA, "/inventory/hp_potion/use"),
+  409,
+  "no_item",
+);
+refusal(
+  "equip of an unknown id → 409 no_item (ownership first)",
+  await post(tokenA, "/inventory/excalibur/equip"),
+  409,
+  "no_item",
+);
+refusal(
+  "unequip of an empty slot → 409 not_equipped",
+  await del(tokenA, "/equipment/weapon"),
+  409,
+  "not_equipped",
+);
+refusal(
+  "unknown slot → 404 not_found (route grammar)",
+  await del(tokenA, "/equipment/hat"),
+  404,
+  "not_found",
+);
+refusal(
+  "unknown NPC → 404 unknown_npc",
+  await post(tokenA, "/npc/nobody/interact"),
+  404,
+  "unknown_npc",
+);
+const talk1 = await post(tokenA, "/npc/hunter/interact");
+check(
+  "hunter accepts jelly_hunt first",
+  talk1.status === 200 &&
+    talk1.body?.action === "accepted" &&
+    talk1.body?.questId === "jelly_hunt" &&
+    talk1.body?.version === 1 &&
+    talk1.body?.sheet?.quests?.jelly_hunt?.active === true,
+  JSON.stringify(talk1.body),
+);
+const talk2 = await post(tokenA, "/npc/hunter/interact");
+check(
+  "hunter accepts wolf_hunt next",
+  talk2.status === 200 &&
+    talk2.body?.action === "accepted" &&
+    talk2.body?.questId === "wolf_hunt" &&
+    talk2.body?.version === 2,
+  JSON.stringify(talk2.body),
+);
+refusal(
+  "hunter with both quests active → 409 quest_incomplete",
+  await post(tokenA, "/npc/hunter/interact"),
+  409,
+  "quest_incomplete",
+);
+refusal(
+  "a quest the NPC does not carry → 404 unknown_quest",
+  await post(tokenA, "/npc/hunter/interact", { questId: "horn_trophy" }),
+  404,
+  "unknown_quest",
+);
+const talk3 = await post(tokenA, "/npc/elder/interact", {
+  questId: "horn_trophy",
+});
+check(
+  "elder accepts the named collect quest horn_trophy",
+  talk3.status === 200 &&
+    talk3.body?.action === "accepted" &&
+    talk3.body?.questId === "horn_trophy" &&
+    talk3.body?.version === 3,
+  JSON.stringify(talk3.body),
+);
+refusal(
+  "unknown zone → 404 unknown_zone",
+  await post(tokenA, "/zone/nowhere"),
+  404,
+  "unknown_zone",
+);
+const zone2 = await post(tokenA, "/zone/zone002");
+check(
+  "POST /zone/zone002 → zone + start + the field's own mapUrl",
+  zone2.status === 200 &&
+    zone2.body?.zone === "zone002" &&
+    Number.isInteger(zone2.body?.start?.x) &&
+    typeof zone2.body?.mapUrl === "string" &&
+    zone2.body.mapUrl !== state.mapUrl &&
+    zone2.body?.sheet?.zone === "zone002" &&
+    zone2.body?.version === 4,
+  JSON.stringify({ zone: zone2.body?.zone, mapUrl: zone2.body?.mapUrl }),
+);
+const fieldBundle = zone2.body?.mapUrl
+  ? (await json(zone2.body.mapUrl).catch(() => ({ body: null }))).body
+  : null;
+check(
+  "zone002's bundle resolves on the CDN (format 2, field-only)",
+  fieldBundle?.format === 2 &&
+    fieldBundle?.id === "zone002" &&
+    fieldBundle?.templates === undefined,
+  JSON.stringify(fieldBundle?.id),
+);
+const zoneAgain = await post(tokenA, "/zone/zone002");
+check(
+  "same zone again writes nothing → 200, still version 4",
+  zoneAgain.status === 200 &&
+    zoneAgain.body?.version === 4 &&
+    (await sheetOf(tokenA)).body?.version === 4,
+  String(zoneAgain.body?.version),
+);
+const gate = await post(tokenA, "/npc/town_gate/interact");
+check(
+  "town_gate teleports back to zone001 (no mapUrl: the world is the town)",
+  gate.status === 200 &&
+    gate.body?.action === "teleported" &&
+    gate.body?.zone === "zone001" &&
+    gate.body?.mapUrl === undefined &&
+    gate.body?.sheet?.zone === "zone001" &&
+    gate.body?.version === 5,
+  JSON.stringify({ action: gate.body?.action, zone: gate.body?.zone }),
+);
+refusal(
+  "questId at a gate → 404 unknown_quest",
+  await post(tokenA, "/npc/forest_gate/interact", { questId: "jelly_hunt" }),
+  404,
+  "unknown_quest",
+);
+
+// Seed b's potions when the deploy env (DOC_API_KEY) is at hand; the doc host is the state file's.
+const docApiKey = envValue("DOC_API_KEY");
+const POTIONS = 2;
+let seededB = false;
+if (docApiKey && state.docBaseUrl) {
+  const seed = await fetch(`${state.docBaseUrl}/s/${userB}`, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${docApiKey}`,
+      "content-type": "application/json",
+      "if-match": '"0"',
+    },
+    body: JSON.stringify({
+      format: 2,
+      level: 1,
+      exp: 0,
+      statPoints: 0,
+      maxHp: 50,
+      attack: 10,
+      defence: 2,
+      items: { hp_potion: POTIONS },
+      equipment: {},
+      quests: {},
+      abnormalities: [],
+      appliedGames: [],
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  seededB = seed.status === 201 || seed.status === 204;
+  check(
+    "seeded b with potions through the doc store",
+    seededB,
+    String(seed.status),
+  );
+  refusal(
+    "a potion in town → 409 field_only",
+    await post(tokenB, "/inventory/hp_potion/use"),
+    409,
+    "field_only",
+  );
+} else {
+  console.log(
+    "skip potion checks (no deploy env file with DOC_API_KEY, or no docBaseUrl in the state file)",
+  );
+}
+const versionBefore = {
+  a: (await sheetOf(tokenA)).body?.version,
+  b: (await sheetOf(tokenB)).body?.version,
+};
 
 // 2. lobby: hello with the map, positions, a party, the dungeon offer as an opaque event
 const { lobby: a, box: ax, hello: helloA } = await connectLobby(tokenA);
@@ -663,6 +954,32 @@ check(
   JSON.stringify(running),
 );
 
+// Reconnect mid-run (§7 item 12): a member reconnects and resynchronises from one
+// `hello` + `frame`; the others see the `enter` again.
+qb.close();
+check(
+  "b's first socket closed by the client",
+  (await qbx.waitClose()) === 1000,
+);
+const { game: qb2, box: qbx2 } = await connectGame(gameId, tokenB);
+const helloB2 = await qbx2.until((m) => m.type === "hello");
+const frameB2 = await qbx2.until((m) => m.type === "frame");
+check(
+  "reconnect → hello + a self-contained frame with both players",
+  helloB2?.payload?.gameId === gameId &&
+    helloB2.payload.you === userB &&
+    frameB2?.payload?.players?.length === 2 &&
+    frameB2.payload.players.some((p) => p.id === userB && p.alive),
+  JSON.stringify(frameB2?.payload?.players),
+);
+check(
+  "the leader sees the re-enter",
+  (await qax.until(
+    (m) => m.type === "enter" && m.payload?.memberId === userB,
+    5000,
+  )) !== null,
+);
+
 // 5. bots: walk to the target and hit it until the result frame
 const walkable = (x, y) =>
   map.rows[y]?.[x] !== undefined && map.rows[y][x] !== map.blocked;
@@ -682,11 +999,14 @@ const stepToward = (me, target, monsters) => {
     }
   return best;
 };
-const bot = async (game, box, me, pickTarget) => {
+const boss = (monsters) => monsters.find((m) => m.templateId === "boss");
+const bot = async (game, box, me, pickTarget, potions = 0) => {
   let result = null;
   let frames = 0;
   // Gateway refusals reach the SDK's `error` event, not `frame`.
   let refusals = 0;
+  const heals = [];
+  let drinking = false;
   const offError = game.on("error", () => refusals++);
   for (;;) {
     const m = await box.next(20000);
@@ -695,15 +1015,44 @@ const bot = async (game, box, me, pickTarget) => {
       result = m.payload;
       break;
     }
+    // A refused `use` (the seed not visible, `full_hp`) must not loop every
+    // frame — refusals count toward the gateway's policy close.
+    if (m.type === "refused" && m.payload?.command === "use") potions = 0;
     if (m.type !== "frame") continue;
     frames++;
+    for (const e of m.payload.events ?? [])
+      if (e.name === "heal" && e.id === me) {
+        heals.push(e);
+        drinking = false;
+      }
     const self = m.payload.players.find((p) => p.id === me);
     if (!self?.alive || m.payload.cleared) continue;
-    const target = pickTarget(m.payload.monsters);
-    if (!target) continue;
     // A frame can be queued ahead of the close that ends the run; the SDK
     // throws on send after close, so only act while still connected.
     if (game.state !== "connected") continue;
+    // One potion, drunk the first time the bot is hurt (§7: field heal).
+    // Monsters only retaliate, so the potion carrier pokes the boss once and
+    // waits next to it until the boss hits back; the other bot idles meanwhile.
+    if (potions > 0 && heals.length === 0) {
+      if (self.hp < self.maxHp) {
+        if (drinking) continue;
+        drinking = true;
+        game.send({ type: "use", itemId: "hp_potion" });
+        continue;
+      }
+      const b = boss(m.payload.monsters);
+      if (b && dist(self, b) <= 1) {
+        if (b.hp === b.maxHp) game.send({ type: "attack", uid: b.uid });
+        continue;
+      }
+      if (b) {
+        const next = stepToward(self, b, m.payload.monsters);
+        if (next) game.send({ type: "move", x: next.x, y: next.y });
+        continue;
+      }
+    }
+    const target = pickTarget(m.payload.monsters);
+    if (!target) continue;
     if (dist(self, target) <= 1) game.send({ type: "attack", uid: target.uid });
     else {
       const next = stepToward(self, target, m.payload.monsters);
@@ -711,9 +1060,8 @@ const bot = async (game, box, me, pickTarget) => {
     }
   }
   offError();
-  return { result, frames, refusals };
+  return { result, frames, refusals, heals };
 };
-const boss = (monsters) => monsters.find((m) => m.templateId === "boss");
 const nearestThenBoss = (self) => (monsters) => {
   const others = monsters.filter((m) => m.templateId !== "boss");
   return others.length
@@ -724,10 +1072,34 @@ const started = Date.now();
 // `finished` (close 1000) is the SDK's "the game dropped you" signal.
 const ended = { a: null, b: null };
 qa.on("finished", (e) => (ended.a = e.code));
-qb.on("finished", (e) => (ended.b = e.code));
+qb2.on("finished", (e) => (ended.b = e.code));
+// While b walks to the boss and waits for its retaliation, a idles (a boss
+// killed under b would end the run before the potion). The window starts when
+// b first stands next to the boss (20 s), with 60 s overall as the backstop.
+const phase = { healed: false, adjacentAt: null, startedAt: Date.now() };
+qbx2.hooks.peek = (m) => {
+  if (m.type !== "frame") return;
+  if (m.payload.events?.some((e) => e.name === "heal" && e.id === userB))
+    phase.healed = true;
+  const me = m.payload.players.find((p) => p.id === userB);
+  const b = boss(m.payload.monsters);
+  if (phase.adjacentAt === null && me && b && dist(me, b) <= 1)
+    phase.adjacentAt = Date.now();
+};
+const aMayGo = () =>
+  !seededB ||
+  phase.healed ||
+  (phase.adjacentAt !== null && Date.now() > phase.adjacentAt + 20000) ||
+  Date.now() > phase.startedAt + 60000;
 const [ra, rb] = await Promise.all([
-  bot(qa, qax, userA, boss),
-  bot(qb, qbx, userB, nearestThenBoss({ x: map.start.x, y: map.start.y })),
+  bot(qa, qax, userA, (monsters) => (aMayGo() ? boss(monsters) : null)),
+  bot(
+    qb2,
+    qbx2,
+    userB,
+    nearestThenBoss({ x: map.start.x, y: map.start.y }),
+    seededB ? POTIONS : 0,
+  ),
 ]);
 console.log(
   `     dungeon took ${((Date.now() - started) / 1000).toFixed(1)}s, frames a=${ra.frames} b=${rb.frames}, refusals a=${ra.refusals} b=${rb.refusals}`,
@@ -750,11 +1122,14 @@ check(
   JSON.stringify({ rewardA, rewardB }),
 );
 // An empty delta is `skipped` (nothing to write); anything earned must be `applied`.
+// Mirrors the server's `isEmptyDelta`: consumed potions alone are a write too.
+const any = (o) => Object.values(o ?? {}).some((n) => n > 0);
 const isEmpty = (r) =>
   !r ||
-  ((r.exp ?? 0) === 0 &&
-    Object.keys(r.items ?? {}).length === 0 &&
-    Object.keys(r.questProgress ?? {}).length === 0);
+  ((r.exp ?? 0) <= 0 &&
+    !any(r.items) &&
+    !any(r.consumed) &&
+    !any(r.questProgress));
 const committedOk = (user, reward) =>
   ra.result?.committed?.[user] === (isEmpty(reward) ? "skipped" : "applied");
 check(
@@ -762,27 +1137,46 @@ check(
   committedOk(userA, rewardA) && committedOk(userB, rewardB),
   JSON.stringify(ra.result?.committed),
 );
+if (seededB) {
+  const heal = rb.heals[0];
+  check(
+    "b drank a potion when hurt → heal event, hp raised",
+    heal !== undefined &&
+      heal.amount > 0 &&
+      heal.hp > 0 &&
+      heal.itemId === "hp_potion",
+    JSON.stringify(rb.heals),
+  );
+  check(
+    "the potion is in b's consumed delta",
+    rewardB?.consumed?.hp_potion === 1,
+    JSON.stringify(rewardB?.consumed),
+  );
+}
 check(
   "sockets dropped with 1000 after the result → SDK `finished`",
   (await qax.waitClose()) === 1000 &&
-    (await qbx.waitClose()) === 1000 &&
+    (await qbx2.waitClose()) === 1000 &&
     ended.a === 1000 &&
     ended.b === 1000,
-  `${qax.code()}/${qbx.code()} finished=${ended.a}/${ended.b}`,
+  `${qax.code()}/${qbx2.code()} finished=${ended.a}/${ended.b}`,
 );
 
 // 6. persisted exactly once — a member with nothing earned keeps a fresh sheet
+const sheets = {};
 for (const [who, token, reward] of [
   ["a", tokenA, rewardA],
   ["b", tokenB, rewardB],
 ]) {
-  const sheet = await json(`${apiBase}/character`, { headers: bearer(token) });
+  const sheet = await sheetOf(token);
+  sheets[who] = sheet.body;
   const s = sheet.body?.sheet;
   const applied = s?.appliedGames?.filter((g) => g === gameId).length ?? 0;
+  const before = versionBefore[who];
   const ok = isEmpty(reward)
-    ? sheet.status === 200 && sheet.body.version === 0 && applied === 0
+    ? sheet.status === 200 && sheet.body.version === before && applied === 0
     : sheet.status === 200 &&
-      sheet.body.version === 1 &&
+      sheet.body.version === before + 1 &&
       s?.exp === reward.exp &&
       applied === 1;
   check(
@@ -804,12 +1198,167 @@ if (docBase) {
   });
   check(
     "a player cannot read another's sheet",
-    cross.status === 401 || cross.status === 403,
+    cross.status === 403,
     String(cross.status),
   );
 }
 
-a.close();
+if (seededB)
+  check(
+    "b's bag lost the potion it drank (plus any slime drops)",
+    sheets.b?.sheet?.items?.hp_potion ===
+      POTIONS - 1 + (rewardB?.items?.hp_potion ?? 0),
+    JSON.stringify(sheets.b?.sheet?.items),
+  );
+
+// Post-run sheet routes with something earned: the boss killer levelled (100 exp →
+// level 2, 5 points) and holds the boss's guaranteed drops.
+const killer = rewardA?.items?.boss_horn
+  ? "a"
+  : rewardB?.items?.boss_horn
+    ? "b"
+    : null;
+check(
+  "someone holds the boss_horn drop",
+  killer !== null,
+  JSON.stringify({ a: rewardA?.items, b: rewardB?.items }),
+);
+if (killer) {
+  const tk = killer === "a" ? tokenA : tokenB;
+  const k0 = sheets[killer];
+  check(
+    `${killer} reached level 2 with 5 stat points`,
+    k0?.sheet?.level === 2 &&
+      k0?.sheet?.statPoints === 5 &&
+      k0?.sheet?.items?.wooden_sword === 1,
+    JSON.stringify({ level: k0?.sheet?.level, points: k0?.sheet?.statPoints }),
+  );
+  const up = await post(tk, "/character/stats-up", {
+    stat: "attack",
+    points: 2,
+  });
+  check(
+    "stats-up attack +2 → attack 12, 3 points left, effective follows",
+    up.status === 200 &&
+      up.body?.sheet?.attack === 12 &&
+      up.body?.sheet?.statPoints === 3 &&
+      up.body?.effective?.attack === 12 &&
+      up.body?.version === k0.version + 1,
+    JSON.stringify({
+      sheet: up.body?.sheet?.attack,
+      effective: up.body?.effective,
+    }),
+  );
+  refusal(
+    "more points than owned → 400 no_points",
+    await post(tk, "/character/stats-up", { stat: "attack", points: 4 }),
+    400,
+    "no_points",
+  );
+  const eq = await post(tk, "/inventory/wooden_sword/equip");
+  check(
+    "equip wooden_sword → weapon slot, effective attack 17",
+    eq.status === 200 &&
+      eq.body?.sheet?.equipment?.weapon === "wooden_sword" &&
+      eq.body?.effective?.attack === 17 &&
+      eq.body?.version === k0.version + 2,
+    JSON.stringify({
+      equipment: eq.body?.sheet?.equipment,
+      effective: eq.body?.effective,
+    }),
+  );
+  const eqAgain = await post(tk, "/inventory/wooden_sword/use");
+  check(
+    "using the equipped weapon again writes nothing",
+    eqAgain.status === 200 && eqAgain.body?.version === k0.version + 2,
+    String(eqAgain.body?.version),
+  );
+  refusal(
+    "using goods → 409 not_usable",
+    await post(tk, "/inventory/boss_horn/use"),
+    409,
+    "not_usable",
+  );
+  const un = await del(tk, "/equipment/weapon");
+  check(
+    "unequip → effective attack back to 12",
+    un.status === 200 &&
+      un.body?.sheet?.equipment?.weapon === undefined &&
+      un.body?.effective?.attack === 12 &&
+      un.body?.version === k0.version + 3,
+    JSON.stringify(un.body?.effective),
+  );
+  let v = k0.version + 3;
+  if (k0?.sheet?.items?.rage_scroll) {
+    const buff = await post(tk, "/inventory/rage_scroll/use");
+    v++;
+    check(
+      "rage_scroll (a 50% drop, present) → live buff, effective attack +10",
+      buff.status === 200 &&
+        buff.body?.sheet?.abnormalities?.some(
+          (x) => x.templateId === "rage" && x.endsAt > Date.now(),
+        ) &&
+        buff.body?.effective?.attack === 22 &&
+        buff.body?.sheet?.items?.rage_scroll === undefined &&
+        buff.body?.version === v,
+      JSON.stringify({
+        abnormalities: buff.body?.sheet?.abnormalities,
+        effective: buff.body?.effective,
+      }),
+    );
+  } else
+    console.log("skip rage_scroll buff (the 50% drop did not land this run)");
+  // horn_trophy: a is holding it active since 1b; b accepts it now. Either way
+  // the next talk turns it in (turn-in before accept) and the horn leaves the bag.
+  let turnIn = await post(tk, "/npc/elder/interact", {
+    questId: "horn_trophy",
+  });
+  if (turnIn.body?.action === "accepted") {
+    v++;
+    turnIn = await post(tk, "/npc/elder/interact", { questId: "horn_trophy" });
+  }
+  v++;
+  check(
+    "elder turns in horn_trophy: completed, horn consumed, quest inactive",
+    turnIn.status === 200 &&
+      turnIn.body?.action === "completed" &&
+      turnIn.body?.sheet?.items?.boss_horn === undefined &&
+      turnIn.body?.sheet?.quests?.horn_trophy?.active === false &&
+      turnIn.body?.sheet?.quests?.horn_trophy?.completed === 1 &&
+      turnIn.body?.version === v,
+    JSON.stringify({
+      action: turnIn.body?.action,
+      quests: turnIn.body?.sheet?.quests,
+      version: turnIn.body?.version,
+    }),
+  );
+  refusal(
+    "a finished non-repeatable quest → 409 not_repeatable",
+    await post(tk, "/npc/elder/interact", { questId: "horn_trophy" }),
+    409,
+    "not_repeatable",
+  );
+}
+// a only fights the boss, so its active jelly_hunt must stay at 0 (kill
+// progress lands on accepted quests only — and only for the killer).
+const jelly = sheets.a?.sheet?.quests?.jelly_hunt;
+check(
+  "a's jelly_hunt is still active and untouched (a killed no slime)",
+  jelly?.active === true &&
+    jelly.progress === 0 &&
+    rewardA?.questProgress?.jelly_hunt === undefined,
+  JSON.stringify({ jelly, progress: rewardA?.questProgress }),
+);
+
+// Single session (§7 item 14): a second lobby socket of the same user replaces the first (4000).
+const { lobby: a2 } = await connectLobby(tokenA);
+check(
+  "second lobby socket of the same user → the first closes 4000",
+  (await ax.waitClose()) === 4000,
+  String(ax.code()),
+);
+a2.close();
+
 b.close();
 await sleep(200);
 finish();
