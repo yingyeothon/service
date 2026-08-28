@@ -43,6 +43,8 @@ export interface CharacterSheet {
   equipment: Partial<Record<EquipSlot, string>>;
   quests: Record<string, QuestState>;
   abnormalities: Abnormality[];
+  /** Town zone the player last teleported to (`Templates.zones`); unset = the default. */
+  zone?: string;
   /** Dungeon results already applied, newest last (bounded). */
   appliedGames: string[];
 }
@@ -84,16 +86,31 @@ export type QuestTemplate =
   | { kind: "kill"; templateId: string; count: number; repeatable: boolean }
   | { kind: "collect"; itemId: string; count: number; repeatable: boolean };
 
+/** A town NPC: static, talks about its quests (mmo101 `Quest` interaction). */
+export interface TownNpcTemplate {
+  /** Quest ids it gives and takes back, in offer order. */
+  quests: string[];
+}
+
+/** A town zone a teleport can target; `start` is where the client re-announces `pos`. */
+export interface ZoneTemplate {
+  start: { x: number; y: number };
+}
+
 export interface Templates {
   items: Record<string, ItemTemplate>;
   abnormalities: Record<string, AbnormalityTemplate>;
   quests: Record<string, QuestTemplate>;
+  npcs: Record<string, TownNpcTemplate>;
+  zones: Record<string, ZoneTemplate>;
 }
 
 export const NO_TEMPLATES: Templates = {
   items: {},
   abnormalities: {},
   quests: {},
+  npcs: {},
+  zones: {},
 };
 
 export const MAX_LEVEL = 100;
@@ -145,6 +162,10 @@ export function isEmptyDelta(d: ResultDelta): boolean {
 /* ---- Parsing ---- */
 
 const ITEM_ID = /^[a-z0-9_-]{1,32}$/;
+
+/** The id grammar shared by items, quests, abnormalities, NPCs and zones. */
+export const isId = (v: unknown): v is string =>
+  typeof v === "string" && ITEM_ID.test(v);
 
 /** Own-property lookup: `constructor`/`__proto__` pass ITEM_ID but are inherited. */
 function own<T>(r: Record<string, T>, key: string): T | undefined {
@@ -230,6 +251,7 @@ export function parseCharacter(raw: unknown): CharacterSheet {
     equipment,
     quests: parseQuests(s.quests),
     abnormalities: parseAbnormalities(s.abnormalities),
+    ...(isId(s.zone) ? { zone: s.zone } : {}),
     appliedGames: Array.isArray(s.appliedGames)
       ? (s.appliedGames as unknown[])
           .filter((g): g is string => typeof g === "string")
@@ -256,7 +278,11 @@ export type SheetRefusal =
   | "quest_not_active"
   | "not_repeatable"
   | "quest_incomplete"
-  | "too_many_buffs";
+  | "too_many_buffs"
+  | "unknown_npc"
+  | "unknown_zone"
+  /** The NPC has nothing to give or take from this player right now. */
+  | "nothing_to_do";
 
 export type SheetResult =
   { ok: true; sheet: CharacterSheet } | { ok: false; reason: SheetRefusal };
@@ -326,7 +352,7 @@ export function applyResult(
 export type StatType = "maxHp" | "attack" | "defence";
 export const STAT_TYPES: readonly StatType[] = ["maxHp", "attack", "defence"];
 
-/** `statsUp` from the lobby: spends points, 1 per unit (maxHp gets 5 per point). */
+/** `statsUp` from the lobby: 1 point per unit of any stat (mmo101 `HandleStatsUp`). */
 export function allocateStat(
   sheet: CharacterSheet,
   stat: StatType,
@@ -336,7 +362,7 @@ export function allocateStat(
     return refuse("no_points");
   const next = clone(sheet);
   next.statPoints -= points;
-  next[stat] += stat === "maxHp" ? points * 5 : points;
+  next[stat] += points;
   return { ok: true, sheet: next };
 }
 
@@ -394,6 +420,8 @@ export function equipItem(
   if (!t) return refuse("unknown_item");
   if (t.kind !== "weapon" && t.kind !== "armor")
     return refuse("not_equippable");
+  // Already in the slot: same object, so the route skips the CAS write.
+  if (sheet.equipment[t.kind] === itemId) return { ok: true, sheet };
   const next = clone(sheet);
   next.equipment[t.kind] = itemId;
   return { ok: true, sheet: next };
@@ -506,4 +534,70 @@ export function completeQuest(
     completed: q.completed + 1,
   };
   return { ok: true, sheet: next };
+}
+
+/** True when `acceptQuest` would succeed. */
+export function questAcceptable(
+  sheet: CharacterSheet,
+  questId: string,
+  t: QuestTemplate,
+): boolean {
+  const q = own(sheet.quests, questId);
+  if (q?.active) return false;
+  return !q || q.completed === 0 || t.repeatable;
+}
+
+export type NpcAction = "accepted" | "completed";
+
+/**
+ * Talks to a town NPC (mmo101 `Quest` interaction): a ready quest is turned in
+ * first, otherwise the next acceptable one is accepted; `questId` narrows the
+ * choice to one of the NPC's quests. `questNpc` states map to the refusals:
+ * `nothing` = `nothing_to_do`, `go` = `quest_incomplete`. mmo101 NPCs carry
+ * exactly one quest and map exactly; the finish → new → go precedence for a
+ * multi-quest NPC is this sample's own choice.
+ */
+export function interactNpc(
+  sheet: CharacterSheet,
+  npcId: string,
+  templates: Templates,
+  questId?: string,
+): SheetResult & { action?: NpcAction; questId?: string } {
+  const npc = own(templates.npcs, npcId);
+  if (!npc) return refuse("unknown_npc");
+  if (questId !== undefined && !npc.quests.includes(questId))
+    return refuse("unknown_quest");
+  const candidates = questId === undefined ? npc.quests : [questId];
+  const known = candidates.flatMap((id) => {
+    const t = own(templates.quests, id);
+    return t ? [{ id, t }] : [];
+  });
+  // `questReady`/`questAcceptable` are exactly the preconditions of the two
+  // transitions, so their refusal arms are unreachable here (kept for the type).
+  for (const { id, t } of known)
+    if (questReady(sheet, id, t)) {
+      const r = completeQuest(sheet, id, templates);
+      return r.ok ? { ...r, action: "completed", questId: id } : r;
+    }
+  for (const { id, t } of known)
+    if (questAcceptable(sheet, id, t)) {
+      const r = acceptQuest(sheet, id, templates);
+      return r.ok ? { ...r, action: "accepted", questId: id } : r;
+    }
+  if (known.some(({ id }) => own(sheet.quests, id)?.active))
+    return refuse("quest_incomplete");
+  // A named quest reports its own refusal (`not_repeatable`, a bundle hole).
+  if (questId !== undefined) return acceptQuest(sheet, questId, templates);
+  return refuse("nothing_to_do");
+}
+
+/** Moves the player to another town zone; a no-op (same sheet object) when already there. */
+export function teleport(
+  sheet: CharacterSheet,
+  zoneId: string,
+  templates: Templates,
+): SheetResult {
+  if (!own(templates.zones, zoneId)) return refuse("unknown_zone");
+  if (sheet.zone === zoneId) return { ok: true, sheet };
+  return { ok: true, sheet: { ...clone(sheet), zone: zoneId } };
 }

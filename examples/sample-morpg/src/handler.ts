@@ -24,7 +24,7 @@ import {
   LIFETIME_MARGIN_SECONDS,
   runDungeonActor,
 } from "./actor.js";
-import { parseCharacter } from "./character.js";
+import { NO_TEMPLATES, parseCharacter } from "./character.js";
 import { commitResult } from "./commit.js";
 import { createDocClient } from "./doc.js";
 import { createHttpHandler, createRosterFetcher } from "./entry.js";
@@ -157,6 +157,9 @@ const handle = createHttpHandler({
       (await redisExists(redis(), `${prefixes.lockKeyPrefix}${gameId}`)) > 0,
   },
   doc,
+  // Bundle format v2 (phase 4) supplies the templates; until then every named
+  // item/quest/NPC/zone is refused and only stats-up / unequip do work.
+  templates: async () => NO_TEMPLATES,
   startEventTtlSeconds,
   log: (m, meta) => logger.info(m, meta),
 });

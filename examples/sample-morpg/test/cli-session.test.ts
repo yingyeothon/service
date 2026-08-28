@@ -5,7 +5,7 @@ import type {
   Hello,
   PartyFrame,
 } from "@yingyeothon/gamebase-client";
-import type { EnterFailed, EnterOk, GameApi } from "../cli/api.js";
+import type { EnterFailed, EnterOk, GameApi, SheetAnswer } from "../cli/api.js";
 import { createSession, type Session } from "../cli/session.js";
 import { newState, type AppState } from "../cli/state.js";
 import { newCharacter } from "../src/character.js";
@@ -158,7 +158,7 @@ interface Harness {
   session: Session;
   lobby: ReturnType<typeof fakeLobby>;
   games: ReturnType<typeof fakeGame>[];
-  api: { calls: string[]; enter: EnterOk | EnterFailed };
+  api: { calls: string[]; enter: EnterOk | EnterFailed; sheet: SheetAnswer };
   quit: string[];
 }
 
@@ -174,16 +174,39 @@ async function start(opts: { connectFails?: boolean } = {}): Promise<Harness> {
       wsUrl: "wss://gw/?channel=ch_q&gameId=" + GAME,
       members: [ME, PEER],
     } as EnterOk | EnterFailed,
+    sheet: {
+      ok: true,
+      userId: ME,
+      version: 9,
+      sheet: { ...newCharacter(), statPoints: 4, attack: 11 },
+      effective: { maxHp: 50, attack: 11, defence: 2 },
+    } as SheetAnswer,
+  };
+  const sheetCall = async (what: string): Promise<SheetAnswer> => {
+    api.calls.push(what);
+    return api.sheet;
   };
   const gameApi: GameApi = {
     async getCharacter() {
       api.calls.push("character");
-      return { userId: ME, version: api.calls.length, sheet: newCharacter() };
+      return {
+        userId: ME,
+        version: api.calls.length,
+        sheet: newCharacter(),
+        effective: { maxHp: 50, attack: 10, defence: 2 },
+      };
     },
     async enterDungeon(partyId) {
       api.calls.push(`enter ${partyId}`);
       return api.enter;
     },
+    statsUp: (stat, points) => sheetCall(`stats ${stat} ${points}`),
+    useItem: (itemId) => sheetCall(`use ${itemId}`),
+    equipItem: (itemId) => sheetCall(`equip ${itemId}`),
+    unequip: (slot) => sheetCall(`unequip ${slot}`),
+    interactNpc: (npcId, questId) =>
+      sheetCall(`talk ${npcId} ${questId ?? "-"}`),
+    teleport: (zoneId) => sheetCall(`zone ${zoneId}`),
   };
   const quit: string[] = [];
   const session = createSession({
@@ -289,6 +312,65 @@ describe("session: lobby", () => {
       scope: "party",
       name: "dungeon.offer",
       payload: { partyId: PTY },
+    });
+  });
+  it("sheet commands call the API in town and replace the sheet; refusals are logged", async () => {
+    const h = await start();
+    h.session.dispatch({ kind: "stats", stat: "attack", points: 1 });
+    h.session.dispatch({ kind: "equip", itemId: "sword" });
+    h.session.dispatch({ kind: "unequip", slot: "weapon" });
+    h.session.dispatch({ kind: "use", itemId: "tonic" });
+    h.session.dispatch({ kind: "talk", npcId: "elder" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.slice(1)).toEqual([
+      "stats attack 1",
+      "equip sword",
+      "unequip weapon",
+      "use tonic",
+      "talk elder -",
+    ]);
+    expect(h.state.sheet).toMatchObject({ version: 9, sheet: { attack: 11 } });
+    h.api.sheet = { ok: false, status: 409, code: "no_item" };
+    h.session.dispatch({ kind: "equip", itemId: "axe" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.log.at(-1)).toEqual({
+      kind: "error",
+      text: "equip axe: no_item (409)",
+    });
+    expect(h.state.sheet?.version).toBe(9);
+  });
+  it("sheet commands are refused outside town without calling the API", async () => {
+    const h = await start();
+    h.state.mode = "dungeon";
+    h.session.dispatch({ kind: "equip", itemId: "sword" });
+    h.session.dispatch({ kind: "talk", npcId: "elder" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls).toEqual(["character"]);
+    expect(h.state.log.at(-1)).toEqual({
+      kind: "error",
+      text: "talk elder works in town",
+    });
+  });
+  it("zone teleport moves the player to the answered start and re-announces pos", async () => {
+    const h = await start();
+    h.api.sheet = {
+      ok: true,
+      userId: ME,
+      version: 2,
+      sheet: { ...newCharacter(), zone: "zone002" },
+      effective: { maxHp: 50, attack: 10, defence: 2 },
+      zone: "zone002",
+      start: { x: 5, y: 6 },
+    };
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.lobby.zone).toBe("zone002");
+    expect(h.lobby.sent.at(-1)).toEqual({
+      type: "pos",
+      zone: "zone002",
+      x: 5,
+      y: 6,
+      dir: "s",
     });
   });
   it("a stopped lobby quits with the replaced explanation on 4000", async () => {
