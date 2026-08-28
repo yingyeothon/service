@@ -37,6 +37,14 @@ export type DungeonMessage =
 export type CommitStatus =
   "applied" | "duplicate" | "failed" | "pending" | "skipped";
 
+/** Payload of the final `result` frame (shared with the CLI client). */
+export interface ResultPayload {
+  reason: string;
+  cleared: boolean;
+  rewards: Record<string, ResultDelta>;
+  committed: Record<string, CommitStatus>;
+}
+
 export interface DungeonActorOptions {
   event: GameActorStartEvent;
   context: GamebaseContext;
@@ -261,6 +269,10 @@ export async function runDungeonActor({
           if (sim) await broadcast(connections(ctx), frame(sim), network);
         },
         onGameEnd: async ({ context: ctx, reason }) => {
+          // The tick that ends the run (boss kill, `cleared`) never reaches
+          // `onSnapshot`; flush its events so clients see the final blow.
+          if (sim && sim.events.length > 0)
+            await broadcast(connections(ctx), frame(sim), network);
           const deltas = sim ? results(sim) : {};
           // Commit before the result frame so a client returning to the lobby
           // reads the persisted sheet (README §4.3). A run nobody joined has
@@ -284,17 +296,15 @@ export async function runDungeonActor({
             cleared,
             committed,
           });
+          const payload: ResultPayload = {
+            reason: setupError ? "error" : reason,
+            cleared,
+            rewards: deltas,
+            committed,
+          };
           await broadcast(
             connections(ctx),
-            {
-              type: "result",
-              payload: {
-                reason: setupError ? "error" : reason,
-                cleared,
-                rewards: deltas,
-                committed,
-              },
-            },
+            { type: "result", payload },
             network,
           );
         },

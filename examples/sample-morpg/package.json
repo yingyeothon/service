@@ -7,7 +7,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "play": "node scripts/play.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-lambda": "^3.864.0",
@@ -23,6 +24,7 @@
     "@types/aws-lambda": "^8.10.152",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.3.0",
+    "@yingyeothon/gamebase-client": "^2.0.0",
     "esbuild": "^0.25.9",
     "eslint": "^9.34.0",
     "globals": "^17.11.0",

@@ -42,6 +42,9 @@ importers:
       '@types/node':
         specifier: ^24.3.0
         version: 24.13.3
+      '@yingyeothon/gamebase-client':
+        specifier: ^2.0.0
+        version: 2.0.0
       esbuild:
         specifier: ^0.25.9
         version: 0.25.12
@@ -931,6 +934,10 @@ packages:
 
   '@yingyeothon/gamebase-all-together@2.0.0':
     resolution: {integrity: sha512-kiffofhggbZUdLSZA5IMMOKra1bI82K//ZBHOUwXu4elQCxkH+yUrK12f99lKMwomyieCtTi+1s6Cf8LnUNe6Q==}
+    engines: {node: '>=20'}
+
+  '@yingyeothon/gamebase-client@2.0.0':
+    resolution: {integrity: sha512-thuX2c2pSZTyhx1Yi+wuDQY50+fKwRJHDpQrV8YpAaTMikCURextHhxPfstKm1JyakT9hWQ+zz3nikTtQZvkvA==}
     engines: {node: '>=20'}
 
   '@yingyeothon/lambda-gamebase@2.0.0':
@@ -2914,6 +2921,11 @@ snapshots:
     transitivePeerDependencies:
       - '@aws-sdk/client-apigatewaymanagementapi'
       - '@aws-sdk/client-lambda'
+
+  '@yingyeothon/gamebase-client@2.0.0':
+    dependencies:
+      '@yingyeothon/codec': 2.0.0
+      '@yingyeothon/logger': 2.0.0
 
   '@yingyeothon/lambda-gamebase@2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1118.0)(@aws-sdk/client-lambda@3.1118.0)':
     dependencies:
