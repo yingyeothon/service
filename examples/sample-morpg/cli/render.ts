@@ -1,5 +1,5 @@
 /* State → screen lines at a fixed width/height. `ansi: false` yields plain text (tests). */
-import { expForLevel } from "../src/character.js";
+import { EQUIP_SLOTS, expForLevel } from "../src/character.js";
 import type { MapBundle } from "../src/map.js";
 import { isLeader, selfPlayer, shortId, type AppState } from "./state.js";
 
@@ -7,6 +7,8 @@ export interface RenderOptions {
   width: number;
   height: number;
   ansi: boolean;
+  /** Epoch millis for buff countdowns; defaults to the wall clock. */
+  now?: number;
 }
 
 export const MIN_WIDTH = 60;
@@ -41,6 +43,7 @@ export function render(
   o: RenderOptions,
 ): string[] {
   const { width, height } = o;
+  const now = o.now ?? Date.now();
   if (width < MIN_WIDTH || height < MIN_HEIGHT)
     return [
       `terminal too small: need ${MIN_WIDTH}x${MIN_HEIGHT}, have ${width}x${height}`,
@@ -54,7 +57,7 @@ export function render(
   ).slice(0, maxTop);
   const mapWidth = map ? map.size.w : visibleWidth(mapLines[0] ?? "");
   const sideWidth = Math.max(SIDE_MIN, width - mapWidth - 2);
-  const side = renderSide(state, map, sideWidth, paint).slice(0, maxTop);
+  const side = renderSide(state, map, sideWidth, paint, now).slice(0, maxTop);
 
   const top: string[] = [];
   const rows = Math.max(mapLines.length, side.length);
@@ -132,6 +135,7 @@ function renderSide(
   map: MapBundle | undefined,
   width: number,
   paint: Paint,
+  now: number,
 ): string[] {
   const out: string[] = [];
   const line = (t: string, kind?: string): void => {
@@ -165,6 +169,14 @@ function renderSide(
       `lv ${s.level}  exp ${s.exp}/${expForLevel(s.level + 1)}  pts ${s.statPoints}`,
     );
     line(`hp ${s.maxHp}  atk ${s.attack}  def ${s.defence}`);
+    const gear = EQUIP_SLOTS.filter((slot) => s.equipment[slot]).map(
+      (slot) => `${slot}=${s.equipment[slot]}`,
+    );
+    if (gear.length > 0) line(`gear ${gear.join(" ")}`, "dim");
+    const buffs = s.abnormalities
+      .filter((a) => a.endsAt > now)
+      .map((a) => `${a.templateId} ${Math.ceil((a.endsAt - now) / 1000)}s`);
+    if (buffs.length > 0) line(`buffs ${buffs.join(" ")}`, "dim");
   }
   const r = state.lobby.roster;
   if (r) {
@@ -191,8 +203,13 @@ function renderSide(
   } else line("party: none", "dim");
   if (map && map.quests.length > 0) {
     line("quests:", "title");
-    for (const q of map.quests)
-      line(`  ${q.id}: ${s?.quests[q.id] ?? 0}/${q.count} ${q.templateId}`);
+    for (const q of map.quests) {
+      const st = s?.quests[q.id];
+      const mark = st?.active ? "" : st && st.completed > 0 ? " done" : " -";
+      line(
+        `  ${q.id}: ${st?.active ? st.progress : 0}/${q.count} ${q.templateId}${mark}`,
+      );
+    }
   }
   const items = Object.entries(s?.items ?? {}).filter(([, n]) => n > 0);
   line("items:", "title");

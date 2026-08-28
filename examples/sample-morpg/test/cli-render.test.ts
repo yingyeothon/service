@@ -19,13 +19,33 @@ describe("render", () => {
       version: 0,
       sheet: {
         ...newCharacter(),
-        items: { slime_jelly: 2 },
-        quests: { jelly_hunt: 1 },
+        items: { slime_jelly: 2, sword: 1 },
+        equipment: { weapon: "sword" },
+        abnormalities: [
+          { templateId: "haste", endsAt: 10_000 },
+          { templateId: "gone", endsAt: 3_000 },
+        ],
+        quests: { jelly_hunt: { active: true, progress: 1, completed: 0 } },
       },
     };
     s.log.push({ kind: "chat", text: "bbbbbbbb: hi" });
-    const lines = render(s, map, opts);
+    const lines = render(s, map, { ...opts, now: 4_000 });
     expect(lines).toHaveLength(20);
+    const text = lines.join("\n");
+    expect(text).toContain("gear weapon=sword");
+    expect(text).toContain("buffs haste 6s");
+    expect(text).not.toContain("gone");
+    expect(text).toContain("jelly_hunt: 1/3 slime");
+    s.sheet.sheet.quests = {
+      jelly_hunt: { active: false, progress: 0, completed: 1 },
+    };
+    expect(render(s, map, opts).join("\n")).toContain(
+      "jelly_hunt: 0/3 slime done",
+    );
+    s.sheet.sheet.quests = {};
+    expect(render(s, map, opts).join("\n")).toContain(
+      "jelly_hunt: 0/3 slime -",
+    );
     expect(lines[1]?.slice(0, map.size.w)).toBe("x@.P" + map.rows[1]?.slice(4));
     expect(lines.every((l) => l.length <= 80)).toBe(true);
     const side = lines.map((l) => l.slice(map.size.w + 2));
