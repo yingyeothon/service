@@ -13,7 +13,9 @@ fi
 zero=0000000000000000000000000000000000000000
 while read -r _lref lsha _rref rsha; do
   [ "$lsha" = "$zero" ] && continue
-  if [ "$rsha" = "$zero" ]; then range="$lsha"; else range="$rsha..$lsha"; fi
+  # After a history rewrite (git filter-repo + force push) the remote tip no longer exists locally,
+  # so `$rsha..$lsha` is an invalid range: scan everything reachable from the pushed tip instead.
+  if [ "$rsha" = "$zero" ] || ! git cat-file -e "$rsha^{commit}" 2>/dev/null; then range="$lsha"; else range="$rsha..$lsha"; fi
   tracked=$(git ls-tree -r --name-only "$lsha" | grep -E '(^|/)\.env(\.|$)|(^|/)\.envrc$|^local/' | grep -vE '\.example$|^local/README\.md$' || true)
   if [ -n "$tracked" ]; then echo "pre-push: secret-bearing paths are tracked in $lsha:" >&2; echo "$tracked" >&2; exit 1; fi
   todo=$(git ls-tree -r --name-only "$lsha" | grep -cE '^todo/' || true)
