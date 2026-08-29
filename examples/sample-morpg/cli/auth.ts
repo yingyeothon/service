@@ -17,7 +17,12 @@ export function resolveUserId(nameOrId: string): string {
 
 export type FetchLike = (
   url: string,
-  init?: { method?: string; headers?: Record<string, string>; body?: string },
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+  },
 ) => Promise<{ status: number; text(): Promise<string> }>;
 
 export interface MintOptions {

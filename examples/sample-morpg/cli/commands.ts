@@ -301,12 +301,36 @@ export function applyResolution(
   }
 }
 
+/**
+ * Node's readline folds an Esc that another key follows within its timeout
+ * into one meta keypress (`\x1bf`, `\x1b\x1b[A`). A person pressing Esc then
+ * a key meant "close this, then that key": returns the key as it was typed,
+ * or `undefined` when there was nothing to unfold.
+ */
+export function unfoldMeta(key: Key): Key | undefined {
+  const s = key.sequence ?? "";
+  if (key.name === "escape" || !s.startsWith("\x1b")) return;
+  const rest = s.slice(1);
+  // Esc before an escape sequence: Node reports `\x1b\x1b[A` as `up` with
+  // `meta: false`, so the sequence itself is the tell, not the flag.
+  if (rest.startsWith("\x1b")) return { ...key, meta: false, sequence: rest };
+  if (!key.meta) return;
+  // A bare CSI/SS3 sequence (`\x1b[A`, `\x1b[1;3A` = Alt+Up) is one key.
+  if (rest === "" || rest.startsWith("[") || rest.startsWith("O")) return;
+  return { ...key, meta: false, sequence: rest };
+}
+
 export function handleKey(
   state: AppState,
   key: Key,
   env: KeyEnv = {},
 ): Action | undefined {
   if (key.ctrl && key.name === "c") return { kind: "quit" };
+  const folded = unfoldMeta(key);
+  if (folded) {
+    handleKey(state, { name: "escape", sequence: "\x1b" }, env);
+    return handleKey(state, folded, env);
+  }
   if (state.input !== undefined) {
     switch (key.name) {
       case "return":

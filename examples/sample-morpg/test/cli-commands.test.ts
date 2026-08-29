@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { userIdFor } from "../cli/auth.js";
-import { handleKey, parseCommand } from "../cli/commands.js";
+import { handleKey, unfoldMeta, parseCommand } from "../cli/commands.js";
 import { newState } from "../cli/state.js";
 import { newCharacter } from "../src/character.js";
 import { loadZone } from "./_fixtures.js";
@@ -334,5 +334,65 @@ describe("handleKey", () => {
     expect(handleKey(s, { name: "c", ctrl: true })).toEqual({ kind: "quit" });
     handleKey(s, { name: "tab", sequence: "\t" });
     expect(s.input).toBe("");
+  });
+});
+
+describe("Esc folded into the next key", () => {
+  const env = { templates: loadZone().templates, now: 1_000 };
+  const open = () => {
+    const s = newState(HEX, "a");
+    s.lobby.zone = "zone001";
+    s.lobby.self = { x: 2, y: 1, dir: "e" };
+    s.sheet = { version: 1, sheet: newCharacter() };
+    handleKey(s, { name: "t" }, env);
+    expect(s.overlay).toMatchObject({ kind: "info" });
+    return s;
+  };
+  it("unfolds a meta key into Esc plus the key, leaving real sequences alone", () => {
+    expect(unfoldMeta({ name: "f", sequence: "\x1bf", meta: true })).toEqual({
+      name: "f",
+      sequence: "f",
+      meta: false,
+    });
+    // Node reports Esc+Up as `up` with `meta: false`; the doubled Esc is the tell.
+    expect(
+      unfoldMeta({ name: "up", sequence: "\x1b\x1b[A", meta: false }),
+    ).toEqual({ name: "up", sequence: "\x1b[A", meta: false });
+    expect(
+      unfoldMeta({ name: "up", sequence: "\x1b[1;3A", meta: true }),
+    ).toBeUndefined(); // Alt+Up is one key
+    expect(unfoldMeta({ name: "up", sequence: "\x1b[A" })).toBeUndefined();
+    expect(
+      unfoldMeta({ name: "escape", sequence: "\x1b", meta: true }),
+    ).toBeUndefined();
+    expect(unfoldMeta({ name: "f", sequence: "f" })).toBeUndefined();
+  });
+  it("Esc+w with a menu open closes it and moves", () => {
+    const s = open();
+    expect(
+      handleKey(s, { name: "w", sequence: "\x1bw", meta: true }, env),
+    ).toEqual({ kind: "move", dir: "n" });
+    expect(s.overlay).toBeUndefined();
+  });
+  it("Esc+arrow with a menu open closes it and moves", () => {
+    const s = open();
+    expect(
+      handleKey(s, { name: "up", sequence: "\x1b\x1b[A", meta: false }, env),
+    ).toEqual({ kind: "move", dir: "n" });
+    expect(s.overlay).toBeUndefined();
+  });
+  it("Esc+f on the input line drops the line and interacts", () => {
+    const s = open();
+    handleKey(s, { name: "escape" }, env);
+    handleKey(s, { name: "return" }, env);
+    s.input = "/say hi";
+    expect(
+      handleKey(s, { name: "f", sequence: "\x1bf", meta: true }, env),
+    ).toBeUndefined(); // hunter is adjacent: the talk menu opens instead
+    expect(s.input).toBeUndefined();
+    expect(s.overlay).toMatchObject({
+      kind: "choices",
+      title: "talk to hunter",
+    });
   });
 });

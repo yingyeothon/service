@@ -14,6 +14,13 @@ import { render } from "./render.js";
 import { createSession } from "./session.js";
 import { newState } from "./state.js";
 import { createTerminal, type Terminal } from "./terminal.js";
+import {
+  NO_TRACE,
+  createFileTrace,
+  startFetchDiagnostics,
+  startLagMonitor,
+  type Trace,
+} from "./trace.js";
 
 const PAINT_INTERVAL_MS = 100;
 
@@ -37,15 +44,36 @@ async function main(): Promise<void> {
   }
   const jwt = token;
   const state = newState(userId, config.user);
+  const file = config.trace ? createFileTrace(config.trace) : undefined;
+  const trace: Trace = file?.trace ?? NO_TRACE;
+  trace("start", {
+    pid: process.pid,
+    node: process.version,
+    batch: config.batch,
+    user: config.user,
+    tty: process.stdout.isTTY
+      ? `${process.stdout.columns}x${process.stdout.rows}`
+      : null,
+  });
+  const stopLag = file ? startLagMonitor(trace) : () => undefined;
+  if (file) startFetchDiagnostics(trace);
+  process.on("exit", (code) => {
+    trace("exit", { code });
+    stopLag();
+    file?.close();
+  });
   if (config.batch) {
-    const code = await runBatch(config, state, jwt);
+    const code = await runBatch(config, state, jwt, trace);
     // Nothing else to wait for: a redirected stdin or an SDK timer must not keep the process alive.
     process.stdout.write("", () => process.exit(code));
     return;
   }
   const term: Terminal = createTerminal();
+  trace("terminal", { nonblocking: term.nonblocking });
   // A throw inside an SDK event handler must not leave the TTY in raw mode on the alternate screen.
   const crash = (e: unknown): void => {
+    // The message only: a stack carries local paths (the sender's home directory).
+    trace("crash", { error: e instanceof Error ? e.message : String(e) });
     term.restore();
     console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
     process.exit(1);
@@ -73,7 +101,8 @@ async function main(): Promise<void> {
         gameId,
         token: jwt,
       }),
-    api: createGameApi({ apiBase: config.apiBase, token: jwt }),
+    api: createGameApi({ apiBase: config.apiBase, token: jwt, trace }),
+    trace,
     onChange: () => (dirty = true),
     onQuit: (reason) => {
       quitReason = reason;
@@ -85,9 +114,13 @@ async function main(): Promise<void> {
     // Countdowns (entry window, buffs) tick without a state change.
     if (state.lobby.pending) dirty = true;
     if (!dirty) return;
-    dirty = false;
+    if (term.backlogged()) {
+      trace("paint_backlog");
+      return; // `onDrain` paints; rendering now would be thrown away
+    }
     const { width, height } = term.size();
-    term.paint(
+    const t0 = performance.now();
+    const painted = term.paint(
       render(state, session.map, {
         width,
         height,
@@ -95,12 +128,36 @@ async function main(): Promise<void> {
         templates: session.templates,
       }),
     );
+    if (painted) dirty = false;
+    // Render plus the (non-blocking) enqueue; the terminal's own time shows
+    // up as `paint_backlog`, not here.
+    const ms = performance.now() - t0;
+    if (term.lastBytes > 0)
+      trace("paint", { bytes: term.lastBytes, ms: Math.round(ms * 10) / 10 });
+    if (ms > 30) trace("paint_slow", { ms: Math.round(ms) });
   };
   const timer = setInterval(paint, PAINT_INTERVAL_MS);
+  term.onDrain(paint);
   term.onResize(() => (dirty = true));
   term.onKey((key) => {
+    // A typed line is chat: on the input line only editing keys are named.
+    const mode =
+      state.input !== undefined ? "input" : state.overlay ? "overlay" : "keys";
+    const editing = ["return", "escape", "backspace"].includes(key.name ?? "");
+    trace("key", {
+      name: mode === "input" && !editing ? "text" : (key.name ?? key.sequence),
+      meta: key.meta || undefined,
+      ctrl: key.ctrl || undefined,
+      mode,
+    });
+    if (key.ctrl && key.name === "l") {
+      term.invalidate(); // redraw everything: the emulator was disturbed
+      dirty = true;
+      return;
+    }
     // ctrl+c always quits; any other key dismisses a finished run first.
     if (!(key.ctrl && key.name === "c") && session.dismissResult()) return;
+    const before = state.log.length;
     const action = handleKey(state, key, {
       templates: session.templates,
       ...(session.map ? { map: session.map } : {}),
@@ -108,6 +165,17 @@ async function main(): Promise<void> {
     });
     dirty = true;
     if (action) session.dispatch(action);
+    else if (mode === "keys") {
+      // A verb that opened a menu or was refused: the trace must not show
+      // `key f` followed by silence.
+      const last = state.log.at(-1);
+      trace("no_action", {
+        overlay: state.overlay?.kind,
+        ...(state.log.length > before && last?.kind === "sys"
+          ? { reason: last.text }
+          : {}),
+      });
+    }
   });
   const cleanup = (): void => {
     clearInterval(timer);
@@ -130,6 +198,7 @@ async function runBatch(
   config: ReturnType<typeof loadConfig>,
   state: ReturnType<typeof newState>,
   jwt: string,
+  trace: Trace,
 ): Promise<number> {
   // A missing script must fail before anything connects.
   if (config.script) openSync(config.script, "r");
@@ -171,7 +240,8 @@ async function runBatch(
         gameId,
         token: jwt,
       }),
-    api: createGameApi({ apiBase: config.apiBase, token: jwt }),
+    api: createGameApi({ apiBase: config.apiBase, token: jwt, trace }),
+    trace,
     onChange: () => front.changed(),
     onQuit: (reason) => front.quit(reason),
   });

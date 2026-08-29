@@ -165,3 +165,26 @@ describe("game api: sheet routes", () => {
     });
   });
 });
+
+describe("deadlines", () => {
+  it("gives up on a call that never answers and says so", async () => {
+    const events: string[] = [];
+    const api = createGameApi({
+      apiBase: "https://api.test",
+      token: "t",
+      timeoutMs: 20,
+      trace: (ev) => events.push(ev),
+      fetch: (_url, init) =>
+        new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const r: unknown = init.signal?.reason;
+            reject(r instanceof Error ? r : new Error(String(r)));
+          });
+        }),
+    });
+    await expect(api.teleport("zone002")).rejects.toThrow(
+      "POST /zone/zone002: no answer in 0.02 s",
+    );
+    expect(events).toEqual(["http_start", "http_fail"]);
+  });
+});
