@@ -96,7 +96,7 @@ describe("reduceLobby", () => {
     ]);
     expect(s.log.map((l) => l.kind)).toEqual(["chat", "party", "whisper"]);
   });
-  it("party roster, invites, offer/accept counting", () => {
+  it("party roster, invites, entry announcement / reject / start from any member", () => {
     const s = newState(ME, "me");
     reduceLobby(s, {
       t: "partyInvite",
@@ -109,42 +109,43 @@ describe("reduceLobby", () => {
     expect(s.lobby.invites).toHaveLength(1);
     reduceLobby(s, { t: "party", frame: party(LEADER, LEADER, ME) });
     expect(isLeader(s)).toBe(false);
-    reduceLobby(s, {
-      t: "event",
-      frame: {
-        type: "event",
-        from: LEADER,
-        scope: "party",
-        name: "dungeon.offer",
-        payload: {},
-      },
-    });
-    reduceLobby(s, {
-      t: "event",
-      frame: {
-        type: "event",
-        from: ME,
-        scope: "party",
-        name: "dungeon.accept",
-        payload: {},
-      },
-    });
-    reduceLobby(s, {
-      t: "event",
-      frame: {
-        type: "event",
-        from: ME,
-        scope: "party",
-        name: "dungeon.accept",
-        payload: {},
-      },
-    });
-    expect(s.lobby.offer).toEqual({ from: LEADER, accepted: [ME] });
+    const ev = (from: string, name: string, payload: unknown = {}) =>
+      reduceLobby(
+        s,
+        {
+          t: "event",
+          frame: { type: "event", from, scope: "party", name, payload },
+        },
+        1000,
+      );
+    // An outsider's announcement is ignored; a member's sets `pending`.
+    ev("ffffffffffffffffffffffffffffffff", "dungeon.offer");
+    expect(s.lobby.pending).toBeUndefined();
+    ev(ME, "dungeon.offer");
+    expect(s.lobby.pending).toEqual({ by: ME, at: 1000 });
+    expect(s.log.at(-1)?.text).toContain("/reject to stop");
+    ev(LEADER, "dungeon.offer");
+    expect(s.lobby.pending?.by).toBe(ME);
+    ev(LEADER, "dungeon.reject");
+    expect(s.lobby.pending).toBeUndefined();
+    expect(s.log.at(-1)?.text).toContain("rejected the dungeon");
+    // A start from a member who is not the leader joins; an outsider's is ignored.
+    ev(ME, "dungeon.offer");
+    expect(
+      ev("ffffffffffffffffffffffffffffffff", "dungeon.start", {
+        gameId: "g_0123456789abcdef",
+      }),
+    ).toEqual([]);
+    expect(ev(ME, "dungeon.start", { gameId: "g_0123456789abcdef" })).toEqual([
+      { kind: "startDungeon", gameId: "g_0123456789abcdef" },
+    ]);
+    expect(s.lobby.pending).toBeUndefined();
+    ev(LEADER, "dungeon.offer");
     reduceLobby(s, { t: "party", frame: { ...party(LEADER), partyId: "" } });
     expect(s.lobby.roster).toBeUndefined();
-    expect(s.lobby.offer).toBeUndefined();
+    expect(s.lobby.pending).toBeUndefined();
   });
-  it("dungeon.start is honoured only from the leader, with a valid gameId, in the lobby", () => {
+  it("dungeon.start is honoured from any party member, with a valid gameId, in the lobby", () => {
     const s = newState(ME, "me");
     const start = (from: string, gameId: unknown) =>
       reduceLobby(s, {
@@ -159,9 +160,11 @@ describe("reduceLobby", () => {
       });
     expect(start(LEADER, "g_0123456789abcdef")).toEqual([]); // no roster yet
     reduceLobby(s, { t: "party", frame: party(LEADER, LEADER, ME, PEER) });
-    expect(start(PEER, "g_0123456789abcdef")).toEqual([]);
+    expect(
+      start("ffffffffffffffffffffffffffffffff", "g_0123456789abcdef"),
+    ).toEqual([]);
     expect(start(LEADER, "g_bad")).toEqual([]);
-    expect(start(LEADER, "g_0123456789abcdef")).toEqual([
+    expect(start(PEER, "g_0123456789abcdef")).toEqual([
       { kind: "startDungeon", gameId: "g_0123456789abcdef" },
     ]);
     s.mode = "dungeon";

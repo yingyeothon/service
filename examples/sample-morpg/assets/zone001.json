@@ -2,10 +2,19 @@
   "format": 2,
   "id": "zone001",
   "version": "2026-08-29-1",
-  "size": { "w": 20, "h": 10 },
-  "origin": { "x": 0, "y": 0 },
+  "size": {
+    "w": 20,
+    "h": 10
+  },
+  "origin": {
+    "x": 0,
+    "y": 0
+  },
   "blocked": "x",
-  "start": { "x": 1, "y": 1 },
+  "start": {
+    "x": 1,
+    "y": 1
+  },
   "rows": [
     "xxxxxxxxxxxxxxxxxxxx",
     "x....a.............x",
@@ -23,44 +32,103 @@
       "mark": "a",
       "kind": "monster",
       "templateId": "slime",
-      "stats": { "maxHp": 20, "attack": 4, "defence": 1 },
-      "spawn": { "initial": 1, "max": 2, "ratePerSec": 0.1 },
+      "stats": {
+        "maxHp": 20,
+        "attack": 4,
+        "defence": 1
+      },
+      "spawn": {
+        "initial": 1,
+        "max": 2,
+        "ratePerSec": 0.1
+      },
       "exp": 10,
       "drops": [
-        { "itemId": "slime_jelly", "probability": 0.5 },
-        { "itemId": "hp_potion", "probability": 0.2 }
+        {
+          "itemId": "slime_jelly",
+          "probability": 0.5
+        },
+        {
+          "itemId": "hp_potion",
+          "probability": 0.2
+        }
       ]
     },
     {
       "mark": "b",
       "kind": "monster",
       "templateId": "boss",
-      "stats": { "maxHp": 60, "attack": 6, "defence": 2 },
-      "spawn": { "initial": 1, "max": 1, "ratePerSec": 0 },
+      "stats": {
+        "maxHp": 60,
+        "attack": 6,
+        "defence": 2
+      },
+      "spawn": {
+        "initial": 1,
+        "max": 1,
+        "ratePerSec": 0
+      },
       "exp": 100,
       "drops": [
-        { "itemId": "boss_horn", "probability": 1 },
-        { "itemId": "wooden_sword", "probability": 1 },
-        { "itemId": "rage_scroll", "probability": 0.5 }
+        {
+          "itemId": "boss_horn",
+          "probability": 1
+        },
+        {
+          "itemId": "wooden_sword",
+          "probability": 1
+        },
+        {
+          "itemId": "rage_scroll",
+          "probability": 0.5
+        }
       ]
     }
   ],
-  "clear": { "kind": "kill", "templateId": "boss" },
+  "clear": {
+    "kind": "kill",
+    "templateId": "boss"
+  },
   "templates": {
     "items": {
-      "slime_jelly": { "kind": "goods" },
-      "boss_horn": { "kind": "goods" },
-      "wolf_fang": { "kind": "goods" },
-      "wooden_sword": { "kind": "weapon", "bonus": { "attack": 5 } },
+      "slime_jelly": {
+        "kind": "goods"
+      },
+      "boss_horn": {
+        "kind": "goods"
+      },
+      "wolf_fang": {
+        "kind": "goods"
+      },
+      "wooden_sword": {
+        "kind": "weapon",
+        "bonus": {
+          "attack": 5
+        }
+      },
       "leather_armor": {
         "kind": "armor",
-        "bonus": { "defence": 3, "maxHp": 10 }
+        "bonus": {
+          "defence": 3,
+          "maxHp": 10
+        }
       },
-      "hp_potion": { "kind": "potion", "heal": 30 },
-      "rage_scroll": { "kind": "buff", "abnormalityId": "rage" }
+      "hp_potion": {
+        "kind": "potion",
+        "heal": 30
+      },
+      "rage_scroll": {
+        "kind": "buff",
+        "abnormalityId": "rage"
+      }
     },
     "abnormalities": {
-      "rage": { "bonus": { "attack": 10 }, "seconds": 300 }
+      "rage": {
+        "bonus": {
+          "attack": 10
+        },
+        "seconds": 300
+      }
     },
     "quests": {
       "jelly_hunt": {
@@ -90,32 +158,74 @@
     },
     "npcs": {
       "hunter": {
-        "at": { "x": 3, "y": 1 },
+        "at": {
+          "x": 3,
+          "y": 1
+        },
         "mark": "H",
         "quests": ["jelly_hunt", "wolf_hunt"]
       },
       "elder": {
-        "at": { "x": 17, "y": 1 },
+        "at": {
+          "x": 17,
+          "y": 1
+        },
         "mark": "E",
         "quests": ["jelly_gather", "horn_trophy"]
       },
       "forest_gate": {
-        "at": { "x": 18, "y": 8 },
+        "at": {
+          "x": 18,
+          "y": 8
+        },
         "mark": "G",
         "quests": [],
         "teleport": "zone002"
       },
       "town_gate": {
         "zone": "zone002",
-        "at": { "x": 1, "y": 2 },
+        "at": {
+          "x": 1,
+          "y": 2
+        },
         "mark": "G",
         "quests": [],
         "teleport": "zone001"
+      },
+      "dungeon_gate": {
+        "at": {
+          "x": 10,
+          "y": 8
+        },
+        "mark": "D",
+        "quests": [],
+        "dungeon": true
+      },
+      "forest_dungeon_gate": {
+        "zone": "zone002",
+        "at": {
+          "x": 5,
+          "y": 1
+        },
+        "mark": "D",
+        "quests": [],
+        "dungeon": true
       }
     },
     "zones": {
-      "zone001": { "start": { "x": 1, "y": 1 } },
-      "zone002": { "start": { "x": 1, "y": 1 }, "mapUrl": "zone002.json" }
+      "zone001": {
+        "start": {
+          "x": 1,
+          "y": 1
+        }
+      },
+      "zone002": {
+        "start": {
+          "x": 1,
+          "y": 1
+        },
+        "mapUrl": "zone002.json"
+      }
     }
   }
 }

@@ -165,7 +165,7 @@ interface Harness {
 }
 
 async function start(
-  opts: { connectFails?: boolean; zone?: string } = {},
+  opts: { connectFails?: boolean; zone?: string; enterDelayMs?: number } = {},
 ): Promise<Harness> {
   const state = newState(ME, "alice");
   const lobby = fakeLobby();
@@ -233,6 +233,7 @@ async function start(
     api: gameApi,
     onChange: () => {},
     onQuit: (r) => quit.push(r ?? "quit"),
+    enterDelayMs: opts.enterDelayMs ?? 0,
   });
   await session.start();
   await vi.advanceTimersByTimeAsync(0);
@@ -301,31 +302,132 @@ describe("session: lobby", () => {
     expect(h.lobby.sent.at(-1)).toEqual({ type: "party.accept", partyId: PTY });
     expect(h.state.lobby.invites).toEqual([]);
   });
-  it("offer is leader-only; accept needs a party", async () => {
-    const h = await start();
+  it("enter announces the run to the party, calls the API after the reject window, and a reject cancels it", async () => {
+    const h = await start({ enterDelayMs: 1000 });
     h.lobby.sent.length = 0;
-    h.session.dispatch({ kind: "offer" });
-    h.session.dispatch({ kind: "accept" });
+    h.session.dispatch({ kind: "enter" });
+    h.session.dispatch({ kind: "reject" });
     expect(h.lobby.sent).toEqual([]);
+    expect(h.state.log.at(-1)?.text).toContain("no party");
+    // A member (not the leader) may start the run.
     h.lobby.setRoster(party(PEER, PEER, ME));
-    h.session.dispatch({ kind: "offer" });
-    h.session.dispatch({ kind: "accept" });
-    expect(h.lobby.sent).toEqual([
-      {
-        type: "event",
-        scope: "party",
-        name: "dungeon.accept",
-        payload: { partyId: PTY },
-      },
-    ]);
-    h.lobby.setRoster(party(ME, ME, PEER));
-    h.session.dispatch({ kind: "offer" });
+    h.session.dispatch({ kind: "enter" });
     expect(h.lobby.sent.at(-1)).toEqual({
       type: "event",
       scope: "party",
       name: "dungeon.offer",
       payload: { partyId: PTY },
     });
+    // The gateway echoes the announcement to everyone, the sender included.
+    const echo = (from: string, name: string) =>
+      h.lobby.emit("event", {
+        type: "event",
+        from,
+        scope: "party",
+        name,
+        payload: { partyId: PTY },
+      });
+    echo(ME, "dungeon.offer");
+    expect(h.state.lobby.pending?.by).toBe(ME);
+    h.session.dispatch({ kind: "enter" });
+    expect(h.state.log.at(-1)?.text).toContain("already entering");
+    const enters = () => h.api.calls.filter((c) => c.startsWith("enter"));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(enters()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.api.calls.at(-1)).toBe(`enter ${PTY}`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.lobby.sent.at(-1)).toMatchObject({ name: "dungeon.start" });
+    expect(h.state.mode).not.toBe("lobby");
+  });
+  it("a reject inside the window cancels the entry; a peer's announcement sets pending and its start joins", async () => {
+    const h = await start({ enterDelayMs: 1000 });
+    h.lobby.setRoster(party(ME, ME, PEER));
+    const echo = (
+      from: string,
+      name: string,
+      payload: unknown = { partyId: PTY },
+    ) =>
+      h.lobby.emit("event", {
+        type: "event",
+        from,
+        scope: "party",
+        name,
+        payload,
+      });
+    h.session.dispatch({ kind: "enter" });
+    echo(ME, "dungeon.offer");
+    h.lobby.sent.length = 0;
+    echo(PEER, "dungeon.reject");
+    expect(h.state.lobby.pending).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.api.calls.filter((c) => c.startsWith("enter"))).toEqual([]);
+    expect(h.state.log.some((l) => l.text.includes("entry cancelled"))).toBe(
+      true,
+    );
+    // The peer announces: we may reject, and its start (a member, not the leader) joins us.
+    echo(PEER, "dungeon.offer");
+    expect(h.state.lobby.pending?.by).toBe(PEER);
+    h.session.dispatch({ kind: "reject" });
+    expect(h.lobby.sent.at(-1)).toMatchObject({ name: "dungeon.reject" });
+    echo(PEER, "dungeon.offer");
+    echo(PEER, "dungeon.start", { gameId: GAME });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.mode).not.toBe("lobby");
+    expect(h.state.dungeon?.gameId).toBe(GAME);
+  });
+  it("a solo party enters at once, without an announcement", async () => {
+    const h = await start({ enterDelayMs: 1000 });
+    h.lobby.setRoster(party(ME, ME));
+    h.lobby.sent.length = 0;
+    h.session.dispatch({ kind: "enter" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.at(-1)).toBe(`enter ${PTY}`);
+    expect(h.lobby.sent.map((f) => (f as { name?: string }).name)).toEqual([
+      "dungeon.start",
+    ]);
+  });
+  it("a refused entry clears the announcement for everyone; the announcer leaving clears it too", async () => {
+    const h = await start({ enterDelayMs: 0 });
+    h.lobby.setRoster(party(ME, ME, PEER));
+    h.api.enter = { ok: false, status: 504, code: "actor_not_ready" };
+    h.session.dispatch({ kind: "enter" });
+    expect(h.state.lobby.pending?.by).toBe(ME);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.lobby.pending).toBeUndefined();
+    expect(h.lobby.sent.at(-1)).toMatchObject({ name: "dungeon.reject" });
+    expect(h.state.log.at(-1)?.text).toContain("actor_not_ready");
+    // A second /enter is possible right away.
+    h.api.enter = { ok: false, status: 409, code: "entering" };
+    h.session.dispatch({ kind: "enter" });
+    expect(h.state.lobby.pending?.by).toBe(ME);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.lobby.pending).toBeUndefined();
+    // The peer announced, then left the party before the window closed.
+    h.lobby.emit("event", {
+      type: "event",
+      from: PEER,
+      scope: "party",
+      name: "dungeon.offer",
+      payload: { partyId: PTY },
+    });
+    expect(h.state.lobby.pending?.by).toBe(PEER);
+    h.lobby.setRoster(party(ME, ME));
+    expect(h.state.lobby.pending).toBeUndefined();
+    expect(h.state.log.some((l) => l.text.includes("announcer left"))).toBe(
+      true,
+    );
+  });
+  it("talking to the dungeon entrance NPC announces the run instead of calling the NPC route", async () => {
+    const h = await start({ enterDelayMs: 1000 });
+    h.lobby.setRoster(party(PEER, PEER, ME));
+    h.lobby.sent.length = 0;
+    h.session.dispatch({ kind: "talk", npcId: "dungeon_gate" });
+    expect(h.lobby.sent.at(-1)).toMatchObject({ name: "dungeon.offer" });
+    expect(h.api.calls.some((c) => c.startsWith("talk"))).toBe(false);
+    h.session.dispatch({ kind: "talk", npcId: "hunter" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.at(-1)).toBe("talk hunter -");
   });
   it("sheet commands call the API in town and replace the sheet; refusals are logged", async () => {
     const h = await start();
@@ -528,7 +630,7 @@ describe("session: lobby", () => {
 });
 
 describe("session: dungeon", () => {
-  it("leader /enter relays dungeon.start and joins; result → finished → back to town", async () => {
+  it("/enter announces, relays dungeon.start and joins; result → finished → back to town", async () => {
     const h = await start();
     h.lobby.setRoster(party(ME, ME, PEER));
     h.lobby.sent.length = 0;
@@ -536,6 +638,12 @@ describe("session: dungeon", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(h.api.calls).toContain(`enter ${PTY}`);
     expect(h.lobby.sent).toEqual([
+      {
+        type: "event",
+        scope: "party",
+        name: "dungeon.offer",
+        payload: { partyId: PTY },
+      },
       {
         type: "event",
         scope: "party",
@@ -580,7 +688,7 @@ describe("session: dungeon", () => {
       { type: "use", itemId: "potion" },
     ]);
     // lobby moves are ignored while in a dungeon
-    expect(h.lobby.sent).toHaveLength(1);
+    expect(h.lobby.sent).toHaveLength(2);
     g.emit("frame", {
       type: "refused",
       payload: { command: "move", code: "too_fast" },
@@ -608,12 +716,12 @@ describe("session: dungeon", () => {
     expect(h.api.calls).toHaveLength(before + 1);
     expect(h.lobby.sent.at(-1)).toMatchObject({ type: "pos", zone: "zone001" });
   });
-  it("a member joins on the leader's dungeon.start and a key dismisses the result early", async () => {
+  it("a member joins on a party member's dungeon.start (never an outsider's) and a key dismisses the result early", async () => {
     const h = await start();
     h.lobby.setRoster(party(PEER, PEER, ME));
     h.lobby.emit("event", {
       type: "event",
-      from: ME,
+      from: "ffffffffffffffffffffffffffffffff",
       scope: "party",
       name: "dungeon.start",
       payload: { gameId: GAME },
@@ -635,10 +743,8 @@ describe("session: dungeon", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(h.state.mode).toBe("lobby");
   });
-  it("non-leader and refused entries are logged, never connected", async () => {
+  it("party-less and refused entries are logged, never connected", async () => {
     const h = await start();
-    h.session.dispatch({ kind: "enter" });
-    h.lobby.setRoster(party(PEER, PEER, ME));
     h.session.dispatch({ kind: "enter" });
     await vi.advanceTimersByTimeAsync(0);
     expect(h.api.calls.filter((c) => c.startsWith("enter"))).toEqual([]);

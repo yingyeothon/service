@@ -51,10 +51,10 @@ describe("game api", () => {
         JSON.stringify({ gameId: GAME, wsUrl: "wss://x" }),
       ).enterDungeon("pty_0123456789abcdef"),
     ).toEqual({ ok: true, gameId: GAME });
-    expect(await api(403, '{"error":"not_leader"}').enterDungeon("p")).toEqual({
+    expect(await api(403, '{"error":"not_member"}').enterDungeon("p")).toEqual({
       ok: false,
       status: 403,
-      code: "not_leader",
+      code: "not_member",
       gameId: undefined,
     });
     expect(

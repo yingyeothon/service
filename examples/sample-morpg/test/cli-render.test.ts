@@ -55,9 +55,48 @@ describe("render", () => {
     expect(side[2]).toBe("zone: zone001  @1,1");
     expect(side[3]).toBe("lv 1  exp 0/100  pts 0");
     expect(side).toContain("party: none");
-    expect(side).toContain(
-      "npcs: hunter(H) @3,1 elder(E) @17,1 forest_gate(G) @18,8",
-    );
+    // The entry announcement counts down from the reducer's timestamp.
+    s.lobby.roster = {
+      type: "party",
+      partyId: "pty_0123456789abcdef",
+      leaderId: ME,
+      members: [
+        { userId: ME, online: true },
+        { userId: PEER, online: true },
+      ],
+      invited: [],
+      max: 4,
+    };
+    s.lobby.pending = { by: PEER, at: 1_000 };
+    const counting = render(s, map, {
+      width: 80,
+      height: 24,
+      ansi: false,
+      now: 3_500,
+    }).map((l) => l.slice(map.size.w + 2));
+    expect(
+      counting.some((l) =>
+        l.startsWith(`party enters the dungeon in 8s (${PEER.slice(0, 8)})`),
+      ),
+    ).toBe(true);
+    // Past the window plus grace the line is gone and the state cleared.
+    const stale = render(s, map, {
+      width: 80,
+      height: 24,
+      ansi: false,
+      now: 1_000 + 10_000 + 5_001,
+    });
+    expect(stale.some((l) => l.includes("party enters"))).toBe(false);
+    expect(s.lobby.pending).toBeUndefined();
+    s.lobby.roster = undefined;
+    // Clipped to the panel width at 80 columns; the full line carries dungeon_gate(D) @10,8 too.
+    expect(
+      side.some((l) =>
+        l.startsWith(
+          "npcs: hunter(H) @3,1 elder(E) @17,1 forest_gate(G) @18,8",
+        ),
+      ),
+    ).toBe(true);
     expect(side).toContain("  jelly_hunt: 1/3 slime");
     // A collect quest counts the bag; the pending marks say not accepted.
     expect(side).toContain("  jelly_gather: 2/2 slime_jelly (collect) -");

@@ -36,8 +36,8 @@ export type QuestTemplate =
 
 /**
  * A town NPC: static, drawn by the client at `at` in `zone` (mmo101 `Town`
- * NPCs). It either talks about its quests (`Quest` interaction) or sends the
- * player to another zone (`Teleport` interaction) — one of the two.
+ * NPCs). It talks about its quests (`Quest` interaction), sends the player to
+ * another zone (`Teleport` interaction) or is the dungeon entrance — one of the three.
  */
 export interface TownNpcTemplate {
   /** The zone whose grid `at` refers to; the bundle's own zone when omitted. */
@@ -49,6 +49,8 @@ export interface TownNpcTemplate {
   quests: string[];
   /** Zone id the NPC teleports to (`Templates.zones`). */
   teleport?: string;
+  /** A dungeon entrance: interacting here starts the party's run (no quests, no teleport). */
+  dungeon?: true;
 }
 
 /**
@@ -315,12 +317,19 @@ export function parseTemplates(
       if (questIds.length > 0) return fail(`npc ${id} teleport with quests`);
       teleport = v.teleport;
     }
+    let dungeon: true | undefined;
+    if (v.dungeon !== undefined) {
+      if (v.dungeon !== true || questIds.length > 0 || teleport !== undefined)
+        return fail(`npc ${id} dungeon`);
+      dungeon = true;
+    }
     return {
       zone,
       at: { x: at.x, y: at.y },
       mark: v.mark,
       quests: questIds,
       ...(teleport === undefined ? {} : { teleport }),
+      ...(dungeon === undefined ? {} : { dungeon }),
     };
   });
 

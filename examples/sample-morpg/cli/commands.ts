@@ -18,9 +18,8 @@ export type Action =
   | { kind: "party"; op: "create" | "leave" | "list" }
   | { kind: "party"; op: "invite"; userId: string }
   | { kind: "party"; op: "accept" | "decline"; partyId?: string }
-  | { kind: "offer" }
-  | { kind: "accept" }
   | { kind: "enter" }
+  | { kind: "reject" }
   | { kind: "char" }
   | { kind: "use"; itemId: string }
   | { kind: "equip"; itemId: string }
@@ -39,7 +38,7 @@ export type Action =
 export const HELP = [
   "keys: wasd/arrows/hjkl move · f/space attack · q skill (facing) · / type a command · Esc back",
   "/say <text> (or plain text) · /p <text> party chat · /w <user> <text> whisper",
-  "/party create|invite <user>|accept|decline|leave|list · /offer · /accept · /enter",
+  "/party create|invite <user>|accept|decline|leave|list · /enter (party enters in 10s; /reject cancels)",
   "/char reload sheet · /use <itemId> (town: buffs/gear, field: potions) · /operate",
   "/equip <itemId> · /unequip weapon|armor · /stats maxHp|attack|defence [n]",
   "/talk <npcId> [questId] · /zone <zoneId> · /help · /quit",
@@ -96,12 +95,10 @@ export function parseCommand(line: string): Action {
           return { kind: "unknown", line };
       }
     }
-    case "offer":
-      return { kind: "offer" };
-    case "accept":
-      return { kind: "accept" };
     case "enter":
       return { kind: "enter" };
+    case "reject":
+      return { kind: "reject" };
     case "char":
       return { kind: "char" };
     case "use": {

@@ -23,10 +23,13 @@ export interface Refused {
 }
 
 /** Party `event` names the game adds on top of the gateway protocol. */
+/** A member announces the run: everyone enters after the reject window unless someone rejects. */
 export const EVENT_OFFER = "dungeon.offer";
-export const EVENT_ACCEPT = "dungeon.accept";
-/** Sent by the leader after `POST /dungeon/enter`; only the entry caller learns the gameId. */
+export const EVENT_REJECT = "dungeon.reject";
+/** Sent by the entering member after `POST /dungeon/enter`; only the entry caller learns the gameId. */
 export const EVENT_START = "dungeon.start";
+/** Reject window (ms) between the announcement and `POST /dungeon/enter`. */
+export const ENTER_DELAY_MS = 10_000;
 
 export const GAME_ID = /^g_[0-9a-f]{16}$/;
 export const USER_ID = /^[0-9a-f]{32}$/;

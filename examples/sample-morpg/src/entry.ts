@@ -100,7 +100,7 @@ export interface EntryOptions {
   /** The world bundle's templates (`MAP_URL`); `NO_TEMPLATES` refuses everything named. */
   templates?: () => Promise<Templates>;
   /**
-   * The world bundle's URL. A party plays the field of the leader's zone
+   * The world bundle's URL. A party plays the field of the entering member's zone
    * (`templates.zones[zone].mapUrl`), falling back to this one; the start
    * event carries no `mapUrl` when unset (the actor then uses its own default).
    */
@@ -207,9 +207,9 @@ export function createHttpHandler(
   const templates = o.templates ?? (async () => NO_TEMPLATES);
   const now = o.now ?? Date.now;
 
-  /** The field a leader standing in `zone` enters (README §4.6 zones). */
-  const fieldFor = async (leaderId: string): Promise<string | undefined> => {
-    const [current, t] = await Promise.all([o.doc.read(leaderId), templates()]);
+  /** The field the entering member's `zone` leads to (README §4.6 zones). */
+  const fieldFor = async (userId: string): Promise<string | undefined> => {
+    const [current, t] = await Promise.all([o.doc.read(userId), templates()]);
     const zone = current ? parseCharacter(current.doc).zone : undefined;
     const zoneUrl = zone === undefined ? undefined : own(t.zones, zone)?.mapUrl;
     return zoneUrl ?? o.mapUrl;
@@ -231,10 +231,12 @@ export function createHttpHandler(
     const roster = await o.fetchRoster(partyId, user.bearer);
     if (roster === "unauthorized") return json(401, { error: "unauthorized" });
     if (roster === "not_found") return json(404, { error: "party_not_found" });
-    if (roster.leaderId !== user.userId)
-      return json(403, { error: "not_leader" });
+    // Any member starts the run (the party's consent is standing; clients give
+    // a reject window before calling this). Outsiders are refused.
+    if (!roster.members.some((m) => m.userId === user.userId))
+      return json(403, { error: "not_member" });
     const members = roster.members.map((m) => m.userId);
-    // One dungeon per party: a leader looping on `enter` would otherwise start
+    // One dungeon per party: a member looping on `enter` would otherwise start
     // one 900 s actor per call. The short lock closes the race between two
     // calls; the party → gameId key (checked against the actor's lock) refuses
     // while a game is live and lets a finished or crashed one be replaced.

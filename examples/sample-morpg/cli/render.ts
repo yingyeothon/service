@@ -2,7 +2,14 @@
 import { EQUIP_SLOTS, expForLevel } from "../src/character.js";
 import { isWalkable, type MapBundle } from "../src/map.js";
 import type { Templates } from "../src/templates.js";
-import { isLeader, selfPlayer, shortId, type AppState } from "./state.js";
+import {
+  isLeader,
+  pendingEntry,
+  selfPlayer,
+  shortId,
+  type AppState,
+} from "./state.js";
+import { ENTER_DELAY_MS } from "./types.js";
 
 export interface RenderOptions {
   width: number;
@@ -224,11 +231,14 @@ function renderSide(
     );
     if (r.invited.length > 0)
       line(`invited: ${r.invited.map(shortId).join(" ")}`, "dim");
-    const offer = state.lobby.offer;
-    if (offer) {
-      const others = r.members.filter((m) => m.userId !== offer.from).length;
+    const pending = pendingEntry(state, now);
+    if (pending) {
+      const left = Math.max(
+        0,
+        Math.ceil((pending.at + ENTER_DELAY_MS - now) / 1000),
+      );
       line(
-        `offer by ${shortId(offer.from)}: ${offer.accepted.length}/${others} accepted`,
+        `party enters the dungeon in ${left}s (${shortId(pending.by)}) — /reject to cancel`,
         "event",
       );
     }

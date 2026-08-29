@@ -36,7 +36,7 @@ export type DungeonMessage =
 
 /** The start event `POST /dungeon/enter` writes: tslib's plus the field to play. */
 export type DungeonStartEvent = GameActorStartEvent & {
-  /** The field's bundle URL (the leader's zone); the deploy's `MAP_URL` when absent. */
+  /** The field's bundle URL (the entering member's zone); the deploy's `MAP_URL` when absent. */
   mapUrl?: string;
 };
 
