@@ -152,6 +152,21 @@ Plan and migration detail: `docs/team-project.md`. Every resource — channel, c
 
 ## Hackathon workflow (console)
 
+Redesigned 2026-08-29 (supersedes the proposal/winner model below; implementation tracked in the local todo). Until the code lands, the previous section still describes the deployed behaviour.
+
+- **An event is a date vote plus a page.** A draft carries everything at once: title, markdown body, poster, place (free text) with an optional map `placeUrl`, `durationHours`, the candidate start times (`options`, each a timestamp) and `voteUntil`. There is no proposal; the round number ("36회") is part of the title.
+- **State machine** `draft → voting → waiting → opened → closed`, plus `cancelled`. `publish` (owner or admin) moves `draft → voting`. The rest is time-driven and **derived lazily**: every read computes the effective status from `voteUntil`, the decided start and `durationHours`, and persists it opportunistically on the next write or the daily sweep. No scheduler; an event nobody reads need not transition.
+- **Vote**: any non-`pending` member, **multiple options** per person, changeable while `voting`; tallies are hidden from voters until the vote closes. At `voteUntil` the option with the most votes wins, ties (including zero votes everywhere) go to the **earliest** start time. No extension, no early decision, `voteUntil` and the options are immutable once `voting`; `place`/`placeUrl` stay editable because they are not part of the vote.
+- **One event per date**: a candidate start time whose calendar day (`Asia/Seoul`) is already taken by another event's options or decided start (in `voting`, `waiting` or `opened`) is rejected — when the option is added to the draft and again at `publish`, since the draft may predate the conflict.
+- **Ownership**: any non-`pending` member creates drafts, at most **3 drafts per member** (`429`, `code: draft_limit`). A draft is visible only to its owner and admins. Owner and admin edit title/body/poster/place until `closed` and may `cancel` before `closed`; only a platform admin deletes (hard delete of the row, revisions, comments, votes and the poster object) — the deleted event is copied in full into `audit_log.detail_json` first.
+- **Every edit is a revision.** `event_revisions` stores the full page (title, body, poster key, place, placeUrl, durationHours) with the editor and time, including admin edits of someone else's draft; the API serves the list and any revision, the SPA and the CLI compute the diff between two revisions. The event page shows the history; the old proposal panel is gone.
+- **Poster**: allowed in every status before `closed`; each upload is recorded (`event_posters`: uploader, time, key, size), and a replacement deletes the previous S3 object immediately (one poster per event, no GC; a failed delete is retried by the daily sweep). Delivery stays the presigned-GET redirect.
+- **Comments** (`event_comments`, markdown, same caps as team comments) by non-`pending` members on non-draft events; edit/delete by the author or an admin. Anonymous visitors see only `waiting`, `opened` and `closed` events; members see every non-draft status including `voting` and `cancelled`.
+- **Migration is destructive**: `proposals`/`votes` are dropped and the `events` status enum is replaced. Both stages hold only test data (confirmed 2026-08-29), so no data is carried over.
+- No Slack notification in this iteration. Everything the SPA can do here the CLI can do too (`yyt events …`).
+
+### Previous model (deployed until the redesign lands)
+
 - Event state machine `draft → proposing → voting → decided → published → closed`, advanced by admins.
 - Proposals/votes require GitHub login (`pending` allowed). Proposal = free text (title/body incl. date, place, topic). One vote per person, changeable while `voting`.
 - In `decided` an admin picks the winner and uploads a poster (S3); `published` exposes `/events/{id}` publicly.
