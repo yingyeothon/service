@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { userIdFor } from "../cli/auth.js";
 import { handleKey, parseCommand } from "../cli/commands.js";
 import { newState } from "../cli/state.js";
+import { newCharacter } from "../src/character.js";
+import { loadZone } from "./_fixtures.js";
 
 const HEX = "0123456789abcdef0123456789abcdef";
+const PEER_ID = "b".repeat(32);
 
 describe("parseCommand", () => {
   it("sheet commands validate ids, slots and stats", () => {
@@ -104,6 +107,7 @@ describe("parseCommand", () => {
   it("simple verbs and limits", () => {
     for (const [line, kind] of [
       ["/reject", "reject"],
+      ["/attack", "attack"],
       ["/enter", "enter"],
       ["/char", "char"],
       ["/operate", "operate"],
@@ -124,12 +128,28 @@ describe("parseCommand", () => {
 });
 
 describe("handleKey", () => {
+  it("/ls, /target and /attack <uid> are the machine's discovery and targeting forms", () => {
+    expect(parseCommand("/ls npcs")).toEqual({ kind: "ls", what: "npcs" });
+    expect(parseCommand("/ls Monsters")).toEqual({
+      kind: "ls",
+      what: "monsters",
+    });
+    expect(parseCommand("/ls").kind).toBe("unknown");
+    expect(parseCommand("/ls everything").kind).toBe("unknown");
+    expect(parseCommand("/target 7")).toEqual({ kind: "target", uid: 7 });
+    expect(parseCommand("/target")).toEqual({ kind: "target" });
+    expect(parseCommand("/target x").kind).toBe("unknown");
+    expect(parseCommand("/attack 7")).toEqual({ kind: "attack", uid: 7 });
+    expect(parseCommand("/attack 1.5").kind).toBe("unknown");
+  });
   it("keys mode: movement, attack, skill, and entering line mode", () => {
     const s = newState(HEX, "a");
     expect(handleKey(s, { name: "w" })).toEqual({ kind: "move", dir: "n" });
     expect(handleKey(s, { name: "right" })).toEqual({ kind: "move", dir: "e" });
     expect(handleKey(s, { name: "j" })).toEqual({ kind: "move", dir: "s" });
-    expect(handleKey(s, { name: "space" })).toEqual({ kind: "attack" });
+    // In town `f`/space is "interact": nobody adjacent → a log line, no action.
+    expect(handleKey(s, { name: "space" })).toBeUndefined();
+    expect(s.log.at(-1)?.text).toBe("nobody adjacent");
     expect(handleKey(s, { name: "q" })).toEqual({ kind: "skill" });
     expect(handleKey(s, { name: "z" })).toBeUndefined();
     expect(handleKey(s, { sequence: "/" })).toBeUndefined();
@@ -155,6 +175,157 @@ describe("handleKey", () => {
     expect(handleKey(s, { name: "return" })).toBeUndefined();
     expect(s.input).toBe("");
     expect(handleKey(s, { name: "return" })).toBeUndefined();
+  });
+  it("overlays: a verb key opens a menu, a key picks (or is refused when disabled), Esc and / close", () => {
+    const s = newState(HEX, "a");
+    s.lobby.zone = "zone001";
+    s.lobby.self = { x: 2, y: 1, dir: "e" }; // hunter at 3,1
+    s.sheet = { version: 1, sheet: newCharacter() };
+    const env = { templates: loadZone().templates, now: 1_000 };
+    expect(handleKey(s, { name: "f" }, env)).toBeUndefined();
+    expect(s.overlay).toMatchObject({
+      kind: "choices",
+      title: "talk to hunter",
+      more: 0,
+    });
+    expect(
+      s.overlay?.kind === "choices" && s.overlay.choices.map((c) => c.key),
+    ).toEqual(["1", "2"]);
+    // Movement keys are swallowed while a menu is open; a digit picks.
+    expect(handleKey(s, { name: "w" }, env)).toBeUndefined();
+    expect(handleKey(s, { name: "1", sequence: "1" }, env)).toEqual({
+      kind: "talk",
+      npcId: "hunter",
+      questId: "jelly_hunt",
+    });
+    expect(s.overlay).toBeUndefined();
+    // Disabled entries do not pick; Esc closes.
+    s.sheet.sheet.quests.jelly_hunt = {
+      active: true,
+      progress: 0,
+      completed: 0,
+    };
+    handleKey(s, { name: "space" }, env);
+    expect(handleKey(s, { name: "1", sequence: "1" }, env)).toBeUndefined();
+    expect(s.overlay).toBeDefined();
+    handleKey(s, { name: "escape" }, env);
+    expect(s.overlay).toBeUndefined();
+    // Fixed operations get mnemonics; `/` leaves a menu straight into the line editor.
+    handleKey(s, { name: "p" }, env);
+    expect(
+      s.overlay?.kind === "choices" && s.overlay.choices.map((c) => c.key),
+    ).toEqual(["c"]);
+    handleKey(s, { sequence: "/" }, env);
+    expect(s.overlay).toBeUndefined();
+    expect(s.input).toBe("/");
+    s.input = undefined;
+    // A compose choice opens the line editor with the command prefix.
+    s.lobby.peers[PEER_ID] = { userId: PEER_ID, x: 5, y: 5 };
+    handleKey(s, { name: "c" }, env);
+    expect(handleKey(s, { name: "1", sequence: "1" }, env)).toBeUndefined();
+    expect(s.input).toBe(`/w ${PEER_ID} `);
+    s.input = undefined;
+    // Info overlays (?, t) close on Esc; a refusal is a log line, never an overlay.
+    expect(handleKey(s, { sequence: "?" }, env)).toEqual({ kind: "help" });
+    handleKey(s, { name: "t" }, env);
+    expect(s.overlay).toMatchObject({ kind: "info", title: "character" });
+    handleKey(s, { name: "escape" }, env);
+    handleKey(s, { name: "+", sequence: "+" }, env);
+    expect(s.overlay).toBeUndefined();
+    expect(s.log.at(-1)?.text).toBe("no stat points");
+    // Tab cycles the target only inside a run.
+    handleKey(s, { name: "tab" }, env);
+    expect(s.log.at(-1)?.text).toBe("targets exist in a dungeon");
+  });
+  it("mnemonic keys, the nine-choice cut, compose prefixes, and the run-mode f/Tab", () => {
+    const s = newState(HEX, "a");
+    s.lobby.zone = "zone001";
+    s.lobby.self = { x: 1, y: 1, dir: "s" };
+    s.sheet = { version: 1, sheet: { ...newCharacter(), statPoints: 3 } };
+    const env = { templates: loadZone().templates, now: 1_000 };
+    const keys = () =>
+      s.overlay?.kind === "choices" ? s.overlay.choices.map((c) => c.key) : [];
+    handleKey(s, { sequence: "+" }, env);
+    expect(keys()).toEqual(["h", "a", "d"]);
+    expect(handleKey(s, { name: "a", sequence: "a" }, env)).toEqual({
+      kind: "stats",
+      stat: "attack",
+      points: 1,
+    });
+    // Eleven item kinds: nine numbered, two counted; mnemonics never consume digits.
+    s.sheet.sheet.items = Object.fromEntries(
+      Array.from({ length: 11 }, (_, i) => [`thing_${i}`, 1]),
+    );
+    handleKey(s, { name: "i" }, env);
+    expect(keys()).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+    expect(s.overlay?.kind === "choices" && s.overlay.more).toBe(2);
+    handleKey(s, { name: "escape" }, env);
+    s.lobby.roster = {
+      type: "party",
+      partyId: "pty_0123456789abcdef",
+      leaderId: HEX,
+      members: [{ userId: HEX, online: true }],
+      invited: [],
+      max: 4,
+    };
+    for (let i = 0; i < 12; i++)
+      s.lobby.peers[`${i}`.padStart(32, "0")] = {
+        userId: `${i}`.padStart(32, "0"),
+        x: 1,
+        y: 1,
+      };
+    handleKey(s, { name: "p" }, env);
+    expect(keys().at(-1)).toBe("l"); // leave survives the cut
+    expect(keys()).toHaveLength(10);
+    handleKey(s, { name: "escape" }, env);
+    handleKey(s, { name: "c" }, env);
+    expect(keys().slice(0, 2)).toEqual(["z", "p"]);
+    handleKey(s, { name: "p", sequence: "p" }, env);
+    expect(s.input).toBe("/p ");
+    s.input = undefined;
+    handleKey(s, { name: "c" }, env);
+    handleKey(s, { name: "z", sequence: "z" }, env);
+    expect(s.input).toBe("/say ");
+    s.input = undefined;
+    // Enter leaves a menu into the (empty) line editor.
+    handleKey(s, { name: "c" }, env);
+    handleKey(s, { name: "return" }, env);
+    expect(s.overlay).toBeUndefined();
+    expect(s.input).toBe("");
+    s.input = undefined;
+    // Inside a run: f attacks (through the target rule), Tab cycles.
+    s.mode = "dungeon";
+    s.dungeon = {
+      gameId: "g_0123456789abcdef",
+      stage: "running",
+      refusals: 0,
+      you: HEX,
+      frame: {
+        time: 1,
+        cleared: false,
+        players: [{ id: HEX, x: 5, y: 5, hp: 10, maxHp: 50, alive: true }],
+        monsters: [
+          { uid: 1, templateId: "slime", x: 6, y: 5, hp: 9, maxHp: 20 },
+          { uid: 2, templateId: "slime", x: 9, y: 9, hp: 9, maxHp: 20 },
+        ],
+        projectiles: [],
+        events: [],
+      },
+    };
+    expect(handleKey(s, { name: "f" }, env)).toEqual({
+      kind: "attack",
+      uid: 1,
+    });
+    expect(handleKey(s, { name: "tab" }, env)).toEqual({
+      kind: "target",
+      uid: 1,
+    });
+    s.target = 2;
+    expect(handleKey(s, { name: "space" }, env)).toBeUndefined();
+    expect(s.log.at(-1)?.text).toBe("target 2 not adjacent (distance 4)");
+    // A run-mode menu still lets `r`… no: reject needs an entry; the potion is usable.
+    handleKey(s, { name: "i" }, env);
+    expect(s.overlay?.kind).toBe("choices");
   });
   it("ctrl+c quits in either mode; control sequences are not typed", () => {
     const s = newState(HEX, "a");

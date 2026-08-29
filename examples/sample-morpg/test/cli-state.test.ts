@@ -145,6 +145,39 @@ describe("reduceLobby", () => {
     expect(s.lobby.roster).toBeUndefined();
     expect(s.lobby.pending).toBeUndefined();
   });
+  it("a frame without the selected monster (dead or gone) clears the target", () => {
+    const s = newState(ME, "me");
+    s.mode = "dungeon";
+    s.dungeon = newDungeon("g_0123456789abcdef");
+    s.target = 7;
+    const mon = (hp: number) => ({
+      uid: 7,
+      templateId: "slime",
+      x: 1,
+      y: 1,
+      hp,
+      maxHp: 9,
+    });
+    const frame = (monsters: ReturnType<typeof mon>[]) =>
+      reduceDungeon(s, {
+        t: "frame",
+        payload: {
+          time: 0,
+          cleared: false,
+          players: [],
+          monsters,
+          projectiles: [],
+          events: [],
+        },
+      });
+    frame([mon(3)]);
+    expect(s.target).toBe(7);
+    frame([mon(0)]);
+    expect(s.target).toBeUndefined();
+    s.target = 7;
+    frame([]);
+    expect(s.target).toBeUndefined();
+  });
   it("dungeon.start is honoured from any party member, with a valid gameId, in the lobby", () => {
     const s = newState(ME, "me");
     const start = (from: string, gameId: unknown) =>
@@ -267,10 +300,20 @@ describe("dungeon", () => {
       payload: {
         reason: "cleared",
         cleared: true,
-        rewards: {},
+        rewards: {
+          [ME]: {
+            exp: 110,
+            items: { boss_horn: 1 },
+            consumed: {},
+            questProgress: {},
+          },
+        },
         committed: { [ME]: "applied" },
       },
     });
+    expect(s.log.at(-1)?.text).toBe(
+      "commit: applied exp+110 items boss_horn+1",
+    );
     reduceDungeon(s, { t: "ended", kind: "finished", reason: "finished" });
     expect(s.dungeon).toMatchObject({
       stage: "ended",

@@ -448,7 +448,7 @@ describe("session: lobby", () => {
     h.api.sheet = { ok: false, status: 409, code: "no_item" };
     h.session.dispatch({ kind: "equip", itemId: "axe" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.state.log.at(-1)).toEqual({
+    expect(h.state.log.at(-1)).toMatchObject({
       kind: "error",
       text: "equip axe: no_item (409)",
     });
@@ -461,7 +461,7 @@ describe("session: lobby", () => {
     h.session.dispatch({ kind: "talk", npcId: "elder" });
     await vi.advanceTimersByTimeAsync(0);
     expect(h.api.calls).toEqual(["character"]);
-    expect(h.state.log.at(-1)).toEqual({
+    expect(h.state.log.at(-1)).toMatchObject({
       kind: "error",
       text: "talk elder works in town",
     });
@@ -490,9 +490,16 @@ describe("session: lobby", () => {
     // The zone's own bundle is drawn from now on; fetched once.
     expect(h.session.map?.id).toBe("zone002");
     expect(h.fetched).toEqual([zone.templates.zones.zone002!.mapUrl]);
+    h.lobby.emit("snapshot", {
+      type: "snapshot",
+      zone: "zone002",
+      peers: [{ userId: PEER, x: 2, y: 2 }],
+    });
     h.session.dispatch({ kind: "zone", zoneId: "zone002" });
     await vi.advanceTimersByTimeAsync(0);
     expect(h.fetched).toHaveLength(1);
+    // Same zone again: no new snapshot comes, so the peers are kept.
+    expect(Object.keys(h.state.lobby.peers)).toEqual([PEER]);
     expect(h.session.templates?.zones.zone002).toBeDefined();
   });
   it("a dungeon hello naming a field bundle fetches it and draws it until the run ends", async () => {
@@ -742,6 +749,62 @@ describe("session: dungeon", () => {
     expect(h.session.dismissResult()).toBe(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(h.state.mode).toBe("lobby");
+  });
+  it("/ls logs one row per entity, /target and /attack <uid> are checked against the frame", async () => {
+    const h = await start();
+    h.session.dispatch({ kind: "ls", what: "party" });
+    expect(h.state.log.at(-1)?.text).toBe("party: none");
+    h.session.dispatch({ kind: "ls", what: "npcs" });
+    expect(h.state.log.at(-1)?.text).toMatch(/^npc dungeon_gate role=dungeon/);
+    h.session.dispatch({ kind: "attack" });
+    expect(h.state.log.at(-1)?.text).toBe("not in a dungeon");
+    h.lobby.setRoster(party(ME, ME));
+    h.session.dispatch({ kind: "enter" });
+    await vi.advanceTimersByTimeAsync(0);
+    const g = h.games[0]!;
+    g.emit("frame", {
+      type: "hello",
+      payload: { gameId: GAME, mapId: "zone001", mapVersion: "v1", you: ME },
+    });
+    h.session.dispatch({ kind: "attack" });
+    expect(h.state.log.at(-1)?.text).toBe("no frame yet");
+    g.emit("frame", {
+      type: "frame",
+      payload: {
+        time: 1,
+        cleared: false,
+        players: [{ id: ME, x: 2, y: 2, hp: 50, maxHp: 50, alive: true }],
+        monsters: [
+          { uid: 7, templateId: "slime", x: 3, y: 2, hp: 9, maxHp: 20 },
+          { uid: 8, templateId: "slime", x: 9, y: 9, hp: 9, maxHp: 20 },
+        ],
+        projectiles: [],
+        events: [],
+      },
+    });
+    g.sent.length = 0;
+    h.session.dispatch({ kind: "target", uid: 99 });
+    expect(h.state.log.at(-1)?.text).toBe("no live monster 99");
+    h.session.dispatch({ kind: "target", uid: 8 });
+    expect(h.state.target).toBe(8);
+    h.session.dispatch({ kind: "attack" });
+    expect(h.state.log.at(-1)?.text).toBe("target 8 not adjacent (distance 7)");
+    expect(g.sent).toEqual([]);
+    h.session.dispatch({ kind: "attack", uid: 7 });
+    expect(g.sent.at(-1)).toEqual({ type: "attack", uid: 7 });
+    h.session.dispatch({ kind: "target" });
+    expect(h.state.target).toBeUndefined();
+    h.session.dispatch({ kind: "ls", what: "monsters" });
+    expect(h.state.log.at(-1)?.text).toBe(
+      "monster 8 tpl=slime hp=9/20 at=9,9 adj=0 target=0",
+    );
+    // Back in town the selection is gone (uids restart per run).
+    h.session.dispatch({ kind: "target", uid: 8 });
+    g.emit("aborted", { code: 4001, reason: "actor died" });
+    h.session.dismissResult();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.mode).toBe("lobby");
+    expect(h.state.target).toBeUndefined();
   });
   it("party-less and refused entries are logged, never connected", async () => {
     const h = await start();
