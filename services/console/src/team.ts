@@ -643,8 +643,9 @@ export function createTeamRoutes({
       body: memberPatchBody,
       handler: async (ctx) => {
         // Owners promote/demote/approve. A platform admin without a membership
-        // may only *appoint an owner*, and only a non-admin platform member
-        // other than themselves: no self-grant into the secret paths.
+        // may only *appoint an owner*: any existing platform member, themselves
+        // included (decisions.md, revised 2026-08-29); a `pending` login is not
+        // a member yet.
         const a = await teamAccess(ctx, ctx.params.team!, {
           min: "owner",
           adminAsOwner: true,
@@ -654,15 +655,10 @@ export function createTeamRoutes({
         const seated = !!row && row.state === "active";
         if (a.standing === "admin") {
           const target = await db.findMember(mid);
-          if (
-            ctx.body.role !== "owner" ||
-            mid === a.id.subject ||
-            target?.role !== "member"
-          )
-            throw new AppError(
-              "forbidden",
-              "admins may only appoint a non-admin platform member as owner",
-            );
+          if (ctx.body.role !== "owner")
+            throw new AppError("forbidden", "admins may only appoint an owner");
+          if (!target || target.role === "pending")
+            throw new AppError("not_found", "no such platform member");
         } else if (!seated) throw new AppError("not_found", "member not found");
         await requireLockable(a.team, mid);
         await mdRate(a.id);

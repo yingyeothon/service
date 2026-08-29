@@ -487,7 +487,7 @@ describe("teams", () => {
 });
 
 describe("platform admin override", () => {
-  it("lists all, reads, appoints a non-admin owner only, never touches secrets", async () => {
+  it("lists all, reads, appoints any platform member (self included) as owner, never touches secrets", async () => {
     const h = ticking();
     const { owner, member, other, admin, team, project } = await seedTeam(h);
     const all = parse(
@@ -531,7 +531,7 @@ describe("platform admin override", () => {
       const r = await h.app(ev(method, path, { body, headers: admin.cookie }));
       expect(r.statusCode, `${method} ${path}`).toBe(403);
     }
-    // Appoint: only role=owner, only a non-admin platform member, never self.
+    // Appoint: only role=owner; the appointee must be an existing platform member.
     const asMember = await h.app(
       ev("PATCH", `/teams/${team.id}/members/${member.id}`, {
         body: { role: "member" },
@@ -539,13 +539,6 @@ describe("platform admin override", () => {
       }),
     );
     expect(asMember.statusCode).toBe(403);
-    const self = await h.app(
-      ev("PATCH", `/teams/${team.id}/members/${admin.id}`, {
-        body: { role: "owner" },
-        headers: admin.cookie,
-      }),
-    );
-    expect(self.statusCode).toBe(403);
     // An outsider can be seated straight in as owner (ownerless-team rescue).
     const notSeated = await h.app(
       ev("PATCH", `/teams/${team.id}/members/${other.id}`, {
@@ -564,7 +557,19 @@ describe("platform admin override", () => {
           }),
         )
       ).statusCode,
-    ).toBe(403);
+    ).toBe(404);
+    // A platform-pending login is not a member yet.
+    const newbie = await h.login("newbie-appoint", "pending");
+    expect(
+      (
+        await h.app(
+          ev("PATCH", `/teams/${team.id}/members/${newbie.id}`, {
+            body: { role: "owner" },
+            headers: admin.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
     const appoint = await h.app(
       ev("PATCH", `/teams/${team.id}/members/${member.id}`, {
         body: { role: "owner" },
@@ -574,13 +579,19 @@ describe("platform admin override", () => {
     expect(appoint.statusCode, appoint.body).toBe(200);
     expect(parse(appoint).role).toBe("owner");
     expect(h.db.audits.map((a) => a.action)).toContain("team.member.appoint");
-    // An admin who *is* a member is judged by the membership.
-    await h.app(
-      ev("POST", `/teams/${team.id}/members`, {
-        body: { login: "Boss", role: "member" },
-        headers: owner.cookie,
+    // Self-appointment is allowed (decisions.md, 2026-08-29): the admin seats
+    // themselves as owner and is judged by that membership from then on.
+    const self = await h.app(
+      ev("PATCH", `/teams/${team.id}/members/${admin.id}`, {
+        body: { role: "owner" },
+        headers: admin.cookie,
       }),
     );
+    expect(self.statusCode, self.body).toBe(200);
+    expect(parse(self)).toMatchObject({ role: "owner", state: "active" });
+    expect(
+      h.db.audits.filter((a) => a.action === "team.member.appoint").at(-1),
+    ).toMatchObject({ actorId: admin.id, detail: { memberId: admin.id } });
     const asSeated = await h.app(
       ev("POST", `/projects/${project.id}/versions`, {
         body: { name: "1.0.0" },

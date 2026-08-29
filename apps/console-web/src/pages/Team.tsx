@@ -243,7 +243,7 @@ const ROLE_TONE: Record<TeamMember["role"], string> = {
 /**
  * Roster and seat management. Owners approve/promote/demote/kick and add by
  * GitHub login; anyone may leave; a platform admin without a seat may only
- * appoint an owner (a non-admin member other than themselves).
+ * appoint an owner (any platform member, themselves included).
  */
 function MembersTab({
   team,
@@ -315,7 +315,9 @@ function MembersTab({
 
   const seated = (list.data ?? []).filter((m) => m.state === "active");
   const appointable = (platform.data ?? []).filter(
-    (m: Member) => m.role === "member" && m.id !== me?.id,
+    (m: Member) =>
+      m.role !== "pending" &&
+      !seated.some((s) => s.id === m.id && s.role === "owner"),
   );
 
   return (
@@ -353,7 +355,7 @@ function MembersTab({
             <Group align="end" wrap="wrap">
               <NativeSelect
                 label="Appoint an owner (admin)"
-                description="A non-admin platform member; they need not be seated yet."
+                description="Any platform member (yourself included); they need not be seated yet."
                 value={appoint}
                 onChange={(e) => setAppoint(e.target.value)}
                 data={[
