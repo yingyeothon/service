@@ -141,6 +141,8 @@ export function createSession(o: SessionOptions): Session {
   const changed = (): void => o.onChange();
   const log = (kind: Parameters<typeof pushLog>[1], text: string): void => {
     pushLog(state, kind, text);
+    // The client's own lines only: chat, party and whisper text stay out.
+    if (kind === "sys" || kind === "error") trace("log", { kind, text });
     changed();
   };
   const run = (effects: LobbyEffect[]): void => {
