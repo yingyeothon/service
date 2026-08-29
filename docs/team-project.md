@@ -18,7 +18,7 @@ GET|PATCH|DELETE /teams/{team}        member / owner / owner|admin (409 while pr
 PUT    /teams/{team}/admin-lock       admin     requires every seated row to be a platform admin
 GET    /teams/{team}/members          team member
 POST   /teams/{team}/members          owner     {login, role} — login must already be a platform member
-PATCH  /teams/{team}/members/{mid}    owner {role}; admin only {role:"owner"} for a non-admin other than self
+PATCH  /teams/{team}/members/{mid}    owner {role}; seatless admin only {role:"owner"} for any existing platform member (self included; `pending` login → 404)
 DELETE /teams/{team}/members/{mid}    owner (kick) / self (leave, or withdraw a pending request)
 GET    /teams/{team}/history          team member  ?cursor&limit (cursor = (at, id))
 GET|POST /teams/{team}/discussions ; GET|PATCH|DELETE …/{id} ; POST …/{id}/comments ; PATCH|DELETE …/comments/{cid}

@@ -525,7 +525,7 @@ func (a *App) teamMembersCmd(teamOf teamResolver) *cobra.Command {
 	}
 	c.AddCommand(
 		setRole("approve", "Approve a pending request as a member (owner)", "member"),
-		setRole("promote", "Make a member an owner (owner; admins may appoint an unseated member)", "owner"),
+		setRole("promote", "Make a member an owner (owner; a seatless admin may appoint any platform member, themselves included)", "owner"),
 		setRole("demote", "Make an owner a member (owner; the last owner cannot be demoted)", "member"),
 	)
 	remove := func(use, short string, self bool) *cobra.Command {
