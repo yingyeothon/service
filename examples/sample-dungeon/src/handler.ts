@@ -35,6 +35,11 @@ const env = readDungeonEnv();
 const prefixes = keyPrefixes(env.redisKeyPrefix);
 const logger = createConsoleLogger("info");
 const context = createGamebaseContext(gamebaseOptionsFromEnv());
+/* Alive window of one actor: the start event and the queue expire with it
+ * (tslib's handleActor keeps its own +10 s margin on the same keys). The
+ * gateway's queue backstop (15 m) must stay >= this. */
+const actorLifetimeSeconds =
+  DEFAULT_WAITING_SECONDS + DEFAULT_RUNNING_SECONDS + LIFETIME_MARGIN_SECONDS;
 
 /* REQUEST authorizer on $connect: verifies the auth service's JWT unchanged. */
 export const authorizer: APIGatewayRequestAuthorizerHandler =
@@ -61,6 +66,7 @@ export async function ws(
         connectionIdAndGameIdKeyPrefix: prefixes.connectionIdAndGameIdKeyPrefix,
         actorEventKeyPrefix: prefixes.eventKeyPrefix,
         actorQueueKeyPrefix: prefixes.queueKeyPrefix,
+        queueTtlSeconds: actorLifetimeSeconds,
         resolveMemberId,
         selectSubprotocol: (offered) =>
           offered.includes("bearer") ? "bearer" : undefined,
@@ -72,6 +78,7 @@ export async function ws(
         logger,
         connectionIdAndGameIdKeyPrefix: prefixes.connectionIdAndGameIdKeyPrefix,
         actorQueueKeyPrefix: prefixes.queueKeyPrefix,
+        queueTtlSeconds: actorLifetimeSeconds,
       });
     default:
       return handleMessages<DungeonMessage>({
@@ -80,6 +87,7 @@ export async function ws(
         logger,
         connectionIdAndGameIdKeyPrefix: prefixes.connectionIdAndGameIdKeyPrefix,
         actorQueueKeyPrefix: prefixes.queueKeyPrefix,
+        queueTtlSeconds: actorLifetimeSeconds,
         validateMessage: isClientMessage,
       });
   }
@@ -105,8 +113,6 @@ export async function actor(event: GameActorStartEvent): Promise<void> {
 }
 
 const lambda = new LambdaClient({});
-const startEventTtlSeconds =
-  DEFAULT_WAITING_SECONDS + DEFAULT_RUNNING_SECONDS + LIFETIME_MARGIN_SECONDS;
 
 export const matchCallback = createLobbyHandler({
   matchApiKey: env.matchApiKey,
@@ -119,7 +125,7 @@ export const matchCallback = createLobbyHandler({
       eventKeyPrefix: prefixes.eventKeyPrefix,
       set: (key, value) =>
         redisSet(context.getRedisConnection(), key, value, {
-          expirationMillis: startEventTtlSeconds * 1000,
+          expirationMillis: actorLifetimeSeconds * 1000,
         }),
     }),
   startActor: (startEvent) =>
