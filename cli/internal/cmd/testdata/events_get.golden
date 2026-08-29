@@ -1,8 +1,18 @@
-id:        ev_0123
-title:     잉여톤 12
-status:    published
-created:   2025-08-24T01:46:40Z
-published: 2025-08-24T01:48:20Z
-winner:    pr_1 Dungeon (3 votes)
-poster:    https://console.example/events/ev_0123/poster
-body:      # hi
+id:           ev_0123
+title:        잉여톤 36
+status:       waiting
+owner:        octo
+place:        Seoul
+map:          https://map.example/x
+hours:        8
+vote until:   2025-08-24T01:46:40Z
+starts:       2025-08-25T05:33:20Z
+option eo_1:  2025-08-25T05:33:20Z (3 votes) *
+option eo_2:  2025-08-26T09:20:00Z (1 votes)
+voters:       3
+revision:     2
+created:      2025-08-24T01:46:40Z
+published:    2025-08-24T01:48:20Z
+poster:       https://console.example/events/ev_0123/poster
+body:         # hi
+comment ec_1: octo 2025-08-24T01:50:00Z: see you

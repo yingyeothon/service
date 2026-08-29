@@ -36,6 +36,7 @@ import {
   runRedisAclReconcile,
   runRedisUsageReport,
 } from "./expire.js";
+import { runEventSweep } from "./events.js";
 import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 import {
   createCloudWatchUsageMetrics,
@@ -230,9 +231,13 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
 
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { stage, db, catalog, assets, team, state, redisAcl, kv } =
+  const { stage, db, events, catalog, assets, team, state, redisAcl, kv } =
     await getDeps();
   const artifacts = artifactStoreFromEnv();
+  const posterBucket = process.env.POSTER_BUCKET ?? "";
+  const posters = posterBucket
+    ? createS3PosterStore({ bucket: posterBucket })
+    : undefined;
   // Run every sweep even when one throws, then rethrow so the Errors alarm
   // still fires: chaining them bare meant a channel-expiry failure silently
   // skipped the asset cleanup on that day and every day after.
@@ -274,6 +279,9 @@ export const expire = async (): Promise<void> => {
     },
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),
+    // Persists the event statuses the API only derives and retries poster
+    // objects whose delete failed at replacement time.
+    () => runEventSweep({ events, posters, clock: systemClock, logger }),
   ]) {
     try {
       await step();

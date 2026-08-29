@@ -7,6 +7,8 @@ export type ErrorCode =
   | "gone"
   | "payload_too_large"
   | "rate_limited"
+  /** 429 with its own code: a member already holds the maximum number of event drafts. */
+  | "draft_limit"
   | "internal"
   | "unavailable";
 
@@ -19,6 +21,7 @@ const DEFAULT_STATUS: Record<ErrorCode, number> = {
   gone: 410,
   payload_too_large: 413,
   rate_limited: 429,
+  draft_limit: 429,
   internal: 500,
   unavailable: 503,
 };

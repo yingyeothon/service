@@ -1,84 +1,64 @@
-import {
-  Anchor,
-  Button,
-  Card,
-  Group,
-  Table,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
-import { useState, type FormEvent } from "react";
-import { Link } from "react-router";
+import { Anchor, Button, Group, Table, Text, Title } from "@mantine/core";
+import { useState } from "react";
+import { Link, useNavigate } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
+import { EventForm } from "../components/EventForm";
 import { Badge, Notice, Spinner } from "../components/ui";
+import { emptyEventForm } from "../lib/eventForm";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
-import type { EventStatus } from "../types";
+import type { EventInput, EventStatus } from "../types";
 
 export const STATUS_TONE: Record<EventStatus, string> = {
   draft: "neutral",
-  proposing: "accent",
   voting: "accent",
-  decided: "warn",
-  published: "ok",
+  waiting: "warn",
+  opened: "ok",
   closed: "neutral",
+  cancelled: "danger",
 };
 
 export function EventsPage() {
   const { me, loading } = useAuth();
+  const nav = useNavigate();
   const list = useApiQuery(["events", me?.id ?? null], () => api.events());
   const act = useAction();
-  const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
 
-  const create = async (e: FormEvent) => {
-    e.preventDefault();
-    const r = await act.run(() =>
-      api.createEvent({ title: title.trim(), bodyMd: "" }),
-    );
+  const create = async (input: EventInput | Partial<EventInput>) => {
+    const r = await act.run(() => api.createEvent(input as EventInput));
     if (!r) return;
-    setTitle("");
     setCreating(false);
-    await list.reload();
+    void nav(`/events/${encodeURIComponent(r.id)}`);
   };
 
   return (
     <>
       <Group justify="space-between" mb="sm">
         <Title order={2}>Hackathon events</Title>
-        {hasRole(me, "admin") && (
-          <Button onClick={() => setCreating((v) => !v)}>New event</Button>
+        {hasRole(me, "member") && !creating && (
+          <Button onClick={() => setCreating(true)}>New event</Button>
         )}
       </Group>
       {!loading && !me && (
         <Text size="sm" c="dimmed" mb="sm">
-          Only published events are listed.{" "}
-          <Anchor href={api.loginUrl("/events")}>Sign in</Anchor> to see events
+          Only scheduled and past events are listed.{" "}
+          <Anchor href={api.loginUrl("/events")}>Sign in</Anchor> to see votes
           in progress and take part.
         </Text>
       )}
-      {creating && (
-        <Card withBorder mb="md">
-          <form onSubmit={(e) => void create(e)}>
-            <Group align="end">
-              <TextInput
-                aria-label="Event title"
-                placeholder="title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                required
-                maxLength={200}
-              />
-              <Button type="submit" disabled={act.busy || !title.trim()}>
-                Create draft
-              </Button>
-            </Group>
-          </form>
-        </Card>
-      )}
       {act.error && <Notice kind="error">{act.error}</Notice>}
+      {creating && (
+        <EventForm
+          initial={emptyEventForm()}
+          schedule
+          busy={act.busy}
+          submitLabel="Create draft"
+          onSubmit={create}
+          onCancel={() => setCreating(false)}
+        />
+      )}
       {list.error && <Notice kind="error">{list.error}</Notice>}
       {list.loading && !list.data ? (
         <Spinner />
@@ -88,8 +68,9 @@ export function EventsPage() {
             <Table.Tr>
               <Table.Th>Title</Table.Th>
               <Table.Th>Status</Table.Th>
-              <Table.Th>Updated</Table.Th>
-              <Table.Th>Published</Table.Th>
+              <Table.Th>When</Table.Th>
+              <Table.Th>Place</Table.Th>
+              <Table.Th>Owner</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -112,8 +93,15 @@ export function EventsPage() {
                 <Table.Td>
                   <Badge tone={STATUS_TONE[ev.status]}>{ev.status}</Badge>
                 </Table.Td>
-                <Table.Td>{fmtTime(ev.updatedAt)}</Table.Td>
-                <Table.Td>{fmtTime(ev.publishedAt)}</Table.Td>
+                <Table.Td>
+                  {ev.startsAt !== null
+                    ? `${fmtTime(ev.startsAt)} · ${ev.durationHours}h`
+                    : ev.status === "voting"
+                      ? `vote until ${fmtTime(ev.voteUntil)}`
+                      : "—"}
+                </Table.Td>
+                <Table.Td>{ev.place}</Table.Td>
+                <Table.Td>{ev.owner ?? "—"}</Table.Td>
               </Table.Tr>
             ))}
           </Table.Tbody>

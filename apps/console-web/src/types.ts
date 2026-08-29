@@ -4,14 +4,14 @@ export type ChannelKind = "auth" | "topic" | "match" | "lobby" | "q";
 export const GATEWAY_KINDS = ["lobby", "q"] as const;
 export type ChannelStatus = "active" | "expired" | "disabled";
 export type EventStatus =
-  "draft" | "proposing" | "voting" | "decided" | "published" | "closed";
+  "draft" | "voting" | "waiting" | "opened" | "closed" | "cancelled";
 
+/** The happy path in order; `cancelled` sits beside it. */
 export const EVENT_STATUSES: readonly EventStatus[] = [
   "draft",
-  "proposing",
   "voting",
-  "decided",
-  "published",
+  "waiting",
+  "opened",
   "closed",
 ];
 
@@ -358,21 +358,23 @@ export interface EventSummary {
   id: string;
   title: string;
   status: EventStatus;
+  place: string;
+  durationHours: number;
+  voteUntil: number;
+  startsAt: number | null;
+  owner: string | null;
+  mine: boolean;
   createdAt: number;
   updatedAt: number;
   publishedAt: number | null;
   hasPoster: boolean;
 }
 
-export interface Proposal {
+export interface EventOption {
   id: string;
-  eventId: string;
-  memberLogin: string | null;
-  title: string;
-  bodyMd: string;
-  createdAt: number;
-  updatedAt: number;
+  startsAt: number;
   mine: boolean;
+  /** Present once the vote has closed. */
   votes?: number;
 }
 
@@ -381,11 +383,60 @@ export interface EventDetail {
   title: string;
   status: EventStatus;
   bodyMd: string;
+  place: string;
+  placeUrl: string | null;
+  durationHours: number;
+  voteUntil: number;
+  startsAt: number | null;
+  options: EventOption[];
+  voters?: number;
+  owner: string | null;
+  mine: boolean;
+  canEdit: boolean;
+  revision: number;
   createdAt: number;
   updatedAt: number;
   publishedAt: number | null;
-  winner: Proposal | null;
+  cancelledAt: number | null;
+  cancelledBy: string | null;
   posterUrl: string | null;
+  comments: Comment[];
+}
+
+/** Body of `POST /events`; `PATCH` takes any subset. */
+export interface EventInput {
+  title: string;
+  bodyMd: string;
+  place: string;
+  placeUrl: string | null;
+  durationHours: number;
+  voteUntil: number;
+  options: number[];
+}
+
+export interface EventRevision {
+  revision: number;
+  editedBy: string | null;
+  editedAt: number;
+  title: string;
+  place: string;
+  placeUrl: string | null;
+  durationHours: number;
+  posterKey: string | null;
+  /** Only on `GET /events/{id}/revisions/{n}`. */
+  bodyMd?: string;
+}
+
+export interface EventPoster {
+  id: string;
+  key: string;
+  contentType: string;
+  size: number;
+  uploadedBy: string | null;
+  uploadedAt: number;
+  replacedAt: number | null;
+  deletedAt: number | null;
+  current: boolean;
 }
 
 export interface PosterUpload {

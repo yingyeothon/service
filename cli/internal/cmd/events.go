@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,30 +18,63 @@ import (
 	"github.com/yingyeothon/service/cli/internal/output"
 )
 
-// event mirrors console's eventView / list item; `winner` is only on the detail view.
+// event mirrors console's eventView / list item (docs/decisions.md *Hackathon
+// workflow*): a date vote plus a versioned page.
 type event struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"`
-	BodyMd      string    `json:"bodyMd,omitempty"`
-	CreatedAt   int64     `json:"createdAt"`
-	UpdatedAt   int64     `json:"updatedAt"`
-	PublishedAt *int64    `json:"publishedAt"`
-	Winner      *proposal `json:"winner,omitempty"`
-	PosterURL   *string   `json:"posterUrl,omitempty"`
-	HasPoster   bool      `json:"hasPoster,omitempty"`
+	ID            string        `json:"id"`
+	Title         string        `json:"title"`
+	Status        string        `json:"status"`
+	BodyMd        string        `json:"bodyMd,omitempty"`
+	Place         string        `json:"place"`
+	PlaceURL      *string       `json:"placeUrl,omitempty"`
+	DurationHours int           `json:"durationHours"`
+	VoteUntil     int64         `json:"voteUntil"`
+	StartsAt      *int64        `json:"startsAt"`
+	Options       []eventOption `json:"options,omitempty"`
+	Voters        *int          `json:"voters,omitempty"`
+	Owner         *string       `json:"owner"`
+	Mine          bool          `json:"mine"`
+	CanEdit       bool          `json:"canEdit,omitempty"`
+	Revision      int           `json:"revision,omitempty"`
+	CreatedAt     int64         `json:"createdAt"`
+	UpdatedAt     int64         `json:"updatedAt"`
+	PublishedAt   *int64        `json:"publishedAt"`
+	CancelledAt   *int64        `json:"cancelledAt,omitempty"`
+	CancelledBy   *string       `json:"cancelledBy,omitempty"`
+	PosterURL     *string       `json:"posterUrl,omitempty"`
+	HasPoster     bool          `json:"hasPoster,omitempty"`
+	Comments      []comment     `json:"comments,omitempty"`
 }
 
-type proposal struct {
+type eventOption struct {
+	ID       string `json:"id"`
+	StartsAt int64  `json:"startsAt"`
+	Mine     bool   `json:"mine"`
+	Votes    *int   `json:"votes,omitempty"`
+}
+
+type eventRevision struct {
+	Revision      int     `json:"revision"`
+	EditedBy      *string `json:"editedBy"`
+	EditedAt      int64   `json:"editedAt"`
+	Title         string  `json:"title"`
+	Place         string  `json:"place"`
+	PlaceURL      *string `json:"placeUrl"`
+	DurationHours int     `json:"durationHours"`
+	PosterKey     *string `json:"posterKey"`
+	BodyMd        string  `json:"bodyMd,omitempty"`
+}
+
+type eventPoster struct {
 	ID          string  `json:"id"`
-	EventID     string  `json:"eventId"`
-	MemberLogin *string `json:"memberLogin"`
-	Title       string  `json:"title"`
-	BodyMd      string  `json:"bodyMd"`
-	CreatedAt   int64   `json:"createdAt"`
-	UpdatedAt   int64   `json:"updatedAt"`
-	Mine        bool    `json:"mine"`
-	Votes       *int    `json:"votes,omitempty"`
+	Key         string  `json:"key"`
+	ContentType string  `json:"contentType"`
+	Size        int64   `json:"size"`
+	UploadedBy  *string `json:"uploadedBy"`
+	UploadedAt  int64   `json:"uploadedAt"`
+	ReplacedAt  *int64  `json:"replacedAt"`
+	DeletedAt   *int64  `json:"deletedAt"`
+	Current     bool    `json:"current"`
 }
 
 var posterTypes = map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
@@ -57,8 +91,27 @@ func bodyArg(s string) (string, error) {
 	return s, nil
 }
 
+// parseWhen accepts RFC3339 (`2026-09-12T14:00:00+09:00`), a date-time
+// without zone (`2026-09-12T14:00` or `2026-09-12 14:00`, local time) or a
+// bare unix-seconds integer.
+func parseWhen(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return n, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Unix(), nil
+	}
+	for _, layout := range []string{"2006-01-02T15:04", "2006-01-02 15:04", "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t.Unix(), nil
+		}
+	}
+	return 0, fmt.Errorf("cannot parse time %q (use RFC3339, YYYY-MM-DDTHH:MM or unix seconds)", s)
+}
+
 func newEvents(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "events", Short: "Hackathon events: proposals, votes, posters"}
+	c := group(&cobra.Command{Use: "events", Short: "Hackathon events: date vote, page revisions, comments, poster"})
 	p := func() output.Printer { return a.printer() }
 
 	printEvent := func(e event) error {
@@ -66,15 +119,37 @@ func newEvents(a *App) *cobra.Command {
 			return p().JSONValue(e)
 		}
 		pairs := [][2]string{
-			{"id", e.ID}, {"title", e.Title}, {"status", e.Status},
-			{"created", output.Time(e.CreatedAt)}, {"published", output.TimePtr(e.PublishedAt)},
+			{"id", e.ID}, {"title", e.Title}, {"status", e.Status}, {"owner", output.Str(e.Owner)},
+			{"place", e.Place},
 		}
-		if e.Winner != nil {
-			votes := ""
-			if e.Winner.Votes != nil {
-				votes = fmt.Sprintf(" (%d votes)", *e.Winner.Votes)
+		if e.PlaceURL != nil {
+			pairs = append(pairs, [2]string{"map", *e.PlaceURL})
+		}
+		pairs = append(pairs,
+			[2]string{"hours", strconv.Itoa(e.DurationHours)},
+			[2]string{"vote until", output.Time(e.VoteUntil)},
+			[2]string{"starts", output.TimePtr(e.StartsAt)},
+		)
+		for _, o := range e.Options {
+			line := output.Time(o.StartsAt)
+			if o.Votes != nil {
+				line += fmt.Sprintf(" (%d votes)", *o.Votes)
 			}
-			pairs = append(pairs, [2]string{"winner", e.Winner.ID + " " + e.Winner.Title + votes})
+			if o.Mine {
+				line += " *"
+			}
+			pairs = append(pairs, [2]string{"option " + o.ID, line})
+		}
+		if e.Voters != nil {
+			pairs = append(pairs, [2]string{"voters", strconv.Itoa(*e.Voters)})
+		}
+		pairs = append(pairs,
+			[2]string{"revision", strconv.Itoa(e.Revision)},
+			[2]string{"created", output.Time(e.CreatedAt)},
+			[2]string{"published", output.TimePtr(e.PublishedAt)},
+		)
+		if e.CancelledAt != nil {
+			pairs = append(pairs, [2]string{"cancelled", output.Time(*e.CancelledAt) + " by " + output.Str(e.CancelledBy)})
 		}
 		if e.PosterURL != nil {
 			pairs = append(pairs, [2]string{"poster", *e.PosterURL})
@@ -82,17 +157,9 @@ func newEvents(a *App) *cobra.Command {
 		if e.BodyMd != "" {
 			pairs = append(pairs, [2]string{"body", e.BodyMd})
 		}
-		return p().KV(pairs)
-	}
-	printProposal := func(pr proposal) error {
-		if a.jsonOut {
-			return p().JSONValue(pr)
+		for _, cm := range e.Comments {
+			pairs = append(pairs, [2]string{"comment " + cm.ID, output.Str(cm.CreatedBy) + " " + output.Time(cm.CreatedAt) + ": " + cm.BodyMd})
 		}
-		pairs := [][2]string{{"id", pr.ID}, {"event", pr.EventID}, {"by", output.Str(pr.MemberLogin)}, {"title", pr.Title}}
-		if pr.Votes != nil {
-			pairs = append(pairs, [2]string{"votes", fmt.Sprint(*pr.Votes)})
-		}
-		pairs = append(pairs, [2]string{"body", pr.BodyMd})
 		return p().KV(pairs)
 	}
 	do := func(cmd *cobra.Command, method, path string, in, out any) error {
@@ -102,11 +169,12 @@ func newEvents(a *App) *cobra.Command {
 		}
 		return cl.Do(cmd.Context(), method, path, in, out)
 	}
+	eventPath := func(id string) string { return "/events/" + api.PathID(id) }
 
 	c.AddCommand(&cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List events (anonymous sees published/closed only)",
+		Short:   "List events (anonymous: waiting/opened/closed; members: everything but others' drafts)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var res struct {
@@ -124,49 +192,79 @@ func newEvents(a *App) *cobra.Command {
 				if e.HasPoster {
 					poster = "yes"
 				}
-				rows = append(rows, []string{e.ID, e.Status, e.Title, output.Time(e.CreatedAt), output.TimePtr(e.PublishedAt), poster})
+				rows = append(rows, []string{e.ID, e.Status, e.Title, output.TimePtr(e.StartsAt), e.Place, output.Str(e.Owner), poster})
 			}
-			return p().Table([]string{"ID", "STATUS", "TITLE", "CREATED", "PUBLISHED", "POSTER"}, rows)
+			return p().Table([]string{"ID", "STATUS", "TITLE", "STARTS", "PLACE", "OWNER", "POSTER"}, rows)
 		},
 	})
 	c.AddCommand(&cobra.Command{
 		Use:   "get <event-id>",
-		Short: "Show one event",
+		Short: "Show one event (options, tally once the vote closed, comments)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var e event
-			if err := do(cmd, http.MethodGet, "/events/"+api.PathID(args[0]), nil, &e); err != nil {
+			if err := do(cmd, http.MethodGet, eventPath(args[0]), nil, &e); err != nil {
 				return err
 			}
 			return printEvent(e)
 		},
 	})
 	{
-		var body string
+		var body, place, placeURL, voteUntil string
+		var options []string
+		var hours int
 		cc := &cobra.Command{
 			Use:   "create <title>",
-			Short: "Create an event (admin; starts as draft)",
+			Short: "Create a draft (member; max 3 drafts): page + place + candidate dates + vote deadline",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := bodyArg(body)
 				if err != nil {
 					return err
 				}
+				until, err := parseWhen(voteUntil)
+				if err != nil {
+					return err
+				}
+				starts := make([]int64, 0, len(options))
+				for _, o := range options {
+					s, err := parseWhen(o)
+					if err != nil {
+						return err
+					}
+					starts = append(starts, s)
+				}
+				in := map[string]any{"title": args[0], "bodyMd": md, "place": place, "durationHours": hours, "voteUntil": until, "options": starts}
+				if placeURL != "" {
+					in["placeUrl"] = placeURL
+				}
 				var e event
-				if err := do(cmd, http.MethodPost, "/events", map[string]any{"title": args[0], "bodyMd": md}, &e); err != nil {
+				if err := do(cmd, http.MethodPost, "/events", in, &e); err != nil {
 					return err
 				}
 				return printEvent(e)
 			},
 		}
 		cc.Flags().StringVar(&body, "body", "", "markdown body (or @file)")
+		cc.Flags().StringVar(&place, "place", "", "venue (free text)")
+		cc.Flags().StringVar(&placeURL, "place-url", "", "map link (http(s))")
+		cc.Flags().IntVar(&hours, "hours", 0, "duration in hours (1–72)")
+		cc.Flags().StringVar(&voteUntil, "vote-until", "", "vote deadline (RFC3339, YYYY-MM-DDTHH:MM local, or unix seconds)")
+		cc.Flags().StringArrayVar(&options, "option", nil, "candidate start time (repeatable, 1–10)")
+		_ = cc.MarkFlagRequired("place")
+		_ = cc.MarkFlagRequired("hours")
+		_ = cc.MarkFlagRequired("vote-until")
+		_ = cc.MarkFlagRequired("option")
 		c.AddCommand(cc)
 	}
 	{
-		var title, body string
+		var title, body, place, placeURL, voteUntil string
+		var options []string
+		var hours int
+		var clearPlaceURL bool
 		cc := &cobra.Command{
 			Use:   "update <event-id>",
-			Short: "Change title/body (admin)",
+			Short: "Edit the page (owner/admin; every edit is a revision); --vote-until/--option/--hours only while draft",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				patch := map[string]any{}
@@ -180,11 +278,41 @@ func newEvents(a *App) *cobra.Command {
 					}
 					patch["bodyMd"] = md
 				}
+				if cmd.Flags().Changed("place") {
+					patch["place"] = place
+				}
+				if cmd.Flags().Changed("place-url") {
+					patch["placeUrl"] = placeURL
+				}
+				if clearPlaceURL {
+					patch["placeUrl"] = nil
+				}
+				if cmd.Flags().Changed("hours") {
+					patch["durationHours"] = hours
+				}
+				if cmd.Flags().Changed("vote-until") {
+					until, err := parseWhen(voteUntil)
+					if err != nil {
+						return err
+					}
+					patch["voteUntil"] = until
+				}
+				if cmd.Flags().Changed("option") {
+					starts := make([]int64, 0, len(options))
+					for _, o := range options {
+						s, err := parseWhen(o)
+						if err != nil {
+							return err
+						}
+						starts = append(starts, s)
+					}
+					patch["options"] = starts
+				}
 				if len(patch) == 0 {
-					return errors.New("nothing to update: pass --title and/or --body")
+					return errors.New("nothing to update: pass --title, --body, --place, --place-url, --clear-place-url, --hours, --vote-until and/or --option")
 				}
 				var e event
-				if err := do(cmd, http.MethodPatch, "/events/"+api.PathID(args[0]), patch, &e); err != nil {
+				if err := do(cmd, http.MethodPatch, eventPath(args[0]), patch, &e); err != nil {
 					return err
 				}
 				return printEvent(e)
@@ -192,163 +320,202 @@ func newEvents(a *App) *cobra.Command {
 		}
 		cc.Flags().StringVar(&title, "title", "", "new title")
 		cc.Flags().StringVar(&body, "body", "", "new markdown body (or @file)")
+		cc.Flags().StringVar(&place, "place", "", "new venue")
+		cc.Flags().StringVar(&placeURL, "place-url", "", "new map link")
+		cc.Flags().BoolVar(&clearPlaceURL, "clear-place-url", false, "remove the map link")
+		cc.Flags().IntVar(&hours, "hours", 0, "new duration in hours (draft only)")
+		cc.Flags().StringVar(&voteUntil, "vote-until", "", "new vote deadline (draft only)")
+		cc.Flags().StringArrayVar(&options, "option", nil, "replace every candidate start time (repeatable, draft only)")
 		c.AddCommand(cc)
 	}
+	simple := func(use, short, action string) *cobra.Command {
+		return &cobra.Command{
+			Use:   use + " <event-id>",
+			Short: short,
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				var e event
+				if err := do(cmd, http.MethodPost, eventPath(args[0])+"/"+action, nil, &e); err != nil {
+					return err
+				}
+				return printEvent(e)
+			},
+		}
+	}
+	c.AddCommand(simple("publish", "Open the date vote (owner/admin, draft → voting)", "publish"))
+	c.AddCommand(simple("cancel", "Cancel the event before it closes (owner/admin)", "cancel"))
 	c.AddCommand(&cobra.Command{
-		Use:   "transition <event-id> <to>",
-		Short: "Advance the status (admin): draft→proposing→voting→decided→published→closed",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var e event
-			if err := do(cmd, http.MethodPost, "/events/"+api.PathID(args[0])+"/transition", map[string]any{"to": args[1]}, &e); err != nil {
-				return err
-			}
-			return printEvent(e)
-		},
-	})
-	c.AddCommand(&cobra.Command{
-		Use:   "decide <event-id> <proposal-id>",
-		Short: "Pick the winning proposal (admin, while decided)",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var e event
-			if err := do(cmd, http.MethodPost, "/events/"+api.PathID(args[0])+"/decide", map[string]any{"proposalId": args[1]}, &e); err != nil {
-				return err
-			}
-			return printEvent(e)
-		},
-	})
-
-	// ---- proposals ----
-	pc := &cobra.Command{Use: "proposals", Short: "Proposals of an event"}
-	pc.AddCommand(&cobra.Command{
-		Use:     "list <event-id>",
-		Aliases: []string{"ls"},
-		Short:   "List proposals (vote counts appear once voting has ended)",
+		Use:     "delete <event-id>",
+		Aliases: []string{"rm"},
+		Short:   "Delete an event with its history (platform admin)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var res struct {
-				Proposals []proposal `json:"proposals"`
-				MyVote    *string    `json:"myVote"`
-			}
-			if err := do(cmd, http.MethodGet, "/events/"+api.PathID(args[0])+"/proposals", nil, &res); err != nil {
-				return err
-			}
-			if a.jsonOut {
-				return p().JSONValue(res)
-			}
-			rows := make([][]string, 0, len(res.Proposals))
-			for _, pr := range res.Proposals {
-				votes := ""
-				if pr.Votes != nil {
-					votes = fmt.Sprint(*pr.Votes)
-				}
-				mark := ""
-				if res.MyVote != nil && *res.MyVote == pr.ID {
-					mark = "*"
-				}
-				rows = append(rows, []string{mark, pr.ID, output.Str(pr.MemberLogin), pr.Title, votes, output.Time(pr.CreatedAt)})
-			}
-			return p().Table([]string{"", "ID", "BY", "TITLE", "VOTES", "CREATED"}, rows)
+			return do(cmd, http.MethodDelete, eventPath(args[0]), nil, nil)
 		},
 	})
-	{
-		var body string
-		cc := &cobra.Command{
-			Use:   "create <event-id> <title>",
-			Short: "Submit a proposal (while proposing)",
-			Args:  cobra.ExactArgs(2),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				md, err := bodyArg(body)
-				if err != nil {
-					return err
-				}
-				var pr proposal
-				if err := do(cmd, http.MethodPost, "/events/"+api.PathID(args[0])+"/proposals", map[string]any{"title": args[1], "bodyMd": md}, &pr); err != nil {
-					return err
-				}
-				return printProposal(pr)
-			},
-		}
-		cc.Flags().StringVar(&body, "body", "", "markdown body (or @file)")
-		pc.AddCommand(cc)
-	}
-	{
-		var title, body string
-		cc := &cobra.Command{
-			Use:   "update <event-id> <proposal-id>",
-			Short: "Edit your proposal (while proposing)",
-			Args:  cobra.ExactArgs(2),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				patch := map[string]any{}
-				if cmd.Flags().Changed("title") {
-					patch["title"] = title
-				}
-				if cmd.Flags().Changed("body") {
-					md, err := bodyArg(body)
-					if err != nil {
-						return err
-					}
-					patch["bodyMd"] = md
-				}
-				if len(patch) == 0 {
-					return errors.New("nothing to update: pass --title and/or --body")
-				}
-				var pr proposal
-				if err := do(cmd, http.MethodPatch, "/events/"+api.PathID(args[0])+"/proposals/"+api.PathID(args[1]), patch, &pr); err != nil {
-					return err
-				}
-				return printProposal(pr)
-			},
-		}
-		cc.Flags().StringVar(&title, "title", "", "new title")
-		cc.Flags().StringVar(&body, "body", "", "new markdown body (or @file)")
-		pc.AddCommand(cc)
-	}
-	pc.AddCommand(&cobra.Command{
-		Use:     "delete <event-id> <proposal-id>",
-		Aliases: []string{"rm"},
-		Short:   "Withdraw your proposal (admins: remove any until decided)",
-		Args:    cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return do(cmd, http.MethodDelete, "/events/"+api.PathID(args[0])+"/proposals/"+api.PathID(args[1]), nil, nil)
-		},
-	})
-	c.AddCommand(pc)
 
 	// ---- votes ----
 	c.AddCommand(&cobra.Command{
-		Use:   "vote <event-id> <proposal-id>",
-		Short: "Cast or change your vote (while voting)",
-		Args:  cobra.ExactArgs(2),
+		Use:   "vote <event-id> <option-id>...",
+		Short: "Pick every date you can make (replaces your previous picks; while voting)",
+		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
-				EventID    string `json:"eventId"`
-				ProposalID string `json:"proposalId"`
+				EventID   string   `json:"eventId"`
+				OptionIDs []string `json:"optionIds"`
 			}
-			if err := do(cmd, http.MethodPut, "/events/"+api.PathID(args[0])+"/vote", map[string]any{"proposalId": args[1]}, &res); err != nil {
+			if err := do(cmd, http.MethodPut, eventPath(args[0])+"/vote", map[string]any{"optionIds": args[1:]}, &res); err != nil {
 				return err
 			}
 			if a.jsonOut {
 				return p().JSONValue(res)
 			}
-			return p().KV([][2]string{{"event", res.EventID}, {"voted", res.ProposalID}})
+			return p().KV([][2]string{{"event", res.EventID}, {"voted", strings.Join(res.OptionIDs, " ")}})
 		},
 	})
 	c.AddCommand(&cobra.Command{
 		Use:   "unvote <event-id>",
-		Short: "Withdraw your vote (while voting)",
+		Short: "Withdraw all your picks (while voting)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return do(cmd, http.MethodDelete, "/events/"+api.PathID(args[0])+"/vote", nil, nil)
+			return do(cmd, http.MethodDelete, eventPath(args[0])+"/vote", nil, nil)
 		},
 	})
 
+	// ---- history ----
+	c.AddCommand(&cobra.Command{
+		Use:   "history <event-id>",
+		Short: "List the page revisions (who changed what, when)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var res struct {
+				Revisions []eventRevision `json:"revisions"`
+			}
+			if err := do(cmd, http.MethodGet, eventPath(args[0])+"/revisions", nil, &res); err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return p().JSONValue(res)
+			}
+			rows := make([][]string, 0, len(res.Revisions))
+			for _, r := range res.Revisions {
+				poster := ""
+				if r.PosterKey != nil {
+					poster = "yes"
+				}
+				rows = append(rows, []string{strconv.Itoa(r.Revision), output.Str(r.EditedBy), output.Time(r.EditedAt), r.Title, r.Place, strconv.Itoa(r.DurationHours), poster})
+			}
+			return p().Table([]string{"REV", "BY", "AT", "TITLE", "PLACE", "HOURS", "POSTER"}, rows)
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use:   "diff <event-id> <rev-a> <rev-b>",
+		Short: "Show what changed between two revisions (unified diff of the page)",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var ra, rb eventRevision
+			if err := do(cmd, http.MethodGet, eventPath(args[0])+"/revisions/"+api.PathID(args[1]), nil, &ra); err != nil {
+				return err
+			}
+			if err := do(cmd, http.MethodGet, eventPath(args[0])+"/revisions/"+api.PathID(args[2]), nil, &rb); err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return p().JSONValue(map[string]any{"a": ra, "b": rb, "diff": diffLines(revisionText(ra), revisionText(rb))})
+			}
+			_, err := fmt.Fprint(a.Out, unifiedDiff(fmt.Sprintf("r%d", ra.Revision), fmt.Sprintf("r%d", rb.Revision), revisionText(ra), revisionText(rb)))
+			return err
+		},
+	})
+
+	// ---- comments ----
+	cm := group(&cobra.Command{Use: "comments", Short: "Comments on an event (members, once published)"})
+	cm.AddCommand(&cobra.Command{
+		Use:     "list <event-id>",
+		Aliases: []string{"ls"},
+		Short:   "List comments",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var e event
+			if err := do(cmd, http.MethodGet, eventPath(args[0]), nil, &e); err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return p().JSONValue(map[string]any{"comments": e.Comments})
+			}
+			rows := make([][]string, 0, len(e.Comments))
+			for _, x := range e.Comments {
+				rows = append(rows, []string{x.ID, output.Str(x.CreatedBy), output.Time(x.CreatedAt), x.BodyMd})
+			}
+			return p().Table([]string{"ID", "BY", "AT", "BODY"}, rows)
+		},
+	})
+	{
+		var body string
+		cc := &cobra.Command{
+			Use:   "add <event-id>",
+			Short: "Post a comment",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				md, err := bodyArg(body)
+				if err != nil {
+					return err
+				}
+				var x comment
+				if err := do(cmd, http.MethodPost, eventPath(args[0])+"/comments", map[string]any{"bodyMd": md}, &x); err != nil {
+					return err
+				}
+				if a.jsonOut {
+					return p().JSONValue(x)
+				}
+				return p().KV([][2]string{{"id", x.ID}, {"by", output.Str(x.CreatedBy)}, {"body", x.BodyMd}})
+			},
+		}
+		cc.Flags().StringVar(&body, "body", "", "markdown (or @file)")
+		_ = cc.MarkFlagRequired("body")
+		cm.AddCommand(cc)
+	}
+	{
+		var body string
+		cc := &cobra.Command{
+			Use:   "edit <event-id> <comment-id>",
+			Short: "Edit your comment",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				md, err := bodyArg(body)
+				if err != nil {
+					return err
+				}
+				var x comment
+				if err := do(cmd, http.MethodPatch, eventPath(args[0])+"/comments/"+api.PathID(args[1]), map[string]any{"bodyMd": md}, &x); err != nil {
+					return err
+				}
+				if a.jsonOut {
+					return p().JSONValue(x)
+				}
+				return p().KV([][2]string{{"id", x.ID}, {"body", x.BodyMd}})
+			},
+		}
+		cc.Flags().StringVar(&body, "body", "", "markdown (or @file)")
+		_ = cc.MarkFlagRequired("body")
+		cm.AddCommand(cc)
+	}
+	cm.AddCommand(&cobra.Command{
+		Use:     "delete <event-id> <comment-id>",
+		Aliases: []string{"rm"},
+		Short:   "Delete a comment (author or admin)",
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return do(cmd, http.MethodDelete, eventPath(args[0])+"/comments/"+api.PathID(args[1]), nil, nil)
+		},
+	})
+	c.AddCommand(cm)
+
 	// ---- poster ----
-	poster := &cobra.Command{Use: "poster", Short: "Event poster (admin)"}
+	poster := group(&cobra.Command{Use: "poster", Short: "Event poster (owner/admin, any status before closed)"})
 	poster.AddCommand(&cobra.Command{
 		Use:   "upload <event-id> <file.png|jpg>",
-		Short: "Upload a poster (≤5MB) through a presigned PUT and attach it",
+		Short: "Upload a poster (≤5MB) through a presigned PUT and attach it (replaces the previous one)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ct, ok := posterTypes[strings.ToLower(filepath.Ext(args[1]))]
@@ -364,7 +531,7 @@ func newEvents(a *App) *cobra.Command {
 				URL     string            `json:"url"`
 				Headers map[string]string `json:"headers"`
 			}
-			if err := do(cmd, http.MethodPost, "/events/"+api.PathID(args[0])+"/poster", map[string]any{"contentType": ct, "size": len(data)}, &signed); err != nil {
+			if err := do(cmd, http.MethodPost, eventPath(args[0])+"/poster", map[string]any{"contentType": ct, "size": len(data)}, &signed); err != nil {
 				return err
 			}
 			// Plain client: the presigned URL must not carry the console bearer.
@@ -372,7 +539,7 @@ func newEvents(a *App) *cobra.Command {
 				return err
 			}
 			var e event
-			if err := do(cmd, http.MethodPost, "/events/"+api.PathID(args[0])+"/poster/commit", map[string]any{"key": signed.Key}, &e); err != nil {
+			if err := do(cmd, http.MethodPost, eventPath(args[0])+"/poster/commit", map[string]any{"key": signed.Key}, &e); err != nil {
 				return err
 			}
 			return printEvent(e)
@@ -384,11 +551,54 @@ func newEvents(a *App) *cobra.Command {
 		Short:   "Remove the poster",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return do(cmd, http.MethodDelete, "/events/"+api.PathID(args[0])+"/poster", nil, nil)
+			return do(cmd, http.MethodDelete, eventPath(args[0])+"/poster", nil, nil)
+		},
+	})
+	poster.AddCommand(&cobra.Command{
+		Use:   "history <event-id>",
+		Short: "List every poster upload (who, when, size; replaced objects are deleted)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var res struct {
+				Posters []eventPoster `json:"posters"`
+			}
+			if err := do(cmd, http.MethodGet, eventPath(args[0])+"/posters", nil, &res); err != nil {
+				return err
+			}
+			if a.jsonOut {
+				return p().JSONValue(res)
+			}
+			rows := make([][]string, 0, len(res.Posters))
+			for _, x := range res.Posters {
+				state := "replaced"
+				if x.Current {
+					state = "current"
+				} else if x.DeletedAt == nil {
+					state = "replaced (object pending delete)"
+				}
+				rows = append(rows, []string{x.ID, output.Str(x.UploadedBy), output.Time(x.UploadedAt), x.ContentType, strconv.FormatInt(x.Size, 10), state})
+			}
+			return p().Table([]string{"ID", "BY", "AT", "TYPE", "SIZE", "STATE"}, rows)
 		},
 	})
 	c.AddCommand(poster)
 	return c
+}
+
+// revisionText is the page as one text so a line diff covers every field.
+func revisionText(r eventRevision) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "title: %s\n", r.Title)
+	fmt.Fprintf(&b, "place: %s\n", r.Place)
+	fmt.Fprintf(&b, "placeUrl: %s\n", output.Str(r.PlaceURL))
+	fmt.Fprintf(&b, "durationHours: %d\n", r.DurationHours)
+	fmt.Fprintf(&b, "poster: %s\n", output.Str(r.PosterKey))
+	b.WriteString("---\n")
+	b.WriteString(r.BodyMd)
+	if !strings.HasSuffix(r.BodyMd, "\n") {
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // putObject uploads bytes to a presigned URL with exactly the signed headers.

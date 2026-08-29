@@ -21,8 +21,8 @@ applies to both. Published to S3 + CloudFront by `scripts/deploy-web.sh <stage>`
   `/ui/catalog` and `/ui/assets` redirect to `/ui/teams`.
 - `/ui/tokens` — any signed-in member (tokens carry the role at use time).
 - `/ui/members` — admin; also the installer-app setting.
-- `/ui/events`, `/ui/events/:id` — public for published/closed events; proposals,
-  votes and admin controls when signed in.
+- `/ui/events`, `/ui/events/:id` — public for waiting/opened/closed events; drafts,
+  date votes, comments, page history/diff and owner/admin controls when signed in.
 
 User text (team/project descriptions, discussions, issues, comments, event and
 proposal bodies) is markdown rendered by `src/components/Markdown.tsx`

@@ -106,7 +106,13 @@ describe("App", () => {
       {
         id: "ev_1",
         title: "Summer jam",
-        status: "published",
+        status: "waiting",
+        place: "Seoul",
+        durationHours: 8,
+        voteUntil: 0,
+        startsAt: 86400,
+        owner: "octo",
+        mine: false,
         createdAt: 0,
         updatedAt: 0,
         publishedAt: 0,
@@ -117,7 +123,8 @@ describe("App", () => {
     expect(
       await screen.findByRole("link", { name: "Summer jam" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("published")).toBeInTheDocument();
+    expect(screen.getByText("waiting")).toBeInTheDocument();
+    expect(screen.getByText("Seoul")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New event" })).toBeNull();
   });
 
