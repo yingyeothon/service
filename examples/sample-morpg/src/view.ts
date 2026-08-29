@@ -70,7 +70,7 @@ export interface View {
     ground: string;
     /** Set name for `blocked` cells. */
     blocked: string;
-    /** Set name for the outermost ring of blocked cells (falls back to `blocked`). */
+    /** Set name for blocked cells on the grid's outer edge (falls back to `blocked`). */
     border?: string;
     /** Decor set scattered over walkable cells with the given probability (deterministic per cell). */
     sprinkle?: { set: string; chance: number };
@@ -102,6 +102,8 @@ const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const isKey = (k: string) => !FORBIDDEN_KEYS.has(k);
 /** Sheet dimensions are bounded so `columns * rows` stays a safe integer. */
 const MAX_SIDE = 4096;
+/** A cell or frame edge in pixels; a hostile sheet must not ask for gigantic draws. */
+const MAX_TILE = 1024;
 const isSide = (v: unknown): v is number =>
   isIndex(v) && v > 0 && v <= MAX_SIDE;
 
@@ -231,8 +233,8 @@ export function parseTiles(raw: unknown, baseUrl?: string): Tiles {
     return fail("tiles", "format must be morpg-tiles version 1");
   const { image, tileSize, columns, rows, count } = raw;
   if (!isNonEmptyString(image)) return fail("tiles.image", "missing");
-  if (!isIndex(tileSize) || tileSize === 0)
-    return fail("tiles.tileSize", "must be positive");
+  if (!isIndex(tileSize) || tileSize === 0 || tileSize > MAX_TILE)
+    return fail("tiles.tileSize", `must be 1..${MAX_TILE}`);
   if (!isSide(columns) || !isSide(rows) || !isIndex(count))
     return fail(
       "tiles",
@@ -297,9 +299,11 @@ export function parseActors(raw: unknown, baseUrl?: string): Actors {
     !isIndex(frame.w) ||
     !isIndex(frame.h) ||
     !frame.w ||
-    !frame.h
+    !frame.h ||
+    frame.w > MAX_TILE ||
+    frame.h > MAX_TILE
   )
-    return fail("actors.frame", "needs positive w and h");
+    return fail("actors.frame", `needs w and h in 1..${MAX_TILE}`);
   if (!isSide(columns) || !isSide(rows))
     return fail("actors", `columns/rows must be 1..${MAX_SIDE}`);
   const cells = columns * rows;
@@ -325,6 +329,7 @@ export function parseActors(raw: unknown, baseUrl?: string): Actors {
   const icons: Record<string, number> = {};
   if (!isRecord(raw.icons)) return fail("actors.icons", "missing");
   for (const [name, i] of Object.entries(raw.icons)) {
+    if (!isKey(name)) return fail("actors.icons", `bad key ${name}`);
     if (!isIndex(i) || i >= cells)
       return fail(`actors.icons.${name}`, "outside sheet");
     icons[name] = i;

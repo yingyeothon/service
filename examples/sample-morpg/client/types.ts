@@ -1,5 +1,5 @@
 /* Wire views the client shares with the server modules by relative import. */
-import type { ResultPayload } from "../src/actor.js";
+import type { ResultPayload } from "../src/result.js";
 import type { frame, SimEvent, Dir } from "../src/sim.js";
 
 export type FrameView = ReturnType<typeof frame>["payload"];

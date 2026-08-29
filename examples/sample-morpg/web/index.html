@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sample-morpg</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14151a;
+        --panel: #1d1f26;
+        --fg: #d7d9e0;
+        --dim: #7c8090;
+        --accent: #f2c94c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          13px/1.4 ui-monospace,
+          Menlo,
+          Consolas,
+          monospace;
+        height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr auto auto;
+        grid-template-columns: 1fr 34ch;
+        grid-template-areas: "head head" "map side" "log side" "input side";
+        gap: 6px;
+        padding: 6px;
+      }
+      header {
+        grid-area: head;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      header input {
+        font: inherit;
+        background: var(--panel);
+        color: var(--fg);
+        border: 1px solid #333;
+        padding: 2px 6px;
+      }
+      header button {
+        font: inherit;
+        background: var(--accent);
+        color: #000;
+        border: 0;
+        padding: 3px 10px;
+        cursor: pointer;
+      }
+      #title {
+        font-weight: bold;
+      }
+      #status {
+        color: var(--dim);
+      }
+      #map {
+        grid-area: map;
+        background: var(--panel);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        min-height: 200px;
+      }
+      canvas {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+      #side {
+        grid-area: side;
+        background: var(--panel);
+        padding: 6px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      #log {
+        grid-area: log;
+        background: var(--panel);
+        padding: 6px;
+        height: 11em;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      #input {
+        grid-area: input;
+        background: var(--panel);
+        padding: 4px 6px;
+        white-space: pre;
+        overflow: hidden;
+      }
+      .k-sys,
+      .k-dim {
+        color: var(--dim);
+      }
+      .k-chat {
+        color: #e6e6e6;
+      }
+      .k-party {
+        color: #7ed07e;
+      }
+      .k-whisper {
+        color: #d08ae6;
+      }
+      .k-event {
+        color: var(--accent);
+      }
+      .k-error {
+        color: #ff6b6b;
+        font-weight: bold;
+      }
+      .k-title {
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span id="title">sample-morpg</span>
+      <label>user <input id="user" size="12" autocomplete="off" /></label>
+      <label id="tokenLabel" hidden
+        >token <input id="token" size="24" type="password" autocomplete="off"
+      /></label>
+      <button id="connect">connect</button>
+      <span id="status">loading config…</span>
+    </header>
+    <div id="map"><canvas id="canvas" width="320" height="160"></canvas></div>
+    <div id="side"></div>
+    <div id="log"></div>
+    <div id="input"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -10,7 +10,7 @@ import { mintDebugToken, userIdFor, userIdFromJwt } from "../client/auth.js";
 import { createBatch } from "./batch.js";
 import { handleKey } from "../client/commands.js";
 import { loadConfig } from "./config.js";
-import { render } from "./render.js";
+import { render } from "../client/render.js";
 import { createSession } from "../client/session.js";
 import { newState } from "../client/state.js";
 import { createTerminal, type Terminal } from "./terminal.js";

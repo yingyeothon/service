@@ -68,6 +68,8 @@ export const DEFAULT_RETURN_DELAY_MS = 8000;
 export interface Session {
   /** The bundle to draw: the current town zone's, or the field's inside a run. */
   readonly map: MapBundle | undefined;
+  /** Where `map` was fetched from; a graphical client resolves the bundle's `view` against it. */
+  readonly mapUrl: string | undefined;
   /** The world bundle's templates (quests, NPCs, zones), once the lobby said hello. */
   readonly templates: Templates | undefined;
   start(): Promise<void>;
@@ -88,7 +90,9 @@ export function createSession(o: SessionOptions): Session {
   /** The world bundle (`hello.mapUrl`): templates plus the default zone's grid. */
   let world: MapBundle | undefined;
   let townMap: MapBundle | undefined;
+  let townUrl: string | undefined;
   let fieldMap: MapBundle | undefined;
+  let fieldUrl: string | undefined;
   const bundles = new Map<string, Promise<MapBundle>>();
   const fetchJson =
     o.fetchJson ??
@@ -119,12 +123,15 @@ export function createSession(o: SessionOptions): Session {
     }
     return p;
   };
-  /** The grid of a town zone: its own bundle, or the world's. */
-  const zoneMap = async (zone: string): Promise<MapBundle> => {
+  /** The grid of a town zone: its own bundle, or the world's — with the URL it came from. */
+  const zoneMap = async (
+    zone: string,
+  ): Promise<{ map: MapBundle; url: string | undefined }> => {
     const url = world?.templates.zones[zone]?.mapUrl;
-    if (world && (url === undefined || url === worldUrl)) return world;
+    if (world && (url === undefined || url === worldUrl))
+      return { map: world, url: worldUrl };
     if (!url) throw new Error("world bundle not loaded");
-    return loadBundle(url);
+    return { map: await loadBundle(url), url };
   };
   let worldUrl: string | undefined;
   /** The zone the player is in — survives a lobby reconnect (`hello.zone` is only the channel default). */
@@ -207,7 +214,7 @@ export function createSession(o: SessionOptions): Session {
               remembered !== undefined && own(world.templates.zones, remembered)
                 ? remembered
                 : hello.zone;
-            townMap = await zoneMap(zone);
+            ({ map: townMap, url: townUrl } = await zoneMap(zone));
             const start =
               own(world.templates.zones, zone)?.start ?? townMap.start;
             currentZone = zone;
@@ -326,6 +333,7 @@ export function createSession(o: SessionOptions): Session {
               const m = h.mapUrl ? await loadBundle(h.mapUrl) : world;
               if (game !== g) return;
               fieldMap = m;
+              fieldUrl = h.mapUrl ?? worldUrl;
               if (m && h.mapId !== m.id)
                 log(
                   "error",
@@ -440,6 +448,7 @@ export function createSession(o: SessionOptions): Session {
     state.target = undefined;
     state.overlay = undefined;
     fieldMap = undefined;
+    fieldUrl = undefined;
     state.mode = "lobby";
     state.conn = { state: lobby?.state ?? "closed" };
     changed();
@@ -537,7 +546,7 @@ export function createSession(o: SessionOptions): Session {
     const t0 = performance.now();
     trace("zone_start", { from: currentZone, to: r.zone });
     try {
-      townMap = await zoneMap(r.zone);
+      ({ map: townMap, url: townUrl } = await zoneMap(r.zone));
     } catch (e) {
       trace("zone_fail", { to: r.zone, ms: since(t0), error: message(e) });
       // The sheet already says the new zone; only the grid is missing.
@@ -863,6 +872,9 @@ export function createSession(o: SessionOptions): Session {
   return {
     get map() {
       return state.mode === "lobby" ? townMap : (fieldMap ?? townMap);
+    },
+    get mapUrl() {
+      return state.mode === "lobby" ? townUrl : (fieldUrl ?? townUrl);
     },
     get templates() {
       return world?.templates;

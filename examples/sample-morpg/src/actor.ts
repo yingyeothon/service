@@ -17,6 +17,8 @@ import {
 } from "./character.js";
 import { keyPrefixes } from "./env.js";
 import type { MapBundle } from "./map.js";
+import type { CommitStatus, ResultPayload } from "./result.js";
+export type { CommitStatus, ResultPayload } from "./result.js";
 import {
   TICK_MILLIS,
   createSim,
@@ -40,16 +42,7 @@ export type DungeonStartEvent = GameActorStartEvent & {
   mapUrl?: string;
 };
 
-export type CommitStatus =
-  "applied" | "duplicate" | "failed" | "pending" | "skipped";
-
 /** Payload of the final `result` frame (shared with the CLI client). */
-export interface ResultPayload {
-  reason: string;
-  cleared: boolean;
-  rewards: Record<string, ResultDelta>;
-  committed: Record<string, CommitStatus>;
-}
 
 export interface DungeonActorOptions {
   event: DungeonStartEvent;
