@@ -348,7 +348,10 @@ resources:
     # second line rather than the only one: no inline or remote scripts, no
     # frames, uploads only to S3 (presigned PUT) and the API on this origin.
     # `style-src 'unsafe-inline'` is required by Mantine's inline style
-    # attributes and its CSS-variables <style> element.
+    # attributes and its CSS-variables <style> element. `img-src` needs the S3
+    # host because `GET /events/{id}/poster` answers a 302 to a presigned URL
+    # and the browser checks the redirect target against the policy too (the
+    # exact virtual-hosted bucket URL the presigner emits, not a wildcard).
     WebHeadersPolicy:
       Type: AWS::CloudFront::ResponseHeadersPolicy
       Properties:
@@ -357,7 +360,7 @@ resources:
           SecurityHeadersConfig:
             ContentSecurityPolicy:
               Override: true
-              ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://*.amazonaws.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+              ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://yyt-console-posters-${self:custom.stage}.s3.ap-northeast-2.amazonaws.com; font-src 'self' data:; connect-src 'self' https://*.amazonaws.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
             ContentTypeOptions:
               Override: true
             FrameOptions:
