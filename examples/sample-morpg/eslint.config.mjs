@@ -27,13 +27,14 @@ export default defineConfig(
     },
   },
   {
-    // The local runner imports an esbuild bundle at runtime: untyped by nature.
+    // The local runner imports an esbuild bundle at runtime and the asset packer reads mapping JSON: untyped by nature.
     files: ["scripts/*.mjs"],
     rules: {
       "@typescript-eslint/no-unsafe-assignment": "off",
       "@typescript-eslint/no-unsafe-call": "off",
       "@typescript-eslint/no-unsafe-member-access": "off",
       "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
       "@typescript-eslint/no-misused-promises": "off",
     },
   },

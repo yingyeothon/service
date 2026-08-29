@@ -126,7 +126,7 @@ Everything except `terminal.ts`/`main.ts` is pure or injected and covered by `te
 
 ## Deploy and verify
 
-1. `scripts/smoke/morpg.mjs setup <debugKey> https://auth-dev.yyt.life https://console-dev.yyt.life https://doc-dev.yyt.life <outEnv> <outState>` (from the service repo) seeds an auth channel, a lobby + a `q` channel with its participant Redis credential, the doc apiKey and the asset bundle (every `assets/*.json` under `v1`), points the lobby's `mapUrl` at the world bundle, and writes the deploy env. After editing a bundle: `scripts/smoke/morpg.mjs publish-map <debugKey> <consoleBase> <outState> <outEnv> <version>` uploads a new immutable version, repoints the lobby and rewrites `MAP_URL` — then redeploy (step 2).
+1. `scripts/smoke/morpg.mjs setup <debugKey> https://auth-dev.yyt.life https://console-dev.yyt.life https://doc-dev.yyt.life <outEnv> <outState>` (from the service repo) seeds an auth channel, a lobby + a `q` channel with its participant Redis credential, the doc apiKey and the asset bundle (every `assets/*.json` plus `assets/view/*` under `v1`), points the lobby's `mapUrl` at the world bundle, and writes the deploy env. After editing a bundle: `scripts/smoke/morpg.mjs publish-map <debugKey> <consoleBase> <outState> <outEnv> <version>` uploads a new immutable version, repoints the lobby and rewrites `MAP_URL` — then redeploy (step 2).
 2. `pnpm install && pnpm typecheck && pnpm test`, then `scripts/deploy.sh <outEnv> dev` — the output's `ApiUrl` is the stack's HTTP base.
 3. `scripts/smoke/morpg.mjs run <debugKey> <authBase> <consoleBase> wss://gw-dev.yyt.life <outState> <ApiUrl> [<outEnv>]` plays the whole loop with two synthetic players: the sheet routes on a fresh sheet (refusals, quest accept/turn-in, gates, zones), the dungeon (bots walk to the boss), a mid-run reconnect, the routes again with the boss killer's level-up and drops, and the lobby's single-session rule. With `<outEnv>` (its `DOC_API_KEY`) player b is seeded with potions and drinks one when the boss hits it — the heal event, the consumed delta and the bag are checked; without it those checks print `skip`. `scripts/smoke/morpg.mjs timeout …` (same arguments; the env file only bounds the wait) idles a solo run until the running stage times out (`result {reason: "timeout"}` + close 1000; takes the `GAME_RUNNING_SECONDS` the stack was deployed with). An interrupted `run`/`timeout` leaves its actor alive until then; the actor's `reservedConcurrency` (10) is the number of such runs that can overlap before `enter` answers `504 actor_not_ready`. Then `clean`.
 
@@ -528,6 +528,43 @@ Constraints that fall out of the platform, not the game:
   invalidated. Allowed extensions and caps: `cli/README.md` "Game assets".
 
 ---
+
+**`view` — presentation for graphical clients (optional, client-only; decisions
+2026-08-30).** The server parsers ignore it. `src/view.ts` (`parseView`,
+`parseTiles`, `parseActors`, `checkView`) is the only reader; a bundle without
+it still plays in the TUI. Sheets are the output of `scripts/pack-assets.mjs`
+under `assets/view/` (`tiles.json` + `tiles.png`: deduplicated 16 px tileset,
+named sets → cell indices, aliases, water autotile; `actors.json` +
+`actors.png`: class clips `<class>.{idle,walk,attack}_<n|s|e|w>`, `effect.*` and
+`monster.*` strips, item icons). Provenance and licence: `CREDITS.md`.
+`pnpm pack-assets [-- --src <dir>] [-- --check]` regenerates `assets/view/` from the
+owner's gitignored source; without that source treat `assets/view/` as read-only
+inputs (tests and the smoke read only the committed output; `--check` is an
+owner-side guard, not a CI gate).
+
+```jsonc
+"view": {
+  "title": "Town",
+  "sheets": { "tiles": "view/tiles.json", "actors": "view/actors.json" }, // relative to this bundle
+  "dress": { // renderer rules over `rows`; no per-cell layers until a Tiled exporter exists
+    "ground": "town.cobble", "blocked": "town.wall", "border": "town.hedge",
+    "sprinkle": { "set": "town.planter", "chance": 0.04 } // deterministic per cell
+  },
+  "players": ["warrior", "mage", "rogue", "cleric"], // by party seat; the sim has no classes
+  "cast": { "slime": { "clip": "monster.slime_green" }, "boss": { "clip": "monster.slime_blue", "scale": 1.5 },
+            "wolf": { "clip": "monster.bat", "tint": "grey" }, "hunter": { "clip": "rogue.idle_s" } },
+  "marks": { "G": "town.gate", "D": "dungeon.arch_gate" }, // tile under a town NPC mark
+  "icons": { "hp_potion": "potion_red", "boss_horn": "bone" },
+  "effects": { "hit": "flash", "heal": "effect.cleric_holy", "kill": "fade", "drop": "icon" } // clip or renderer keyword
+}
+```
+
+Rules (relative URLs, `rows` stays the only collision source, a field bundle
+carries its own `view`, the tween contract): `docs/decisions.md` "Sample MORPG
+GUI client and presentation data". `dress` is optional so a later exporter can
+ship per-cell layers beside it without a format bump; `effects` keywords are
+`flash` / `fade` / `icon` (`EFFECT_KEYWORDS`). `test/view.test.ts` proves the
+shipped bundles, sheets and PNG sizes agree.
 
 ### 4.5 Storage
 

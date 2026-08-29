@@ -21,7 +21,7 @@
 //          GAME_RUNNING_SECONDS the stack was deployed with (setup writes 120 s); the env file, when
 //          given, bounds the wait to that value + 90 s instead of the code's 15 min maximum.
 //   publish-map: scripts/smoke/morpg.mjs publish-map <debugKey> <consoleBaseUrl> <stateFile> <envFile> <version>
-//          uploads every assets/*.json as a new immutable version of the existing bundle, points the
+//          uploads assets/*.json and assets/view/* as a new immutable version of the existing bundle, points the
 //          lobby channel at the new world bundle and rewrites MAP_URL / state.mapUrl (redeploy afterwards).
 //   clean: scripts/smoke/morpg.mjs clean <debugKey> <consoleBaseUrl> <stateFile>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
@@ -97,13 +97,24 @@ const WORLD_FILE = "zone001.json";
  */
 async function publishAssets(consoleBase, cookie, bundleId, version) {
   let worldUrl = "";
-  const files = readdirSync(ASSETS_DIR).filter((f) => f.endsWith(".json"));
+  // zone bundles at the top level plus the client sheets under view/ (README §4.6 `view`).
+  const viewDir = new URL("view/", ASSETS_DIR);
+  check(
+    "assets/view present (scripts/pack-assets.mjs output)",
+    existsSync(viewDir),
+  );
+  const files = [
+    ...readdirSync(ASSETS_DIR).filter((f) => f.endsWith(".json")),
+    ...(existsSync(viewDir) ? readdirSync(viewDir) : [])
+      .filter((f) => f.endsWith(".json") || f.endsWith(".png"))
+      .map((f) => `view/${f}`),
+  ];
   for (const file of files) {
-    const payload = readFileSync(new URL(file, ASSETS_DIR), "utf8");
+    const payload = readFileSync(new URL(file, ASSETS_DIR));
     const up = await json(`${consoleBase}/assets/bundles/${bundleId}/files`, {
       method: "POST",
       headers: cookie,
-      body: { version, path: file, size: Buffer.byteLength(payload) },
+      body: { version, path: file, size: payload.length },
     });
     check(`presign ${file} upload`, up.status === 201, String(up.status));
     if (up.status !== 201) continue;
