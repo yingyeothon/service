@@ -162,18 +162,16 @@ describe("POST /dungeon/enter", () => {
       ).statusCode,
     ).toBe(404);
   });
-  it("only the leader enters, with the gateway's roster, and gets wsUrl + gameId once the actor is ready", async () => {
+  it("any member enters with the gateway's roster (outsiders 403) and gets wsUrl + gameId once the actor is ready", async () => {
     const h = harness();
     const body = JSON.stringify({ partyId: PARTY });
-    expect(
-      (
-        await h.handle(
-          h.req("POST", "/dungeon/enter", `Bearer ${token("mate")}`, body),
-        )
-      ).statusCode,
-    ).toBe(403);
+    const outsider = await h.handle(
+      h.req("POST", "/dungeon/enter", `Bearer ${token("stranger")}`, body),
+    );
+    expect(outsider.statusCode).toBe(403);
+    expect(parse(outsider).error).toBe("not_member");
     const res = await h.handle(
-      h.req("POST", "/dungeon/enter", `Bearer ${token("leader")}`, body),
+      h.req("POST", "/dungeon/enter", `Bearer ${token("mate")}`, body),
     );
     expect(res.statusCode).toBe(200);
     const out = parse(res);
@@ -194,7 +192,7 @@ describe("POST /dungeon/enter", () => {
     // No world bundle configured: the actor falls back to its own MAP_URL.
     expect(h.events[0]!).not.toHaveProperty("mapUrl");
   });
-  it("the leader's zone picks the field: its own bundle, else the world's", async () => {
+  it("the entering member's zone picks the field: its own bundle, else the world's", async () => {
     const h = harness({
       templates: async () => TEMPLATES,
       mapUrl: "https://cdn/world.json",

@@ -14,8 +14,9 @@ import type {
 import type { CharacterSheet } from "../src/character.js";
 import { distance, isWalkable, type Cell, type MapBundle } from "../src/map.js";
 import {
-  EVENT_ACCEPT,
+  ENTER_DELAY_MS,
   EVENT_OFFER,
+  EVENT_REJECT,
   EVENT_START,
   GAME_ID,
   type Dir,
@@ -50,7 +51,8 @@ export interface LobbyState {
   peers: Record<string, Peer>;
   roster?: PartyFrame;
   invites: Array<{ partyId: string; from: string }>;
-  offer?: { from: string; accepted: string[] };
+  /** A member announced the run; everyone enters when the window closes unless it is rejected. */
+  pending?: { by: string; at: number };
 }
 
 export type DungeonStage = "connecting" | "waiting" | "running" | "ended";
@@ -135,6 +137,23 @@ export type LobbyEvent =
 /** What the session must do after a reduce; the reducer itself stays pure. */
 export type LobbyEffect = { kind: "startDungeon"; gameId: string };
 
+/** Grace past the reject window before a stale announcement is dropped (RTT, a slow API call). */
+export const PENDING_GRACE_MS = 5000;
+
+/** The entry announcement still in force at `now` (a stale one is treated as gone). */
+export function pendingEntry(
+  state: AppState,
+  now: number,
+): { by: string; at: number } | undefined {
+  const p = state.lobby.pending;
+  if (!p) return undefined;
+  if (now > p.at + ENTER_DELAY_MS + PENDING_GRACE_MS) {
+    state.lobby.pending = undefined;
+    return undefined;
+  }
+  return p;
+}
+
 export function isLeader(state: AppState): boolean {
   const r = state.lobby.roster;
   return r !== undefined && r.partyId !== "" && r.leaderId === state.userId;
@@ -145,7 +164,11 @@ export function partyId(state: AppState): string | undefined {
   return r && r.partyId !== "" ? r.partyId : undefined;
 }
 
-export function reduceLobby(state: AppState, ev: LobbyEvent): LobbyEffect[] {
+export function reduceLobby(
+  state: AppState,
+  ev: LobbyEvent,
+  now: number = Date.now(),
+): LobbyEffect[] {
   const lobby = state.lobby;
   switch (ev.t) {
     case "connected":
@@ -187,10 +210,17 @@ export function reduceLobby(state: AppState, ev: LobbyEvent): LobbyEffect[] {
       return [];
     }
     case "event":
-      return reduceEvent(state, ev.frame);
+      return reduceEvent(state, ev.frame, now);
     case "party":
       lobby.roster = ev.frame.partyId === "" ? undefined : ev.frame;
-      if (ev.frame.partyId === "") lobby.offer = undefined;
+      // The announcer left (or the party dissolved): nobody will call the API.
+      if (
+        lobby.pending &&
+        !ev.frame.members.some((m) => m.userId === lobby.pending?.by)
+      ) {
+        lobby.pending = undefined;
+        pushLog(state, "event", "dungeon entry cancelled (announcer left)");
+      }
       pushLog(
         state,
         "sys",
@@ -222,35 +252,52 @@ export function reduceLobby(state: AppState, ev: LobbyEvent): LobbyEffect[] {
   }
 }
 
-function reduceEvent(state: AppState, f: EventBroadcastFrame): LobbyEffect[] {
+function reduceEvent(
+  state: AppState,
+  f: EventBroadcastFrame,
+  now: number,
+): LobbyEffect[] {
   const from = shortId(f.from);
   const lobby = state.lobby;
+  const inParty = (userId: string): boolean =>
+    lobby.roster?.members.some((m) => m.userId === userId) ?? false;
   switch (f.name) {
     case EVENT_OFFER:
-      lobby.offer = { from: f.from, accepted: [] };
+      if (!inParty(f.from)) return [];
+      if (pendingEntry(state, now)) return [];
+      lobby.pending = { by: f.from, at: now };
       pushLog(
         state,
         "event",
         f.from === state.userId
-          ? "you offered a dungeon run"
-          : `${from} offers a dungeon run — /accept`,
+          ? `you called the party into the dungeon — entering in ${ENTER_DELAY_MS / 1000}s, /reject to stop`
+          : `${from} called the party into the dungeon — entering in ${ENTER_DELAY_MS / 1000}s, /reject to stay in town`,
       );
       return [];
-    case EVENT_ACCEPT:
-      if (lobby.offer && !lobby.offer.accepted.includes(f.from))
-        lobby.offer.accepted.push(f.from);
-      pushLog(state, "event", `${from} accepted`);
+    case EVENT_REJECT: {
+      if (!lobby.pending || !inParty(f.from)) return [];
+      const byAnnouncer = f.from === lobby.pending.by;
+      lobby.pending = undefined;
+      pushLog(
+        state,
+        "event",
+        byAnnouncer
+          ? "dungeon entry cancelled"
+          : `${from} rejected the dungeon — entry cancelled`,
+      );
       return [];
+    }
     case EVENT_START: {
       const gameId = (f.payload as { gameId?: unknown } | null)?.gameId;
-      if (!lobby.roster || f.from !== lobby.roster.leaderId) {
+      if (!inParty(f.from)) {
         pushLog(
           state,
           "error",
-          `ignored ${EVENT_START} from ${from} (not the leader)`,
+          `ignored ${EVENT_START} from ${from} (not in the party)`,
         );
         return [];
       }
+      lobby.pending = undefined;
       if (typeof gameId !== "string" || !GAME_ID.test(gameId)) {
         pushLog(state, "error", `ignored ${EVENT_START} with a bad gameId`);
         return [];

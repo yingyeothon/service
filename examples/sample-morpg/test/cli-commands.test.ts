@@ -103,8 +103,7 @@ describe("parseCommand", () => {
   });
   it("simple verbs and limits", () => {
     for (const [line, kind] of [
-      ["/offer", "offer"],
-      ["/accept", "accept"],
+      ["/reject", "reject"],
       ["/enter", "enter"],
       ["/char", "char"],
       ["/operate", "operate"],

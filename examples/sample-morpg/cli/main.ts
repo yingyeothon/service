@@ -74,6 +74,8 @@ async function main(): Promise<void> {
   });
 
   const paint = (): void => {
+    // Countdowns (entry window, buffs) tick without a state change.
+    if (state.lobby.pending) dirty = true;
     if (!dirty) return;
     dirty = false;
     const { width, height } = term.size();

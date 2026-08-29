@@ -389,9 +389,12 @@ const mint = async (userId) =>
   ).body?.jwt;
 const tokenA = await mint(userA);
 const tokenB = await mint(userB);
+const tokenX = await mint(userX);
 check(
   "minted tokens",
-  typeof tokenA === "string" && typeof tokenB === "string",
+  typeof tokenA === "string" &&
+    typeof tokenB === "string" &&
+    typeof tokenX === "string",
 );
 const bearer = (t) => ({ authorization: `Bearer ${t}` });
 
@@ -553,7 +556,7 @@ if (mode === "timeout") {
     partyId: soloRoster?.partyId,
   });
   check(
-    "solo leader enters",
+    "solo member enters",
     soloEntered.status === 200,
     JSON.stringify(soloEntered.body),
   );
@@ -799,7 +802,7 @@ const versionBefore = {
   b: (await sheetOf(tokenB)).body?.version,
 };
 
-// 2. lobby: hello with the map, positions, a party, the dungeon offer as an opaque event
+// 2. lobby: hello with the map, positions, a party, the dungeon announcement + reject as opaque events
 const { lobby: a, box: ax, hello: helloA } = await connectLobby(tokenA);
 check(
   "lobby hello carries mapUrl + zone",
@@ -847,24 +850,25 @@ check(
   "dungeon offer relayed to the party",
   offer?.from === userA && offer.payload?.map === map.id,
 );
-b.event({ scope: "party", name: "dungeon.accept", payload: {} });
+b.event({ scope: "party", name: "dungeon.reject", payload: {} });
 check(
-  "acceptance relayed back",
-  (await ax.until((m) => m.type === "event" && m.name === "dungeon.accept"))
+  "rejection relayed back",
+  (await ax.until((m) => m.type === "event" && m.name === "dungeon.reject"))
     ?.from === userB,
 );
 
-// 3. entry: only the leader, only a party the gateway knows
+// 3. entry: any member of a party the gateway knows (the client gives the
+// party a reject window first); outsiders and unknown parties are refused
 const partyId = roster?.partyId;
-const notLeader = await json(`${apiBase}/dungeon/enter`, {
+const outsider = await json(`${apiBase}/dungeon/enter`, {
   method: "POST",
-  headers: bearer(tokenB),
+  headers: bearer(tokenX),
   body: { partyId },
 });
 check(
-  "non-leader cannot enter → 403",
-  notLeader.status === 403,
-  JSON.stringify(notLeader.body),
+  "outsider cannot enter → 404 (the gateway hides the party from non-members)",
+  outsider.status === 404 && outsider.body?.error === "party_not_found",
+  JSON.stringify(outsider.body),
 );
 const noParty = await json(`${apiBase}/dungeon/enter`, {
   method: "POST",
@@ -876,13 +880,14 @@ check(
   noParty.status === 404,
   JSON.stringify(noParty.body),
 );
+// The member (not the leader) starts the run.
 const entered = await json(`${apiBase}/dungeon/enter`, {
   method: "POST",
-  headers: bearer(tokenA),
+  headers: bearer(tokenB),
   body: { partyId },
 });
 check(
-  "leader enters → wsUrl + gameId + members",
+  "a member enters → wsUrl + gameId + members",
   entered.status === 200 &&
     typeof entered.body?.wsUrl === "string" &&
     /^g_[0-9a-f]{16}$/.test(entered.body?.gameId ?? "") &&
@@ -973,7 +978,7 @@ check(
   JSON.stringify(frameB2?.payload?.players),
 );
 check(
-  "the leader sees the re-enter",
+  "the other member sees the re-enter",
   (await qax.until(
     (m) => m.type === "enter" && m.payload?.memberId === userB,
     5000,

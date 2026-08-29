@@ -27,6 +27,7 @@ const base = () => ({
     elder: { at: { x: 1, y: 1 }, mark: "E", quests: ["hunt", "gather"] },
     gate: { at: { x: 2, y: 1 }, mark: "G", teleport: "forest" },
     camp: { zone: "forest", at: { x: 9, y: 9 }, mark: "E", teleport: "town" },
+    door: { at: { x: 3, y: 1 }, mark: "D", quests: [], dungeon: true },
   },
   zones: {
     town: { start: { x: 1, y: 2 } },
@@ -51,6 +52,13 @@ describe("parseTemplates", () => {
       quests: ["hunt", "gather"],
     });
     expect(t.npcs.gate?.teleport).toBe("forest");
+    expect(t.npcs.door).toEqual({
+      zone: "town",
+      at: { x: 3, y: 1 },
+      mark: "D",
+      quests: [],
+      dungeon: true,
+    });
     expect(t.zones.forest?.mapUrl).toBe("https://cdn.test/v1/forest.json");
     expect(t.zones.town).toEqual({ start: { x: 1, y: 2 } });
   });
@@ -84,6 +92,19 @@ describe("parseTemplates", () => {
     [
       "npc gate teleport with quests",
       (b) => ((b.npcs.gate as { quests?: string[] }).quests = ["hunt"]),
+    ],
+    [
+      "npc door dungeon",
+      (b) => ((b.npcs.door as { dungeon: unknown }).dungeon = "yes"),
+    ],
+    [
+      "npc door dungeon",
+      (b) => ((b.npcs.door as { dungeon: unknown }).dungeon = false),
+    ],
+    ["npc door dungeon", (b) => (b.npcs.door.quests as string[]).push("hunt")],
+    [
+      "npc door dungeon",
+      (b) => ((b.npcs.door as { teleport?: string }).teleport = "forest"),
     ],
     ["npc camp zone", (b) => (b.npcs.camp.zone = "moon")],
     ["zone town start", (b) => (b.zones.town.start = { x: 0, y: 0 })],

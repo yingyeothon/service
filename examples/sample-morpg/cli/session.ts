@@ -15,10 +15,10 @@ import type { GameApi, SheetAnswer } from "./api.js";
 import { HELP, type Action } from "./commands.js";
 import {
   dungeonStep,
-  isLeader,
   nearestAdjacentMonster,
   newDungeon,
   partyId,
+  pendingEntry,
   pushLog,
   reduceDungeon,
   reduceLobby,
@@ -29,8 +29,9 @@ import {
   type LobbyEffect,
 } from "./state.js";
 import {
-  EVENT_ACCEPT,
+  ENTER_DELAY_MS,
   EVENT_OFFER,
+  EVENT_REJECT,
   EVENT_START,
   GAME_ID,
   type DungeonHello,
@@ -50,6 +51,8 @@ export interface SessionOptions {
   posIntervalMs?: number;
   /** Auto-return to town this long after a run ends. */
   returnDelayMs?: number;
+  /** Reject window between `enter` and `POST /dungeon/enter`. */
+  enterDelayMs?: number;
   /** Fetches a zone/field bundle by URL (the world bundle comes through the SDK's `map()`). */
   fetchJson?: (url: string) => Promise<unknown>;
 }
@@ -75,6 +78,7 @@ export function createSession(o: SessionOptions): Session {
   const { state, api } = o;
   const posInterval = o.posIntervalMs ?? DEFAULT_POS_INTERVAL_MS;
   const returnDelay = o.returnDelayMs ?? DEFAULT_RETURN_DELAY_MS;
+  const enterDelayMs = o.enterDelayMs ?? ENTER_DELAY_MS;
   let lobby: GatewayLobbyClient | undefined;
   let game: GatewayGameClient | undefined;
   /** The world bundle (`hello.mapUrl`): templates plus the default zone's grid. */
@@ -254,7 +258,7 @@ export function createSession(o: SessionOptions): Session {
   const enterDungeon = async (gameId: string): Promise<void> => {
     if (state.mode !== "lobby") return;
     state.mode = "connecting";
-    state.lobby.offer = undefined;
+    state.lobby.pending = undefined;
     state.dungeon = newDungeon(gameId);
     changed();
     const g = o.createGame(gameId);
@@ -552,7 +556,12 @@ export function createSession(o: SessionOptions): Session {
             ),
         );
         return;
-      case "talk":
+      case "talk": {
+        // The dungeon entrance is a client-side verb: it starts the party's run.
+        if (world?.templates.npcs[action.npcId]?.dungeon) {
+          announceEntry();
+          return;
+        }
         void sheetAction(
           `talk ${action.npcId}`,
           () => api.interactNpc(action.npcId, action.questId),
@@ -565,6 +574,7 @@ export function createSession(o: SessionOptions): Session {
           },
         );
         return;
+      }
       case "zone":
         void sheetAction(
           `zone ${action.zoneId}`,
@@ -617,30 +627,20 @@ export function createSession(o: SessionOptions): Session {
             }
           }
         });
-      case "offer":
-        return withLobby((l) => {
-          const pid = partyId(state);
-          if (!pid) throw new Error("no party");
-          if (!isLeader(state)) throw new Error("only the leader offers");
-          l.event({
-            scope: "party",
-            name: EVENT_OFFER,
-            payload: { partyId: pid },
-          });
-        });
-      case "accept":
-        return withLobby((l) => {
-          const pid = partyId(state);
-          if (!pid) throw new Error("no party");
-          l.event({
-            scope: "party",
-            name: EVENT_ACCEPT,
-            payload: { partyId: pid },
-          });
-        });
       case "enter":
-        void enter();
+        announceEntry();
         return;
+      case "reject":
+        return withLobby((l) => {
+          const pid = partyId(state);
+          if (!pid) throw new Error("no party");
+          if (!state.lobby.pending) throw new Error("nothing to reject");
+          l.event({
+            scope: "party",
+            name: EVENT_REJECT,
+            payload: { partyId: pid },
+          });
+        });
       case "char":
         void refreshSheet();
         return;
@@ -659,16 +659,66 @@ export function createSession(o: SessionOptions): Session {
     }
   };
 
+  /**
+   * The party's consent is standing: announce the run, give everyone the
+   * reject window, then call the entry API. A solo party skips the wait.
+   * The announcement echoes back as `dungeon.offer`, which sets `pending`; a
+   * `dungeon.reject` from anyone clears it before the timer fires.
+   */
+  const announceEntry = (): void => {
+    const pid = partyId(state);
+    if (!pid) return log("error", "no party — /party create first");
+    if (state.mode !== "lobby") return log("error", "already in a dungeon");
+    if (pendingEntry(state, Date.now()))
+      return log("error", "already entering");
+    const solo = (state.lobby.roster?.members.length ?? 1) <= 1;
+    if (solo) {
+      void enter();
+      return;
+    }
+    withLobby((l) =>
+      l.event({
+        scope: "party",
+        name: EVENT_OFFER,
+        payload: { partyId: pid },
+      }),
+    );
+    // Pending locally at once; the gateway's echo of the event is a no-op then.
+    const mine = { by: state.userId, at: Date.now() };
+    state.lobby.pending = mine;
+    changed();
+    setTimeout(() => {
+      // Only this announcement's timer enters; a rejected (and re-announced)
+      // one was already logged by the reducer.
+      if (state.lobby.pending !== mine) return;
+      void enter();
+    }, enterDelayMs);
+  };
+
+  /** The announced entry did not happen: clear it here and for the party. */
+  const cancelEntry = (): void => {
+    if (!state.lobby.pending) return;
+    state.lobby.pending = undefined;
+    const pid = partyId(state);
+    if (pid)
+      withLobby((l) =>
+        l.event({
+          scope: "party",
+          name: EVENT_REJECT,
+          payload: { partyId: pid },
+        }),
+      );
+  };
+
   const enter = async (): Promise<void> => {
     const pid = partyId(state);
     if (!pid) return log("error", "no party — /party create first");
-    if (!isLeader(state))
-      return log("error", "only the leader enters (403 not_leader)");
     if (state.mode !== "lobby") return log("error", "already in a dungeon");
     log("sys", "entering…");
     try {
       const r = await api.enterDungeon(pid);
       if (!r.ok) {
+        cancelEntry();
         // The party's run is still alive (this client restarted mid-run): rejoin it.
         if (
           r.code === "party_in_dungeon" &&
@@ -693,6 +743,7 @@ export function createSession(o: SessionOptions): Session {
       );
       await enterDungeon(r.gameId);
     } catch (e) {
+      cancelEntry();
       log("error", `enter: ${message(e)}`);
     }
   };
