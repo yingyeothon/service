@@ -138,11 +138,16 @@ describe("createRedisKv error handling", () => {
       client: { ...r, on } as unknown as RedisCommands,
       logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
     });
-    handler?.(Object.assign(new Error("boom"), { code: "ETIMEDOUT" }));
-    expect(warn).toHaveBeenCalledWith("redis error", {
-      code: "ETIMEDOUT",
-      message: "boom",
-    });
+    handler?.(
+      Object.assign(new Error("connect ETIMEDOUT 203.0.113.9:6379"), {
+        code: "ETIMEDOUT",
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith("redis error", { code: "ETIMEDOUT" });
+    // A reply error has no `code`: the kind is the first word, never the rest.
+    handler?.(new Error("NOAUTH Authentication required."));
+    expect(warn).toHaveBeenLastCalledWith("redis error", { code: "NOAUTH" });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("203.0.113");
   });
 });
 

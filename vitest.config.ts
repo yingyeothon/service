@@ -2,7 +2,13 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    projects: ["packages/*", "services/*", "apps/*"],
+    projects: [
+      "packages/*",
+      "services/*",
+      "apps/*",
+      // Repository-wide invariants (serverless.yml shapes) live in `test/`.
+      { test: { name: "repo", include: ["test/**/*.test.ts"] } },
+    ],
     coverage: {
       provider: "v8",
       include: ["packages/*/src/**", "services/*/src/**"],

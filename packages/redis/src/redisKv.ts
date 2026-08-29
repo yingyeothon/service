@@ -70,6 +70,15 @@ export function redisOptionsFromEnv(
  * The ACL user is restricted to `{prefix}*`, so a wrong prefix fails with
  * NOPERM rather than touching another service's keys.
  */
+/** The address-free kind of a driver error: its `code`, else the first word. */
+function errorKind(e: unknown): string {
+  return (
+    (e as { code?: string }).code ??
+    (e instanceof Error ? e.message.split(" ")[0] : undefined) ??
+    "unknown"
+  );
+}
+
 export function createRedisKv({
   host,
   port,
@@ -100,12 +109,11 @@ export function createRedisKv({
       retryStrategy: (times) => Math.min(times * 100, 1000),
     });
   // Without a listener ioredis prints unstructured console errors on every
-  // reconnect tick. Messages carry host:port and error codes, never secrets.
+  // reconnect tick. Messages name host:port (an infra identifier in a public
+  // repo's logs), so only the error kind is logged: the `code` when the driver
+  // sets one, else the first word of the message (`ECONNRESET`, `NOAUTH`, …).
   redis.on?.("error", (e) =>
-    logger.warn("redis error", {
-      code: (e as { code?: string }).code,
-      message: e.message,
-    }),
+    logger.warn("redis error", { code: errorKind(e) }),
   );
   const k = (key: string) => prefix + key;
   /** Driver/network failures become 503s with a value-free cause, like MySQL. */
@@ -114,11 +122,8 @@ export function createRedisKv({
       return await fn();
     } catch (e) {
       if (e instanceof AppError) throw e;
-      const code =
-        (e as { code?: string }).code ??
-        (e instanceof Error ? e.message.split(" ")[0] : "unknown");
       throw new AppError("unavailable", "redis error", {
-        cause: new Error(`redis ${code}`),
+        cause: new Error(`redis ${errorKind(e)}`),
       });
     }
   };
