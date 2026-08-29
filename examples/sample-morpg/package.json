@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint .",
-    "play": "node scripts/play.mjs"
+    "play": "node scripts/play.mjs",
+    "pack-assets": "node scripts/pack-assets.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-lambda": "^3.864.0",

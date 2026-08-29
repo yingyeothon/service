@@ -227,5 +227,60 @@
         "mapUrl": "zone002.json"
       }
     }
+  },
+  "view": {
+    "title": "Town",
+    "sheets": {
+      "tiles": "view/tiles.json",
+      "actors": "view/actors.json"
+    },
+    "dress": {
+      "ground": "town.cobble",
+      "blocked": "town.wall",
+      "border": "town.hedge",
+      "sprinkle": {
+        "set": "town.planter",
+        "chance": 0.04
+      }
+    },
+    "players": ["warrior", "mage", "rogue", "cleric"],
+    "cast": {
+      "slime": {
+        "clip": "monster.slime_green"
+      },
+      "boss": {
+        "clip": "monster.slime_blue",
+        "scale": 1.5
+      },
+      "hunter": {
+        "clip": "rogue.idle_s"
+      },
+      "elder": {
+        "clip": "cleric.idle_s"
+      }
+    },
+    "marks": {
+      "G": "town.gate",
+      "D": "dungeon.arch_gate"
+    },
+    "icons": {
+      "hp_potion": "potion_red",
+      "wooden_sword": "sword",
+      "leather_armor": "shield",
+      "rage_scroll": "scroll",
+      "slime_jelly": "gem_green",
+      "boss_horn": "bone",
+      "wolf_fang": "bone"
+    },
+    "effects": {
+      "hit": "flash",
+      "heal": "effect.cleric_holy",
+      "kill": "fade",
+      "drop": "icon",
+      "death": "fade",
+      "respawn": "effect.mage_fire",
+      "spawn": "effect.mage_fire",
+      "cleared": "effect.cleric_holy"
+    }
   }
 }
