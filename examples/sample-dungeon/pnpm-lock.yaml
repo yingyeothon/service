@@ -13,19 +13,19 @@ importers:
         version: 3.1116.0
       '@yingyeothon/gamebase-all-together':
         specifier: ^2.0.0
-        version: 2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
+        version: 2.0.1(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
       '@yingyeothon/lambda-authorizer-jwt':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.1
       '@yingyeothon/lambda-gamebase':
         specifier: ^2.0.0
-        version: 2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
+        version: 2.0.1(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
       '@yingyeothon/logger':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.1
       '@yingyeothon/naive-redis':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.1
     devDependencies:
       '@aws-sdk/client-apigatewaymanagementapi':
         specifier: ^3.864.0
@@ -914,47 +914,47 @@ packages:
   '@vitest/utils@3.2.7':
     resolution: {integrity: sha512-x6BDOd7dyo3PFLY3I9/HJ25X/6OurhGXk2/B9gOZNPF7XDVjeBK4k01lQE5uvDpbuheErh91qYuE1E2OEjK3Rw==}
 
-  '@yingyeothon/actor-system-redis@2.0.0':
-    resolution: {integrity: sha512-t0knli0gS2Mvtq0c4UHjPip/SijoBJpWLz/zMPQAnWQ/ZWRsgAgWIB0hc5jWWPv/pjXOVPjK28M9XUsjL98eXg==}
+  '@yingyeothon/actor-system-redis@2.0.1':
+    resolution: {integrity: sha512-pLNO1v9IPmZhr4hpbHftTap80eV49lSIPGWadZAVdEC5PYdxI1C1qB4IKDjJ6ZvBibs/OQ6ViYKOn3mC4Qd2tQ==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/actor-system@2.0.0':
-    resolution: {integrity: sha512-IcN6bezgYHTzUO2drbIuXOqwa2Fu5u/MTd4Ky+PceXbugBH0bW2WrPbzUFPIPIlpvahDrbxgjV/Xdy3erohfyA==}
+  '@yingyeothon/actor-system@2.0.1':
+    resolution: {integrity: sha512-kjOsR4wOe/zYeETPitzFn7rdQXhNwnq6i9gCdXtuenED1sIkaWKjCMOHVsZdxTV7bABsZRAx8kUZ/kWfISeqdA==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/codec@2.0.0':
-    resolution: {integrity: sha512-WmiBZCYMFAhCBkWSMuRSB0qdA0YplUdWSQY79l69ZjDiELKg775Jw9YLiOrlm8fMPo817fSbVP7zkFOW6i7+vg==}
+  '@yingyeothon/codec@2.0.1':
+    resolution: {integrity: sha512-BGw2DxiU24OAlfLDVkCuVd+uT8jQMgcn49biiBTMdQYRpSv6LWkc7Kj+uVqRlCing9IN7XTnvOmrSCEd4jGj9Q==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/gamebase-all-together@2.0.0':
-    resolution: {integrity: sha512-kiffofhggbZUdLSZA5IMMOKra1bI82K//ZBHOUwXu4elQCxkH+yUrK12f99lKMwomyieCtTi+1s6Cf8LnUNe6Q==}
+  '@yingyeothon/gamebase-all-together@2.0.1':
+    resolution: {integrity: sha512-MR7aatVNpQ8EaVhS4RCQRgGOnGASP7beoAE9XbCbwy01L3iJBW/JU3vUHqL54DbFQLp5CLApu5giVNHKVVd07w==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/lambda-authorizer-jwt@2.0.0':
-    resolution: {integrity: sha512-6dCiAvh0TCoMEPGkh1RvLPn4RpZR6MwDX4j3Wp9AhgALLhwKlMcxfjlS3StqoPwpUOMHqOMEmwnXyqlw2JT+4A==}
+  '@yingyeothon/lambda-authorizer-jwt@2.0.1':
+    resolution: {integrity: sha512-dCflZ+0CRzZ6VrbcXAova9odNTMMo4ons9EKsR+5kdaOTbrt9s1kxkFEkqbHE50aLQxrXRQy39VdJKXbumIf2A==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/lambda-authorizer@2.0.0':
-    resolution: {integrity: sha512-OwoO+rBMUd1m4QZT/YcBSfEOKUpPrx2Uy2IIWofqMRRQyo1BvcvX/B4Dht2lCzF/Yo3TBxp7kwk6B+xsyvYc6g==}
+  '@yingyeothon/lambda-authorizer@2.0.1':
+    resolution: {integrity: sha512-koEpj05e0dosNEIG0Nw6Xph1R8vmdvzUCxu6pWDUCNpsKwmj/niVUocoVzRcU/edBe6MkdhMr9f3OM1ca48ynw==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/lambda-gamebase@2.0.0':
-    resolution: {integrity: sha512-/L0D2yjQq3lapD+WydC6hgYH8uuPGVYhs4gdPK96RJpffYC/rUBPA/af/1b8TH26EaThmQcPcxxou0P+wcfMVg==}
+  '@yingyeothon/lambda-gamebase@2.0.1':
+    resolution: {integrity: sha512-p7YbpNeNXKPCAS92O5diz7GbwnRHUeDxKSzRIJEShWbk1t0CZS+/Y31iSfxXekCxDhnQAmrW8hNcaEWM2d9dSQ==}
     engines: {node: '>=20'}
     peerDependencies:
       '@aws-sdk/client-apigatewaymanagementapi': ^3.879.0
       '@aws-sdk/client-lambda': ^3.879.0
 
-  '@yingyeothon/logger@2.0.0':
-    resolution: {integrity: sha512-K+H60CjzVXNyqKwSk31vtWh8s6gEFf+IXZnNyU0VeIpCFlxccm0OC5ZAwYymEZtZLQNyPNSfttZyn+j2W2MYIg==}
+  '@yingyeothon/logger@2.0.1':
+    resolution: {integrity: sha512-GgsLtQ1mfCpw1AzeZ2cuCuc43JdAniSVXGwGH5h3LSHxbWlyNBzwFFqKlqBJ5F7N/1IEBARrcpa//INiHOmKHg==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/naive-redis@2.0.0':
-    resolution: {integrity: sha512-WY/jA6ZrlPiCmiYzyEezXN/0aUb6MF0FzOnmAzPM0tmBZEZu3qzqPtgSIMmqHMNZ/3/DVyq3nHlhqCl/Vizqeg==}
+  '@yingyeothon/naive-redis@2.0.1':
+    resolution: {integrity: sha512-+b3wICPwj/JOMo+dzLSp3PgWo2vUXJ3k/lQBxA9vbVxgwl/6/eByCVZ8A7FU9yZf0MtRAiM8YnZkGufjhSoVcg==}
     engines: {node: '>=20'}
 
-  '@yingyeothon/naive-socket@2.0.0':
-    resolution: {integrity: sha512-IQGC81MGwFnq5s4R0IZAzwEalzqKv3NznrLCz4bAIHRAYpOcMQExVuuLInbxbEmVS4mBZddkWzotYccouO1MhA==}
+  '@yingyeothon/naive-socket@2.0.1':
+    resolution: {integrity: sha512-5Lgg4iZ+aVnkaJt7Lou14HzC4PEmWOd2eJPEJKKMlGezkVOvnCRvgrOINv1WtzH424Y5KxoZACg4XwUtLDhrAw==}
     engines: {node: '>=20'}
 
   abort-controller@3.0.0:
@@ -2899,61 +2899,61 @@ snapshots:
       loupe: 3.2.1
       tinyrainbow: 2.0.0
 
-  '@yingyeothon/actor-system-redis@2.0.0':
+  '@yingyeothon/actor-system-redis@2.0.1':
     dependencies:
-      '@yingyeothon/actor-system': 2.0.0
-      '@yingyeothon/codec': 2.0.0
-      '@yingyeothon/logger': 2.0.0
-      '@yingyeothon/naive-redis': 2.0.0
+      '@yingyeothon/actor-system': 2.0.1
+      '@yingyeothon/codec': 2.0.1
+      '@yingyeothon/logger': 2.0.1
+      '@yingyeothon/naive-redis': 2.0.1
 
-  '@yingyeothon/actor-system@2.0.0':
+  '@yingyeothon/actor-system@2.0.1':
     dependencies:
-      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/logger': 2.0.1
 
-  '@yingyeothon/codec@2.0.0': {}
+  '@yingyeothon/codec@2.0.1': {}
 
-  '@yingyeothon/gamebase-all-together@2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)':
+  '@yingyeothon/gamebase-all-together@2.0.1(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)':
     dependencies:
-      '@yingyeothon/lambda-gamebase': 2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
-      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/lambda-gamebase': 2.0.1(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)
+      '@yingyeothon/logger': 2.0.1
     transitivePeerDependencies:
       - '@aws-sdk/client-apigatewaymanagementapi'
       - '@aws-sdk/client-lambda'
 
-  '@yingyeothon/lambda-authorizer-jwt@2.0.0':
+  '@yingyeothon/lambda-authorizer-jwt@2.0.1':
     dependencies:
       '@types/aws-lambda': 8.10.162
       '@types/jsonwebtoken': 9.0.10
-      '@yingyeothon/lambda-authorizer': 2.0.0
-      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/lambda-authorizer': 2.0.1
+      '@yingyeothon/logger': 2.0.1
       jsonwebtoken: 9.0.3
 
-  '@yingyeothon/lambda-authorizer@2.0.0':
+  '@yingyeothon/lambda-authorizer@2.0.1':
     dependencies:
       '@types/aws-lambda': 8.10.162
-      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/logger': 2.0.1
 
-  '@yingyeothon/lambda-gamebase@2.0.0(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)':
+  '@yingyeothon/lambda-gamebase@2.0.1(@aws-sdk/client-apigatewaymanagementapi@3.1116.0)(@aws-sdk/client-lambda@3.1116.0)':
     dependencies:
       '@aws-sdk/client-apigatewaymanagementapi': 3.1116.0
       '@aws-sdk/client-lambda': 3.1116.0
       '@types/aws-lambda': 8.10.162
-      '@yingyeothon/actor-system': 2.0.0
-      '@yingyeothon/actor-system-redis': 2.0.0
-      '@yingyeothon/logger': 2.0.0
-      '@yingyeothon/naive-redis': 2.0.0
+      '@yingyeothon/actor-system': 2.0.1
+      '@yingyeothon/actor-system-redis': 2.0.1
+      '@yingyeothon/logger': 2.0.1
+      '@yingyeothon/naive-redis': 2.0.1
 
-  '@yingyeothon/logger@2.0.0': {}
+  '@yingyeothon/logger@2.0.1': {}
 
-  '@yingyeothon/naive-redis@2.0.0':
+  '@yingyeothon/naive-redis@2.0.1':
     dependencies:
-      '@yingyeothon/logger': 2.0.0
-      '@yingyeothon/naive-socket': 2.0.0
+      '@yingyeothon/logger': 2.0.1
+      '@yingyeothon/naive-socket': 2.0.1
 
-  '@yingyeothon/naive-socket@2.0.0':
+  '@yingyeothon/naive-socket@2.0.1':
     dependencies:
       '@types/node': 24.13.3
-      '@yingyeothon/logger': 2.0.0
+      '@yingyeothon/logger': 2.0.1
 
   abort-controller@3.0.0:
     dependencies:
