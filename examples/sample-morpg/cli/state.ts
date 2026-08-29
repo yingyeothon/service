@@ -12,6 +12,7 @@ import type {
   SnapshotFrame,
 } from "@yingyeothon/gamebase-client";
 import type { CharacterSheet } from "../src/character.js";
+import type { Choice } from "./intent.js";
 import { distance, isWalkable, type Cell, type MapBundle } from "../src/map.js";
 import {
   ENTER_DELAY_MS,
@@ -41,6 +42,8 @@ export type LogKind = "sys" | "chat" | "party" | "whisper" | "event" | "error";
 export interface LogLine {
   kind: LogKind;
   text: string;
+  /** Monotonic per client; lets a script wait for lines newer than a mark. */
+  seq: number;
 }
 export const LOG_KEPT = 200;
 
@@ -92,7 +95,21 @@ export interface AppState {
   conn: ConnStatus;
   /** Line being typed; `undefined` means keys act directly. */
   input?: string;
+  /** Selected monster (`uid`) inside a run; cleared when it dies or vanishes. */
+  target?: number;
+  /** A menu or info block covering the side panel; keys pick from it until Esc. */
+  overlay?: Overlay;
+  /** Next log `seq`. */
+  logSeq: number;
+  /** Sees every line before the log is bounded (the batch front-end's feed). */
+  onLog?: (line: LogLine) => void;
 }
+
+/** A choice with the key the terminal assigned to it. */
+export type KeyedChoice = Choice & { key: string };
+export type Overlay =
+  | { kind: "choices"; title: string; choices: KeyedChoice[]; more: number }
+  | { kind: "info"; title: string; lines: string[] };
 
 export function newState(userId: string, name: string): AppState {
   return {
@@ -101,6 +118,7 @@ export function newState(userId: string, name: string): AppState {
     mode: "lobby",
     lobby: { self: { x: 0, y: 0, dir: "s" }, peers: {}, invites: [] },
     log: [],
+    logSeq: 1,
     conn: { state: "idle" },
   };
 }
@@ -109,7 +127,13 @@ export function newState(userId: string, name: string): AppState {
 const UNPRINTABLE = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 export function pushLog(state: AppState, kind: LogKind, text: string): void {
-  state.log.push({ kind, text: text.replace(UNPRINTABLE, "") });
+  const line: LogLine = {
+    kind,
+    text: text.replace(UNPRINTABLE, ""),
+    seq: state.logSeq++,
+  };
+  state.log.push(line);
+  state.onLog?.(line);
   if (state.log.length > LOG_KEPT)
     state.log.splice(0, state.log.length - LOG_KEPT);
 }
@@ -365,6 +389,11 @@ export function reduceDungeon(state: AppState, ev: DungeonEvent): void {
       return;
     case "frame":
       d.frame = ev.payload;
+      if (
+        state.target !== undefined &&
+        !ev.payload.monsters.some((m) => m.uid === state.target && m.hp > 0)
+      )
+        state.target = undefined;
       for (const e of ev.payload.events ?? [])
         pushLog(state, "event", describeEvent(e, d.you));
       return;
@@ -384,6 +413,18 @@ export function reduceDungeon(state: AppState, ev: DungeonEvent): void {
         "event",
         `run over: ${ev.payload.reason}${ev.payload.cleared ? " (cleared)" : ""}`,
       );
+      {
+        // The screen draws the result box; a script reads these lines.
+        const mine = ev.payload.rewards[state.userId];
+        const items = Object.entries(mine?.items ?? {})
+          .map(([id, n]) => `${id}+${n}`)
+          .join(",");
+        pushLog(
+          state,
+          "event",
+          `commit: ${ev.payload.committed[state.userId] ?? "-"} exp+${mine?.exp ?? 0}${items ? ` items ${items}` : ""}`,
+        );
+      }
       return;
     case "error":
       pushLog(state, "error", `gateway: ${ev.frame.code} ${ev.frame.message}`);

@@ -1,11 +1,13 @@
 /* Entry point: config → token → session → paint loop. Run via `pnpm play` (scripts/play.mjs). */
-import { readFileSync } from "node:fs";
+import { createReadStream, openSync, readFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import {
   createGatewayGameClient,
   createGatewayLobbyClient,
 } from "@yingyeothon/gamebase-client";
 import { createGameApi } from "./api.js";
 import { mintDebugToken, userIdFor, userIdFromJwt } from "./auth.js";
+import { createBatch } from "./batch.js";
 import { handleKey } from "./commands.js";
 import { loadConfig } from "./config.js";
 import { render } from "./render.js";
@@ -35,6 +37,12 @@ async function main(): Promise<void> {
   }
   const jwt = token;
   const state = newState(userId, config.user);
+  if (config.batch) {
+    const code = await runBatch(config, state, jwt);
+    // Nothing else to wait for: a redirected stdin or an SDK timer must not keep the process alive.
+    process.stdout.write("", () => process.exit(code));
+    return;
+  }
   const term: Terminal = createTerminal();
   // A throw inside an SDK event handler must not leave the TTY in raw mode on the alternate screen.
   const crash = (e: unknown): void => {
@@ -93,7 +101,11 @@ async function main(): Promise<void> {
   term.onKey((key) => {
     // ctrl+c always quits; any other key dismisses a finished run first.
     if (!(key.ctrl && key.name === "c") && session.dismissResult()) return;
-    const action = handleKey(state, key);
+    const action = handleKey(state, key, {
+      templates: session.templates,
+      ...(session.map ? { map: session.map } : {}),
+      now: Date.now(),
+    });
     dirty = true;
     if (action) session.dispatch(action);
   });
@@ -111,6 +123,75 @@ async function main(): Promise<void> {
     cleanup();
   }
   if (quitReason) console.error(quitReason);
+}
+
+/** `--batch`: no TTY, commands from stdin or `--script`, NDJSON on stdout. */
+async function runBatch(
+  config: ReturnType<typeof loadConfig>,
+  state: ReturnType<typeof newState>,
+  jwt: string,
+): Promise<number> {
+  // A missing script must fail before anything connects.
+  if (config.script) openSync(config.script, "r");
+  let input: ReturnType<typeof createInterface> | undefined;
+  const write = (line: string): void => {
+    process.stdout.write(`${line}\n`);
+  };
+  const front = createBatch({
+    state,
+    io: {
+      input: () => {
+        input = createInterface({
+          input: config.script
+            ? createReadStream(config.script)
+            : process.stdin,
+          crlfDelay: Infinity,
+        });
+        return input;
+      },
+      write,
+    },
+  });
+  // The reader went away (`head`, a closed pipe): stop instead of crashing.
+  process.stdout.on("error", (e: NodeJS.ErrnoException) => {
+    if (e.code === "EPIPE") front.quit("stdout closed");
+  });
+  const session = createSession({
+    state,
+    createLobby: () =>
+      createGatewayLobbyClient({
+        url: config.gatewayWsUrl,
+        channelId: config.state.lobbyChannelId,
+        token: jwt,
+      }),
+    createGame: (gameId) =>
+      createGatewayGameClient({
+        url: config.gatewayWsUrl,
+        channelId: config.state.qChannelId,
+        gameId,
+        token: jwt,
+      }),
+    api: createGameApi({ apiBase: config.apiBase, token: jwt }),
+    onChange: () => front.changed(),
+    onQuit: (reason) => front.quit(reason),
+  });
+  try {
+    await session.start();
+    return await front.run(session);
+  } catch (e) {
+    // The contract: `quit` is always the last line.
+    write(
+      JSON.stringify({
+        type: "quit",
+        reason: e instanceof Error ? e.message : String(e),
+        code: 1,
+      }),
+    );
+    return 1;
+  } finally {
+    input?.close();
+    session.close();
+  }
 }
 
 main().catch((e: unknown) => {

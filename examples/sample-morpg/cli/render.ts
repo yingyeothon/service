@@ -1,6 +1,6 @@
 /* State → screen lines at a fixed width/height. `ansi: false` yields plain text (tests). */
 import { EQUIP_SLOTS, expForLevel } from "../src/character.js";
-import { isWalkable, type MapBundle } from "../src/map.js";
+import { distance, isWalkable, type MapBundle } from "../src/map.js";
 import type { Templates } from "../src/templates.js";
 import {
   isLeader,
@@ -10,6 +10,11 @@ import {
   type AppState,
 } from "./state.js";
 import { ENTER_DELAY_MS } from "./types.js";
+import { nearestMonsters, npcsIn } from "./intent.js";
+export { npcsIn };
+
+/** Monsters listed in the dungeon panel, nearest first. */
+const NEAR_SHOWN = 5;
 
 export interface RenderOptions {
   width: number;
@@ -71,10 +76,11 @@ export function render(
   ).slice(0, maxTop);
   const mapWidth = map ? map.size.w : visibleWidth(mapLines[0] ?? "");
   const sideWidth = Math.max(SIDE_MIN, width - mapWidth - 2);
-  const side = renderSide(state, templates, sideWidth, paint, now).slice(
-    0,
-    maxTop,
-  );
+  const side = (
+    state.overlay
+      ? renderOverlay(state.overlay, sideWidth, paint)
+      : renderSide(state, templates, sideWidth, paint, now)
+  ).slice(0, maxTop);
 
   const top: string[] = [];
   const rows = Math.max(mapLines.length, side.length);
@@ -98,18 +104,13 @@ export function render(
 
 function hint(state: AppState): string {
   if (state.dungeon?.ended) return "[any key] back to town · ctrl+c quit";
+  if (state.overlay)
+    return state.overlay.kind === "choices"
+      ? "pick a key · Esc back · Enter or / type a command"
+      : "Esc back · Enter or / type a command";
   return state.mode === "dungeon"
     ? "wasd move · f attack · q skill · / command · ? help"
     : "wasd move · / command · ? help";
-}
-
-/** Town NPCs standing in `zone`. */
-export function npcsIn(
-  templates: Templates | undefined,
-  zone: string | undefined,
-): Array<[string, Templates["npcs"][string]]> {
-  if (!templates || !zone) return [];
-  return Object.entries(templates.npcs).filter(([, n]) => n.zone === zone);
 }
 
 function renderMap(
@@ -164,6 +165,27 @@ function renderMap(
   );
 }
 
+/** A menu or info block in place of the side panel; the map and the log stay. */
+function renderOverlay(
+  o: NonNullable<AppState["overlay"]>,
+  width: number,
+  paint: Paint,
+): string[] {
+  const out: string[] = [paint("title", clip(`── ${o.title} ──`, width))];
+  if (o.kind === "info") for (const l of o.lines) out.push(clip(l, width));
+  else
+    for (const c of o.choices)
+      out.push(
+        c.disabled
+          ? paint("dim", clip(`    ${c.label} (${c.disabled.text})`, width))
+          : clip(`[${c.key}] ${c.label}`, width),
+      );
+  if (o.kind === "choices" && o.more > 0)
+    out.push(paint("dim", clip(`    … ${o.more} more`, width)));
+  out.push(paint("dim", clip("Esc back · / command", width)));
+  return out;
+}
+
 function renderSide(
   state: AppState,
   templates: Templates | undefined,
@@ -192,10 +214,26 @@ function renderSide(
       line(
         `hp ${bar(me.hp, me.maxHp, 10)} ${me.hp}/${me.maxHp}${me.alive ? "" : " dead"}`,
       );
-    if (d.frame)
+    if (d.frame) {
       line(
         `t=${d.frame.time.toFixed(0)}s  monsters ${d.frame.monsters.length}`,
       );
+      if (me && !d.ended) {
+        const near = nearestMonsters(d.frame, me).slice(0, NEAR_SHOWN);
+        if (near.length > 0) line("near:", "title");
+        for (const m of near)
+          line(
+            `${m.uid === state.target ? ">" : " "} ${m.uid} ${m.templateId} ${m.hp}/${m.maxHp}${distance(m, me) <= 1 ? " adj" : ""}`,
+            m.uid === state.target ? "event" : undefined,
+          );
+      }
+      for (const p of d.frame.players)
+        if (p.id !== d.you && !d.ended)
+          line(
+            `  ${shortId(p.id)} ${p.hp}/${p.maxHp}${p.alive ? "" : " dead"}`,
+            "dim",
+          );
+    }
   }
   const s = state.sheet?.sheet;
   if (s) {
@@ -251,6 +289,27 @@ function renderSide(
         "dim",
       );
   }
+  if (d?.result) {
+    line("── result ──", "title");
+    const mine = d.result.rewards[state.userId];
+    const outcome =
+      d.result.cleared && d.result.reason !== "cleared"
+        ? `${d.result.reason} (cleared)`
+        : d.result.reason;
+    line(`${outcome}  commit: ${d.result.committed[state.userId] ?? "-"}`);
+    if (mine) {
+      line(`  exp +${mine.exp}`);
+      for (const [id, n] of Object.entries(mine.items)) line(`  ${id} +${n}`);
+      for (const [id, n] of Object.entries(mine.questProgress))
+        line(`  quest ${id} +${n}`);
+    }
+  }
+  line(
+    state.mode === "dungeon"
+      ? "f attack · Tab target · i bag · ? help"
+      : "f talk · i bag · t char · p party · ? help",
+    "dim",
+  );
   // Inside a run only the quests being worked on, so the result box stays visible.
   const quests = Object.entries(templates?.quests ?? {}).filter(
     ([id]) => state.mode === "lobby" || s?.quests[id]?.active,
@@ -275,21 +334,6 @@ function renderSide(
   line("items:", "title");
   if (items.length === 0) line("  (none)", "dim");
   for (const [id, n] of items) line(`  ${id} x${n}`);
-  if (d?.result) {
-    line("── result ──", "title");
-    const mine = d.result.rewards[state.userId];
-    const outcome =
-      d.result.cleared && d.result.reason !== "cleared"
-        ? `${d.result.reason} (cleared)`
-        : d.result.reason;
-    line(`${outcome}  commit: ${d.result.committed[state.userId] ?? "-"}`);
-    if (mine) {
-      line(`  exp +${mine.exp}`);
-      for (const [id, n] of Object.entries(mine.items)) line(`  ${id} +${n}`);
-      for (const [id, n] of Object.entries(mine.questProgress))
-        line(`  quest ${id} +${n}`);
-    }
-  }
   return out;
 }
 

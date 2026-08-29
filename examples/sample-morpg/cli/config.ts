@@ -15,6 +15,9 @@ export interface Config {
   token?: string;
   user: string;
   state: StateFile;
+  /** No TTY: slash commands from stdin (or `script`), NDJSON to stdout. */
+  batch: boolean;
+  script?: string;
 }
 
 export interface LoadConfigOptions {
@@ -32,12 +35,16 @@ const FLAGS: Record<string, string> = {
   "--debug-key-file": "MORPG_DEBUG_KEY_FILE",
   "--token": "MORPG_TOKEN",
   "--user": "MORPG_USER",
+  "--script": "MORPG_SCRIPT",
 };
+/** Flags that take no value. */
+const SWITCHES: Record<string, string> = { "--batch": "MORPG_BATCH" };
 
 export const USAGE = `usage: pnpm play -- [--config <env-file>] [--user <name>] [--token <jwt>]
        [--api <url>] [--gw <wss-url>] [--auth <url>] [--state <state.json>] [--debug-key-file <path>]
+       [--batch [--script <file>]]   (no TTY: slash commands in, NDJSON out — README "Drive it from a script")
 env file keys: MORPG_API_BASE MORPG_GATEWAY_WS_URL MORPG_STATE_FILE MORPG_AUTH_BASE
-               MORPG_DEBUG_KEY_FILE MORPG_TOKEN MORPG_USER`;
+               MORPG_DEBUG_KEY_FILE MORPG_TOKEN MORPG_USER MORPG_BATCH MORPG_SCRIPT`;
 
 export function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -45,6 +52,10 @@ export function parseArgs(argv: string[]): Record<string, string> {
     const a = argv[i] ?? "";
     // `pnpm play -- --user x` hands the `--` through (pnpm >= 10).
     if (a === "--") continue;
+    if (Object.hasOwn(SWITCHES, a)) {
+      out[SWITCHES[a]!] = "1";
+      continue;
+    }
     const eq = a.indexOf("=");
     const flag = eq > 0 ? a.slice(0, eq) : a;
     const key = FLAGS[flag];
@@ -119,6 +130,8 @@ export function loadConfig({ argv, env, readFile }: LoadConfigOptions): Config {
     token,
     user: get("MORPG_USER") ?? env.USER ?? "player",
     state: parseState(read(readFile, statePath), statePath),
+    batch: get("MORPG_BATCH") === "1",
+    script: get("MORPG_SCRIPT"),
   };
 }
 

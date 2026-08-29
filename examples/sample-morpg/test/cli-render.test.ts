@@ -6,7 +6,85 @@ import { loadZone } from "./_fixtures.js";
 
 const ME = "a".repeat(32);
 const PEER = "b".repeat(32);
-const opts = { width: 80, height: 20, ansi: false };
+const opts = { width: 80, height: 26, ansi: false };
+
+describe("render: overlay and screen contract", () => {
+  it("an overlay replaces only the side panel; the map, row 0 mode word and log stay", () => {
+    const map = loadZone();
+    const s = newState(ME, "alice");
+    s.lobby.zone = "zone001";
+    s.lobby.self = { x: 1, y: 1, dir: "s" };
+    pushLog(s, "sys", "hello there");
+    const plain = render(s, map, opts);
+    s.overlay = {
+      kind: "choices",
+      title: "inventory",
+      choices: [
+        {
+          key: "1",
+          label: "hp_potion x2 — potion",
+          ref: { kind: "item", id: "hp_potion", count: 2, itemKind: "potion" },
+          disabled: { code: "field_only", text: "field only" },
+        },
+        {
+          key: "2",
+          label: "wooden_sword x1 — weapon [equip]",
+          ref: { kind: "item", id: "wooden_sword", count: 1 },
+          action: { kind: "equip", itemId: "wooden_sword" },
+        },
+      ],
+      more: 3,
+    };
+    const lines = render(s, map, opts);
+    for (let y = 0; y < map.size.h; y++)
+      expect(lines[y]?.slice(0, map.size.w)).toBe(
+        plain[y]?.slice(0, map.size.w),
+      );
+    const side = lines.map((l) => l.slice(map.size.w + 2));
+    expect(side[0]).toBe("── inventory ──");
+    expect(side[1]).toBe("    hp_potion x2 — potion (field only)");
+    expect(side[2]).toBe("[2] wooden_sword x1 — weapon [equip]");
+    expect(side[3]).toBe("    … 3 more");
+    expect(side[4]).toBe("Esc back · / command");
+    expect(lines.join("\n")).toContain("hello there");
+    s.overlay = { kind: "info", title: "keys", lines: ["a", "b"] };
+    expect(
+      render(s, map, opts)
+        .map((l) => l.slice(map.size.w + 2))
+        .slice(0, 3),
+    ).toEqual(["── keys ──", "a", "b"]);
+  });
+  it("screen contract for drivers: map at the origin at bundle size, uppercase mode in row 0, the npcs line and the lv line formats", () => {
+    const map = loadZone();
+    const s = newState(ME, "alice");
+    s.lobby.zone = "zone001";
+    s.lobby.self = { x: 1, y: 1, dir: "s" };
+    s.sheet = { version: 0, sheet: newCharacter() };
+    const lines = render(s, map, { width: 100, height: 30, ansi: false });
+    expect(lines[0]?.startsWith("x".repeat(map.size.w))).toBe(true);
+    expect(lines[1]?.slice(0, 3)).toBe("x@.");
+    expect(lines[0]?.slice(map.size.w + 2)).toMatch(/^LOBBY {2}/);
+    const side = lines.map((l) => l.slice(map.size.w + 2));
+    expect(side).toContain(
+      "npcs: hunter(H) @3,1 elder(E) @17,1 forest_gate(G) @18,8 dungeon_gate(D) @10,8",
+    );
+    expect(
+      side.some((l) => /^lv \d+ {2}exp \d+\/\d+ {2}pts \d+$/.test(l)),
+    ).toBe(true);
+    expect(side).toContain("f talk · i bag · t char · p party · ? help");
+    s.mode = "dungeon";
+    s.dungeon = {
+      ...newDungeon("g_0123456789abcdef"),
+      you: ME,
+      stage: "running",
+    };
+    expect(
+      render(s, map, { width: 100, height: 30, ansi: false })[0]?.slice(
+        map.size.w + 2,
+      ),
+    ).toMatch(/^DUNGEON {2}/);
+  });
+});
 
 describe("render", () => {
   it("lobby: self and peers overlay the bundle rows; side panel shows the sheet", () => {
@@ -28,9 +106,9 @@ describe("render", () => {
         quests: { jelly_hunt: { active: true, progress: 1, completed: 0 } },
       },
     };
-    s.log.push({ kind: "chat", text: "bbbbbbbb: hi" });
+    pushLog(s, "chat", "bbbbbbbb: hi");
     const lines = render(s, map, { ...opts, now: 4_000 });
-    expect(lines).toHaveLength(20);
+    expect(lines).toHaveLength(26);
     const text = lines.join("\n");
     expect(text).toContain("gear weapon=sword");
     expect(text).toContain("buffs haste 6s");
@@ -70,7 +148,7 @@ describe("render", () => {
     s.lobby.pending = { by: PEER, at: 1_000 };
     const counting = render(s, map, {
       width: 80,
-      height: 24,
+      height: 28,
       ansi: false,
       now: 3_500,
     }).map((l) => l.slice(map.size.w + 2));
@@ -82,7 +160,7 @@ describe("render", () => {
     // Past the window plus grace the line is gone and the state cleared.
     const stale = render(s, map, {
       width: 80,
-      height: 24,
+      height: 28,
       ansi: false,
       now: 1_000 + 10_000 + 5_001,
     });
@@ -147,6 +225,10 @@ describe("render", () => {
     expect(side[0]).toBe("DUNGEON  idle");
     expect(side[2]).toBe("game: g_0123456789abcdef  running");
     expect(side[3]).toBe("hp #####----- 25/50");
+    expect(side).toContain("near:");
+    expect(side.some((l) => /^ {2}\d+ (slime|boss) \d+\/\d+/.test(l))).toBe(
+      true,
+    );
     expect(side).toContain("cleared  commit: applied");
     expect(side).toContain("  exp +110");
     expect(side).toContain("  boss_horn +1");
@@ -155,7 +237,7 @@ describe("render", () => {
   it("ansi output strips back to the plain rendering; narrow widths clip", () => {
     const map = loadZone();
     const s = newState(ME, "alice");
-    s.log.push({ kind: "error", text: "e".repeat(200) });
+    pushLog(s, "error", "e".repeat(200));
     const plain = render(s, map, { ...opts, width: 60 });
     const colored = render(s, map, { ...opts, width: 60, ansi: true });
     expect(colored.map(stripAnsi)).toEqual(plain);
@@ -196,10 +278,7 @@ describe("render", () => {
       invited: [PEER],
       max: 4,
     };
-    s.log.push({
-      kind: "chat",
-      text: "가나다라마바사아자차카타파하".repeat(5),
-    });
+    pushLog(s, "chat", "가나다라마바사아자차카타파하".repeat(5));
     for (const [width, height] of [
       [60, 16],
       [70, 18],

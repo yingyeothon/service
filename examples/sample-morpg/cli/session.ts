@@ -15,7 +15,6 @@ import type { GameApi, SheetAnswer } from "./api.js";
 import { HELP, type Action } from "./commands.js";
 import {
   dungeonStep,
-  nearestAdjacentMonster,
   newDungeon,
   partyId,
   pendingEntry,
@@ -28,6 +27,7 @@ import {
   type ConnStatus,
   type LobbyEffect,
 } from "./state.js";
+import { attackTarget, listEntities } from "./intent.js";
 import {
   ENTER_DELAY_MS,
   EVENT_OFFER,
@@ -259,6 +259,8 @@ export function createSession(o: SessionOptions): Session {
     if (state.mode !== "lobby") return;
     state.mode = "connecting";
     state.lobby.pending = undefined;
+    state.target = undefined;
+    state.overlay = undefined;
     state.dungeon = newDungeon(gameId);
     changed();
     const g = o.createGame(gameId);
@@ -386,6 +388,8 @@ export function createSession(o: SessionOptions): Session {
     game = undefined;
     if (g && g.state !== "closed") g.close();
     state.dungeon = undefined;
+    state.target = undefined;
+    state.overlay = undefined;
     fieldMap = undefined;
     state.mode = "lobby";
     state.conn = { state: lobby?.state ?? "closed" };
@@ -466,12 +470,14 @@ export function createSession(o: SessionOptions): Session {
         `zone ${r.zone}: ${message(e)} — the sheet is there already, /zone ${r.zone} to retry`,
       );
     }
+    // A new zone gets a fresh snapshot from the gateway; the same zone does
+    // not, so its peers must survive the re-announce.
+    if (r.zone !== currentZone) state.lobby.peers = {};
     currentZone = r.zone;
     state.lobby.zone = r.zone;
     const start = r.start ?? townMap.start;
     state.lobby.self.x = start.x;
     state.lobby.self.y = start.y;
-    state.lobby.peers = {};
     lastSent = undefined;
     sendPos();
     log("sys", `now in ${r.zone}`);
@@ -512,12 +518,35 @@ export function createSession(o: SessionOptions): Session {
       case "move":
         return move(action.dir);
       case "attack": {
-        const d = state.dungeon;
-        const me = selfPlayer(d);
-        if (!d?.frame || !me) return;
-        const target = nearestAdjacentMonster(d.frame, me);
-        if (target) sendGame({ type: "attack", uid: target.uid });
-        else log("sys", "nothing adjacent to attack");
+        if (state.mode !== "dungeon") return log("sys", "not in a dungeon");
+        const r = attackTarget(state, action.uid);
+        if ("uid" in r) sendGame({ type: "attack", uid: r.uid });
+        else log("sys", r.reason);
+        return;
+      }
+      case "target": {
+        if (action.uid === undefined) {
+          state.target = undefined;
+          return log("sys", "target cleared");
+        }
+        const m = state.dungeon?.frame?.monsters.find(
+          (x) => x.uid === action.uid && x.hp > 0,
+        );
+        if (!m) return log("error", `no live monster ${action.uid}`);
+        state.target = m.uid;
+        log("sys", `target ${m.uid} ${m.templateId}`);
+        changed();
+        return;
+      }
+      case "ls": {
+        const rows = listEntities(action.what, {
+          state,
+          templates: world?.templates,
+          now: Date.now(),
+        });
+        if (rows.length === 0) pushLog(state, "sys", `${action.what}: none`);
+        for (const r of rows) pushLog(state, "sys", r.text);
+        changed();
         return;
       }
       case "skill":
