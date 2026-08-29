@@ -8,9 +8,9 @@ import {
   selfPlayer,
   shortId,
   type AppState,
-} from "../client/state.js";
-import { ENTER_DELAY_MS } from "../client/types.js";
-import { nearestMonsters, npcsIn } from "../client/intent.js";
+} from "./state.js";
+import { ENTER_DELAY_MS } from "./types.js";
+import { nearestMonsters, npcsIn } from "./intent.js";
 export { npcsIn };
 
 /** Monsters listed in the dungeon panel, nearest first. */
@@ -53,6 +53,12 @@ const RESET = "\x1b[0m";
 
 type Paint = (kind: string, text: string) => string;
 
+/** One panel line: the text and the colour class the terminal/web paints it with. */
+export interface PanelLine {
+  text: string;
+  kind?: string;
+}
+
 export function render(
   state: AppState,
   map: MapBundle | undefined,
@@ -78,9 +84,13 @@ export function render(
   const sideWidth = Math.max(SIDE_MIN, width - mapWidth - 2);
   const side = (
     state.overlay
-      ? renderOverlay(state.overlay, sideWidth, paint)
-      : renderSide(state, templates, sideWidth, paint, now)
-  ).slice(0, maxTop);
+      ? overlayLines(state.overlay)
+      : sideLines(state, templates, now)
+  )
+    .slice(0, maxTop)
+    .map((l) =>
+      l.kind ? paint(l.kind, clip(l.text, sideWidth)) : clip(l.text, sideWidth),
+    );
 
   const top: string[] = [];
   const rows = Math.max(mapLines.length, side.length);
@@ -98,12 +108,13 @@ export function render(
   const input =
     state.input !== undefined
       ? clip(`> ${state.input}_`, width)
-      : paint("dim", clip(hint(state), width));
+      : paint("dim", clip(inputHint(state, "ctrl+c quit"), width));
   return [...top, paint("dim", "-".repeat(width)), ...logLines, input];
 }
 
-function hint(state: AppState): string {
-  if (state.dungeon?.ended) return "[any key] back to town · ctrl+c quit";
+/** The input line's hint; `quit` names the front-end's way out. */
+export function inputHint(state: AppState, quit: string): string {
+  if (state.dungeon?.ended) return `[any key] back to town · ${quit}`;
   if (state.overlay)
     return state.overlay.kind === "choices"
       ? "pick a key · Esc back · Enter or / type a command"
@@ -166,37 +177,31 @@ function renderMap(
 }
 
 /** A menu or info block in place of the side panel; the map and the log stay. */
-function renderOverlay(
-  o: NonNullable<AppState["overlay"]>,
-  width: number,
-  paint: Paint,
-): string[] {
-  const out: string[] = [paint("title", clip(`── ${o.title} ──`, width))];
-  if (o.kind === "info") for (const l of o.lines) out.push(clip(l, width));
+export function overlayLines(o: NonNullable<AppState["overlay"]>): PanelLine[] {
+  const out: PanelLine[] = [{ text: `── ${o.title} ──`, kind: "title" }];
+  if (o.kind === "info") for (const l of o.lines) out.push({ text: l });
   else
     for (const c of o.choices)
       out.push(
         c.disabled
-          ? paint("dim", clip(`    ${c.label} (${c.disabled.text})`, width))
-          : clip(`[${c.key}] ${c.label}`, width),
+          ? { text: `    ${c.label} (${c.disabled.text})`, kind: "dim" }
+          : { text: `[${c.key}] ${c.label}` },
       );
   if (o.kind === "choices" && o.more > 0)
-    out.push(paint("dim", clip(`    … ${o.more} more`, width)));
-  out.push(paint("dim", clip("Esc back · / command", width)));
+    out.push({ text: `    … ${o.more} more`, kind: "dim" });
+  out.push({ text: "Esc back · / command", kind: "dim" });
   return out;
 }
 
-function renderSide(
+/** The side panel: connection, sheet, party, quests, bag — the same lines on every client. */
+export function sideLines(
   state: AppState,
   templates: Templates | undefined,
-  width: number,
-  paint: Paint,
   now: number,
-): string[] {
-  const out: string[] = [];
-  const line = (t: string, kind?: string): void => {
-    const c = clip(t, width);
-    out.push(kind ? paint(kind, c) : c);
+): PanelLine[] {
+  const out: PanelLine[] = [];
+  const line = (text: string, kind?: string): void => {
+    out.push(kind ? { text, kind } : { text });
   };
   const d = state.dungeon;
   const conn =

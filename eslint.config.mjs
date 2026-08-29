@@ -18,6 +18,7 @@ export default defineConfig(
     "layers/**",
     // Standalone pnpm root with its own eslint config (examples/sample-dungeon).
     "examples/**",
+    "local/**",
   ]),
   js.configs.recommended,
   tseslint.configs.recommendedTypeChecked,

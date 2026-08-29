@@ -184,6 +184,18 @@ describe("parseView", () => {
 });
 
 describe("parseTiles / parseActors", () => {
+  it("bound the pixel sizes and refuse prototype keys in icons", () => {
+    const t = read("view/tiles.json") as Record<string, unknown>;
+    expect(() => parseTiles({ ...t, tileSize: 5000 })).toThrow(/tileSize/);
+    const a = read("view/actors.json") as Record<string, unknown>;
+    expect(() => parseActors({ ...a, frame: { w: 5000, h: 16 } })).toThrow(
+      /actors.frame/,
+    );
+    expect(() =>
+      parseActors({ ...a, icons: JSON.parse('{"__proto__": 3}') as unknown }),
+    ).toThrow(/icons/);
+  });
+
   it("reject indices outside the atlas and dangling aliases", () => {
     const raw = read("view/tiles.json") as Record<string, unknown>;
     expect(() => parseTiles({ ...raw, count: 1 })).toThrow(/outside atlas/);

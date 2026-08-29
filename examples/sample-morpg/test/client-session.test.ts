@@ -260,6 +260,7 @@ describe("session: lobby", () => {
   it("connect loads the map, starts at map.start, announces pos once, loads the sheet", async () => {
     const h = await start();
     expect(h.session.map?.id).toBe("zone001");
+    expect(h.session.mapUrl).toBe(hello.mapUrl);
     expect(h.state.lobby.self).toMatchObject(zone.start);
     expect(h.lobby.sent).toEqual([
       { type: "pos", zone: "zone001", x: 1, y: 1, dir: "s" },
@@ -502,6 +503,7 @@ describe("session: lobby", () => {
     });
     // The zone's own bundle is drawn from now on; fetched once.
     expect(h.session.map?.id).toBe("zone002");
+    expect(h.session.mapUrl).toBe(zone.templates.zones.zone002!.mapUrl);
     expect(h.fetched).toEqual([zone.templates.zones.zone002!.mapUrl]);
     h.lobby.emit("snapshot", {
       type: "snapshot",

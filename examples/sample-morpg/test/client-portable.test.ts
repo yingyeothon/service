@@ -16,6 +16,7 @@ describe("client core stays portable", () => {
       "auth.ts",
       "commands.ts",
       "intent.ts",
+      "render.ts",
       "session.ts",
       "sha256.ts",
       "state.ts",
@@ -30,6 +31,22 @@ describe("client core stays portable", () => {
     expect(code).not.toMatch(/from "\.\.\/cli\//);
     expect(code).not.toMatch(/\bBuffer\b|\bprocess\.|\brequire\(/);
   });
+});
+
+describe("web client stays browser-only", () => {
+  const dir = new URL("../web/src/", import.meta.url);
+  it.each(readdirSync(dir).filter((f) => f.endsWith(".ts")))(
+    "%s imports no node: module and nothing from cli/",
+    (f) => {
+      const code = readFileSync(new URL(f, dir), "utf8").replace(
+        /\/\*[\s\S]*?\*\/|\/\/.*$/gm,
+        "",
+      );
+      expect(code).not.toMatch(/from "node:/);
+      expect(code).not.toMatch(/from "\.\.\/\.\.\/cli\//);
+      expect(code).not.toMatch(/\bBuffer\b|\bprocess\.|\brequire\(/);
+    },
+  );
 });
 
 describe("sha256Hex", () => {

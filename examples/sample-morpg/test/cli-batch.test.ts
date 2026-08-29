@@ -43,6 +43,7 @@ function harness(lines: string[], state = newState(ME, "alice")) {
   let dismissed = 0;
   const session: Session = {
     map: zone,
+    mapUrl: "https://cdn.test/assets/v1/zone001.json",
     templates: zone.templates,
     start: async () => {},
     dispatch: (a) => {

@@ -15,7 +15,9 @@ export default defineConfig(
   {
     languageOptions: {
       parserOptions: {
-        projectService: { allowDefaultProject: ["*.mjs", "scripts/*.mjs"] },
+        projectService: {
+          allowDefaultProject: ["*.mjs", "scripts/*.mjs", "web/*.mjs"],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
       globals: globals.node,
@@ -27,8 +29,12 @@ export default defineConfig(
     },
   },
   {
-    // The local runner imports an esbuild bundle at runtime and the asset packer reads mapping JSON: untyped by nature.
-    files: ["scripts/*.mjs"],
+    files: ["web/src/**/*.ts"],
+    languageOptions: { globals: globals.browser },
+  },
+  {
+    // The local runner imports an esbuild bundle at runtime, the asset packer reads mapping JSON, the vite dev plugin handles raw HTTP: untyped by nature.
+    files: ["scripts/*.mjs", "web/*.mjs"],
     rules: {
       "@typescript-eslint/no-unsafe-assignment": "off",
       "@typescript-eslint/no-unsafe-call": "off",

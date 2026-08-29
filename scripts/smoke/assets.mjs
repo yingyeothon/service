@@ -217,6 +217,19 @@ try {
         "nosniff",
       cdn.headers.get("x-content-type-options") ?? "-",
     );
+    // A browser game client fetches from another origin. The first fetch above
+    // carried no Origin and is now cached; the CORS header must still be on
+    // the cached variant (2026-08-30: the edge cached a `br` variant without it
+    // and every browser fetch of the map bundle failed).
+    const cors = await fetch(file.url, {
+      headers: { origin: "http://127.0.0.1:5174" },
+    });
+    await cors.arrayBuffer();
+    check(
+      "CDN sends Access-Control-Allow-Origin on a cached object",
+      cors.headers.get("access-control-allow-origin") === "*",
+      cors.headers.get("access-control-allow-origin") ?? "-",
+    );
   } else {
     check("asset served by CDN", false, "no url");
   }

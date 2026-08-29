@@ -18,6 +18,11 @@
 - When a route can answer with a status instead of a value, assert the status too. "A re-issue returns a different password" kept passing after a 429 was added because `undefined` is `not.toBe` the old password.
 - Test a cron/sweep step through the function the handler calls, not by re-implementing the wiring in the test: with the wiring re-implemented, deleting the line in `handler.ts` kept the suite green. Extract the step (`runRedisAclReconcile` pattern) and call it directly.
 
+## Examples are self-gated (2026-08-30)
+
+- `examples/*` are standalone pnpm projects outside the root workspace: root `lint`/`typecheck`/`test` never see them, so CI has an `examples` job that runs each example's own `lint`/`typecheck`/`test` (and `web:build` for sample-morpg). Run those inside the example before calling it green; the root gates passing says nothing about them.
+- Browser-safety of shared client code is proven two ways in sample-morpg: `tsconfig.client.json`/`web/tsconfig.json` compile `client/` and `web/src` with `lib: DOM`, `types: []` (no `@types/node` globals — which forced `ResultPayload` out of the Node-typed `src/actor.ts` into `src/result.ts`), and `test/client-portable.test.ts` greps for `node:` imports, `Buffer`/`process`/`require` and `cli/` imports. The grep alone was not enough: with `types: ["node"]` every Node global type-checked in browser code.
+
 ## Ordering and time (2026-08-29)
 
 - A list ordered by `(created_at, id)` is only deterministic when the id is time-ordered. Poster uploads minted `ep_${randomHex(6)}`, two uploads landed in the same second on dev, and the events smoke flipped between passes — a unit test with the fake clock never sees it. Use `ulid().toLowerCase()` for any id that serves as a sort tiebreaker (posters, comments); keep `randomHex` only for ids that are never ordered.

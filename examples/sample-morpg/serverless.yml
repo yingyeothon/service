@@ -33,6 +33,14 @@ provider:
   timeout: 15
   logRetentionInDays: 7
   deploymentMethod: direct
+  # A browser client (web/) calls the API from another origin with a Bearer
+  # token — no cookies, so a wildcard origin is safe; the JWT is the credential.
+  httpApi:
+    cors:
+      allowedOrigins: ["*"]
+      allowedHeaders: [authorization, content-type]
+      allowedMethods: [GET, POST, DELETE, OPTIONS]
+      maxAge: 3600
   # Every value comes from the deploy shell (scripts/deploy.sh sources an env
   # file): no SSM, so the stack copies to any AWS account unchanged.
   environment:
