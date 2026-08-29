@@ -30,7 +30,9 @@ import (
 type redisLogger struct{ log *slog.Logger }
 
 func (l redisLogger) Printf(_ context.Context, format string, v ...any) {
-	l.log.Warn("go-redis: " + fmt.Sprintf(format, v...))
+	// go-redis names the remote host:port in dial/pubsub lines; mask it
+	// (`rules/security.md`: no infra identifiers in logs).
+	l.log.Warn("go-redis: " + redisx.MaskAddresses(fmt.Sprintf(format, v...)))
 }
 
 func main() {

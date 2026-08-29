@@ -235,7 +235,7 @@ func (b *Bridge) Join(ctx context.Context, gameID, connID, memberID string, sock
 			}
 			close(g.ready)
 			b.mu.Unlock()
-			b.redisErr("subscribe", err)
+			b.redisErr("subscribe", redisx.Sanitize(err))
 			return err
 		}
 		g.pubsub, g.cancel = ps, cancel

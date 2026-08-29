@@ -16,6 +16,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -93,11 +95,11 @@ func (c *Client) SessionKey(kind, channelID, userID string) string {
 // game's HTTP API can see who is online.
 func (c *Client) ClaimSession(ctx context.Context, kind, channelID, userID, connectionID string) (previous string, err error) {
 	key := c.SessionKey(kind, channelID, userID)
-	prev, err := c.rdb.GetSet(ctx, key, connectionID).Result()
+	// One `SET … EX GET` round trip (Redis ≥ 7 / Valkey): value and TTL land
+	// together, so a crash between a `GETSET` and its `EXPIRE` can no longer
+	// leave a TTL-less key behind.
+	prev, err := c.rdb.SetArgs(ctx, key, connectionID, redis.SetArgs{TTL: SessionTTL, Get: true}).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
-		return "", fmt.Errorf("redis: %w", sanitize(err))
-	}
-	if err := c.rdb.Expire(ctx, key, SessionTTL).Err(); err != nil {
 		return "", fmt.Errorf("redis: %w", sanitize(err))
 	}
 	if prev == connectionID {
@@ -274,8 +276,54 @@ func (c *Client) del(ctx context.Context, key string) error {
 	return nil
 }
 
-// sanitize keeps driver errors free of credentials. go-redis never includes
-// the password in an error, but a dial error names host:port, which is an
-// infra identifier in logs and acceptable (`rules/security.md`: host:port may
-// appear inside driver errors, never passwords).
-func sanitize(err error) error { return err }
+// Sanitize is `sanitize` for callers that hold a raw go-redis object (the
+// pub/sub subscription from `Subscribe` yields unsanitized dial errors).
+func Sanitize(err error) error { return sanitize(err) }
+
+// hostPort matches `host:port` / `[v6]:port` in free text. go-redis formats
+// its own log lines ("connection pool: failed to dial …: dial tcp H:P …",
+// "pubsub: reconnecting to new endpoint H:P") before handing them to the
+// logger, so those need text-level masking. A key fragment such as
+// `queue:1234` may match too; that is harmless.
+var hostPort = regexp.MustCompile(`(?:\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}\b`)
+
+// MaskAddresses replaces every `host:port` in a formatted log line.
+func MaskAddresses(s string) string { return hostPort.ReplaceAllString(s, "<addr>") }
+
+// sanitize keeps driver errors free of infra identifiers. go-redis never
+// includes the password in an error, but a dial/read error is a `*net.OpError`
+// whose text names host:port, and a resolver error names the host: this is a
+// public repository whose logs are reviewed in the open (`rules/security.md`),
+// so the address is replaced by the operation and the error kind. Server
+// replies (`NOPERM`, `WRONGTYPE`, …) and pool/context errors carry no address
+// and pass through. The original error stays reachable through `Unwrap`, so
+// `errors.Is(err, context.DeadlineExceeded)` still works; only the message
+// changes. Out of scope: `rediss://` certificate errors (`x509.HostnameError`)
+// are not `*net.OpError` and would name the host — the gateway connects over
+// `redis://` to the same box today.
+func sanitize(err error) error {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		return err
+	}
+	kind := "network error"
+	var dnsErr *net.DNSError
+	switch {
+	case errors.As(opErr.Err, &dnsErr):
+		kind = "lookup: " + dnsErr.Err
+	case opErr.Timeout():
+		kind = "i/o timeout"
+	case opErr.Err != nil:
+		kind = opErr.Err.Error()
+	}
+	return &maskedError{msg: opErr.Op + " " + opErr.Net + ": " + kind, cause: err}
+}
+
+// maskedError replaces a driver error's text while keeping its chain.
+type maskedError struct {
+	msg   string
+	cause error
+}
+
+func (e *maskedError) Error() string { return e.msg }
+func (e *maskedError) Unwrap() error { return e.cause }
