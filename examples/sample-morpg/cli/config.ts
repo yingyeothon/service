@@ -43,6 +43,8 @@ export function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] ?? "";
+    // `pnpm play -- --user x` hands the `--` through (pnpm >= 10).
+    if (a === "--") continue;
     const eq = a.indexOf("=");
     const flag = eq > 0 ? a.slice(0, eq) : a;
     const key = FLAGS[flag];

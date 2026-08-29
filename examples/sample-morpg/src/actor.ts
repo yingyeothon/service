@@ -271,7 +271,8 @@ export async function runDungeonActor({
           );
           if (!sim) return;
           // Also the reconnect resync: one frame is the whole world. The
-          // events stay for the tick broadcast (`drain: false`).
+          // events stay for the tick broadcast (`resync`), otherwise the
+          // entering member sees the pending spawns twice.
           await reply(
             connectionId,
             {
@@ -287,7 +288,7 @@ export async function runDungeonActor({
             },
             network,
           );
-          await reply(connectionId, frame(sim, { drain: false }), network);
+          await reply(connectionId, frame(sim, { resync: true }), network);
         },
         onSnapshot: async ({ context: ctx }) => {
           if (sim) await broadcast(connections(ctx), frame(sim), network);

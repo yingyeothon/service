@@ -237,12 +237,12 @@ describe("dungeon sim", () => {
     expect(slimes).toBeGreaterThanOrEqual(1);
     expect(sim.monsters.filter((m) => m.templateId === "boss")).toHaveLength(1);
   });
-  it("a private frame does not drain the events the broadcast carries", () => {
+  it("a resync frame carries no events and leaves them for the broadcast", () => {
     const sim = createSim(loadZone(), party(), seeded(1));
-    expect(frame(sim, { drain: false }).payload.events.length).toBeGreaterThan(
-      0,
-    );
-    expect(frame(sim).payload.events.length).toBeGreaterThan(0);
+    const pending = [...sim.events];
+    expect(pending.length).toBeGreaterThan(0);
+    expect(frame(sim, { resync: true }).payload.events).toEqual([]);
+    expect(frame(sim).payload.events).toEqual(pending);
     expect(frame(sim).payload.events).toEqual([]);
   });
   it("a member enters with effective stats: gear plus live buffs, expired ones ignored", () => {
