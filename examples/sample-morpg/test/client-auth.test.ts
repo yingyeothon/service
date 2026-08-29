@@ -4,7 +4,7 @@ import {
   resolveUserId,
   userIdFor,
   userIdFromJwt,
-} from "../cli/auth.js";
+} from "../client/auth.js";
 
 describe("auth", () => {
   it("userIdFor is 32 lowercase hex, stable, and distinct per name", () => {

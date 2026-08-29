@@ -14,11 +14,11 @@
  * Exit codes: 0 = script ended (EOF or /quit); 3 = a /wait timed out (the
  * script stops there — a failed step must not run the rest blind).
  */
-import { parseCommand } from "./commands.js";
-import { listEntities, type Row } from "./intent.js";
-import type { Session } from "./session.js";
-import { pendingEntry, type AppState, type LogLine } from "./state.js";
-import type { Dir } from "./types.js";
+import { parseCommand } from "../client/commands.js";
+import { listEntities, type Row } from "../client/intent.js";
+import type { Session } from "../client/session.js";
+import { pendingEntry, type AppState, type LogLine } from "../client/state.js";
+import type { Dir } from "../client/types.js";
 
 export const WAIT_DEFAULT_MS = 10_000;
 /** ≥ the sim tick (200 ms): its move cooldown is counted per tick, so faster steps are `too_fast`. */

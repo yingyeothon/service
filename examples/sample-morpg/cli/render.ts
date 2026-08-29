@@ -8,9 +8,9 @@ import {
   selfPlayer,
   shortId,
   type AppState,
-} from "./state.js";
-import { ENTER_DELAY_MS } from "./types.js";
-import { nearestMonsters, npcsIn } from "./intent.js";
+} from "../client/state.js";
+import { ENTER_DELAY_MS } from "../client/types.js";
+import { nearestMonsters, npcsIn } from "../client/intent.js";
 export { npcsIn };
 
 /** Monsters listed in the dungeon panel, nearest first. */

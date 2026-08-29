@@ -5,9 +5,14 @@ import type {
   Hello,
   PartyFrame,
 } from "@yingyeothon/gamebase-client";
-import type { EnterFailed, EnterOk, GameApi, SheetAnswer } from "../cli/api.js";
-import { createSession, type Session } from "../cli/session.js";
-import { newState, type AppState } from "../cli/state.js";
+import type {
+  EnterFailed,
+  EnterOk,
+  GameApi,
+  SheetAnswer,
+} from "../client/api.js";
+import { createSession, type Session } from "../client/session.js";
+import { newState, type AppState } from "../client/state.js";
 import { newCharacter } from "../src/character.js";
 import { loadZone, loadZone2 } from "./_fixtures.js";
 

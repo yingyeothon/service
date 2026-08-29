@@ -13,5 +13,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "cli", "test", "vitest.config.ts"]
+  "include": ["src", "client", "cli", "test", "vitest.config.ts"]
 }

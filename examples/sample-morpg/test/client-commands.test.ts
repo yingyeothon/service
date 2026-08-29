@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { userIdFor } from "../cli/auth.js";
-import { handleKey, unfoldMeta, parseCommand } from "../cli/commands.js";
-import { newState } from "../cli/state.js";
+import { userIdFor } from "../client/auth.js";
+import { handleKey, unfoldMeta, parseCommand } from "../client/commands.js";
+import { newState } from "../client/state.js";
 import { newCharacter } from "../src/character.js";
 import { loadZone } from "./_fixtures.js";
 

@@ -7,9 +7,14 @@ import {
   projectState,
   STATE_TICK_MS,
 } from "../cli/batch.js";
-import type { Action } from "../cli/commands.js";
-import type { Session } from "../cli/session.js";
-import { newDungeon, newState, pushLog, type AppState } from "../cli/state.js";
+import type { Action } from "../client/commands.js";
+import type { Session } from "../client/session.js";
+import {
+  newDungeon,
+  newState,
+  pushLog,
+  type AppState,
+} from "../client/state.js";
 import { loadZone } from "./_fixtures.js";
 
 const ME = "a".repeat(32);

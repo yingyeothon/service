@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGameApi } from "../cli/api.js";
+import { createGameApi } from "../client/api.js";
 import { newCharacter } from "../src/character.js";
 
 const GAME = "g_0123456789abcdef";
