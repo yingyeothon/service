@@ -1,7 +1,7 @@
 /* Raw-mode keypresses in, ANSI screens out. The only module touching the TTY. */
 import { writeSync } from "node:fs";
 import { emitKeypressEvents, type Interface } from "node:readline";
-import type { Key } from "./commands.js";
+import type { Key } from "../client/commands.js";
 
 /**
  * How long readline waits after a lone `\x1b` before calling it Esc. Node's

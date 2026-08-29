@@ -56,7 +56,7 @@ export interface SessionOptions {
   enterDelayMs?: number;
   /** Fetches a zone/field bundle by URL (the world bundle comes through the SDK's `map()`). */
   fetchJson?: (url: string) => Promise<unknown>;
-  /** Diagnostic timeline (`cli/trace.ts`); off by default. */
+  /** Diagnostic timeline (`client/trace.ts`); off by default. */
   trace?: Trace;
 }
 

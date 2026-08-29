@@ -10,9 +10,9 @@ import {
   resolve,
   type IntentContext,
   type Resolution,
-} from "../cli/intent.js";
-import { newDungeon, newState, type AppState } from "../cli/state.js";
-import type { FrameView } from "../cli/types.js";
+} from "../client/intent.js";
+import { newDungeon, newState, type AppState } from "../client/state.js";
+import type { FrameView } from "../client/types.js";
 import { loadZone } from "./_fixtures.js";
 
 const ME = "a".repeat(32);

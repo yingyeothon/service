@@ -1,13 +1,10 @@
 /* Identity: a stable per-name userId and the dev debug token mint. Tokens never reach a log. */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "./sha256.js";
 import { USER_ID } from "./types.js";
 
 /** 32 hex chars derived from a human name so two terminals can pick stable, distinct ids. */
 export function userIdFor(name: string): string {
-  return createHash("sha256")
-    .update(`morpg-cli:${name}`)
-    .digest("hex")
-    .slice(0, 32);
+  return sha256Hex(`morpg-cli:${name}`).slice(0, 32);
 }
 
 /** A raw 32-hex id passes through; anything else is treated as a name. */
@@ -53,10 +50,18 @@ export async function mintDebugToken(o: MintOptions): Promise<string> {
 export function userIdFromJwt(token: string): string {
   const parts = token.split(".");
   if (parts.length !== 3) throw new Error("token is not a JWT");
-  const payload = JSON.parse(
-    Buffer.from(parts[1] ?? "", "base64url").toString("utf8"),
-  ) as { sub?: unknown };
+  const payload = JSON.parse(decodeBase64Url(parts[1] ?? "")) as {
+    sub?: unknown;
+  };
   if (typeof payload.sub !== "string" || payload.sub.length === 0)
     throw new Error("token has no sub claim");
   return payload.sub;
+}
+
+/** base64url → UTF-8 text without `Buffer` (the core also runs in a browser). */
+function decodeBase64Url(s: string): string {
+  const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), "="));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
 }

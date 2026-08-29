@@ -64,7 +64,7 @@ export const HELP = [
 const PARTY_ID = /^pty_[0-9a-f]{16}$/;
 
 function tooLong(text: string): boolean {
-  return Buffer.byteLength(text, "utf8") > SAY_MAX_BYTES;
+  return new TextEncoder().encode(text).length > SAY_MAX_BYTES;
 }
 
 export function parseCommand(line: string): Action {

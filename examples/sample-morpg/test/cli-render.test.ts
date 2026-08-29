@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { clip, render, stripAnsi, visibleWidth } from "../cli/render.js";
-import { newDungeon, newState, pushLog } from "../cli/state.js";
+import { newDungeon, newState, pushLog } from "../client/state.js";
 import { newCharacter } from "../src/character.js";
 import { loadZone } from "./_fixtures.js";
 

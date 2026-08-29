@@ -11,8 +11,8 @@ import {
   reduceLobby,
   stepLobby,
   LOG_KEPT,
-} from "../cli/state.js";
-import type { FrameView } from "../cli/types.js";
+} from "../client/state.js";
+import type { FrameView } from "../client/types.js";
 import { loadZone } from "./_fixtures.js";
 
 const ME = "a".repeat(32);

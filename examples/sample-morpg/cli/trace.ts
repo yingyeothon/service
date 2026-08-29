@@ -9,10 +9,15 @@
 import { subscribe } from "node:diagnostics_channel";
 import { closeSync, openSync, writeSync } from "node:fs";
 
-export type TraceFields = Record<string, unknown>;
-export type Trace = (ev: string, fields?: TraceFields) => void;
+import { errorText, since, type Trace } from "../client/trace.js";
 
-export const NO_TRACE: Trace = () => undefined;
+export {
+  NO_TRACE,
+  errorText,
+  since,
+  type Trace,
+  type TraceFields,
+} from "../client/trace.js";
 
 export interface FileTrace {
   trace: Trace;
@@ -55,25 +60,6 @@ export function createFileTrace(
     fd = undefined;
   };
   return { trace, close };
-}
-
-/** Milliseconds since `start`, rounded to 0.1 ms. */
-export function since(
-  start: number,
-  up: () => number = () => performance.now(),
-): number {
-  return Math.round((up() - start) * 10) / 10;
-}
-
-/** `e.message`, plus the code or message of its `cause` (undici says only "fetch failed"). */
-export function errorText(e: unknown): string {
-  if (!(e instanceof Error)) return String(e);
-  const cause = (e as { cause?: unknown }).cause;
-  if (cause instanceof Error) {
-    const code = (cause as { code?: unknown }).code;
-    return `${e.message} (${typeof code === "string" ? code : cause.message})`;
-  }
-  return e.message;
 }
 
 /**
