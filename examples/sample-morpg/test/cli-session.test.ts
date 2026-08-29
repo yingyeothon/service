@@ -159,7 +159,12 @@ interface Harness {
   session: Session;
   lobby: ReturnType<typeof fakeLobby>;
   games: ReturnType<typeof fakeGame>[];
-  api: { calls: string[]; enter: EnterOk | EnterFailed; sheet: SheetAnswer };
+  api: {
+    calls: string[];
+    enter: EnterOk | EnterFailed;
+    sheet: SheetAnswer;
+    hold: Promise<void> | undefined;
+  };
   quit: string[];
   fetched: string[];
 }
@@ -185,9 +190,12 @@ async function start(
       sheet: { ...newCharacter(), statPoints: 4, attack: 11 },
       effective: { maxHp: 50, attack: 11, defence: 2 },
     } as SheetAnswer,
+    hold: undefined as Promise<void> | undefined,
   };
   const sheetCall = async (what: string): Promise<SheetAnswer> => {
     api.calls.push(what);
+    // `hold` = an answer that has not arrived yet.
+    if (api.hold) await api.hold;
     return api.sheet;
   };
   const gameApi: GameApi = {
@@ -495,12 +503,44 @@ describe("session: lobby", () => {
       zone: "zone002",
       peers: [{ userId: PEER, x: 2, y: 2 }],
     });
+    h.state.lobby.self = { x: 4, y: 4, dir: "e" };
+    const sentBefore = h.lobby.sent.length;
     h.session.dispatch({ kind: "zone", zoneId: "zone002" });
     await vi.advanceTimersByTimeAsync(0);
     expect(h.fetched).toHaveLength(1);
-    // Same zone again: no new snapshot comes, so the peers are kept.
+    // Same zone again: the sheet did not change and the gateway kept the
+    // position, so nothing moves, nothing is re-announced, the peers stay.
+    expect(h.state.lobby.self).toMatchObject({ x: 4, y: 4 });
+    expect(h.lobby.sent).toHaveLength(sentBefore);
     expect(Object.keys(h.state.lobby.peers)).toEqual([PEER]);
+    expect(h.state.log.at(-1)).toMatchObject({ text: "already in zone002" });
     expect(h.session.templates?.zones.zone002).toBeDefined();
+  });
+  it("a gate says where it is going before the answer arrives", async () => {
+    const h = await start();
+    let answer: (() => void) | undefined;
+    h.api.hold = new Promise<void>((r) => (answer = r));
+    h.session.dispatch({ kind: "talk", npcId: "forest_gate" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.log.at(-1)).toMatchObject({
+      kind: "sys",
+      text: "forest_gate: going to zone002…",
+    });
+    expect(h.state.lobby.zone).toBe("zone001");
+    h.api.sheet = {
+      ok: true,
+      userId: ME,
+      version: 2,
+      sheet: { ...newCharacter(), zone: "zone002" },
+      effective: { maxHp: 50, attack: 10, defence: 2 },
+      action: "teleported",
+      zone: "zone002",
+      start: { x: 1, y: 1 },
+    };
+    answer?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.state.lobby.zone).toBe("zone002");
+    expect(h.state.log.at(-1)).toMatchObject({ text: "now in zone002" });
   });
   it("a dungeon hello naming a field bundle fetches it and draws it until the run ends", async () => {
     const h = await start();
@@ -886,5 +926,25 @@ describe("session: dungeon", () => {
     expect(h.state.log.some((l) => l.text.includes("connect failed"))).toBe(
       true,
     );
+  });
+});
+
+describe("sheet queue", () => {
+  it("drops a repeat of an action that is still queued (a held key)", async () => {
+    const h = await start();
+    let answer: (() => void) | undefined;
+    h.api.hold = new Promise<void>((r) => (answer = r));
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.filter((c) => c === "zone zone002")).toHaveLength(1);
+    answer?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.filter((c) => c === "zone zone002")).toHaveLength(1);
+    // Once answered, the same action may go again.
+    h.session.dispatch({ kind: "zone", zoneId: "zone002" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.calls.filter((c) => c === "zone zone002")).toHaveLength(2);
   });
 });

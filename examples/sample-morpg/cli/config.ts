@@ -18,6 +18,8 @@ export interface Config {
   /** No TTY: slash commands from stdin (or `script`), NDJSON to stdout. */
   batch: boolean;
   script?: string;
+  /** NDJSON diagnostic trace file (appended); see `cli/trace.ts`. */
+  trace?: string;
 }
 
 export interface LoadConfigOptions {
@@ -36,6 +38,7 @@ const FLAGS: Record<string, string> = {
   "--token": "MORPG_TOKEN",
   "--user": "MORPG_USER",
   "--script": "MORPG_SCRIPT",
+  "--trace": "MORPG_TRACE",
 };
 /** Flags that take no value. */
 const SWITCHES: Record<string, string> = { "--batch": "MORPG_BATCH" };
@@ -43,8 +46,9 @@ const SWITCHES: Record<string, string> = { "--batch": "MORPG_BATCH" };
 export const USAGE = `usage: pnpm play -- [--config <env-file>] [--user <name>] [--token <jwt>]
        [--api <url>] [--gw <wss-url>] [--auth <url>] [--state <state.json>] [--debug-key-file <path>]
        [--batch [--script <file>]]   (no TTY: slash commands in, NDJSON out — README "Drive it from a script")
+       [--trace <file>]              (append a diagnostic timeline: keys, HTTP, sockets, zone steps, loop stalls)
 env file keys: MORPG_API_BASE MORPG_GATEWAY_WS_URL MORPG_STATE_FILE MORPG_AUTH_BASE
-               MORPG_DEBUG_KEY_FILE MORPG_TOKEN MORPG_USER MORPG_BATCH MORPG_SCRIPT`;
+               MORPG_DEBUG_KEY_FILE MORPG_TOKEN MORPG_USER MORPG_BATCH MORPG_SCRIPT MORPG_TRACE`;
 
 export function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -132,6 +136,7 @@ export function loadConfig({ argv, env, readFile }: LoadConfigOptions): Config {
     state: parseState(read(readFile, statePath), statePath),
     batch: get("MORPG_BATCH") === "1",
     script: get("MORPG_SCRIPT"),
+    trace: get("MORPG_TRACE"),
   };
 }
 

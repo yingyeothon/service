@@ -28,6 +28,7 @@ import {
   type LobbyEffect,
 } from "./state.js";
 import { attackTarget, listEntities } from "./intent.js";
+import { NO_TRACE, errorText, since, type Trace } from "./trace.js";
 import {
   ENTER_DELAY_MS,
   EVENT_OFFER,
@@ -55,6 +56,8 @@ export interface SessionOptions {
   enterDelayMs?: number;
   /** Fetches a zone/field bundle by URL (the world bundle comes through the SDK's `map()`). */
   fetchJson?: (url: string) => Promise<unknown>;
+  /** Diagnostic timeline (`cli/trace.ts`); off by default. */
+  trace?: Trace;
 }
 
 /** The gateway refuses a `pos` further than this from the last one. */
@@ -76,6 +79,7 @@ export interface Session {
 
 export function createSession(o: SessionOptions): Session {
   const { state, api } = o;
+  const trace = o.trace ?? NO_TRACE;
   const posInterval = o.posIntervalMs ?? DEFAULT_POS_INTERVAL_MS;
   const returnDelay = o.returnDelayMs ?? DEFAULT_RETURN_DELAY_MS;
   const enterDelayMs = o.enterDelayMs ?? ENTER_DELAY_MS;
@@ -97,8 +101,20 @@ export function createSession(o: SessionOptions): Session {
   const loadBundle = (url: string): Promise<MapBundle> => {
     let p = bundles.get(url);
     if (!p) {
-      p = fetchJson(url).then((raw) => parseMapBundle(raw, url));
-      p.catch(() => bundles.delete(url));
+      const t0 = performance.now();
+      trace("bundle_start", { url: bare(url) });
+      p = fetchJson(url).then((raw) => {
+        trace("bundle_end", { url: bare(url), ms: since(t0) });
+        return parseMapBundle(raw, url);
+      });
+      p.catch((e: unknown) => {
+        trace("bundle_fail", {
+          url: bare(url),
+          ms: since(t0),
+          error: message(e),
+        });
+        bundles.delete(url);
+      });
       bundles.set(url, p);
     }
     return p;
@@ -115,6 +131,8 @@ export function createSession(o: SessionOptions): Session {
   let currentZone: string | undefined;
   /** Sheet transitions run one after another: answers apply in order, so two in flight cannot cross. */
   let queue: Promise<void> = Promise.resolve();
+  /** What is queued or in flight, by `what`: a held key must not line up ten round trips. */
+  const inFlight = new Set<string>();
   let lastSent: { x: number; y: number } | undefined;
   let posTimer: ReturnType<typeof setTimeout> | undefined;
   let returnTimer: ReturnType<typeof setTimeout> | undefined;
@@ -133,12 +151,17 @@ export function createSession(o: SessionOptions): Session {
   // ------------------------------------------------------------ lobby
 
   const sendPos = (): void => {
-    if (!lobby || lobby.state !== "connected" || !state.lobby.zone) return;
+    if (!lobby || lobby.state !== "connected" || !state.lobby.zone) {
+      trace("pos_skip", { state: lobby?.state, zone: state.lobby.zone });
+      return;
+    }
     const s = state.lobby.self;
     try {
       lobby.pos({ zone: state.lobby.zone, x: s.x, y: s.y, dir: s.dir });
+      trace("pos_send", { zone: state.lobby.zone, x: s.x, y: s.y });
       lastSent = { x: s.x, y: s.y };
     } catch (e) {
+      trace("pos_fail", { error: message(e) });
       log("error", `pos: ${message(e)}`);
     }
   };
@@ -163,6 +186,7 @@ export function createSession(o: SessionOptions): Session {
 
   const wireLobby = (l: GatewayLobbyClient): void => {
     l.on("connected", (hello) => {
+      trace("lobby_connected", { zone: hello.zone, party: hello.partyId });
       const conn = state.conn;
       run(reduceLobby(state, { t: "connected", hello }));
       if (state.mode !== "lobby") state.conn = conn; // the side panel shows the socket of the current mode
@@ -170,7 +194,10 @@ export function createSession(o: SessionOptions): Session {
         try {
           if (!townMap) {
             worldUrl = hello.mapUrl;
+            const t0 = performance.now();
+            trace("map_start", { url: bare(hello.mapUrl) });
             world = parseMapBundle(await l.map(), hello.mapUrl);
+            trace("map_end", { ms: since(t0) });
             // The sheet remembers the zone a teleport left the player in; the
             // gateway only knows the channel's default.
             const remembered = state.sheet?.sheet.zone;
@@ -195,9 +222,10 @@ export function createSession(o: SessionOptions): Session {
         changed();
       })();
     });
-    l.on("snapshot", (frame) =>
-      run(reduceLobby(state, { t: "snapshot", frame })),
-    );
+    l.on("snapshot", (frame) => {
+      trace("lobby_snapshot", { zone: frame.zone, peers: frame.peers.length });
+      run(reduceLobby(state, { t: "snapshot", frame }));
+    });
     l.on("peerEnter", (peer) =>
       run(reduceLobby(state, { t: "peerEnter", peer })),
     );
@@ -216,25 +244,33 @@ export function createSession(o: SessionOptions): Session {
     l.on("partyDeclined", (frame) =>
       run(reduceLobby(state, { t: "partyDeclined", frame })),
     );
-    l.on("error", (frame) => run(reduceLobby(state, { t: "error", frame })));
+    l.on("error", (frame) => {
+      trace("lobby_refused", { code: frame.code, message: frame.message });
+      run(reduceLobby(state, { t: "error", frame }));
+    });
     const lobbyConn = (status: ConnStatus): void => {
       const conn = state.conn;
       run(reduceLobby(state, { t: "conn", status }));
       if (state.mode !== "lobby") state.conn = conn;
     };
-    l.on("disconnected", (e) =>
+    l.on("disconnected", (e) => {
+      trace("lobby_disconnected", { code: e.code, reconnect: e.willReconnect });
       lobbyConn({
         state: e.willReconnect ? "reconnecting" : "closed",
         detail: `close ${e.code}`,
-      }),
-    );
-    l.on("reconnecting", (e) =>
+      });
+    });
+    l.on("reconnecting", (e) => {
+      trace("lobby_reconnecting", { attempt: e.attempt, delayMs: e.delayMs });
       lobbyConn({
         state: "reconnecting",
         detail: `#${e.attempt} in ${(e.delayMs / 1000).toFixed(1)}s`,
-      }),
-    );
-    l.on("stopped", (e) => onLobbyStopped(e));
+      });
+    });
+    l.on("stopped", (e) => {
+      trace("lobby_stopped", { reason: e.reason });
+      onLobbyStopped(e);
+    });
     l.on("frame", () => changed());
   };
 
@@ -265,8 +301,13 @@ export function createSession(o: SessionOptions): Session {
     changed();
     const g = o.createGame(gameId);
     game = g;
+    trace("game_connect", { gameId });
+    let frames = 0;
     g.on("frame", (f) => {
       const type = typeof f.type === "string" ? f.type : "";
+      // Every 50th tick (10 s at 5 Hz) plus every non-tick message.
+      if (type !== "frame" || frames++ % 50 === 0)
+        trace("game_frame", { type, n: frames });
       const payload = f.payload;
       if (typeof payload !== "object" || payload === null) {
         log("error", `bad ${type || "frame"} from the dungeon`);
@@ -327,10 +368,12 @@ export function createSession(o: SessionOptions): Session {
       changed();
     });
     g.on("error", (frame) => {
+      trace("game_refused", { code: frame.code, message: frame.message });
       reduceDungeon(state, { t: "error", frame });
       changed();
     });
     g.on("disconnected", (e) => {
+      trace("game_disconnected", { code: e.code, reconnect: e.willReconnect });
       reduceDungeon(state, {
         t: "conn",
         status: {
@@ -341,6 +384,7 @@ export function createSession(o: SessionOptions): Session {
       changed();
     });
     g.on("reconnecting", (e) => {
+      trace("game_reconnecting", { attempt: e.attempt, delayMs: e.delayMs });
       reduceDungeon(state, {
         t: "conn",
         status: {
@@ -351,6 +395,7 @@ export function createSession(o: SessionOptions): Session {
       changed();
     });
     g.on("connected", () => {
+      trace("game_connected", { gameId });
       reduceDungeon(state, { t: "conn", status: { state: "connected" } });
       changed();
     });
@@ -359,6 +404,7 @@ export function createSession(o: SessionOptions): Session {
       reason: string,
     ): void => {
       if (game !== g) return;
+      trace("game_ended", { kind, reason });
       reduceDungeon(state, { t: "ended", kind, reason });
       changed();
       clearTimeout(returnTimer);
@@ -384,6 +430,7 @@ export function createSession(o: SessionOptions): Session {
     clearTimeout(returnTimer);
     returnTimer = undefined;
     if (closed) return;
+    trace("return_start");
     const g = game;
     game = undefined;
     if (g && g.state !== "closed") g.close();
@@ -397,6 +444,7 @@ export function createSession(o: SessionOptions): Session {
     await refreshSheet();
     lastSent = undefined;
     sendPos();
+    trace("return_done");
   };
 
   const sendGame = (frame: Parameters<GatewayGameClient["send"]>[0]): void => {
@@ -428,17 +476,35 @@ export function createSession(o: SessionOptions): Session {
     run: () => Promise<SheetAnswer>,
     onOk?: (r: Extract<SheetAnswer, { ok: true }>) => void,
   ): Promise<void> => {
-    queue = queue.then(() => sheetActionNow(what, run, onOk));
+    if (inFlight.has(what)) {
+      trace("sheet_dropped", { what });
+      return queue;
+    }
+    inFlight.add(what);
+    const queuedAt = performance.now();
+    trace("sheet_queued", { what });
+    queue = queue
+      .then(() => sheetActionNow(what, run, onOk, since(queuedAt)))
+      .finally(() => inFlight.delete(what));
     return queue;
   };
   const sheetActionNow = async (
     what: string,
     run: () => Promise<SheetAnswer>,
     onOk?: (r: Extract<SheetAnswer, { ok: true }>) => void,
+    waitedMs = 0,
   ): Promise<void> => {
     if (state.mode !== "lobby") return log("error", `${what} works in town`);
+    const t0 = performance.now();
+    trace("sheet_start", { what, waitedMs });
     try {
       const r = await run();
+      trace("sheet_end", {
+        what,
+        ms: since(t0),
+        ok: r.ok,
+        ...(r.ok ? {} : { code: r.code, status: r.status }),
+      });
       if (!r.ok) {
         log("error", `${what}: ${r.code} (${r.status})`);
       } else {
@@ -450,6 +516,7 @@ export function createSession(o: SessionOptions): Session {
         onOk?.(r);
       }
     } catch (e) {
+      trace("sheet_fail", { what, ms: since(t0), error: message(e) });
       log("error", `${what}: ${message(e)}`);
     }
     changed();
@@ -461,18 +528,24 @@ export function createSession(o: SessionOptions): Session {
     start?: { x: number; y: number };
   }): Promise<void> => {
     if (!r.zone) return;
+    // Already there (a gate into the zone the sheet names): the sheet did not
+    // change and the gateway kept the position, so a jump to `start` would
+    // only earn a `move_too_far` refusal.
+    if (r.zone === currentZone) return log("sys", `already in ${r.zone}`);
+    const t0 = performance.now();
+    trace("zone_start", { from: currentZone, to: r.zone });
     try {
       townMap = await zoneMap(r.zone);
     } catch (e) {
+      trace("zone_fail", { to: r.zone, ms: since(t0), error: message(e) });
       // The sheet already says the new zone; only the grid is missing.
       return log(
         "error",
         `zone ${r.zone}: ${message(e)} — the sheet is there already, /zone ${r.zone} to retry`,
       );
     }
-    // A new zone gets a fresh snapshot from the gateway; the same zone does
-    // not, so its peers must survive the re-announce.
-    if (r.zone !== currentZone) state.lobby.peers = {};
+    // The new zone's snapshot from the gateway replaces the peers.
+    state.lobby.peers = {};
     currentZone = r.zone;
     state.lobby.zone = r.zone;
     const start = r.start ?? townMap.start;
@@ -480,6 +553,7 @@ export function createSession(o: SessionOptions): Session {
     state.lobby.self.y = start.y;
     lastSent = undefined;
     sendPos();
+    trace("zone_done", { zone: r.zone, ms: since(t0) });
     log("sys", `now in ${r.zone}`);
   };
 
@@ -514,6 +588,7 @@ export function createSession(o: SessionOptions): Session {
   };
 
   const dispatch = (action: Action): void => {
+    trace("dispatch", { kind: action.kind, ...actionFields(action) });
     switch (action.kind) {
       case "move":
         return move(action.dir);
@@ -587,10 +662,15 @@ export function createSession(o: SessionOptions): Session {
         return;
       case "talk": {
         // The dungeon entrance is a client-side verb: it starts the party's run.
-        if (world?.templates.npcs[action.npcId]?.dungeon) {
+        const npc = world?.templates.npcs[action.npcId];
+        if (npc?.dungeon) {
           announceEntry();
           return;
         }
+        // A gate is a round trip through the API and the doc store (seconds
+        // on a cold stage): say so at once rather than after the answer.
+        if (npc?.teleport !== undefined)
+          log("sys", `${action.npcId}: going to ${npc.teleport}…`);
         void sheetAction(
           `talk ${action.npcId}`,
           () => api.interactNpc(action.npcId, action.questId),
@@ -605,6 +685,7 @@ export function createSession(o: SessionOptions): Session {
         return;
       }
       case "zone":
+        log("sys", `going to ${action.zoneId}…`);
         void sheetAction(
           `zone ${action.zoneId}`,
           () => api.teleport(action.zoneId),
@@ -811,6 +892,34 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+/** The ids an action names, for the trace — never its text. */
+function actionFields(a: Action): Record<string, unknown> {
+  switch (a.kind) {
+    case "talk":
+      return { npcId: a.npcId, questId: a.questId };
+    case "zone":
+      return { zoneId: a.zoneId };
+    case "move":
+      return { dir: a.dir };
+    case "party":
+      return { op: a.op };
+    case "use":
+    case "equip":
+      return { itemId: a.itemId };
+    case "attack":
+    case "target":
+      return { uid: a.uid };
+    default:
+      return {};
+  }
+}
+
+/** A URL without its query string (a presigned URL would carry a signature). */
+function bare(url: string): string {
+  const i = url.indexOf("?");
+  return i < 0 ? url : url.slice(0, i);
+}
+
 function message(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return errorText(e);
 }
