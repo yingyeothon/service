@@ -27,6 +27,7 @@ const readFile = (p: string): string => {
 
 describe("config", () => {
   it("parseArgs accepts --k v and --k=v, rejects unknown", () => {
+    expect(parseArgs(["--", "--user", "a"])).toEqual({ MORPG_USER: "a" });
     expect(parseArgs(["--user", "a", "--token=t"])).toEqual({
       MORPG_USER: "a",
       MORPG_TOKEN: "t",

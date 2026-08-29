@@ -63,6 +63,8 @@ export interface DungeonState {
   result?: ResultPayload;
   ended?: { kind: "finished" | "aborted" | "stopped"; reason: string };
   refusals: number;
+  /** The last `stage` frame's value; the actor repeats it per entering member. */
+  lastStage?: string;
 }
 
 export interface ConnStatus {
@@ -311,7 +313,8 @@ export function reduceDungeon(state: AppState, ev: DungeonEvent): void {
       return;
     case "stage":
       if (ev.stage === "running") d.stage = "running";
-      pushLog(state, "sys", `stage: ${ev.stage}`);
+      if (d.lastStage !== ev.stage) pushLog(state, "sys", `stage: ${ev.stage}`);
+      d.lastStage = ev.stage;
       return;
     case "frame":
       d.frame = ev.payload;

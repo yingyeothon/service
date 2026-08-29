@@ -231,6 +231,13 @@ describe("dungeon", () => {
     expect(s.dungeon).toMatchObject({ you: ME, stage: "waiting" });
     reduceDungeon(s, { t: "stage", stage: "running" });
     expect(s.dungeon.stage).toBe("running");
+    const stageLines = () =>
+      s.log.filter((l) => l.text === "stage: running").length;
+    expect(stageLines()).toBe(1);
+    reduceDungeon(s, { t: "stage", stage: "running" });
+    expect(stageLines()).toBe(1);
+    reduceDungeon(s, { t: "stage", stage: "ending" });
+    expect(s.log.filter((l) => l.text === "stage: ending")).toHaveLength(1);
     reduceDungeon(s, {
       t: "frame",
       payload: {

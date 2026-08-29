@@ -491,13 +491,13 @@ export function step(sim: Sim, dt: number): void {
 
 /**
  * One self-contained world frame (README §4.2) plus the events since the last
- * one. `drain` (the tick broadcast) hands the events out and clears them; a
- * private resync (`drain: false`) copies them so the broadcast still carries
- * every event exactly once.
+ * one. The tick broadcast drains the events; a `resync` frame (one member's
+ * hello / reconnect) carries none — the world is self-contained and the events
+ * stay for the broadcast, so every event is seen exactly once.
  */
-export function frame(sim: Sim, { drain = true }: { drain?: boolean } = {}) {
-  const events = drain ? sim.events : [...sim.events];
-  if (drain) sim.events = [];
+export function frame(sim: Sim, { resync = false }: { resync?: boolean } = {}) {
+  const events = resync ? [] : sim.events;
+  if (!resync) sim.events = [];
   return {
     type: "frame",
     payload: {
