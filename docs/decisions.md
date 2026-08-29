@@ -152,7 +152,7 @@ Plan and migration detail: `docs/team-project.md`. Every resource — channel, c
 
 ## Hackathon workflow (console)
 
-Redesigned 2026-08-29 (supersedes the proposal/winner model below; implementation tracked in the local todo). Until the code lands, the previous section still describes the deployed behaviour.
+Redesigned 2026-08-29, superseding the proposal/winner model (an admin-driven `draft → proposing → voting → decided → published → closed` chain with free-text proposals and one vote per member; dropped with migration `m0009_event_redesign`).
 
 - **An event is a date vote plus a page.** A draft carries everything at once: title, markdown body, poster, place (free text) with an optional map `placeUrl`, `durationHours`, the candidate start times (`options`, each a timestamp) and `voteUntil`. There is no proposal; the round number ("36회") is part of the title.
 - **State machine** `draft → voting → waiting → opened → closed`, plus `cancelled`. `publish` (owner or admin) moves `draft → voting`. The rest is time-driven and **derived lazily**: every read computes the effective status from `voteUntil`, the decided start and `durationHours`, and persists it opportunistically on the next write or the daily sweep. No scheduler; an event nobody reads need not transition.
@@ -164,13 +164,7 @@ Redesigned 2026-08-29 (supersedes the proposal/winner model below; implementatio
 - **Comments** (`event_comments`, markdown, same caps as team comments) by non-`pending` members on non-draft events; edit/delete by the author or an admin. Anonymous visitors see only `waiting`, `opened` and `closed` events; members see every non-draft status including `voting` and `cancelled`.
 - **Migration is destructive**: `proposals`/`votes` are dropped and the `events` status enum is replaced. Both stages hold only test data (confirmed 2026-08-29), so no data is carried over.
 - No Slack notification in this iteration. Everything the SPA can do here the CLI can do too (`yyt events …`).
-
-### Previous model (deployed until the redesign lands)
-
-- Event state machine `draft → proposing → voting → decided → published → closed`, advanced by admins.
-- Proposals/votes require GitHub login (`pending` allowed). Proposal = free text (title/body incl. date, place, topic). One vote per person, changeable while `voting`.
-- In `decided` an admin picks the winner and uploads a poster (S3); `published` exposes `/events/{id}` publicly.
-- Visibility: anonymous sees `published`/`closed`; logged-in members see everything except `draft`; admins see all. Vote counts are hidden while `voting` (only the caller's own vote is returned) and public from `decided` on. Members may hold up to 3 proposals per event, edit/withdraw them while `proposing`; admins may remove proposals until `decided`.
+- Implementation notes (2026-08-29): `cancel` is allowed from `draft` too (a member cannot delete their own draft, so this is how a spare draft is retired; a cancelled draft no longer counts against the cap). `durationHours` is frozen with the vote at `publish` because it fixes when `opened` becomes `closed`. A due vote is decided by the first read that finds it (one conditional update), so the tally is frozen the moment `voteUntil` passes even before the sweep runs. Comments are part of the event detail response (no separate list route). Page edits are capped at 200 revisions per event (409 beyond).
 - Posters live in a private bucket owned by the console stack (`yyt-console-posters-{stage}`, retained on stack removal), uploaded through a presigned PUT (png/jpeg ≤ 5 MB, content headers signed) and attached only after a `commit` step re-checks the object. Poster visibility follows the event's visibility and is enforced by the API, so CloudFront does not front the poster bucket: `GET /events/{id}/poster` redirects to a 10-minute presigned GET (browsers may cache it, so a replaced poster can lag up to 10 minutes).
 
 ## Binary catalog (console)
@@ -188,7 +182,7 @@ Redesigned 2026-08-29 (supersedes the proposal/winner model below; implementatio
 ## CLI (`yyt`)
 
 - `yyt login --token <API token>` (issued in console > account > API tokens), stored in `~/.config/yyt/config.json`.
-- Every console API as subcommands (`members`, `channels`, `events` with `proposals`/`vote`/`poster`; `list/create/get/extend/rotate-secret/delete`), `--json` output.
+- Every console API as subcommands (`members`, `channels`, `events` with `vote`/`history`/`diff`/`comments`/`poster`; `list/create/get/extend/rotate-secret/delete`), `--json` output.
 - Team/project context (2026-08-26): `--team`/`--project` > `YYT_TEAM`/`YYT_PROJECT` > `.yyt.json {team, project}` found by upward search from `--project-path` (stops at `$HOME` or the git root) > profile defaults (`yyt team use`, `yyt project use`) > auto-select when unique, **for read commands only**. Fields layer independently, but a project from a lower layer than the team is dropped and a team/project pair must agree. Write commands (`catalog deploy`, `artifact upload`, `asset push`, `channels create`, `app create`, and every update/delete by name) require an explicit context and fail with a hint and exit code 6 otherwise, so a non-interactive script does not start failing with `ambiguous` the day its author joins a second team. Resources are addressed by id or by name unique within the team; member-written text is stripped of terminal control characters on the way out.
 - **Catalog apps resolve with a team context alone** (2026-08-26): because an app name is unique within the team, `catalog` commands look a name up across the team (`GET /teams/{team}/catalog/apps`, a permanent route) and the project context only narrows it — so one deploy script with `YYT_TEAM` serves every repository, and an existing app counts as the explicit context a write needs. A **new** app (`catalog deploy` on a 404) goes into the explicit project context if set, else into the project named after the `--project-path` directory, created when missing; `--project` covers the exceptions. Channels and asset bundles keep the project context.
 

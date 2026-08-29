@@ -78,7 +78,7 @@ export function HomePage() {
           <Anchor component={Link} to="/events">
             events
           </Anchor>{" "}
-          (proposals, votes) are open to you already.
+          (date votes, comments) are open to you already.
         </Notice>
       )}
       {me && me.role !== "pending" && <InstallerDownloadCard compact />}
@@ -108,7 +108,7 @@ export function HomePage() {
             <Anchor component={Link} to="/events">
               Events
             </Anchor>{" "}
-            — hackathon proposals and votes.
+            — hackathon date votes, pages and comments.
           </List.Item>
           <List.Item>
             <Anchor component={Link} to="/installer">

@@ -904,6 +904,7 @@ export function createConsoleApp({
     events,
     posters,
     clock,
+    kv,
     audit,
   });
 

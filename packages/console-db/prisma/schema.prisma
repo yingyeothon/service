@@ -176,22 +176,105 @@ model channels {
 }
 
 model events {
-  id                  String        @id @db.VarChar(64)
-  title               String        @db.VarChar(255)
-  status              events_status
-  body_md             String        @db.MediumText
-  created_by          String        @db.VarChar(64)
-  created_at          BigInt
-  updated_at          BigInt
-  decided_proposal_id String?       @db.VarChar(64)
-  poster_key          String?       @db.VarChar(255)
-  published_at        BigInt?
-  members             members       @relation(fields: [created_by], references: [id], onUpdate: Restrict, map: "events_creator")
-  proposals           proposals[]
-  votes               votes[]
+  id              String            @id @db.VarChar(64)
+  title           String            @db.VarChar(255)
+  status          events_status
+  body_md         String            @db.MediumText
+  created_by      String            @db.VarChar(64)
+  created_at      BigInt
+  updated_at      BigInt
+  poster_key      String?           @db.VarChar(255)
+  published_at    BigInt?
+  place           String            @db.VarChar(255)
+  place_url       String?           @db.VarChar(1024)
+  duration_hours  Int
+  vote_until      BigInt
+  starts_at       BigInt?
+  cancelled_at    BigInt?
+  cancelled_by    String?           @db.VarChar(64)
+  revision        Int               @default(1)
+  members         members           @relation(fields: [created_by], references: [id], onUpdate: Restrict, map: "events_creator")
+  event_options   event_options[]
+  event_votes     event_votes[]
+  event_revisions event_revisions[]
+  event_posters   event_posters[]
+  event_comments  event_comments[]
 
   @@index([created_by], map: "events_creator")
   @@index([status, created_at], map: "events_status")
+}
+
+model event_options {
+  id          String        @id @db.VarChar(64)
+  event_id    String        @db.VarChar(64)
+  starts_at   BigInt
+  events      events        @relation(fields: [event_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "event_options_event_fk")
+  event_votes event_votes[]
+
+  @@index([event_id, starts_at], map: "event_options_event")
+}
+
+model event_votes {
+  event_id      String        @db.VarChar(64)
+  member_id     String        @db.VarChar(64)
+  option_id     String        @db.VarChar(64)
+  updated_at    BigInt
+  events        events        @relation(fields: [event_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "event_votes_event_fk")
+  members       members       @relation(fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "event_votes_member_fk")
+  event_options event_options @relation(fields: [option_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "event_votes_option_fk")
+
+  @@id([event_id, member_id, option_id])
+  @@index([member_id], map: "event_votes_member")
+  @@index([option_id], map: "event_votes_option")
+}
+
+model event_revisions {
+  event_id       String  @db.VarChar(64)
+  revision       Int
+  title          String  @db.VarChar(255)
+  body_md        String  @db.MediumText
+  poster_key     String? @db.VarChar(255)
+  place          String  @db.VarChar(255)
+  place_url      String? @db.VarChar(1024)
+  duration_hours Int
+  edited_by      String  @db.VarChar(64)
+  edited_at      BigInt
+  events         events  @relation(fields: [event_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "event_revisions_event_fk")
+  members        members @relation(fields: [edited_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "event_revisions_editor_fk")
+
+  @@id([event_id, revision])
+  @@index([edited_by], map: "event_revisions_editor")
+}
+
+model event_posters {
+  id           String  @id @db.VarChar(64)
+  event_id     String  @db.VarChar(64)
+  object_key   String  @db.VarChar(255)
+  content_type String  @db.VarChar(64)
+  size         Int
+  uploaded_by  String  @db.VarChar(64)
+  uploaded_at  BigInt
+  replaced_at  BigInt?
+  deleted_at   BigInt?
+  events       events  @relation(fields: [event_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "event_posters_event_fk")
+  members      members @relation(fields: [uploaded_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "event_posters_uploader_fk")
+
+  @@index([event_id, uploaded_at], map: "event_posters_event")
+  @@index([uploaded_by], map: "event_posters_uploader")
+}
+
+model event_comments {
+  id         String  @id @db.VarChar(64)
+  event_id   String  @db.VarChar(64)
+  body_md    String  @db.MediumText
+  created_by String  @db.VarChar(64)
+  created_at BigInt
+  updated_at BigInt
+  events     events  @relation(fields: [event_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "event_comments_event_fk")
+  members    members @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "event_comments_author_fk")
+
+  @@index([event_id, created_at], map: "event_comments_event")
+  @@index([created_by], map: "event_comments_author")
 }
 
 model members {
@@ -207,8 +290,10 @@ model members {
   catalog_apps         catalog_apps[]
   channels             channels[]
   events               events[]
-  proposals            proposals[]
-  votes                votes[]
+  event_votes          event_votes[]
+  event_revisions      event_revisions[]
+  event_posters        event_posters[]
+  event_comments       event_comments[]
   teams_created        teams[]               @relation("team_creator")
   team_members         team_members[]        @relation("team_member")
   team_members_decided team_members[]        @relation("team_decider")
@@ -221,22 +306,6 @@ model members {
   issues               issues[]
   issue_comments       issue_comments[]
   platform_settings    platform_settings[]
-}
-
-model proposals {
-  id         String  @id @db.VarChar(64)
-  event_id   String  @db.VarChar(64)
-  member_id  String  @db.VarChar(64)
-  title      String  @db.VarChar(255)
-  body_md    String  @db.MediumText
-  created_at BigInt
-  updated_at BigInt
-  events     events  @relation(fields: [event_id], references: [id], onUpdate: Restrict, map: "proposals_event")
-  members    members @relation(fields: [member_id], references: [id], onUpdate: Restrict, map: "proposals_member")
-  votes      votes[]
-
-  @@index([event_id, created_at], map: "proposals_event")
-  @@index([member_id], map: "proposals_member")
 }
 
 model schema_migrations {
@@ -254,20 +323,6 @@ model state_docs {
   channels   channels @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "state_docs_channel")
 
   @@id([channel_id, owner_id])
-}
-
-model votes {
-  event_id    String    @db.VarChar(64)
-  member_id   String    @db.VarChar(64)
-  proposal_id String    @db.VarChar(64)
-  updated_at  BigInt
-  events      events    @relation(fields: [event_id], references: [id], onUpdate: Restrict, map: "votes_event")
-  members     members   @relation(fields: [member_id], references: [id], onUpdate: Restrict, map: "votes_member")
-  proposals   proposals @relation(fields: [proposal_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "votes_proposal")
-
-  @@id([event_id, member_id])
-  @@index([member_id], map: "votes_member")
-  @@index([proposal_id], map: "votes_proposal")
 }
 
 enum channels_kind {
@@ -302,11 +357,11 @@ enum catalog_pending_uploads_platform {
 
 enum events_status {
   draft
-  proposing
   voting
-  decided
-  published
+  waiting
+  opened
   closed
+  cancelled
 }
 
 enum members_role {

@@ -38,8 +38,6 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
   afterAll(async () => {
     const exec = (sql: string, p: string) =>
       db?.$executeRawUnsafe(sql, p) ?? Promise.resolve(0);
-    await exec(`delete from votes where event_id = ?`, id);
-    await exec(`delete from proposals where event_id = ?`, id);
     await exec(`delete from events where id = ?`, id);
     await exec(`delete from channels where id = ?`, id);
     await exec(`delete from catalog_apps where id like ?`, `${id}%`);
@@ -108,45 +106,51 @@ describe.skipIf(!env)("MySQL integration (real dev DB, YYT_IT=1)", () => {
       repo.insertChannel({ ...base, ...parents, id, name: "dup" }),
     ).rejects.toMatchObject({ code: "conflict" });
 
-    // events round-trip: conditional transition, upsert vote, cascade on delete
+    // events round-trip: conditional transition, votes per option, revision, cascade on delete
     const events = createEventsDb(db);
     await events.insertEvent({
       id,
       title: "it",
       bodyMd: "",
+      posterKey: null,
+      place: "here",
+      placeUrl: null,
+      durationHours: 8,
       createdBy: ownerId,
       createdAt: 1,
+      voteUntil: 100,
+      options: [{ id: `${id}_o`, startsAt: 200 }],
     });
     expect(
-      await events.updateEvent(id, { status: "proposing" }, 2, "voting"),
+      await events.updateEvent(id, { status: "voting" }, 2, "closed"),
     ).toBe(false);
+    expect(await events.updateEvent(id, { status: "voting" }, 2, "draft")).toBe(
+      true,
+    );
+    await events.setVotes(id, ownerId, [`${id}_o`], 1);
+    await events.setVotes(id, ownerId, [`${id}_o`, `${id}_o`], 2);
+    expect((await events.listVotes(id)).map((v) => v.updatedAt)).toEqual([2]);
     expect(
-      await events.updateEvent(id, { status: "proposing" }, 2, "draft"),
+      await events.commitRevision(
+        id,
+        {
+          title: "it2",
+          bodyMd: "b",
+          posterKey: null,
+          place: "there",
+          placeUrl: null,
+          durationHours: 8,
+        },
+        ownerId,
+        3,
+        1,
+      ),
     ).toBe(true);
-    await events.insertProposal({
-      id: `${id}_p`,
-      eventId: id,
-      memberId: ownerId,
-      title: "p",
-      bodyMd: "b",
-      createdAt: 1,
-    });
-    await events.upsertVote({
-      eventId: id,
-      memberId: ownerId,
-      proposalId: `${id}_p`,
-      updatedAt: 1,
-    });
-    await events.upsertVote({
-      eventId: id,
-      memberId: ownerId,
-      proposalId: `${id}_p`,
-      updatedAt: 2,
-    });
-    expect(await events.countVotes(id)).toEqual(new Map([[`${id}_p`, 1]]));
-    expect((await events.findVote(id, ownerId))?.updatedAt).toBe(2);
-    expect(await events.deleteProposal(`${id}_p`)).toBe(true);
-    expect(await events.findVote(id, ownerId)).toBeUndefined();
+    expect((await events.listRevisions(id)).map((r) => r.revision)).toEqual([
+      2, 1,
+    ]);
+    expect(await events.deleteEvent(id)).toBe(true);
+    expect(await events.listVotes(id)).toEqual([]);
 
     // catalog round-trip: team-scoped ci name, settings, idempotent upload
     const catalog = createCatalogDb(db);

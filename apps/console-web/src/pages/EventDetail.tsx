@@ -2,67 +2,68 @@ import {
   Anchor,
   Button,
   Card,
+  Checkbox,
+  Code,
   Group,
   Image,
+  Select,
   Stack,
   Stepper,
   Table,
   Text,
-  TextInput,
   Title,
 } from "@mantine/core";
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { Link, useParams } from "react-router";
+import { useRef, useState, type ChangeEvent } from "react";
+import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
+import { Comments } from "../components/Comments";
+import { EventForm } from "../components/EventForm";
 import { Markdown } from "../components/Markdown";
-import { MdField } from "../components/MdField";
 import { Badge, Confirm, Notice, Spinner } from "../components/ui";
+import { diffLines, revisionText } from "../lib/diff";
+import { formFromEvent } from "../lib/eventForm";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
 import {
   EVENT_STATUSES,
   type EventDetail,
+  type EventInput,
+  type EventRevision,
   type EventStatus,
-  type Proposal,
 } from "../types";
 import { STATUS_TONE } from "./Events";
 
-const PROPOSALS_PER_MEMBER = 3;
-const NEXT_LABEL: Partial<Record<EventStatus, string>> = {
-  proposing: "Open proposals",
-  voting: "Start voting",
-  decided: "Close voting",
-  published: "Publish",
-  closed: "Close event",
-};
+const EDITABLE: readonly EventStatus[] = [
+  "draft",
+  "voting",
+  "waiting",
+  "opened",
+];
 
 export function EventDetailPage() {
   const { id = "" } = useParams();
   const { me, loading: authLoading } = useAuth();
+  const nav = useNavigate();
   // Wait for /me: an anonymous fetch of an in-progress event would 404 and flash an error.
   const ev = useApiQuery(["event", id, me?.id ?? null], () => api.event(id), {
     enabled: !authLoading,
   });
-  const props = useApiQuery(
-    ["proposals", id, me?.id ?? null],
-    () =>
-      ev.data && (me || ["published", "closed"].includes(ev.data.status))
-        ? api.proposals(id)
-        : Promise.resolve({ proposals: [], myVote: null }),
-    { enabled: ev.data !== undefined },
-  );
   const act = useAction();
-  const admin = hasRole(me, "admin");
+  const [editing, setEditing] = useState(false);
 
   if (ev.error) return <Notice kind="error">{ev.error}</Notice>;
   if (!ev.data) return <Spinner />;
   const e = ev.data;
-  const next = EVENT_STATUSES[EVENT_STATUSES.indexOf(e.status) + 1];
+  const member = hasRole(me, "member");
+  const editable = e.canEdit && EDITABLE.includes(e.status);
 
-  const refreshAll = async () => {
-    await ev.reload();
-    await props.reload();
+  const save = async (input: EventInput | Partial<EventInput>) => {
+    const r = await act.run(() => api.updateEvent(e.id, input));
+    if (r) {
+      setEditing(false);
+      ev.set(r);
+    }
   };
 
   return (
@@ -72,58 +73,124 @@ export function EventDetailPage() {
           ← Events
         </Anchor>
       </Text>
-      <Group gap="xs" mb="sm">
+      <Group gap="xs" mb="xs">
         <Title order={2}>{e.title}</Title>
         <Badge tone={STATUS_TONE[e.status]}>{e.status}</Badge>
       </Group>
-      <StatusSteps status={e.status} />
+      <When e={e} />
+      {e.status !== "cancelled" && <StatusSteps status={e.status} />}
+      {e.status === "cancelled" && (
+        <Notice kind="error">
+          Cancelled {fmtTime(e.cancelledAt)} by {e.cancelledBy ?? "—"}.
+        </Notice>
+      )}
       {act.error && <Notice kind="error">{act.error}</Notice>}
 
-      {e.posterUrl && (
-        <Image
-          src={`${api.posterSrc(e.id)}?v=${e.updatedAt}`}
-          alt={`${e.title} poster`}
-          maw={420}
-          radius="sm"
-          mb="md"
+      {editing ? (
+        <EventForm
+          initial={formFromEvent(e)}
+          schedule={e.status === "draft"}
+          busy={act.busy}
+          submitLabel="Save"
+          onSubmit={save}
+          onCancel={() => setEditing(false)}
         />
+      ) : (
+        <>
+          {e.posterUrl && (
+            <Image
+              src={`${api.posterSrc(e.id)}?v=${e.revision}`}
+              alt={`${e.title} poster`}
+              maw={420}
+              radius="sm"
+              mb="md"
+            />
+          )}
+          <Markdown text={e.bodyMd} />
+        </>
       )}
-      <Markdown text={e.bodyMd} />
       <Text size="sm" c="dimmed" mb="md">
-        Created {fmtTime(e.createdAt)}
-        {e.publishedAt !== null && <> · Published {fmtTime(e.publishedAt)}</>}
+        By {e.owner ?? "—"} · created {fmtTime(e.createdAt)}
+        {e.publishedAt !== null && <> · published {fmtTime(e.publishedAt)}</>}
+        {" · revision "}
+        {e.revision}
       </Text>
 
-      {e.winner && (
-        <Card
-          withBorder
-          mb="md"
-          style={{ borderColor: "var(--mantine-color-green-5)" }}
-        >
-          <Title order={4}>Winning proposal</Title>
-          <ProposalCard p={e.winner} />
-        </Card>
-      )}
+      <VotePanel e={e} member={member} onChange={ev.reload} act={act} />
 
-      {admin && (
-        <AdminPanel
+      {editable && !editing && (
+        <OwnerPanel
           e={e}
-          next={next}
-          proposals={props.data?.proposals ?? []}
-          onChange={refreshAll}
+          onEdit={() => setEditing(true)}
+          onChange={(next) => (next ? ev.set(next) : ev.reload())}
           act={act}
         />
       )}
+      {hasRole(me, "admin") && (
+        <Group mb="md">
+          <Confirm
+            label="Delete event (admin)"
+            confirmLabel="Yes, delete everything"
+            disabled={act.busy}
+            onConfirm={async () => {
+              const ok = await act.run(async () => {
+                await api.deleteEvent(e.id);
+                return true;
+              });
+              if (ok) void nav("/events");
+            }}
+          />
+        </Group>
+      )}
 
-      <ProposalsSection
-        e={e}
-        data={props.data}
-        loading={props.loading}
-        error={props.error}
-        onChange={refreshAll}
-        act={act}
-      />
+      <History id={e.id} revision={e.revision} />
+
+      {e.status !== "draft" && (
+        <Comments
+          comments={e.comments}
+          canPost={member}
+          owner={hasRole(me, "admin")}
+          onAdd={async (bodyMd) => {
+            await api.addEventComment(e.id, bodyMd);
+            await ev.reload();
+          }}
+          onEdit={async (cid, bodyMd) => {
+            await api.updateEventComment(e.id, cid, bodyMd);
+            await ev.reload();
+          }}
+          onDelete={async (cid) => {
+            await api.deleteEventComment(e.id, cid);
+            await ev.reload();
+          }}
+        />
+      )}
     </>
+  );
+}
+
+/** Date, place and duration — the header line the whole redesign is about. */
+function When({ e }: { e: EventDetail }) {
+  return (
+    <Text size="sm" mb="sm">
+      {e.startsAt !== null ? (
+        <>
+          <strong>{fmtTime(e.startsAt)}</strong> · {e.durationHours}h
+        </>
+      ) : (
+        <>
+          Date to be voted · <strong>vote until {fmtTime(e.voteUntil)}</strong>{" "}
+          · {e.durationHours}h
+        </>
+      )}
+      {" · "}
+      {e.placeUrl ? (
+        <Anchor href={e.placeUrl} target="_blank" rel="noopener noreferrer">
+          {e.place}
+        </Anchor>
+      ) : (
+        e.place
+      )}
+    </Text>
   );
 }
 
@@ -146,42 +213,142 @@ function StatusSteps({ status }: { status: EventStatus }) {
 
 type Act = ReturnType<typeof useAction>;
 
-function AdminPanel({
+function VotePanel({
   e,
-  next,
-  proposals,
+  member,
   onChange,
   act,
 }: {
   e: EventDetail;
-  next: EventStatus | undefined;
-  proposals: Proposal[];
+  member: boolean;
   onChange: () => Promise<void>;
   act: Act;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState(e.title);
-  const [body, setBody] = useState(e.bodyMd);
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const canPoster = ["decided", "published", "closed"].includes(e.status);
+  const [picked, setPicked] = useState<Set<string>>(
+    () => new Set(e.options.filter((o) => o.mine).map((o) => o.id)),
+  );
+  const voting = e.status === "voting";
+  const counted = e.options.some((o) => o.votes !== undefined);
+  const mine = e.options.filter((o) => o.mine).length;
+  const best = Math.max(0, ...e.options.map((o) => o.votes ?? 0));
 
-  const save = async (ev: FormEvent) => {
-    ev.preventDefault();
-    const r = await act.run(() =>
-      api.updateEvent(e.id, { title: title.trim(), bodyMd: body }),
-    );
-    if (r) {
-      setEditing(false);
+  const save = async () => {
+    if (await act.run(() => api.vote(e.id, [...picked]))) await onChange();
+  };
+  const withdraw = async () => {
+    if (
+      await act.run(async () => {
+        await api.unvote(e.id);
+        return true;
+      })
+    ) {
+      setPicked(new Set());
       await onChange();
     }
   };
-  const transition = async () => {
-    if (!next) return;
-    if (await act.run(() => api.transitionEvent(e.id, next))) await onChange();
+
+  return (
+    <Card withBorder mb="md">
+      <Title order={4} mb="xs">
+        {voting
+          ? "Date vote"
+          : e.status === "draft"
+            ? "Candidate dates"
+            : "Date vote result"}
+      </Title>
+      {voting && member && (
+        <Text size="sm" c="dimmed" mb="xs">
+          Tick every date you can make; you can change your picks until{" "}
+          {fmtTime(e.voteUntil)}. Tallies are shown once the vote closes.
+        </Text>
+      )}
+      <Stack gap={6}>
+        {e.options.map((o) => (
+          <Group key={o.id} gap="sm">
+            {voting && member ? (
+              <Checkbox
+                label={fmtTime(o.startsAt)}
+                checked={picked.has(o.id)}
+                onChange={(x) => {
+                  const next = new Set(picked);
+                  if (x.target.checked) next.add(o.id);
+                  else next.delete(o.id);
+                  setPicked(next);
+                }}
+              />
+            ) : (
+              <Text size="sm">{fmtTime(o.startsAt)}</Text>
+            )}
+            {counted && (
+              <Badge
+                tone={
+                  o.votes === best && e.startsAt === o.startsAt
+                    ? "ok"
+                    : "neutral"
+                }
+              >
+                {o.votes} vote{o.votes === 1 ? "" : "s"}
+              </Badge>
+            )}
+            {o.mine && !voting && <Badge tone="accent">your pick</Badge>}
+            {e.startsAt === o.startsAt && e.startsAt !== null && (
+              <Badge tone="ok">decided</Badge>
+            )}
+          </Group>
+        ))}
+      </Stack>
+      {counted && e.voters !== undefined && (
+        <Text size="xs" c="dimmed" mt="xs">
+          {e.voters} voter{e.voters === 1 ? "" : "s"} · ties go to the earliest
+          date.
+        </Text>
+      )}
+      {voting && member && (
+        <Group mt="sm">
+          <Button
+            size="compact-sm"
+            disabled={act.busy || picked.size === 0}
+            onClick={() => void save()}
+          >
+            {mine ? "Update picks" : "Vote"}
+          </Button>
+          {mine > 0 && (
+            <Button
+              size="compact-sm"
+              variant="default"
+              disabled={act.busy}
+              onClick={() => void withdraw()}
+            >
+              Withdraw
+            </Button>
+          )}
+        </Group>
+      )}
+    </Card>
+  );
+}
+
+function OwnerPanel({
+  e,
+  onEdit,
+  onChange,
+  act,
+}: {
+  e: EventDetail;
+  onEdit: () => void;
+  onChange: (next?: EventDetail) => void | Promise<void>;
+  act: Act;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const publish = async () => {
+    const r = await act.run(() => api.publishEvent(e.id));
+    if (r) await onChange(r);
   };
-  const decide = async (pid: string) => {
-    if (await act.run(() => api.decideEvent(e.id, pid))) await onChange();
+  const cancel = async () => {
+    const r = await act.run(() => api.cancelEvent(e.id));
+    if (r) await onChange(r);
   };
   const upload = async (ev: ChangeEvent<HTMLInputElement>) => {
     const file = ev.target.files?.[0];
@@ -189,392 +356,197 @@ function AdminPanel({
     if (!file) return;
     setUploading(true);
     try {
-      if (await act.run(() => api.uploadPoster(e.id, file))) await onChange();
+      const r = await act.run(() => api.uploadPoster(e.id, file));
+      if (r) await onChange(r);
     } finally {
       setUploading(false);
     }
   };
   const removePoster = async () => {
-    if (
-      await act.run(async () => {
-        await api.deletePoster(e.id);
-        return true;
-      })
-    )
-      await onChange();
+    const ok = await act.run(async () => {
+      await api.deletePoster(e.id);
+      return true;
+    });
+    if (ok) await onChange();
   };
 
   return (
     <Card withBorder mb="md">
       <Title order={4} mb="xs">
-        Admin
+        {e.mine ? "Your event" : "Admin"}
       </Title>
       <Group>
-        {next && (
+        {e.status === "draft" && (
           <Confirm
-            label={`${NEXT_LABEL[next] ?? next} (${e.status} → ${next})`}
-            confirmLabel={`Yes, ${next}`}
+            label="Publish (open the date vote)"
+            confirmLabel="Yes, publish"
             color="brand"
             variant="filled"
-            onConfirm={transition}
-            disabled={act.busy || (next === "published" && !e.winner)}
+            onConfirm={publish}
+            disabled={act.busy}
           />
         )}
-        {next === "published" && !e.winner && (
-          <Text size="sm" c="dimmed">
-            Pick a winner below before publishing.
-          </Text>
-        )}
-        {next === "voting" && proposals.length === 0 && (
-          <Text size="sm" c="dimmed">
-            Voting needs at least one proposal.
-          </Text>
-        )}
-        {!editing && (
-          <Button
-            size="compact-sm"
-            variant="default"
-            onClick={() => {
-              setTitle(e.title);
-              setBody(e.bodyMd);
-              setEditing(true);
-            }}
-          >
-            Edit text
-          </Button>
-        )}
-        {canPoster && (
-          <>
-            <Button
-              size="compact-sm"
-              variant="default"
-              disabled={uploading}
-              onClick={() => fileRef.current?.click()}
-            >
-              {uploading
-                ? "Uploading…"
-                : e.posterUrl
-                  ? "Replace poster"
-                  : "Upload poster"}
-            </Button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/png,image/jpeg"
-              hidden
-              aria-label="Poster file"
-              onChange={(x) => void upload(x)}
-            />
-          </>
-        )}
-        {canPoster && e.posterUrl && (
+        <Button size="compact-sm" variant="default" onClick={onEdit}>
+          {e.status === "draft" ? "Edit draft" : "Edit page"}
+        </Button>
+        <Button
+          size="compact-sm"
+          variant="default"
+          disabled={uploading}
+          onClick={() => fileRef.current?.click()}
+        >
+          {uploading
+            ? "Uploading…"
+            : e.posterUrl
+              ? "Replace poster"
+              : "Upload poster"}
+        </Button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg"
+          hidden
+          aria-label="Poster file"
+          onChange={(x) => void upload(x)}
+        />
+        {e.posterUrl && (
           <Confirm
             label="Remove poster"
             onConfirm={removePoster}
             disabled={act.busy}
           />
         )}
+        <Confirm
+          label="Cancel event"
+          confirmLabel="Yes, cancel it"
+          onConfirm={cancel}
+          disabled={act.busy}
+        />
       </Group>
-      {!canPoster && (
-        <Text size="sm" c="dimmed" mt="xs">
-          Posters can be uploaded once voting has closed (png/jpeg ≤ 5 MB).
-        </Text>
-      )}
-      {editing && (
-        <form onSubmit={(x) => void save(x)}>
-          <Stack gap="sm" mt="sm">
-            <TextInput
-              label="Title"
-              value={title}
-              onChange={(x) => setTitle(x.target.value)}
-              required
-              maxLength={200}
-            />
-            <MdField label="Description" value={body} onChange={setBody} />
-            <Group>
-              <Button type="submit" disabled={act.busy}>
-                Save
-              </Button>
-              <Button variant="default" onClick={() => setEditing(false)}>
-                Cancel
-              </Button>
-            </Group>
-          </Stack>
-        </form>
-      )}
-      {e.status === "decided" && (
-        <>
-          <Title order={4} mt="sm" mb="xs">
-            Results
-          </Title>
-          {proposals.length === 0 ? (
-            <Text size="sm" c="dimmed">
-              No proposals.
-            </Text>
-          ) : (
-            <Table.ScrollContainer minWidth={480}>
-              <Table striped>
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th>Votes</Table.Th>
-                    <Table.Th>Proposal</Table.Th>
-                    <Table.Th>By</Table.Th>
-                    <Table.Th />
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {[...proposals]
-                    .sort((a, b) => (b.votes ?? 0) - (a.votes ?? 0))
-                    .map((p) => (
-                      <Table.Tr key={p.id}>
-                        <Table.Td>{p.votes ?? 0}</Table.Td>
-                        <Table.Td>{p.title}</Table.Td>
-                        <Table.Td>{p.memberLogin ?? "—"}</Table.Td>
-                        <Table.Td>
-                          {e.winner?.id === p.id ? (
-                            <Badge tone="ok">winner</Badge>
-                          ) : (
-                            <Button
-                              size="compact-sm"
-                              variant="default"
-                              disabled={act.busy}
-                              onClick={() => void decide(p.id)}
-                            >
-                              {e.winner ? "Make winner instead" : "Make winner"}
-                            </Button>
-                          )}
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                </Table.Tbody>
-              </Table>
-            </Table.ScrollContainer>
-          )}
-        </>
-      )}
+      <Text size="sm" c="dimmed" mt="xs">
+        {e.status === "draft"
+          ? "Only you and admins see a draft. Publishing freezes the candidate dates, the deadline and the duration."
+          : "Every edit is kept as a revision; the page history below shows who changed what."}
+      </Text>
     </Card>
   );
 }
 
-function ProposalCard({ p }: { p: Proposal }) {
+/** Revision list plus a two-revision diff (computed here, the API only serves revisions). */
+function History({ id, revision }: { id: string; revision: number }) {
+  const list = useApiQuery(["event-revisions", id, revision], () =>
+    api.eventRevisions(id),
+  );
+  const [pair, setPair] = useState<{ a: number; b: number } | null>(null);
+  const a = pair?.a ?? Math.max(1, revision - 1);
+  const b = pair?.b ?? revision;
+  const ra = useApiQuery(
+    ["event-revision", id, a],
+    () => api.eventRevision(id, a),
+    {
+      enabled: revision > 1,
+    },
+  );
+  const rb = useApiQuery(
+    ["event-revision", id, b],
+    () => api.eventRevision(id, b),
+    {
+      enabled: revision > 1,
+    },
+  );
+  const revs = list.data ?? [];
+  const choices = revs.map((r) => ({
+    value: String(r.revision),
+    label: `r${r.revision} · ${r.editedBy ?? "—"} · ${fmtTime(r.editedAt)}`,
+  }));
+
   return (
     <>
-      <Title order={5}>{p.title}</Title>
-      <Text size="sm" c="dimmed">
-        by {p.memberLogin ?? "—"} · {fmtTime(p.createdAt)}
-        {p.votes !== undefined && (
-          <>
-            {" "}
-            · {p.votes} vote{p.votes === 1 ? "" : "s"}
-          </>
-        )}
-      </Text>
-      <Markdown text={p.bodyMd} />
+      <Title order={4} mt="md" mb="xs">
+        Page history
+      </Title>
+      {list.error && <Notice kind="error">{list.error}</Notice>}
+      {revs.length > 0 && (
+        <Table.ScrollContainer minWidth={480}>
+          <Table striped>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Rev</Table.Th>
+                <Table.Th>By</Table.Th>
+                <Table.Th>At</Table.Th>
+                <Table.Th>Title</Table.Th>
+                <Table.Th>Place</Table.Th>
+                <Table.Th>Poster</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {revs.map((r: EventRevision) => (
+                <Table.Tr key={r.revision}>
+                  <Table.Td>{r.revision}</Table.Td>
+                  <Table.Td>{r.editedBy ?? "—"}</Table.Td>
+                  <Table.Td>{fmtTime(r.editedAt)}</Table.Td>
+                  <Table.Td>{r.title}</Table.Td>
+                  <Table.Td>{r.place}</Table.Td>
+                  <Table.Td>{r.posterKey ? "yes" : "—"}</Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+      )}
+      {revision > 1 && (
+        <>
+          <Group mt="sm" align="end">
+            <Select
+              label="From"
+              data={choices}
+              value={String(a)}
+              onChange={(v) => v && setPair({ a: Number(v), b })}
+              allowDeselect={false}
+            />
+            <Select
+              label="To"
+              data={choices}
+              value={String(b)}
+              onChange={(v) => v && setPair({ a, b: Number(v) })}
+              allowDeselect={false}
+            />
+          </Group>
+          {ra.error && <Notice kind="error">{ra.error}</Notice>}
+          {rb.error && <Notice kind="error">{rb.error}</Notice>}
+          {ra.data && rb.data && <DiffView a={ra.data} b={rb.data} />}
+        </>
+      )}
     </>
   );
 }
 
-function ProposalsSection({
-  e,
-  data,
-  loading,
-  error,
-  onChange,
-  act,
-}: {
-  e: EventDetail;
-  data: { proposals: Proposal[]; myVote: string | null } | undefined;
-  loading: boolean;
-  error: string | null;
-  onChange: () => Promise<void>;
-  act: Act;
-}) {
-  const { me } = useAuth();
-  const admin = hasRole(me, "admin");
-  const [draft, setDraft] = useState<{
-    id?: string;
-    title: string;
-    bodyMd: string;
-  } | null>(null);
-  const proposals = data?.proposals ?? [];
-  const mine = proposals.filter((p) => p.mine).length;
-  const canPropose =
-    !!me && e.status === "proposing" && mine < PROPOSALS_PER_MEMBER;
-  const voting = !!me && e.status === "voting";
-
-  if (!me && !["published", "closed"].includes(e.status)) return null;
-
-  const submit = async (ev: FormEvent) => {
-    ev.preventDefault();
-    if (!draft) return;
-    const body = { title: draft.title.trim(), bodyMd: draft.bodyMd };
-    const r = await act.run(() =>
-      draft.id
-        ? api.updateProposal(e.id, draft.id, body)
-        : api.createProposal(e.id, body),
+function DiffView({ a, b }: { a: EventRevision; b: EventRevision }) {
+  const lines = diffLines(revisionText(a), revisionText(b));
+  if (lines.every((l) => l.op === " "))
+    return (
+      <Text size="sm" c="dimmed" mt="xs">
+        No changes between r{a.revision} and r{b.revision}.
+      </Text>
     );
-    if (r) {
-      setDraft(null);
-      await onChange();
-    }
-  };
-  const withdraw = async (pid: string) => {
-    if (
-      await act.run(async () => {
-        await api.deleteProposal(e.id, pid);
-        return true;
-      })
-    )
-      await onChange();
-  };
-  const vote = async (pid: string) => {
-    if (await act.run(() => api.vote(e.id, pid))) await onChange();
-  };
-  const unvote = async () => {
-    if (
-      await act.run(async () => {
-        await api.unvote(e.id);
-        return true;
-      })
-    )
-      await onChange();
-  };
-
   return (
-    <>
-      <Group justify="space-between" mb="xs">
-        <Title order={3}>
-          Proposals {proposals.length ? `(${proposals.length})` : ""}
-        </Title>
-        {canPropose && !draft && (
-          <Button
-            size="compact-sm"
-            onClick={() => setDraft({ title: "", bodyMd: "" })}
-          >
-            New proposal ({mine}/{PROPOSALS_PER_MEMBER})
-          </Button>
-        )}
-      </Group>
-      {e.status === "proposing" && me?.role === "pending" && (
-        <Text size="sm" c="dimmed" mb="xs">
-          Pending members can propose and vote.
-        </Text>
-      )}
-      {voting && (
-        <Notice>
-          Voting is open: one vote per member, changeable until voting closes.{" "}
-          {data?.myVote ? (
-            <>
-              You voted for{" "}
-              <strong>
-                {proposals.find((p) => p.id === data.myVote)?.title ??
-                  data.myVote}
-              </strong>
-              .{" "}
-              <Button
-                size="compact-sm"
-                variant="default"
-                disabled={act.busy}
-                onClick={() => void unvote()}
-              >
-                Withdraw vote
-              </Button>
-            </>
-          ) : (
-            "You have not voted yet."
-          )}
-        </Notice>
-      )}
-      {draft && (
-        <Card withBorder mb="md">
-          <form onSubmit={(x) => void submit(x)}>
-            <Stack gap="sm">
-              <TextInput
-                label="Title"
-                value={draft.title}
-                onChange={(x) => setDraft({ ...draft, title: x.target.value })}
-                required
-                maxLength={200}
-              />
-              <MdField
-                label="Details"
-                value={draft.bodyMd}
-                onChange={(bodyMd) => setDraft({ ...draft, bodyMd })}
-              />
-              <Group>
-                <Button
-                  type="submit"
-                  disabled={act.busy || !draft.title.trim()}
-                >
-                  {draft.id ? "Save" : "Submit"}
-                </Button>
-                <Button variant="default" onClick={() => setDraft(null)}>
-                  Cancel
-                </Button>
-              </Group>
-            </Stack>
-          </form>
-        </Card>
-      )}
-      {error && <Notice kind="error">{error}</Notice>}
-      {loading && !data ? (
-        <Spinner />
-      ) : proposals.length === 0 ? (
-        <Text size="sm" c="dimmed">
-          No proposals yet.
-        </Text>
-      ) : (
-        proposals.map((p) => (
-          <Card
-            key={p.id}
-            withBorder
-            mb="sm"
-            style={
-              e.winner?.id === p.id
-                ? { borderColor: "var(--mantine-color-green-5)" }
-                : undefined
-            }
-          >
-            <ProposalCard p={p} />
-            <Group mt="xs">
-              {e.winner?.id === p.id && <Badge tone="ok">winner</Badge>}
-              {p.mine && <Badge>mine</Badge>}
-              {voting && data?.myVote !== p.id && (
-                <Button
-                  size="compact-sm"
-                  disabled={act.busy}
-                  onClick={() => void vote(p.id)}
-                >
-                  Vote
-                </Button>
-              )}
-              {voting && data?.myVote === p.id && (
-                <Badge tone="accent">your vote</Badge>
-              )}
-              {p.mine && e.status === "proposing" && !draft && (
-                <Button
-                  size="compact-sm"
-                  variant="default"
-                  onClick={() =>
-                    setDraft({ id: p.id, title: p.title, bodyMd: p.bodyMd })
-                  }
-                >
-                  Edit
-                </Button>
-              )}
-              {((p.mine && e.status === "proposing") ||
-                (admin && ["proposing", "voting"].includes(e.status))) &&
-                e.winner?.id !== p.id && (
-                  <Confirm
-                    label={p.mine ? "Withdraw" : "Delete (admin)"}
-                    onConfirm={() => withdraw(p.id)}
-                    disabled={act.busy}
-                  />
-                )}
-            </Group>
-          </Card>
-        ))
-      )}
-    </>
+    <Code block mt="xs" aria-label={`diff r${a.revision} r${b.revision}`}>
+      {lines.map((l, i) => (
+        <div
+          key={i}
+          style={{
+            background:
+              l.op === "+"
+                ? "var(--mantine-color-green-0)"
+                : l.op === "-"
+                  ? "var(--mantine-color-red-0)"
+                  : undefined,
+          }}
+        >
+          {l.op}
+          {l.text}
+        </div>
+      ))}
+    </Code>
   );
 }

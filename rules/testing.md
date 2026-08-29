@@ -18,6 +18,12 @@
 - When a route can answer with a status instead of a value, assert the status too. "A re-issue returns a different password" kept passing after a 429 was added because `undefined` is `not.toBe` the old password.
 - Test a cron/sweep step through the function the handler calls, not by re-implementing the wiring in the test: with the wiring re-implemented, deleting the line in `handler.ts` kept the suite green. Extract the step (`runRedisAclReconcile` pattern) and call it directly.
 
+## Ordering and time (2026-08-29)
+
+- A list ordered by `(created_at, id)` is only deterministic when the id is time-ordered. Poster uploads minted `ep_${randomHex(6)}`, two uploads landed in the same second on dev, and the events smoke flipped between passes — a unit test with the fake clock never sees it. Use `ulid().toLowerCase()` for any id that serves as a sort tiebreaker (posters, comments); keep `randomHex` only for ids that are never ordered.
+- A smoke that waits for a real deadline must set the deadline **right before** the transition it exercises (`PATCH voteUntil` just before `publish`), not at script start: a cold Lambda plus an S3 round trip is enough to push a fixed 20 s window past `publish` and turn one slow call into a cascade of unrelated FAILs.
+- Fresh-context reviews of a schema+API+CLI+SPA change (this one: 3 agents, ~7 min) found four real defects the 600-test suite did not — two contract gaps (a private state reachable from `draft`, an admin permission the decision grants), one missing cross-cutting rule (the write slot) and one lost-bookkeeping path (hard delete after a failed S3 delete). Budget for them; they are cheaper than the dev round trip that would have found the same.
+
 ## Golden-review lessons (2026-08-28)
 
 - An invariant stated as "every X has Y" (every Redis key a TTL, every Lambda a `reservedConcurrency`, nothing logs a credential) is enforced by review, not by a test: there is no lint that enumerates write sites or `serverless.yml` functions. When such an invariant is reviewed, grep the whole tree **including `examples/*`** — that is where the 2026-08-28 review found the only violation (seven example functions without `reservedConcurrency`) — outside the MariaDB budget the rule was written for, but copied verbatim by participants, so the knob and a peak-sized number (`rules/serverless-aws.md`) matter there too.

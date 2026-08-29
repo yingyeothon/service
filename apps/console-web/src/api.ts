@@ -18,7 +18,9 @@ import type {
   Discussion,
   DiscussionDetail,
   EventDetail,
-  EventStatus,
+  EventInput,
+  EventPoster,
+  EventRevision,
   EventSummary,
   HistoryPage,
   InstallerAppSetting,
@@ -31,7 +33,6 @@ import type {
   PosterUpload,
   Project,
   ProjectDetail,
-  Proposal,
   RemoveMemberResult,
   Team,
   TeamDetail,
@@ -359,32 +360,34 @@ export function createApiClient({
     events: () =>
       get<{ events: EventSummary[] }>("/events").then((r) => r.events),
     event: (id: string) => get<EventDetail>(`/events/${enc(id)}`),
-    createEvent: (body: { title: string; bodyMd: string }) =>
-      post<EventDetail>("/events", body),
-    updateEvent: (id: string, body: { title?: string; bodyMd?: string }) =>
+    createEvent: (body: EventInput) => post<EventDetail>("/events", body),
+    updateEvent: (id: string, body: Partial<EventInput>) =>
       patch<EventDetail>(`/events/${enc(id)}`, body),
-    transitionEvent: (id: string, to: EventStatus) =>
-      post<EventDetail>(`/events/${enc(id)}/transition`, { to }),
-    decideEvent: (id: string, proposalId: string) =>
-      post<EventDetail>(`/events/${enc(id)}/decide`, { proposalId }),
-    proposals: (id: string) =>
-      get<{ proposals: Proposal[]; myVote: string | null }>(
-        `/events/${enc(id)}/proposals`,
-      ),
-    createProposal: (id: string, body: { title: string; bodyMd: string }) =>
-      post<Proposal>(`/events/${enc(id)}/proposals`, body),
-    updateProposal: (
-      id: string,
-      pid: string,
-      body: { title?: string; bodyMd?: string },
-    ) => patch<Proposal>(`/events/${enc(id)}/proposals/${enc(pid)}`, body),
-    deleteProposal: (id: string, pid: string) =>
-      del(`/events/${enc(id)}/proposals/${enc(pid)}`),
-    vote: (id: string, proposalId: string) =>
-      put<{ eventId: string; proposalId: string }>(`/events/${enc(id)}/vote`, {
-        proposalId,
+    publishEvent: (id: string) =>
+      post<EventDetail>(`/events/${enc(id)}/publish`),
+    cancelEvent: (id: string) => post<EventDetail>(`/events/${enc(id)}/cancel`),
+    deleteEvent: (id: string) => del(`/events/${enc(id)}`),
+    vote: (id: string, optionIds: string[]) =>
+      put<{ eventId: string; optionIds: string[] }>(`/events/${enc(id)}/vote`, {
+        optionIds,
       }),
     unvote: (id: string) => del(`/events/${enc(id)}/vote`),
+    eventRevisions: (id: string) =>
+      get<{ revisions: EventRevision[] }>(`/events/${enc(id)}/revisions`).then(
+        (r) => r.revisions,
+      ),
+    eventRevision: (id: string, n: number) =>
+      get<Required<EventRevision>>(`/events/${enc(id)}/revisions/${n}`),
+    eventPosters: (id: string) =>
+      get<{ posters: EventPoster[] }>(`/events/${enc(id)}/posters`).then(
+        (r) => r.posters,
+      ),
+    addEventComment: (id: string, bodyMd: string) =>
+      post<Comment>(`/events/${enc(id)}/comments`, { bodyMd }),
+    updateEventComment: (id: string, cid: string, bodyMd: string) =>
+      patch<Comment>(`/events/${enc(id)}/comments/${enc(cid)}`, { bodyMd }),
+    deleteEventComment: (id: string, cid: string) =>
+      del(`/events/${enc(id)}/comments/${enc(cid)}`),
 
     /** presign → browser PUT to S3 → commit. Returns the refreshed event. */
     async uploadPoster(id: string, file: File): Promise<EventDetail> {

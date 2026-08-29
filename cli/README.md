@@ -94,13 +94,16 @@ yyt channels create --kind q     --name n --auth-channel <auth-id>   # prefixes 
 yyt channels update <channel> [--name n] [same config flags; only the given ones change — --config replaces the whole config]
 yyt channels create … --config '{…}' | --config @file.json        # raw config instead of flags
 
-yyt events list | get <id>                                       # anonymous: published/closed only
-yyt events create <title> [--body @file.md] | update <id> [--title t] [--body …]   # admin
-yyt events transition <id> proposing|voting|decided|published|closed               # admin, in order
-yyt events decide <id> <proposal-id>                                               # admin, while decided
-yyt events proposals list|create <event-id> <title> [--body …]|update|delete
-yyt events vote <event-id> <proposal-id> | unvote <event-id>                        # while voting
-yyt events poster upload <event-id> poster.png|jpg | delete <event-id>             # admin, ≤5MB
+yyt events list | get <id>                                       # anonymous: waiting/opened/closed; members: + voting/cancelled + own drafts
+yyt events create <title> --place p [--place-url url] --hours N --vote-until <when> --option <when>... [--body @f]  # member draft (max 3)
+yyt events update <id> [--title t] [--body …] [--place p] [--place-url u|--clear-place-url] [--hours N] [--vote-until w] [--option w]...
+                                                                 # owner/admin; every edit is a revision; schedule flags only while draft
+yyt events publish <id> | cancel <id> | delete <id>              # owner/admin (draft → voting; cancel before closed); delete = platform admin
+yyt events vote <event-id> <option-id>... | unvote <event-id>    # while voting; pick every date you can make
+yyt events history <id> | diff <id> <rev-a> <rev-b>              # page revisions; unified diff (fields + body)
+yyt events comments list|add <event-id> --body …|edit <event-id> <cid> --body …|delete <event-id> <cid>
+yyt events poster upload <event-id> poster.png|jpg | delete <event-id> | history <event-id>   # owner/admin, any status before closed, ≤5MB
+# <when>: RFC3339 (2026-09-12T14:00:00+09:00), local YYYY-MM-DDTHH:MM, or unix seconds
 ```
 
 OAuth client secrets may come from `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET` to keep them out of shell history.

@@ -1,0 +1,13 @@
+--- r1
++++ r2
+@@ -1,8 +1,8 @@
+-title: before
++title: after
+ place: Seoul
+ placeUrl: -
+ durationHours: 8
+ poster: -
+ ---
+ line a
+-line b
++line c
