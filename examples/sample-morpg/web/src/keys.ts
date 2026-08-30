@@ -6,7 +6,7 @@ export interface KeyEventLike {
   ctrlKey: boolean;
   altKey: boolean;
   metaKey: boolean;
-  /** An IME is composing; the text arrives through `compositionend`. */
+  /** An IME is composing; the composed text reaches the command field, not the handler. */
   isComposing?: boolean;
 }
 
@@ -25,8 +25,8 @@ const NAMED: Record<string, Key> = {
 /**
  * `undefined` for modifier-only presses, keys the client has no use for,
  * browser shortcuts (ctrl/alt/meta belong to the browser: ctrl+r must reload,
- * not reject the party's entry) and IME composition (the composed text comes
- * through `compositionend`).
+ * not reject the party's entry) and IME composition (the command field takes
+ * the composed text itself; an Enter mid-composition is not a send).
  */
 export function keyFromEvent(e: KeyEventLike): Key | undefined {
   if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return undefined;

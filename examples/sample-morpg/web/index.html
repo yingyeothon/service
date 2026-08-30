@@ -59,15 +59,14 @@
         align-items: center;
         flex-wrap: wrap;
       }
-      header input {
+      input {
         font: inherit;
         background: var(--panel);
         color: var(--fg);
         border: 1px solid #333;
         padding: 2px 6px;
       }
-      header button,
-      #pad button {
+      button {
         font: inherit;
         background: var(--accent);
         color: #000;
@@ -76,7 +75,7 @@
         cursor: pointer;
         touch-action: manipulation;
       }
-      header button.alt,
+      button.alt,
       #pad button {
         background: #2b2e3a;
         color: var(--fg);
@@ -86,12 +85,46 @@
       }
       #status {
         color: var(--dim);
+        margin-left: auto;
       }
-      #tokenLabel[hidden],
-      #login[hidden],
-      #fullscreen[hidden],
-      #pad[hidden] {
-        display: none;
+      [hidden] {
+        display: none !important;
+      }
+      /* The gate (`main.ts`): a black sheet over the page until a session runs; sign-in or connect controls in the middle. */
+      #gate {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        background: #000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 24px;
+        text-align: center;
+      }
+      #gate h1 {
+        font-size: 18px;
+        margin: 0;
+      }
+      #gate .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      #gate button {
+        padding: 10px 18px;
+        font-size: 15px;
+      }
+      #gateStatus {
+        color: var(--dim);
+        min-height: 1.4em;
+      }
+      #gateStatus.bad {
+        color: #ff6b6b;
       }
       #map {
         grid-area: map;
@@ -126,20 +159,33 @@
         white-space: pre-wrap;
         word-break: break-all;
       }
+      /* The command line: a hint while idle; a real text field while a line is open (it is what raises the phone keyboard). */
       #input {
         grid-area: input;
         background: var(--panel);
         padding: 4px 6px;
-        white-space: pre;
         overflow: hidden;
+        cursor: text;
       }
-      /* Touch controls (`main.ts`: coarse pointers, while a session runs): their own row under the map. */
+      #hint {
+        color: var(--dim);
+        white-space: pre;
+      }
+      #cmd {
+        width: 100%;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        outline: none;
+      }
+      /* Touch controls (`main.ts`: coarse pointers, while a session runs): the joystick left, action keys right. */
       #pad {
         grid-area: pad;
         display: flex;
         justify-content: space-between;
-        align-items: flex-end;
+        align-items: center;
         padding: 4px 8px;
+        gap: 8px;
       }
       #pad button {
         min-width: 44px;
@@ -149,15 +195,31 @@
         user-select: none;
         -webkit-user-select: none;
       }
-      #pad .dpad {
-        display: grid;
-        grid-template-columns: repeat(3, 44px);
-        grid-template-rows: repeat(3, 44px);
-        gap: 4px;
+      #stick {
+        position: relative;
+        width: 120px;
+        height: 120px;
+        flex: none;
+        border-radius: 50%;
+        background: #2b2e3a;
+        opacity: 0.85;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #knob {
+        position: absolute;
+        left: 35px;
+        top: 35px;
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        background: var(--accent);
+        pointer-events: none;
       }
       #pad .keys {
         display: grid;
-        grid-template-columns: repeat(2, auto);
+        grid-template-columns: repeat(3, auto);
         gap: 4px;
       }
       .k-sys,
@@ -219,40 +281,58 @@
     </style>
   </head>
   <body>
+    <div id="gate">
+      <h1>sample-morpg</h1>
+      <div id="gateStatus" role="status" aria-live="polite">
+        loading config…
+      </div>
+      <div class="row" id="gateForm" hidden>
+        <label>name <input id="user" size="12" autocomplete="off" /></label>
+        <label id="tokenLabel" hidden
+          >token <input id="token" size="24" type="password" autocomplete="off"
+        /></label>
+        <button id="connect" hidden>connect</button>
+        <span id="login"></span>
+      </div>
+    </div>
     <header>
       <span id="title">sample-morpg</span>
-      <label>name <input id="user" size="12" autocomplete="off" /></label>
-      <span id="login" hidden></span>
-      <label id="tokenLabel" hidden
-        >token <input id="token" size="24" type="password" autocomplete="off"
-      /></label>
-      <button id="connect">connect</button>
       <button id="fullscreen" class="alt" hidden title="toggle fullscreen">
         ⛶
       </button>
-      <span id="status">loading config…</span>
+      <span id="status" role="status" aria-live="polite"></span>
     </header>
     <div id="map"><canvas id="canvas" width="320" height="160"></canvas></div>
     <div id="pad" hidden>
-      <div class="dpad">
-        <span></span><button data-key="w" aria-label="up">▲</button
-        ><span></span>
-        <button data-key="a" aria-label="left">◀</button>
-        <button data-key="s" aria-label="down">▼</button>
-        <button data-key="d" aria-label="right">▶</button>
+      <div id="stick" role="img" aria-label="joystick">
+        <div id="knob"></div>
       </div>
       <div class="keys">
         <button data-key="f">f</button>
         <button data-key="q">q</button>
-        <button data-key="return">⏎</button>
-        <button data-key="escape">esc</button>
+        <button data-key="tab">tab</button>
+        <button data-key="i">i</button>
+        <button data-key="t">t</button>
+        <button data-key="p">p</button>
         <button data-key="/">/</button>
         <button data-key="?">?</button>
+        <button data-key="escape">esc</button>
       </div>
     </div>
     <div id="side"></div>
     <div id="log"></div>
-    <div id="input"></div>
+    <div id="input">
+      <div id="hint"></div>
+      <input
+        id="cmd"
+        hidden
+        aria-label="command"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        enterkeyhint="send"
+      />
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
