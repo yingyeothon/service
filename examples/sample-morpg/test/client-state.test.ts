@@ -237,6 +237,14 @@ describe("stepLobby", () => {
     s.lobby.self = { x: 0, y: 0, dir: "n" };
     expect(stepLobby(s, map, "w")).toBe(false);
   });
+  it("refuses a blocker cell (an NPC) but still turns", () => {
+    const map = loadZone();
+    const s = newState(ME, "me");
+    s.lobby.self = { x: 1, y: 1, dir: "s" };
+    expect(stepLobby(s, map, "e", [{ x: 2, y: 1 }])).toBe(false);
+    expect(s.lobby.self).toMatchObject({ x: 1, y: 1, dir: "e" });
+    expect(stepLobby(s, map, "e", [{ x: 5, y: 5 }])).toBe(true);
+  });
 });
 
 const frameAt = (
@@ -351,9 +359,48 @@ describe("dungeon", () => {
     );
     expect(nearestAdjacentMonster(f, me)?.uid).toBe(2);
     expect(nearestAdjacentMonster(f, { x: 10, y: 8 })).toBeUndefined();
-    expect(dungeonStep(map, f, me, "e")).toBeUndefined(); // peer at 3,2
+    expect(dungeonStep(map, f, me, "e")).toEqual({ x: 3, y: 2 }); // peer at 3,2: passable
     expect(dungeonStep(map, f, me, "s")).toEqual({ x: 2, y: 3 });
     expect(dungeonStep(map, f, { x: 1, y: 2 }, "n")).toBeUndefined(); // monster at 1,1
     expect(dungeonStep(map, f, { x: 1, y: 1 }, "w")).toBeUndefined(); // wall
+  });
+});
+
+describe("invites", () => {
+  it("dedupes per party, keeps the newest few, and clears once in a party", () => {
+    const s = newState(ME, "me");
+    const invite = (n: number) =>
+      reduceLobby(s, {
+        t: "partyInvite",
+        frame: {
+          type: "party.invite",
+          partyId: `pty_${String(n).padStart(16, "0")}`,
+          from: PEER,
+        },
+      });
+    for (let i = 1; i <= 7; i++) invite(i);
+    invite(3);
+    expect(s.lobby.invites.map((i) => i.partyId.slice(-2))).toEqual([
+      "04",
+      "05",
+      "06",
+      "07",
+      "03",
+    ]);
+    reduceLobby(s, {
+      t: "party",
+      frame: {
+        type: "party",
+        partyId: "pty_0123456789abcdef",
+        leaderId: PEER,
+        members: [
+          { userId: PEER, online: true },
+          { userId: ME, online: true },
+        ],
+        invited: [],
+        max: 4,
+      },
+    });
+    expect(s.lobby.invites).toEqual([]);
   });
 });

@@ -27,7 +27,7 @@ import {
   type ConnStatus,
   type LobbyEffect,
 } from "./state.js";
-import { attackTarget, listEntities } from "./intent.js";
+import { attackTarget, listEntities, npcsIn } from "./intent.js";
 import { NO_TRACE, errorText, since, type Trace } from "./trace.js";
 import {
   ENTER_DELAY_MS,
@@ -439,7 +439,7 @@ export function createSession(o: SessionOptions): Session {
   const returnToLobby = async (): Promise<void> => {
     clearTimeout(returnTimer);
     returnTimer = undefined;
-    if (closed) return;
+    if (closed || !state.dungeon) return; // a second dismiss while the first is still returning
     trace("return_start");
     const g = game;
     game = undefined;
@@ -594,7 +594,11 @@ export function createSession(o: SessionOptions): Session {
       return;
     }
     if (state.mode !== "lobby" || !townMap) return;
-    if (stepLobby(state, townMap, dir)) schedulePos();
+    // Interactive NPCs are solid; peers are not (the town has no authority to say otherwise).
+    const solid = npcsIn(world?.templates, state.lobby.zone).map(
+      ([, n]) => n.at,
+    );
+    if (stepLobby(state, townMap, dir, solid)) schedulePos();
     changed();
   };
 
