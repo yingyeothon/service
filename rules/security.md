@@ -72,6 +72,13 @@
 - A caller-supplied path that becomes part of an object key needs a whole-string regex of safe segments, not a `..` blacklist: allow `seg(/seg)*` with a bounded segment count and no leading slash, dot-segment or backslash. Percent-encoding is decoded before the key is built, so a blacklist on the raw string is checking the wrong string.
 - Reserve every prefix a user-named resource could claim in the _other_ resource's key space, in both directions (`uploads`, `assets`, `asset-uploads` are all refused as catalog app names). The dangerous case is not the collision itself but the sweep: whoever owns the prefix also owns the deletions.
 
+## Static sites (2026-08-30)
+
+- `g.yyt.life` exists to serve HTML, so the asset allowlist argument (no scriptable types on a trusted origin) does not apply there; what replaces it is **one shared origin for every team**, accepted with a standing rule the console, `yyt site` and the SPA repeat verbatim (`SITE_SHARED_ORIGIN_WARNING`): no credential in web storage on that host. A game page keeps its JWT in memory and mints per session.
+- The zip entry name is the only thing between one team's deploy and another's prefix. `zip.ts` `sitePath` is an **allowlist** (ASCII, segment charset, no `.`/`..`/empty segments, no backslash, ≤16 segments), non-ASCII is refused rather than normalised (NFC/NFD twins would be two objects the prune cannot tell apart), symlinks and dot-files are dropped, and the worker still asserts `key.startsWith(slug + "/")` and `SLUG.test(slug)` before any S3 call — an empty or malformed slug would otherwise turn "prune the prefix" into "wipe the bucket".
+- Every cap on an archive is enforced **while** inflating (`inflateRawSync({ maxOutputLength })`, running total), never from the central directory's declared sizes; zip64, encryption and multi-disk are refused, and entries are read from the central directory (Go's writer leaves local headers at 0).
+- Staging uploads never go to a public bucket: the site bucket is a website endpoint (world-readable), so the zip is presigned into the private poster bucket and deleted after the worker read it.
+
 ## Documents (state service, 2026-08-26)
 
 - The state service has **two** credentials and one 401. A doc apiKey (`yds.{channelId}.{random}`) is the server, may touch any owner's document; a player's channel JWT may read the single document its own `sub` names. Everything that does not verify — wrong key, wrong signing secret, wrong audience, an expired/disabled/deleted channel — returns the same `unauthorized`, so nothing distinguishes "no such channel" from "wrong password".

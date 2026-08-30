@@ -4,6 +4,7 @@ import {
   ISSUE_STATUSES,
   type Actor,
   type AssetsDb,
+  type SitesDb,
   type CatalogDb,
   type ChannelRow,
   type CommentRow,
@@ -58,7 +59,7 @@ export const MD_RATE_SLOT_MS = 500;
  */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ID_LIKE =
-  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
 export const RESOURCE_NAME_MESSAGE =
   "1-64 chars of letters, digits, '.', '_' or '-', not shaped like an id";
 export const resourceName = z
@@ -212,6 +213,7 @@ export interface TeamRoutesOptions {
   team: TeamDb;
   catalog: CatalogDb;
   assets: AssetsDb;
+  sites: SitesDb;
   kv: Kv;
   clock: Clock;
   audit: (
@@ -236,11 +238,12 @@ export function createTeamRoutes({
   team,
   catalog,
   assets,
+  sites,
   kv,
   clock,
   audit,
 }: TeamRoutesOptions): AnyRoute[] {
-  const access = createTeamAccess({ db, team, catalog, assets });
+  const access = createTeamAccess({ db, team, catalog, assets, sites });
   const { teamAccess, projectAccess } = access;
   const now = () => nowSec(clock);
   const actor = (id: ConsoleIdentity): Actor => ({

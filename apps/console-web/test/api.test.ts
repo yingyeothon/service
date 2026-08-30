@@ -159,6 +159,9 @@ describe("team and project routes", () => {
     await api.catalogSettings("ca_1");
     await api.createAssetBundle("prj_1", { name: "b" });
     await api.assetBundle("ab_1");
+    await api.createSite("prj_1", { name: "s" });
+    await api.site("st_1");
+    await api.siteDeploy("st_1", "sd_1");
     await api.setInstallerApp(null);
     expect(calls).toEqual([
       ["GET", "/teams?scope=all", undefined],
@@ -188,6 +191,9 @@ describe("team and project routes", () => {
       ["GET", "/catalog/apps/ca_1/settings", undefined],
       ["POST", "/projects/prj_1/assets/bundles", '{"name":"b"}'],
       ["GET", "/assets/bundles/ab_1", undefined],
+      ["POST", "/projects/prj_1/sites", '{"name":"s"}'],
+      ["GET", "/sites/st_1", undefined],
+      ["GET", "/sites/st_1/deploys/sd_1", undefined],
       ["PUT", "/admin/settings/installer-app", '{"appId":null}'],
     ]);
   });

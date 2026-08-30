@@ -732,6 +732,7 @@ describe("projects", () => {
       channels: 0,
       apps: 0,
       bundles: 1,
+      sites: 0,
       versions: 0,
       issues: 0,
     });

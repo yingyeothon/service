@@ -77,7 +77,7 @@ func NewRoot(a *App) *cobra.Command {
 	}
 	root := &cobra.Command{
 		Use:           "yyt",
-		Short:         "CLI for the yingyeothon service console (teams, projects, channels, catalog, assets, events)",
+		Short:         "CLI for the yingyeothon service console (teams, projects, channels, catalog, assets, sites, events)",
 		Version:       api.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -96,7 +96,7 @@ func NewRoot(a *App) *cobra.Command {
 		newLogin(a), newLogout(a), newWhoami(a),
 		newProfile(a),
 		newTeam(a), newProject(a),
-		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newCatalog(a), newAssets(a), newSmoke(a),
+		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newCatalog(a), newAssets(a), newSites(a), newSmoke(a),
 		newSelf(a, a.Updater),
 	)
 	return root

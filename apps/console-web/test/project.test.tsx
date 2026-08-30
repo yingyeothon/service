@@ -52,7 +52,14 @@ const PROJECT: ProjectDetail = {
   createdBy: "alice",
   createdAt: 0,
   updatedAt: 0,
-  counts: { channels: 0, apps: 0, bundles: 0, versions: 1, issues: 1 },
+  counts: {
+    channels: 0,
+    apps: 0,
+    bundles: 0,
+    sites: 0,
+    versions: 1,
+    issues: 1,
+  },
 };
 const V1: Version = {
   id: "ver_1",

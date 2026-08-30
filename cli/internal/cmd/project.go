@@ -66,6 +66,7 @@ func (a *App) printProject(p projectRow) error {
 			[2]string{"channels", fmt.Sprint(p.Counts.Channels)},
 			[2]string{"apps", fmt.Sprint(p.Counts.Apps)},
 			[2]string{"bundles", fmt.Sprint(p.Counts.Bundles)},
+			[2]string{"sites", fmt.Sprint(p.Counts.Sites)},
 			[2]string{"versions", fmt.Sprint(p.Counts.Versions)},
 			[2]string{"issues", fmt.Sprint(p.Counts.Issues)},
 		)

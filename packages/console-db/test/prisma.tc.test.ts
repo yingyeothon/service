@@ -5,6 +5,7 @@ import {
   createConsoleDb,
   createEventsDb,
   createTeamDb,
+  createSitesDb,
   createStateDb,
   contractPreflight,
   toLobbyChannel,
@@ -13,6 +14,7 @@ import {
 } from "../src/index.js";
 import { assetsContract } from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
+import { sitesContract } from "./sites.test.js";
 import { eventsContract } from "./events.test.js";
 import { teamContract } from "./team.test.js";
 import { stateContract } from "./state.test.js";
@@ -60,6 +62,14 @@ describe.skipIf(!dockerAvailable())(
         await resetTestDb(db.client);
         await seedTeamProject(db.client);
         return createAssetsDb(db.client);
+      });
+    });
+
+    describe("sites contract", () => {
+      sitesContract(async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        return createSitesDb(db.client);
       });
     });
 
@@ -274,11 +284,21 @@ describe.skipIf(!dockerAvailable())(
             (b) => b.teamId,
           ),
         ).toEqual(["team_1"]);
+        await createSitesDb(db.client).insertSite({
+          id: "st_1",
+          name: "web",
+          slug: "abcdefghi",
+          teamId: "team_1",
+          projectId: "prj_1",
+          createdAt: 3,
+        });
         expect(await team.countProjectResources("prj_1")).toEqual({
           channels: 1,
           apps: 1,
           bundles: 1,
+          sites: 1,
         });
+        await createSitesDb(db.client).deleteSite("st_1");
         // A parent that does not exist is a foreign-key failure, not a silent null.
         await expect(
           console.insertChannel({

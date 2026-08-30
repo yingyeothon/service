@@ -29,12 +29,12 @@ GET|PATCH|DELETE /projects/{prj}      member / member / owner|admin (409 while r
 GET|POST /projects/{prj}/versions ; POST …/versions/bump {part} ; GET|PATCH|DELETE …/versions/{ver}
 GET|POST …/versions/{ver}/links ; DELETE …/links/{id}
 GET|POST /projects/{prj}/issues ; GET|PATCH …/issues/{n} ; POST …/issues/{n}/close|reopen ; comments as above
-POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles
+POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles | /projects/{prj}/sites
 GET|PUT  /admin/settings/installer-app   admin
 ```
 
 Single-resource routes stay id-based and unchanged in path: `/channels/{id}`, `/catalog/apps/{appId}`,
-`/assets/bundles/{bundleId}` (plus their sub-routes: settings, extend, rotate-secret, redis-user, doc-key, artifacts, artifacts/cleanup; gateway lookups are top-level `GET /gw/health`, `GET /gw/channels/{id}`).
+`/assets/bundles/{bundleId}`, `/sites/{siteId}` (plus their sub-routes: deploys, deploys/{id}/commit, settings, extend, rotate-secret, redis-user, doc-key, artifacts, artifacts/cleanup; gateway lookups are top-level `GET /gw/health`, `GET /gw/channels/{id}`).
 `GET /channels` lists every channel across the caller's teams (`?scope=all` for admin).
 
 Resource views carry `teamId, teamName, projectId, projectName, createdBy` (login) for breadcrumbs;

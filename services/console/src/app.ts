@@ -16,6 +16,7 @@ import type {
   ChannelRow,
   ConsoleDb,
   EventsDb,
+  SitesDb,
   TeamDb,
   StateDb,
 } from "@yyt/console-db";
@@ -49,6 +50,8 @@ import {
 } from "./channels.js";
 import type { ArtifactStore } from "./artifact-store.js";
 import { createAssetRoutes } from "./assets.js";
+import { createSiteRoutes, type SiteDeployInvoker } from "./sites.js";
+import type { SiteStore } from "./site-store.js";
 import {
   createChannelRedisRoutes,
   revokeChannelRedis,
@@ -89,6 +92,7 @@ export interface ConsoleAppOptions {
   events: EventsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
+  sites: SitesDb;
   /** Teams, projects, versions, issues, discussions and platform settings. */
   team: TeamDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
@@ -97,6 +101,12 @@ export interface ConsoleAppOptions {
   artifacts?: ArtifactStore;
   /** Public CDN in front of the artifact bucket, e.g. `https://dev-d.yyt.life`. */
   cdnBaseUrl?: string;
+  /** Omit when no site bucket is configured: site deploy routes answer 503. */
+  siteStore?: SiteStore;
+  /** Async invoke of the `siteDeploy` worker; omit = deploys answer 503. */
+  siteInvoke?: SiteDeployInvoker;
+  /** The shared static host, e.g. `https://dev-g.yyt.life`. */
+  siteCdnUrl?: string;
   /** Injectable for tests; Slack webhooks only. */
   slackFetch?: typeof fetch;
   kv: Kv;
@@ -157,10 +167,14 @@ export function createConsoleApp({
   events,
   catalog,
   assets,
+  sites,
   team,
   posters,
   artifacts,
   cdnBaseUrl,
+  siteStore,
+  siteInvoke,
+  siteCdnUrl,
   slackFetch,
   kv,
   github,
@@ -233,7 +247,7 @@ export function createConsoleApp({
     return { memberId, role, created };
   }
 
-  const access = createTeamAccess({ db, team, catalog, assets });
+  const access = createTeamAccess({ db, team, catalog, assets, sites });
   const { projectAccess, projectResource, memberTeamIds } = access;
   const history = createResourceHistory(team, logger);
   const crumbs = createCrumbResolver({ db, team });
@@ -952,11 +966,25 @@ export function createConsoleApp({
     audit,
   });
 
+  const siteRoutes = createSiteRoutes({
+    sites,
+    access,
+    crumbs,
+    history,
+    store: siteStore,
+    invoke: siteInvoke,
+    cdnBaseUrl: (siteCdnUrl ?? "https://g.yyt.life").replace(/\/+$/, ""),
+    clock,
+    logger,
+    audit,
+  });
+
   const teamRoutes = createTeamRoutes({
     db,
     team,
     catalog,
     assets,
+    sites,
     kv,
     clock,
     audit,
@@ -984,6 +1012,7 @@ export function createConsoleApp({
       ...teamRoutes,
       ...catalogRoutes,
       ...assetRoutes,
+      ...siteRoutes,
       ...channelRedisRoutes,
       ...channelDocKeyRoutes,
       ...gatewayRoutes,

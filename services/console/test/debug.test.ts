@@ -4,6 +4,7 @@ import {
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
+  createMemorySitesDb,
   createMemoryTeamDb,
 } from "@yyt/console-db";
 import { createMemoryKv } from "@yyt/redis";
@@ -30,6 +31,7 @@ describe("debug login hook", () => {
       events: createMemoryEventsDb(),
       catalog: createMemoryCatalogDb(),
       assets: createMemoryAssetsDb(),
+      sites: createMemorySitesDb(),
       team: createMemoryTeamDb(),
       kv,
       github: createGithubLogin({ clientId: "a", clientSecret: "b" }),

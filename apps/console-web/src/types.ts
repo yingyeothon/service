@@ -154,6 +154,7 @@ export interface ProjectDetail extends Project {
     channels: number;
     apps: number;
     bundles: number;
+    sites: number;
     versions: number;
     issues: number;
   };
@@ -560,6 +561,54 @@ export interface AssetFile {
   size: number;
   hash: string | null;
   createdAt: number;
+}
+
+// ---- static sites -----------------------------------------------------------
+
+export type SiteDeployStatus =
+  "pending" | "queued" | "extracting" | "live" | "failed";
+
+export interface SiteDeploy {
+  id: string;
+  siteId: string;
+  status: SiteDeployStatus;
+  zipBytes: number;
+  bytes: number;
+  files: number;
+  /** Fixed machine code on `failed` (`zip_no_index_html`, `worker_lost`, …). */
+  error: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+export interface Site extends ResourceCrumbs {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  publicUrl: string;
+  basePath: string;
+  currentDeployId: string | null;
+  /** A deploy or a delete holds the site; a new deploy is refused meanwhile. */
+  busy: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SiteDetail extends Site {
+  currentDeploy: SiteDeploy | null;
+  deploys: SiteDeploy[];
+  warning: string;
+}
+
+export interface SiteDeployGrant {
+  deployId: string;
+  url: string;
+  method: "PUT";
+  headers: Record<string, string>;
+  expiresAt: number;
 }
 
 export interface AssetUploadGrant {

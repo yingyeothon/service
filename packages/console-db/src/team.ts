@@ -288,6 +288,7 @@ export interface ProjectResourceCounts {
   channels: number;
   apps: number;
   bundles: number;
+  sites: number;
 }
 
 export interface TeamDb {
@@ -953,14 +954,15 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const projects = await t.projects.count({ where: { team_id: id } });
         if (projects > 0) throw conflict("team still has projects");
         // Expand phase: a resource may carry `team_id` without a project.
-        const [ch, ap, bu] = await Promise.all([
+        const [ch, ap, bu, si] = await Promise.all([
           // Soft-deleted channels count too: the FK is RESTRICT and the row
           // stays until the daily sweep purges it, so the delete would 503.
           t.channels.count({ where: { team_id: id } }),
           t.catalog_apps.count({ where: { team_id: id } }),
           t.asset_bundles.count({ where: { team_id: id } }),
+          t.sites.count({ where: { team_id: id } }),
         ]);
-        if (ch + ap + bu > 0) throw conflict("team still has resources");
+        if (ch + ap + bu + si > 0) throw conflict("team still has resources");
         const r = await t.teams.deleteMany({ where: { id } });
         return r.count > 0;
       }),
@@ -1254,7 +1256,7 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const teamId = await projectTeam(t, id);
         if (!teamId || !(await lockTeam(t, teamId))) return false;
         const counts = await countResources(t, id);
-        if (counts.channels + counts.apps + counts.bundles > 0)
+        if (counts.channels + counts.apps + counts.bundles + counts.sites > 0)
           throw conflict("project still has resources");
         const r = await t.projects.deleteMany({ where: { id } });
         if (r.count === 0) return false;
@@ -1713,12 +1715,13 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
     t: Tx | PrismaClient,
     projectId: string,
   ): Promise<ProjectResourceCounts> {
-    const [channels, apps, bundles] = await Promise.all([
+    const [channels, apps, bundles, sites] = await Promise.all([
       t.channels.count({ where: { project_id: projectId } }),
       t.catalog_apps.count({ where: { project_id: projectId } }),
       t.asset_bundles.count({ where: { project_id: projectId } }),
+      t.sites.count({ where: { project_id: projectId } }),
     ]);
-    return { channels, apps, bundles };
+    return { channels, apps, bundles, sites };
   }
 }
 
@@ -1781,9 +1784,11 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
   const artifactExists = deps.artifactExists ?? (() => true);
   const bundleExists = deps.bundleExists ?? (() => true);
   const countResources =
-    deps.countResources ?? (() => ({ channels: 0, apps: 0, bundles: 0 }));
+    deps.countResources ??
+    (() => ({ channels: 0, apps: 0, bundles: 0, sites: 0 }));
   const countTeamResources =
-    deps.countTeamResources ?? (() => ({ channels: 0, apps: 0, bundles: 0 }));
+    deps.countTeamResources ??
+    (() => ({ channels: 0, apps: 0, bundles: 0, sites: 0 }));
   let seq = 0;
   const newHistoryId =
     deps.newHistoryId ?? (() => `h_${String(++seq).padStart(8, "0")}`);
@@ -2005,7 +2010,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       if ([...projects.values()].some((p) => p.teamId === id))
         throw conflict("team still has projects");
       const c = countTeamResources(id);
-      if (c.channels + c.apps + c.bundles > 0)
+      if (c.channels + c.apps + c.bundles + c.sites > 0)
         throw conflict("team still has resources");
       teams.delete(id);
       for (const [k, m] of [...teamMembers])
@@ -2285,7 +2290,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
         const p = projects.get(id);
         if (!p) return false;
         const c = countResources(id);
-        if (c.channels + c.apps + c.bundles > 0)
+        if (c.channels + c.apps + c.bundles + c.sites > 0)
           throw conflict("project still has resources");
         projects.delete(id);
         nextIssue.delete(id);
