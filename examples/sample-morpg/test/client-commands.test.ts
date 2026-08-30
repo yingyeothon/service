@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { userIdFor } from "../client/auth.js";
-import { handleKey, unfoldMeta, parseCommand } from "../client/commands.js";
+import {
+  handleKey,
+  pickChoice,
+  unfoldMeta,
+  parseCommand,
+} from "../client/commands.js";
 import { newState } from "../client/state.js";
 import { newCharacter } from "../src/character.js";
 import { loadZone } from "./_fixtures.js";
@@ -260,6 +265,12 @@ describe("handleKey", () => {
     expect(keys()).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
     expect(s.overlay?.kind === "choices" && s.overlay.more).toBe(2);
     handleKey(s, { name: "escape" }, env);
+    // A front-end that lists every row lifts the cut; the extra keys are two digits.
+    handleKey(s, { name: "i" }, { ...env, maxChoices: Infinity });
+    expect(keys()).toHaveLength(11);
+    expect(keys().at(-1)).toBe("11");
+    expect(s.overlay?.kind === "choices" && s.overlay.more).toBe(0);
+    handleKey(s, { name: "escape" }, env);
     s.lobby.roster = {
       type: "party",
       partyId: "pty_0123456789abcdef",
@@ -394,5 +405,39 @@ describe("Esc folded into the next key", () => {
       kind: "choices",
       title: "talk to hunter",
     });
+  });
+});
+
+describe("pickChoice", () => {
+  it("is the hotkey path for a tapped row: disabled stays, compose opens the line, else the action", () => {
+    const s = newState(HEX, "a");
+    s.lobby.zone = "zone001";
+    s.lobby.self = { x: 2, y: 1, dir: "e" }; // hunter at 3,1
+    s.sheet = { version: 1, sheet: newCharacter() };
+    const env = { templates: loadZone().templates, now: 1_000 };
+    handleKey(s, { name: "u" }, env);
+    expect(s.overlay).toMatchObject({ kind: "info", title: "quests" });
+    expect(s.overlay?.kind === "info" && s.overlay.data?.level).toBe(1);
+    handleKey(s, { name: "escape" }, env);
+    handleKey(s, { name: "f" }, env);
+    const rows = s.overlay?.kind === "choices" ? s.overlay.choices : [];
+    expect(
+      pickChoice(s, {
+        ...rows[0]!,
+        disabled: { code: "quest_done", text: "done" },
+      }),
+    ).toBeUndefined();
+    expect(s.overlay).toBeDefined();
+    expect(pickChoice(s, rows[0]!)).toEqual({
+      kind: "talk",
+      npcId: "hunter",
+      questId: "jelly_hunt",
+    });
+    expect(s.overlay).toBeUndefined();
+    handleKey(s, { name: "c" }, env);
+    const chat = s.overlay?.kind === "choices" ? s.overlay.choices : [];
+    expect(pickChoice(s, chat[0]!)).toBeUndefined();
+    expect(s.input).toBe("/say ");
+    expect(s.overlay).toBeUndefined();
   });
 });

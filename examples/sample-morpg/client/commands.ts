@@ -51,7 +51,7 @@ export type Action =
 
 export const HELP = [
   "keys: wasd/arrows/hjkl move · f/space talk/enter/attack · Tab target · q skill (facing)",
-  "      i bag · t character · + stats · p party · c chat · r reject · / command · ? help · Esc back",
+  "      i bag · t character · u quests · + stats · p party · c chat · r reject · / command · ? help · Esc back",
   "/say <text> (or plain text) · /p <text> party chat · /w <user> <text> whisper",
   "/party create|invite <user>|accept|decline|leave|list · /enter (party enters in 10s; /reject cancels)",
   "/char reload sheet · /use <itemId> (town: buffs/gear, field: potions) · /operate",
@@ -226,6 +226,8 @@ export interface KeyEnv {
   /** The bundle being played (its `clear` names the key item). */
   map?: MapBundle;
   now?: number;
+  /** Choices shown before the rest are counted as `more`; a GUI that lists every row passes `Infinity`. */
+  maxChoices?: number;
 }
 
 const VERB_KEYS: Record<string, Verb> = {
@@ -237,6 +239,7 @@ const VERB_KEYS: Record<string, Verb> = {
   "+": "stats",
   p: "party",
   c: "chat",
+  u: "quests",
   r: "reject",
 };
 
@@ -253,8 +256,15 @@ function hotkey(c: Choice, digit: () => string): string {
   return digit();
 }
 
-/** Mnemonic choices are always shown; the numbered ones are cut at `MAX_CHOICES`. */
-export function keyChoices(choices: Choice[]): {
+/**
+ * Mnemonic choices are always shown; the numbered ones are cut at `max`
+ * (`MAX_CHOICES` for a terminal). Past 9 a key is two digits, which no single
+ * keypress matches — such rows are for a front-end that picks by tap.
+ */
+export function keyChoices(
+  choices: Choice[],
+  max: number = MAX_CHOICES,
+): {
   keyed: KeyedChoice[];
   more: number;
 } {
@@ -264,7 +274,7 @@ export function keyChoices(choices: Choice[]): {
   let more = 0;
   for (const c of choices) {
     const key = hotkey(c, digit);
-    if (/^\d+$/.test(key) && Number(key) > MAX_CHOICES) more++;
+    if (/^\d+$/.test(key) && Number(key) > max) more++;
     else keyed.push({ ...c, key });
   }
   return { keyed, more };
@@ -283,17 +293,23 @@ export function composeLine(c: Compose): string {
 export function applyResolution(
   state: AppState,
   r: Resolution,
+  maxChoices: number = MAX_CHOICES,
 ): Action | undefined {
   switch (r.kind) {
     case "action":
       return r.action;
     case "choices": {
-      const { keyed, more } = keyChoices(r.choices);
+      const { keyed, more } = keyChoices(r.choices, maxChoices);
       state.overlay = { kind: "choices", title: r.title, choices: keyed, more };
       return undefined;
     }
     case "info":
-      state.overlay = { kind: "info", title: r.title, lines: r.lines };
+      state.overlay = {
+        kind: "info",
+        title: r.title,
+        lines: r.lines,
+        ...(r.data ? { data: r.data } : {}),
+      };
       return undefined;
     case "refused":
       pushLog(state, "sys", r.reason);
@@ -318,6 +334,21 @@ export function unfoldMeta(key: Key): Key | undefined {
   // A bare CSI/SS3 sequence (`\x1b[A`, `\x1b[1;3A` = Alt+Up) is one key.
   if (rest === "" || rest.startsWith("[") || rest.startsWith("O")) return;
   return { ...key, meta: false, sequence: rest };
+}
+
+/**
+ * Picks one row of the open menu — the hotkey path and a tap on a GUI row
+ * end here: a disabled row does nothing, the menu closes, a compose row
+ * opens the line, anything else returns its action.
+ */
+export function pickChoice(state: AppState, c: Choice): Action | undefined {
+  if (c.disabled) return undefined;
+  state.overlay = undefined;
+  if (c.compose) {
+    state.input = composeLine(c.compose);
+    return undefined;
+  }
+  return c.action;
 }
 
 export function handleKey(
@@ -378,17 +409,12 @@ export function handleKey(
             templates: env.templates,
             now: env.now ?? Date.now(),
           }),
+          env.maxChoices,
         );
       }
       return undefined;
     }
-    if (c.disabled) return undefined;
-    state.overlay = undefined;
-    if (c.compose) {
-      state.input = composeLine(c.compose);
-      return undefined;
-    }
-    return c.action;
+    return pickChoice(state, c);
   }
   if (key.name === "return" || key.name === "enter") {
     state.input = "";
@@ -409,7 +435,7 @@ export function handleKey(
       ...(env.map ? { map: env.map } : {}),
       now: env.now ?? Date.now(),
     };
-    return applyResolution(state, resolve(verb, ctx));
+    return applyResolution(state, resolve(verb, ctx), env.maxChoices);
   }
   const dir = Object.hasOwn(MOVES, name) ? MOVES[name] : undefined;
   if (dir !== undefined) return { kind: "move", dir };

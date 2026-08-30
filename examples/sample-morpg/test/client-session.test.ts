@@ -268,25 +268,26 @@ describe("session: lobby", () => {
     expect(h.state.sheet?.sheet.level).toBe(1);
     expect(h.api.calls).toEqual(["character"]);
   });
-  it("moves are applied locally and flushed at most every 200 ms, or at once after 3 cells", async () => {
+  it("moves are applied locally and flushed at most every 200 ms, or at once after 3 cells; NPCs are solid", async () => {
     const h = await start();
     h.lobby.sent.length = 0;
-    h.session.dispatch({ kind: "move", dir: "e" });
-    h.session.dispatch({ kind: "move", dir: "e" });
-    expect(h.state.lobby.self).toMatchObject({ x: 3, y: 1, dir: "e" });
-    expect(h.lobby.sent).toEqual([]);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(h.lobby.sent).toEqual([
-      { type: "pos", zone: "zone001", x: 3, y: 1, dir: "e" },
-    ]);
-    for (let i = 0; i < 3; i++) h.session.dispatch({ kind: "move", dir: "e" });
-    expect(h.lobby.sent).toHaveLength(2);
-    expect(h.lobby.sent[1]).toMatchObject({ x: 6 });
     // walking into a wall turns but sends nothing
     h.session.dispatch({ kind: "move", dir: "n" });
     await vi.advanceTimersByTimeAsync(300);
-    expect(h.lobby.sent).toHaveLength(2);
+    expect(h.lobby.sent).toEqual([]);
     expect(h.state.lobby.self.dir).toBe("n");
+    h.session.dispatch({ kind: "move", dir: "e" });
+    // The hunter stands at 3,1: the step turns east but stays put.
+    h.session.dispatch({ kind: "move", dir: "e" });
+    expect(h.state.lobby.self).toMatchObject({ x: 2, y: 1, dir: "e" });
+    expect(h.lobby.sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.lobby.sent).toEqual([
+      { type: "pos", zone: "zone001", x: 2, y: 1, dir: "e" },
+    ]);
+    for (let i = 0; i < 3; i++) h.session.dispatch({ kind: "move", dir: "s" });
+    expect(h.lobby.sent).toHaveLength(2);
+    expect(h.lobby.sent[1]).toMatchObject({ x: 2, y: 4 });
   });
   it("chat, whisper and party commands map onto the SDK; party chat needs a party", async () => {
     const h = await start();

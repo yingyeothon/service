@@ -40,6 +40,7 @@ export type Verb =
   | "stats"
   | "party"
   | "chat"
+  | "quests"
   | "reject";
 
 export type QuestStatus = "new" | "active" | "ready" | "done" | "repeatable";
@@ -232,8 +233,25 @@ function talkChoices(
   npc: TownNpcTemplate,
 ): Resolution {
   const verb = "interact";
-  if (npc.dungeon || npc.teleport !== undefined)
-    return { verb, kind: "action", action: { kind: "talk", npcId } };
+  // A gate or the entrance is one confirm row: a GUI shows it as the NPC's popup.
+  if (npc.dungeon || npc.teleport !== undefined) {
+    const role = npcRole(npc);
+    return {
+      verb,
+      kind: "choices",
+      title: `talk to ${npcId}`,
+      choices: [
+        {
+          label:
+            role === "dungeon"
+              ? "enter the dungeon"
+              : `travel to ${npc.teleport}`,
+          ref: { kind: "npc", id: npcId, role, mark: npc.mark, at: npc.at },
+          action: { kind: "talk", npcId },
+        },
+      ],
+    };
+  }
   if (npc.quests.length === 0)
     return {
       verb,
@@ -489,6 +507,24 @@ function character(ctx: IntentContext): Resolution {
   return { verb, kind: "info", title: "character", lines, data: v };
 }
 
+/** The quest log: every quest the world offers with its state for this player. */
+function quests(ctx: IntentContext): Resolution {
+  const verb = "quests";
+  const v = characterView(ctx);
+  if (!v)
+    return {
+      verb,
+      kind: "refused",
+      code: "no_sheet",
+      reason: "no character sheet yet",
+    };
+  const lines = v.quests.map(
+    (q) => `${q.id} — ${questLabel(q)}${q.giver ? ` (${q.giver})` : ""}`,
+  );
+  if (lines.length === 0) lines.push("(no quests)");
+  return { verb, kind: "info", title: "quests", lines, data: v };
+}
+
 function stats(ctx: IntentContext): Resolution {
   const verb = "stats";
   const sheet = ctx.state.sheet?.sheet;
@@ -635,6 +671,8 @@ export function resolve(verb: Verb, ctx: IntentContext): Resolution {
       return party(ctx);
     case "chat":
       return chat(ctx);
+    case "quests":
+      return quests(ctx);
     case "reject":
       return pendingEntry(ctx.state, ctx.now)
         ? { verb, kind: "action", action: { kind: "reject" } }

@@ -12,7 +12,7 @@ import type {
   SnapshotFrame,
 } from "@yingyeothon/gamebase-client";
 import type { CharacterSheet } from "../src/character.js";
-import type { Choice } from "./intent.js";
+import type { CharacterView, Choice } from "./intent.js";
 import { distance, isWalkable, type Cell, type MapBundle } from "../src/map.js";
 import {
   ENTER_DELAY_MS,
@@ -109,7 +109,7 @@ export interface AppState {
 export type KeyedChoice = Choice & { key: string };
 export type Overlay =
   | { kind: "choices"; title: string; choices: KeyedChoice[]; more: number }
-  | { kind: "info"; title: string; lines: string[] };
+  | { kind: "info"; title: string; lines: string[]; data?: CharacterView };
 
 export function newState(userId: string, name: string): AppState {
   return {
@@ -160,6 +160,9 @@ export type LobbyEvent =
 
 /** What the session must do after a reduce; the reducer itself stays pure. */
 export type LobbyEffect = { kind: "startDungeon"; gameId: string };
+
+/** Pending invites kept (newest win); an inviter cannot grow the list without bound. */
+export const INVITES_KEPT = 5;
 
 /** Grace past the reject window before a stale announcement is dropped (RTT, a slow API call). */
 export const PENDING_GRACE_MS = 5000;
@@ -237,6 +240,8 @@ export function reduceLobby(
       return reduceEvent(state, ev.frame, now);
     case "party":
       lobby.roster = ev.frame.partyId === "" ? undefined : ev.frame;
+      // In a party the pending invites are moot.
+      if (ev.frame.partyId !== "") lobby.invites = [];
       // The announcer left (or the party dissolved): nobody will call the API.
       if (
         lobby.pending &&
@@ -254,7 +259,13 @@ export function reduceLobby(
       );
       return [];
     case "partyInvite":
+      // One entry per party; a flood of invites keeps only the newest few.
+      lobby.invites = lobby.invites.filter(
+        (i) => i.partyId !== ev.frame.partyId,
+      );
       lobby.invites.push({ partyId: ev.frame.partyId, from: ev.frame.from });
+      if (lobby.invites.length > INVITES_KEPT)
+        lobby.invites.splice(0, lobby.invites.length - INVITES_KEPT);
       pushLog(
         state,
         "sys",
@@ -336,13 +347,23 @@ function reduceEvent(
   }
 }
 
-/** Client-authoritative town movement: one cell, walls from the bundle. Returns whether the position changed. */
-export function stepLobby(state: AppState, map: MapBundle, dir: Dir): boolean {
+/**
+ * Client-authoritative town movement: one cell, walls from the bundle,
+ * `blockers` (the zone's NPCs) refused; peers are walked through. Returns
+ * whether the position changed.
+ */
+export function stepLobby(
+  state: AppState,
+  map: MapBundle,
+  dir: Dir,
+  blockers: ReadonlyArray<Cell> = [],
+): boolean {
   const self = state.lobby.self;
   self.dir = dir;
   const d = FACING_DELTA[dir];
   const next = { x: self.x + d.x, y: self.y + d.y };
   if (!isWalkable(map, next)) return false;
+  if (blockers.some((b) => b.x === next.x && b.y === next.y)) return false;
   self.x = next.x;
   self.y = next.y;
   return true;
@@ -408,6 +429,7 @@ export function reduceDungeon(state: AppState, ev: DungeonEvent): void {
     case "result":
       d.result = ev.payload;
       d.stage = "ended";
+      state.overlay = undefined; // the result owns the screen
       pushLog(
         state,
         "event",
@@ -441,6 +463,7 @@ export function reduceDungeon(state: AppState, ev: DungeonEvent): void {
     case "ended":
       d.stage = "ended";
       d.ended = { kind: ev.kind, reason: ev.reason };
+      state.overlay = undefined;
       pushLog(
         state,
         "sys",
@@ -501,7 +524,7 @@ export function nearestAdjacentMonster(
   return best;
 }
 
-/** The dungeon cell one step in `dir`, if walkable and not occupied by a monster. */
+/** The dungeon cell one step in `dir`, if walkable and not occupied by a monster (players brush past each other, as the sim allows). */
 export function dungeonStep(
   map: MapBundle,
   frame: FrameView,
@@ -512,8 +535,6 @@ export function dungeonStep(
   const next = { x: self.x + d.x, y: self.y + d.y };
   if (!isWalkable(map, next)) return undefined;
   if (frame.monsters.some((m) => m.x === next.x && m.y === next.y))
-    return undefined;
-  if (frame.players.some((p) => p.alive && p.x === next.x && p.y === next.y))
     return undefined;
   return next;
 }

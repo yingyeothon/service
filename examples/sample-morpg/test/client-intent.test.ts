@@ -133,18 +133,35 @@ describe("intent: interact", () => {
     expect(questGiver(templates, "jelly_hunt")).toBe("hunter");
     expect(questGiver(templates, "nope")).toBeUndefined();
   });
-  it("a gate or the dungeon entrance acts at once; several neighbours pick the NPC first", () => {
+  it("a gate or the dungeon entrance is one confirm row; several neighbours pick the NPC first", () => {
     const s = town();
     s.lobby.self = { x: 17, y: 8, dir: "e" }; // forest_gate at 18,8
     expect(resolve("interact", ctx(s))).toEqual({
       verb: "interact",
-      kind: "action",
-      action: { kind: "talk", npcId: "forest_gate" },
+      kind: "choices",
+      title: "talk to forest_gate",
+      choices: [
+        {
+          label: "travel to zone002",
+          ref: {
+            kind: "npc",
+            id: "forest_gate",
+            role: "gate",
+            mark: "G",
+            at: { x: 18, y: 8 },
+          },
+          action: { kind: "talk", npcId: "forest_gate" },
+        },
+      ],
     });
     s.lobby.self = { x: 10, y: 7, dir: "s" }; // dungeon_gate at 10,8
-    expect(resolve("interact", ctx(s))).toMatchObject({
-      action: { kind: "talk", npcId: "dungeon_gate" },
-    });
+    expect(choices(resolve("interact", ctx(s)))).toMatchObject([
+      {
+        label: "enter the dungeon",
+        ref: { kind: "npc", role: "dungeon" },
+        action: { kind: "talk", npcId: "dungeon_gate" },
+      },
+    ]);
     // Two NPCs next to each other: stand between them.
     const two: IntentContext = {
       ...ctx(s),
@@ -304,6 +321,15 @@ describe("intent: inventory / character / stats", () => {
     expect(
       r.kind === "info" && r.data?.quests.find((q) => q.id === "jelly_hunt"),
     ).toEqual({ id: "jelly_hunt", status: "new", giver: "hunter" });
+    // The quest log is the same data under its own verb (a GUI's quests button).
+    const q = resolve("quests", ctx(s, 1_000));
+    expect(q).toMatchObject({ verb: "quests", kind: "info", title: "quests" });
+    expect(q.kind === "info" && q.lines).toContain("jelly_hunt — new (hunter)");
+    expect(q.kind === "info" && q.data?.level).toBe(1);
+    expect(resolve("quests", ctx(newState(s.userId, "x")))).toMatchObject({
+      kind: "refused",
+      code: "no_sheet",
+    });
     expect(resolve("stats", ctx(s))).toMatchObject({
       kind: "refused",
       code: "no_points",

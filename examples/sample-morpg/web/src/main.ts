@@ -1,13 +1,18 @@
-/* Entry: the gate (config → token: OAuth fragment, dev mint or pasted) → the shared session → canvas + panels; keys, the command field and the touch pad all go through the shared handler. */
+/* Entry: the gate (config → token: OAuth fragment, dev mint or pasted) → the shared session → canvas + HUD/dialog/toasts (derived from the state each paint) + the debug panels; keys, the command field, the joystick and every HUD button go through the shared handler. */
 import {
   createGatewayGameClient,
   createGatewayLobbyClient,
 } from "@yingyeothon/gamebase-client";
 import { createGameApi } from "../../client/api.js";
 import { resolveUserId, userIdFromJwt } from "../../client/auth.js";
-import { handleKey, type Key } from "../../client/commands.js";
+import {
+  HELP,
+  handleKey,
+  pickChoice,
+  type Key,
+} from "../../client/commands.js";
 import { createSession, type Session } from "../../client/session.js";
-import { newState, pushLog } from "../../client/state.js";
+import { newState, pushLog, type KeyedChoice } from "../../client/state.js";
 import type { Trace } from "../../client/trace.js";
 import { createScene } from "./canvas.js";
 import { loadWebConfig, mintToken, type WebConfig } from "./config.js";
@@ -25,6 +30,12 @@ import {
 } from "./login.js";
 import { createPanels } from "./panels.js";
 import { createSheetLoader, type Sheets } from "./sheets.js";
+import { dialogModel } from "./ui/dialog.js";
+import { createDialogDom } from "./ui/dom/dialog-dom.js";
+import { createHudDom } from "./ui/dom/hud-dom.js";
+import { createToastDom } from "./ui/dom/toast-dom.js";
+import { hudModel, KEYS } from "./ui/hud.js";
+import { LineToasts, stateToasts, type ToastDo } from "./ui/toasts.js";
 
 const PANEL_INTERVAL_MS = 100;
 const TRACE_KEPT = 500;
@@ -44,6 +55,10 @@ const connectButton = $<HTMLButtonElement>("connect");
 const loginBox = $("login");
 const cmdInput = $<HTMLInputElement>("cmd");
 const hintEl = $("hint");
+const consoleEl = $("console");
+const menuEl = $("menu");
+const debugEl = $("debug");
+const stickEl = $("stick");
 /** Progress goes to the gate while it is up and to the header line always. */
 const say = (text: string, bad = false): void => {
   status.textContent = text;
@@ -141,7 +156,68 @@ userInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") void connect();
 });
 setupFullscreen();
-const pad = setupPad();
+/**
+ * The HUD, the popup sheet and the toasts are built once; a session plugs
+ * its handlers in through `active` and unplugs on quit.
+ */
+interface Active {
+  press(key: Key): void;
+  /** A HUD button: closes an open line first so the letter is not typed into it. */
+  tap(key: Key): void;
+  pick(c: KeyedChoice): void;
+  toast(d: ToastDo): void;
+  /** The help as a popup (the `?` key logs it, which the debug view shows). */
+  help(): void;
+  /** A disabled button's reason, as a passing line. */
+  hint(text: string): void;
+}
+let active: Active | undefined;
+const hudDom = createHudDom(
+  { top: $("topStatus"), icons: $("icons"), actions: $("actions") },
+  {
+    press: (k) => active?.tap(k),
+    hint: (t) => active?.hint(t),
+    menu: () => (menuEl.hidden = !menuEl.hidden),
+  },
+);
+const dialogDom = createDialogDom($("sheet"), {
+  pick: (c) => active?.pick(c),
+  press: (keys) => {
+    for (const k of keys) active?.press(k);
+  },
+});
+const toastDom = createToastDom($("toasts"), (d) => active?.toast(d));
+const stick = createJoystick(stickEl, $("knob"), { dead: 14, radius: 39 });
+$("debugToggle").addEventListener("click", () => {
+  debugEl.hidden = !debugEl.hidden;
+  $("stage").classList.toggle("debug", !debugEl.hidden); // the map moves aside
+  menuEl.hidden = true;
+});
+$("help").addEventListener("click", () => {
+  menuEl.hidden = true;
+  active?.help();
+});
+$("quit").addEventListener("click", () => {
+  menuEl.hidden = true;
+  active?.press({ name: "escape", sequence: "\x1b" });
+  quitRequested?.();
+});
+let quitRequested: (() => void) | undefined;
+$("command").addEventListener("click", () => {
+  menuEl.hidden = true;
+  active?.tap({ sequence: "/" }); // the focus happens inside this tap: the phone keyboard rises
+});
+$("send").addEventListener("click", () => active?.press(KEYS.line));
+// iOS keeps the layout viewport under the keyboard: pin the console to the visual one.
+const vv = window.visualViewport;
+if (vv) {
+  const place = (): void => {
+    consoleEl.style.bottom = `${Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + 12}px`;
+  };
+  vv.addEventListener("resize", place);
+  vv.addEventListener("scroll", place);
+}
+$("cancel").addEventListener("click", () => active?.press(KEYS.escape));
 
 let session: Session | undefined;
 /** Set before the first await of `connect`: Enter twice must not mint two tokens. */
@@ -186,7 +262,13 @@ async function connect(): Promise<void> {
   const listeners = new AbortController();
   const ended = (): void => {
     listeners.abort();
-    pad.show(false);
+    active = undefined;
+    quitRequested = undefined;
+    hudDom.render(undefined);
+    dialogDom.render(undefined, undefined);
+    toastDom.render([]);
+    stickEl.hidden = true;
+    menuEl.hidden = true;
     dead = true;
     session = undefined;
     connecting = false;
@@ -208,6 +290,9 @@ async function connect(): Promise<void> {
   let sheets: Sheets | undefined;
   let sheetsFor: string | undefined;
   let dirty = true;
+  const lineToasts = new LineToasts();
+  /** From the last HUD model: whether a joystick step means anything now. */
+  let stickOn = false;
 
   const s = createSession({
     state,
@@ -288,6 +373,31 @@ async function connect(): Promise<void> {
     });
     if (dirty || state.lobby.pending || now - lastPanel > 1000) {
       if (now - lastPanel >= PANEL_INTERVAL_MS) {
+        const ctx = {
+          state,
+          templates: s.templates,
+          ...(s.map ? { map: s.map } : {}),
+          now,
+        };
+        const hud = hudModel(ctx);
+        stickOn = hud.stick && !state.overlay && state.input === undefined;
+        stickEl.classList.toggle("idle", !stickOn);
+        hudDom.render(hud);
+        dialogDom.render(
+          state.overlay
+            ? dialogModel(state.overlay, {
+                state,
+                templates: s.templates,
+                ...(sheets ? { icons: sheets.view.icons } : {}),
+              })
+            : undefined,
+          sheets,
+        );
+        toastDom.render([
+          ...stateToasts(state, now),
+          ...lineToasts.at(state, now),
+        ]);
+        // Painted even while hidden: a script reads the panels' text, and opening the view shows history.
         panels.paint(state, s.templates, now);
         syncLine();
         lastPanel = now;
@@ -308,10 +418,52 @@ async function connect(): Promise<void> {
       templates: s.templates,
       ...(s.map ? { map: s.map } : {}),
       now: Date.now(),
+      maxChoices: Infinity, // the popup lists every row
     });
     dirty = true;
     if (action) s.dispatch(action);
     syncLine();
+  };
+  /** A tapped popup row: the same rule as its hotkey. */
+  const pick: Active["pick"] = (c) => {
+    if (session !== s) return;
+    // A row from a menu that closed or changed in the ≤100 ms before the DOM caught up.
+    if (state.overlay?.kind !== "choices" || !state.overlay.choices.includes(c))
+      return;
+    const action = pickChoice(state, c);
+    dirty = true;
+    if (action) s.dispatch(action);
+    syncLine(); // a compose row opens the line: the focus happens inside the tap
+  };
+  const tap: Active["tap"] = (key) => {
+    if (session !== s) return;
+    // An open line or popup closes first: the letter must not be typed into the
+    // line or read as the popup's hotkey (`c` is "create" on the party board).
+    if (
+      (state.input !== undefined || state.overlay) &&
+      key.name !== "escape" &&
+      key.name !== "return"
+    )
+      press(KEYS.escape);
+    press(key);
+  };
+  const hint: Active["hint"] = (text) => {
+    if (session !== s) return;
+    lineToasts.say(text, Date.now());
+    dirty = true;
+  };
+  const help = (): void => {
+    if (session !== s || state.input !== undefined) return;
+    state.overlay = { kind: "info", title: "help", lines: HELP };
+    dirty = true;
+  };
+  const toast: Active["toast"] = (d) => {
+    if (session !== s) return;
+    if (d.kind === "key") tap(d.key);
+    else if (d.kind === "action") {
+      dirty = true;
+      s.dispatch(d.action);
+    } else if (s.dismissResult()) dirty = true;
   };
   /**
    * The command field mirrors `state.input`: shown and focused while a line
@@ -355,24 +507,25 @@ async function connect(): Promise<void> {
     },
     { signal },
   );
-  // A tap on the idle hint opens the line (Enter), which focuses the field within the gesture.
-  $("input").addEventListener(
-    "click",
-    () => {
-      if (session !== s) return;
-      if (state.input === undefined) press({ name: "return", sequence: "\r" });
-      else cmdInput.focus();
-    },
-    { signal },
-  );
-  pad.bind((key) => {
-    if (session !== s) return;
-    // While a line is open the pad only closes it (Esc): a joystick step or an
-    // action button must not spell letters into the command.
-    if (state.input !== undefined && key.name !== "escape") return;
+  // The joystick is idle while a line or a popup is open, the run is over or
+  // the player is dead: a held thumb must not spell letters, pick `a`/`d` in
+  // the stats menu, or dismiss the result before it was read.
+  stick.bind((key) => {
+    if (session !== s || !stickOn) return;
     press(key);
   }, signal);
   window.addEventListener("resize", () => (dirty = true), { signal });
+  // Anywhere outside the menu closes it.
+  window.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (menuEl.hidden) return;
+      const t = e.target as HTMLElement | null;
+      if (!menuEl.contains(t) && !t?.closest("[data-testid=btn-menu]"))
+        menuEl.hidden = true;
+    },
+    { signal },
+  );
 
   try {
     say("connecting…");
@@ -383,7 +536,11 @@ async function connect(): Promise<void> {
     connecting = false;
     say(`connected as ${name}`);
     gate.hidden = true;
-    pad.show(true);
+    // Lines already logged while connecting are history, not news.
+    lineToasts.skipTo(state.logSeq - 1);
+    active = { press, tap, pick, toast, help, hint };
+    quitRequested = () => s.dispatch({ kind: "quit" });
+    stickEl.hidden = false;
     requestAnimationFrame(loop);
   } catch (e) {
     say(`start failed: ${e instanceof Error ? e.message : String(e)}`, true);
@@ -395,11 +552,10 @@ async function connect(): Promise<void> {
 /** The field's text as the handler would have built it key by key: no control characters. */
 const clean = (text: string): string => text.replace(/[\p{Cc}]/gu, "");
 
-/** The command field in place of the hint, focused; or the hint back and the keyboard down. */
+/** The console with its field, focused; or hidden and the keyboard down. */
 function showLine(open: boolean): void {
-  if (cmdInput.hidden === !open) return;
-  cmdInput.hidden = !open;
-  hintEl.hidden = open;
+  if (consoleEl.hidden === !open) return;
+  consoleEl.hidden = !open;
   if (open) cmdInput.focus();
   else {
     cmdInput.value = "";
@@ -407,57 +563,17 @@ function showLine(open: boolean): void {
   }
 }
 
-/** The fullscreen toggle; hidden where the API is missing (iPhone Safari). */
+/** The fullscreen toggle (in the menu); hidden where the API is missing (iPhone Safari). */
 function setupFullscreen(): void {
   const b = $<HTMLButtonElement>("fullscreen");
   if (!document.fullscreenEnabled) return;
   b.hidden = false;
   b.addEventListener("click", () => {
+    menuEl.hidden = true;
     if (document.fullscreenElement) void document.exitFullscreen();
     else
       void document.documentElement.requestFullscreen({ navigationUI: "hide" });
   });
-}
-
-/**
- * The touch pad for coarse pointers: the joystick for wasd and buttons for
- * f/q/Tab/i/t/p, `/`, `?`, Esc as the same `Key` values the keyboard
- * produces. `bind` is per session.
- */
-function setupPad(): {
-  bind(on: (key: Key) => void, signal: AbortSignal): void;
-  /** Shown only while a session runs, and only for coarse pointers. */
-  show(on: boolean): void;
-} {
-  const pad = $("pad");
-  const coarse = window.matchMedia("(pointer: coarse)").matches;
-  const stick = createJoystick($("stick"), $("knob"), { dead: 14, radius: 35 });
-  const NAMED: Record<string, Key> = {
-    tab: { name: "tab", sequence: "\t" },
-    escape: { name: "escape", sequence: "\x1b" },
-  };
-  return {
-    show(on) {
-      pad.hidden = !(on && coarse);
-    },
-    bind(on, signal) {
-      stick.bind(on, signal);
-      pad.addEventListener(
-        "click",
-        (e) => {
-          const b = (e.target as HTMLElement).closest("button[data-key]");
-          const k = b?.getAttribute("data-key");
-          if (!k) return;
-          e.preventDefault();
-          on(
-            NAMED[k] ??
-              (/^[a-z]$/.test(k) ? { name: k, sequence: k } : { sequence: k }),
-          );
-        },
-        { signal },
-      );
-    },
-  };
 }
 
 // Last: `connect` reads bindings declared above (a call before them is a TDZ error that only the sign-in path hits).
