@@ -142,7 +142,6 @@ userInput.addEventListener("keydown", (e) => {
 });
 setupFullscreen();
 const pad = setupPad();
-if (issued && config) void connect();
 
 let session: Session | undefined;
 /** Set before the first await of `connect`: Enter twice must not mint two tokens. */
@@ -460,3 +459,6 @@ function setupPad(): {
     },
   };
 }
+
+// Last: `connect` reads bindings declared above (a call before them is a TDZ error that only the sign-in path hits).
+if (issued && config) void connect();
