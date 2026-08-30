@@ -136,7 +136,6 @@ const PLATFORM_TAGS: Record<CatalogPlatform, readonly string[]> = {
     "distribution_method",
     "minimum_os_version",
   ],
-  web: ["entrypoint", "mount_path", "spa_fallback"],
   bin: ["content_type", "sha256", "filename"],
   server: ["content_type", "sha256", "filename", "entrypoint", "type"],
   win32: ["arch", "sha256", "filename", "entrypoint"],
@@ -146,7 +145,6 @@ const PLATFORM_TAGS: Record<CatalogPlatform, readonly string[]> = {
 const EXTENSIONS: Partial<Record<CatalogPlatform, readonly string[]>> = {
   android: [".apk", ".aab"],
   ios: [".ipa"],
-  web: [".zip"],
 };
 
 /** Ported from the legacy catalog's upload-metadata validation. */
@@ -170,11 +168,6 @@ export function validateUploadMetadata(
   if (!tags.version?.trim()) throw bad('missing required tag "version"');
   if (tags.sha256 !== undefined && !/^[a-fA-F0-9]{64}$/.test(tags.sha256))
     throw bad('tag "sha256" must be a 64-character hex string');
-  if (
-    tags.spa_fallback !== undefined &&
-    !["true", "false"].includes(tags.spa_fallback.toLowerCase())
-  )
-    throw bad('tag "spa_fallback" must be true or false');
   if (
     tags.build_type !== undefined &&
     !["debug", "release", "appbundle"].includes(tags.build_type)

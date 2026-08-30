@@ -1,9 +1,9 @@
 import type { PrismaClient } from "./generated/prisma/client.js";
 
 /**
- * Invariants the team/project contract migration (`NOT NULL`, team-scoped
- * unique names, catalog permission drops — the `-- contract` file) needs
- * before it can be applied. Returns one line per violation; empty means the
+ * Invariants the `-- contract` migrations need before they can be applied:
+ * the team/project contract (`NOT NULL`, team-scoped unique names, catalog
+ * permission drops) and the catalog `web` platform removal. Returns one line per violation; empty means the
  * stage is ready. Shared by `scripts/apply-team-project-map.mjs` (verify after
  * apply) and `scripts/contract-preflight.mjs` (run by `migrate.sh` before a
  * contract migration), so both judge the database by the same rules.
@@ -42,5 +42,19 @@ export async function contractPreflight(
   const reserved = await prisma.catalog_apps.count({ where: { name: "apps" } });
   if (reserved > 0)
     problems.push(`catalog_apps: ${reserved} app(s) named "apps" (reserved)`);
+
+  // `m0011_catalog_drop_web` narrows the platform ENUMs: a row still saying
+  // `web` would fail the MODIFY (and the generated client already lacks the
+  // value, hence raw SQL).
+  const [web] = await prisma.$queryRaw<
+    { catalog_artifacts: bigint; catalog_pending_uploads: bigint }[]
+  >`select
+      (select count(*) from catalog_artifacts where platform = 'web') as catalog_artifacts,
+      (select count(*) from catalog_pending_uploads where platform = 'web') as catalog_pending_uploads`;
+  for (const [table, n] of Object.entries(web ?? {}))
+    if (Number(n) > 0)
+      problems.push(
+        `${table}: ${Number(n)} row(s) with platform "web" (removed)`,
+      );
   return problems;
 }

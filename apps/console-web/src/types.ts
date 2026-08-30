@@ -453,7 +453,6 @@ export interface PosterUpload {
 export const CATALOG_PLATFORMS = [
   "android",
   "ios",
-  "web",
   "bin",
   "server",
   "win32",

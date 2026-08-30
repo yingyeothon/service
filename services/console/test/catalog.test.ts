@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { nullLogger } from "@yyt/core";
-import { createMemoryCatalogDb, createMemoryConsoleDb } from "@yyt/console-db";
+import {
+  CATALOG_PLATFORMS,
+  createMemoryCatalogDb,
+  createMemoryConsoleDb,
+} from "@yyt/console-db";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import { planDeletions } from "../src/catalog-cleanup.js";
 import { finalObjectKey, validateUploadMetadata } from "../src/catalog.js";
@@ -1102,16 +1106,12 @@ describe("upload metadata validation", () => {
       }),
     ).not.toThrow();
   });
-  it("rejects bad sha256 and spa_fallback values", () => {
+  it("rejects bad sha256 values and no longer knows the web platform", () => {
     expect(() =>
       validateUploadMetadata("bin", "a.zip", { version: "1", sha256: "xyz" }),
     ).toThrow();
-    expect(() =>
-      validateUploadMetadata("web", "a.zip", {
-        version: "1",
-        spa_fallback: "maybe",
-      }),
-    ).toThrow();
+    // Static builds are the `site` resource (docs/decisions.md *Static sites*).
+    expect(CATALOG_PLATFORMS).not.toContain("web");
   });
 });
 

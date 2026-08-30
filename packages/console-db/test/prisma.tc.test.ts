@@ -220,6 +220,41 @@ describe.skipIf(!dockerAvailable())(
       });
     });
 
+    describe("catalog web platform removal (m0011)", () => {
+      // The rows the pre-flight refuses can only exist before the ENUM
+      // narrowed, so this runs on a database migrated through `m0010_sites`.
+      let pre: TestDb;
+      beforeAll(async () => {
+        pre = await startTestDb({ through: "m0010_sites" });
+      }, 180_000);
+      afterAll(async () => {
+        await pre?.stop();
+      });
+
+      it("lists artifact and pending-upload rows that still say web", async () => {
+        await resetTestDb(pre.client);
+        await seedTeamProject(pre.client);
+        const run = (sql: string) => pre.client.$executeRawUnsafe(sql);
+        await run(
+          `insert into catalog_apps (id, name, path, created_at, updated_at, team_id, project_id)
+           values ('ca_w', 'w', 'w', 1, 1, 'team_1', 'prj_1')`,
+        );
+        expect(await contractPreflight(pre.client)).toEqual([]);
+        await run(
+          `insert into catalog_artifacts (id, app_id, platform, url, tags_json, created_at)
+           values ('art_w', 'ca_w', 'web', 'https://example.com/w.zip', '{}', 2)`,
+        );
+        await run(
+          `insert into catalog_pending_uploads (id, app_id, platform, filename, tags_json, created_at, expires_at)
+           values ('up_w', 'ca_w', 'web', 'w.zip', '{}', 2, 99)`,
+        );
+        expect(await contractPreflight(pre.client)).toEqual([
+          'catalog_artifacts: 1 row(s) with platform "web" (removed)',
+          'catalog_pending_uploads: 1 row(s) with platform "web" (removed)',
+        ]);
+      });
+    });
+
     describe("team / project columns on resources (migration 6)", () => {
       it("channels, apps and bundles carry their parents and the FKs hold", async () => {
         await resetTestDb(db.client);
