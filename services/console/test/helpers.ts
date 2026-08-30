@@ -5,6 +5,7 @@ import {
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
+  createMemorySitesDb,
   createMemoryTeamDb,
   createMemoryStateDb,
 } from "@yyt/console-db";
@@ -14,6 +15,7 @@ import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import { createMemoryPosterStore } from "../src/poster.js";
+import { createMemorySiteStore } from "../src/site-store.js";
 import { historyId } from "../src/team.js";
 import { SESSION_COOKIE } from "../src/session.js";
 
@@ -30,6 +32,7 @@ export const URLS = {
 export const GATEWAY_TOKEN = "gw_" + "0123456789abcdef".repeat(2) + "ff";
 export const STAGE = "dev";
 export const CDN = "https://dev-d.yyt.life";
+export const SITE_CDN = "https://dev-g.yyt.life";
 /** Never the real host: the stateful box's address is a guarded identifier. */
 export const REDIS_ENDPOINT = { host: "redis.example", port: 6379 };
 export const NOW_MS = 1_700_000_000_000;
@@ -57,7 +60,11 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const events = createMemoryEventsDb((id) => db.members.has(id));
   const catalog = createMemoryCatalogDb((id) => db.members.has(id));
   const assets = createMemoryAssetsDb((id) => db.members.has(id));
+  const sites = createMemorySitesDb((id) => db.members.has(id));
   const posters = createMemoryPosterStore();
+  const siteStore = createMemorySiteStore({ distributionId: "EDIST" });
+  /** Deploy ids the app asked the worker for; tests run `runSiteDeploy` themselves. */
+  const invoked: string[] = [];
   const artifacts = createMemoryArtifactStore();
   const redisAcl = createMemoryAclAdmin();
   const state = createMemoryStateDb((id) => db.channels.has(id));
@@ -68,6 +75,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     channels: [...db.channels.values()].filter(pick).length,
     apps: [...catalog.apps.values()].filter(pick).length,
     bundles: [...assets.bundles.values()].filter(pick).length,
+    sites: [...sites.sites.values()].filter(pick).length,
   });
   const teamDb = createMemoryTeamDb({
     memberExists: (id) => db.members.has(id),
@@ -87,10 +95,16 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     catalog,
     assets,
+    sites,
     team: teamDb,
     posters,
     artifacts,
     cdnBaseUrl: CDN,
+    siteStore,
+    siteInvoke: async (id) => {
+      invoked.push(id);
+    },
+    siteCdnUrl: SITE_CDN,
     slackFetch: fetch,
     kv,
     github: createGithubLogin({ clientId: "cid", clientSecret: "csec", fetch }),
@@ -203,6 +217,9 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     catalog,
     assets,
+    sites,
+    siteStore,
+    invoked,
     teamDb,
     posters,
     artifacts,

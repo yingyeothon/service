@@ -9,6 +9,7 @@ import {
   IconUsers,
   IconUsersGroup,
   IconWorld,
+  IconWorldWww,
   type IconProps,
 } from "@tabler/icons-react";
 import type { ComponentType } from "react";
@@ -56,6 +57,13 @@ export const NAV_ITEMS: NavItem[] = [
     path: "/assets",
     label: "Assets",
     icon: IconPhoto,
+    minRole: "member",
+    hidden: true,
+  },
+  {
+    path: "/sites",
+    label: "Sites",
+    icon: IconWorldWww,
     minRole: "member",
     hidden: true,
   },

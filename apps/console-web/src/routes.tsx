@@ -13,6 +13,7 @@ import { InstallerPage } from "./pages/Installer";
 import { IssuePage } from "./pages/Issue";
 import { MembersPage } from "./pages/Members";
 import { ProjectPage } from "./pages/Project";
+import { SitePage } from "./pages/Site";
 import { TeamPage } from "./pages/Team";
 import { TeamsPage } from "./pages/Teams";
 import { TokensPage } from "./pages/Tokens";
@@ -77,6 +78,12 @@ export const ROUTES: AppRoute[] = [
     element: <Navigate to="/teams" replace />,
   },
   { path: "/assets/:id", guard: "/assets", element: <AssetBundlePage /> },
+  {
+    path: "/sites",
+    guard: "/sites",
+    element: <Navigate to="/teams" replace />,
+  },
+  { path: "/sites/:id", guard: "/sites", element: <SitePage /> },
   { path: "/installer", guard: "/installer", element: <InstallerPage /> },
   { path: "/tokens", guard: "/tokens", element: <TokensPage /> },
   { path: "/app-login", guard: "/app-login", element: <AppLoginPage /> },

@@ -32,6 +32,18 @@ custom:
   artifactCdn:
     dev: https://dev-d.yyt.life
     prod: https://d.yyt.life
+  # Static sites (docs/decisions.md *Static sites*): pre-existing public S3
+  # website buckets behind hand-made CloudFront distributions, outside this
+  # stack like the artifact buckets; the stack only grants IAM on them. Zips
+  # are staged in the private poster bucket, never here.
+  siteBucket:
+    dev: yyt-gallery-dev
+    prod: yyt-gallery
+  siteCdn:
+    dev: https://dev-g.yyt.life
+    prod: https://g.yyt.life
+  # Plain SSM String set by hand (todo/07); empty = no invalidation on this stage.
+  siteDistributionId: ${ssm:${self:custom.stageSsm}/site-distribution-id, ""}
   ssm: /yyt-service/${self:custom.stage}/console
   stageSsm: /yyt-service/${self:custom.stage}
   esbuild:
@@ -127,6 +139,14 @@ provider:
     # CloudFront distribution id of ARTIFACT_CDN_URL, for the daily usage
     # digest's traffic metric; plain SSM String set by hand, empty = no CDN metric.
     ARTIFACT_CDN_DISTRIBUTION_ID: ${ssm:${self:custom.stageSsm}/cdn-distribution-id, ""}
+    SITE_BUCKET: ${self:custom.siteBucket.${self:custom.stage}}
+    SITE_CDN_URL: ${self:custom.siteCdn.${self:custom.stage}}
+    # CloudFront distribution id of SITE_CDN_URL, invalidated after every site
+    # deploy; plain SSM String set by hand, empty = deploys go live without
+    # invalidation (the edge serves the old tree for up to its TTL).
+    SITE_CDN_DISTRIBUTION_ID: ${self:custom.siteDistributionId}
+    # The worker `api` invokes asynchronously on commit.
+    SITE_DEPLOY_FUNCTION: ${self:service}-${self:custom.stage}-siteDeploy
   iam:
     role:
       statements:
@@ -144,7 +164,40 @@ provider:
           Resource: !GetAtt PosterBucket.Arn
           Condition:
             StringLike:
-              s3:prefix: posters/*
+              s3:prefix:
+                - posters/*
+                - site-uploads/*
+        # Site zips are staged in the same private bucket (presigned PUT,
+        # read once by the worker, deleted after).
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/site-uploads/*"]]
+        # Site bucket: the worker writes `{slug}/…` and prunes; the api lists
+        # a prefix before minting a slug and wipes it on delete.
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: arn:aws:s3:::${self:custom.siteBucket.${self:custom.stage}}/*
+        - Effect: Allow
+          Action: s3:ListBucket
+          Resource: arn:aws:s3:::${self:custom.siteBucket.${self:custom.stage}}
+        # `/{slug}/*` after a deploy or a delete: only the stage's own site
+        # distribution, and no statement at all while none is configured.
+        - !If
+          - HasSiteDistribution
+          - Effect: Allow
+            Action: cloudfront:CreateInvalidation
+            Resource: arn:aws:cloudfront::${aws:accountId}:distribution/${self:custom.siteDistributionId}
+          - !Ref AWS::NoValue
+        # commit → async invoke of the worker (this stack's own function).
+        - Effect: Allow
+          Action: lambda:InvokeFunction
+          Resource: arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:custom.stage}-siteDeploy
         # Binary catalog artifacts and game assets share this bucket: presigned
         # PUT into uploads/ or asset-uploads/, commit copies to the app prefix
         # or assets/{bundle}/{version}/, delete covers cleanup — whole-bucket
@@ -202,6 +255,17 @@ functions:
       # 03:00 KST daily; a fixed time so operators can predict when channels flip.
       - schedule: cron(0 18 * * ? *)
 
+  siteDeploy:
+    handler: src/handler.siteDeploy
+    # One deploy at a time (the api serialises per site anyway); holds one
+    # MariaDB connection — counted in the budget table (rules/data.md).
+    reservedConcurrency: 1
+    # Inflates up to 50 MB and PUTs up to 2000 objects.
+    memorySize: 512
+    timeout: 300
+    # Every path ends in a status write; a retry could only repeat a failure.
+    maximumRetryAttempts: 0
+
   gatewayProbe:
     handler: src/handler.gatewayProbe
     reservedConcurrency: 1
@@ -221,6 +285,8 @@ package:
 resources:
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
+    HasSiteDistribution:
+      !Not [!Equals ["${self:custom.siteDistributionId}", ""]]
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:

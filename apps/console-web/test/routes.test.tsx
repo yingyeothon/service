@@ -12,7 +12,7 @@ describe("routes", () => {
 
   it("keeps the hidden items as guards without listing them", () => {
     const hidden = NAV_ITEMS.filter((i) => i.hidden).map((i) => i.path);
-    expect(hidden).toEqual(["/channels", "/catalog", "/assets"]);
+    expect(hidden).toEqual(["/channels", "/catalog", "/assets", "/sites"]);
     for (const h of hidden) expect(navMinRole(h)).toBe("member");
     expect(navMinRole("/teams")).toBe("member");
   });
@@ -31,6 +31,7 @@ describe("routes", () => {
       "/channels/:id",
       "/catalog/apps/:id",
       "/assets/:id",
+      "/sites/:id",
     ])
       expect(paths).toContain(p);
     // Creation lives under a project now; the old top-level path is gone.

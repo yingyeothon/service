@@ -287,6 +287,8 @@ model members {
   approved_by          String?               @db.VarChar(64)
   api_tokens           api_tokens[]
   asset_bundles        asset_bundles[]
+  sites                sites[]
+  site_deploys         site_deploys[]
   catalog_apps         catalog_apps[]
   channels             channels[]
   events               events[]
@@ -398,6 +400,7 @@ model teams {
   channels      channels[]
   catalog_apps  catalog_apps[]
   asset_bundles asset_bundles[]
+  sites         sites[]
 
   @@index([created_by], map: "teams_creator")
 }
@@ -483,6 +486,7 @@ model projects {
   channels          channels[]
   catalog_apps      catalog_apps[]
   asset_bundles     asset_bundles[]
+  sites             sites[]
 
   @@unique([team_id, name], map: "projects_team_name")
   @@index([created_by], map: "projects_creator")
@@ -589,4 +593,59 @@ enum project_version_links_kind {
 enum issues_status {
   open
   closed
+}
+
+/// Static sites on the shared `g.yyt.life` host (docs/decisions.md *Static sites*).
+model sites {
+  id                String         @id @db.VarChar(64)
+  team_id           String         @db.VarChar(64)
+  project_id        String         @db.VarChar(64)
+  name              String         @db.VarChar(255)
+  /// URL path segment; opaque, random, never reused. Binary: it is an S3 key prefix.
+  slug              String         @unique(map: "sites_slug") @db.VarChar(16)
+  description       String?        @db.MediumText
+  owner_id          String?        @db.VarChar(64)
+  current_deploy_id String?        @db.VarChar(64)
+  /// Claim held by the deploy (or the delete) in flight; null when idle.
+  active_deploy_id  String?        @db.VarChar(64)
+  created_at        BigInt
+  updated_at        BigInt
+  members           members?       @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_owner")
+  teams             teams          @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_team_fk")
+  projects          projects       @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_project_fk")
+  site_deploys      site_deploys[]
+
+  @@unique([team_id, name], map: "sites_team_name")
+  @@index([owner_id], map: "sites_owner")
+  @@index([project_id], map: "sites_project")
+}
+
+/// One zip upload per row; the row is created with the presign and ends `live` or `failed`.
+model site_deploys {
+  id         String              @id @db.VarChar(64)
+  site_id    String              @db.VarChar(64)
+  status     site_deploys_status @default(pending)
+  zip_bytes  BigInt
+  bytes      BigInt              @default(0)
+  files      Int                 @default(0)
+  error      String?             @db.VarChar(255)
+  object_key String              @db.VarChar(1024)
+  created_by String?             @db.VarChar(64)
+  created_at BigInt
+  updated_at BigInt
+  expires_at BigInt
+  sites      sites               @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "site_deploys_site")
+  members    members?            @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "site_deploys_creator")
+
+  @@index([site_id, created_at], map: "site_deploys_site")
+  @@index([status, updated_at], map: "site_deploys_status")
+  @@index([created_by], map: "site_deploys_creator")
+}
+
+enum site_deploys_status {
+  pending
+  queued
+  extracting
+  live
+  failed
 }

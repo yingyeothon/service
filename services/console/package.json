@@ -10,7 +10,9 @@
     "deploy:dev": "serverless deploy --stage dev --region ap-northeast-2"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudfront": "^3.1121.0",
     "@aws-sdk/client-cloudwatch": "^3.1119.0",
+    "@aws-sdk/client-lambda": "^3.1121.0",
     "@aws-sdk/client-s3": "^3.1115.0",
     "@aws-sdk/client-sns": "^3.1115.0",
     "@aws-sdk/s3-request-presigner": "^3.1116.0",

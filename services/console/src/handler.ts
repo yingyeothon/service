@@ -5,12 +5,14 @@ import {
   createEventsDb,
   createTeamDb,
   createPrismaClient,
+  createSitesDb,
   createStateDb,
   mysqlOptionsFromEnv,
   type AssetsDb,
   type CatalogDb,
   type ConsoleDb,
   type EventsDb,
+  type SitesDb,
   type TeamDb,
   type StateDb,
 } from "@yyt/console-db";
@@ -46,6 +48,9 @@ import { createGithubLogin } from "./github.js";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { historyId } from "./team.js";
 import { createS3PosterStore } from "./poster.js";
+import { createS3SiteStore, type SiteStore } from "./site-store.js";
+import { runSiteDeploy, runSiteSweep } from "./site-deploy.js";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
 
@@ -72,6 +77,7 @@ interface Deps {
   events: EventsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
+  sites: SitesDb;
   team: TeamDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
@@ -111,6 +117,7 @@ function getDeps(): Promise<Deps> {
       events: createEventsDb(raw),
       catalog: createCatalogDb(raw),
       assets: createAssetsDb(raw),
+      sites: createSitesDb(raw),
       team: createTeamDb(raw, { newHistoryId: historyId }),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
@@ -160,6 +167,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     catalog,
     assets,
+    sites,
     team,
     state,
     kv,
@@ -167,6 +175,11 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     redisEndpoint,
   } = await getDeps();
   const clock = systemClock;
+  const siteStore = siteStoreFromEnv();
+  if (!siteStore)
+    logger.warn("SITE_BUCKET/POSTER_BUCKET is empty: site deploy is disabled", {
+      stage,
+    });
   const posterBucket = process.env.POSTER_BUCKET ?? "";
   if (!posterBucket)
     logger.warn("POSTER_BUCKET is empty: poster upload is disabled", { stage });
@@ -203,6 +216,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     catalog,
     assets,
+    sites,
     team,
     state,
     posters: posterBucket
@@ -210,6 +224,9 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       : undefined,
     artifacts: artifactStoreFromEnv(),
     cdnBaseUrl: process.env.ARTIFACT_CDN_URL || undefined,
+    siteStore,
+    siteInvoke: siteInvokerFromEnv(),
+    siteCdnUrl: process.env.SITE_CDN_URL || undefined,
     kv,
     redisAcl,
     redisEndpoint,
@@ -229,10 +246,82 @@ function artifactStoreFromEnv(): ArtifactStore | undefined {
   return bucket ? createS3ArtifactStore({ bucket }) : undefined;
 }
 
+/** Staging in the private poster bucket, files in the public site bucket. */
+function siteStoreFromEnv(): SiteStore | undefined {
+  const siteBucket = process.env.SITE_BUCKET ?? "";
+  const stagingBucket = process.env.POSTER_BUCKET ?? "";
+  if (!siteBucket || !stagingBucket) return undefined;
+  return createS3SiteStore({
+    stagingBucket,
+    siteBucket,
+    distributionId: process.env.SITE_CDN_DISTRIBUTION_ID ?? "",
+  });
+}
+
+let lambda: LambdaClient | undefined;
+
+/** Fire-and-forget invoke of `siteDeploy`; the row is the queue. */
+function siteInvokerFromEnv():
+  ((deployId: string) => Promise<void>) | undefined {
+  const fn = process.env.SITE_DEPLOY_FUNCTION ?? "";
+  if (!fn) return undefined;
+  return async (deployId) => {
+    lambda ??= new LambdaClient({});
+    await lambda.send(
+      new InvokeCommand({
+        FunctionName: fn,
+        InvocationType: "Event",
+        Payload: Buffer.from(JSON.stringify({ deployId })),
+      }),
+    );
+  };
+}
+
+/**
+ * Async worker: one deploy per event. Never throws (`runSiteDeploy` ends every
+ * path in a status write); a malformed event is logged and dropped, since a
+ * retry could not fix it.
+ */
+export const siteDeploy = async (event: unknown): Promise<void> => {
+  const deployId = (event as { deployId?: unknown } | null)?.deployId;
+  if (typeof deployId !== "string" || !/^sd_[0-9a-z]{1,64}$/.test(deployId)) {
+    logger.error("site deploy event malformed");
+    return;
+  }
+  const store = siteStoreFromEnv();
+  if (!store) {
+    logger.error("site deploy invoked without a site bucket", { deployId });
+    return;
+  }
+  let sites: SitesDb;
+  try {
+    ({ sites } = await getDeps());
+  } catch (e) {
+    // No database, no status write: the row stays `queued` and the stale
+    // heal reports it. Throwing would only add a retry-less Lambda error.
+    logger.error("site deploy cannot reach the database", {
+      deployId,
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
+  await runSiteDeploy(deployId, { sites, store, logger });
+};
+
 /** EventBridge daily schedule. */
 export const expire = async (): Promise<void> => {
-  const { stage, db, events, catalog, assets, team, state, redisAcl, kv } =
-    await getDeps();
+  const {
+    stage,
+    db,
+    events,
+    catalog,
+    assets,
+    sites,
+    team,
+    state,
+    redisAcl,
+    kv,
+  } = await getDeps();
   const artifacts = artifactStoreFromEnv();
   const posterBucket = process.env.POSTER_BUCKET ?? "";
   const posters = posterBucket
@@ -279,6 +368,12 @@ export const expire = async (): Promise<void> => {
     },
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),
+    // Expired zip grants and deploys whose worker died; nothing else looks
+    // at a site nobody polls.
+    async () => {
+      const store = siteStoreFromEnv();
+      if (store) await runSiteSweep({ sites, store, logger });
+    },
     // Persists the event statuses the API only derives and retries poster
     // objects whose delete failed at replacement time.
     () => runEventSweep({ events, posters, clock: systemClock, logger }),

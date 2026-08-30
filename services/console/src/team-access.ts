@@ -10,6 +10,8 @@ import type {
   TeamRole,
   TeamRow,
   ProjectRow,
+  SiteRow,
+  SitesDb,
 } from "@yyt/console-db";
 import type { RouteContext } from "@yyt/http";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
@@ -66,12 +68,14 @@ export interface ProjectAccess extends TeamAccess {
   project: ProjectRow;
 }
 
-export type ResourceKind = "channel" | "app" | "bundle";
+export type ResourceKind = "channel" | "app" | "bundle" | "site";
 export type ResourceRowOf<K extends ResourceKind> = K extends "channel"
   ? ChannelRow
   : K extends "app"
     ? CatalogAppRow
-    : AssetBundleRow;
+    : K extends "bundle"
+      ? AssetBundleRow
+      : SiteRow;
 
 export interface ResourceAccess<K extends ResourceKind> extends ProjectAccess {
   row: ResourceRowOf<K>;
@@ -82,6 +86,7 @@ export interface TeamAccessDeps {
   team: TeamDb;
   catalog: CatalogDb;
   assets: AssetsDb;
+  sites: SitesDb;
 }
 
 export function createTeamAccess({
@@ -89,6 +94,7 @@ export function createTeamAccess({
   team,
   catalog,
   assets,
+  sites,
 }: TeamAccessDeps) {
   /** Standing of `id` in `teamRow`, or `undefined` when it has none and is not an admin. */
   async function standingOf(
@@ -154,8 +160,17 @@ export function createTeamAccess({
         return (await db.findChannelRow(id)) as ResourceRowOf<K> | undefined;
       case "app":
         return (await catalog.findApp(id)) as ResourceRowOf<K> | undefined;
-      default:
+      case "bundle":
         return (await assets.findBundle(id)) as ResourceRowOf<K> | undefined;
+      case "site":
+        return (await sites.findSite(id)) as ResourceRowOf<K> | undefined;
+      default: {
+        const unknown: never = kind;
+        throw new AppError(
+          "internal",
+          `unknown resource kind ${String(unknown)}`,
+        );
+      }
     }
   }
 

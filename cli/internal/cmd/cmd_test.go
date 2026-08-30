@@ -61,6 +61,7 @@ func ctxRoutes(routes map[string]func(recorded) (int, any), channels, apps, bund
 		"GET /projects/prj_1/catalog/apps":   list("apps", apps),
 		"GET /teams/team_1/catalog/apps":     list("apps", apps),
 		"GET /projects/prj_1/assets/bundles": list("bundles", bundles),
+		"GET /projects/prj_1/sites":          list("sites", nil),
 	}
 	for k, h := range defaults {
 		if _, own := routes[k]; !own { // a test's own route wins

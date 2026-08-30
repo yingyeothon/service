@@ -2,6 +2,10 @@ import type {
   ApiToken,
   AssetBundle,
   AssetBundleDetail,
+  Site,
+  SiteDeploy,
+  SiteDeployGrant,
+  SiteDetail,
   AssetFile,
   AssetUploadGrant,
   CatalogApp,
@@ -491,6 +495,36 @@ export function createApiClient({
       );
       await putToGrant(grant, file, "asset");
       return post<AssetFile>(`/assets/uploads/${enc(grant.uploadId)}/commit`);
+    },
+    // ---- static sites (addressed by id) -------------------------------------
+    projectSites: (prj: string) =>
+      get<{ sites: Site[] }>(`${projectPath(prj)}/sites`).then((r) => r.sites),
+    createSite: (prj: string, body: { name: string; description?: string }) =>
+      post<Site & { warning: string }>(`${projectPath(prj)}/sites`, body),
+    site: (id: string) => get<SiteDetail>(`/sites/${enc(id)}`),
+    updateSite: (
+      id: string,
+      body: { name?: string; description?: string | null },
+    ) => patch<Site>(`/sites/${enc(id)}`, body),
+    deleteSite: (id: string) => del(`/sites/${enc(id)}`),
+    siteDeploys: (id: string) =>
+      get<{ deploys: SiteDeploy[] }>(`/sites/${enc(id)}/deploys`).then(
+        (r) => r.deploys,
+      ),
+    siteDeploy: (id: string, deployId: string) =>
+      get<SiteDeploy>(`/sites/${enc(id)}/deploys/${enc(deployId)}`),
+    /**
+     * presign → browser PUT of the zip → commit (202). The console extracts
+     * asynchronously; poll `siteDeploy` until `live` or `failed`.
+     */
+    async deploySite(id: string, zip: File): Promise<SiteDeploy> {
+      const grant = await post<SiteDeployGrant>(`/sites/${enc(id)}/deploys`, {
+        size: zip.size,
+      });
+      await putToGrant(grant, zip, "site zip");
+      return post<SiteDeploy>(
+        `/sites/${enc(id)}/deploys/${enc(grant.deployId)}/commit`,
+      );
     },
     /**
      * Poster `<img>` source. The API's `posterUrl` is absolute to the API host;

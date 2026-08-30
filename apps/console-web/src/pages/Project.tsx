@@ -31,11 +31,13 @@ import type {
   VersionLink,
 } from "../types";
 import { ISSUE_TONE, VersionSelect } from "./Issue";
+import { SITE_SHARED_ORIGIN_WARNING } from "./Site";
 
 const TABS = [
   "channels",
   "catalog",
   "assets",
+  "sites",
   "versions",
   "issues",
   "settings",
@@ -66,8 +68,8 @@ export function ProjectPage() {
       <Text size="xs" c="dimmed" mb="sm">
         Created by {project.createdBy ?? "—"} · {fmtTime(project.createdAt)} ·{" "}
         {project.counts.channels} channel(s), {project.counts.apps} app(s),{" "}
-        {project.counts.bundles} bundle(s), {project.counts.versions}{" "}
-        version(s), {project.counts.issues} issue(s)
+        {project.counts.bundles} bundle(s), {project.counts.sites} site(s),{" "}
+        {project.counts.versions} version(s), {project.counts.issues} issue(s)
       </Text>
       <Tabs
         value={TABS.includes(tab) ? tab : "channels"}
@@ -79,6 +81,7 @@ export function ProjectPage() {
           <Tabs.Tab value="channels">Channels</Tabs.Tab>
           <Tabs.Tab value="catalog">Catalog</Tabs.Tab>
           <Tabs.Tab value="assets">Assets</Tabs.Tab>
+          <Tabs.Tab value="sites">Sites</Tabs.Tab>
           <Tabs.Tab value="versions">Versions</Tabs.Tab>
           <Tabs.Tab value="issues">Issues</Tabs.Tab>
           <Tabs.Tab value="settings">Settings</Tabs.Tab>
@@ -91,6 +94,9 @@ export function ProjectPage() {
         </Tabs.Panel>
         <Tabs.Panel value="assets" pt="sm">
           <AssetsTab project={project} canWrite={canWrite} />
+        </Tabs.Panel>
+        <Tabs.Panel value="sites" pt="sm">
+          <SitesTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
         <Tabs.Panel value="versions" pt="sm">
           <VersionsTab project={project} canWrite={canWrite} />
@@ -401,6 +407,127 @@ function AssetsTab({
       ) : (
         <Text size="sm" c="dimmed">
           No asset bundles yet.
+        </Text>
+      )}
+    </>
+  );
+}
+
+function SitesTab({
+  project,
+  canWrite,
+}: {
+  project: ProjectDetail;
+  canWrite: boolean;
+}) {
+  const list = useApiQuery(["project", project.id, "sites"], () =>
+    api.projectSites(project.id),
+  );
+  const act = useAction();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    const r = await act.run(() =>
+      api.createSite(project.id, {
+        name: name.trim(),
+        ...(description.trim() ? { description: description.trim() } : {}),
+      }),
+    );
+    if (!r) return;
+    setName("");
+    setDescription("");
+    await list.reload();
+  };
+  return (
+    <>
+      <Text size="sm" c="dimmed" mb="sm">
+        Static web builds (a browser game client, a landing page) served at the
+        shared static host under a random path. One live tree per site: a deploy
+        replaces the previous files.
+      </Text>
+      <Notice kind="warn">{SITE_SHARED_ORIGIN_WARNING}</Notice>
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      {canWrite && (
+        <Card withBorder mb="md" padding="sm">
+          <form onSubmit={(e) => void create(e)}>
+            <Group align="end" wrap="wrap">
+              <TextInput
+                label="New site"
+                placeholder="name (e.g. game-web)"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                maxLength={64}
+              />
+              <TextInput
+                label="Description"
+                placeholder="optional"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                maxLength={2000}
+              />
+              <Button type="submit" disabled={act.busy || !name.trim()}>
+                Create site
+              </Button>
+            </Group>
+          </form>
+        </Card>
+      )}
+      {list.error && <Notice kind="error">{list.error}</Notice>}
+      {list.loading && !list.data ? (
+        <Spinner />
+      ) : list.data?.length ? (
+        <Table.ScrollContainer minWidth={560}>
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Site</Table.Th>
+                <Table.Th>URL</Table.Th>
+                <Table.Th>Live</Table.Th>
+                <Table.Th>Updated</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {list.data.map((s) => (
+                <Table.Tr key={s.id}>
+                  <Table.Td>
+                    <Anchor
+                      component={Link}
+                      to={`/sites/${encodeURIComponent(s.id)}`}
+                      size="sm"
+                    >
+                      {s.name}
+                    </Anchor>
+                  </Table.Td>
+                  <Table.Td>
+                    <Anchor
+                      href={s.publicUrl}
+                      size="sm"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {s.publicUrl}
+                    </Anchor>
+                  </Table.Td>
+                  <Table.Td>
+                    {s.busy ? (
+                      <Badge tone="warn">deploying</Badge>
+                    ) : s.currentDeployId ? (
+                      <Badge tone="ok">live</Badge>
+                    ) : (
+                      <Badge tone="neutral">empty</Badge>
+                    )}
+                  </Table.Td>
+                  <Table.Td>{fmtTime(s.updatedAt)}</Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+      ) : (
+        <Text size="sm" c="dimmed">
+          No sites yet.
         </Text>
       )}
     </>

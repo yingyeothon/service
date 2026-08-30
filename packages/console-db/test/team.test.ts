@@ -1131,8 +1131,8 @@ describe("memory team db", () => {
     const db = createMemoryTeamDb({
       countResources: (id) =>
         id === "prj_1"
-          ? { channels: 1, apps: 0, bundles: 0 }
-          : { channels: 0, apps: 0, bundles: 0 },
+          ? { channels: 1, apps: 0, bundles: 0, sites: 0 }
+          : { channels: 0, apps: 0, bundles: 0, sites: 0 },
     });
     await seedTeam(db);
     await seedProject(db, "team_1");
@@ -1144,6 +1144,7 @@ describe("memory team db", () => {
       channels: 1,
       apps: 0,
       bundles: 0,
+      sites: 0,
     });
   });
 

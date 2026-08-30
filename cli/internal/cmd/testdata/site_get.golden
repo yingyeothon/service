@@ -1,0 +1,15 @@
+id:          st_1
+name:        game-web
+project:     dooroo/game
+url:         https://dev-g.yyt.life/k3x9q2mzp/
+basePath:    /k3x9q2mzp/
+description: browser client
+createdBy:   octo
+created:     2025-08-24T01:46:40Z
+updated:     2025-08-24T01:48:20Z
+live:        sd_01j5
+busy:        false
+
+DEPLOY   STATUS  FILES  BYTES  ERROR              BY      CREATED
+sd_01j6  failed  0      5678   zip_no_index_html  m_octo  2025-08-24T01:50:00Z
+sd_01j5  live    12     5678   -                  m_octo  2025-08-24T01:50:00Z
