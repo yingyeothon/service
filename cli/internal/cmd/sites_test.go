@@ -70,12 +70,13 @@ func TestSiteListAndGet(t *testing.T) {
 func TestSiteDeployZipsAndPolls(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
-		"index.html":        "<p>hi</p>",
-		"assets/app-1.js":   "console.log(1)",
-		".DS_Store":         "junk",
-		"config.json":       `{"apiBase":"x"}`,
-		"nested/.git/HEAD":  "ref",
-		"nested/deep/x.txt": "x",
+		"index.html":          "<p>hi</p>",
+		"assets/app-1.js":     "console.log(1)",
+		".DS_Store":           "junk",
+		"config.json":         `{"apiBase":"x"}`,
+		"nested/.git/HEAD":    "ref",
+		"nested/deep/x.txt":   "x",
+		"assets/app-1.js.map": "{}",
 	} {
 		p := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -121,7 +122,7 @@ func TestSiteDeployZipsAndPolls(t *testing.T) {
 		inner.ServeHTTP(w, r)
 	})
 
-	out, _, err := run(t, f, "site", "deploy", "st_1", dir)
+	out, _, err := run(t, f, "site", "deploy", "st_1", dir, "--exclude", "*.map")
 	if err != nil {
 		t.Fatal(err)
 	}

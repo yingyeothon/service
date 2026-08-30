@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -321,6 +322,7 @@ func newSiteDeploys(a *App, siteID siteResolver) *cobra.Command {
 
 func newSiteDeploy(a *App, siteID siteResolver) *cobra.Command {
 	var wait time.Duration
+	var exclude []string
 	var noWait bool
 	c := &cobra.Command{
 		Use:   "deploy <site> <dir|file.zip>",
@@ -337,7 +339,7 @@ func newSiteDeploy(a *App, siteID siteResolver) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload, err := siteZipOf(args[1])
+			payload, err := siteZipOf(args[1], exclude)
 			if err != nil {
 				return err
 			}
@@ -382,6 +384,7 @@ func newSiteDeploy(a *App, siteID siteResolver) *cobra.Command {
 	f := c.Flags()
 	f.DurationVar(&wait, "wait", 6*time.Minute, "how long to poll for the deploy to finish")
 	f.BoolVar(&noWait, "no-wait", false, "return right after commit; poll with `yyt site deploys`")
+	f.StringArrayVar(&exclude, "exclude", nil, "glob (path.Match on the slash path) to leave out of a directory deploy, e.g. '*.map' or 'assets/*.map'; repeatable")
 	return c
 }
 
@@ -423,7 +426,8 @@ func waitSiteDeploy(ctx context.Context, cl *api.Client, path string, d siteDepl
 // siteZipOf returns the bytes to upload: a `.zip` file as-is, a directory
 // zipped in memory with slash paths relative to it. Dot-files, dot-directories
 // and symlinks are skipped, like `asset push`.
-func siteZipOf(path string) ([]byte, error) {
+// `exclude` globs are matched against the whole slash path and its base name.
+func siteZipOf(path string, exclude []string) ([]byte, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -438,6 +442,17 @@ func siteZipOf(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	rels = slices.DeleteFunc(rels, func(rel string) bool {
+		for _, g := range exclude {
+			if ok, _ := filepath.Match(g, rel); ok {
+				return true
+			}
+			if ok, _ := filepath.Match(g, rel[strings.LastIndex(rel, "/")+1:]); ok {
+				return true
+			}
+		}
+		return false
+	})
 	if len(rels) == 0 {
 		return nil, fmt.Errorf("no files under %s", path)
 	}
