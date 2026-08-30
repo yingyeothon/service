@@ -1,4 +1,10 @@
-/* What the page needs from the dev server (`web/vite.config.mjs`); a static build has none of it. */
+/* What the page needs from the dev server (`web/vite.config.mjs`) or the static build's `config.json`. */
+import {
+  LOGIN_PROVIDERS,
+  type LoginConfig,
+  type LoginProvider,
+} from "./login.js";
+
 export interface WebConfig {
   apiBase: string;
   gatewayWsUrl: string;
@@ -6,6 +12,8 @@ export interface WebConfig {
   user: string;
   /** The dev server can mint debug tokens (auth base + key file configured). */
   canMint: boolean;
+  /** OAuth sign-in through the auth channel; absent when the channel has no provider configured. */
+  login?: LoginConfig;
 }
 
 const isNonEmpty = (v: unknown): v is string =>
@@ -23,6 +31,7 @@ export function parseWebConfig(raw: unknown): WebConfig {
     if (!isNonEmpty(o[k])) throw new Error(`config lacks ${k}`);
   for (const k of ["authChannelId", "lobbyChannelId", "qChannelId"])
     if (!isNonEmpty(st[k])) throw new Error(`config.state lacks ${k}`);
+  const login = parseLogin(o.login);
   return {
     apiBase: o.apiBase as string,
     gatewayWsUrl: o.gatewayWsUrl as string,
@@ -33,13 +42,42 @@ export function parseWebConfig(raw: unknown): WebConfig {
     },
     user: isNonEmpty(o.user) ? o.user : "player",
     canMint: o.canMint === true,
+    ...(login ? { login } : {}),
   };
+}
+
+/** Same rule as the auth stack's redirect check: https, or http on localhost. */
+function isHttpsOrLocal(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+    return u.protocol === "https:" || (u.protocol === "http:" && local);
+  } catch {
+    return false;
+  }
+}
+
+/** `login` is optional; when present it needs an auth base and at least one known provider. */
+function parseLogin(raw: unknown): LoginConfig | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const o = raw as Record<string, unknown>;
+  if (!isNonEmpty(o.authBase)) throw new Error("config.login lacks authBase");
+  if (!isHttpsOrLocal(o.authBase))
+    throw new Error("config.login.authBase must be https");
+  const list = Array.isArray(o.providers) ? o.providers : [];
+  const providers = list.filter((p): p is LoginProvider =>
+    (LOGIN_PROVIDERS as readonly unknown[]).includes(p),
+  );
+  if (providers.length === 0)
+    throw new Error("config.login.providers has no known provider");
+  return { authBase: o.authBase, providers };
 }
 
 /**
  * The dev server's `/__morpg/config` first; a static build (`pnpm web:build`)
  * ships without it and reads a `config.json` next to `index.html` instead
- * (same shape, no `canMint`), with the JWT pasted into the page.
+ * (same shape, no `canMint`); the player signs in through `login` or, failing
+ * that, pastes a JWT into the page.
  */
 export async function loadWebConfig(): Promise<WebConfig> {
   for (const url of ["/__morpg/config", "./config.json"]) {

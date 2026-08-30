@@ -76,6 +76,11 @@ const morpgDev = {
           state: c.state,
           user: c.user,
           canMint: Boolean(c.authBase && c.debugKeyFile),
+          // OAuth through the auth channel works from the dev server too when
+          // its redirectAllowlist carries http://127.0.0.1:<port>/.
+          ...(c.authBase
+            ? { login: { authBase: c.authBase, providers: ["github"] } }
+            : {}),
         });
       } catch (e) {
         // The page gets a code; the path of the file that failed stays on this terminal.
