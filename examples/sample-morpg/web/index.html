@@ -2,7 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#14151a" />
     <title>sample-morpg</title>
     <link rel="icon" href="data:," />
     <style>
@@ -18,6 +24,15 @@
         box-sizing: border-box;
       }
       body {
+        touch-action: manipulation; /* no double-tap zoom on the map; pinch still works */
+        -webkit-touch-callout: none;
+      }
+      html,
+      body {
+        height: 100%;
+        overscroll-behavior: none;
+      }
+      body {
         margin: 0;
         background: var(--bg);
         color: var(--fg);
@@ -26,13 +41,16 @@
           Menlo,
           Consolas,
           monospace;
-        height: 100vh;
+        height: 100dvh;
         display: grid;
         grid-template-rows: auto 1fr auto auto;
         grid-template-columns: 1fr 34ch;
         grid-template-areas: "head head" "map side" "log side" "input side";
         gap: 6px;
         padding: 6px;
+        padding-left: max(6px, env(safe-area-inset-left));
+        padding-right: max(6px, env(safe-area-inset-right));
+        padding-bottom: max(6px, env(safe-area-inset-bottom));
       }
       header {
         grid-area: head;
@@ -48,19 +66,32 @@
         border: 1px solid #333;
         padding: 2px 6px;
       }
-      header button {
+      header button,
+      #pad button {
         font: inherit;
         background: var(--accent);
         color: #000;
         border: 0;
         padding: 3px 10px;
         cursor: pointer;
+        touch-action: manipulation;
+      }
+      header button.alt,
+      #pad button {
+        background: #2b2e3a;
+        color: var(--fg);
       }
       #title {
         font-weight: bold;
       }
       #status {
         color: var(--dim);
+      }
+      #tokenLabel[hidden],
+      #login[hidden],
+      #fullscreen[hidden],
+      #pad[hidden] {
+        display: none;
       }
       #map {
         grid-area: map;
@@ -74,6 +105,9 @@
       canvas {
         image-rendering: pixelated;
         image-rendering: crisp-edges;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
       }
       #side {
         grid-area: side;
@@ -99,6 +133,33 @@
         white-space: pre;
         overflow: hidden;
       }
+      /* Touch controls (`main.ts`: coarse pointers, while a session runs): their own row under the map. */
+      #pad {
+        grid-area: pad;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        padding: 4px 8px;
+      }
+      #pad button {
+        min-width: 44px;
+        min-height: 44px;
+        font-size: 16px;
+        opacity: 0.85;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #pad .dpad {
+        display: grid;
+        grid-template-columns: repeat(3, 44px);
+        grid-template-rows: repeat(3, 44px);
+        gap: 4px;
+      }
+      #pad .keys {
+        display: grid;
+        grid-template-columns: repeat(2, auto);
+        gap: 4px;
+      }
       .k-sys,
       .k-dim {
         color: var(--dim);
@@ -122,19 +183,73 @@
       .k-title {
         font-weight: bold;
       }
+      /* Phones (portrait or landscape): one column, the map first at full width, the pad and panels under it. */
+      @media (max-width: 720px), (max-height: 500px) {
+        body {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto minmax(160px, 1fr) auto auto auto auto;
+          grid-template-areas: "head" "map" "pad" "input" "log" "side";
+          gap: 4px;
+          padding: 4px;
+          font-size: 12px;
+        }
+        #side {
+          max-height: 30dvh;
+        }
+        #log {
+          height: auto;
+          max-height: 7em;
+        }
+        #map {
+          min-height: 160px;
+        }
+      }
+      /* Wide screens with a coarse pointer (tablets): the pad under the map inside the left column. */
+      @media (min-width: 721px) and (min-height: 501px) {
+        body {
+          grid-template-rows: auto 1fr auto auto auto;
+          grid-template-areas:
+            "head head"
+            "map side"
+            "pad side"
+            "log side"
+            "input side";
+        }
+      }
     </style>
   </head>
   <body>
     <header>
       <span id="title">sample-morpg</span>
-      <label>user <input id="user" size="12" autocomplete="off" /></label>
+      <label>name <input id="user" size="12" autocomplete="off" /></label>
+      <span id="login" hidden></span>
       <label id="tokenLabel" hidden
         >token <input id="token" size="24" type="password" autocomplete="off"
       /></label>
       <button id="connect">connect</button>
+      <button id="fullscreen" class="alt" hidden title="toggle fullscreen">
+        ⛶
+      </button>
       <span id="status">loading config…</span>
     </header>
     <div id="map"><canvas id="canvas" width="320" height="160"></canvas></div>
+    <div id="pad" hidden>
+      <div class="dpad">
+        <span></span><button data-key="w" aria-label="up">▲</button
+        ><span></span>
+        <button data-key="a" aria-label="left">◀</button>
+        <button data-key="s" aria-label="down">▼</button>
+        <button data-key="d" aria-label="right">▶</button>
+      </div>
+      <div class="keys">
+        <button data-key="f">f</button>
+        <button data-key="q">q</button>
+        <button data-key="return">⏎</button>
+        <button data-key="escape">esc</button>
+        <button data-key="/">/</button>
+        <button data-key="?">?</button>
+      </div>
+    </div>
     <div id="side"></div>
     <div id="log"></div>
     <div id="input"></div>
