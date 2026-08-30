@@ -338,7 +338,6 @@ enum channels_kind {
 enum catalog_artifacts_platform {
   android
   ios
-  web
   bin
   server
   win32
@@ -349,7 +348,6 @@ enum catalog_artifacts_platform {
 enum catalog_pending_uploads_platform {
   android
   ios
-  web
   bin
   server
   win32

@@ -501,7 +501,7 @@ func newCatalog(a *App) *cobra.Command {
 				return printArtifact(*v)
 			},
 		}
-		up.Flags().StringVar(&platform, "platform", "", "android|ios|web|bin|server|win32|osx|linux")
+		up.Flags().StringVar(&platform, "platform", "", "android|ios|bin|server|win32|osx|linux")
 		up.Flags().StringVar(&version, "version", "", "artifact version tag")
 		up.Flags().StringArrayVar(&tags, "tag", nil, "extra tag key=value (repeatable)")
 		_ = up.MarkFlagRequired("platform")

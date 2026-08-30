@@ -5,7 +5,6 @@ import { Prisma } from "./generated/prisma/client.js";
 export const CATALOG_PLATFORMS = [
   "android",
   "ios",
-  "web",
   "bin",
   "server",
   "win32",
