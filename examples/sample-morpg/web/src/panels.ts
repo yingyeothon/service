@@ -1,4 +1,4 @@
-/* The text panels: the same side/overlay lines as the terminal, the log, the input line. */
+/* The text panels: the same side/overlay lines as the terminal, the log, the input hint. */
 import type { Templates } from "../../src/templates.js";
 import { inputHint, overlayLines, sideLines } from "../../client/render.js";
 import type { AppState } from "../../client/state.js";
@@ -10,7 +10,8 @@ export interface Panels {
 export function createPanels(el: {
   side: HTMLElement;
   log: HTMLElement;
-  input: HTMLElement;
+  /** The idle command-line hint; the open line is a text field the page owns (`main.ts`). */
+  hint: HTMLElement;
 }): Panels {
   let lastLogSeq = 0;
   const lineEl = (text: string, kind?: string): HTMLDivElement => {
@@ -35,11 +36,7 @@ export function createPanels(el: {
         lastLogSeq = fresh.at(-1)!.seq;
         if (atBottom) el.log.scrollTop = el.log.scrollHeight;
       }
-      el.input.replaceChildren(
-        state.input !== undefined
-          ? lineEl(`> ${state.input}_`)
-          : lineEl(inputHint(state, "/quit"), "dim"),
-      );
+      el.hint.textContent = inputHint(state, "/quit");
     },
   };
 }

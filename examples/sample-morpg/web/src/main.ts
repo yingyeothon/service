@@ -1,4 +1,4 @@
-/* Entry: config → token (OAuth fragment, dev mint or pasted) → the shared session → canvas + panels; keys and touch buttons go through the shared handler. */
+/* Entry: the gate (config → token: OAuth fragment, dev mint or pasted) → the shared session → canvas + panels; keys, the command field and the touch pad all go through the shared handler. */
 import {
   createGatewayGameClient,
   createGatewayLobbyClient,
@@ -11,6 +11,7 @@ import { newState, pushLog } from "../../client/state.js";
 import type { Trace } from "../../client/trace.js";
 import { createScene } from "./canvas.js";
 import { loadWebConfig, mintToken, type WebConfig } from "./config.js";
+import { createJoystick } from "./stick.js";
 import { keyFromEvent, swallows } from "./keys.js";
 import {
   isExpired,
@@ -34,12 +35,20 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 const status = $("status");
+const gate = $("gate");
+const gateStatus = $("gateStatus");
+const gateForm = $("gateForm");
 const userInput = $<HTMLInputElement>("user");
 const tokenInput = $<HTMLInputElement>("token");
 const connectButton = $<HTMLButtonElement>("connect");
 const loginBox = $("login");
-const say = (text: string): void => {
+const cmdInput = $<HTMLInputElement>("cmd");
+const hintEl = $("hint");
+/** Progress goes to the gate while it is up and to the header line always. */
+const say = (text: string, bad = false): void => {
   status.textContent = text;
+  gateStatus.textContent = text;
+  gateStatus.classList.toggle("bad", bad);
 };
 
 /**
@@ -106,16 +115,25 @@ try {
     });
     loginBox.append(b);
   }
-  loginBox.hidden = !cfg.login;
-  // The token field is the fallback for a page that can neither sign in nor mint.
+  // With sign-in the gate shows only the name and the provider buttons; the
+  // token field is the fallback for a page that can neither sign in nor mint.
   $("tokenLabel").hidden = cfg.canMint || Boolean(cfg.login);
+  // The dev server keeps its connect button (a minted token) next to the sign-in buttons.
+  connectButton.hidden = Boolean(cfg.login) && !cfg.canMint;
   if (issued) say("signed in — connecting…");
-  else if (signInProblem) say(signInProblem);
-  else if (cfg.login) say("sign in to play");
+  else if (signInProblem) say(signInProblem, true);
+  else if (cfg.login)
+    say(
+      cfg.canMint
+        ? "sign in to play — or ready (dev token mint)"
+        : "sign in to play",
+    );
   else say(cfg.canMint ? "ready (dev token mint)" : "ready — paste a JWT");
+  gateForm.hidden = Boolean(issued);
 } catch (e) {
   $("tokenLabel").hidden = false;
-  say(`no dev config: ${e instanceof Error ? e.message : String(e)}`);
+  gateForm.hidden = false;
+  say(`no dev config: ${e instanceof Error ? e.message : String(e)}`, true);
 }
 
 connectButton.addEventListener("click", () => void connect());
@@ -156,10 +174,11 @@ async function connect(): Promise<void> {
         cfg.login ? "sign in first" : "paste a token or configure the dev mint",
       );
   } catch (e) {
-    say(e instanceof Error ? e.message : String(e));
+    say(e instanceof Error ? e.message : String(e), true);
     connecting = false;
     connectButton.disabled = false;
     userInput.disabled = false;
+    gateForm.hidden = false;
     return;
   }
   tokenInput.value = "";
@@ -169,17 +188,22 @@ async function connect(): Promise<void> {
   const ended = (): void => {
     listeners.abort();
     pad.show(false);
+    dead = true;
     session = undefined;
     connecting = false;
     userInput.disabled = false;
     connectButton.disabled = false;
+    showLine(false);
+    // Back to the gate: the signed-in token was used once, so it is a fresh sign-in.
+    gateForm.hidden = false;
+    gate.hidden = false;
   };
   const state = newState(userId, name);
   const scene = createScene($<HTMLCanvasElement>("canvas"));
   const panels = createPanels({
     side: $("side"),
     log: $("log"),
-    input: $("input"),
+    hint: hintEl,
   });
   const sheetLoader = createSheetLoader();
   let sheets: Sheets | undefined;
@@ -205,13 +229,13 @@ async function connect(): Promise<void> {
     trace,
     onChange: () => (dirty = true),
     onQuit: (reason) => {
-      say(reason ?? "quit");
+      say(reason ?? "quit", reason !== undefined);
       s.close();
       ended();
     },
   });
-  session = s;
-  connecting = false;
+  /** Set once `start()` resolved: keys before that would reach a session without sockets. */
+  let dead = false;
 
   /**
    * Sheets follow the drawn bundle; a bundle without `view` draws plainly. A
@@ -266,6 +290,7 @@ async function connect(): Promise<void> {
     if (dirty || state.lobby.pending || now - lastPanel > 1000) {
       if (now - lastPanel >= PANEL_INTERVAL_MS) {
         panels.paint(state, s.templates, now);
+        syncLine();
         lastPanel = now;
         dirty = false;
       }
@@ -274,7 +299,7 @@ async function connect(): Promise<void> {
   };
 
   const { signal } = listeners;
-  /** One key into the shared handler; the keyboard and the touch pad both end here. */
+  /** One key into the shared handler; the keyboard, the command field and the touch pad all end here. */
   const press = (key: Key): void => {
     if (s.dismissResult()) {
       dirty = true;
@@ -287,7 +312,28 @@ async function connect(): Promise<void> {
     });
     dirty = true;
     if (action) s.dispatch(action);
+    syncLine();
   };
+  /**
+   * The command field mirrors `state.input`: shown and focused while a line
+   * is open (a focus inside the tap that opened it raises the phone
+   * keyboard), hidden when the handler closes it. The field owns editing and
+   * IME composition; Enter and Esc go through the handler like any key.
+   */
+  const syncLine = (): void => {
+    const open = state.input !== undefined;
+    if (open && cmdInput.value !== state.input) cmdInput.value = state.input!;
+    showLine(open);
+  };
+  cmdInput.addEventListener(
+    "input",
+    () => {
+      if (session !== s || state.input === undefined) return;
+      state.input = clean(cmdInput.value);
+      dirty = true;
+    },
+    { signal },
+  );
   window.addEventListener(
     "keydown",
     (e) => {
@@ -295,43 +341,70 @@ async function connect(): Promise<void> {
         return;
       const key = keyFromEvent(e);
       if (!key) return;
-      if (swallows(e) || state.input !== undefined) e.preventDefault();
+      if (e.target === cmdInput) {
+        // Editing keys belong to the field; only the line's ends reach the handler.
+        if (key.name !== "return" && key.name !== "escape") return;
+        if (state.input !== undefined) state.input = clean(cmdInput.value);
+      } else if (
+        swallows(e) ||
+        state.input !== undefined ||
+        // Enter on a button the mouse left focused would also click it.
+        (e.target as HTMLElement | null)?.tagName === "BUTTON"
+      )
+        e.preventDefault();
       press(key);
+    },
+    { signal },
+  );
+  // A tap on the idle hint opens the line (Enter), which focuses the field within the gesture.
+  $("input").addEventListener(
+    "click",
+    () => {
+      if (session !== s) return;
+      if (state.input === undefined) press({ name: "return", sequence: "\r" });
+      else cmdInput.focus();
     },
     { signal },
   );
   pad.bind((key) => {
     if (session !== s) return;
+    // While a line is open the pad only closes it (Esc): a joystick step or an
+    // action button must not spell letters into the command.
+    if (state.input !== undefined && key.name !== "escape") return;
     press(key);
-    // A touch device has no key row for the command line: take it as one prompt.
-    if (state.input !== undefined) {
-      const line = window.prompt("command", state.input);
-      state.input = line ?? undefined;
-      dirty = true;
-      if (line !== null) press({ name: "return", sequence: "\r" });
-    }
   }, signal);
-  // IME text (Korean, Japanese, …) arrives composed, not as key presses.
-  window.addEventListener(
-    "compositionend",
-    (e) => {
-      if (session !== s || state.input === undefined || !e.data) return;
-      state.input += e.data.replace(/[\p{Cc}]/gu, "");
-      dirty = true;
-    },
-    { signal },
-  );
   window.addEventListener("resize", () => (dirty = true), { signal });
 
   try {
     say("connecting…");
+    gateForm.hidden = true;
     await s.start();
+    if (dead) return; // quit or dropped while starting: the gate is already back
+    session = s;
+    connecting = false;
     say(`connected as ${name}`);
+    gate.hidden = true;
+    pad.show(true);
     requestAnimationFrame(loop);
   } catch (e) {
-    say(`start failed: ${e instanceof Error ? e.message : String(e)}`);
+    say(`start failed: ${e instanceof Error ? e.message : String(e)}`, true);
     s.close();
     ended();
+  }
+}
+
+/** The field's text as the handler would have built it key by key: no control characters. */
+const clean = (text: string): string => text.replace(/[\p{Cc}]/gu, "");
+
+/** The command field in place of the hint, focused; or the hint back and the keyboard down. */
+function showLine(open: boolean): void {
+  if (cmdInput.hidden === !open) return;
+  cmdInput.hidden = !open;
+  hintEl.hidden = open;
+  if (open) cmdInput.focus();
+  else {
+    cmdInput.value = "";
+    cmdInput.blur();
   }
 }
 
@@ -348,8 +421,9 @@ function setupFullscreen(): void {
 }
 
 /**
- * The on-screen keys for coarse pointers: wasd, f/q, Enter, Esc, `/`, `?`
- * as the same `Key` values the keyboard produces. `bind` is per session.
+ * The touch pad for coarse pointers: the joystick for wasd and buttons for
+ * f/q/Tab/i/t/p, `/`, `?`, Esc as the same `Key` values the keyboard
+ * produces. `bind` is per session.
  */
 function setupPad(): {
   bind(on: (key: Key) => void, signal: AbortSignal): void;
@@ -358,8 +432,9 @@ function setupPad(): {
 } {
   const pad = $("pad");
   const coarse = window.matchMedia("(pointer: coarse)").matches;
+  const stick = createJoystick($("stick"), $("knob"), { dead: 14, radius: 35 });
   const NAMED: Record<string, Key> = {
-    return: { name: "return", sequence: "\r" },
+    tab: { name: "tab", sequence: "\t" },
     escape: { name: "escape", sequence: "\x1b" },
   };
   return {
@@ -367,6 +442,7 @@ function setupPad(): {
       pad.hidden = !(on && coarse);
     },
     bind(on, signal) {
+      stick.bind(on, signal);
       pad.addEventListener(
         "click",
         (e) => {
