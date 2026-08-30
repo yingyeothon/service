@@ -13,7 +13,7 @@ Read this before your first commit. `CONTRIBUTING.md` requires it; the git hooks
 | Work notes that may cite either  | `todo/`                                                                  | machine-local, gitignored                                 |
 | Generated artifacts with secrets | `local/deploy/*` (SSM logs, `debug-key.dev`), `.serverless/`, `.env*`    | gitignored                                                |
 
-Allowed in git: public service domains (`*.yyt.life`), the bucket name `yyt-service-<stage>`, SSM parameter **names**, placeholders (`<stateful-host>`, `<database>`), and the fixed test fixture `0123456789abcdef…`.
+Allowed in git: public service domains (`*.yyt.life`), the bucket names this repo's stacks create (`yyt-service-<stage>`, `yyt-console-*-<stage>`), SSM parameter **names**, placeholders (`<stateful-host>`, `<database>`), and the fixed test fixture `0123456789abcdef…`.
 
 Identifiers are treated as secrets because the stateful host is reachable from the internet; a leaked name is a target.
 

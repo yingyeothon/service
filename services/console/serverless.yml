@@ -23,12 +23,11 @@ custom:
     dev: "-dev"
     prod: ""
   domain: console${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
-  # Binary catalog (docs/decisions.md): pre-existing public distribution buckets
-  # fronted by the manually managed CDN. Both are outside this stack (surveyed
-  # in todo/12); the stack only grants IAM on them.
-  artifactBucket:
-    dev: yyt-binary-dist-dev
-    prod: yyt-binary-dist
+  # Binary catalog (docs/decisions.md): pre-existing public distribution bucket
+  # fronted by the manually managed CDN, outside this stack (surveyed in
+  # todo/12); the stack only grants IAM on it. The name is an infra identifier
+  # (docs/secrets.md), so it comes from SSM like every other one.
+  artifactBucket: ${ssm:${self:custom.stageSsm}/artifact-bucket}
   artifactCdn:
     dev: https://dev-d.yyt.life
     prod: https://d.yyt.life
@@ -36,9 +35,7 @@ custom:
   # website buckets behind hand-made CloudFront distributions, outside this
   # stack like the artifact buckets; the stack only grants IAM on them. Zips
   # are staged in the private poster bucket, never here.
-  siteBucket:
-    dev: yyt-gallery-dev
-    prod: yyt-gallery
+  siteBucket: ${ssm:${self:custom.stageSsm}/site-bucket}
   siteCdn:
     dev: https://dev-g.yyt.life
     prod: https://g.yyt.life
@@ -134,12 +131,12 @@ provider:
     # alarm involved). Empty means the probe logs and notifies nobody.
     ALARM_TOPIC_ARN: ${self:custom.alarmTopic}
     POSTER_BUCKET: !Ref PosterBucket
-    ARTIFACT_BUCKET: ${self:custom.artifactBucket.${self:custom.stage}}
+    ARTIFACT_BUCKET: ${self:custom.artifactBucket}
     ARTIFACT_CDN_URL: ${self:custom.artifactCdn.${self:custom.stage}}
     # CloudFront distribution id of ARTIFACT_CDN_URL, for the daily usage
     # digest's traffic metric; plain SSM String set by hand, empty = no CDN metric.
     ARTIFACT_CDN_DISTRIBUTION_ID: ${ssm:${self:custom.stageSsm}/cdn-distribution-id, ""}
-    SITE_BUCKET: ${self:custom.siteBucket.${self:custom.stage}}
+    SITE_BUCKET: ${self:custom.siteBucket}
     SITE_CDN_URL: ${self:custom.siteCdn.${self:custom.stage}}
     # CloudFront distribution id of SITE_CDN_URL, invalidated after every site
     # deploy; plain SSM String set by hand, empty = deploys go live without
@@ -182,10 +179,10 @@ provider:
             - s3:PutObject
             - s3:GetObject
             - s3:DeleteObject
-          Resource: arn:aws:s3:::${self:custom.siteBucket.${self:custom.stage}}/*
+          Resource: arn:aws:s3:::${self:custom.siteBucket}/*
         - Effect: Allow
           Action: s3:ListBucket
-          Resource: arn:aws:s3:::${self:custom.siteBucket.${self:custom.stage}}
+          Resource: arn:aws:s3:::${self:custom.siteBucket}
         # `/{slug}/*` after a deploy or a delete: only the stage's own site
         # distribution, and no statement at all while none is configured.
         - !If
@@ -207,12 +204,12 @@ provider:
             - s3:PutObject
             - s3:GetObject
             - s3:DeleteObject
-          Resource: arn:aws:s3:::${self:custom.artifactBucket.${self:custom.stage}}/*
+          Resource: arn:aws:s3:::${self:custom.artifactBucket}/*
         # ListBucket: HeadObject 404s (vs 403) + the uploads/ and
         # asset-uploads/ garbage sweeps.
         - Effect: Allow
           Action: s3:ListBucket
-          Resource: arn:aws:s3:::${self:custom.artifactBucket.${self:custom.stage}}
+          Resource: arn:aws:s3:::${self:custom.artifactBucket}
         - Effect: Allow
           Action:
             - kms:GenerateDataKey

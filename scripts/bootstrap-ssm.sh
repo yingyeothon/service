@@ -144,6 +144,10 @@ put gateway-token "${GATEWAY_TOKEN}"
 printf '%s\n' "${GATEWAY_TOKEN}" > "local/deploy/gateway-token.${STAGE}"
 chmod 600 "local/deploy/gateway-token.${STAGE}"
 log "gateway-token written to local/deploy/gateway-token.${STAGE} (hand it to the gateway; scripts/smoke/console.mjs reads it)"
+# artifact-bucket / site-bucket (the hand-made distribution and static-site
+# buckets, plain Strings) are set by hand once per stage — bucket names are
+# infra identifiers (docs/secrets.md), so serverless.yml reads them from SSM:
+#   aws ssm put-parameter --name /yyt-service/<stage>/site-bucket --type String --value <bucket>
 # GATEWAY_WS_URL is a public domain, not a secret, and is set by hand once the
 # gateway actually resolves:
 #   aws ssm put-parameter --name /yyt-service/<stage>/gateway-ws-url --type String --value wss://gw…
