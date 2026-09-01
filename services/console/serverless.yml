@@ -81,16 +81,12 @@ provider:
   httpApi:
     disableDefaultEndpoint: false
     metrics: true
-    # `api` is one function behind every console route at
-    # `reservedConcurrency: 10`, so `connectionLimit: 1` already caps its share
-    # of the host's MySQL connections — but nothing stopped an anonymous flood
-    # of the show routes from throttling sign-in, the SPA and the CLI with it.
-    # The show gallery is the first anonymous, uncached, multi-query route
-    # family here (`todo/24-show.md`), which is what makes this worth having.
-    # Well above real organiser traffic; the state stack sets the precedent.
-    defaultRouteSettings:
-      throttlingRateLimit: 50
-      throttlingBurstLimit: 100
+    # The stage throttle is NOT set here: `provider.httpApi` has no
+    # `defaultRouteSettings` in Serverless 4, which rejects it as an
+    # unrecognized property, prints a warning and deploys without it. Measured
+    # 2026-09-01: both stages of console AND of state (which carried the same
+    # unsupported block) had no ThrottlingRateLimit at all. It lives in
+    # `resources.extensions.HttpApiStage` below, which does reach CloudFormation.
   environment:
     STAGE: ${self:custom.stage}
     NODE_OPTIONS: --enable-source-maps
@@ -301,6 +297,24 @@ package:
   individually: true
 
 resources:
+  # Serverless owns AWS::ApiGatewayV2::Stage for the `$default` stage; this
+  # patches its properties. `DefaultRouteSettings` is replaced wholesale, so
+  # `DetailedMetricsEnabled` (from `httpApi.metrics: true`) is restated here.
+  #
+  # `api` is one function behind every console route at
+  # `reservedConcurrency: 10`, so `connectionLimit: 1` already caps its share
+  # of the host's MySQL connections — but nothing stopped an anonymous flood
+  # of the show routes from throttling sign-in, the SPA and the CLI with it.
+  # The show gallery is the first anonymous, uncached, multi-query route
+  # family here (`todo/24-show.md`), which is what makes this worth having.
+  # Well above real organiser traffic.
+  extensions:
+    HttpApiStage:
+      Properties:
+        DefaultRouteSettings:
+          DetailedMetricsEnabled: true
+          ThrottlingRateLimit: 50
+          ThrottlingBurstLimit: 100
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
     HasSiteDistribution:
