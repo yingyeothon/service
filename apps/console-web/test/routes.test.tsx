@@ -38,4 +38,19 @@ describe("routes", () => {
     expect(paths).not.toContain("/channels/new");
     expect(paths).not.toContain("/catalog/groups/:id");
   });
+
+  it("keeps the show routes public and the audit log admin-only", () => {
+    const byPath = new Map(ROUTES.map((r) => [r.path, r.guard]));
+    // A `public` show is readable by anonymous visitors, so the route cannot
+    // be guarded; the show's own ACL decides, per request.
+    for (const p of ["/shows", "/shows/:id", "/shows/:id/entries/:eid"]) {
+      expect(byPath.has(p), p).toBe(true);
+      expect(byPath.get(p), p).toBeNull();
+    }
+    expect(byPath.get("/audit")).toBe("/audit");
+    expect(navMinRole("/audit")).toBe("admin");
+    // Visible, not hidden: the hidden list is pinned above and must stay four.
+    expect(NAV_ITEMS.find((i) => i.path === "/audit")?.hidden).toBeUndefined();
+    expect(NAV_ITEMS.find((i) => i.path === "/shows")?.minRole).toBeNull();
+  });
 });

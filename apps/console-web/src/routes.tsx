@@ -18,6 +18,10 @@ import { TeamPage } from "./pages/Team";
 import { TeamsPage } from "./pages/Teams";
 import { TokensPage } from "./pages/Tokens";
 import { AppLoginPage } from "./pages/AppLogin";
+import { AuditPage } from "./pages/Audit";
+import { ShowDetailPage } from "./pages/ShowDetail";
+import { ShowEntryPage } from "./pages/ShowEntry";
+import { ShowsPage } from "./pages/Shows";
 
 export interface AppRoute {
   path: string;
@@ -35,6 +39,17 @@ export const ROUTES: AppRoute[] = [
   { path: "/", guard: null, element: <HomePage /> },
   { path: "/events", guard: null, element: <EventsPage /> },
   { path: "/events/:id", guard: null, element: <EventDetailPage /> },
+  // Public, exactly like `/events`: the show's own ACL decides, per request.
+  { path: "/shows", guard: null, element: <ShowsPage /> },
+  { path: "/shows/:id", guard: null, element: <ShowDetailPage /> },
+  // Submitting and editing are inline forms on these two pages rather than
+  // routes of their own; that is a UX choice, not a way to hide anything.
+  {
+    path: "/shows/:id/entries/:eid",
+    guard: null,
+    element: <ShowEntryPage />,
+  },
+  { path: "/audit", guard: "/audit", element: <AuditPage /> },
   { path: "/teams", guard: "/teams", element: <TeamsPage /> },
   { path: "/teams/:team", guard: "/teams", element: <TeamPage /> },
   { path: "/teams/:team/:tab", guard: "/teams", element: <TeamPage /> },

@@ -126,6 +126,15 @@ export interface EventRoutesOptions {
     target: string | null,
     detail?: unknown,
   ) => Promise<void>;
+  /**
+   * `showId` for the event page's gallery section, **as this viewer may see
+   * it**: a `member_only` show must not be named to a reader who could not
+   * open it. Omit and it is always null.
+   */
+  showOfEvent?: (
+    eventId: string,
+    viewer: ConsoleIdentity | undefined,
+  ) => Promise<string | undefined>;
 }
 
 /** The status the clock says the event is in; `draft`/`cancelled` are final as stored. */
@@ -241,6 +250,7 @@ export function createEventRoutes({
   clock,
   kv,
   audit,
+  showOfEvent,
 }: EventRoutesOptions): AnyRoute[] {
   const identityOf = (ctx: RouteContext) =>
     ctx.identity as ConsoleIdentity | undefined;
@@ -421,6 +431,12 @@ export function createEventRoutes({
       publishedAt: row.publishedAt,
       cancelledAt: row.cancelledAt,
       cancelledBy: loginOf(logins, row.cancelledBy),
+      /**
+       * The gallery this event spawned, if any. Resolved through an injected
+       * lookup rather than a `ShowsDb` handle: an event knows it may have a
+       * show, not what a show is (`docs/decisions.md` decision 11).
+       */
+      showId: (await showOfEvent?.(row.id, viewer)) ?? null,
       posterUrl: posterUrl(row),
       comments: comments.map((c) => commentView(c, logins, viewer?.subject)),
     };

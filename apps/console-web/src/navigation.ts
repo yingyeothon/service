@@ -1,10 +1,12 @@
 import {
   IconCalendarEvent,
+  IconClipboardList,
   IconDeviceMobileDown,
   IconHome,
   IconKey,
   IconPackages,
   IconPhoto,
+  IconPhotoStar,
   IconQrcode,
   IconUsers,
   IconUsersGroup,
@@ -38,6 +40,9 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { path: "/", label: "Home", icon: IconHome, minRole: null },
   { path: "/events", label: "Events", icon: IconCalendarEvent, minRole: null },
+  // Public like `/events`: a `public` show is readable by anonymous visitors,
+  // and what a `member_only` one hides is the show, not the menu entry.
+  { path: "/shows", label: "Shows", icon: IconPhotoStar, minRole: null },
   { path: "/teams", label: "Teams", icon: IconUsersGroup, minRole: "member" },
   {
     path: "/channels",
@@ -81,6 +86,14 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { path: "/tokens", label: "API tokens", icon: IconKey, minRole: "pending" },
   { path: "/members", label: "Members", icon: IconUsers, minRole: "admin" },
+  // Visible rather than hidden: `hidden` marks a path that guards routes
+  // reached from elsewhere, and `test/routes.test.tsx` pins that list.
+  {
+    path: "/audit",
+    label: "Audit log",
+    icon: IconClipboardList,
+    minRole: "admin",
+  },
 ];
 
 export const isNavActive = (pathname: string, path: string): boolean =>

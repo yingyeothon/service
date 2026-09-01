@@ -197,4 +197,89 @@ describe("team and project routes", () => {
       ["PUT", "/admin/settings/installer-app", '{"appId":null}'],
     ]);
   });
+
+  it("uploads screenshots in one presign and commits ids, never object keys", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      calls.push({ url, init });
+      if (url.endsWith("/shots") && init?.method === "POST")
+        return jsonRes(200, {
+          grants: [
+            {
+              id: "ss_new",
+              url: "https://s3.test/put/one",
+              method: "PUT",
+              headers: { "content-type": "image/png" },
+            },
+          ],
+          expiresInSec: 600,
+        });
+      if (url.startsWith("https://s3.test/"))
+        return new Response(null, { status: 200 });
+      return new Response(null, { status: 204 });
+    });
+    const api = createApiClient({ baseUrl: "https://x.test", fetch });
+    const file = new File([new Uint8Array([1])], "a.png", {
+      type: "image/png",
+    });
+    await api.setEntryScreenshots("sh_1", "se_1", [file], ["ss_kept"]);
+
+    // One presign for the whole batch: each one takes the caller's 500 ms
+    // write slot, so a call per file would 429.
+    expect(calls.filter((c) => c.init?.method === "POST")).toHaveLength(1);
+    // The commit carries **ids**, in keep-then-added order. Object keys are
+    // server-minted and never leave the server.
+    const commit = calls.find(
+      (c) => c.init?.method === "PUT" && c.url.startsWith("https://x.test"),
+    )!;
+    expect(JSON.parse(commit.init!.body as string)).toEqual({
+      ids: ["ss_kept", "ss_new"],
+    });
+    // The presigned PUT goes to S3 with exactly the signed headers.
+    const upload = calls.find((c) => c.url.startsWith("https://s3.test"))!;
+    expect(upload.init!.headers).toEqual({ "content-type": "image/png" });
+  });
+
+  it("keeps the entry untouched when an upload fails", async () => {
+    const seen: string[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      seen.push(`${init?.method ?? "GET"} ${url}`);
+      if (url.endsWith("/shots") && init?.method === "POST")
+        return jsonRes(200, {
+          grants: [
+            {
+              id: "ss_new",
+              url: "https://s3.test/put/one",
+              method: "PUT",
+              headers: {},
+            },
+          ],
+          expiresInSec: 600,
+        });
+      if (url.startsWith("https://s3.test/"))
+        return new Response("no", { status: 403 });
+      return new Response(null, { status: 204 });
+    });
+    const api = createApiClient({ baseUrl: "https://x.test", fetch });
+    const file = new File([new Uint8Array([1])], "a.png", {
+      type: "image/png",
+    });
+    await expect(
+      api.setEntryScreenshots("sh_1", "se_1", [file], []),
+    ).rejects.toMatchObject({ code: "upload_failed" });
+    // It threw *before* the commit, so the entry keeps what it had.
+    expect(seen.some((s) => s.startsWith("PUT https://x.test"))).toBe(false);
+  });
 });

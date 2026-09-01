@@ -963,27 +963,37 @@ describe("GET /admin/audit", () => {
 
 describe("shows: screenshots", () => {
   /** Presign, PUT (the fake store's `put`), and hand back the key. */
+  /** Presign `n` files in one call, "upload" them, and return the shot ids. */
   const upload = async (
     h: H,
     u: User,
     show: string,
     entry: string,
+    n = 1,
     size = 100,
   ) => {
     const r = await app(
       h,
       ev("POST", `/shows/${show}/entries/${entry}/shots`, {
         headers: u.cookie,
-        body: { contentType: "image/png", size },
+        body: {
+          files: Array.from({ length: n }, () => ({
+            contentType: "image/png",
+            size,
+          })),
+        },
       }),
     );
     expect(r.statusCode, r.body).toBe(200);
-    const { key } = parse(r);
-    h.posters.put(key as string, {
-      contentType: "image/png",
-      contentLength: size,
-    });
-    return key as string;
+    const grants = parse(r).grants as Json[];
+    for (const g of grants) {
+      const shot = await h.shows.findShot(g.id as string);
+      h.posters.put(shot!.key, {
+        contentType: "image/png",
+        contentLength: size,
+      });
+    }
+    return grants.map((g) => g.id as string);
   };
 
   async function withEntry() {
@@ -995,22 +1005,26 @@ describe("shows: screenshots", () => {
         title: "our site",
       }),
     ).id as string;
-    return { ...s, entry };
+    /** A second entry in the same show, for the cross-entry checks. */
+    const other = parse(
+      await submit(s.h, s.owner, s.show, {
+        targetKind: "app",
+        targetId: s.t.app,
+        title: "second",
+      }),
+    ).id as string;
+    return { ...s, entry, otherEntry: other };
   }
 
   it("three upload, two commit, and the retired object is gone", async () => {
     const { h, owner, show, entry } = await withEntry();
-    const keys = [
-      await upload(h, owner, show, entry),
-      await upload(h, owner, show, entry),
-      await upload(h, owner, show, entry),
-    ];
+    const ids = await upload(h, owner, show, entry, 3);
     // Reservations count against the cap even before anything is committed.
     const overCap = await app(
       h,
       ev("POST", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { contentType: "image/png", size: 10 },
+        body: { files: [{ contentType: "image/png", size: 10 }] },
       }),
     );
     expect(overCap.statusCode, overCap.body).toBe(409);
@@ -1019,7 +1033,7 @@ describe("shows: screenshots", () => {
       h,
       ev("PUT", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { keys: [keys[1]!, keys[0]!] },
+        body: { ids: [ids[1]!, ids[0]!] },
       }),
     );
     expect(commit.statusCode, commit.body).toBe(204);
@@ -1029,21 +1043,19 @@ describe("shows: screenshots", () => {
     expect(view.shots[0].url).toContain(
       `/shows/${show}/entries/${entry}/shots/`,
     );
-    // The uncommitted third object is gone from the live set and its object
-    // was deleted with the rest of the retired ones.
-    expect(h.posters.deleted).toContain(keys[2]);
-    expect(h.posters.objects.has(keys[0]!)).toBe(true);
+    // The uncommitted third reservation was retired with the rest.
+    expect(h.posters.deleted).toHaveLength(1);
 
     // A second commit of one key replaces the whole list again.
     const second = await app(
       h,
       ev("PUT", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { keys: [keys[0]!] },
+        body: { ids: [ids[0]!] },
       }),
     );
     expect(second.statusCode, second.body).toBe(204);
-    expect(h.posters.deleted).toContain(keys[1]);
+    expect(h.posters.deleted).toHaveLength(2);
     expect(
       parse(await get(h, `/shows/${show}/entries/${entry}`)).shots,
     ).toHaveLength(1);
@@ -1051,16 +1063,12 @@ describe("shows: screenshots", () => {
 
   it("an entry already holding three can still presign its replacements", async () => {
     const { h, owner, show, entry } = await withEntry();
-    const keys = [
-      await upload(h, owner, show, entry),
-      await upload(h, owner, show, entry),
-      await upload(h, owner, show, entry),
-    ];
+    const ids = await upload(h, owner, show, entry, 3);
     const commit = await app(
       h,
       ev("PUT", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { keys },
+        body: { ids },
       }),
     );
     expect(commit.statusCode, commit.body).toBe(204);
@@ -1071,7 +1079,7 @@ describe("shows: screenshots", () => {
       h,
       ev("POST", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { contentType: "image/png", size: 10 },
+        body: { files: [{ contentType: "image/png", size: 10 }] },
       }),
     );
     expect(again.statusCode, again.body).toBe(200);
@@ -1092,7 +1100,7 @@ describe("shows: screenshots", () => {
       h,
       ev("POST", `/shows/${show}/entries/${entry}/shots`, {
         headers: other.cookie,
-        body: { contentType: "image/png", size: 10 },
+        body: { files: [{ contentType: "image/png", size: 10 }] },
       }),
     );
     // Otherwise a grantee locks the author out of their own three slots and
@@ -1107,24 +1115,22 @@ describe("shows: screenshots", () => {
         h,
         ev("POST", `/shows/${show}/entries/${entry}/shots`, {
           headers: owner.cookie,
-          body: { contentType: "image/png", size: 10 },
+          body: { files: [{ contentType: "image/png", size: 10 }] },
         }),
       );
-      const { key } = parse(p);
+      const shotId = (parse(p).grants as Json[])[0]!.id as string;
+      const row = await h.shows.findShot(shotId);
       // What actually landed in the bucket is not what was signed for.
-      h.posters.put(key as string, {
-        contentType: "text/plain",
-        contentLength: 10,
-      });
+      h.posters.put(row!.key, { contentType: "text/plain", contentLength: 10 });
       const c = await app(
         h,
         ev("PUT", `/shows/${show}/entries/${entry}/shots`, {
           headers: owner.cookie,
-          body: { keys: [key] },
+          body: { ids: [shotId] },
         }),
       );
       expect(c.statusCode, c.body).toBe(400);
-      expect(h.posters.objects.has(key as string)).toBe(false);
+      expect(h.posters.objects.has(row!.key)).toBe(false);
     };
     // Three bad uploads in a row must not lock the entry for ten minutes.
     await bad();
@@ -1134,15 +1140,15 @@ describe("shows: screenshots", () => {
       h,
       ev("POST", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { contentType: "image/png", size: 10 },
+        body: { files: [{ contentType: "image/png", size: 10 }] },
       }),
     );
     expect(ok.statusCode, ok.body).toBe(200);
   });
 
-  it("refuses a key that is not this entry's, and one never uploaded", async () => {
-    const { h, owner, other, show, entry } = await withEntry();
-    const key = await upload(h, owner, show, entry);
+  it("refuses a screenshot that is not this entry's, and one never uploaded", async () => {
+    const { h, owner, other, show, entry, otherEntry } = await withEntry();
+    const [mine] = await upload(h, owner, show, entry);
     const commit = (body: unknown, u: User = owner) =>
       app(
         h,
@@ -1151,30 +1157,24 @@ describe("shows: screenshots", () => {
           body,
         }),
       );
-    expect(
-      (await commit({ keys: [`shots/${show}/other/x.png`] })).statusCode,
-    ).toBe(400);
-    expect((await commit({ keys: [`${key}/../../../etc`] })).statusCode).toBe(
-      400,
-    );
-    expect((await commit({ keys: [key, key] })).statusCode).toBe(400);
-    // Server-minted, so a well-formed key that was never PUT is a 400 too.
-    expect(
-      (await commit({ keys: [`shots/${show}/${entry}/ss_never.png`] }))
-        .statusCode,
-    ).toBe(400);
+    // Another entry's screenshot: the id names a row, and the row names its
+    // entry — a caller never holds an object key at all.
+    const [theirs] = await upload(h, owner, show, otherEntry);
+    expect((await commit({ ids: [theirs] })).statusCode).toBe(404);
+    expect((await commit({ ids: ["ss_never"] })).statusCode).toBe(404);
+    expect((await commit({ ids: [mine, mine] })).statusCode).toBe(400);
     // Not the author, and no grant: 403 before any of that.
-    expect((await commit({ keys: [key] }, other)).statusCode).toBe(403);
+    expect((await commit({ ids: [mine!] }, other)).statusCode).toBe(403);
   });
 
   it("the redirect follows the show's ACL, and is never cached", async () => {
     const { h, owner, other, pending, show, entry } = await withEntry();
-    const key = await upload(h, owner, show, entry);
+    const [only] = await upload(h, owner, show, entry);
     await app(
       h,
       ev("PUT", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { keys: [key] },
+        body: { ids: [only] },
       }),
     );
     const shotId = parse(await get(h, `/shows/${show}/entries/${entry}`))
@@ -1206,14 +1206,55 @@ describe("shows: screenshots", () => {
     ).toBe(404);
   });
 
+  it("a show's id is only named to a reader who could open it", async () => {
+    const { h, owner, admin } = await setup();
+    // An event-spawned show starts public, then is narrowed.
+    const draft = parse(
+      await app(
+        h,
+        ev("POST", "/events", {
+          headers: owner.cookie,
+          body: {
+            title: "잉여톤 37",
+            bodyMd: "",
+            place: "Seoul",
+            durationHours: 8,
+            voteUntil: NOW_SEC + HOUR,
+            options: [NOW_SEC + 2 * DAY, NOW_SEC + 3 * DAY],
+          },
+        }),
+      ),
+    ).id as string;
+    await app(
+      h,
+      ev("POST", `/events/${draft}/publish`, { headers: owner.cookie }),
+    );
+    h.clock.tick(HOUR + 10);
+    const spawned = parse(await post(h, owner, `/events/${draft}/show`, {}))
+      .id as string;
+    expect(parse(await get(h, `/events/${draft}`)).showId).toBe(spawned);
+    await app(
+      h,
+      ev("PATCH", `/shows/${spawned}`, {
+        headers: owner.cookie,
+        body: { acl: "member_only" },
+      }),
+    );
+    // Anonymous must not learn that a show they cannot open exists: naming it
+    // would let the event page link straight into a 404.
+    expect(parse(await get(h, `/events/${draft}`)).showId).toBeNull();
+    expect(parse(await get(h, `/events/${draft}`, admin)).showId).toBe(spawned);
+  });
+
   it("deleting the show takes its objects with it", async () => {
     const { h, admin, owner, show, entry } = await withEntry();
-    const key = await upload(h, owner, show, entry);
+    const [only] = await upload(h, owner, show, entry);
+    const shot = await h.shows.findShot(only!);
     await app(
       h,
       ev("PUT", `/shows/${show}/entries/${entry}/shots`, {
         headers: owner.cookie,
-        body: { keys: [key] },
+        body: { ids: [only] },
       }),
     );
     const r = await app(
@@ -1224,10 +1265,10 @@ describe("shows: screenshots", () => {
       }),
     );
     expect(r.statusCode, r.body).toBe(204);
-    expect(h.posters.objects.has(key)).toBe(false);
+    expect(h.posters.objects.has(shot!.key)).toBe(false);
     // The snapshot names what was deleted, so an operator can still see it.
     const audit = h.db.audits.find((a) => a.action === "show.delete")!;
-    expect(JSON.stringify(audit.detail)).toContain(key);
+    expect(JSON.stringify(audit.detail)).toContain(shot!.key);
   });
 });
 

@@ -58,6 +58,21 @@ export const SHOTS_PREFIX = "shots/";
  */
 export const INLINE_DELETE_MAX = 20;
 
+/**
+ * `pending` is excluded from `member_only` deliberately: sign-up is
+ * self-service, so a `pending`-readable show would mean "anyone with a GitHub
+ * account", and what a show hands its readers is a permanent unauthenticated
+ * link to a team's work (decision 2).
+ *
+ * Module-level so anything that mentions a show elsewhere can ask the same
+ * question — the event page carries its show's id, and a narrowed show must
+ * not be named to a reader who could not open it.
+ */
+export const canReadShow = (
+  show: Pick<ShowRow, "acl">,
+  id: ConsoleIdentity | undefined,
+) => show.acl === "public" || (id !== undefined && id.role !== "pending");
+
 /** Caps (`docs/decisions.md` *Show (console)*, decision 13). */
 export const OPEN_SHOWS_PER_MEMBER = 5;
 export const ENTRIES_PER_SHOW = 200;
@@ -164,16 +179,39 @@ const targetRef = z
   .string()
   .trim()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "invalid targetRef");
+/**
+ * One call for the whole batch, not one per file: each presign writes a row
+ * and an audit row, so it takes the per-member 500 ms slot — three separate
+ * calls from a browser would 429 on the second and leave dead reservations
+ * holding the entry's slots for the presign TTL.
+ */
 const shotPresignBody = z
   .object({
-    contentType: z.enum(Object.keys(POSTER_TYPES) as [string, ...string[]]),
-    size: z.number().int().positive().max(POSTER_MAX_BYTES),
+    files: z
+      .array(
+        z
+          .object({
+            contentType: z.enum(
+              Object.keys(POSTER_TYPES) as [string, ...string[]],
+            ),
+            size: z.number().int().positive().max(POSTER_MAX_BYTES),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(ENTRY_SHOTS_MAX),
     reason: reason.optional(),
   })
   .strict();
 const shotCommitBody = z
   .object({
-    keys: z.array(z.string().min(1).max(255)).max(ENTRY_SHOTS_MAX),
+    /**
+     * Screenshot **ids**, in the order they should appear. Not object keys:
+     * the key is server-minted and the client never holds one — the presign
+     * hands back an id and the entry view lists ids, so "keep these two, add
+     * this one" needs nothing else.
+     */
+    ids: z.array(z.string().min(1).max(64)).max(ENTRY_SHOTS_MAX),
     reason: reason.optional(),
   })
   .strict();
@@ -273,14 +311,7 @@ export function createShowRoutes({
 
   /* ---- authorization: decided in exactly one place ------------------- */
 
-  /**
-   * `pending` is excluded from `member_only` deliberately: sign-up is
-   * self-service, so a `pending`-readable show would mean "anyone with a
-   * GitHub account", and what a show hands its readers is a permanent
-   * unauthenticated link to a team's work (decision 2).
-   */
-  const canRead = (show: ShowRow, id: ConsoleIdentity | undefined) =>
-    show.acl === "public" || (id !== undefined && id.role !== "pending");
+  const canRead = canReadShow;
   /** Comments and likes: any signed-in non-`pending` reader (decision 10). */
   const canReact = (show: ShowRow, id: ConsoleIdentity | undefined) =>
     id !== undefined && id.role !== "pending" && canRead(show, id);
@@ -585,12 +616,19 @@ export function createShowRoutes({
     );
   }
 
-  const commentView = (c: ShowCommentRow, logins: Map<string, string>) => ({
+  const commentView = (
+    c: ShowCommentRow,
+    logins: Map<string, string>,
+    viewer: ConsoleIdentity | undefined,
+  ) => ({
     id: c.id,
     bodyMd: c.bodyMd,
     createdBy: loginOf(logins, c.createdBy),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
+    // Every sibling comment view sets this; without it a client cannot tell
+    // whose comment it is drawing controls for.
+    mine: viewer !== undefined && viewer.subject === c.createdBy,
   });
 
   /** `live` shots of a page of entries, grouped, in one query. */
@@ -723,10 +761,22 @@ export function createShowRoutes({
             await shows.listShots(entry.id, ["live"]),
             counts.get(entry.id),
           ),
-          comments: comments.map((c) => commentView(c, logins)),
+          comments: comments.map((c) => commentView(c, logins, id)),
           // "may do this **now**", closedness included: these are what the SPA
           // enables its controls from, and a closed show refuses both with 409.
+          //
+          // `canWrite` is show-level (may submit here at all); `canEdit` is
+          // entry-level, and they are different ladders — a grant says "you may
+          // put something on this wall", not "you may rewrite everyone else's"
+          // (`rules/security.md`). A client that draws from the wrong one
+          // offers buttons that always 403.
           canWrite: show.closedAt === null && (await canWrite(show, id)),
+          canEdit:
+            show.closedAt === null &&
+            id !== undefined &&
+            (entry.createdBy === id.subject || canManage(show, id)),
+          /** Moderating somebody else's content here needs a reason. */
+          canModerate: canManage(show, id),
           canReact: show.closedAt === null && canReact(show, id),
         };
       },
@@ -1274,40 +1324,54 @@ export function createShowRoutes({
         // Reservations only: the live set is capped by the commit, which
         // replaces it wholesale. Counting live rows here would mean an entry
         // already holding three could never presign a replacement.
-        if ((await shows.countPendingShots(entry.id, now)) >= ENTRY_SHOTS_MAX)
+        const held = await shows.countPendingShots(entry.id, now);
+        if (held + ctx.body.files.length > ENTRY_SHOTS_MAX)
           throw new AppError(
             "conflict",
             `too many screenshots in flight (max ${ENTRY_SHOTS_MAX} per entry)`,
           );
-        const shotId = `ss_${ulid().toLowerCase()}`;
-        const key = `${shotPrefix(show.id, entry.id)}${shotId}.${POSTER_TYPES[ctx.body.contentType]}`;
-        const url = await store.presignPut({
-          key,
-          contentType: ctx.body.contentType,
-          contentLength: ctx.body.size,
-        });
-        // The row is the reservation: it counts against the cap until it
-        // expires, so a caller cannot pipeline presigns past the limit.
-        await shows.insertShot({
-          id: shotId,
-          entryId: entry.id,
-          status: "pending",
-          ord: 0,
-          key,
-          contentType: ctx.body.contentType,
-          size: ctx.body.size,
-          uploadedBy: id.subject,
-          uploadedAt: now,
-          expiresAt: now + POSTER_URL_TTL_SEC,
-          replacedAt: null,
-          deletedAt: null,
-        });
+        const grants = [];
+        for (const f of ctx.body.files) {
+          const shotId = `ss_${ulid().toLowerCase()}`;
+          const key = `${shotPrefix(show.id, entry.id)}${shotId}.${POSTER_TYPES[f.contentType]}`;
+          const url = await store.presignPut({
+            key,
+            contentType: f.contentType,
+            contentLength: f.size,
+          });
+          // The row is the reservation: it counts against the cap until it
+          // expires, so a caller cannot pipeline presigns past the limit.
+          await shows.insertShot({
+            id: shotId,
+            entryId: entry.id,
+            status: "pending",
+            ord: 0,
+            key,
+            contentType: f.contentType,
+            size: f.size,
+            uploadedBy: id.subject,
+            uploadedAt: now,
+            expiresAt: now + POSTER_URL_TTL_SEC,
+            replacedAt: null,
+            deletedAt: null,
+          });
+          grants.push({
+            id: shotId,
+            url,
+            method: "PUT",
+            headers: {
+              "content-type": f.contentType,
+              "content-length": String(f.size),
+            },
+          });
+        }
         await audit(id.subject, "show.entry.shots", entry.id, {
           showId: show.id,
+          count: grants.length,
           ...mod,
         });
         // An explicit result: a plain object return would skip the header, and
-        // this body carries a signed upload URL (`rules/security.md`).
+        // this body carries signed upload URLs (`rules/security.md`).
         return {
           statusCode: 200,
           headers: {
@@ -1315,14 +1379,7 @@ export function createShowRoutes({
             "cache-control": "no-store",
           },
           body: JSON.stringify({
-            id: shotId,
-            key,
-            url,
-            method: "PUT",
-            headers: {
-              "content-type": ctx.body.contentType,
-              "content-length": String(ctx.body.size),
-            },
+            grants,
             expiresInSec: POSTER_URL_TTL_SEC,
           }),
         };
@@ -1340,21 +1397,25 @@ export function createShowRoutes({
           throw new AppError("forbidden", "not your entry");
         const mod = moderation(id, entry.createdBy, ctx.body.reason);
         const store = requirePosters();
-        const prefix = shotPrefix(show.id, entry.id);
-        const keys = ctx.body.keys;
-        if (new Set(keys).size !== keys.length)
-          throw new AppError("bad_request", "duplicate screenshot key");
-        for (const key of keys)
-          // The prefix carries the ids from *this* path, so the parent
-          // assertion above is what makes this check mean anything.
-          if (!key.startsWith(prefix) || key.includes(".."))
+        const ids = ctx.body.ids;
+        if (new Set(ids).size !== ids.length)
+          throw new AppError("bad_request", "duplicate screenshot");
+        // Every id must name a row of *this* entry. The rows are the authority
+        // on which object each one is; a caller never names a key.
+        const rows = await shows.listShots(entry.id);
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        for (const shotId of ids)
+          if (!byId.has(shotId))
             throw new AppError(
-              "bad_request",
-              "key does not belong to this entry",
+              "not_found",
+              "no such screenshot for this entry",
             );
-        // A signed `content-type` is not proof the object has one: re-read it.
-        for (const key of keys) {
-          const obj = await store.head(key);
+        // A signed `content-type` is not proof the object has one: re-read the
+        // ones that have not been verified yet (a `live` row already was).
+        for (const shotId of ids) {
+          const row = byId.get(shotId)!;
+          if (row.status === "live") continue;
+          const obj = await store.head(row.key);
           if (!obj) {
             // `head` maps 403 to "missing", and an IAM or KMS refusal on this
             // prefix looks exactly like a caller who never uploaded — log it
@@ -1372,11 +1433,11 @@ export function createShowRoutes({
             obj.contentLength > POSTER_MAX_BYTES ||
             obj.contentLength <= 0
           ) {
-            await store.delete(key).catch(() => undefined);
+            await store.delete(row.key).catch(() => undefined);
             // The reservation goes with the object: leaving it would hold a
             // slot for the full presign TTL after an upload that stored
             // nothing.
-            await shows.deleteShotsByKeys([key]).catch(() => 0);
+            await shows.deleteShotsByKeys([row.key]).catch(() => 0);
             throw new AppError(
               "bad_request",
               "screenshots must be png/jpeg ≤ 5MB",
@@ -1386,7 +1447,7 @@ export function createShowRoutes({
         await writeSlot(id);
         // One commit sets the whole list, so there is no half-replaced state
         // to reconcile: a failed PUT leaves the entry exactly as it was.
-        const retired = await shows.replaceShots(entry.id, keys, now);
+        const retired = await shows.replaceShots(entry.id, ids, now);
         if (retired === undefined)
           throw new AppError("not_found", "no such screenshot for this entry");
         // Bounded: an entry can accumulate dead reservations faster than the
@@ -1408,7 +1469,7 @@ export function createShowRoutes({
         await shows.markShotsDeleted(gone, now);
         await audit(id.subject, "show.entry.shots", entry.id, {
           showId: show.id,
-          count: keys.length,
+          count: ids.length,
           ...mod,
         });
         return undefined;

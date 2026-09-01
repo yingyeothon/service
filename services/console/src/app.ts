@@ -59,7 +59,7 @@ import {
 } from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
 import { createEventRoutes } from "./events.js";
-import { createShowRoutes } from "./shows.js";
+import { canReadShow, createShowRoutes } from "./shows.js";
 import {
   createChannelDocKeyRoutes,
   deleteChannelDocs,
@@ -943,6 +943,10 @@ export function createConsoleApp({
     clock,
     kv,
     audit,
+    showOfEvent: async (id, viewer) => {
+      const s = await shows.findShowByEvent(id);
+      return s && canReadShow(s, viewer) ? s.id : undefined;
+    },
   });
 
   const gatewayRoutes = createGatewayRoutes({

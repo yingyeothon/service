@@ -401,6 +401,8 @@ export interface EventDetail {
   cancelledAt: number | null;
   cancelledBy: string | null;
   posterUrl: string | null;
+  /** The gallery this event spawned, if any (`docs/decisions.md` decision 11). */
+  showId: string | null;
   comments: Comment[];
 }
 
@@ -617,4 +619,129 @@ export interface AssetUploadGrant {
   method: "PUT";
   headers: Record<string, string>;
   expiresAt: number;
+}
+
+/* ---- show (the gallery) --------------------------------------------------- */
+
+export type ShowAcl = "public" | "member_only";
+export type ShowTargetKind = "app" | "bundle" | "site";
+
+export interface ShowSummary {
+  id: string;
+  title: string;
+  acl: ShowAcl;
+  eventId: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  closedAt: number | null;
+}
+
+export interface ShowGrant {
+  login: string | null;
+  grantedBy: string | null;
+  grantedAt: number;
+}
+
+export interface ShowDetail extends ShowSummary {
+  bodyMd: string;
+  closedBy: string | null;
+  entryCount: number;
+  canWrite: boolean;
+  canManage: boolean;
+  /** Owner and admins only. */
+  grants?: ShowGrant[];
+}
+
+export interface ShowTarget {
+  kind: ShowTargetKind;
+  id: string;
+  /** Snapshotted at submit time: the resource itself may be gone. */
+  name: string;
+  /** The pinned artifact (app) or version (bundle); a site links live. */
+  ref: string | null;
+  available: boolean;
+  url: string | null;
+}
+
+export interface ShowShot {
+  id: string;
+  contentType: string;
+  size: number;
+  /** The API redirect, never the object key: visibility follows the show's. */
+  url: string;
+}
+
+export interface ShowEntry {
+  id: string;
+  showId: string;
+  title: string;
+  bodyMd: string;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  target: ShowTarget;
+  shots: ShowShot[];
+  likes: number;
+  /**
+   * A count, not the thread: the detail route carries the thread under
+   * `comments`, and one field must not be two types on sibling endpoints.
+   */
+  commentCount: number;
+  liked: boolean;
+}
+
+/** The card's fields plus the comment thread the detail route embeds. */
+export interface ShowEntryDetail extends ShowEntry {
+  comments: Comment[];
+  /** Show-level: may this caller put anything on this wall at all. */
+  canWrite: boolean;
+  /** Entry-level, and a different ladder: author, show owner or admin. */
+  canEdit: boolean;
+  /** Moderating somebody else's content here needs a stated reason. */
+  canModerate: boolean;
+  canReact: boolean;
+}
+
+export interface ShowSubmittable {
+  kind: ShowTargetKind;
+  id: string;
+  name: string;
+}
+
+/** One presigned PUT. The object key is server-minted and never sent here. */
+export interface ShotGrant {
+  id: string;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+}
+
+export interface ShotUpload {
+  grants: ShotGrant[];
+  expiresInSec: number;
+}
+
+export interface AuditRow {
+  id: string;
+  actor: string | null;
+  action: string;
+  target: string | null;
+  at: number;
+}
+
+export interface AuditDetail extends AuditRow {
+  detail: string | null;
+  detailTruncated: boolean;
+}
+
+export interface AuditFilter {
+  action?: string;
+  actionPrefix?: string;
+  target?: string;
+  actor?: string;
+  from?: number;
+  to?: number;
+  cursor?: string;
+  limit?: number;
 }

@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 import { fmtTime } from "../lib/format";
 import { useAction } from "../lib/query";
 import type { Comment } from "../types";
-import { Confirm, Notice } from "./ui";
+import { Confirm, ConfirmWithReason, Notice } from "./ui";
 import { Markdown } from "./Markdown";
 import { MdField } from "./MdField";
 
@@ -16,6 +16,7 @@ export function Comments({
   comments,
   canPost,
   owner,
+  reasonOnForeignDelete = false,
   onAdd,
   onEdit,
   onDelete,
@@ -23,9 +24,16 @@ export function Comments({
   comments: Comment[];
   canPost: boolean;
   owner: boolean;
+  /**
+   * Demand a stated reason before deleting somebody else's comment. Set only
+   * where an operator may act beyond their own content (`docs/decisions.md`
+   * *Show (console)*, decision 12); the three older call sites leave it off
+   * and keep their plain confirm.
+   */
+  reasonOnForeignDelete?: boolean;
   onAdd: (bodyMd: string) => Promise<unknown>;
   onEdit: (id: string, bodyMd: string) => Promise<unknown>;
-  onDelete: (id: string) => Promise<unknown>;
+  onDelete: (id: string, reason?: string) => Promise<unknown>;
 }) {
   const act = useAction();
   const [draft, setDraft] = useState("");
@@ -104,11 +112,23 @@ export function Comments({
                       Edit
                     </Button>
                   )}
-                  <Confirm
-                    label="Delete"
-                    onConfirm={() => void act.run(() => onDelete(c.id))}
-                    disabled={act.busy}
-                  />
+                  {reasonOnForeignDelete && !c.mine ? (
+                    <ConfirmWithReason
+                      label="Delete"
+                      required
+                      placeholder="Why is this being removed?"
+                      disabled={act.busy}
+                      onConfirm={(reason) =>
+                        void act.run(() => onDelete(c.id, reason))
+                      }
+                    />
+                  ) : (
+                    <Confirm
+                      label="Delete"
+                      onConfirm={() => void act.run(() => onDelete(c.id))}
+                      disabled={act.busy}
+                    />
+                  )}
                 </Group>
               )}
             </>

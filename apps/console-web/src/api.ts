@@ -1,5 +1,18 @@
 import type {
   ApiToken,
+  AuditDetail,
+  AuditFilter,
+  AuditRow,
+  ShotGrant,
+  ShotUpload,
+  ShowAcl,
+  ShowDetail,
+  ShowEntry,
+  ShowEntryDetail,
+  ShowGrant,
+  ShowSubmittable,
+  ShowSummary,
+  ShowTargetKind,
   AssetBundle,
   AssetBundleDetail,
   Site,
@@ -123,12 +136,17 @@ export function createApiClient({
     call<T>("POST", path, body ?? {});
   const patch = <T>(path: string, body: unknown) =>
     call<T>("PATCH", path, body);
-  const put = <T>(path: string, body: unknown) => call<T>("PUT", path, body);
-  const del = <T = void>(path: string) => call<T>("DELETE", path);
+  const put = <T>(path: string, body?: unknown) =>
+    call<T>("PUT", path, body ?? {});
+  // Some deletes carry a moderation `reason`; `call` sends a body only when
+  // one is given, so a plain delete is unchanged.
+  const del = <T = void>(path: string, body?: unknown) =>
+    call<T>("DELETE", path, body);
   const enc = encodeURIComponent;
-  const qs = (params: Record<string, string | undefined>) => {
+  const qs = (params: Record<string, string | number | undefined>) => {
     const q = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) if (v) q.set(k, v);
+    for (const [k, v] of Object.entries(params))
+      if (v !== undefined && v !== "") q.set(k, String(v));
     const s = q.toString();
     return s ? `?${s}` : "";
   };
@@ -405,6 +423,142 @@ export function createApiClient({
       });
     },
     deletePoster: (id: string) => del(`/events/${enc(id)}/poster`),
+
+    // ---- shows (the gallery; platform-global, so no team in the path) ------
+    shows: (q: { state?: "open" | "closed"; cursor?: string } = {}) =>
+      get<{ shows: ShowSummary[]; next: string | null }>(
+        `/shows${qs({ state: q.state, cursor: q.cursor })}`,
+      ),
+    show: (id: string) => get<ShowDetail>(`/shows/${enc(id)}`),
+    createShow: (body: { title: string; bodyMd?: string; acl?: ShowAcl }) =>
+      post<{ id: string }>("/shows", body),
+    updateShow: (
+      id: string,
+      body: { title?: string; bodyMd?: string; acl?: ShowAcl; reason?: string },
+    ) => patch<void>(`/shows/${enc(id)}`, body),
+    closeShow: (id: string, reason?: string) =>
+      post<void>(`/shows/${enc(id)}/close`, reason ? { reason } : {}),
+    reopenShow: (id: string, reason?: string) =>
+      post<void>(`/shows/${enc(id)}/reopen`, reason ? { reason } : {}),
+    deleteShow: (id: string, reason: string) =>
+      del(`/shows/${enc(id)}`, { reason }),
+    openShowForEvent: (eventId: string) =>
+      post<{ id: string }>(`/events/${enc(eventId)}/show`, {}),
+
+    showGrants: (id: string) =>
+      get<{ grants: ShowGrant[] }>(`/shows/${enc(id)}/grants`).then(
+        (r) => r.grants,
+      ),
+    grantShow: (id: string, login: string) =>
+      put<void>(`/shows/${enc(id)}/grants/${enc(login)}`, {}),
+    revokeShow: (id: string, login: string) =>
+      del(`/shows/${enc(id)}/grants/${enc(login)}`),
+    showSubmittable: (id: string) =>
+      get<{ targets: ShowSubmittable[] }>(`/shows/${enc(id)}/submittable`).then(
+        (r) => r.targets,
+      ),
+
+    showEntries: (
+      id: string,
+      q: { sort?: "new" | "likes"; cursor?: string } = {},
+    ) =>
+      get<{ entries: ShowEntry[]; next: string | null }>(
+        `/shows/${enc(id)}/entries${qs({ sort: q.sort, cursor: q.cursor })}`,
+      ),
+    showEntry: (id: string, entry: string) =>
+      get<ShowEntryDetail>(`/shows/${enc(id)}/entries/${enc(entry)}`),
+    submitEntry: (
+      id: string,
+      body: {
+        targetKind: ShowTargetKind;
+        targetId: string;
+        title: string;
+        bodyMd?: string;
+        reason?: string;
+      },
+    ) => post<{ id: string }>(`/shows/${enc(id)}/entries`, body),
+    updateEntry: (
+      id: string,
+      entry: string,
+      body: {
+        title?: string;
+        bodyMd?: string;
+        targetRef?: string;
+        reason?: string;
+      },
+    ) => patch<void>(`/shows/${enc(id)}/entries/${enc(entry)}`, body),
+    deleteEntry: (id: string, entry: string, reason?: string) =>
+      del(`/shows/${enc(id)}/entries/${enc(entry)}`, reason ? { reason } : {}),
+
+    likeEntry: (id: string, entry: string) =>
+      put<void>(`/shows/${enc(id)}/entries/${enc(entry)}/like`),
+    unlikeEntry: (id: string, entry: string) =>
+      del(`/shows/${enc(id)}/entries/${enc(entry)}/like`),
+    addEntryComment: (id: string, entry: string, bodyMd: string) =>
+      post<{ id: string }>(`/shows/${enc(id)}/entries/${enc(entry)}/comments`, {
+        bodyMd,
+      }),
+    editEntryComment: (
+      id: string,
+      entry: string,
+      cid: string,
+      bodyMd: string,
+      reason?: string,
+    ) =>
+      patch<void>(
+        `/shows/${enc(id)}/entries/${enc(entry)}/comments/${enc(cid)}`,
+        reason ? { bodyMd, reason } : { bodyMd },
+      ),
+    deleteEntryComment: (
+      id: string,
+      entry: string,
+      cid: string,
+      reason?: string,
+    ) =>
+      del(
+        `/shows/${enc(id)}/entries/${enc(entry)}/comments/${enc(cid)}`,
+        reason ? { reason } : {},
+      ),
+
+    /**
+     * One presign for the whole batch, then the PUTs, then one commit that
+     * sets the entire list — so a failed upload leaves the entry with exactly
+     * the screenshots it already had. `keepIds` are the shots already live
+     * that the caller kept; screenshots are addressed by **id**, never by
+     * object key (the key is server-minted and never leaves the server).
+     */
+    async setEntryScreenshots(
+      id: string,
+      entry: string,
+      files: File[],
+      keepIds: string[],
+    ): Promise<void> {
+      const path = `/shows/${enc(id)}/entries/${enc(entry)}/shots`;
+      let added: ShotGrant[] = [];
+      if (files.length > 0) {
+        // One call, not one per file: each presign takes the caller's 500 ms
+        // write slot, so three of them in a row would 429.
+        const grant = await post<ShotUpload>(path, {
+          files: files.map((f) => ({ contentType: f.type, size: f.size })),
+        });
+        added = grant.grants;
+        const results = await Promise.allSettled(
+          added.map((g, i) => putToGrant(g, files[i]!, "screenshot")),
+        );
+        const failed = results.find((r) => r.status === "rejected");
+        // Throw *before* the commit: the entry keeps what it had rather than
+        // ending up with a half-replaced set.
+        if (failed) throw failed.reason;
+      }
+      await put<void>(path, { ids: [...keepIds, ...added.map((g) => g.id)] });
+    },
+
+    // ---- audit log (admin only) --------------------------------------------
+    audit: (f: AuditFilter = {}) =>
+      get<{ rows: AuditRow[]; next: string | null }>(
+        `/admin/audit${qs({ ...f })}`,
+      ),
+    auditRow: (id: string) => get<AuditDetail>(`/admin/audit/${enc(id)}`),
 
     // ---- binary catalog (apps are addressed by id) -------------------------
     projectCatalogApps: (prj: string) =>
