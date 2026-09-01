@@ -103,6 +103,14 @@ export interface SitesDb {
     teamIds?: string[];
     projectId?: string;
   }): Promise<SiteRow[]>;
+  /**
+   * Rows for a page of ids, in one query, by id ascending; unknown ids are
+   * simply absent. A show entry page resolves up to `ENTRY_PAGE_MAX` targets
+   * and the pool has one connection, so a per-entry `find` would be that many
+   * serial round trips (`rules/data.md`). The caller indexes the result by id,
+   * so the order is only here to make the contract deterministic.
+   */
+  listSitesByIds(ids: readonly string[]): Promise<SiteRow[]>;
   updateSite(id: string, patch: SitePatch, at: number): Promise<boolean>;
   /**
    * Takes the site for `holder` when nobody holds it (or `holder` already
@@ -257,6 +265,17 @@ export function createSitesDb(prisma: PrismaClient): SitesDb {
         });
         return rows.map(toSite);
       }),
+    listSitesByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : (
+              await prisma.sites.findMany({
+                where: { id: { in: [...ids] } },
+                orderBy: { id: "asc" },
+              })
+            ).map(toSite),
+      ),
     updateSite: (id, patch, at) =>
       run(async () => {
         const r = await prisma.sites.updateMany({
@@ -439,6 +458,11 @@ export function createMemorySitesDb(
         .sort(
           (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
         ),
+    listSitesByIds: async (ids) =>
+      [...ids].sort().flatMap((id) => {
+        const x = sites.get(id);
+        return x ? [{ ...x }] : [];
+      }),
     updateSite: async (id, patch, at) => {
       const s = sites.get(id);
       if (!s) return false;

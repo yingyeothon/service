@@ -80,8 +80,14 @@ export interface ShowListFilter {
   limit?: number;
 }
 
+/**
+ * A listed show never carries its markdown body: at `SHOW_PAGE_MAX` that is
+ * 2 MB of MEDIUMTEXT read over the one connection for a view that drops it.
+ */
+export type ShowListRow = Omit<ShowRow, "bodyMd">;
+
 export interface ShowPage {
-  rows: ShowRow[];
+  rows: ShowListRow[];
   next?: string;
 }
 
@@ -243,6 +249,14 @@ export interface ShowsDb {
   ): Promise<ShowEntryPage>;
   /** Every entry id of the show, newest first: what `sort=likes` aggregates over. */
   listEntryIds(showId: string): Promise<string[]>;
+  /**
+   * Which targets the show already exhibits — **all** of them, not a page, so
+   * the "what may I still submit" filter cannot offer a target that the
+   * `(show, kind, target)` unique index will refuse. Two narrow columns only.
+   */
+  listEntryTargets(
+    showId: string,
+  ): Promise<{ kind: ShowTargetKind; id: string }[]>;
   /** One query for a page of ids (the `sort=likes` page, in caller order). */
   listEntriesByIds(ids: readonly string[]): Promise<ShowEntryRow[]>;
   countEntries(showId: string): Promise<number>;
@@ -395,6 +409,27 @@ export function boundSnapshot(s: ShowSnapshot): ShowSnapshot {
 }
 
 export function createShowsDb(prisma: PrismaClient): ShowsDb {
+  const toShowList = (r: {
+    id: string;
+    title: string;
+    acl: string;
+    event_id: string | null;
+    created_by: string;
+    created_at: bigint | number;
+    updated_at: bigint | number;
+    closed_at: bigint | number | null;
+    closed_by: string | null;
+  }): ShowListRow => ({
+    id: r.id,
+    title: r.title,
+    acl: r.acl as ShowAcl,
+    eventId: r.event_id,
+    createdBy: r.created_by,
+    createdAt: num(r.created_at),
+    updatedAt: num(r.updated_at),
+    closedAt: nul(r.closed_at),
+    closedBy: r.closed_by,
+  });
   const toShow = (r: {
     id: string;
     title: string;
@@ -561,6 +596,18 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
         const limit = pageLimit(filter.limit, SHOW_PAGE_DEFAULT, SHOW_PAGE_MAX);
         const c = cursorOf(filter.cursor);
         const rows = await prisma.shows.findMany({
+          // Everything but `body_md`: see `ShowListRow`.
+          select: {
+            id: true,
+            title: true,
+            acl: true,
+            event_id: true,
+            created_by: true,
+            created_at: true,
+            updated_at: true,
+            closed_at: true,
+            closed_by: true,
+          },
           where: {
             ...(filter.acls ? { acl: { in: [...filter.acls] } } : {}),
             ...(filter.state === "open" ? { closed_at: null } : {}),
@@ -570,7 +617,7 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
           orderBy: [{ created_at: "desc" }, { id: "desc" }],
           take: limit + 1,
         });
-        const page = rows.slice(0, limit).map(toShow);
+        const page = rows.slice(0, limit).map(toShowList);
         const last = page[page.length - 1];
         return rows.length > limit && last
           ? {
@@ -789,6 +836,15 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
             orderBy: [{ created_at: "desc" }, { id: "desc" }],
           })
         ).map((r) => r.id),
+      ),
+    listEntryTargets: (showId) =>
+      run(async () =>
+        (
+          await prisma.show_entries.findMany({
+            where: { show_id: showId },
+            select: { target_kind: true, target_id: true },
+          })
+        ).map((r) => ({ kind: r.target_kind, id: r.target_id })),
       ),
     listEntriesByIds: (ids) =>
       run(async () => {
@@ -1209,6 +1265,7 @@ export function createMemoryShowsDb(
     listShows: async (filter = {}) =>
       page(
         [...shows.values()]
+          .map(({ bodyMd: _body, ...rest }) => rest)
           .filter(
             (s) =>
               (!filter.acls || filter.acls.includes(s.acl)) &&
@@ -1378,6 +1435,10 @@ export function createMemoryShowsDb(
         .filter((e) => e.showId === showId)
         .sort(desc)
         .map((e) => e.id),
+    listEntryTargets: async (showId) =>
+      [...entries.values()]
+        .filter((e) => e.showId === showId)
+        .map((e) => ({ kind: e.targetKind, id: e.targetId })),
     listEntriesByIds: async (ids) =>
       ids.flatMap((id) => {
         const e = entries.get(id);

@@ -3,6 +3,7 @@ import {
   createCatalogDb,
   createConsoleDb,
   createEventsDb,
+  createShowsDb,
   createTeamDb,
   createPrismaClient,
   createSitesDb,
@@ -12,6 +13,7 @@ import {
   type CatalogDb,
   type ConsoleDb,
   type EventsDb,
+  type ShowsDb,
   type SitesDb,
   type TeamDb,
   type StateDb,
@@ -75,6 +77,7 @@ interface Deps {
   stage: string;
   db: ConsoleDb;
   events: EventsDb;
+  shows: ShowsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
   sites: SitesDb;
@@ -115,6 +118,7 @@ function getDeps(): Promise<Deps> {
       stage,
       db: createConsoleDb(raw),
       events: createEventsDb(raw),
+      shows: createShowsDb(raw),
       catalog: createCatalogDb(raw),
       assets: createAssetsDb(raw),
       sites: createSitesDb(raw),
@@ -165,6 +169,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     stage,
     db,
     events,
+    shows,
     catalog,
     assets,
     sites,
@@ -214,6 +219,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     stage,
     db,
     events,
+    shows,
     catalog,
     assets,
     sites,

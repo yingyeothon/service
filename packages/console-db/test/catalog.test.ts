@@ -84,6 +84,23 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
     expect(await db.findArtifact("f1")).toBeUndefined();
   });
 
+  it("apps and artifacts come back for a page of ids in one call", async () => {
+    const db = await make();
+    await db.insertApp(app("ca_1"));
+    await db.insertApp(app("ca_2"));
+    // By id, with unknown ids simply absent — a show entry page resolves its
+    // targets this way and one of them may have been deleted.
+    expect(
+      (await db.listAppsByIds(["ca_2", "zz", "ca_1"])).map((a) => a.id),
+    ).toEqual(["ca_1", "ca_2"]);
+    expect(await db.listAppsByIds([])).toEqual([]);
+    await db.insertArtifact(art("art_1", "ca_1"));
+    expect(
+      (await db.listArtifactsByIds(["art_1", "zz"])).map((a) => a.id),
+    ).toEqual(["art_1"]);
+    expect(await db.listArtifactsByIds([])).toEqual([]);
+  });
+
   it("artifacts: newest first, platform narrow, tags roundtrip", async () => {
     const db = await make();
     await db.insertApp(app("a1"));
@@ -112,6 +129,15 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
     });
     expect(await db.deleteArtifact("f1")).toBe(true);
     expect(await db.deleteArtifact("f1")).toBe(false);
+  });
+
+  it("finds an app's newest artifact in one query", async () => {
+    const db = await make();
+    await db.insertApp(app("ca_1"));
+    expect(await db.findNewestArtifact("ca_1")).toBeUndefined();
+    await db.insertArtifact(art("art_1", "ca_1", 10));
+    await db.insertArtifact(art("art_2", "ca_1", 20));
+    expect((await db.findNewestArtifact("ca_1"))?.id).toBe("art_2");
   });
 
   it("summarizeArtifacts: newest per app, distinct application ids, platform narrow", async () => {

@@ -352,6 +352,18 @@ export interface ConsoleDb {
 
   /* --- console-only writers/readers below (members, tokens, audit, channel lifecycle) --- */
   findMember(id: string): Promise<MemberRow | undefined>;
+  /**
+   * Members for a page of ids, by id ascending. `rules/data.md` names this as
+   * the fix for the read paths that resolve ids to logins by pulling the whole
+   * table; use it wherever the set of ids is known and bounded.
+   */
+  findMembersByIds(ids: readonly string[]): Promise<MemberRow[]>;
+  /**
+   * By GitHub login, case-insensitively (`github_login` sits on the database
+   * default collation, which is what GitHub's own semantics want). One query
+   * instead of reading every row and comparing in JS.
+   */
+  findMemberByLogin(login: string): Promise<MemberRow | undefined>;
   listMembers(): Promise<MemberRow[]>;
   /**
    * Returns `false` when the member does not exist. `approval` `null` clears
@@ -562,6 +574,24 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
     findMember: (id) =>
       run(async () => {
         const r = await prisma.members.findUnique({ where: { id } });
+        return r ? toMember(r) : undefined;
+      }),
+    findMembersByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : (
+              await prisma.members.findMany({
+                where: { id: { in: [...ids] } },
+                orderBy: { id: "asc" },
+              })
+            ).map(toMember),
+      ),
+    findMemberByLogin: (login) =>
+      run(async () => {
+        const r = await prisma.members.findFirst({
+          where: { github_login: login },
+        });
         return r ? toMember(r) : undefined;
       }),
     listMembers: () =>

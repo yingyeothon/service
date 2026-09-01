@@ -120,6 +120,14 @@ export interface AssetsDb {
     teamIds?: string[];
     projectId?: string;
   }): Promise<AssetBundleRow[]>;
+  /**
+   * Rows for a page of ids, in one query, by id ascending; unknown ids are
+   * simply absent. A show entry page resolves up to `ENTRY_PAGE_MAX` targets
+   * and the pool has one connection, so a per-entry `find` would be that many
+   * serial round trips (`rules/data.md`). The caller indexes the result by id,
+   * so the order is only here to make the contract deterministic.
+   */
+  listBundlesByIds(ids: readonly string[]): Promise<AssetBundleRow[]>;
   updateBundle(
     id: string,
     patch: AssetBundlePatch,
@@ -134,6 +142,14 @@ export interface AssetsDb {
     bundleId: string,
     filter?: { version?: string },
   ): Promise<AssetFileRow[]>;
+  /**
+   * The bundle's newest version, by the time its first file was committed —
+   * what "the exhibited version" means for a show entry (decision 5). Ordering
+   * by the version string would be lexicographic, so `9` would beat `10`.
+   */
+  findNewestVersion(bundleId: string): Promise<string | undefined>;
+  /** Whether the bundle holds this version at all; validates a pinned ref. */
+  hasVersion(bundleId: string, version: string): Promise<boolean>;
   deleteFile(id: string): Promise<boolean>;
   /** Drops every file row of one version; returns how many. */
   deleteVersion(bundleId: string, version: string): Promise<number>;
@@ -273,6 +289,17 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         });
         return rows.map(toBundle);
       }),
+    listBundlesByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : (
+              await prisma.asset_bundles.findMany({
+                where: { id: { in: [...ids] } },
+                orderBy: { id: "asc" },
+              })
+            ).map(toBundle),
+      ),
     updateBundle: (id, patch, at) =>
       run(async () => {
         const r = await prisma.asset_bundles.updateMany({
@@ -328,6 +355,22 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         });
         return rows.map(toFile);
       }),
+    findNewestVersion: (bundleId) =>
+      run(async () => {
+        const r = await prisma.asset_files.findFirst({
+          where: { bundle_id: bundleId },
+          select: { version: true },
+          orderBy: [{ created_at: "desc" }, { id: "desc" }],
+        });
+        return r?.version;
+      }),
+    hasVersion: (bundleId, version) =>
+      run(
+        async () =>
+          (await prisma.asset_files.count({
+            where: { bundle_id: bundleId, version },
+          })) > 0,
+      ),
     deleteFile: (id) =>
       run(async () => {
         const r = await prisma.asset_files.deleteMany({ where: { id } });
@@ -478,6 +521,11 @@ export function createMemoryAssetsDb(
         .sort(
           (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
         ),
+    listBundlesByIds: async (ids) =>
+      [...ids].sort().flatMap((id) => {
+        const b = bundles.get(id);
+        return b ? [{ ...b }] : [];
+      }),
     updateBundle: async (id, patch, at) => {
       const b = bundles.get(id);
       if (!b) return false;
@@ -547,6 +595,15 @@ export function createMemoryAssetsDb(
         // `utf8mb4_bin`, so MariaDB sorts `MAP.json` before `map.json` and a
         // locale-aware sort here would quietly diverge from the real listing.
         .sort((a, b) => cmp(a.version, b.version) || cmp(a.path, b.path)),
+    findNewestVersion: async (bundleId) =>
+      [...files.values()]
+        .filter((f) => f.bundleId === bundleId)
+        .sort((a, b) => b.createdAt - a.createdAt || cmp(b.id, a.id))[0]
+        ?.version,
+    hasVersion: async (bundleId, version) =>
+      [...files.values()].some(
+        (f) => f.bundleId === bundleId && f.version === version,
+      ),
     deleteFile: async (id) => files.delete(id),
     deleteVersion: async (bundleId, version) => {
       let n = 0;

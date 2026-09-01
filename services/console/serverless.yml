@@ -81,6 +81,16 @@ provider:
   httpApi:
     disableDefaultEndpoint: false
     metrics: true
+    # `api` is one function behind every console route at
+    # `reservedConcurrency: 10`, so `connectionLimit: 1` already caps its share
+    # of the host's MySQL connections — but nothing stopped an anonymous flood
+    # of the show routes from throttling sign-in, the SPA and the CLI with it.
+    # The show gallery is the first anonymous, uncached, multi-query route
+    # family here (`todo/24-show.md`), which is what makes this worth having.
+    # Well above real organiser traffic; the state stack sets the precedent.
+    defaultRouteSettings:
+      throttlingRateLimit: 50
+      throttlingBurstLimit: 100
   environment:
     STAGE: ${self:custom.stage}
     NODE_OPTIONS: --enable-source-maps

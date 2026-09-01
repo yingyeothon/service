@@ -63,12 +63,14 @@ export interface ShowsHarness {
   db: ShowsDb;
   /** Creates the event row `id` so a show may link to it. */
   seedEvent(id: string): Promise<void>;
+  /** Deletes it again, so the `ON DELETE SET NULL` on the link is exercised. */
+  dropEvent(id: string): Promise<void>;
 }
 
 /** Behaviour shared by the fake and (via Docker) the real DB. */
 export function showsContract(make: () => Promise<ShowsHarness>) {
   it("shows: insert, the nullable-unique event link, list filters and paging", async () => {
-    const { db, seedEvent } = await make();
+    const { db, seedEvent, dropEvent } = await make();
     await seedEvent("ev1");
     await db.insertShow(show("sh1"));
     await db.insertShow(show("sh2", { createdAt: 2, acl: "member_only" }));
@@ -99,19 +101,30 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
     expect((await db.findShowByEvent("ev1"))?.id).toBe("sh3");
     expect(await db.findShowByEvent("nope")).toBeUndefined();
 
+    // Deleting the event clears the link and leaves the gallery standing
+    // (decision 11); the freed event may then be claimed by another show.
+    await dropEvent("ev1");
+    expect(await db.findShow("sh3")).toMatchObject({ eventId: null });
+    expect(await db.findShowByEvent("ev1")).toBeUndefined();
+    await seedEvent("ev1");
+    await db.insertShow(show("sh7", { createdAt: 4, eventId: "ev1" }));
+
+    // A listed show carries no markdown body.
+    expect((await db.listShows()).rows[0]).not.toHaveProperty("bodyMd");
     expect((await db.listShows()).rows.map((s) => s.id)).toEqual([
+      "sh7",
       "sh3",
       "sh2",
       "sh1",
     ]);
     expect(
       (await db.listShows({ acls: ["public"] })).rows.map((s) => s.id),
-    ).toEqual(["sh3", "sh1"]);
+    ).toEqual(["sh7", "sh3", "sh1"]);
     const first = await db.listShows({ limit: 2 });
-    expect(first.rows.map((s) => s.id)).toEqual(["sh3", "sh2"]);
+    expect(first.rows.map((s) => s.id)).toEqual(["sh7", "sh3"]);
     expect(first.next).toBeDefined();
     const second = await db.listShows({ limit: 2, cursor: first.next });
-    expect(second.rows.map((s) => s.id)).toEqual(["sh1"]);
+    expect(second.rows.map((s) => s.id)).toEqual(["sh2", "sh1"]);
     expect(second.next).toBeUndefined();
     await expect(db.listShows({ cursor: "junk" })).rejects.toMatchObject({
       code: "bad_request",
@@ -263,6 +276,12 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
       ),
     ).toEqual(["se1"]);
     expect(await db.listEntryIds("sh1")).toEqual(["se2", "se1"]);
+    // Every target the show already holds, not a page of them: the picker
+    // filter must never offer one the unique index would refuse.
+    expect(
+      (await db.listEntryTargets("sh1")).map((t) => `${t.kind}:${t.id}`).sort(),
+    ).toEqual(["app:ca_se1", "site:st_a"]);
+    expect(await db.listEntryTargets("zz")).toEqual([]);
     expect(
       (await db.listEntriesByIds(["se1", "se2"])).map((e) => e.id),
     ).toEqual(["se1", "se2"]);
@@ -540,6 +559,12 @@ describe("memory shows db", () => {
       db,
       seedEvent: async (id) => {
         events.add(id);
+      },
+      dropEvent: async (id) => {
+        events.delete(id);
+        // `shows.event_id` is `ON DELETE SET NULL`.
+        for (const [k, s] of db.shows)
+          if (s.eventId === id) db.shows.set(k, { ...s, eventId: null });
       },
     };
   });
