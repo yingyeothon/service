@@ -104,6 +104,29 @@ yyt events history <id> | diff <id> <rev-a> <rev-b>              # page revision
 yyt events comments list|add <event-id> --body …|edit <event-id> <cid> --body …|delete <event-id> <cid>
 yyt events poster upload <event-id> poster.png|jpg | delete <event-id> | history <event-id>   # owner/admin, any status before closed, ≤5MB
 # <when>: RFC3339 (2026-09-12T14:00:00+09:00), local YYYY-MM-DDTHH:MM, or unix seconds
+
+yyt show list [--state open|closed] [--cursor c] | get <show>    # a public show is readable signed out; member_only needs a seat
+yyt show create <title> [--acl public|member_only] [--body @f]   # any non-pending member; audience is chosen here
+yyt show update <show> [--title t] [--body …] [--acl a] [--reason why]
+                                                                 # narrowing is always allowed; widening is refused once it has entries
+yyt show close <show> | reopen <show> [--reason why]             # closed = read-only, and reversible
+yyt show delete <show> --reason why                              # platform admin only; destroys other people's entries, so a reason is required
+yyt show from-event <event>                                      # owner/admin, once the event is visible to the world
+yyt show grants list <show> | add <show> <login> | rm <show> <login> [--reason why]
+                                                                 # write access, one member at a time; there is no read grant
+yyt show submittable <show>                                      # what you may still put up, from the teams you sit in
+yyt show entries list <show> [--sort new|likes] [--cursor c] | get <show> <entry>
+yyt show entries submit <show> <title> --app|--bundle|--site <name-or-id> [--body @f] [--screenshot a.png]...
+                                                                 # submitting is publication: the target's name and link become visible
+yyt show entries update <show> <entry> [--title t] [--body …] [--build ref] [--reason why]
+                                                                 # --screenshot replaces the whole set (max 3); omitting keeps it;
+                                                                 # --clear-screenshots empties it
+yyt show entries delete <show> <entry> [--reason why]            # its author, the show owner, an admin, or anyone who can write the target
+yyt show entries like <show> <entry> | unlike <show> <entry>     # idempotent
+yyt show entries comments list|add <show> <entry> --body …|edit <show> <entry> <cid> --body …|delete <show> <entry> <cid>
+
+yyt audit list [--action a|--action-prefix p] [--target id] [--actor login] [--from w] [--to w] [--cursor c|--all]
+yyt audit get <id>                                               # the full detail; admin only, and never cached
 ```
 
 OAuth client secrets may come from `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET` to keep them out of shell history.

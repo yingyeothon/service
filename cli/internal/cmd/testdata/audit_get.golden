@@ -1,0 +1,6 @@
+id:     au_1
+when:   2025-08-24T01:55:00Z
+action: show.delete
+actor:  boss
+target: sh_0123
+detail: {"reason":"spam"}

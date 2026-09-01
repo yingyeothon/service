@@ -1,0 +1,3 @@
+WHEN                  ACTION       ACTOR  TARGET   ID
+2025-08-24T01:55:00Z  show.delete  boss   sh_0123  au_1
+2025-08-24T01:56:40Z  show.sweep   -      -        au_2

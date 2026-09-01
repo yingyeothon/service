@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -535,7 +536,7 @@ func newEvents(a *App) *cobra.Command {
 				return err
 			}
 			// Plain client: the presigned URL must not carry the console bearer.
-			if err := putObject(cmd.Context(), &http.Client{Timeout: 60 * time.Second}, signed.URL, signed.Headers, data); err != nil {
+			if err := putObject(cmd.Context(), &http.Client{Timeout: 60 * time.Second}, "poster", signed.URL, signed.Headers, data); err != nil {
 				return err
 			}
 			var e event
@@ -602,8 +603,12 @@ func revisionText(r eventRevision) string {
 }
 
 // putObject uploads bytes to a presigned URL with exactly the signed headers.
-func putObject(ctx context.Context, hc *http.Client, url string, headers map[string]string, data []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+// `what` names the thing in the error, so posters and screenshots can share it.
+//
+// `hc` must be a bare client: the presigned URL carries its own signature and
+// must never see the console bearer (pinned by a test).
+func putObject(ctx context.Context, hc *http.Client, what, signedURL string, headers map[string]string, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, signedURL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -616,12 +621,39 @@ func putObject(ctx context.Context, hc *http.Client, url string, headers map[str
 	}
 	res, err := hc.Do(req)
 	if err != nil {
-		return err
+		// Never the URL: Go's `*url.Error` prints it in full, query string
+		// and all, and a presigned URL's query **is** a temporary credential
+		// (`X-Amz-Credential`, `X-Amz-Signature`) plus the object key. The
+		// cause alone is enough to tell a timeout from a refusal, and this
+		// path is driven from a smoke script into a log.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return fmt.Errorf("%s upload failed: %w", what, ue.Err)
+		}
+		return fmt.Errorf("%s upload failed: %w", what, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
+		// The status and S3's own error code, never the body: an S3 error
+		// document quotes the access key id, the string-to-sign and the key.
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
-		return fmt.Errorf("poster upload failed: HTTP %d %s", res.StatusCode, strings.TrimSpace(string(b)))
+		return fmt.Errorf("%s upload failed: HTTP %d%s", what, res.StatusCode, s3Code(b))
 	}
 	return nil
+}
+
+// s3Code pulls the `<Code>` element out of an S3 error document, so a failure
+// is diagnosable without echoing the document.
+func s3Code(body []byte) string {
+	const open, close = "<Code>", "</Code>"
+	i := strings.Index(string(body), open)
+	if i < 0 {
+		return ""
+	}
+	rest := string(body)[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 || j > 64 {
+		return ""
+	}
+	return " " + rest[:j]
 }

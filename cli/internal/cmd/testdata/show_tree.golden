@@ -1,0 +1,30 @@
+audit
+audit get
+audit list
+show
+show close
+show create
+show delete
+show entries
+show entries comments
+show entries comments add
+show entries comments delete
+show entries comments edit
+show entries comments list
+show entries delete
+show entries get
+show entries like
+show entries list
+show entries submit
+show entries unlike
+show entries update
+show from-event
+show get
+show grants
+show grants add
+show grants list
+show grants rm
+show list
+show reopen
+show submittable
+show update
