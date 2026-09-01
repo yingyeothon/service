@@ -519,6 +519,211 @@ describe("votes and time-driven transitions", () => {
   });
 });
 
+describe("early close by a platform admin", () => {
+  const nowOf = (h: H) => Math.floor(h.clock.now() / 1000);
+  const close = (h: H, u: User, id: string, body: unknown) =>
+    app(h, ev("POST", `/events/${id}/close-vote`, { headers: u.cookie, body }));
+
+  it("ends the vote now, decides by the tally, and says who forced it and why", async () => {
+    const { h, admin, owner, other, event } = await setup();
+    const id = event.id;
+    const [o1, o2] = event.options.map((o: Json) => o.id as string);
+    await publish(h, owner, id);
+    expect(await status(h, vote(h, other, id, [o2]))).toBe(200);
+    expect(await status(h, vote(h, owner, id, [o2]))).toBe(200);
+
+    h.clock.tick(1);
+    const at = nowOf(h) + 1; // `app` ticks a second for the write slot
+    const res = parse(await close(h, admin, id, { reason: "venue deadline" }));
+    expect(res).toMatchObject({
+      status: "waiting",
+      startsAt: NOW_SEC + 3 * DAY, // o2, the tally winner
+      voteClosedAt: at,
+      voteClosedBy: "boss",
+      voteClosedReason: "venue deadline",
+      // The standing rule decided; the page must not claim an admin picked it.
+      voteOverridden: false,
+      voters: 2,
+    });
+    // The deadline moves to the decision so the row stops advertising a vote
+    // that is over, and every option still starts after it.
+    expect(res.voteUntil).toBe(at);
+    expect(at).toBeLessThan(NOW_SEC + HOUR);
+    expect(res.options.map((o: Json) => [o.startsAt, o.votes])).toEqual([
+      [NOW_SEC + 2 * DAY, 0],
+      [NOW_SEC + 3 * DAY, 2],
+    ]);
+    expect(h.events.events.get(id)).toMatchObject({
+      status: "waiting",
+      startsAt: NOW_SEC + 3 * DAY,
+      voteClosedBy: "m_boss",
+    });
+    // ids never leave the API, only logins
+    expect(JSON.stringify(res)).not.toMatch(/m_boss|githubId|memberId/);
+
+    const a = h.db.audits.find((x) => x.action === "event.vote.close")!;
+    expect(a.target).toBe(id);
+    expect(a.detail).toMatchObject({
+      reason: "venue deadline",
+      startsAt: NOW_SEC + 3 * DAY,
+      decided: "tally",
+      // What was cut off, and what the standing rule said — `voteUntil` is
+      // overwritten by the close, so the row is the only record left.
+      previousVoteUntil: NOW_SEC + HOUR,
+      tallyStartsAt: NOW_SEC + 3 * DAY,
+    });
+
+    // the vote is over for everyone, and the event is public before its start
+    expect(await status(h, vote(h, other, id, [o1]))).toBe(409);
+    expect(
+      await status(
+        h,
+        app(h, ev("DELETE", `/events/${id}/vote`, { headers: other.cookie })),
+      ),
+    ).toBe(409);
+    const anon = parse(await get(h, id));
+    expect(anon).toMatchObject({ status: "waiting", voteClosedBy: "boss" });
+    expect(anon.voteOverridden).toBe(false);
+
+    // neither a later read nor the sweep re-decides what was already decided
+    h.clock.tick(HOUR);
+    expect(parse(await get(h, id)).startsAt).toBe(NOW_SEC + 3 * DAY);
+    expect(
+      await runEventSweep({
+        events: h.events,
+        posters: h.posters,
+        clock: h.clock,
+        logger: nullLogger,
+      }),
+    ).toEqual({ transitioned: 0, postersDeleted: 0 });
+    expect(h.events.events.get(id)).toMatchObject({
+      status: "waiting",
+      startsAt: NOW_SEC + 3 * DAY,
+      voteClosedReason: "venue deadline",
+    });
+  });
+
+  it("an admin may name an option that lost, and the day it frees is reusable", async () => {
+    const { h, admin, owner, other, event } = await setup();
+    const id = event.id;
+    const [o1, o2] = event.options.map((o: Json) => o.id as string);
+    await publish(h, owner, id);
+    expect(await status(h, vote(h, other, id, [o2]))).toBe(200);
+    const res = parse(
+      await close(h, admin, id, {
+        reason: "only the hall is free",
+        optionId: o1,
+      }),
+    );
+    expect(res).toMatchObject({
+      status: "waiting",
+      startsAt: NOW_SEC + 2 * DAY, // o1, with zero votes
+      voteOverridden: true,
+    });
+    expect(res.options.map((o: Json) => o.votes)).toEqual([0, 1]);
+    expect(
+      h.db.audits.find((x) => x.action === "event.vote.close")!.detail,
+    ).toMatchObject({
+      decided: "chosen",
+      startsAt: NOW_SEC + 2 * DAY,
+      // the tally wanted the other one; that is the whole point of the record
+      tallyStartsAt: NOW_SEC + 3 * DAY,
+    });
+    // day +3 was held by the losing option and is free again
+    expect(
+      await status(
+        h,
+        app(
+          h,
+          ev("POST", "/events", { headers: other.cookie, body: draftBody(3) }),
+        ),
+      ),
+    ).toBe(201);
+  });
+
+  it("needs a reason and a real option, and only a platform admin may do it", async () => {
+    const { h, admin, owner, other, pending, event } = await setup();
+    const id = event.id;
+    const [o1] = event.options.map((o: Json) => o.id as string);
+    await publish(h, owner, id);
+    expect(await status(h, close(h, admin, id, {}))).toBe(400);
+    expect(await status(h, close(h, admin, id, { reason: "   " }))).toBe(400);
+    expect(
+      await status(
+        h,
+        close(h, admin, id, { reason: "x", optionId: "eo_nope" }),
+      ),
+    ).toBe(400);
+    expect(
+      await status(h, close(h, admin, id, { reason: "x", note: "y" })),
+    ).toBe(400);
+    // The reason is printed back into the CLI's `key: value` table, whose
+    // sanitizer keeps newlines and tabs — so a forged row is refused here.
+    expect(
+      await status(h, close(h, admin, id, { reason: "ok\nposter:\tevil" })),
+    ).toBe(400);
+    expect(await status(h, close(h, other, id, { reason: "x" }))).toBe(403);
+    expect(await status(h, close(h, pending, id, { reason: "x" }))).toBe(403);
+    // the owner is not an admin: their own event is not theirs to force
+    expect(await status(h, close(h, owner, id, { reason: "x" }))).toBe(403);
+    expect(
+      await status(
+        h,
+        app(
+          h,
+          ev("POST", `/events/${id}/close-vote`, { body: { reason: "x" } }),
+        ),
+      ),
+    ).toBe(401);
+    expect(h.events.events.get(id)?.status).toBe("voting");
+    // nothing above spent the decision
+    expect(
+      parse(await close(h, admin, id, { reason: "now", optionId: o1 })).status,
+    ).toBe("waiting");
+  });
+
+  it("only a running vote can be closed early", async () => {
+    const { h, admin, owner, event } = await setup();
+    const id = event.id;
+    // draft
+    expect(await status(h, close(h, admin, id, { reason: "x" }))).toBe(409);
+    await publish(h, owner, id);
+    expect(await status(h, close(h, admin, id, { reason: "x" }))).toBe(200);
+    // waiting: already decided
+    expect(await status(h, close(h, admin, id, { reason: "again" }))).toBe(409);
+    // an unknown id is a 404 through `visibleEvent`, not a 403
+    expect(await status(h, close(h, admin, "ev_nope", { reason: "x" }))).toBe(
+      404,
+    );
+    // and an event whose deadline simply passed is not force-closed either
+    const d = parse(
+      await app(
+        h,
+        ev("POST", "/events", { headers: owner.cookie, body: draftBody(8) }),
+      ),
+    );
+    await publish(h, owner, d.id);
+    h.clock.tick(HOUR);
+    expect(await status(h, close(h, admin, d.id, { reason: "x" }))).toBe(409);
+    expect(parse(await get(h, d.id)).voteClosedAt).toBeNull();
+    // A draft cancelled before it was ever published stays as private as the
+    // draft it was (`rules/security.md`): admin-visible, but never `voting`.
+    const priv = parse(
+      await app(
+        h,
+        ev("POST", "/events", { headers: owner.cookie, body: draftBody(11) }),
+      ),
+    );
+    await app(
+      h,
+      ev("POST", `/events/${priv.id}/cancel`, { headers: owner.cookie }),
+    );
+    expect(await status(h, close(h, admin, priv.id, { reason: "x" }))).toBe(
+      409,
+    );
+  });
+});
+
 describe("comments", () => {
   it("members comment on non-draft events; authors edit, authors or admins delete", async () => {
     const { h, admin, owner, other, pending, event } = await setup();

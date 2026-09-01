@@ -355,13 +355,16 @@ try {
       })
     ).body?.revision === 5,
   );
-  // a second event on another day, decided instantly through a short vote, then cancelled by its owner
+  // a second event on another day, published then cancelled by its owner.
+  // The deadline has to outlive the publish that follows: create and publish
+  // each sleep out a 500 ms write slot, so a +2 s deadline was already past by
+  // the time `publish` ran and answered 409 (`rules/testing.md`).
   const e2 = await call("/events", {
     method: "POST",
     headers: as(other),
     body: draft({
       options: [base_day + 3 * DAY],
-      voteUntil: Math.floor(Date.now() / 1000) + 2,
+      voteUntil: Math.floor(Date.now() / 1000) + 60,
     }),
   });
   check("second draft on a free day", e2.status === 201, e2.text.slice(0, 200));
@@ -407,6 +410,186 @@ try {
       })
     ).status === 201,
   );
+  // early close: an admin ends a vote whose deadline is an hour out and names
+  // the candidate that lost, so the override is the thing being measured.
+  const e3 = await call("/events", {
+    method: "POST",
+    headers: as(owner),
+    body: draft({ options: [base_day + 5 * DAY, base_day + 6 * DAY] }),
+  });
+  check("third draft on free days", e3.status === 201, e3.text.slice(0, 200));
+  ids.push(e3.body?.id);
+  const e3id = e3.body?.id;
+  const [t1, t2] = (e3.body?.options ?? []).map((o) => o.id);
+  check(
+    "third publish",
+    (
+      await call(`/events/${e3id}/publish`, {
+        method: "POST",
+        headers: as(owner),
+      })
+    ).body?.status === "voting",
+  );
+  check(
+    "member votes for the later date",
+    (
+      await call(`/events/${e3id}/vote`, {
+        method: "PUT",
+        headers: as(other),
+        body: { optionIds: [t2] },
+      })
+    ).status === 200,
+  );
+  check(
+    "the owner cannot close their own vote",
+    (
+      await call(`/events/${e3id}/close-vote`, {
+        method: "POST",
+        headers: as(owner),
+        body: { reason: "I decide" },
+      })
+    ).status === 403,
+  );
+  check(
+    "a reason is required",
+    (
+      await call(`/events/${e3id}/close-vote`, {
+        method: "POST",
+        headers: as(admin),
+        body: {},
+      })
+    ).status === 400,
+  );
+  check(
+    "an unknown option is refused",
+    (
+      await call(`/events/${e3id}/close-vote`, {
+        method: "POST",
+        headers: as(admin),
+        body: { reason: "x", optionId: "eo_nope" },
+      })
+    ).status === 400,
+  );
+  const forced = await call(`/events/${e3id}/close-vote`, {
+    method: "POST",
+    headers: as(admin),
+    body: { reason: "the venue moved its deadline", optionId: t1 },
+  });
+  check(
+    "admin closes the vote now, on the option that lost",
+    forced.status === 200 &&
+      forced.body?.status === "waiting" &&
+      forced.body?.startsAt === base_day + 5 * DAY &&
+      forced.body?.voteUntil === forced.body?.voteClosedAt &&
+      forced.body?.voteClosedBy === "smoke-admin" &&
+      forced.body?.voteClosedReason === "the venue moved its deadline" &&
+      forced.body?.options?.[1]?.votes === 1,
+    forced.text.slice(0, 300),
+  );
+  const forcedAnon = await call(`/events/${e3id}`);
+  check(
+    "the forced decision is public, with its reason",
+    forcedAnon.status === 200 &&
+      forcedAnon.body?.voteClosedBy === "smoke-admin" &&
+      forcedAnon.body?.voteClosedReason === "the venue moved its deadline",
+    String(forcedAnon.status),
+  );
+  check(
+    "voting is over for everyone",
+    (
+      await call(`/events/${e3id}/vote`, {
+        method: "PUT",
+        headers: as(other),
+        body: { optionIds: [t2] },
+      })
+    ).status === 409,
+  );
+  check(
+    "a decided vote cannot be closed twice",
+    (
+      await call(`/events/${e3id}/close-vote`, {
+        method: "POST",
+        headers: as(admin),
+        body: { reason: "again" },
+      })
+    ).status === 409,
+  );
+  check(
+    "the option it did not pick frees its day",
+    (
+      await call("/events", {
+        method: "POST",
+        headers: as(admin),
+        body: draft({ options: [base_day + 6 * DAY + 60] }),
+      })
+    ).status === 201,
+  );
+
+  // The common case: an early close with no `optionId`, so the standing rule
+  // runs against the real driver's `listVotes` rather than only the fake's.
+  const e4 = await call("/events", {
+    method: "POST",
+    headers: as(owner),
+    body: draft({ options: [base_day + 8 * DAY, base_day + 9 * DAY] }),
+  });
+  check("fourth draft on free days", e4.status === 201, e4.text.slice(0, 200));
+  ids.push(e4.body?.id);
+  const e4id = e4.body?.id;
+  const [, u2] = (e4.body?.options ?? []).map((o) => o.id);
+  check(
+    "fourth publish",
+    (
+      await call(`/events/${e4id}/publish`, {
+        method: "POST",
+        headers: as(owner),
+      })
+    ).body?.status === "voting",
+  );
+  check(
+    "two members vote for the later date",
+    (
+      await call(`/events/${e4id}/vote`, {
+        method: "PUT",
+        headers: as(other),
+        body: { optionIds: [u2] },
+      })
+    ).status === 200 &&
+      (
+        await call(`/events/${e4id}/vote`, {
+          method: "PUT",
+          headers: as(admin),
+          body: { optionIds: [u2] },
+        })
+      ).status === 200,
+  );
+  check(
+    "a control character in the reason is refused",
+    (
+      await call(`/events/${e4id}/close-vote`, {
+        method: "POST",
+        headers: as(admin),
+        body: { reason: "ok\nposter:\tevil" },
+      })
+    ).status === 400,
+  );
+  const tallied = await call(`/events/${e4id}/close-vote`, {
+    method: "POST",
+    headers: as(admin),
+    body: { reason: "everyone has voted already" },
+  });
+  check(
+    "closing with no option lets the tally decide, and says so",
+    tallied.status === 200 &&
+      tallied.body?.startsAt === base_day + 9 * DAY &&
+      tallied.body?.voteOverridden === false &&
+      tallied.body?.voters === 2,
+    tallied.text.slice(0, 300),
+  );
+  check(
+    "the overridden close is flagged, the tally close is not",
+    (await call(`/events/${e3id}`)).body?.voteOverridden === true,
+  );
+
   const lastList =
     (await call("/events", { headers: as(admin) })).body?.events ?? [];
   ids.push(

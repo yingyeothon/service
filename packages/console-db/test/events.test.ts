@@ -34,6 +34,9 @@ export function eventsContract(make: () => EventsDb | Promise<EventsDb>) {
       startsAt: null,
       cancelledAt: null,
       cancelledBy: null,
+      voteClosedAt: null,
+      voteClosedBy: null,
+      voteClosedReason: null,
       revision: 1,
       voteUntil: 100,
       durationHours: 8,
@@ -92,6 +95,28 @@ export function eventsContract(make: () => EventsDb | Promise<EventsDb>) {
     });
     expect(await db.updateEvent("e1", { startsAt: null }, 7)).toBe(true);
     expect((await db.findEvent("e1"))?.startsAt).toBeNull();
+    // An admin force-closing the vote writes every column at once, under the
+    // same status CAS the route uses: a patch that lost the race must not
+    // write the reason either.
+    const close = {
+      startsAt: 300,
+      status: "waiting" as const,
+      voteUntil: 8,
+      voteClosedAt: 8,
+      voteClosedBy: "m2",
+      voteClosedReason: "the venue moved its deadline",
+    };
+    expect(await db.updateEvent("e1", close, 8, "waiting")).toBe(false);
+    expect((await db.findEvent("e1"))?.voteClosedBy).toBeNull();
+    expect(await db.updateEvent("e1", close, 8, "voting")).toBe(true);
+    expect(await db.findEvent("e1")).toMatchObject({
+      status: "waiting",
+      startsAt: 300,
+      voteUntil: 8,
+      voteClosedAt: 8,
+      voteClosedBy: "m2",
+      voteClosedReason: "the venue moved its deadline",
+    });
     expect(await db.updateEvent("nope", { status: "closed" }, 1)).toBe(false);
   });
 

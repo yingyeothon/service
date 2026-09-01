@@ -38,6 +38,15 @@ export interface EventRow {
   cancelledBy: string | null;
   /** Current revision number; `event_revisions` holds one row per number. */
   revision: number;
+  /**
+   * Set when a platform admin ended the vote before `voteUntil`
+   * (`docs/decisions.md` *Hackathon workflow*, early close). Null on every
+   * event whose date the clock decided. The reason is shown on the event page,
+   * not only in the audit log.
+   */
+  voteClosedAt: number | null;
+  voteClosedBy: string | null;
+  voteClosedReason: string | null;
 }
 
 /** The versioned part of the page (one `event_revisions` row). */
@@ -65,6 +74,9 @@ export interface EventPatch {
   publishedAt?: number | null;
   cancelledAt?: number | null;
   cancelledBy?: string | null;
+  voteClosedAt?: number | null;
+  voteClosedBy?: string | null;
+  voteClosedReason?: string | null;
 }
 
 export interface EventOptionRow {
@@ -201,6 +213,9 @@ export function createEventsDb(prisma: PrismaClient): EventsDb {
     cancelled_at: bigint | number | null;
     cancelled_by: string | null;
     revision: number;
+    vote_closed_at: bigint | number | null;
+    vote_closed_by: string | null;
+    vote_closed_reason: string | null;
   }): EventRow => ({
     id: r.id,
     title: r.title,
@@ -219,6 +234,9 @@ export function createEventsDb(prisma: PrismaClient): EventsDb {
     cancelledAt: nul(r.cancelled_at),
     cancelledBy: r.cancelled_by,
     revision: r.revision,
+    voteClosedAt: nul(r.vote_closed_at),
+    voteClosedBy: r.vote_closed_by,
+    voteClosedReason: r.vote_closed_reason,
   });
   const toOption = (r: {
     id: string;
@@ -364,6 +382,12 @@ export function createEventsDb(prisma: PrismaClient): EventsDb {
           data.cancelled_at = patch.cancelledAt;
         if (patch.cancelledBy !== undefined)
           data.cancelled_by = patch.cancelledBy;
+        if (patch.voteClosedAt !== undefined)
+          data.vote_closed_at = patch.voteClosedAt;
+        if (patch.voteClosedBy !== undefined)
+          data.vote_closed_by = patch.voteClosedBy;
+        if (patch.voteClosedReason !== undefined)
+          data.vote_closed_reason = patch.voteClosedReason;
         const r = await prisma.events.updateMany({
           where: {
             id,
@@ -632,6 +656,9 @@ export function createMemoryEventsDb(
         cancelledAt: null,
         cancelledBy: null,
         revision: 1,
+        voteClosedAt: null,
+        voteClosedBy: null,
+        voteClosedReason: null,
       });
       for (const o of e.options)
         options.set(o.id, { id: o.id, eventId: e.id, startsAt: o.startsAt });

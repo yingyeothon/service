@@ -100,6 +100,7 @@ yyt events update <id> [--title t] [--body …] [--place p] [--place-url u|--cle
                                                                  # owner/admin; every edit is a revision; schedule flags only while draft
 yyt events publish <id> | cancel <id> | delete <id>              # owner/admin (draft → voting; cancel before closed); delete = platform admin
 yyt events vote <event-id> <option-id>... | unvote <event-id>    # while voting; pick every date you can make
+yyt events close-vote <id> --reason why [--option <option-id>]   # platform admin; ends the vote now — --option overrides the tally
 yyt events history <id> | diff <id> <rev-a> <rev-b>              # page revisions; unified diff (fields + body)
 yyt events comments list|add <event-id> --body …|edit <event-id> <cid> --body …|delete <event-id> <cid>
 yyt events poster upload <event-id> poster.png|jpg | delete <event-id> | history <event-id>   # owner/admin, any status before closed, ≤5MB

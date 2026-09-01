@@ -400,6 +400,20 @@ export interface EventDetail {
   publishedAt: number | null;
   cancelledAt: number | null;
   cancelledBy: string | null;
+  /**
+   * Non-null when a platform admin ended the vote before its deadline
+   * (`docs/decisions.md` *Hackathon workflow*, early close). Shown on the page
+   * so participants see a forced decision, not only the audit log.
+   */
+  voteClosedAt: number | null;
+  voteClosedBy: string | null;
+  voteClosedReason: string | null;
+  /**
+   * Present only alongside `voteClosedAt`: true when the admin also named a
+   * date the tally would not have picked. An early close usually lets the
+   * standing rule decide, so the two cases must read differently.
+   */
+  voteOverridden?: boolean;
   posterUrl: string | null;
   /** The gallery this event spawned, if any (`docs/decisions.md` decision 11). */
   showId: string | null;
