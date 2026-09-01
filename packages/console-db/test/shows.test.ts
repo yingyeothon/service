@@ -335,9 +335,9 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
       db.insertShot(shot("ss4", "zz", k("d"))),
     ).rejects.toMatchObject({ code: "unavailable" });
 
-    // Both reservations are live slots until they expire.
-    expect(await db.countShotSlots("se1", 100)).toBe(2);
-    expect(await db.countShotSlots("se1", 700)).toBe(0);
+    // Reservations hold a slot until they expire.
+    expect(await db.countPendingShots("se1", 100)).toBe(2);
+    expect(await db.countPendingShots("se1", 700)).toBe(0);
 
     expect(await db.findShot("ss1")).toMatchObject({
       status: "pending",
@@ -353,7 +353,9 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
     expect((await db.listShots("se1", ["live"])).map((s) => s.key)).toEqual([
       k("b"),
     ]);
-    expect(await db.countShotSlots("se1", 700)).toBe(1);
+    // A committed shot is **not** a reservation: an entry already holding the
+    // maximum must still be able to presign its replacements.
+    expect(await db.countPendingShots("se1", 100)).toBe(0);
     // The entry's `updatedAt` moves: the SPA uses it as the cache-buster.
     expect((await db.findEntry("se1"))?.updatedAt).toBe(30);
 
@@ -388,6 +390,20 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
     expect(await db.updateShot("ss1", { deletedAt: 40 })).toBe(true);
     expect(await db.updateShot("zz", { deletedAt: 40 })).toBe(false);
     expect(await db.listPendingShotDeletes(10)).toEqual([]);
+    // The batch form: one statement for a backlog, unknown ids ignored.
+    await db.insertShot(
+      shot("ss7", "se1", k("y"), { status: "replaced", replacedAt: 35 }),
+    );
+    expect(await db.markShotsDeleted([], 40)).toBe(0);
+    expect(await db.markShotsDeleted(["ss7", "zz"], 40)).toBe(1);
+    expect(await db.findShot("ss7")).toMatchObject({ deletedAt: 40 });
+    // A failed upload takes its reservation with it, or the slot stays taken.
+    await db.insertShot(shot("ss6", "se1", k("z")));
+    expect(await db.countPendingShots("se1", 100)).toBe(1);
+    expect(await db.deleteShotsByKeys([])).toBe(0);
+    expect(await db.deleteShotsByKeys([k("z")])).toBe(1);
+    expect(await db.findShot("ss6")).toBeUndefined();
+    expect(await db.countPendingShots("se1", 100)).toBe(0);
 
     expect(await db.listShotsByKeys([])).toEqual([]);
     expect(
@@ -400,18 +416,21 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
     ).toEqual([k("b")]);
     expect(await db.listLiveShotsOf([])).toEqual([]);
 
-    // A key whose object the sweep already deleted is not a key any more:
-    // re-committing it would leave a `live` row pointing at nothing that
-    // neither the delete queue nor the snapshot could ever see again.
+    // A retired key is already in the sweep's delete queue: re-committing it
+    // would race that delete into a `live` row pointing at nothing, which
+    // neither the queue nor the age pass could ever see again.
     expect(await db.replaceShots("se1", [k("a")], 41)).toBeUndefined();
+    // ...and a refused commit must not move the entry's `updatedAt`.
+    expect((await db.findEntry("se1"))?.updatedAt).toBe(30);
     expect((await db.listShots("se1", ["live"])).map((s) => s.key)).toEqual([
       k("b"),
     ]);
 
     // Retired rows do not accumulate forever.
     expect(await db.purgeDeletedShots(40)).toBe(0);
-    expect(await db.purgeDeletedShots(41)).toBe(1);
+    expect(await db.purgeDeletedShots(41)).toBe(2);
     expect(await db.findShot("ss1")).toBeUndefined();
+    expect(await db.findShot("ss7")).toBeUndefined();
 
     // Expired reservations are reclaimed so their objects stop being pinned.
     expect(await db.deleteExpiredShotReservations(700)).toBe(1);

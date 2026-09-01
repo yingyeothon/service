@@ -41,6 +41,7 @@ import {
   runRedisUsageReport,
 } from "./expire.js";
 import { runEventSweep } from "./events.js";
+import { runShowSweep } from "./shows.js";
 import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 import {
   createCloudWatchUsageMetrics,
@@ -320,6 +321,7 @@ export const expire = async (): Promise<void> => {
     stage,
     db,
     events,
+    shows,
     catalog,
     assets,
     sites,
@@ -383,6 +385,10 @@ export const expire = async (): Promise<void> => {
     // Persists the event statuses the API only derives and retries poster
     // objects whose delete failed at replacement time.
     () => runEventSweep({ events, posters, clock: systemClock, logger }),
+    // Retries screenshot deletes that failed at replacement time, reclaims
+    // expired presign reservations, and drops `shots/` objects no row
+    // references. Its own step, so a failure above still lets it run.
+    () => runShowSweep({ shows, db, posters, kv, clock: systemClock, logger }),
   ]) {
     try {
       await step();

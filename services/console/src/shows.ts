@@ -1,4 +1,4 @@
-import { AppError, nowSec, ulid, type Clock } from "@yyt/core";
+import { AppError, nowSec, ulid, type Clock, type Logger } from "@yyt/core";
 import type {
   AssetsDb,
   CatalogDb,
@@ -7,22 +7,51 @@ import type {
   ShowEntryRow,
   ShowListRow,
   ShowRow,
+  ShowShotRow,
   ShowTargetKind,
   ShowsDb,
   SitesDb,
 } from "@yyt/console-db";
-import { ENTRY_PAGE_MAX, SHOW_PAGE_MAX } from "@yyt/console-db";
-import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
+import {
+  ENTRY_PAGE_MAX,
+  ENTRY_SHOTS_MAX,
+  SHOW_PAGE_MAX,
+} from "@yyt/console-db";
+import {
+  defineRoute,
+  redirect,
+  type AnyRoute,
+  type RouteContext,
+} from "@yyt/http";
 import type { Kv } from "@yyt/redis";
 import { z } from "zod";
 import { artifactUrl } from "./catalog.js";
 import { ASSET_KEY_PREFIX } from "./assets.js";
 import { canSeeEvent, settleEvent } from "./events.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
+import {
+  POSTER_MAX_BYTES,
+  POSTER_TYPES,
+  POSTER_URL_TTL_SEC,
+  type PosterStore,
+} from "./poster.js";
 import { sitePublicUrl } from "./site-deploy.js";
 import type { TeamAccessHelpers } from "./team-access.js";
 import { MD_BODY_MAX } from "./team.js";
 import { createWriteSlot } from "./write-slot.js";
+
+/**
+ * Screenshots live under their own prefix in the console's existing private
+ * media bucket, beside `posters/` and `site-uploads/`. Server-minted keys:
+ * `shots/{showId}/{entryId}/{ulid}.{png|jpg}`.
+ */
+export const SHOTS_PREFIX = "shots/";
+
+/**
+ * How many objects a request deletes inline before handing the rest to the
+ * nightly sweep. The request path has a 25 s budget; the sweep has all night.
+ */
+export const INLINE_DELETE_MAX = 20;
 
 /** Caps (`docs/decisions.md` *Show (console)*, decision 13). */
 export const OPEN_SHOWS_PER_MEMBER = 5;
@@ -84,6 +113,19 @@ const targetRef = z
   .string()
   .trim()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "invalid targetRef");
+const shotPresignBody = z
+  .object({
+    contentType: z.enum(Object.keys(POSTER_TYPES) as [string, ...string[]]),
+    size: z.number().int().positive().max(POSTER_MAX_BYTES),
+    reason: reason.optional(),
+  })
+  .strict();
+const shotCommitBody = z
+  .object({
+    keys: z.array(z.string().min(1).max(255)).max(ENTRY_SHOTS_MAX),
+    reason: reason.optional(),
+  })
+  .strict();
 const entryPatchBody = z
   .object({
     title: title.optional(),
@@ -106,6 +148,10 @@ export interface ShowRoutesOptions {
   cdnBaseUrl?: string;
   /** The shared static site host; without it site links are omitted. */
   siteCdnUrl?: string;
+  /** `https://console-dev.yyt.life`; screenshots are served from this host. */
+  baseUrl: string;
+  /** Omit when no media bucket is configured: screenshot routes answer 503. */
+  posters?: PosterStore;
   clock: Clock;
   kv: Kv;
   audit: (
@@ -131,6 +177,8 @@ export function createShowRoutes({
   access,
   cdnBaseUrl,
   siteCdnUrl,
+  baseUrl,
+  posters,
   clock,
   kv,
   audit,
@@ -145,6 +193,16 @@ export function createShowRoutes({
   });
   /** The `mdrl:` slot shared by every route family that records rows. */
   const writeSlot = createWriteSlot({ kv, clock });
+
+  function requirePosters(): PosterStore {
+    if (!posters)
+      throw new AppError("unavailable", "media storage is not configured");
+    return posters;
+  }
+  const shotPrefix = (showId: string, entryId: string) =>
+    `${SHOTS_PREFIX}${showId}/${entryId}/`;
+  const shotUrl = (showId: string, entryId: string, shotId: string) =>
+    `${baseUrl.replace(/\/+$/, "")}/shows/${showId}/entries/${entryId}/shots/${shotId}`;
 
   /**
    * Logins for exactly the ids a response needs. Deliberately not
@@ -387,6 +445,7 @@ export function createShowRoutes({
     e: ShowEntryRow,
     logins: Map<string, string>,
     target: TargetView,
+    shots: readonly ShowShotRow[] = [],
   ) => ({
     id: e.id,
     showId: e.showId,
@@ -396,7 +455,26 @@ export function createShowRoutes({
     createdAt: e.createdAt,
     updatedAt: e.updatedAt,
     target,
+    // The redirect route, never the object key: visibility follows the show's
+    // and is re-derived on every request.
+    shots: shots.map((x) => ({
+      id: x.id,
+      contentType: x.contentType,
+      size: x.size,
+      url: shotUrl(e.showId, e.id, x.id),
+    })),
   });
+
+  /** `live` shots of a page of entries, grouped, in one query. */
+  async function shotsOf(
+    entries: readonly ShowEntryRow[],
+  ): Promise<Map<string, ShowShotRow[]>> {
+    const out = new Map<string, ShowShotRow[]>();
+    for (const e of entries) out.set(e.id, []);
+    for (const x of await shows.listLiveShotsOf(entries.map((e) => e.id)))
+      out.get(x.entryId)?.push(x);
+    return out;
+  }
 
   /* ---- routes --------------------------------------------------------- */
 
@@ -465,9 +543,10 @@ export function createShowRoutes({
         });
         const logins = await loginsOf(...page.rows.map((e) => e.createdBy));
         const targets = await targetViews(page.rows);
+        const shots = await shotsOf(page.rows);
         return {
           entries: page.rows.map((e) =>
-            entryView(e, logins, targets.get(e.id)!),
+            entryView(e, logins, targets.get(e.id)!, shots.get(e.id)),
           ),
           next: page.next ?? null,
         };
@@ -482,7 +561,12 @@ export function createShowRoutes({
         const logins = await loginsOf(entry.createdBy);
         const targets = await targetViews([entry]);
         return {
-          ...entryView(entry, logins, targets.get(entry.id)!),
+          ...entryView(
+            entry,
+            logins,
+            targets.get(entry.id)!,
+            await shows.listShots(entry.id, ["live"]),
+          ),
           canWrite: await canWrite(show, id),
         };
       },
@@ -666,9 +750,27 @@ export function createShowRoutes({
           at: nowSec(clock),
           detail: { reason: ctx.body.reason, snapshot },
         });
-        // The objects the snapshot's `shotKeys` name are deleted in step D
-        // (`todo/24-show.md`); until then `runShowSweep` pass (b) reclaims
-        // them, which is what makes the ordering here recoverable either way.
+        // Objects after the snapshot, before the row: a failed delete leaves
+        // the show standing and retryable, and the sweep's age pass reclaims
+        // whatever a partial run left behind.
+        if (posters)
+          // Bounded for the same reason as the commit: once the row is gone
+          // the objects are unreferenced, and the sweep's age pass reclaims
+          // whatever this run did not reach. A delete that never finished
+          // would leave the show undeletable instead.
+          for (const key of (await shows.listShowObjectKeys(show.id)).slice(
+            0,
+            INLINE_DELETE_MAX,
+          ))
+            try {
+              if (!key.startsWith(SHOTS_PREFIX)) continue;
+              await posters.delete(key);
+            } catch (e) {
+              ctx.logger.warn("shot delete failed; sweep will reclaim", {
+                showId: show.id,
+                message: e instanceof Error ? e.message : String(e),
+              });
+            }
         await shows.deleteShow(show.id);
         return undefined;
       },
@@ -771,6 +873,187 @@ export function createShowRoutes({
             login: member.githubLogin,
             ...mod,
           });
+        return undefined;
+      },
+    }),
+
+    // ---- screenshots ------------------------------------------------------
+    {
+      method: "GET",
+      path: "/shows/{show}/entries/{entry}/shots/{id}",
+      handler: async (ctx) => {
+        // `acl` is mutable, so this re-derives visibility like every other
+        // read: an object-serving route is still a resource route.
+        const { show } = await visibleShow(ctx);
+        const entry = await entryOf(ctx, show);
+        const shot = await shows.findShot(ctx.params.id!);
+        if (!shot || shot.entryId !== entry.id || shot.status !== "live")
+          throw new AppError("not_found", "screenshot not found");
+        const url = await requirePosters().presignGet(shot.key);
+        // `no-store`, unlike the poster route: narrowing a show's ACL must
+        // take effect on the next request. The presigned URL itself stays
+        // valid for its own TTL — that residual is unavoidable and small.
+        return redirect(url, { headers: { "cache-control": "no-store" } });
+      },
+    },
+    defineRoute({
+      method: "POST",
+      path: "/shows/{show}/entries/{entry}/shots",
+      auth: true,
+      body: shotPresignBody,
+      handler: async (ctx) => {
+        const { id, show, now } = await writableShow(ctx);
+        const entry = await entryOf(ctx, show);
+        // The same ladder as the commit. Without it a grant holder could pile
+        // reservations onto a peer's entry, lock its author out of their own
+        // three slots, and stage megabytes under their prefix.
+        if (entry.createdBy !== id.subject && !canManage(show, id))
+          throw new AppError("forbidden", "not your entry");
+        const mod = moderation(id, entry.createdBy, ctx.body.reason);
+        const store = requirePosters();
+        // This writes a row and an audit row, so it takes the slot like every
+        // other recorded write — a presign is a reservation, not a read.
+        await writeSlot(id);
+        // Reservations only: the live set is capped by the commit, which
+        // replaces it wholesale. Counting live rows here would mean an entry
+        // already holding three could never presign a replacement.
+        if ((await shows.countPendingShots(entry.id, now)) >= ENTRY_SHOTS_MAX)
+          throw new AppError(
+            "conflict",
+            `too many screenshots in flight (max ${ENTRY_SHOTS_MAX} per entry)`,
+          );
+        const shotId = `ss_${ulid().toLowerCase()}`;
+        const key = `${shotPrefix(show.id, entry.id)}${shotId}.${POSTER_TYPES[ctx.body.contentType]}`;
+        const url = await store.presignPut({
+          key,
+          contentType: ctx.body.contentType,
+          contentLength: ctx.body.size,
+        });
+        // The row is the reservation: it counts against the cap until it
+        // expires, so a caller cannot pipeline presigns past the limit.
+        await shows.insertShot({
+          id: shotId,
+          entryId: entry.id,
+          status: "pending",
+          ord: 0,
+          key,
+          contentType: ctx.body.contentType,
+          size: ctx.body.size,
+          uploadedBy: id.subject,
+          uploadedAt: now,
+          expiresAt: now + POSTER_URL_TTL_SEC,
+          replacedAt: null,
+          deletedAt: null,
+        });
+        await audit(id.subject, "show.entry.shots", entry.id, {
+          showId: show.id,
+          ...mod,
+        });
+        // An explicit result: a plain object return would skip the header, and
+        // this body carries a signed upload URL (`rules/security.md`).
+        return {
+          statusCode: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+          body: JSON.stringify({
+            id: shotId,
+            key,
+            url,
+            method: "PUT",
+            headers: {
+              "content-type": ctx.body.contentType,
+              "content-length": String(ctx.body.size),
+            },
+            expiresInSec: POSTER_URL_TTL_SEC,
+          }),
+        };
+      },
+    }),
+    defineRoute({
+      method: "PUT",
+      path: "/shows/{show}/entries/{entry}/shots",
+      auth: true,
+      body: shotCommitBody,
+      handler: async (ctx) => {
+        const { id, show, now } = await writableShow(ctx);
+        const entry = await entryOf(ctx, show);
+        if (entry.createdBy !== id.subject && !canManage(show, id))
+          throw new AppError("forbidden", "not your entry");
+        const mod = moderation(id, entry.createdBy, ctx.body.reason);
+        const store = requirePosters();
+        const prefix = shotPrefix(show.id, entry.id);
+        const keys = ctx.body.keys;
+        if (new Set(keys).size !== keys.length)
+          throw new AppError("bad_request", "duplicate screenshot key");
+        for (const key of keys)
+          // The prefix carries the ids from *this* path, so the parent
+          // assertion above is what makes this check mean anything.
+          if (!key.startsWith(prefix) || key.includes(".."))
+            throw new AppError(
+              "bad_request",
+              "key does not belong to this entry",
+            );
+        // A signed `content-type` is not proof the object has one: re-read it.
+        for (const key of keys) {
+          const obj = await store.head(key);
+          if (!obj) {
+            // `head` maps 403 to "missing", and an IAM or KMS refusal on this
+            // prefix looks exactly like a caller who never uploaded — log it
+            // or a misdeployed policy is undiagnosable from the outside.
+            ctx.logger.warn("screenshot not found at commit", {
+              entryId: entry.id,
+            });
+            throw new AppError("bad_request", "screenshot was not uploaded");
+          }
+          if (
+            // `hasOwn`, not `in`: `POSTER_TYPES` is a plain object, so `in`
+            // accepts `constructor` and friends (`rules/testing.md`).
+            !obj.contentType ||
+            !Object.hasOwn(POSTER_TYPES, obj.contentType) ||
+            obj.contentLength > POSTER_MAX_BYTES ||
+            obj.contentLength <= 0
+          ) {
+            await store.delete(key).catch(() => undefined);
+            // The reservation goes with the object: leaving it would hold a
+            // slot for the full presign TTL after an upload that stored
+            // nothing.
+            await shows.deleteShotsByKeys([key]).catch(() => 0);
+            throw new AppError(
+              "bad_request",
+              "screenshots must be png/jpeg ≤ 5MB",
+            );
+          }
+        }
+        await writeSlot(id);
+        // One commit sets the whole list, so there is no half-replaced state
+        // to reconcile: a failed PUT leaves the entry exactly as it was.
+        const retired = await shows.replaceShots(entry.id, keys, now);
+        if (retired === undefined)
+          throw new AppError("not_found", "no such screenshot for this entry");
+        // Bounded: an entry can accumulate dead reservations faster than the
+        // nightly sweep clears them, and a request that deletes all of them
+        // one at a time would hit the gateway timeout. The rest keep
+        // `replaced_at` with no `deleted_at`, which is the sweep's queue.
+        const gone: string[] = [];
+        for (const r of retired.slice(0, INLINE_DELETE_MAX))
+          try {
+            await store.delete(r.key);
+            gone.push(r.id);
+          } catch (e) {
+            // Failing the request would undo a commit that already happened.
+            ctx.logger.warn("shot delete failed; sweep will retry", {
+              entryId: entry.id,
+              message: e instanceof Error ? e.message : String(e),
+            });
+          }
+        await shows.markShotsDeleted(gone, now);
+        await audit(id.subject, "show.entry.shots", entry.id, {
+          showId: show.id,
+          count: keys.length,
+          ...mod,
+        });
         return undefined;
       },
     }),
@@ -888,6 +1171,11 @@ export function createShowRoutes({
         requireOpen(show);
         const mod = moderation(id, entry.createdBy, ctx.body.reason);
         await writeSlot(id);
+        // The shot rows cascade with the entry, so its objects become
+        // unreferenced and the sweep's age pass reclaims them within a day.
+        // Deleting them here would be a second unbounded loop for no gain:
+        // the redirect route needs a `live` row, so they are unreachable the
+        // moment the row is gone.
         await shows.deleteEntry(entry.id);
         await audit(id.subject, "show.entry.delete", entry.id, {
           showId: show.id,
@@ -950,4 +1238,143 @@ export function createShowRoutes({
       throw e;
     }
   }
+}
+
+/** Retired rows are dropped once their object has been gone this long. */
+export const SHOT_HISTORY_RETAIN_SEC = 30 * 86_400;
+/** Objects with no row are only garbage once nothing could still commit them. */
+export const SHOT_GARBAGE_GRACE_SEC = 24 * 3600;
+/**
+ * One night's delete budget per pass. `expire` has 300 s for six sweeps and
+ * deletes are serial, so an uncapped pass would spend the whole invocation —
+ * and a timeout there is an async-invoke failure that reruns every other sweep
+ * twice more.
+ */
+export const SHOT_DELETE_BATCH = 500;
+/** Where the last listing stopped; a long TTL, rewritten every night. */
+export const SHOT_SWEEP_CURSOR_KEY = "shotsweep:after";
+const SHOT_SWEEP_CURSOR_TTL_SEC = 90 * 86_400;
+
+/**
+ * Daily screenshot sweep, its own step in the `expire` handler.
+ *
+ * Two passes, for two different kinds of leftover:
+ *
+ * (a) rows whose S3 delete failed at replacement time (`replaced` with no
+ *     `deleted_at`), plus expired `pending` reservations — those must be
+ *     reclaimed or their objects stay pinned against pass (b) forever — plus
+ *     a purge of long-dead rows, without which the table keeps one row per
+ *     screenshot ever uploaded.
+ *
+ * (b) objects under `shots/` that no row references, older than the grace
+ *     period. Rows cannot name every object: a client may PUT and never
+ *     commit. The listing is **explicitly prefixed** — this bucket is shared
+ *     with `posters/` and `site-uploads/`, and whoever owns the prefix owns
+ *     the deletions.
+ *
+ * Pass (b) **resumes where it stopped**. `ListObjectsV2` always returns the
+ * lexicographically first keys, and those are the oldest shows' live objects,
+ * which are exactly the ones it must never delete — so a pass that always
+ * started at the beginning would sweep the same head forever and never reach
+ * the tail. The cursor is kept in Redis and wraps when the prefix is
+ * exhausted; losing it costs one wasted night, not correctness.
+ */
+export async function runShowSweep({
+  shows,
+  db,
+  posters,
+  kv,
+  clock,
+  logger,
+}: {
+  shows: ShowsDb;
+  /** For the `show.sweep` record; omit and the sweep simply does not write one. */
+  db?: Pick<ConsoleDb, "insertAudit">;
+  posters?: PosterStore;
+  /** Holds the listing cursor; without it pass (b) restarts every night. */
+  kv?: Pick<Kv, "get" | "set">;
+  clock: Clock;
+  logger: Logger;
+}): Promise<{
+  reservationsDropped: number;
+  objectsDeleted: number;
+  rowsPurged: number;
+  truncated: boolean;
+}> {
+  const now = nowSec(clock);
+  const reservationsDropped = await shows.deleteExpiredShotReservations(now);
+  let objectsDeleted = 0;
+  let failures = 0;
+  let truncated = false;
+
+  /** Never delete outside our own prefix, whatever handed us the key. */
+  const drop = async (key: string, what: string): Promise<boolean> => {
+    if (!key.startsWith(SHOTS_PREFIX)) {
+      logger.error("refused to delete outside the shots prefix", { what });
+      return false;
+    }
+    try {
+      await posters!.delete(key);
+      return true;
+    } catch (e) {
+      failures++;
+      logger.warn(`${what} failed`, {
+        key,
+        message: e instanceof Error ? e.message : String(e),
+      });
+      return false;
+    }
+  };
+
+  if (posters) {
+    // (a) retry the deletes that failed when their replacement committed.
+    const done: string[] = [];
+    for (const row of await shows.listPendingShotDeletes(SHOT_DELETE_BATCH))
+      if (await drop(row.key, "shot delete retry")) done.push(row.id);
+    objectsDeleted += done.length;
+    await shows.markShotsDeleted(done, now);
+
+    // (b) objects nothing references any more, resuming where we stopped.
+    const after = (await kv?.get(SHOT_SWEEP_CURSOR_KEY)) ?? undefined;
+    const listing = await posters.list(SHOTS_PREFIX, { after });
+    truncated = listing.truncated;
+    // Wrap when the prefix is exhausted, so the next run starts over.
+    if (kv)
+      await kv.set(SHOT_SWEEP_CURSOR_KEY, listing.next ?? "", {
+        ex: SHOT_SWEEP_CURSOR_TTL_SEC,
+      });
+    const stale = listing.objects.filter(
+      (o) => o.lastModifiedSec <= now - SHOT_GARBAGE_GRACE_SEC,
+    );
+    // One batched query for the whole page rather than one per object: a
+    // backlog would otherwise be thousands of round trips on a
+    // one-connection pool (`rules/data.md`).
+    const referenced = new Set(
+      (await shows.listShotsByKeys(stale.map((o) => o.key))).map((r) => r.key),
+    );
+    let budget = SHOT_DELETE_BATCH;
+    for (const o of stale) {
+      if (referenced.has(o.key)) continue;
+      if (budget-- <= 0) break;
+      if (await drop(o.key, "shot garbage delete")) objectsDeleted++;
+    }
+  }
+
+  const rowsPurged = await shows.purgeDeletedShots(
+    now - SHOT_HISTORY_RETAIN_SEC,
+  );
+  const out = { reservationsDropped, objectsDeleted, rowsPurged, truncated };
+  if (db && reservationsDropped + objectsDeleted + rowsPurged > 0)
+    await db
+      .insertAudit({
+        id: ulid(),
+        actorId: null,
+        action: "show.sweep",
+        target: null,
+        at: now,
+        detail: { ...out, failures },
+      })
+      .catch(() => undefined);
+  logger.info("show sweep", { ...out, failures });
+  return out;
 }

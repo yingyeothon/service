@@ -38,13 +38,15 @@ export interface PosterStore {
   head(key: string): Promise<PosterObject | undefined>;
   delete(key: string): Promise<void>;
   /**
-   * Keys + last-modified under a prefix, oldest key first, capped at
+   * Keys + last-modified under a prefix, in key order, capped at
    * `POSTER_LIST_MAX_KEYS`.
    *
-   * `truncated` says the cap was hit, and it matters: `ListObjectsV2` always
-   * returns the *lexicographically first* keys, so the window never advances
-   * on its own — a caller that ignores the flag has a permanently unswept
-   * tail, not a backlog that later runs catch up with.
+   * `ListObjectsV2` always returns the *lexicographically first* keys, so a
+   * caller that always starts at the beginning has a permanently unswept tail
+   * — not a backlog that later runs catch up with, because the keys occupying
+   * the window are the ones it must never delete. `after` resumes past a key,
+   * and `next` is where to resume: together they let a nightly job walk the
+   * whole prefix across runs.
    *
    * The prefix is required and must end in `/`: this bucket is shared between
    * `posters/`, `site-uploads/` and `shots/`, and an age-based
@@ -52,12 +54,14 @@ export interface PosterStore {
    * objects. An empty string from a template or a config lookup is the way
    * that happens, so it is refused here rather than trusted.
    */
-  list(prefix: string): Promise<PosterListing>;
+  list(prefix: string, opts?: { after?: string }): Promise<PosterListing>;
 }
 
 export interface PosterListing {
   objects: Array<{ key: string; lastModifiedSec: number }>;
   truncated: boolean;
+  /** The key to pass as `after` next time; absent once the prefix is exhausted. */
+  next?: string;
 }
 
 /** 10 pages of `ListObjectsV2`; enough to bound one sweep's work. */
@@ -122,7 +126,7 @@ export function createS3PosterStore({
     delete: async (key) => {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
-    list: async (prefix) => {
+    list: async (prefix, opts = {}) => {
       const p = requirePrefix(prefix);
       const objects: Array<{ key: string; lastModifiedSec: number }> = [];
       let token: string | undefined;
@@ -132,6 +136,10 @@ export function createS3PosterStore({
           new ListObjectsV2Command({
             Bucket: bucket,
             Prefix: p,
+            // Only on the first page; after that the token carries the place.
+            ...(token === undefined && opts.after !== undefined
+              ? { StartAfter: opts.after }
+              : {}),
             ContinuationToken: token,
           }),
         );
@@ -150,13 +158,21 @@ export function createS3PosterStore({
           break;
         }
       }
-      return { objects, truncated };
+      const last = objects[objects.length - 1];
+      return {
+        objects,
+        truncated,
+        ...(truncated && last ? { next: last.key } : {}),
+      };
     },
   };
 }
 
 /** Test double: remembers what was "uploaded" via `put`. */
-export function createMemoryPosterStore(): PosterStore & {
+export function createMemoryPosterStore(
+  /** Page size, so a test can exercise the truncation branch. */
+  listCap = POSTER_LIST_MAX_KEYS,
+): PosterStore & {
   objects: Map<string, PosterObject>;
   deleted: string[];
   /** `at` is the object's last-modified, so age-based sweeps are testable. */
@@ -180,13 +196,26 @@ export function createMemoryPosterStore(): PosterStore & {
       times.delete(key);
       deleted.push(key);
     },
-    list: async (prefix) => ({
+    list: async (prefix, opts = {}) => {
       // Sorted like S3, which returns keys in lexicographic order.
-      objects: [...objects.keys()]
-        .filter((k) => k.startsWith(requirePrefix(prefix)))
-        .sort()
-        .map((key) => ({ key, lastModifiedSec: times.get(key) ?? 0 })),
-      truncated: false,
-    }),
+      const all = [...objects.keys()]
+        .filter(
+          (k) =>
+            k.startsWith(requirePrefix(prefix)) &&
+            (opts.after === undefined || k > opts.after),
+        )
+        .sort();
+      const page = all.slice(0, listCap);
+      const truncated = all.length > page.length;
+      const last = page[page.length - 1];
+      return {
+        objects: page.map((key) => ({
+          key,
+          lastModifiedSec: times.get(key) ?? 0,
+        })),
+        truncated,
+        ...(truncated && last ? { next: last } : {}),
+      };
+    },
   };
 }
