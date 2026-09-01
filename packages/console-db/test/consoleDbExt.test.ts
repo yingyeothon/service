@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMemoryConsoleDb } from "../src/index.js";
+import { createMemoryConsoleDb, type ConsoleDb } from "../src/index.js";
 
 const member = {
   id: "m1",
@@ -174,4 +174,133 @@ describe("memory console db: members/tokens/channels/audit", () => {
     ).rejects.toMatchObject({ code: "conflict" });
     expect(db.audits).toHaveLength(1);
   });
+});
+
+/**
+ * The audit read side (`GET /admin/audit`). Shared by the fake and the real
+ * repository: the filters have to mean the same thing on both, and only the
+ * container run proves the SQL actually uses `startsWith` rather than a scan.
+ */
+export function auditReadContract(make: () => ConsoleDb | Promise<ConsoleDb>) {
+  it("audit: filters, newest-first paging and the by-id read", async () => {
+    const db = await make();
+    const rows = [
+      { id: "a1", actorId: "m1", action: "show.create", target: "sh1", at: 10 },
+      {
+        id: "a2",
+        actorId: "m2",
+        action: "show.entry.create",
+        target: "se1",
+        at: 20,
+      },
+      {
+        id: "a3",
+        actorId: "m1",
+        action: "team.create",
+        target: "team_1",
+        at: 30,
+      },
+      { id: "a4", actorId: null, action: "show.delete", target: "sh1", at: 30 },
+      // A real action name with an underscore in it.
+      {
+        id: "a5",
+        actorId: "m1",
+        action: "team.admin_lock",
+        target: "team_1",
+        at: 40,
+      },
+    ];
+    for (const r of rows) await db.insertAudit({ ...r, detail: { k: r.id } });
+
+    // `(at, id)` descending, and the id breaks the tie inside one second.
+    expect((await db.listAudit()).rows.map((r) => r.id)).toEqual([
+      "a5",
+      "a4",
+      "a3",
+      "a2",
+      "a1",
+    ]);
+    expect(
+      (await db.listAudit({ actionPrefix: "show." })).rows.map((r) => r.id),
+    ).toEqual(["a4", "a2", "a1"]);
+    expect(
+      (await db.listAudit({ action: "show.create" })).rows.map((r) => r.id),
+    ).toEqual(["a1"]);
+    expect(
+      (await db.listAudit({ target: "sh1" })).rows.map((r) => r.id),
+    ).toEqual(["a4", "a1"]);
+    expect(
+      (await db.listAudit({ actorId: "m1" })).rows.map((r) => r.id),
+    ).toEqual(["a5", "a3", "a1"]);
+    // The escaped `_` matches the literal one.
+    expect(
+      (await db.listAudit({ actionPrefix: "team.admin_" })).rows.map(
+        (r) => r.id,
+      ),
+    ).toEqual(["a5"]);
+    expect(
+      (await db.listAudit({ from: 20, to: 30 })).rows.map((r) => r.id),
+    ).toEqual(["a4", "a3", "a2"]);
+
+    const first = await db.listAudit({ limit: 2 });
+    expect(first.rows.map((r) => r.id)).toEqual(["a5", "a4"]);
+    expect(first.next).toBeDefined();
+    const second = await db.listAudit({ limit: 3, cursor: first.next });
+    expect(second.rows.map((r) => r.id)).toEqual(["a3", "a2", "a1"]);
+    expect(second.next).toBeUndefined();
+    await expect(db.listAudit({ cursor: "junk" })).rejects.toMatchObject({
+      code: "bad_request",
+    });
+
+    // The two action filters are exclusive: spread into one Prisma `where`
+    // they would overwrite each other and the exact match would vanish.
+    await expect(
+      db.listAudit({ action: "show.create", actionPrefix: "show." }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    // `startsWith` reaches MySQL as an unescaped `LIKE`, so a pattern
+    // character would turn the indexed prefix into the full scan of a
+    // MEDIUMTEXT table that this filter exists to avoid.
+    for (const bad of ["%", "sh%w.", "a\\b", "x".repeat(65)])
+      await expect(db.listAudit({ actionPrefix: bad })).rejects.toMatchObject({
+        code: "bad_request",
+      });
+    // `_` is legitimate (`team.admin_lock`), so it is escaped, not banned:
+    // it must match a literal underscore and nothing else.
+    expect(
+      (await db.listAudit({ actionPrefix: "team_" })).rows.map((r) => r.id),
+    ).toEqual([]);
+    expect(
+      (await db.listAudit({ actionPrefix: "show.entry_" })).rows.map(
+        (r) => r.id,
+      ),
+    ).toEqual([]);
+    // `audit_log` sits on the database default collation, which folds case.
+    expect(
+      (await db.listAudit({ action: "SHOW.CREATE" })).rows.map((r) => r.id),
+    ).toEqual(["a1"]);
+    expect(
+      (await db.listAudit({ actionPrefix: "SHOW." })).rows.map((r) => r.id),
+    ).toEqual(["a4", "a2", "a1"]);
+    expect(
+      (await db.listAudit({ target: "SH1" })).rows.map((r) => r.id),
+    ).toEqual(["a4", "a1"]);
+
+    // A listed row never carries the MEDIUMTEXT detail: `limit` of them would
+    // be megabytes read over the one connection before a route could trim it.
+    expect(first.rows[0]).not.toHaveProperty("detailJson");
+
+    // The by-id read is the way to the detail.
+    expect(await db.findAudit("a1")).toMatchObject({
+      actorId: "m1",
+      action: "show.create",
+      target: "sh1",
+      at: 10,
+      detailJson: '{"k":"a1"}',
+    });
+    expect(await db.findAudit("zz")).toBeUndefined();
+  });
+}
+
+describe("memory console db: audit read", () => {
+  auditReadContract(() => createMemoryConsoleDb());
 });

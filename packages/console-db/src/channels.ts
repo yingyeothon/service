@@ -7,6 +7,7 @@ import {
   translatePrismaError,
   type PrismaClient,
 } from "./prisma.js";
+import { decodeHistoryCursor, encodeHistoryCursor } from "./team.js";
 
 export interface OAuthAppPublic {
   clientId: string;
@@ -222,6 +223,78 @@ export interface AuditInput {
   detail?: unknown;
 }
 
+export interface AuditRow {
+  id: string;
+  actorId: string | null;
+  action: string;
+  target: string | null;
+  at: number;
+  /** Raw `detail_json`; the route decides how much of it to hand out. */
+  detailJson: string | null;
+}
+
+/**
+ * A listed row never carries `detail_json`. That column is a MEDIUMTEXT holding
+ * whole deletion snapshots, so `limit` of them is megabytes read over the one
+ * MySQL connection and materialised in the Lambda — truncating in the route
+ * would be too late. The by-id read is the way to the detail.
+ */
+export type AuditListRow = Omit<AuditRow, "detailJson">;
+
+export interface AuditFilter {
+  action?: string;
+  /**
+   * Prefix match on `action` (`show.` → every show action). There is
+   * deliberately no `contains` filter: that is a full scan of a table
+   * carrying a MEDIUMTEXT column, and Prisma's `startsWith` reaches MySQL as
+   * an unescaped `LIKE`, so `%x` would be exactly that scan. The value is
+   * therefore restricted to `AUDIT_ACTION_CHARS` and its `_` — legitimate in
+   * `team.admin_lock` — is escaped rather than banned.
+   */
+  actionPrefix?: string;
+  target?: string;
+  actorId?: string;
+  /** Inclusive lower / upper bound on `at` (unix seconds). */
+  from?: number;
+  to?: number;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface AuditPage {
+  rows: AuditListRow[];
+  next?: string;
+}
+
+export const AUDIT_PAGE_DEFAULT = 50;
+export const AUDIT_PAGE_MAX = 200;
+/**
+ * What an audit action is made of, and therefore what a prefix may contain.
+ * `%` and `\` are absent because neither appears in an action name and both
+ * are `LIKE` metacharacters; `_` is present because `team.admin_lock` is real,
+ * and `escapeLikePrefix` neutralises it instead.
+ */
+export const AUDIT_ACTION_CHARS = /^[A-Za-z0-9._-]{0,64}$/;
+
+/**
+ * Shared by the repository and its fake so both refuse the same inputs: an
+ * unescapable `LIKE` pattern, and the two `action` filters at once (they would
+ * silently overwrite each other in a Prisma `where`).
+ */
+export function checkAuditFilter(f: AuditFilter): void {
+  if (f.actionPrefix !== undefined && !AUDIT_ACTION_CHARS.test(f.actionPrefix))
+    throw new AppError("bad_request", "invalid actionPrefix");
+  if (f.action !== undefined && f.actionPrefix !== undefined)
+    throw new AppError("bad_request", "action and actionPrefix are exclusive");
+}
+
+/**
+ * `_` is a single-character `LIKE` wildcard and Prisma emits no `ESCAPE`
+ * clause, so it is escaped with MySQL's default escape character. Everything
+ * else `AUDIT_ACTION_CHARS` admits is literal.
+ */
+const escapeLikePrefix = (p: string) => p.replaceAll("_", "\\_");
+
 export interface ChannelPatch {
   name?: string;
   config?: unknown;
@@ -318,6 +391,13 @@ export interface ConsoleDb {
   purgeChannels(now: number, retainSec: number): Promise<string[]>;
 
   insertAudit(a: AuditInput): Promise<void>;
+  /**
+   * Newest first, keyset-paged on `(at, id)`. Both columns are ULID-backed, so
+   * the order is total. `detail_json` is neither selected, sorted on, nor
+   * landed in a derived table (`rules/data.md`).
+   */
+  listAudit(filter?: AuditFilter): Promise<AuditPage>;
+  findAudit(id: string): Promise<AuditRow | undefined>;
 }
 
 export function toAuthChannel(row: ChannelRow): AuthChannel | undefined {
@@ -434,6 +514,27 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
     approvedAt: nul(r.approved_at),
     approvedBy: r.approved_by,
   });
+  const toAuditList = (r: {
+    id: string;
+    actor_id: string | null;
+    action: string;
+    target: string | null;
+    at: bigint | number;
+  }): AuditListRow => ({
+    id: r.id,
+    actorId: r.actor_id,
+    action: r.action,
+    target: r.target,
+    at: num(r.at),
+  });
+  const toAudit = (r: {
+    id: string;
+    actor_id: string | null;
+    action: string;
+    target: string | null;
+    at: bigint | number;
+    detail_json: string | null;
+  }): AuditRow => ({ ...toAuditList(r), detailJson: r.detail_json });
   const toToken = (r: {
     id: string;
     member_id: string;
@@ -646,6 +747,69 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
               a.detail === undefined ? null : JSON.stringify(a.detail),
           },
         });
+      }),
+    listAudit: (filter = {}) =>
+      run(async () => {
+        checkAuditFilter(filter);
+        const limit = Math.min(
+          AUDIT_PAGE_MAX,
+          Math.max(1, filter.limit ?? AUDIT_PAGE_DEFAULT),
+        );
+        const cursor = filter.cursor
+          ? decodeHistoryCursor(filter.cursor)
+          : undefined;
+        if (filter.cursor && !cursor)
+          throw new AppError("bad_request", "invalid cursor");
+        const at =
+          filter.from !== undefined || filter.to !== undefined
+            ? {
+                ...(filter.from !== undefined ? { gte: filter.from } : {}),
+                ...(filter.to !== undefined ? { lte: filter.to } : {}),
+              }
+            : undefined;
+        const rows = await prisma.audit_log.findMany({
+          // Everything but `detail_json`: see `AuditListRow`.
+          select: {
+            id: true,
+            actor_id: true,
+            action: true,
+            target: true,
+            at: true,
+          },
+          where: {
+            ...(filter.action !== undefined ? { action: filter.action } : {}),
+            ...(filter.actionPrefix !== undefined
+              ? {
+                  action: { startsWith: escapeLikePrefix(filter.actionPrefix) },
+                }
+              : {}),
+            ...(filter.target !== undefined ? { target: filter.target } : {}),
+            ...(filter.actorId !== undefined
+              ? { actor_id: filter.actorId }
+              : {}),
+            ...(at ? { at } : {}),
+            ...(cursor
+              ? {
+                  OR: [
+                    { at: { lt: cursor.at } },
+                    { at: cursor.at, id: { lt: cursor.id } },
+                  ],
+                }
+              : {}),
+          },
+          orderBy: [{ at: "desc" }, { id: "desc" }],
+          take: limit + 1,
+        });
+        const page = rows.slice(0, limit).map(toAuditList);
+        const last = page[page.length - 1];
+        return rows.length > limit && last
+          ? { rows: page, next: encodeHistoryCursor(last) }
+          : { rows: page };
+      }),
+    findAudit: (id) =>
+      run(async () => {
+        const r = await prisma.audit_log.findUnique({ where: { id } });
+        return r ? toAudit(r) : undefined;
       }),
     findChannelRow,
     findAuthChannel: async (id) => {

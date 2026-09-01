@@ -1,15 +1,21 @@
 import { AppError } from "@yyt/core";
 import {
+  AUDIT_PAGE_DEFAULT,
+  AUDIT_PAGE_MAX,
+  checkAuditFilter,
   toAuthChannel,
   toMatchChannel,
   toTopicChannel,
   type ApiTokenRow,
   type AuditInput,
+  type AuditListRow,
+  type AuditRow,
   type ChannelRow,
   type ConsoleDb,
   type ExpiredChannel,
   type MemberRow,
 } from "./channels.js";
+import { decodeHistoryCursor, encodeHistoryCursor } from "./team.js";
 
 /** In-memory `ConsoleDb` for tests: same contract as the MySQL repository, no SQL. */
 export function createMemoryConsoleDb(): ConsoleDb & {
@@ -34,6 +40,21 @@ export function createMemoryConsoleDb(): ConsoleDb & {
   const members = new Map<string, MemberRow>();
   const tokens = new Map<string, ApiTokenRow>();
   const audits: AuditInput[] = [];
+  /** Mirrors what `insertAudit` stores: `detail` is serialized into the column. */
+  const toAuditRow = (a: AuditInput): AuditRow => ({
+    ...toAuditListRow(a),
+    detailJson: a.detail === undefined ? null : JSON.stringify(a.detail),
+  });
+  const toAuditListRow = (a: AuditInput): AuditListRow => ({
+    id: a.id,
+    actorId: a.actorId,
+    action: a.action,
+    target: a.target,
+    at: a.at,
+  });
+  /** `audit_log` sits on the database default `utf8mb4_unicode_ci`. */
+  const eqI = (a: string | null, b: string) =>
+    a !== null && a.toLowerCase() === b.toLowerCase();
   const findChannelRow = async (id: string) => {
     const r = channels.get(id);
     return r && r.deletedAt === null ? { ...r } : undefined;
@@ -219,6 +240,49 @@ export function createMemoryConsoleDb(): ConsoleDb & {
       if (audits.some((x) => x.id === a.id))
         throw new AppError("conflict", "duplicate key");
       audits.push({ ...a });
+    },
+    listAudit: async (filter = {}) => {
+      checkAuditFilter(filter);
+      const limit = Math.min(
+        AUDIT_PAGE_MAX,
+        Math.max(1, filter.limit ?? AUDIT_PAGE_DEFAULT),
+      );
+      const cursor = filter.cursor
+        ? decodeHistoryCursor(filter.cursor)
+        : undefined;
+      if (filter.cursor && !cursor)
+        throw new AppError("bad_request", "invalid cursor");
+      const all = audits
+        .filter(
+          (a) =>
+            (filter.action === undefined || eqI(a.action, filter.action)) &&
+            (filter.actionPrefix === undefined ||
+              a.action
+                .toLowerCase()
+                .startsWith(filter.actionPrefix.toLowerCase())) &&
+            (filter.target === undefined || eqI(a.target, filter.target)) &&
+            (filter.actorId === undefined || eqI(a.actorId, filter.actorId)) &&
+            (filter.from === undefined || a.at >= filter.from) &&
+            (filter.to === undefined || a.at <= filter.to),
+        )
+        .map(toAuditListRow)
+        .sort(
+          (a, b) => b.at - a.at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+        );
+      const rest = cursor
+        ? all.filter(
+            (a) => a.at < cursor.at || (a.at === cursor.at && a.id < cursor.id),
+          )
+        : all;
+      const rows = rest.slice(0, limit);
+      const last = rows[rows.length - 1];
+      return rest.length > limit && last
+        ? { rows, next: encodeHistoryCursor(last) }
+        : { rows };
+    },
+    findAudit: async (id) => {
+      const a = audits.find((x) => x.id === id);
+      return a && toAuditRow(a);
     },
   };
 }

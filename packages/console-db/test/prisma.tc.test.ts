@@ -5,6 +5,7 @@ import {
   createConsoleDb,
   createEventsDb,
   createTeamDb,
+  createShowsDb,
   createSitesDb,
   createStateDb,
   contractPreflight,
@@ -16,6 +17,8 @@ import { assetsContract } from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
 import { sitesContract } from "./sites.test.js";
 import { eventsContract } from "./events.test.js";
+import { showsContract } from "./shows.test.js";
+import { auditReadContract } from "./consoleDbExt.test.js";
 import { teamContract } from "./team.test.js";
 import { stateContract } from "./state.test.js";
 import {
@@ -46,6 +49,33 @@ describe.skipIf(!dockerAvailable())(
       eventsContract(async () => {
         await resetTestDb(db.client);
         return createEventsDb(db.client);
+      });
+    });
+
+    describe("shows contract", () => {
+      showsContract(async () => {
+        await resetTestDb(db.client);
+        const events = createEventsDb(db.client);
+        return {
+          db: createShowsDb(db.client),
+          // Seeded through the real repository so both sides of the contract
+          // see the same row (the fake mirrors it with a set).
+          seedEvent: async (id: string) => {
+            await events.insertEvent({
+              id,
+              title: `ev-${id}`,
+              bodyMd: "",
+              posterKey: null,
+              place: "Seoul",
+              placeUrl: null,
+              durationHours: 8,
+              createdBy: "m1",
+              createdAt: 1,
+              voteUntil: 100,
+              options: [],
+            });
+          },
+        };
       });
     });
 
@@ -498,6 +528,13 @@ describe.skipIf(!dockerAvailable())(
         await assets.deleteBundle("ab_1");
         expect(await team.listVersionLinks("ver_1")).toEqual([]);
         expect(await counts()).toEqual([0, 0]);
+      });
+    });
+
+    describe("audit read contract", () => {
+      auditReadContract(async () => {
+        await resetTestDb(db.client);
+        return createConsoleDb(db.client);
       });
     });
 
