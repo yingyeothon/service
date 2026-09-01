@@ -119,12 +119,28 @@ func TestDecodeRejects(t *testing.T) {
 		`{"id":"x","kind":"lobby","config":{}}`,
 		`{"id":"x","kind":"q","authVerifyUrl":"https://a/v","config":{"authChannelId":"a"}}`,
 		`{"id":"x","kind":"lobby","authVerifyUrl":"file:///etc","config":{}}`,
+		`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{"aoi":{"range":0}}}`,
 		`not json`,
 	}
 	for _, b := range bad {
 		if _, err := decode([]byte(b)); err == nil {
 			t.Errorf("accepted %s", b)
 		}
+	}
+}
+
+func TestDecodeLobbyAOIDefaultsAndClamps(t *testing.T) {
+	ch, err := decode([]byte(`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{"aoi":{"range":10}}}`))
+	if err != nil || ch.Lobby.AOI == nil || ch.Lobby.AOI.Range != 10 || ch.Lobby.AOI.MaxPeers != 64 {
+		t.Fatalf("aoi defaults: %+v %v", ch.Lobby.AOI, err)
+	}
+	ch, err = decode([]byte(`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{"aoi":{"range":1e-300,"maxPeers":100000}}}`))
+	if err != nil || ch.Lobby.AOI.Range != 1 || ch.Lobby.AOI.MaxPeers != 256 {
+		t.Fatalf("aoi clamp: %+v %v", ch.Lobby.AOI, err)
+	}
+	ch, err = decode([]byte(`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{}}`))
+	if err != nil || ch.Lobby.AOI != nil {
+		t.Fatalf("no aoi: %+v %v", ch.Lobby.AOI, err)
 	}
 }
 

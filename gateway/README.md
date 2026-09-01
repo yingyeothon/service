@@ -90,7 +90,9 @@ Close codes the gateway sends:
 | `1011` | `q`: the enter push failed                                  | retry the connect                                                                |
 
 Both strategies: text frames only, 16 KB inbound cap, 32 KB outbound cap
-(larger gateway frames are dropped and counted), WebSocket ping every 30 s,
+(a larger gateway frame is dropped, counted, logged with the channel, and
+replaced by `error frame_too_large` so the client knows a gap exists),
+WebSocket ping every 30 s,
 per-connection token bucket (lobby: the channel's `rateLimit`/s; q: 20/s;
 burst 2×; over it → `error rate_limited`), and a 256-frame outbound queue
 that drops the **oldest** pending frame under backpressure. Every refusal is a typed frame
@@ -115,6 +117,7 @@ First frame, always:
   "mapUrl": "https://d.yyt.life/…",
   "zone": "Zone001",
   "partyId": "pty_…",
+  "aoi": { "range": 10, "maxPeers": 64 },
   "capabilities": {
     "pos": true,
     "say": ["zone", "party", "user"],
@@ -126,7 +129,8 @@ First frame, always:
 ```
 
 `capabilities` is the channel's config object verbatim (the design sketch
-showed a flat list; the object keeps the `say` scopes). `partyId` is present
+showed a flat list; the object keeps the `say` scopes). `aoi` is present only
+when the channel filters by area of interest (below). `partyId` is present
 when the gateway already knows the reconnecting player's party; after a
 gateway restart the roster is loaded from Redis and arrives as the `party`
 frame right after `hello` instead. `{type:"ping"}` is answered with
@@ -134,30 +138,31 @@ frame right after `hello` instead. `{type:"ping"}` is answered with
 
 Client → gateway:
 
-| type                             | fields                                                      | routed to                            | refused with                                                                         |
-| -------------------------------- | ----------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| `pos`                            | `zone`, `x`, `y`, `dir?`                                    | everyone in `zone` (coalesced)       | `capability_off`, `bad_zone`, `move_too_far` (delta > `maxMoveDelta` within a zone)  |
-| `say`                            | `scope` (`zone`\|`party`\|`user`), `to?`, `text` (≤ 1024 B) | that scope, sender included          | `capability_off`, `bad_scope`, `bad_zone`, `no_party`, `unknown_user`, `too_long`    |
-| `event`                          | `scope`, `to?`, `name` (≤ 64 B), `payload` (≤ 8 KB, unread) | that scope, sender included          | same as `say`                                                                        |
-| `party.create`                   | –                                                           | –                                    | `already_in_party`                                                                   |
-| `party.invite`                   | `userId`                                                    | invitee gets `party.invite`          | `no_party`, `not_leader`, `unknown_user` (offline), `already_in_party`, `party_full` |
-| `party.accept` / `party.decline` | `partyId`                                                   | party / leader gets `party.declined` | `unknown_party`, `not_invited`, `party_full`                                         |
-| `party.leave`                    | –                                                           | party                                | `no_party`                                                                           |
-| `party.list`                     | –                                                           | sender                               | –                                                                                    |
+| type                             | fields                                                      | routed to                                                 | refused with                                                                         |
+| -------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `pos`                            | `zone`, `x`, `y`, `dir?`                                    | everyone in `zone` whose view has you (coalesced)         | `capability_off`, `bad_zone`, `move_too_far` (delta > `maxMoveDelta` within a zone)  |
+| `say`                            | `scope` (`zone`\|`party`\|`user`), `to?`, `text` (≤ 1024 B) | that scope, sender included (`zone` = whose view has you) | `capability_off`, `bad_scope`, `bad_zone`, `no_party`, `unknown_user`, `too_long`    |
+| `event`                          | `scope`, `to?`, `name` (≤ 64 B), `payload` (≤ 8 KB, unread) | that scope, sender included (`zone` = whose view has you) | same as `say`                                                                        |
+| `party.create`                   | –                                                           | –                                                         | `already_in_party`                                                                   |
+| `party.invite`                   | `userId`                                                    | invitee gets `party.invite`                               | `no_party`, `not_leader`, `unknown_user` (offline), `already_in_party`, `party_full` |
+| `party.accept` / `party.decline` | `partyId`                                                   | party / leader gets `party.declined`                      | `unknown_party`, `not_invited`, `party_full`                                         |
+| `party.leave`                    | –                                                           | party                                                     | `no_party`                                                                           |
+| `party.list`                     | –                                                           | sender                                                    | –                                                                                    |
 
 Gateway → client:
 
-| type             | fields                                                                                  | when                                                                                                            |
-| ---------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `snapshot`       | `zone`, `peers[]`                                                                       | you entered a zone (first `pos`, zone change, or reconnect with a retained position) — every peer already there |
-| `enter`          | `zone`, `userId`, `x`, `y`, `dir`                                                       | a peer entered your zone                                                                                        |
-| `leave`          | `zone`, `userId`                                                                        | a peer left your zone (zone change or disconnect)                                                               |
-| `pos`            | `zone`, `peers[]`                                                                       | once per `flushIntervalMs` (`tick`), only peers that moved; includes you — filter your own `userId`             |
-| `say` / `event`  | `from`, `scope`, `to?`, …                                                               | mirrored to the routed set                                                                                      |
-| `party`          | `partyId` (`""` = no party), `leaderId`, `members[{userId,online}]`, `invited[]`, `max` | roster snapshot on every change, and on reconnect                                                               |
-| `party.invite`   | `partyId`, `from`                                                                       | you were invited                                                                                                |
-| `party.declined` | `partyId`, `userId`                                                                     | (leader) an invite was refused                                                                                  |
-| `error`          | `code`, `message`                                                                       | any refusal                                                                                                     |
+| type             | fields                                                                                  | when                                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `snapshot`       | `zone`, `peers[]`                                                                       | you entered a zone (first `pos`, zone change, or reconnect with a retained position) — every peer in your view   |
+| `enter`          | `zone`, `userId`, `x`, `y`, `dir`                                                       | a peer came into your view (entered the zone, or with AOI walked into your box / a slot freed up)                |
+| `leave`          | `zone`, `userId`                                                                        | a peer left your view (zone change, disconnect, or with AOI walked out of your box / was cut by `maxPeers`)      |
+| `pos`            | `zone`, `peers[]`                                                                       | once per `flushIntervalMs` (`tick`), only peers in your view that moved; includes you — filter your own `userId` |
+| `error`          | `code: "frame_too_large"`                                                               | a frame meant for you exceeded 32 KB and was dropped (the message says how large)                                |
+| `say` / `event`  | `from`, `scope`, `to?`, …                                                               | mirrored to the routed set                                                                                       |
+| `party`          | `partyId` (`""` = no party), `leaderId`, `members[{userId,online}]`, `invited[]`, `max` | roster snapshot on every change, and on reconnect                                                                |
+| `party.invite`   | `partyId`, `from`                                                                       | you were invited                                                                                                 |
+| `party.declined` | `partyId`, `userId`                                                                     | (leader) an invite was refused                                                                                   |
+| `error`          | `code`, `message`                                                                       | any refusal                                                                                                      |
 
 A player has no zone until their first `pos`; `hello.zone` is only the
 default the game should start in. A zone change is decided by the game's HTTP
@@ -168,8 +173,31 @@ table and work across zones. **Zones are not private**: any client may
 announce itself into any zone name and receive that zone's snapshot — zone
 access is the game's rule, and the gateway does not enforce it.
 
+**Area of interest.** Without `aoi` in the channel config your view is the
+whole zone and the rows above read as they always did. With
+`aoi: { range, maxPeers }` your view is the box `|dx| ≤ range && |dy| ≤ range`
+around your last `pos` (Chebyshev distance, so a range of 10 is "10 tiles
+up, down, left and right"), nearest first when more than `maxPeers` peers
+are inside (equal distance is broken by `userId`, so the cut is predictable).
+Views are **receiver-owned**: each socket's view is exactly the
+set of peers it was told about by `snapshot`/`enter` and not yet by `leave`,
+and every `enter`/`leave` is a diff of that set — a peer that walks out of
+your box gets a `leave` although it never left the zone, one that walks in
+gets an `enter` carrying its position, and a `maxPeers` cut can evict a far
+peer (`leave`) to admit a near one (`enter`). Views are re-derived when a
+peer enters or leaves the zone, at every flush (so a move flips a view at
+most once per tick — `enter`/`leave` precede that tick's `pos` batch, and a
+peer that just entered may appear in both), and when the channel config
+changes. `say`/`event` with `scope:"zone"` follow the same rule: you hear
+whoever has you in view, plus yourself. Because of `maxPeers` the relation
+can be asymmetric — B may see A while A's box is full. A client that keeps a
+peer map keyed by `userId` and applies `enter`/`leave`/`pos` as before needs
+no change (`@yingyeothon/gamebase-client` does exactly that).
+
 Disconnect keeps the retained position (`gateway:{stage}:pos:…`, 30 min
-sliding) and the party membership (`gateway:{stage}:party:…` +
+sliding, written at most once a second for all movers at once and at once
+on zone change or disconnect — only a hard crash loses up to a second of
+movement) and the party membership (`gateway:{stage}:party:…` +
 `partyOf:…`, 30 min sliding, refreshed on change); a reconnect resumes both,
 and the roster marks the member `online:false` in between. Only an explicit
 `party.leave` or the TTL removes a member; an empty party dissolves. A

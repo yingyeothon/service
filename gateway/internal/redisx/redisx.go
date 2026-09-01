@@ -136,6 +136,22 @@ func (c *Client) SetPos(ctx context.Context, channelID, userID string, value []b
 	return c.set(ctx, c.Key("pos", channelID, userID), value, PosTTL)
 }
 
+// SetPosBatch stores many positions of one channel in a single round trip
+// (the lobby flush persists at most once a second, all movers at once).
+func (c *Client) SetPosBatch(ctx context.Context, channelID string, values map[string][]byte) error {
+	if len(values) == 0 {
+		return nil
+	}
+	pipe := c.rdb.TxPipeline()
+	for userID, v := range values {
+		pipe.Set(ctx, c.Key("pos", channelID, userID), v, PosTTL)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("redis: %w", sanitize(err))
+	}
+	return nil
+}
+
 // GetPos returns the retained position, or nil.
 func (c *Client) GetPos(ctx context.Context, channelID, userID string) ([]byte, error) {
 	return c.get(ctx, c.Key("pos", channelID, userID))

@@ -7,6 +7,7 @@ package conn
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -61,9 +62,11 @@ func DefaultLimits() Limits {
 
 // Hooks receive counters; nil hooks are ignored.
 type Hooks struct {
-	OnSent      func()
-	OnDropped   func()
-	OnOversized func()
+	OnSent    func()
+	OnDropped func()
+	// OnOversized reports a frame the gateway tried to send over
+	// MaxOutbound; the frame is dropped and the client gets a typed error.
+	OnOversized func(size int)
 	// OnQueueDepth reports the outbound backlog after each enqueue, so the
 	// process can keep a high-water mark of socket buffering.
 	OnQueueDepth func(depth int)
@@ -130,8 +133,11 @@ func (c *Conn) Send(v any) bool {
 func (c *Conn) SendRaw(b []byte) bool {
 	if len(b) > c.limits.MaxOutbound {
 		if c.hooks.OnOversized != nil {
-			c.hooks.OnOversized()
+			c.hooks.OnOversized(len(b))
 		}
+		// Every refusal is a typed frame, never silence: the client learns
+		// that a frame it will never see existed, instead of a quiet gap.
+		c.SendError(ErrFrameTooLarge, fmt.Sprintf("a %d-byte frame exceeded the %d-byte outbound cap and was dropped", len(b), c.limits.MaxOutbound))
 		return false
 	}
 	c.mu.Lock()
@@ -311,6 +317,9 @@ type ErrorFrame struct {
 }
 
 // SendError queues `{type:"error", code, message}`.
+// ErrFrameTooLarge is sent in place of an outbound frame over MaxOutbound.
+const ErrFrameTooLarge = "frame_too_large"
+
 func (c *Conn) SendError(code, message string) {
 	c.Send(ErrorFrame{Type: "error", Code: code, Message: message})
 }

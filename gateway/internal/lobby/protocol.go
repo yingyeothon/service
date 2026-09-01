@@ -31,6 +31,15 @@ type Hello struct {
 	Zone         string       `json:"zone"`
 	// PartyID is set when a reconnecting player still belongs to a party.
 	PartyID string `json:"partyId,omitempty"`
+	// AOI is the channel's view box when area-of-interest filtering is on;
+	// absent means every peer in the zone is in view.
+	AOI *AOI `json:"aoi,omitempty"`
+}
+
+// AOI is the `hello` form of the channel's area-of-interest config.
+type AOI struct {
+	Range    float64 `json:"range"`
+	MaxPeers int     `json:"maxPeers"`
 }
 
 // Capabilities is the `hello` form: the config object verbatim, so the
@@ -51,14 +60,16 @@ type Peer struct {
 	Dir    string  `json:"dir,omitempty"`
 }
 
-// Snapshot lists everyone already in the zone the client just entered.
+// Snapshot lists everyone in view of the client that just entered a zone:
+// the whole zone, or the AOI box when the channel filters.
 type Snapshot struct {
 	Type  string `json:"type"`
 	Zone  string `json:"zone"`
 	Peers []Peer `json:"peers"`
 }
 
-// Enter/Leave are gateway-synthesised.
+// Enter/Leave are gateway-synthesised: a peer came into, or went out of,
+// the receiver's view (zone-wide without AOI, the box with it).
 type Enter struct {
 	Type string `json:"type"`
 	Zone string `json:"zone"`
@@ -71,8 +82,8 @@ type Leave struct {
 	UserID string `json:"userId"`
 }
 
-// PosBatch is one coalesced frame per flush interval with every peer that
-// moved since the last one.
+// PosBatch is one coalesced frame per flush interval with every peer in
+// view (you included) that moved since the last one.
 type PosBatch struct {
 	Type  string `json:"type"`
 	Zone  string `json:"zone"`

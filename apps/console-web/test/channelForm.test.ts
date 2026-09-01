@@ -164,6 +164,30 @@ describe("buildConfig lobby/q", () => {
     });
   });
 
+  it("carries the area-of-interest box only when a range is given", () => {
+    const f = formFromChannel(lobby);
+    expect(f.aoiRange).toBe("");
+    expect(buildConfig("lobby", f, "patch", lobby)).not.toHaveProperty("aoi");
+    expect(
+      buildConfig("lobby", { ...f, aoiRange: "10" }, "patch", lobby),
+    ).toMatchObject({ aoi: { range: 10, maxPeers: 64 } });
+    const withAoi: Channel = {
+      ...lobby,
+      config: { ...lobby.config, aoi: { range: 12, maxPeers: 8 } },
+    };
+    expect(
+      buildConfig("lobby", formFromChannel(withAoi), "patch", withAoi),
+    ).toEqual(withAoi.config);
+    expect(() =>
+      buildConfig(
+        "lobby",
+        { ...f, aoiRange: "10", capPos: false, capSay: ["user"] },
+        "patch",
+        lobby,
+      ),
+    ).toThrow(/positions/);
+  });
+
   it("rejects a non-https map URL before the request", () => {
     const f = formFromChannel(lobby);
     expect(() =>

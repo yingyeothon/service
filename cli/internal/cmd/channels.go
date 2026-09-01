@@ -128,7 +128,13 @@ type configFlags struct {
 	partyMax    int
 	defaultZone string
 	mapURL      string
+	aoiRange    int
+	aoiMaxPeers int
 }
+
+// lobbyObjectFlags are the flags that land inside a nested lobby config
+// object; `update` merges them one level deeper than the rest.
+var lobbyObjectFlags = map[string]string{"aoi-range": "aoi", "aoi-max-peers": "aoi"}
 
 // lobbyCapFlags are the flags that land inside the nested `capabilities`
 // object; `update` has to merge them one level deeper than the rest.
@@ -166,6 +172,8 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.IntVar(&f.partyMax, "party-size-max", 0, "lobby: largest party (default 4)")
 	fl.StringVar(&f.defaultZone, "zone", "", "lobby: zone announced in hello (default lobby)")
 	fl.StringVar(&f.mapURL, "map-url", "", "lobby: immutable map asset URL announced in hello")
+	fl.IntVar(&f.aoiRange, "aoi-range", 0, "lobby: area-of-interest view range in tiles on both axes, 1..256 (default none = whole zone; 0 on update removes it)")
+	fl.IntVar(&f.aoiMaxPeers, "aoi-max-peers", 0, "lobby: nearest peers shown when more are in range, 1..256 (default 64)")
 }
 
 // build turns the flags into the JSON `config` for the given kind. For PATCH
@@ -322,6 +330,30 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 		}
 		if set("map-url") {
 			m["mapUrl"] = f.mapURL
+		}
+		if set("aoi-range") || set("aoi-max-peers") {
+			switch {
+			case set("aoi-range") && f.aoiRange == 0 && patch:
+				if set("aoi-max-peers") {
+					return nil, errors.New("--aoi-range 0 removes the box; --aoi-max-peers has nothing to apply to")
+				}
+				// An untyped nil removes the object on update (`merged`
+				// drops nil keys); a typed nil map would survive the check.
+				m["aoi"] = nil
+			case set("aoi-range") && f.aoiRange <= 0:
+				return nil, errors.New("--aoi-range must be positive")
+			case !set("aoi-range") && !patch:
+				return nil, errors.New("--aoi-max-peers needs --aoi-range")
+			default:
+				aoi := map[string]any{}
+				if set("aoi-range") {
+					aoi["range"] = f.aoiRange
+				}
+				if set("aoi-max-peers") {
+					aoi["maxPeers"] = f.aoiMaxPeers
+				}
+				m["aoi"] = aoi
+			}
 		}
 		if !patch && m["authChannelId"] == nil {
 			return nil, errors.New("--auth-channel is required for lobby channels")
@@ -521,9 +553,14 @@ func newChannels(a *App) *cobra.Command {
 						return fmt.Errorf("current config: %w", err)
 					}
 					for k, v := range cfg {
-						// `capabilities` is the one nested object: a top-level
+						if v == nil {
+							// A flag that clears an optional object (`--aoi-range 0`).
+							delete(merged, k)
+							continue
+						}
+						// `capabilities` and `aoi` are nested objects: a top-level
 						// overwrite would silently reset the flags not given.
-						if k == "capabilities" {
+						if k == "capabilities" || k == "aoi" {
 							if cm, ok := mergeCapabilities(merged[k], v); ok {
 								merged[k] = cm
 								continue
@@ -625,6 +662,9 @@ var kindConfigFlags = func() map[string][]string {
 		"q": {"auth-channel"},
 	}
 	for n := range lobbyCapFlags {
+		m["lobby"] = append(m["lobby"], n)
+	}
+	for n := range lobbyObjectFlags {
 		m["lobby"] = append(m["lobby"], n)
 	}
 	for _, names := range m {

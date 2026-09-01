@@ -202,6 +202,13 @@ describe("lobby/q channels", () => {
       { authChannelId, flushIntervalMs: 10 },
       { authChannelId, partySizeMax: 1 },
       { authChannelId, capabilities: { say: ["shout"] } },
+      { authChannelId, aoi: { range: 0 } },
+      { authChannelId, aoi: { range: 10, cellSize: 4 } },
+      {
+        authChannelId,
+        aoi: { range: 10 },
+        capabilities: { pos: false, say: ["user"] },
+      },
     ]) {
       expect((await create(h, a, "lobby", config)).statusCode).toBe(400);
     }
@@ -256,6 +263,22 @@ describe("lobby/q channels", () => {
       partySizeMax: 4,
       mapUrl: "",
     });
+    // The area-of-interest box is optional and fills its own default.
+    const boxed = parse(
+      await h.app(
+        ev("PATCH", `/channels/${lobby.id}`, {
+          headers: a.cookie,
+          body: { config: { authChannelId, aoi: { range: 10 } } },
+        }),
+      ),
+    );
+    expect(boxed.config.aoi).toEqual({ range: 10, maxPeers: 64 });
+    const gw = await h.app(
+      ev("GET", `/gw/channels/${lobby.id}`, {
+        headers: { authorization: `Bearer ${GATEWAY_TOKEN}` },
+      }),
+    );
+    expect(parse(gw).config.aoi).toEqual({ range: 10, maxPeers: 64 });
     expect(
       JSON.parse(h.db.channels.get(lobby.id as string)!.secretJson),
     ).toEqual({});

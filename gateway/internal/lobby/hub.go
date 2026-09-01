@@ -49,7 +49,29 @@ type client struct {
 	zone   string
 	pos    *Peer
 	bad    int
+	// cell is the spatial-index bucket of pos (`cellSize` wide).
+	cell cellKey
+	// visible is the receiver-owned view: every userID this client has been
+	// told is present (by `snapshot` or `enter`) and not yet told left. Each
+	// `enter`/`leave` is a diff of this set, so a peer that leaves the view
+	// box without leaving the zone still produces a `leave` (`todo/26`).
+	visible map[string]struct{}
 }
+
+// cellKey buckets positions so a view lookup reads 3×3 cells instead of the
+// zone. The cell is as wide as the AOI range, so the box around a viewer
+// never reaches past its neighbouring cells.
+type cellKey struct{ x, y int }
+
+// pendingPos is a position not yet persisted to Redis.
+type pendingPos struct {
+	zone string
+	peer Peer
+}
+
+// posPersistEvery bounds how often moved positions are written to Redis.
+// They exist for reconnect recovery, which does not need every flush.
+const posPersistEvery = time.Second
 
 type party struct {
 	id      string
@@ -75,19 +97,28 @@ type Hub struct {
 	now       func() time.Time
 	newID     func() string
 
-	mu      sync.Mutex
-	cfg     console.LobbyConfig
-	conns   map[string]*client
-	byUser  map[string]*client
-	zones   map[string]map[string]*client
-	dirty   map[string]map[string]Peer
-	parties map[string]*party
-	partyOf map[string]string
-	stop    chan struct{}
-	stopped bool
+	mu     sync.Mutex
+	cfg    console.LobbyConfig
+	conns  map[string]*client
+	byUser map[string]*client
+	zones  map[string]map[string]*client
+	cells  map[string]map[cellKey]map[string]*client
+	dirty  map[string]map[string]Peer
+	// pending holds moved positions until the next persist window;
+	// lastPersist is when the last batch was written.
+	pending     map[string]pendingPos
+	lastPersist time.Time
+	parties     map[string]*party
+	partyOf     map[string]string
+	stop        chan struct{}
+	stopped     bool
 	// after collects Redis writes decided under the lock and run after it:
 	// a stalled Redis must never freeze every zone's relay (`persist`).
-	after []func()
+	// afterMu serialises the drainers so writes run in the order they were
+	// decided — a flush's batch and a later leave's write of the same user
+	// must not race, or the stale one can land last.
+	after   []func()
+	afterMu sync.Mutex
 	// logAt throttles Redis error logging per op.
 	logAt map[string]time.Time
 }
@@ -106,11 +137,9 @@ type Options struct {
 // New creates the hub and starts its flush loop.
 func New(o Options) *Hub {
 	h := &Hub{channelID: o.ChannelID, rdb: o.Redis, log: o.Logger, reg: o.Registry, now: o.Now, newID: o.NewID,
-		cfg: o.Config, conns: map[string]*client{}, byUser: map[string]*client{}, zones: map[string]map[string]*client{},
-		dirty: map[string]map[string]Peer{}, parties: map[string]*party{}, partyOf: map[string]string{}, stop: make(chan struct{}), logAt: map[string]time.Time{}}
-	if h.cfg.FlushIntervalMs <= 0 {
-		h.cfg.FlushIntervalMs = 200
-	}
+		cfg: normalize(o.Config), conns: map[string]*client{}, byUser: map[string]*client{}, zones: map[string]map[string]*client{},
+		cells: map[string]map[cellKey]map[string]*client{}, dirty: map[string]map[string]Peer{}, pending: map[string]pendingPos{},
+		parties: map[string]*party{}, partyOf: map[string]string{}, stop: make(chan struct{}), logAt: map[string]time.Time{}}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -129,21 +158,56 @@ func New(o Options) *Hub {
 	return h
 }
 
-// Reconfigure applies a refreshed channel config.
-func (h *Hub) Reconfigure(cfg console.LobbyConfig) {
+// normalize fills the defaults the console also applies, so a hub built
+// from a partial config (tests, an older console) behaves the same.
+func normalize(cfg console.LobbyConfig) console.LobbyConfig {
 	if cfg.FlushIntervalMs <= 0 {
 		cfg.FlushIntervalMs = 200
 	}
+	if cfg.AOI != nil {
+		if cfg.AOI.Range <= 0 {
+			cfg.AOI = nil
+		} else {
+			a := *cfg.AOI
+			if a.MaxPeers <= 0 {
+				a.MaxPeers = 64
+			}
+			cfg.AOI = &a
+		}
+	}
+	return cfg
+}
+
+// Reconfigure applies a refreshed channel config. A changed AOI re-buckets
+// every position and re-derives every view, so clients get the `enter`/
+// `leave` frames that make their peer maps match the new box.
+func (h *Hub) Reconfigure(cfg console.LobbyConfig) {
+	cfg = normalize(cfg)
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	changed := !sameAOI(h.cfg.AOI, cfg.AOI)
 	h.cfg = cfg
-	h.mu.Unlock()
+	if changed {
+		h.rebuildViewsLocked()
+	}
+}
+
+func sameAOI(a, b *console.LobbyAOI) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Range == b.Range && a.MaxPeers == b.MaxPeers
 }
 
 // persist schedules a Redis write for after the lock is released.
 func (h *Hub) persist(f func()) { h.after = append(h.after, f) }
 
-// runAfter executes the scheduled writes; call with the lock released.
+// runAfter executes the scheduled writes in order; call with the lock
+// released. It holds afterMu across drain and execution, so a concurrent
+// caller waits for everything queued before its own writes to finish.
 func (h *Hub) runAfter() {
+	h.afterMu.Lock()
+	defer h.afterMu.Unlock()
 	h.mu.Lock()
 	fs := h.after
 	h.after = nil
@@ -210,9 +274,12 @@ func (h *Hub) Join(ctx context.Context, connID, userID string, sock Socket) bool
 	// `hello` goes out before the lock is released: once the client is in
 	// `byUser` a whisper or a roster change could otherwise be queued first.
 	sock.Send(Hello{Type: THello, UserID: userID, ConnectionID: connID, Tick: cfg.FlushIntervalMs, MapURL: cfg.MapURL,
-		Capabilities: capabilities(cfg.Capabilities), Zone: cfg.DefaultZone, PartyID: h.partyOf[userID]})
+		Capabilities: capabilities(cfg.Capabilities), Zone: cfg.DefaultZone, PartyID: h.partyOf[userID], AOI: helloAOI(cfg.AOI)})
 	h.mu.Unlock()
 	h.stats.Connections.Add(1)
+	// The replaced socket's pending position is written here, in order,
+	// before GetPos below reads it back (runAfter serialises drainers).
+	h.runAfter()
 
 	if _, err := h.rdb.ClaimSession(ctx, "lobby", h.channelID, userID, connID); err != nil {
 		h.redisErr("claim session", err)
@@ -399,6 +466,7 @@ func (h *Hub) handlePosLocked(cl *client, cfg console.LobbyConfig, in Inbound) {
 			return
 		}
 		cl.pos = &p
+		h.moveCellLocked(cl)
 		h.markDirtyLocked(cl.zone, p)
 		return
 	}
@@ -418,41 +486,254 @@ func (h *Hub) enterZoneLocked(cl *client, zone string, p Peer) {
 		peers = map[string]*client{}
 		h.zones[zone] = peers
 	}
-	snap := Snapshot{Type: TSnapshot, Zone: zone, Peers: make([]Peer, 0, len(peers))}
-	enter := Enter{Type: TEnter, Zone: zone, Peer: p}
-	for _, other := range peers {
-		if other.pos != nil {
-			snap.Peers = append(snap.Peers, *other.pos)
-		}
-		other.sock.Send(enter)
-	}
-	sort.Slice(snap.Peers, func(i, j int) bool { return snap.Peers[i].UserID < snap.Peers[j].UserID })
 	peers[cl.userID] = cl
-	cl.sock.Send(snap)
+	h.indexLocked(cl)
+	// The joiner's first view is the snapshot, never a burst of `enter`.
+	view := h.viewLocked(cl)
+	snap := Snapshot{Type: TSnapshot, Zone: zone, Peers: make([]Peer, 0, len(view))}
+	visible := make(map[string]struct{}, len(view))
+	for _, other := range view {
+		snap.Peers = append(snap.Peers, *other.pos)
+		visible[other.userID] = struct{}{}
+	}
+	// A snapshot the socket refused (over the outbound cap) taught the
+	// client nothing: keep the view empty so the next refresh introduces
+	// each peer with its own `enter` instead of assuming they were seen.
+	if cl.sock.Send(snap) {
+		cl.visible = visible
+	} else {
+		cl.visible = map[string]struct{}{}
+	}
+	// Everyone whose view could contain the joiner learns of it now.
+	for _, other := range h.neighboursLocked(cl) {
+		h.refreshViewLocked(other)
+	}
 	h.markDirtyLocked(zone, p)
 }
 
+// leaveZoneLocked removes cl from its zone. With announce, every viewer
+// gets a `leave`; without it (a replaced socket) viewers silently forget
+// the peer so that the successor's entry produces a fresh `enter`, exactly
+// as before views existed.
 func (h *Hub) leaveZoneLocked(cl *client, announce bool) {
 	zone := cl.zone
+	// A leaving position is persisted at once: the retained value is what a
+	// reconnect resumes from, and the persist window must not lose it.
+	moved := false
+	if d := h.dirty[zone]; d != nil {
+		if _, ok := d[cl.userID]; ok {
+			moved = true
+			delete(d, cl.userID)
+		}
+	}
+	if _, ok := h.pending[cl.userID]; ok {
+		moved = true
+		delete(h.pending, cl.userID)
+	}
+	if moved && cl.pos != nil {
+		h.persistPosLocked(map[string]pendingPos{cl.userID: {zone: zone, peer: *cl.pos}})
+	}
 	peers := h.zones[zone]
 	if peers != nil && peers[cl.userID] == cl {
 		delete(peers, cl.userID)
+		h.unindexLocked(cl)
 		if len(peers) == 0 {
 			delete(h.zones, zone)
+			delete(h.cells, zone)
 			delete(h.dirty, zone)
 		}
 	}
-	if d := h.dirty[zone]; d != nil {
-		delete(d, cl.userID)
-	}
-	if announce && peers != nil {
-		leave := Leave{Type: TLeave, Zone: zone, UserID: cl.userID}
-		for _, other := range peers {
-			other.sock.Send(leave)
+	if peers != nil {
+		for _, other := range h.viewersLocked(cl) {
+			if announce {
+				h.refreshViewLocked(other)
+			} else {
+				delete(other.visible, cl.userID)
+			}
 		}
 	}
 	cl.zone = ""
+	cl.visible = nil
 }
+
+// viewersLocked is neighboursLocked plus every client in the zone whose
+// view still holds cl: views are derived at flush time, and a peer can move
+// out of a viewer's 3×3 cells and leave the zone before the next flush —
+// that viewer must still get its `leave`, or the character freezes.
+func (h *Hub) viewersLocked(cl *client) []*client {
+	if h.cfg.AOI == nil {
+		return h.neighboursLocked(cl)
+	}
+	out := h.neighboursLocked(cl)
+	seen := make(map[*client]struct{}, len(out))
+	for _, other := range out {
+		seen[other] = struct{}{}
+	}
+	for _, other := range h.zones[cl.zone] {
+		if _, dup := seen[other]; dup || other == cl {
+			continue
+		}
+		if _, sees := other.visible[cl.userID]; sees {
+			out = append(out, other)
+		}
+	}
+	return out
+}
+
+// --- view ------------------------------------------------------------------
+
+// cellSize is the spatial bucket width: the AOI range, or 1 without AOI
+// (the index is kept either way so switching AOI on is a rebucket, not a
+// rebuild from scratch).
+func (h *Hub) cellSize() float64 {
+	if h.cfg.AOI != nil {
+		return h.cfg.AOI.Range
+	}
+	return 1
+}
+
+func (h *Hub) cellOf(p *Peer) cellKey {
+	size := h.cellSize()
+	return cellKey{int(math.Floor(p.X / size)), int(math.Floor(p.Y / size))}
+}
+
+func (h *Hub) indexLocked(cl *client) {
+	cells := h.cells[cl.zone]
+	if cells == nil {
+		cells = map[cellKey]map[string]*client{}
+		h.cells[cl.zone] = cells
+	}
+	cl.cell = h.cellOf(cl.pos)
+	bucket := cells[cl.cell]
+	if bucket == nil {
+		bucket = map[string]*client{}
+		cells[cl.cell] = bucket
+	}
+	bucket[cl.userID] = cl
+}
+
+func (h *Hub) unindexLocked(cl *client) {
+	cells := h.cells[cl.zone]
+	if cells == nil {
+		return
+	}
+	if bucket := cells[cl.cell]; bucket != nil && bucket[cl.userID] == cl {
+		delete(bucket, cl.userID)
+		if len(bucket) == 0 {
+			delete(cells, cl.cell)
+		}
+	}
+}
+
+// moveCellLocked re-buckets cl after a same-zone move.
+func (h *Hub) moveCellLocked(cl *client) {
+	if next := h.cellOf(cl.pos); next != cl.cell {
+		h.unindexLocked(cl)
+		h.indexLocked(cl)
+	}
+}
+
+// neighboursLocked lists every other client whose view could include cl:
+// the zone without AOI, the 3×3 cells around cl with it.
+func (h *Hub) neighboursLocked(cl *client) []*client {
+	if h.cfg.AOI == nil {
+		out := make([]*client, 0, len(h.zones[cl.zone]))
+		for _, other := range h.zones[cl.zone] {
+			if other != cl {
+				out = append(out, other)
+			}
+		}
+		return out
+	}
+	cells := h.cells[cl.zone]
+	var out []*client
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			for _, other := range cells[cellKey{cl.cell.x + dx, cl.cell.y + dy}] {
+				if other != cl {
+					out = append(out, other)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// viewLocked computes who cl can see, sorted by userID: without AOI the
+// whole zone; with it the peers within the box, nearest first up to
+// MaxPeers (ties by userID, so the cut is deterministic).
+func (h *Hub) viewLocked(cl *client) []*client {
+	out := h.neighboursLocked(cl)
+	if aoi := h.cfg.AOI; aoi != nil {
+		kept := out[:0]
+		for _, other := range out {
+			if math.Abs(other.pos.X-cl.pos.X) <= aoi.Range && math.Abs(other.pos.Y-cl.pos.Y) <= aoi.Range {
+				kept = append(kept, other)
+			}
+		}
+		out = kept
+		if len(out) > aoi.MaxPeers {
+			dist := func(o *client) float64 {
+				return math.Max(math.Abs(o.pos.X-cl.pos.X), math.Abs(o.pos.Y-cl.pos.Y))
+			}
+			sort.Slice(out, func(i, j int) bool {
+				di, dj := dist(out[i]), dist(out[j])
+				if di != dj {
+					return di < dj
+				}
+				return out[i].userID < out[j].userID
+			})
+			out = out[:aoi.MaxPeers]
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].userID < out[j].userID })
+	return out
+}
+
+// refreshViewLocked re-derives cl's view and sends the diff: `enter` for
+// each peer now in view, `leave` for each that dropped out.
+func (h *Hub) refreshViewLocked(cl *client) {
+	if cl.zone == "" || cl.pos == nil {
+		return
+	}
+	view := h.viewLocked(cl)
+	next := make(map[string]struct{}, len(view))
+	for _, other := range view {
+		next[other.userID] = struct{}{}
+		if _, had := cl.visible[other.userID]; !had {
+			cl.sock.Send(Enter{Type: TEnter, Zone: cl.zone, Peer: *other.pos})
+		}
+	}
+	var gone []string
+	for id := range cl.visible {
+		if _, still := next[id]; !still {
+			gone = append(gone, id)
+		}
+	}
+	sort.Strings(gone)
+	for _, id := range gone {
+		cl.sock.Send(Leave{Type: TLeave, Zone: cl.zone, UserID: id})
+	}
+	cl.visible = next
+}
+
+// rebuildViewsLocked re-buckets every position and refreshes every view
+// after the AOI config changed.
+func (h *Hub) rebuildViewsLocked() {
+	h.cells = map[string]map[cellKey]map[string]*client{}
+	for _, peers := range h.zones {
+		for _, cl := range peers {
+			h.indexLocked(cl)
+		}
+	}
+	for _, peers := range h.zones {
+		for _, cl := range peers {
+			h.refreshViewLocked(cl)
+		}
+	}
+}
+
+// --- flush -----------------------------------------------------------------
 
 func (h *Hub) markDirtyLocked(zone string, p Peer) {
 	d := h.dirty[zone]
@@ -485,61 +766,101 @@ func (h *Hub) flushLoop() {
 	}
 }
 
-// Flush sends one coalesced `pos` frame per zone with every peer that moved
-// since the last flush, and persists those positions. Exported for tests.
+// Flush sends each client one coalesced `pos` frame with every peer in its
+// view that moved since the last flush (the client itself included), after
+// re-deriving views so that `enter`/`leave` precede the positions; then
+// persists moved positions at most once per posPersistEvery. Exported for
+// tests.
 func (h *Hub) Flush(ctx context.Context) {
-	type zoneBatch struct {
+	type delivery struct {
+		to    *client
 		zone  string
 		peers []Peer
-		to    []*client
 	}
 	h.mu.Lock()
-	batches := make([]zoneBatch, 0, len(h.dirty))
+	var out []delivery
 	for zone, d := range h.dirty {
 		if len(d) == 0 {
 			continue
 		}
-		b := zoneBatch{zone: zone, peers: make([]Peer, 0, len(d))}
-		for _, p := range d {
-			b.peers = append(b.peers, p)
-		}
-		sort.Slice(b.peers, func(i, j int) bool { return b.peers[i].UserID < b.peers[j].UserID })
 		for _, c := range h.zones[zone] {
-			b.to = append(b.to, c)
+			if h.cfg.AOI != nil {
+				// Without AOI a view only changes on enter/leave, which
+				// already refreshed it.
+				h.refreshViewLocked(c)
+			}
+			peers := make([]Peer, 0, len(d))
+			for id, p := range d {
+				if _, seen := c.visible[id]; seen || id == c.userID {
+					peers = append(peers, p)
+				}
+			}
+			if len(peers) == 0 {
+				continue
+			}
+			sort.Slice(peers, func(i, j int) bool { return peers[i].UserID < peers[j].UserID })
+			out = append(out, delivery{to: c, zone: zone, peers: peers})
 		}
-		batches = append(batches, b)
+		for id, p := range d {
+			h.pending[id] = pendingPos{zone: zone, peer: p}
+		}
 		delete(h.dirty, zone)
 	}
-	h.mu.Unlock()
-	for _, b := range batches {
-		frame := PosBatch{Type: TPos, Zone: b.zone, Peers: b.peers}
-		raw, err := json.Marshal(frame)
-		if err != nil {
-			continue
-		}
-		for _, c := range b.to {
-			if s, ok := c.sock.(interface{ SendRaw([]byte) bool }); ok {
-				s.SendRaw(raw)
-			} else {
-				c.sock.Send(frame)
-			}
-		}
-		var failed error
-		for _, p := range b.peers {
-			v, _ := json.Marshal(struct {
-				Zone string  `json:"zone"`
-				X    float64 `json:"x"`
-				Y    float64 `json:"y"`
-				Dir  string  `json:"dir,omitempty"`
-			}{b.zone, p.X, p.Y, p.Dir})
-			if err := h.rdb.SetPos(ctx, h.channelID, p.UserID, v); err != nil {
-				failed = err
-			}
-		}
-		if failed != nil {
-			h.redisErr("set pos", failed)
+	if len(h.pending) > 0 {
+		if now := h.now(); h.lastPersist.IsZero() || now.Sub(h.lastPersist) >= posPersistEvery {
+			h.lastPersist = now
+			batch := h.pending
+			h.pending = map[string]pendingPos{}
+			h.persistPosLocked(batch)
 		}
 	}
+	h.mu.Unlock()
+	// Recipients with the same peer list share one marshalled frame: the
+	// whole zone without AOI, a cell's worth of viewers with it. Keyed per
+	// zone first, so a zone name containing the separator cannot alias.
+	shared := map[string]map[string][]byte{}
+	for _, dl := range out {
+		key := ""
+		for _, p := range dl.peers {
+			key += p.UserID + "\x00"
+		}
+		if shared[dl.zone] == nil {
+			shared[dl.zone] = map[string][]byte{}
+		}
+		raw, ok := shared[dl.zone][key]
+		if !ok {
+			var err error
+			if raw, err = json.Marshal(PosBatch{Type: TPos, Zone: dl.zone, Peers: dl.peers}); err != nil {
+				continue
+			}
+			shared[dl.zone][key] = raw
+		}
+		if s, ok := dl.to.sock.(interface{ SendRaw([]byte) bool }); ok {
+			s.SendRaw(raw)
+		} else {
+			dl.to.sock.Send(PosBatch{Type: TPos, Zone: dl.zone, Peers: dl.peers})
+		}
+	}
+	h.runAfter()
+}
+
+// persistPosLocked schedules one batched write of the given positions.
+func (h *Hub) persistPosLocked(batch map[string]pendingPos) {
+	values := make(map[string][]byte, len(batch))
+	for id, pp := range batch {
+		v, _ := json.Marshal(struct {
+			Zone string  `json:"zone"`
+			X    float64 `json:"x"`
+			Y    float64 `json:"y"`
+			Dir  string  `json:"dir,omitempty"`
+		}{pp.zone, pp.peer.X, pp.peer.Y, pp.peer.Dir})
+		values[id] = v
+	}
+	h.persist(func() {
+		if err := h.rdb.SetPosBatch(context.Background(), h.channelID, values); err != nil {
+			h.redisErr("set pos", err)
+		}
+	})
 }
 
 // --- say / event -----------------------------------------------------------
@@ -554,7 +875,12 @@ func (h *Hub) scopeTargetsLocked(cl *client, scope, to string) ([]*client, strin
 		}
 		out := make([]*client, 0, len(h.zones[cl.zone]))
 		for _, c := range h.zones[cl.zone] {
-			out = append(out, c)
+			// With AOI, zone chat reaches whoever has the speaker in view
+			// (plus the speaker): views are receiver-owned, so this is the
+			// same rule as `pos` (`todo/26` Q6).
+			if _, sees := c.visible[cl.userID]; c == cl || h.cfg.AOI == nil || sees {
+				out = append(out, c)
+			}
 		}
 		return out, "", true
 	case "party":
@@ -868,6 +1194,13 @@ func (h *Hub) redisErr(op string, err error) {
 
 // logEvery is the per-op log throttle for Redis errors.
 const logEvery = 5 * time.Second
+
+func helloAOI(a *console.LobbyAOI) *AOI {
+	if a == nil {
+		return nil
+	}
+	return &AOI{Range: a.Range, MaxPeers: a.MaxPeers}
+}
 
 func capabilities(c console.Capabilities) Capabilities {
 	say := make([]string, 0, len(c.Say))
