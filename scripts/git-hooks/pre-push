@@ -2,6 +2,11 @@
 # Scans every commit about to be pushed (covers amend/rebase/--no-verify commits) and refuses tracked secret paths.
 # Checks capture their matches rather than using `grep -q`: `grep -q` exits at the first hit, SIGPIPEs the
 # upstream command, and under `pipefail` that 141 turned the test false — the guard passed silently on large ranges.
+# Every grep runs with `-a`: a single NUL byte anywhere in the stream makes grep
+# treat the rest as binary and stop matching, so half the history went unscanned
+# on every push until 2026-09-01 (one source file held a raw NUL in a template
+# literal). A guard that greps must be told the input is text — the same
+# fail-open family as `grep -q` below.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 command -v gitleaks >/dev/null || { echo "pre-push: gitleaks is required" >&2; exit 1; }
@@ -16,9 +21,9 @@ while read -r _lref lsha _rref rsha; do
   # After a history rewrite (git filter-repo + force push) the remote tip no longer exists locally,
   # so `$rsha..$lsha` is an invalid range: scan everything reachable from the pushed tip instead.
   if [ "$rsha" = "$zero" ] || ! git cat-file -e "$rsha^{commit}" 2>/dev/null; then range="$lsha"; else range="$rsha..$lsha"; fi
-  tracked=$(git ls-tree -r --name-only "$lsha" | grep -E '(^|/)\.env(\.|$)|(^|/)\.envrc$|^local/' | grep -vE '\.example$|^local/README\.md$' || true)
+  tracked=$(git ls-tree -r --name-only "$lsha" | grep -a -E '(^|/)\.env(\.|$)|(^|/)\.envrc$|^local/' | grep -a -vE '\.example$|^local/README\.md$' || true)
   if [ -n "$tracked" ]; then echo "pre-push: secret-bearing paths are tracked in $lsha:" >&2; echo "$tracked" >&2; exit 1; fi
-  todo=$(git ls-tree -r --name-only "$lsha" | grep -cE '^todo/' || true)
+  todo=$(git ls-tree -r --name-only "$lsha" | grep -a -cE '^todo/' || true)
   if [ "${todo:-0}" -gt 0 ]; then echo "pre-push: todo/ must stay untracked ($todo path(s) in $lsha)" >&2; exit 1; fi
   # Scan the whole history reachable from the pushed tip, not just the new range: a leak an older
   # commit already carries is still being published, and once it is out a later commit cannot undo it.

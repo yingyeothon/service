@@ -1813,7 +1813,10 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
   const ci = (s: string) => s.trimEnd().toLowerCase();
   /** `utf8mb4_bin` is byte-exact but still PAD SPACE. */
   const bin = (s: string) => s.trimEnd();
-  const mk = (teamId: string, memberId: string) => `${teamId} ${memberId}`;
+  // `\u0000` as an escape, never a raw NUL in the source: one NUL byte makes
+  // git's diff stream binary, and the identifier guards grep that stream — the
+  // check silently stopped at this file until 2026-09-01 (`rules/security.md`).
+  const mk = (teamId: string, memberId: string) => `${teamId}\u0000${memberId}`;
 
   /** Snapshot/restore around multi-row writes: the fake's transaction. */
   const atomic = async <T>(fn: () => Promise<T> | T): Promise<T> => {
