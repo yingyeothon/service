@@ -187,6 +187,7 @@ export {
   type ShowGrantRow,
   type ShowInput,
   type ShowListFilter,
+  type ShowListRow,
   type ShowPage,
   type ShowPatch,
   type ShowRow,

@@ -16,6 +16,7 @@ import type {
   ChannelRow,
   ConsoleDb,
   EventsDb,
+  ShowsDb,
   SitesDb,
   TeamDb,
   StateDb,
@@ -58,6 +59,7 @@ import {
 } from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
 import { createEventRoutes } from "./events.js";
+import { createShowRoutes } from "./shows.js";
 import {
   createChannelDocKeyRoutes,
   deleteChannelDocs,
@@ -90,6 +92,8 @@ export interface ConsoleAppOptions {
   urls: ServiceUrls;
   db: ConsoleDb;
   events: EventsDb;
+  /** The gallery: platform-global, so it hangs off no team and no project. */
+  shows: ShowsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
   sites: SitesDb;
@@ -165,6 +169,7 @@ export function createConsoleApp({
   urls,
   db,
   events,
+  shows,
   catalog,
   assets,
   sites,
@@ -329,6 +334,8 @@ export function createConsoleApp({
   // it: the value is announced to every client and fetched server-side by the
   // game (`docs/decisions.md` *Storage shapes*).
   const cdn = (cdnBaseUrl ?? "https://d.yyt.life").replace(/\/+$/, "");
+  /** Same defaulting as the site routes: a stage without the env var still links. */
+  const siteCdn = (siteCdnUrl ?? "https://g.yyt.life").replace(/\/+$/, "");
   const channelOptions = {
     assetOrigin: new URL(cdn).origin,
   } satisfies ChannelOptions;
@@ -912,6 +919,20 @@ export function createConsoleApp({
     },
   ];
 
+  const showRoutes = createShowRoutes({
+    db,
+    shows,
+    events,
+    catalog,
+    assets,
+    sites,
+    access,
+    cdnBaseUrl: cdn,
+    siteCdnUrl: siteCdn,
+    clock,
+    kv,
+    audit,
+  });
   const eventRoutes = createEventRoutes({
     baseUrl: base,
     db,
@@ -973,7 +994,7 @@ export function createConsoleApp({
     history,
     store: siteStore,
     invoke: siteInvoke,
-    cdnBaseUrl: (siteCdnUrl ?? "https://g.yyt.life").replace(/\/+$/, ""),
+    cdnBaseUrl: siteCdn,
     clock,
     logger,
     audit,
@@ -1009,6 +1030,7 @@ export function createConsoleApp({
       ...routes,
       ...memberRoutes,
       ...eventRoutes,
+      ...showRoutes,
       ...teamRoutes,
       ...catalogRoutes,
       ...assetRoutes,

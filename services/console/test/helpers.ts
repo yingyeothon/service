@@ -5,6 +5,7 @@ import {
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
+  createMemoryShowsDb,
   createMemorySitesDb,
   createMemoryTeamDb,
   createMemoryStateDb,
@@ -57,7 +58,18 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const clock = fakeClock();
   const kv = createMemoryKv({ clock });
   const db = createMemoryConsoleDb();
-  const events = createMemoryEventsDb((id) => db.members.has(id));
+  const events = createMemoryEventsDb(
+    (id) => db.members.has(id),
+    // `shows.event_id` is `ON DELETE SET NULL`: the gallery outlives its event.
+    (eventId) => {
+      for (const [k, s] of shows.shows)
+        if (s.eventId === eventId) shows.shows.set(k, { ...s, eventId: null });
+    },
+  );
+  const shows = createMemoryShowsDb({
+    memberExists: (id) => db.members.has(id),
+    eventExists: (id) => events.events.has(id),
+  });
   const catalog = createMemoryCatalogDb((id) => db.members.has(id));
   const assets = createMemoryAssetsDb((id) => db.members.has(id));
   const sites = createMemorySitesDb((id) => db.members.has(id));
@@ -93,6 +105,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     stage: STAGE,
     db,
     events,
+    shows,
     catalog,
     assets,
     sites,
@@ -215,6 +228,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     kv,
     db,
     events,
+    shows,
     catalog,
     assets,
     sites,

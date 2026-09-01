@@ -4,6 +4,7 @@ import {
   createMemoryCatalogDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
+  createMemoryShowsDb,
   createMemorySitesDb,
   createMemoryTeamDb,
 } from "@yyt/console-db";
@@ -29,6 +30,7 @@ describe("debug login hook", () => {
       stage: "dev",
       db,
       events: createMemoryEventsDb(),
+      shows: createMemoryShowsDb(),
       catalog: createMemoryCatalogDb(),
       assets: createMemoryAssetsDb(),
       sites: createMemorySitesDb(),

@@ -571,9 +571,17 @@ export function createEventsDb(prisma: PrismaClient): EventsDb {
   };
 }
 
-/** In-memory `EventsDb` with the same contract as the MySQL repository. */
+/**
+ * In-memory `EventsDb` with the same contract as the MySQL repository.
+ *
+ * `onDeleted` mirrors a cascade this repository cannot see: `shows.event_id`
+ * is `ON DELETE SET NULL`, so deleting an event clears the link and leaves the
+ * gallery standing. A fake that skipped it would let a test pass that the
+ * database fails (`rules/testing.md`).
+ */
 export function createMemoryEventsDb(
   memberExists: (id: string) => boolean = () => true,
+  onDeleted: (eventId: string) => void = () => {},
 ): EventsDb & {
   events: Map<string, EventRow>;
   options: Map<string, EventOptionRow>;
@@ -784,6 +792,7 @@ export function createMemoryEventsDb(
     deleteComment: async (id) => comments.delete(id),
     deleteEvent: async (id) => {
       if (!events.delete(id)) return false;
+      onDeleted(id);
       for (const [k, o] of options) if (o.eventId === id) options.delete(k);
       for (const [k, v] of votes) if (v.eventId === id) votes.delete(k);
       for (const [k, r] of revisions) if (r.eventId === id) revisions.delete(k);

@@ -301,6 +301,39 @@ export function auditReadContract(make: () => ConsoleDb | Promise<ConsoleDb>) {
   });
 }
 
+/** The two member lookups the show read paths use instead of a full scan. */
+export function memberLookupContract(
+  make: () => ConsoleDb | Promise<ConsoleDb>,
+) {
+  it("members: by a page of ids, and by login case-insensitively", async () => {
+    const db = await make();
+    // Fresh ids and github ids: `resetTestDb` already seeded `m1`..`m9`, and
+    // `upsertMember` matches on `github_id`.
+    for (const [id, login, githubId] of [
+      ["ml1", "Octocat", 9001],
+      ["ml2", "hubot", 9002],
+    ] as const)
+      await db.upsertMember({
+        id,
+        githubId,
+        githubLogin: login,
+        role: "member",
+        createdAt: 1,
+      });
+    expect(
+      (await db.findMembersByIds(["ml2", "zz", "ml1"])).map((m) => m.id),
+    ).toEqual(["ml1", "ml2"]);
+    expect(await db.findMembersByIds([])).toEqual([]);
+    expect((await db.findMemberByLogin("OCTOCAT"))?.id).toBe("ml1");
+    expect((await db.findMemberByLogin("octocat"))?.id).toBe("ml1");
+    expect(await db.findMemberByLogin("nobody")).toBeUndefined();
+  });
+}
+
 describe("memory console db: audit read", () => {
   auditReadContract(() => createMemoryConsoleDb());
+});
+
+describe("memory console db: member lookups", () => {
+  memberLookupContract(() => createMemoryConsoleDb());
 });

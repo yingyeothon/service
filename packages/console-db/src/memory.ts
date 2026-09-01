@@ -119,6 +119,18 @@ export function createMemoryConsoleDb(): ConsoleDb & {
       const m = members.get(id);
       return m && { ...m };
     },
+    findMembersByIds: async (ids) =>
+      [...ids].sort().flatMap((id) => {
+        const m = members.get(id);
+        return m ? [{ ...m }] : [];
+      }),
+    findMemberByLogin: async (login) => {
+      // `github_login` sits on the database default collation.
+      const m = [...members.values()].find(
+        (x) => x.githubLogin.toLowerCase() === login.toLowerCase(),
+      );
+      return m && { ...m };
+    },
     listMembers: async () =>
       [...members.values()]
         .map((m) => ({ ...m }))

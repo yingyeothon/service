@@ -84,6 +84,16 @@ export function assetsContract(make: () => AssetsDb | Promise<AssetsDb>) {
     expect(await db.deleteBundle("a1")).toBe(false);
   });
 
+  it("bundles come back for a page of ids in one call", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("ab_1"));
+    await db.insertBundle(bundle("ab_2"));
+    expect(
+      (await db.listBundlesByIds(["ab_2", "zz", "ab_1"])).map((b) => b.id),
+    ).toEqual(["ab_1", "ab_2"]);
+    expect(await db.listBundlesByIds([])).toEqual([]);
+  });
+
   it("files: write-once per (bundle, version, path), listed and filtered", async () => {
     const db = await make();
     await db.insertBundle(bundle("b1"));
@@ -123,6 +133,20 @@ export function assetsContract(make: () => AssetsDb | Promise<AssetsDb>) {
     expect((await db.listFiles("b1")).map((f) => f.id)).toEqual(["f2"]);
     expect(await db.deleteFile("f2")).toBe(true);
     expect(await db.deleteFile("f2")).toBe(false);
+  });
+
+  it("pins the newest version by commit time, not by version string", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("ab_1"));
+    expect(await db.findNewestVersion("ab_1")).toBeUndefined();
+    await db.insertFile(file("af_9", "ab_1", { version: "9", at: 10 }));
+    await db.insertFile(file("af_10", "ab_1", { version: "10", at: 20 }));
+    // Lexicographically "9" wins; by commit time "10" does, which is what an
+    // exhibited version means.
+    expect(await db.findNewestVersion("ab_1")).toBe("10");
+    expect(await db.hasVersion("ab_1", "9")).toBe(true);
+    expect(await db.hasVersion("ab_1", "nope")).toBe(false);
+    expect(await db.hasVersion("zz", "9")).toBe(false);
   });
 
   it("names compare case-insensitively; versions and paths do not", async () => {

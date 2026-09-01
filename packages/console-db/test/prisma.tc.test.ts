@@ -18,7 +18,10 @@ import { catalogContract } from "./catalog.test.js";
 import { sitesContract } from "./sites.test.js";
 import { eventsContract } from "./events.test.js";
 import { showsContract } from "./shows.test.js";
-import { auditReadContract } from "./consoleDbExt.test.js";
+import {
+  auditReadContract,
+  memberLookupContract,
+} from "./consoleDbExt.test.js";
 import { teamContract } from "./team.test.js";
 import { stateContract } from "./state.test.js";
 import {
@@ -74,6 +77,9 @@ describe.skipIf(!dockerAvailable())(
               voteUntil: 100,
               options: [],
             });
+          },
+          dropEvent: async (id: string) => {
+            await events.deleteEvent(id);
           },
         };
       });
@@ -533,6 +539,13 @@ describe.skipIf(!dockerAvailable())(
 
     describe("audit read contract", () => {
       auditReadContract(async () => {
+        await resetTestDb(db.client);
+        return createConsoleDb(db.client);
+      });
+    });
+
+    describe("member lookup contract", () => {
+      memberLookupContract(async () => {
         await resetTestDb(db.client);
         return createConsoleDb(db.client);
       });

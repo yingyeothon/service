@@ -165,6 +165,64 @@ export function visibleStatuses(
 }
 
 /** Candidate start times must all come after the vote closes. */
+/**
+ * The row with `status` replaced by the effective one. A vote that is due is
+ * decided here — the only read-side write, conditional on `voting` so two
+ * concurrent readers cannot decide twice.
+ *
+ * Module-level so anything gating on "is this event visible" settles the row
+ * first: the show spawn does, and `docs/decisions.md` decision 11 turns on it.
+ */
+export async function settleEvent(
+  events: EventsDb,
+  row: EventRow,
+  now: number,
+): Promise<EventRow> {
+  if (
+    row.status === "voting" &&
+    row.startsAt === null &&
+    now >= row.voteUntil
+  ) {
+    const startsAt = decideStart(
+      await events.listOptions(row.id),
+      await events.listVotes(row.id),
+    );
+    if (startsAt !== null) {
+      const ok = await events.updateEvent(
+        row.id,
+        { startsAt, status: "waiting" },
+        now,
+        "voting",
+      );
+      row = ok
+        ? { ...row, startsAt, status: "waiting", updatedAt: now }
+        : ((await events.findEvent(row.id)) ?? row);
+    }
+  }
+  return { ...row, status: effectiveStatus(row, now) };
+}
+
+/** A draft, or a draft that was cancelled before it was ever published: owner and admins only. */
+export const isPrivateEvent = (row: Pick<EventRow, "status" | "publishedAt">) =>
+  row.status === "draft" ||
+  (row.status === "cancelled" && row.publishedAt === null);
+
+/**
+ * Whether `id` may see the event **as settled**. Passing `undefined` asks the
+ * question that matters to the show spawn: is this visible to an anonymous
+ * visitor? Note that is neither "published" nor a status name — a `voting`
+ * event and one cancelled after publication are both published and both
+ * invisible (`rules/security.md`, "a status enum is not the whole visibility
+ * rule").
+ */
+export const canSeeEvent = (
+  id: ConsoleIdentity | undefined,
+  row: Pick<EventRow, "status" | "createdBy" | "publishedAt">,
+): boolean =>
+  isPrivateEvent(row)
+    ? id !== undefined && (id.role === "admin" || id.subject === row.createdBy)
+    : visibleStatuses(id?.role).includes(row.status);
+
 function checkSchedule(voteUntil: number, starts: readonly number[]): void {
   if (new Set(starts).size !== starts.length)
     throw new AppError("bad_request", "duplicate option");
@@ -187,49 +245,9 @@ export function createEventRoutes({
   const identityOf = (ctx: RouteContext) =>
     ctx.identity as ConsoleIdentity | undefined;
 
-  /**
-   * The row with `status` replaced by the effective one. A vote that is due
-   * is decided here — the only read-side write, conditional on `voting` so
-   * two concurrent readers cannot decide twice.
-   */
-  async function settle(row: EventRow, now: number): Promise<EventRow> {
-    if (
-      row.status === "voting" &&
-      row.startsAt === null &&
-      now >= row.voteUntil
-    ) {
-      const startsAt = decideStart(
-        await events.listOptions(row.id),
-        await events.listVotes(row.id),
-      );
-      if (startsAt !== null) {
-        const ok = await events.updateEvent(
-          row.id,
-          { startsAt, status: "waiting" },
-          now,
-          "voting",
-        );
-        row = ok
-          ? { ...row, startsAt, status: "waiting", updatedAt: now }
-          : ((await events.findEvent(row.id)) ?? row);
-      }
-    }
-    return { ...row, status: effectiveStatus(row, now) };
-  }
-
-  /** A draft, or a draft that was cancelled before it was ever published: owner and admins only. */
-  const isPrivate = (row: Pick<EventRow, "status" | "publishedAt">) =>
-    row.status === "draft" ||
-    (row.status === "cancelled" && row.publishedAt === null);
-
-  const canSee = (
-    id: ConsoleIdentity | undefined,
-    row: Pick<EventRow, "status" | "createdBy" | "publishedAt">,
-  ): boolean =>
-    isPrivate(row)
-      ? id !== undefined &&
-        (id.role === "admin" || id.subject === row.createdBy)
-      : visibleStatuses(id?.role).includes(row.status);
+  const settle = (row: EventRow, now: number) => settleEvent(events, row, now);
+  const canSee = canSeeEvent;
+  const isPrivate = isPrivateEvent;
 
   /** The `mdrl:` slot shared by every route family that records rows. */
   const writeSlot = createWriteSlot({ kv, clock });

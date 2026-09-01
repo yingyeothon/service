@@ -154,11 +154,27 @@ export interface CatalogDb {
     teamIds?: string[];
     projectId?: string;
   }): Promise<CatalogAppRow[]>;
+  /**
+   * Rows for a page of ids, in one query, by id ascending; unknown ids are
+   * simply absent. A show entry page resolves up to `ENTRY_PAGE_MAX` targets
+   * and the pool has one connection, so a per-entry `find` would be that many
+   * serial round trips (`rules/data.md`). The caller indexes the result by id,
+   * so the order is only here to make the contract deterministic.
+   */
+  listAppsByIds(ids: readonly string[]): Promise<CatalogAppRow[]>;
   updateApp(id: string, patch: CatalogAppPatch, at: number): Promise<boolean>;
   deleteApp(id: string): Promise<boolean>;
 
   insertArtifact(a: CatalogArtifactInput): Promise<void>;
   findArtifact(id: string): Promise<CatalogArtifactRow | undefined>;
+  /**
+   * Rows for a page of ids, in one query, by id ascending; unknown ids are
+   * simply absent. A show entry page resolves up to `ENTRY_PAGE_MAX` targets
+   * and the pool has one connection, so a per-entry `find` would be that many
+   * serial round trips (`rules/data.md`). The caller indexes the result by id,
+   * so the order is only here to make the contract deterministic.
+   */
+  listArtifactsByIds(ids: readonly string[]): Promise<CatalogArtifactRow[]>;
   /** Newest first; `platform` narrows. */
   listArtifacts(
     appId: string,
@@ -175,6 +191,8 @@ export interface CatalogDb {
     appIds: string[],
     filter?: { platform?: CatalogPlatform },
   ): Promise<CatalogArtifactSummary[]>;
+  /** The app's newest artifact — the build a show entry pins (decision 5). */
+  findNewestArtifact(appId: string): Promise<CatalogArtifactRow | undefined>;
   deleteArtifact(id: string): Promise<boolean>;
 
   /**
@@ -326,6 +344,17 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
           })
         ).map(toApp),
       ),
+    listAppsByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : (
+              await prisma.catalog_apps.findMany({
+                where: { id: { in: [...ids] } },
+                orderBy: { id: "asc" },
+              })
+            ).map(toApp),
+      ),
     updateApp: (id, patch, at) =>
       run(async () => {
         const data: Record<string, string | number | boolean | null> = {
@@ -373,6 +402,17 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
         const r = await prisma.catalog_artifacts.findUnique({ where: { id } });
         return r ? toArtifact(r) : undefined;
       }),
+    listArtifactsByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : (
+              await prisma.catalog_artifacts.findMany({
+                where: { id: { in: [...ids] } },
+                orderBy: { id: "asc" },
+              })
+            ).map(toArtifact),
+      ),
     listArtifacts: (appId, filter = {}) =>
       run(async () =>
         (
@@ -436,6 +476,14 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
         for (const r of ids)
           byApp.get(r.app_id)?.applicationIds.push(r.application_id);
         return [...byApp.values()];
+      }),
+    findNewestArtifact: (appId) =>
+      run(async () => {
+        const r = await prisma.catalog_artifacts.findFirst({
+          where: { app_id: appId },
+          orderBy: [{ created_at: "desc" }, { id: "desc" }],
+        });
+        return r ? toArtifact(r) : undefined;
       }),
     deleteArtifact: (id) =>
       run(async () => {
@@ -566,6 +614,11 @@ export function createMemoryCatalogDb(
         )
         .map((a) => ({ ...a }))
         .sort(byName),
+    listAppsByIds: async (ids) =>
+      [...ids].sort().flatMap((id) => {
+        const a = apps.get(id);
+        return a ? [{ ...a }] : [];
+      }),
     updateApp: async (id, patch, at) => {
       const a = apps.get(id);
       if (!a) return false;
@@ -609,6 +662,11 @@ export function createMemoryCatalogDb(
       const a = artifacts.get(id);
       return a && { ...a, tags: { ...a.tags } };
     },
+    listArtifactsByIds: async (ids) =>
+      [...ids].sort().flatMap((id) => {
+        const a = artifacts.get(id);
+        return a ? [{ ...a }] : [];
+      }),
     listArtifacts: async (appId, filter = {}) =>
       [...artifacts.values()]
         .filter(
@@ -641,6 +699,12 @@ export function createMemoryCatalogDb(
         if (id && !s.applicationIds.includes(id)) s.applicationIds.push(id);
       }
       return [...byApp.values()];
+    },
+    findNewestArtifact: async (appId) => {
+      const a = [...artifacts.values()]
+        .filter((x) => x.appId === appId)
+        .sort((x, y) => y.createdAt - x.createdAt || (x.id < y.id ? 1 : -1))[0];
+      return a && { ...a };
     },
     deleteArtifact: async (id) => artifacts.delete(id),
 

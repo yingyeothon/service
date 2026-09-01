@@ -95,6 +95,16 @@ export function sitesContract(make: () => SitesDb | Promise<SitesDb>) {
     expect(await db.deleteSite("a1")).toBe(false);
   });
 
+  it("sites come back for a page of ids in one call", async () => {
+    const db = await make();
+    await db.insertSite(site("st_1"));
+    await db.insertSite(site("st_2"));
+    expect(
+      (await db.listSitesByIds(["st_2", "zz", "st_1"])).map((s) => s.id),
+    ).toEqual(["st_1", "st_2"]);
+    expect(await db.listSitesByIds([])).toEqual([]);
+  });
+
   it("deploys: insert, list newest first, CAS transitions, sweeps", async () => {
     const db = await make();
     await db.insertSite(site("s1", "s1s1s1s1s"));
