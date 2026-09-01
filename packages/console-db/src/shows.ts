@@ -291,16 +291,22 @@ export interface ShowsDb {
    */
   countPendingShots(entryId: string, now: number): Promise<number>;
   /**
-   * The wholesale replace: promotes `keys` to `live` in the given order,
-   * retires every other `live` **or** `pending` row of the entry and bumps the
-   * entry's `updated_at`, all in one transaction. Returns the retired rows so
-   * the route can delete their objects, or `undefined` when a key is unknown,
-   * duplicated, belongs to another entry, or names an object the sweep has
-   * already deleted. More than `ENTRY_SHOTS_MAX` keys is a `bad_request`.
+   * The wholesale replace: promotes the named rows to `live` in the given
+   * order, retires every other `live` **or** `pending` row of the entry and
+   * bumps the entry's `updated_at`, all in one transaction. Returns the
+   * retired rows so the route can delete their objects, or `undefined` when an
+   * id is unknown, duplicated, belongs to another entry, or names an object
+   * the sweep has already deleted. More than `ENTRY_SHOTS_MAX` is a
+   * `bad_request`.
+   *
+   * By **row id**, not object key: the key is server-minted and the client
+   * never needs it — the presign hands back an id and the entry view lists
+   * ids, so a caller can express "keep these two, add this one" without ever
+   * holding an S3 key.
    */
   replaceShots(
     entryId: string,
-    keys: readonly string[],
+    ids: readonly string[],
     at: number,
   ): Promise<ShowShotRow[] | undefined>;
   updateShot(
@@ -375,15 +381,15 @@ const chunked = (keys: readonly string[], size: number): string[][] => {
 };
 
 /**
- * Shared by the repository and its fake. A duplicated key would write `ord`
- * twice and, against `show_entry_shots_key`, is meaningless; more keys than the
- * cap would put an unbounded statement count inside one transaction.
+ * Shared by the repository and its fake. A repeated id would write `ord`
+ * twice; more than the cap would put an unbounded statement count inside one
+ * transaction.
  */
-export function checkShotKeys(keys: readonly string[]): void {
-  if (keys.length > ENTRY_SHOTS_MAX)
+export function checkShotIds(ids: readonly string[]): void {
+  if (ids.length > ENTRY_SHOTS_MAX)
     throw new AppError("bad_request", `max ${ENTRY_SHOTS_MAX} screenshots`);
-  if (new Set(keys).size !== keys.length)
-    throw new AppError("bad_request", "duplicate screenshot key");
+  if (new Set(ids).size !== ids.length)
+    throw new AppError("bad_request", "duplicate screenshot");
 }
 
 /** `(created_at, id)` descending, as a Prisma `where` fragment. */
@@ -960,20 +966,20 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
           },
         }),
       ),
-    replaceShots: (entryId, keys, at) =>
+    replaceShots: (entryId, ids, at) =>
       // `async` so a synchronous guard throw becomes a rejection like every
       // other method here, rather than throwing out of the call itself.
       run(async () => {
-        checkShotKeys(keys);
+        checkShotIds(ids);
         return prisma.$transaction(async (tx) => {
           // Only `tx` inside: the pool holds one connection and the outer
           // client would wait on it forever (`rules/data.md`).
           const named =
-            keys.length === 0
+            ids.length === 0
               ? []
               : await tx.show_entry_shots.findMany({
                   where: {
-                    object_key: { in: [...keys] },
+                    id: { in: [...ids] },
                     // `live` or `pending` only. A `replaced` row is already in
                     // the sweep's delete queue, and promoting one back would
                     // race that delete into a `live` row pointing at nothing —
@@ -983,7 +989,7 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
                     deleted_at: null,
                   },
                 });
-          if (named.length !== keys.length) return undefined;
+          if (named.length !== ids.length) return undefined;
           if (named.some((r) => r.entry_id !== entryId)) return undefined;
           // Only now the parent row, and before any child write, so this and a
           // concurrent `deleteEntry` cascade take their locks in one order. A
@@ -1006,9 +1012,9 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
               },
             })
           ).map(toShot);
-          for (const [i, key] of keys.entries())
+          for (const [i, id] of ids.entries())
             await tx.show_entry_shots.updateMany({
-              where: { object_key: key },
+              where: { id },
               data: { status: "live", ord: i, replaced_at: null },
             });
           if (retired.length > 0)
@@ -1541,15 +1547,15 @@ export function createMemoryShowsDb(
       entryShots(entryId).filter(
         (s) => s.status === "pending" && s.expiresAt > now,
       ).length,
-    replaceShots: async (entryId, keys, at) => {
-      checkShotKeys(keys);
+    replaceShots: async (entryId, ids, at) => {
+      checkShotIds(ids);
       const named = [...shots.values()].filter(
         (s) =>
-          keys.includes(s.key) &&
+          ids.includes(s.id) &&
           s.deletedAt === null &&
           (s.status === "live" || s.status === "pending"),
       );
-      if (named.length !== keys.length) return undefined;
+      if (named.length !== ids.length) return undefined;
       if (named.some((s) => s.entryId !== entryId)) return undefined;
       const e = entries.get(entryId);
       if (e) entries.set(entryId, { ...e, updatedAt: at });
@@ -1558,8 +1564,8 @@ export function createMemoryShowsDb(
         (s) =>
           !keep.has(s.id) && (s.status === "live" || s.status === "pending"),
       );
-      for (const [i, key] of [...keys].entries()) {
-        const s = named.find((x) => x.key === key)!;
+      for (const [i, id] of [...ids].entries()) {
+        const s = named.find((x) => x.id === id)!;
         shots.set(s.id, { ...s, status: "live", ord: i, replacedAt: null });
       }
       for (const s of retired)

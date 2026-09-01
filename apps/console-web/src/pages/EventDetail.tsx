@@ -19,6 +19,7 @@ import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
 import { Comments } from "../components/Comments";
 import { EventForm } from "../components/EventForm";
+import { EntryGrid } from "../components/EntryGrid";
 import { Markdown } from "../components/Markdown";
 import { Badge, Confirm, Notice, Spinner } from "../components/ui";
 import { diffLines, revisionText } from "../lib/diff";
@@ -51,6 +52,7 @@ export function EventDetailPage() {
   });
   const act = useAction();
   const [editing, setEditing] = useState(false);
+  const [history, setHistory] = useState(false);
 
   if (ev.error) return <Notice kind="error">{ev.error}</Notice>;
   if (!ev.data) return <Spinner />;
@@ -143,7 +145,24 @@ export function EventDetailPage() {
         </Group>
       )}
 
-      <History id={e.id} revision={e.revision} />
+      <ShowSection e={e} act={act} onOpened={ev.reload} />
+
+      {/*
+       * Collapsed by default to make room for the gallery. Conditionally
+       * mounted rather than hidden: `Collapse` keeps its children mounted and
+       * their queries would still fire, so the revision list would be fetched
+       * on every event page whether or not anyone looked at it.
+       */}
+      <Group mt="md" gap="xs">
+        <Button
+          size="compact-sm"
+          variant="subtle"
+          onClick={() => setHistory((v) => !v)}
+        >
+          {history ? "Hide page history" : "Page history"}
+        </Button>
+      </Group>
+      {history && <History id={e.id} revision={e.revision} />}
 
       {e.status !== "draft" && (
         <Comments
@@ -429,6 +448,72 @@ function OwnerPanel({
           : "Every edit is kept as a revision; the page history below shows who changed what."}
       </Text>
     </Card>
+  );
+}
+
+/**
+ * The gallery this event spawned, below the page. Deliberately **outside**
+ * `OwnerPanel`: that panel disappears once an event is `closed`, which is
+ * exactly when its entries matter most (`docs/decisions.md` decision 11).
+ */
+function ShowSection({
+  e,
+  act,
+  onOpened,
+}: {
+  e: EventDetail;
+  act: ReturnType<typeof useAction>;
+  onOpened: () => Promise<void>;
+}) {
+  const { me } = useAuth();
+  const [sort, setSort] = useState<"new" | "likes">("new");
+  const entries = useApiQuery(
+    ["event-show-entries", e.showId ?? "", sort],
+    () => api.showEntries(e.showId!, { sort }),
+    { enabled: e.showId !== null },
+  );
+  if (e.showId === null) {
+    if (!e.canEdit && !hasRole(me, "admin")) return null;
+    // The API gates on "is this event visible to an anonymous visitor",
+    // evaluated on the settled row — offering the button on a draft or a
+    // running vote would only ever produce a 409.
+    if (!["waiting", "opened", "closed"].includes(e.status)) return null;
+    return (
+      <Group mt="md" gap="xs">
+        <Button
+          size="compact-sm"
+          disabled={act.busy}
+          onClick={() =>
+            void (async () => {
+              await act.run(() => api.openShowForEvent(e.id));
+              await onOpened();
+            })()
+          }
+        >
+          Open a show for this event
+        </Button>
+        <Text size="xs" c="dimmed">
+          A gallery where members put up what they built here.
+        </Text>
+      </Group>
+    );
+  }
+  return (
+    <>
+      <Group mt="md" mb="xs" justify="space-between">
+        <Title order={4}>What people built</Title>
+        <Anchor component={Link} to={`/shows/${e.showId}`} size="sm">
+          Open the show
+        </Anchor>
+      </Group>
+      {entries.error && <Notice kind="error">{entries.error}</Notice>}
+      <EntryGrid
+        entries={entries.data?.entries ?? []}
+        sort={sort}
+        onSort={setSort}
+        loading={entries.loading && !entries.data}
+      />
+    </>
   );
 }
 

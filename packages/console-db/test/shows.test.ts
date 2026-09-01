@@ -346,8 +346,8 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
       expiresAt: 620,
     });
 
-    // Commit only `b`: `a` is retired and handed back for its S3 delete.
-    const retired = await db.replaceShots("se1", [k("b")], 30);
+    // Commit only `ss2`: `ss1` is retired and handed back for its S3 delete.
+    const retired = await db.replaceShots("se1", ["ss2"], 30);
     expect(retired?.map((r) => r.key)).toEqual([k("a")]);
     expect(retired?.[0]).toMatchObject({ status: "replaced", replacedAt: 30 });
     expect((await db.listShots("se1", ["live"])).map((s) => s.key)).toEqual([
@@ -362,23 +362,19 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
     // An empty patch changes no row, so MySQL reports nothing updated.
     expect(await db.updateShot("ss2", {})).toBe(false);
 
-    // An unknown key, or one belonging to another entry, commits nothing.
-    expect(
-      await db.replaceShots("se1", ["shots/sh1/se1/zz.png"], 31),
-    ).toBeUndefined();
+    // An unknown id, or one belonging to another entry, commits nothing.
+    expect(await db.replaceShots("se1", ["ss_nope"], 31)).toBeUndefined();
     // More keys than the cap, or a repeated key, is a caller error: the first
     // would put an unbounded statement count inside one transaction, the
     // second would write `ord` twice for one object.
     await expect(
-      db.replaceShots("se1", [k("b"), k("b")], 31),
+      db.replaceShots("se1", ["ss2", "ss2"], 31),
     ).rejects.toMatchObject({ code: "bad_request" });
     await expect(
-      db.replaceShots("se1", [k("a"), k("b"), k("c"), k("d")], 31),
+      db.replaceShots("se1", ["ss1", "ss2", "ss3", "ss4"], 31),
     ).rejects.toMatchObject({ code: "bad_request" });
     await db.insertShot(shot("ss5", "se2", "shots/sh1/se2/a.png"));
-    expect(
-      await db.replaceShots("se1", ["shots/sh1/se2/a.png"], 31),
-    ).toBeUndefined();
+    expect(await db.replaceShots("se1", ["ss5"], 31)).toBeUndefined();
     expect((await db.listShots("se1", ["live"])).map((s) => s.key)).toEqual([
       k("b"),
     ]);
@@ -416,10 +412,10 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
     ).toEqual([k("b")]);
     expect(await db.listLiveShotsOf([])).toEqual([]);
 
-    // A retired key is already in the sweep's delete queue: re-committing it
+    // A retired row is already in the sweep's delete queue: re-committing it
     // would race that delete into a `live` row pointing at nothing, which
     // neither the queue nor the age pass could ever see again.
-    expect(await db.replaceShots("se1", [k("a")], 41)).toBeUndefined();
+    expect(await db.replaceShots("se1", ["ss1"], 41)).toBeUndefined();
     // ...and a refused commit must not move the entry's `updatedAt`.
     expect((await db.findEntry("se1"))?.updatedAt).toBe(30);
     expect((await db.listShots("se1", ["live"])).map((s) => s.key)).toEqual([
@@ -526,7 +522,7 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
     });
     await db.insertEntry(entry("se1", "sh1"));
     await db.insertShot(shot("ss1", "se1", "shots/sh1/se1/a.png"));
-    await db.replaceShots("se1", ["shots/sh1/se1/a.png"], 30);
+    await db.replaceShots("se1", ["ss1"], 30);
     await db.insertLike("se1", "m2", 31);
     await db.insertComment({
       id: "sc1",

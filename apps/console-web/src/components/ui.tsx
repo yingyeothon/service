@@ -7,6 +7,7 @@ import {
   Loader,
   Stack,
   Text,
+  TextInput,
 } from "@mantine/core";
 import {
   IconAlertTriangle,
@@ -14,7 +15,13 @@ import {
   IconInfoCircle,
   IconX,
 } from "@tabler/icons-react";
-import { useEffect, useId, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useState,
+  type ChangeEvent,
+  type ReactNode,
+} from "react";
 
 const NOTICE: Record<
   "info" | "error" | "success" | "warn",
@@ -247,5 +254,81 @@ function CopyButton({
         {copied === "no" ? "" : text}
       </span>
     </>
+  );
+}
+
+/**
+ * A destructive action a platform admin may only take with a stated reason
+ * (`docs/decisions.md` *Show (console)*, decision 12). The reason is required
+ * only when `required` is set, so the same control serves an owner acting on
+ * their own content and an admin acting beyond it.
+ */
+export function ConfirmWithReason({
+  label,
+  confirmLabel = "Confirm",
+  required,
+  placeholder = "Why?",
+  onConfirm,
+  disabled,
+}: {
+  label: string;
+  confirmLabel?: string;
+  /** Demand a reason before the confirm button does anything. */
+  required: boolean;
+  placeholder?: string;
+  onConfirm: (reason: string | undefined) => void | Promise<void>;
+  disabled?: boolean;
+}) {
+  const [arm, setArm] = useState(false);
+  const [reason, setReason] = useState("");
+  if (!arm)
+    return (
+      <Button
+        size="compact-sm"
+        color="red"
+        variant="light"
+        disabled={disabled}
+        onClick={() => setArm(true)}
+      >
+        {label}
+      </Button>
+    );
+  return (
+    <Group gap="xs" wrap="nowrap" align="flex-start">
+      <TextInput
+        size="xs"
+        placeholder={placeholder}
+        value={reason}
+        aria-label="Reason"
+        onChange={(e: ChangeEvent<HTMLInputElement>) =>
+          setReason(e.currentTarget.value)
+        }
+        style={{ minWidth: 220 }}
+      />
+      <Button
+        size="compact-sm"
+        color="red"
+        variant="filled"
+        disabled={required && reason.trim() === ""}
+        onClick={() => {
+          setArm(false);
+          const r = reason.trim();
+          setReason("");
+          void onConfirm(r === "" ? undefined : r);
+        }}
+      >
+        {confirmLabel}
+      </Button>
+      <Button
+        size="compact-sm"
+        variant="default"
+        onClick={() => {
+          setArm(false);
+          setReason("");
+        }}
+      >
+        Cancel
+      </Button>
+    </Group>
   );
 }

@@ -177,29 +177,46 @@ try {
 
   /* ---- 3. three screenshots, then a two-screenshot save ---- */
   const entry = entries.site;
-  const keys = [];
-  for (let i = 0; i < 3; i++) {
-    const p = await req(`/shows/${show}/entries/${entry}/shots`, {
+  /** One presign for the batch; each one takes the caller's write slot. */
+  const presign = async (n) => {
+    const r = await req(`/shows/${show}/entries/${entry}/shots`, {
       method: "POST",
       headers: as(other),
-      body: { contentType: "image/png", size: PNG.length },
-    });
-    check(`presign screenshot ${i + 1}`, p.status === 200, String(p.status));
-    const up = await fetch(p.body.url, {
-      method: "PUT",
-      headers: {
-        "content-type": "image/png",
-        "content-length": String(PNG.length),
+      body: {
+        files: Array.from({ length: n }, () => ({
+          contentType: "image/png",
+          size: PNG.length,
+        })),
       },
-      body: PNG,
     });
-    check(`upload screenshot ${i + 1}`, up.status === 200, String(up.status));
-    keys.push(p.body.key);
-  }
+    check(`presign ${n} screenshot(s)`, r.status === 200, r.text.slice(0, 160));
+    check(
+      "the presign body is never cached",
+      r.headers.get("cache-control") === "no-store",
+      String(r.headers.get("cache-control")),
+    );
+    for (const g of r.body?.grants ?? []) {
+      const up = await fetch(g.url, {
+        method: "PUT",
+        headers: {
+          "content-type": "image/png",
+          "content-length": String(PNG.length),
+        },
+        body: PNG,
+      });
+      check(
+        "upload to the presigned URL",
+        up.status === 200,
+        String(up.status),
+      );
+    }
+    return (r.body?.grants ?? []).map((g) => g.id);
+  };
+  const ids = await presign(3);
   const over = await req(`/shows/${show}/entries/${entry}/shots`, {
     method: "POST",
     headers: as(other),
-    body: { contentType: "image/png", size: PNG.length },
+    body: { files: [{ contentType: "image/png", size: PNG.length }] },
   });
   check(
     "a fourth reservation is refused",
@@ -210,7 +227,7 @@ try {
   const commit = await req(`/shows/${show}/entries/${entry}/shots`, {
     method: "PUT",
     headers: as(other),
-    body: { keys: [keys[1], keys[0]] },
+    body: { ids: [ids[1], ids[0]] },
   });
   check(
     "commit two of three",
@@ -231,36 +248,14 @@ try {
     img.status === 200 && (await img.arrayBuffer()).byteLength === PNG.length,
     String(img.status),
   );
-  const freed = await req(`/shows/${show}/entries/${entry}/shots`, {
-    method: "POST",
-    headers: as(other),
-    body: { contentType: "image/png", size: PNG.length },
-  });
-  check(
-    "the retired screenshot freed its slot",
-    freed.status === 200,
-    String(freed.status),
-  );
-  check(
-    "the presign body is never cached",
-    freed.headers.get("cache-control") === "no-store",
-    String(freed.headers.get("cache-control")),
-  );
-  // Fill the entry to the cap and presign again: the cap is on reservations,
+  // The retired reservation freed its slot, so the entry can be filled to the
+  // cap and *still* presign a replacement: the cap is on what is in flight,
   // not on the live set, or an entry at three could never be re-shot.
-  const third = await fetch(freed.body.url, {
-    method: "PUT",
-    headers: {
-      "content-type": "image/png",
-      "content-length": String(PNG.length),
-    },
-    body: PNG,
-  });
-  check("upload the third again", third.status === 200, String(third.status));
+  const [third] = await presign(1);
   const full = await req(`/shows/${show}/entries/${entry}/shots`, {
     method: "PUT",
     headers: as(other),
-    body: { keys: [keys[0], keys[1], freed.body.key] },
+    body: { ids: [ids[0], ids[1], third] },
   });
   check(
     "commit a full set of three",
@@ -270,18 +265,19 @@ try {
   const afterFull = await req(`/shows/${show}/entries/${entry}/shots`, {
     method: "POST",
     headers: as(other),
-    body: { contentType: "image/png", size: PNG.length },
+    body: { files: [{ contentType: "image/png", size: PNG.length }] },
   });
   check(
     "an entry at the cap can still presign a replacement",
     afterFull.status === 200,
     String(afterFull.status),
   );
-  // A grant holder is not an entry writer for somebody else's entry.
+  // A grant holder is not an entry writer for somebody else's entry, and a
+  // seatless admin acting on one needs a reason.
   const peer = await req(`/shows/${show}/entries/${entries.app}/shots`, {
     method: "POST",
     headers: as(admin),
-    body: { contentType: "image/png", size: PNG.length },
+    body: { files: [{ contentType: "image/png", size: PNG.length }] },
   });
   check(
     "an admin reserving on another's entry needs a reason",
@@ -306,7 +302,7 @@ try {
       "commit its screenshots",
       `/shows/${second.body?.id}/entries/${entry}/shots`,
       "PUT",
-      { keys: [] },
+      { ids: [] },
     ],
     [
       "read a screenshot",
