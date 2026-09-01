@@ -27,7 +27,7 @@ import {
 import type { Kv } from "@yyt/redis";
 import { z } from "zod";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
-import { MD_RATE_SLOT_MS } from "./team.js";
+import { createWriteSlot } from "./write-slot.js";
 import {
   POSTER_MAX_BYTES,
   POSTER_TYPES,
@@ -231,22 +231,8 @@ export function createEventRoutes({
         (id.role === "admin" || id.subject === row.createdBy)
       : visibleStatuses(id?.role).includes(row.status);
 
-  /**
-   * Every recorded write takes one `nx` key per 500 ms slot per member (the
-   * same `mdrl:` slot as team writes), so a burst is a 429 rather than
-   * unbounded audit rows (`rules/security.md`).
-   */
-  async function writeSlot(id: ConsoleIdentity): Promise<void> {
-    const slot = Math.floor(clock.now() / MD_RATE_SLOT_MS);
-    const ok = await kv.set(`mdrl:${id.subject}:${slot}`, "1", {
-      nx: true,
-      ex: 2,
-    });
-    if (!ok)
-      throw new AppError("rate_limited", "too many writes; slow down", {
-        details: { retryAfterMs: MD_RATE_SLOT_MS },
-      });
-  }
+  /** The `mdrl:` slot shared by every route family that records rows. */
+  const writeSlot = createWriteSlot({ kv, clock });
 
   async function visibleEvent(ctx: RouteContext): Promise<{
     id: ConsoleIdentity | undefined;

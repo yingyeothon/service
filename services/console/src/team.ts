@@ -30,6 +30,7 @@ import {
 import { z } from "zod";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import { createTeamAccess, type Standing } from "./team-access.js";
+import { createWriteSlot } from "./write-slot.js";
 
 /* ------------------------------------------------------------------ */
 /* caps and grammars (docs/decisions.md *Teams and projects*)   */
@@ -49,8 +50,6 @@ export const MD_BODY_MAX = 20_000;
 export const COMMENT_MAX = 10_000;
 /** Kicked/declined members wait this long before asking again. */
 export const JOIN_COOLDOWN_SEC = 7 * 86_400;
-/** Markdown writes per member: one per 500 ms slot, i.e. 2/s. */
-export const MD_RATE_SLOT_MS = 500;
 
 /**
  * Names are ASCII with no blank anywhere (MariaDB PAD SPACE would fold a
@@ -265,22 +264,8 @@ export function createTeamRoutes({
     );
   }
 
-  /**
-   * Every recorded write (markdown or not — each one is an `team_history`
-   * row, and history has no cap) takes one `nx` key per 500 ms slot per
-   * member, so a burst is a 429 rather than rows.
-   */
-  async function mdRate(id: ConsoleIdentity): Promise<void> {
-    const slot = Math.floor(clock.now() / MD_RATE_SLOT_MS);
-    const ok = await kv.set(`mdrl:${id.subject}:${slot}`, "1", {
-      nx: true,
-      ex: 2,
-    });
-    if (!ok)
-      throw new AppError("rate_limited", "too many writes; slow down", {
-        details: { retryAfterMs: MD_RATE_SLOT_MS },
-      });
-  }
+  /** The `mdrl:` slot shared by every route family that records rows. */
+  const writeSlot = createWriteSlot({ kv, clock });
 
   /* ---- views ------------------------------------------------------- */
   const teamView = (
@@ -501,7 +486,7 @@ export function createTeamRoutes({
         if (!row) throw new AppError("not_found", "team not found");
         // A probe by name is also a write that records history on the target
         // team, so it is rate-limited like every other recorded write.
-        await mdRate(id);
+        await writeSlot(id);
         const counts = await team.countActive(row.id);
         if (counts.pending >= PENDING_PER_TEAM)
           throw new AppError(
@@ -533,7 +518,7 @@ export function createTeamRoutes({
       body: teamPatchBody,
       handler: async (ctx) => {
         const a = await teamAccess(ctx, ctx.params.team!, { min: "owner" });
-        await mdRate(a.id);
+        await writeSlot(a.id);
         // `adminLocked` is not in the body schema and `updateTeam` cannot set it.
         if (!(await team.updateTeam(a.team.id, ctx.body, actor(a.id))))
           throw new AppError("not_found", "team not found");
@@ -633,7 +618,7 @@ export function createTeamRoutes({
         if (!target || target.role === "pending")
           throw new AppError("not_found", "no such platform member");
         await requireLockable(a.team, target.id);
-        await mdRate(a.id);
+        await writeSlot(a.id);
         await team.addMember(a.team.id, target.id, ctx.body.role, actor(a.id));
         const row = await team.findTeamMember(a.team.id, target.id);
         return noStore(201, row && memberView(row, await loginMap()));
@@ -664,7 +649,7 @@ export function createTeamRoutes({
             throw new AppError("not_found", "no such platform member");
         } else if (!seated) throw new AppError("not_found", "member not found");
         await requireLockable(a.team, mid);
-        await mdRate(a.id);
+        await writeSlot(a.id);
         const by = actor(a.id);
         // An admin may seat an outsider straight in as owner: a team whose
         // owners all left has nobody else who could.
@@ -796,7 +781,7 @@ export function createTeamRoutes({
       body: discussionCreateBody,
       handler: async (ctx) => {
         const a = await teamAccess(ctx, ctx.params.team!, { secret: true });
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if ((await team.countDiscussions(a.team.id)) >= DISCUSSIONS_PER_TEAM)
           throw new AppError(
             "conflict",
@@ -836,7 +821,7 @@ export function createTeamRoutes({
       body: discussionPatchBody,
       handler: async (ctx) => {
         const { a, row } = await ownDiscussion(ctx, "edit");
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if (!(await team.updateDiscussion(row.id, ctx.body, actor(a.id))))
           throw new AppError("not_found", "discussion not found");
         const after = await team.findDiscussion(row.id);
@@ -863,7 +848,7 @@ export function createTeamRoutes({
         const { a, row } = await ownDiscussion(ctx, "read");
         if (a.standing === "admin")
           throw new AppError("forbidden", "admins cannot post");
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if (
           (await team.listDiscussionComments(row.id)).length >=
           COMMENTS_PER_PARENT
@@ -896,7 +881,7 @@ export function createTeamRoutes({
           throw new AppError("not_found", "comment not found");
         if (c.createdBy !== a.id.subject)
           throw new AppError("forbidden", "only the author may edit");
-        await mdRate(a.id);
+        await writeSlot(a.id);
         await team.updateDiscussionComment(c.id, ctx.body.bodyMd, now());
         const after = await team.findDiscussionComment(c.id);
         return after && commentView(after, await loginMap(), a.id.subject);
@@ -945,7 +930,7 @@ export function createTeamRoutes({
       body: projectCreateBody,
       handler: async (ctx) => {
         const a = await teamAccess(ctx, ctx.params.team!, { secret: true });
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if ((await team.countProjects(a.team.id)) >= PROJECTS_PER_TEAM)
           throw new AppError(
             "conflict",
@@ -988,7 +973,7 @@ export function createTeamRoutes({
       body: projectPatchBody,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if (!(await team.updateProject(a.project.id, ctx.body, actor(a.id))))
           throw new AppError("not_found", "project not found");
         const after = await team.findProject(a.project.id);
@@ -1071,7 +1056,7 @@ export function createTeamRoutes({
       body: versionCreateBody,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if ((await team.countVersions(a.project.id)) >= VERSIONS_PER_PROJECT)
           throw new AppError(
             "conflict",
@@ -1098,7 +1083,7 @@ export function createTeamRoutes({
       body: bumpBody,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
-        await mdRate(a.id);
+        await writeSlot(a.id);
         const existing = await team.listVersions(a.project.id);
         if (existing.length >= VERSIONS_PER_PROJECT)
           throw new AppError(
@@ -1147,7 +1132,7 @@ export function createTeamRoutes({
       body: versionPatchBody,
       handler: async (ctx) => {
         const { a, row } = await ownVersion(ctx);
-        await mdRate(a.id);
+        await writeSlot(a.id);
         await team.updateVersion(row.id, { note: ctx.body.note }, actor(a.id));
         const after = await team.findVersion(row.id);
         return after && versionView(after, await loginMap());
@@ -1183,7 +1168,7 @@ export function createTeamRoutes({
       body: linkBody,
       handler: async (ctx) => {
         const { a, row } = await ownVersion(ctx);
-        await mdRate(a.id);
+        await writeSlot(a.id);
         await checkLinkTarget(a.project.id, ctx.body);
         if ((await team.listVersionLinks(row.id)).length >= LINKS_PER_VERSION)
           throw new AppError(
@@ -1270,7 +1255,7 @@ export function createTeamRoutes({
       body: issueCreateBody,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if ((await team.countIssues(a.project.id)) >= ISSUES_PER_PROJECT)
           throw new AppError(
             "conflict",
@@ -1314,7 +1299,7 @@ export function createTeamRoutes({
       body: issuePatchBody,
       handler: async (ctx) => {
         const { a, row } = await ownIssue(ctx, true);
-        await mdRate(a.id);
+        await writeSlot(a.id);
         await checkVersionRef(a.project.id, ctx.body.versionId);
         if (
           !(await team.updateIssue(
@@ -1335,7 +1320,7 @@ export function createTeamRoutes({
       auth: true,
       handler: async (ctx: RouteContext) => {
         const { a, row } = await ownIssue(ctx, true);
-        await mdRate(a.id);
+        await writeSlot(a.id);
         const status = action === "close" ? "closed" : "open";
         if (
           !(await team.setIssueStatus(
@@ -1357,7 +1342,7 @@ export function createTeamRoutes({
       body: commentBody,
       handler: async (ctx) => {
         const { a, row } = await ownIssue(ctx, true);
-        await mdRate(a.id);
+        await writeSlot(a.id);
         if ((await team.countIssueComments(row.id)) >= COMMENTS_PER_PARENT)
           throw new AppError(
             "conflict",
@@ -1387,7 +1372,7 @@ export function createTeamRoutes({
           throw new AppError("not_found", "comment not found");
         if (c.createdBy !== a.id.subject)
           throw new AppError("forbidden", "only the author may edit");
-        await mdRate(a.id);
+        await writeSlot(a.id);
         await team.updateIssueComment(c.id, ctx.body.bodyMd, now());
         const after = await team.findIssueComment(c.id);
         return after && commentView(after, await loginMap(), a.id.subject);
