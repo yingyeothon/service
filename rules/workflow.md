@@ -13,6 +13,7 @@
 
 - `docs/decisions.md` is the contract. If implementation forces a change, edit the doc in the same commit and note it in `todo/index.md`.
 - Do not leave work in chat only: anything a future session needs must be in `todo/` or `rules/`.
+- A scope qualifier in `docs/` is a deferral, not a policy: "grid bucketing and radius config are explicitly not built **at this scale**" was read as "the gateway will never do AOI", and the review built on that for a whole session before the owner corrected it (2026-09-01, `todo/26`). When a sentence rules something out, say whether it is _not yet_ or _not ever_, and when reading one, check the protocol before trusting the prose — `pos` had carried `(x,y)` from day one, which no relay needs unless it intends to filter by them. The same rule as the seatless-admin case (2026-08-29): a restriction the assistant inferred is not "by design".
 - Commit per coherent unit; never `git add .` when generated files are present. Keep `.gitignore` current.
 - Sessions start by reading `todo/index.md` → "Next work"; sessions end by updating the same section.
 - Retiring a todo doc: fold design into `docs/`, lessons into `rules/`, leave only unchecked items in `todo/`; user-owned tasks (OAuth app registration, email confirmations, private ops-repo work) stay in `todo/` because nothing in this repo can close them. `docs/`/`rules/` are public: operational identifiers go to gitignored `local/ops-notes.md`.

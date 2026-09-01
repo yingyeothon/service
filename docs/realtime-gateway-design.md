@@ -20,10 +20,15 @@ that those do not repeat. Superseded the `todo/14` design draft on 2026-08-28.
 - One process, by decision: sticky routing is free, the lobby peer index is
   global, and cross-instance position replication must not be built. A deploy
   disconnects everyone; deploy before the event and make clients reconnect.
-- The design ceiling is a contest (10 concurrent players), so area-of-interest
-  filtering (grid, radius) would be a behaviour change dressed as an
-  optimisation. What clients depend on is the synthesised `enter`/`leave`, not
-  any radius.
+- Area-of-interest filtering is intended and was deferred, not rejected
+  (corrected 2026-09-01; see `docs/decisions.md` _Realtime gateway_ and
+  `todo/26`). The design ceiling is a contest (10 concurrent players), so v1
+  ships zone-wide relay. The observation that survives is not "do not build
+  it" but its constraint: what clients depend on is the synthesised
+  `enter`/`leave`, so AOI is a behaviour change and has to redefine them —
+  a peer leaving your _view_ must produce a `leave` even though it never left
+  your zone, or the frozen-character bug those frames exist to prevent comes
+  straight back.
 - The gateway reads channel config over HTTP from the console rather than
   through a MariaDB driver: it stays out of the connection budget and does not
   become a second schema consumer. The cost is one HTTP hop per cache miss.
