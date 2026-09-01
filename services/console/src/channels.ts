@@ -41,9 +41,15 @@ const ID = /^[a-z0-9_-]{3,40}$/;
  * Free text, but never id-shaped: channel names are unique within the team and
  * the CLI resolves a `{prefix}_…` argument as an id, so a name in that shape
  * could never be addressed (`docs/decisions.md` *Teams and projects*).
+ *
+ * Kept in step with `team.ts`'s copy and `cli/internal/cmd/context.go`'s
+ * `idLike` — this one was missing `st|sd`, so a channel could be named
+ * `st_foo` and the CLI would then read that name as a site id. The event and
+ * show prefixes are absent from all three on purpose: those are addressed by
+ * id only, and adding them would retroactively forbid existing names.
  */
 const ID_LIKE =
-  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
 const name = z
   .string()
   .trim()
