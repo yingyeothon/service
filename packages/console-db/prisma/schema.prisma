@@ -88,7 +88,13 @@ model audit_log {
   at          BigInt
   detail_json String? @db.MediumText
 
+  /// InnoDB extends every secondary index with the primary key, so this index
+  /// *is* `(at, id)` and serves the keyset page; a declared `(at, id)` was
+  /// measured never to be chosen and only cost a fourth B-tree per write.
   @@index([at], map: "audit_log_at")
+  @@index([action, at, id], map: "audit_log_action")
+  @@index([target, at, id], map: "audit_log_target")
+  @@index([actor_id, at, id], map: "audit_log_actor")
 }
 
 model catalog_apps {
@@ -199,6 +205,7 @@ model events {
   event_revisions event_revisions[]
   event_posters   event_posters[]
   event_comments  event_comments[]
+  shows           shows?
 
   @@index([created_by], map: "events_creator")
   @@index([status, created_at], map: "events_status")
@@ -308,6 +315,14 @@ model members {
   issues               issues[]
   issue_comments       issue_comments[]
   platform_settings    platform_settings[]
+  shows_created        shows[]               @relation("show_creator")
+  shows_closed         shows[]               @relation("show_closer")
+  show_grants_held     show_grants[]         @relation("show_grant_member")
+  show_grants_given    show_grants[]         @relation("show_grant_granter")
+  show_entries         show_entries[]
+  show_entry_shots     show_entry_shots[]
+  show_entry_likes     show_entry_likes[]
+  show_comments        show_comments[]
 }
 
 model schema_migrations {
@@ -646,4 +661,159 @@ enum site_deploys_status {
   extracting
   live
   failed
+}
+
+/// A gallery of what members built (docs/decisions.md *Show (console)*).
+/// Platform-global like an event: it belongs to no team and no project, and
+/// carries its own tiny grant table instead of going through `teamAccess`.
+model shows {
+  id         String         @id @db.VarChar(64)
+  title      String         @db.VarChar(255)
+  body_md    String         @db.MediumText
+  acl        shows_acl
+  /// The event this show was spawned from, if any. Nullable **and** unique on
+  /// purpose: MySQL treats NULLs as distinct, so this allows unlimited
+  /// event-less shows while pinning at most one show per event. Deleting the
+  /// event clears the link and leaves the gallery standing (decision 11).
+  event_id   String?        @unique(map: "shows_event") @db.VarChar(64)
+  created_by String         @db.VarChar(64)
+  created_at BigInt
+  updated_at BigInt
+  /// Closed means read-only; it is reversible and says nothing about who may read.
+  closed_at  BigInt?
+  closed_by  String?        @db.VarChar(64)
+  events     events?        @relation(fields: [event_id], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "shows_event_fk")
+  creator    members        @relation("show_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "shows_creator_fk")
+  closer     members?       @relation("show_closer", fields: [closed_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "shows_closer_fk")
+  grants     show_grants[]
+  entries    show_entries[]
+
+  @@index([created_at, id], map: "shows_created")
+  /// Serves both the "5 open shows per member" cap and `?state=open|closed`.
+  @@index([created_by, closed_at], map: "shows_creator")
+  /// Declared rather than left to the FK: an index MariaDB auto-creates would
+  /// be the only one in the database that `schema.prisma` does not name.
+  @@index([closed_by], map: "shows_closer")
+}
+
+/// A row *is* write permission: `public`/`member_only` already decide who reads,
+/// so a read grant would express nothing (decision 3).
+model show_grants {
+  show_id    String  @db.VarChar(64)
+  member_id  String  @db.VarChar(64)
+  granted_by String  @db.VarChar(64)
+  granted_at BigInt
+  shows      shows   @relation(fields: [show_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "show_grants_show_fk")
+  member     members @relation("show_grant_member", fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "show_grants_member_fk")
+  granter    members @relation("show_grant_granter", fields: [granted_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "show_grants_granter_fk")
+
+  @@id([show_id, member_id])
+  @@index([member_id], map: "show_grants_member")
+  @@index([granted_by], map: "show_grants_granter")
+}
+
+/// One submitted deliverable. There is deliberately **no** foreign key to the
+/// target: a team stays free to delete its own app/bundle/site and the entry
+/// survives on `target_name` (decision 6).
+model show_entries {
+  id          String              @id @db.VarChar(64)
+  show_id     String              @db.VarChar(64)
+  target_kind show_entries_target
+  target_id   String              @db.VarChar(64)
+  /// Display name snapshotted at submit time; the target may be gone.
+  target_name String              @db.VarChar(255)
+  /// The exhibited artifact (app) or version (bundle), pinned at submit time
+  /// so a later build is not published by an entry nobody touched. A site
+  /// links live and stores NULL (decision 5).
+  target_ref  String?             @db.VarChar(255)
+  title       String              @db.VarChar(255)
+  body_md     String              @db.MediumText
+  created_by  String              @db.VarChar(64)
+  created_at  BigInt
+  updated_at  BigInt
+  shows       shows               @relation(fields: [show_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "show_entries_show_fk")
+  members     members             @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "show_entries_author_fk")
+  shots       show_entry_shots[]
+  likes       show_entry_likes[]
+  comments    show_comments[]
+
+  @@unique([show_id, target_kind, target_id], map: "show_entries_target")
+  @@index([show_id, created_at, id], map: "show_entries_show")
+  @@index([target_kind, target_id], map: "show_entries_target_lookup")
+  @@index([created_by], map: "show_entries_author")
+}
+
+/// Screenshot upload log. A `pending` row is the presign reservation and counts
+/// against the 3-per-entry cap until it expires (`rules/data.md`: a grant is a
+/// reservation). `replaced_at` set with `deleted_at` NULL = the S3 delete failed
+/// and the daily sweep retries it.
+model show_entry_shots {
+  id           String                  @id @db.VarChar(64)
+  entry_id     String                  @db.VarChar(64)
+  status       show_entry_shots_status @default(pending)
+  ord          Int                     @default(0)
+  /// The S3 key *and* what `commit` compares a caller-supplied string against,
+  /// so it is binary: under `_ci` a case-shifted key would match another
+  /// object's row. Same reason as `4_assets_binary_paths`.
+  object_key   String                  @unique(map: "show_entry_shots_key") @db.VarChar(255)
+  content_type String                  @db.VarChar(64)
+  size         Int
+  uploaded_by  String                  @db.VarChar(64)
+  uploaded_at  BigInt
+  expires_at   BigInt
+  replaced_at  BigInt?
+  deleted_at   BigInt?
+  entries      show_entries            @relation(fields: [entry_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "show_entry_shots_entry_fk")
+  members      members                 @relation(fields: [uploaded_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "show_entry_shots_uploader_fk")
+
+  @@index([entry_id, status, ord], map: "show_entry_shots_entry")
+  @@index([status, expires_at], map: "show_entry_shots_status")
+  /// The sweep's delete queue (`status = replaced`) and its purge, both keyed
+  /// on the selective column. `(replaced_at, deleted_at)` was measured never to
+  /// be chosen: `replaced_at IS NOT NULL` is not selective enough to beat a scan.
+  @@index([status, deleted_at], map: "show_entry_shots_delete_queue")
+  @@index([uploaded_by], map: "show_entry_shots_uploader")
+}
+
+/// A like is set membership; counts are derived, never stored (decision 10).
+model show_entry_likes {
+  entry_id  String       @db.VarChar(64)
+  member_id String       @db.VarChar(64)
+  liked_at  BigInt
+  entries   show_entries @relation(fields: [entry_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "show_entry_likes_entry_fk")
+  members   members      @relation(fields: [member_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "show_entry_likes_member_fk")
+
+  @@id([entry_id, member_id])
+  @@index([member_id], map: "show_entry_likes_member")
+}
+
+model show_comments {
+  id         String       @id @db.VarChar(64)
+  entry_id   String       @db.VarChar(64)
+  body_md    String       @db.MediumText
+  created_by String       @db.VarChar(64)
+  created_at BigInt
+  updated_at BigInt
+  entries    show_entries @relation(fields: [entry_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "show_comments_entry_fk")
+  members    members      @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "show_comments_author_fk")
+
+  @@index([entry_id, created_at, id], map: "show_comments_entry")
+  @@index([created_by], map: "show_comments_author")
+}
+
+enum shows_acl {
+  public
+  member_only
+}
+
+enum show_entries_target {
+  app
+  bundle
+  site
+}
+
+enum show_entry_shots_status {
+  pending
+  live
+  replaced
 }
