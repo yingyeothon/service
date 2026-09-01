@@ -96,7 +96,7 @@ func NewRoot(a *App) *cobra.Command {
 		newLogin(a), newLogout(a), newWhoami(a),
 		newProfile(a),
 		newTeam(a), newProject(a),
-		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newCatalog(a), newAssets(a), newSites(a), newSmoke(a),
+		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newShows(a), newCatalog(a), newAssets(a), newSites(a), newAudit(a), newSmoke(a),
 		newSelf(a, a.Updater),
 	)
 	return root
