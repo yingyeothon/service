@@ -63,15 +63,12 @@ provider:
   httpApi:
     disableDefaultEndpoint: false
     metrics: true
-    # Resolving *any* bearer costs one MySQL SELECT before a body limit or an
-    # authorization check applies, so unauthenticated junk is what actually
-    # competes for `reservedConcurrency` — and through it for the shared box's
-    # connections. The design ceiling is 10 concurrent players writing a
-    # document per dungeon result, so this is far above real use and still
-    # keeps a flood from starving them.
-    defaultRouteSettings:
-      throttlingRateLimit: 20
-      throttlingBurstLimit: 40
+    # The stage throttle is NOT set here: `provider.httpApi` has no
+    # `defaultRouteSettings` in Serverless 4, which rejects it as an
+    # unrecognized property, prints a warning and deploys without it. This
+    # stack carried that block from the start and neither stage ever had a
+    # ThrottlingRateLimit (measured 2026-09-01, same as console). It lives in
+    # `resources.extensions.HttpApiStage` below, which does reach CloudFormation.
   environment:
     STAGE: ${self:custom.stage}
     NODE_OPTIONS: --enable-source-maps
@@ -96,6 +93,23 @@ package:
   individually: true
 
 resources:
+  # Serverless owns AWS::ApiGatewayV2::Stage for the `$default` stage; this
+  # patches its properties. `DefaultRouteSettings` is replaced wholesale, so
+  # `DetailedMetricsEnabled` (from `httpApi.metrics: true`) is restated here.
+  #
+  # Resolving *any* bearer costs one MySQL SELECT before a body limit or an
+  # authorization check applies, so unauthenticated junk is what actually
+  # competes for `reservedConcurrency` — and through it for the shared box's
+  # connections. The design ceiling is 10 concurrent players writing a
+  # document per dungeon result, so this is far above real use and still
+  # keeps a flood from starving them.
+  extensions:
+    HttpApiStage:
+      Properties:
+        DefaultRouteSettings:
+          DetailedMetricsEnabled: true
+          ThrottlingRateLimit: 20
+          ThrottlingBurstLimit: 40
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
