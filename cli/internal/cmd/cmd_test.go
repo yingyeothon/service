@@ -653,6 +653,31 @@ func TestChannelsGatewayKinds(t *testing.T) {
 		t.Fatalf("merged config %v", cfg)
 	}
 
+	// aoi: `--aoi-range` creates the nested object with the server default
+	// for maxPeers; on update a lone `--aoi-max-peers` merges into it and
+	// `--aoi-range 0` removes it.
+	if _, _, err := run(t, f, "channels", "create", "--kind", "lobby", "--name", "l",
+		"--auth-channel", "auth_0123", "--aoi-range", "10"); err != nil {
+		t.Fatal(err)
+	}
+	if aoi := sent["config"].(map[string]any)["aoi"].(map[string]any); aoi["range"] != float64(10) || aoi["maxPeers"] != nil {
+		t.Fatalf("aoi create %v", aoi)
+	}
+	lobbyCh["config"].(map[string]any)["aoi"] = map[string]any{"range": 10, "maxPeers": 64}
+	if _, _, err := run(t, f, "channels", "update", "lobby_1", "--aoi-max-peers", "8"); err != nil {
+		t.Fatal(err)
+	}
+	if aoi := sent["config"].(map[string]any)["aoi"].(map[string]any); aoi["range"] != float64(10) || aoi["maxPeers"] != float64(8) {
+		t.Fatalf("aoi merge %v", aoi)
+	}
+	if _, _, err := run(t, f, "channels", "update", "lobby_1", "--aoi-range", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := sent["config"].(map[string]any)["aoi"]; has {
+		t.Fatalf("--aoi-range 0 must drop aoi: %v", sent["config"])
+	}
+	delete(lobbyCh["config"].(map[string]any), "aoi")
+
 	// `none` is the only way to say "no chat", and it is what makes
 	// --cap-pos=false usable at all.
 	if _, _, err := run(t, f, "channels", "create", "--kind", "lobby", "--name", "l",
@@ -672,7 +697,10 @@ func TestChannelsGatewayKinds(t *testing.T) {
 		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--cap-say", "none", "--cap-say", "user"},
 		// A flag that belongs to another kind must fail, not silently no-op.
 		{"channels", "create", "--kind", "q", "--name", "q", "--auth-channel", "a", "--cap-debug"},
+		{"channels", "create", "--kind", "q", "--name", "q", "--auth-channel", "a", "--aoi-range", "10"},
 		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--callback-url", "https://x/"},
+		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--aoi-range", "0"},
+		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--aoi-max-peers", "8"},
 	} {
 		if _, _, err := run(t, f, args...); err == nil {
 			t.Errorf("expected error for %v", args)

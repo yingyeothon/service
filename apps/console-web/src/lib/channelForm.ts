@@ -38,6 +38,9 @@ export interface ChannelFormState {
   partySizeMax: string;
   defaultZone: string;
   mapUrl: string;
+  /** Empty = no area-of-interest filter (the whole zone is in view). */
+  aoiRange: string;
+  aoiMaxPeers: string;
 }
 
 export const emptyForm: ChannelFormState = {
@@ -67,6 +70,8 @@ export const emptyForm: ChannelFormState = {
   partySizeMax: "4",
   defaultZone: "lobby",
   mapUrl: "",
+  aoiRange: "",
+  aoiMaxPeers: "64",
 };
 
 /** Pre-fills the form from an existing channel (secrets are never returned, so they stay blank). */
@@ -104,6 +109,8 @@ export function formFromChannel(ch: Channel): ChannelFormState {
       partySizeMax: String(c.partySizeMax),
       defaultZone: c.defaultZone,
       mapUrl: c.mapUrl,
+      aoiRange: c.aoi ? String(c.aoi.range) : "",
+      aoiMaxPeers: c.aoi ? String(c.aoi.maxPeers) : "64",
     };
   }
   const c = ch.config as MatchConfig;
@@ -194,6 +201,18 @@ export function buildConfig(
       throw new Error(
         'chat scope "zone" needs positions enabled (no positions, no zones)',
       );
+    const aoiRange = f.aoiRange.trim();
+    if (aoiRange !== "" && !f.capPos)
+      throw new Error("the view range needs positions enabled");
+    const aoi =
+      aoiRange === ""
+        ? {}
+        : {
+            aoi: {
+              range: int(aoiRange, "view range"),
+              maxPeers: int(f.aoiMaxPeers, "visible peers"),
+            },
+          };
     return {
       authChannelId: f.authChannelId,
       capabilities: {
@@ -209,6 +228,7 @@ export function buildConfig(
       partySizeMax: int(f.partySizeMax, "max party size"),
       defaultZone: f.defaultZone.trim(),
       mapUrl: assetUrl(f.mapUrl.trim()),
+      ...aoi,
     } satisfies LobbyConfig;
   }
   return {

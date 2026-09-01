@@ -136,6 +136,7 @@ func TestEveryWriteHelperLeavesATTL(t *testing.T) {
 		"ClaimSession": func() error { _, err := c.ClaimSession(ctx, "lobby", "ch", "u", "i:c"); return err },
 		"TouchSession": func() error { return c.TouchSession(ctx, "lobby", "ch", "u") },
 		"SetPos":       func() error { return c.SetPos(ctx, "ch", "u", []byte("{}")) },
+		"SetPosBatch":  func() error { return c.SetPosBatch(ctx, "ch", map[string][]byte{"u": []byte("{}"), "v": []byte("{}")}) },
 		"SetParty":     func() error { return c.SetParty(ctx, "ch", "p", []byte("{}"), []string{"u"}) },
 		"Push":         func() error { _, err := c.Push(ctx, "game:test:ch:queue:g", []byte("{}")); return err },
 	}

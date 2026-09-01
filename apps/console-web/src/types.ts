@@ -266,6 +266,7 @@ export interface LobbyConfig {
   partySizeMax: number;
   defaultZone: string;
   mapUrl: string;
+  aoi?: { range: number; maxPeers: number };
 }
 export interface QConfig {
   authChannelId: string;

@@ -86,6 +86,9 @@ const lobby = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
       defaultZone: "town",
       flushIntervalMs: 100,
       partySizeMax: 2,
+      // Area of interest: a 5-tile box. alice/bob below stay inside it;
+      // carol walks in and out.
+      aoi: { range: 5 },
     },
   },
 });
@@ -208,6 +211,7 @@ check(
 const lobbyUrl = `${gwBase}/?channel=${lobby.body?.id}`;
 const alice = await mint("alice");
 const bob = await mint("bob");
+const carol = await mint("carol");
 check(
   "no channel → 400",
   (await refused(`${gwBase}/`, ["bearer", alice])) === 400,
@@ -238,6 +242,11 @@ check(
     helloA.tick === 100,
   JSON.stringify(helloA?.capabilities),
 );
+check(
+  "hello carries the aoi box",
+  helloA?.aoi?.range === 5 && helloA.aoi.maxPeers === 64,
+  JSON.stringify(helloA?.aoi),
+);
 a.send({ type: "pos", zone: "town", x: 1, y: 1 });
 const snapA = await a.until("snapshot");
 check("first pos → empty snapshot", snapA?.peers?.length === 0);
@@ -254,6 +263,45 @@ check(
   "coalesced pos batch",
   batch?.peers?.some((p) => p.userId === "bob" && p.x === 3),
 );
+// AOI: carol at (9,1) is 8 tiles from alice (1,1) and 6 from bob (3,2) —
+// outside both boxes; (5,1) is inside both. The 9↔5 steps sit exactly at
+// the default maxMoveDelta (4): do not "tidy" the coordinates.
+const c = await connect(lobbyUrl, carol);
+await c.next();
+c.send({ type: "pos", zone: "town", x: 9, y: 1 });
+const snapC = await c.until("snapshot");
+check(
+  "out-of-box newcomer gets an empty snapshot",
+  snapC?.peers?.length === 0,
+  JSON.stringify(snapC?.peers),
+);
+check(
+  "out-of-box newcomer is not announced",
+  (await a.until("enter", 500)) === null,
+);
+c.send({ type: "say", scope: "zone", text: "anyone?" });
+check(
+  "zone say outside the box is not heard",
+  (await a.until("say", 500)) === null,
+);
+c.send({ type: "pos", zone: "town", x: 5, y: 1 });
+const enterC = await a.until("enter");
+check(
+  "walking into the box announces enter",
+  enterC?.userId === "carol" && enterC.x === 5,
+);
+const enterA = await c.until("enter");
+check(
+  "the walker sees the box's peers",
+  enterA?.userId === "alice" || enterA?.userId === "bob",
+);
+c.send({ type: "pos", zone: "town", x: 9, y: 1 });
+const leaveC = await a.until("leave");
+check(
+  "walking out of the box announces leave",
+  leaveC?.userId === "carol" && leaveC.zone === "town",
+);
+c.close();
 b.send({ type: "pos", zone: "town", x: 30, y: 2 });
 const far = await b.until("error");
 check("move delta capped", far?.code === "move_too_far");
@@ -311,10 +359,10 @@ check(
   JSON.stringify(metrics1.body?.gauges),
 );
 check(
-  "accepted 3 sockets, replaced 1",
+  "accepted 4 sockets, replaced 1",
   metrics1.body.counters.connectionsAccepted -
     metrics0.body.counters.connectionsAccepted ===
-    3 &&
+    4 &&
     metrics1.body.counters.sessionsReplaced -
       metrics0.body.counters.sessionsReplaced ===
       1,

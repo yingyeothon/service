@@ -217,9 +217,27 @@ const lobbyConfig = z
       .default("lobby"),
     /** Empty = this channel has no map. */
     mapUrl: z.string().max(2048).default(""),
+    /**
+     * Area-of-interest filter (`docs/decisions.md` *Realtime gateway*): a peer
+     * is in view when both |dx| and |dy| are within `range` tiles, nearest
+     * `maxPeers` first. Absent = the whole zone is in view, as before.
+     */
+    aoi: z
+      .object({
+        range: z.number().int().min(1).max(256),
+        maxPeers: z.number().int().min(1).max(256).default(64),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
+    if (c.aoi && !c.capabilities.pos)
+      ctx.addIssue({
+        code: "custom",
+        path: ["aoi"],
+        message: "aoi requires capabilities.pos (no pos, no view)",
+      });
     // Both combinations below are configuration errors the gateway could only
     // report at connect time, one confusing frame at a time (`todo/14` §2.3).
     if (c.capabilities.say.includes("party") && !c.capabilities.party)

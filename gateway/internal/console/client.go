@@ -59,6 +59,16 @@ type LobbyConfig struct {
 	PartySizeMax    int          `json:"partySizeMax"`
 	DefaultZone     string       `json:"defaultZone"`
 	MapURL          string       `json:"mapUrl"`
+	// AOI is the area-of-interest filter (`todo/26`); nil relays zone-wide.
+	AOI *LobbyAOI `json:"aoi,omitempty"`
+}
+
+// LobbyAOI mirrors `LobbyChannelConfig.aoi`: a peer is in view when both
+// |dx| and |dy| are within Range of the viewer (a box, Chebyshev distance),
+// and at most MaxPeers nearest peers are shown.
+type LobbyAOI struct {
+	Range    float64 `json:"range"`
+	MaxPeers int     `json:"maxPeers"`
 }
 
 // Redis is the derived name block of a `q` channel (`gatewayRedis` in the
@@ -365,6 +375,23 @@ func decode(body []byte) (*Channel, error) {
 		}
 		if lc.MaxMoveDelta <= 0 {
 			lc.MaxMoveDelta = 3
+		}
+		if lc.AOI != nil {
+			// The console enforces 1..256 for both; clamp here too so a
+			// hand-edited row cannot blow up the grid or the frame cap.
+			if lc.AOI.Range <= 0 {
+				return nil, errors.New("console: lobby aoi.range must be positive")
+			}
+			if lc.AOI.Range < 1 {
+				lc.AOI.Range = 1
+			} else if lc.AOI.Range > 256 {
+				lc.AOI.Range = 256
+			}
+			if lc.AOI.MaxPeers <= 0 {
+				lc.AOI.MaxPeers = 64
+			} else if lc.AOI.MaxPeers > 256 {
+				lc.AOI.MaxPeers = 256
+			}
 		}
 		ch.Lobby = &lc
 		ch.AuthChannelID = lc.AuthChannelID

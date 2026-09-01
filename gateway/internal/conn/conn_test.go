@@ -121,14 +121,20 @@ func TestOversizedAndBinaryRefused(t *testing.T) {
 	var oversized atomic.Int32
 	lim := DefaultLimits()
 	lim.MaxInbound = 64
-	c, cl := pair(t, lim, Hooks{OnOversized: func() { oversized.Add(1) }})
-	if c.SendRaw([]byte(strings.Repeat("y", lim.MaxOutbound+1))) || oversized.Load() != 1 {
+	var reported atomic.Int32
+	c, cl := pair(t, lim, Hooks{OnOversized: func(size int) { oversized.Add(1); reported.Store(int32(size)) }})
+	if c.SendRaw([]byte(strings.Repeat("y", lim.MaxOutbound+1))) || oversized.Load() != 1 || int(reported.Load()) != lim.MaxOutbound+1 {
 		t.Fatal("oversized outbound not refused")
+	}
+	// The drop is not silent: the client gets a typed error in its place.
+	_, b, err := cl.ReadMessage()
+	if err != nil || !strings.Contains(string(b), `"code":"frame_too_large"`) || !strings.Contains(string(b), "32769-byte") {
+		t.Fatalf("frame_too_large not sent: %s %v", b, err)
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- c.ReadLoop(func([]byte) {}) }()
 	_ = cl.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("z", 100)))
-	_, _, err := cl.ReadMessage()
+	_, _, err = cl.ReadMessage()
 	var ce *websocket.CloseError
 	if !asClose(err, &ce) || ce.Code != websocket.CloseMessageTooBig {
 		t.Fatalf("too-big close: %v", err)

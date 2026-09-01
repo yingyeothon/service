@@ -64,7 +64,12 @@ type Server struct {
 	opToken  []byte
 	instance string
 	started  time.Time
-	now      func() time.Time
+	// dropLogAt throttles the oversized-frame warning per channel: a zone
+	// over the cap drops one frame per socket per tick, and one line per
+	// drop would be a flood where a counter already exists.
+	dropLogMu sync.Mutex
+	dropLogAt map[string]time.Time
+	now       func() time.Time
 
 	mu       sync.Mutex
 	hubs     map[string]*lobby.Hub
@@ -350,16 +355,22 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 	connID := s.instance + ":" + shortID()
 	stats := s.reg.Channel(channelID)
+	log := s.log.With("channel", channelID, "kind", string(ch.Kind), "conn", connID, "user", id.UserID)
 	c := conn.New(ws, connID, id.UserID, limits, conn.Hooks{
-		OnSent:       func() { s.reg.Counters.OutboundFrames.Add(1) },
-		OnDropped:    func() { s.reg.Counters.DroppedFrames.Add(1); stats.Dropped.Add(1) },
-		OnOversized:  func() { s.reg.Counters.OversizedFrames.Add(1) },
+		OnSent:    func() { s.reg.Counters.OutboundFrames.Add(1) },
+		OnDropped: func() { s.reg.Counters.DroppedFrames.Add(1); stats.Dropped.Add(1) },
+		OnOversized: func(size int) {
+			s.reg.Counters.OversizedFrames.Add(1)
+			// A counter alone cannot say which channel outgrew the cap.
+			if s.shouldLogDrop(channelID) {
+				log.Warn("outbound frame dropped", "bytes", size, "cap", limits.MaxOutbound)
+			}
+		},
 		OnQueueDepth: s.reg.Gauges.RecordQueueDepth,
 	})
 	s.reg.Counters.ConnectionsAccepted.Add(1)
 	s.reg.Gauges.Connections.Add(1)
 	defer s.reg.Gauges.Connections.Add(-1)
-	log := s.log.With("channel", channelID, "kind", string(ch.Kind), "conn", connID, "user", id.UserID)
 	log.Info("connected")
 	bg := context.Background()
 	var readErr error
@@ -437,6 +448,23 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+// dropLogEvery is the per-channel throttle of the oversized-frame warning.
+const dropLogEvery = 5 * time.Second
+
+func (s *Server) shouldLogDrop(channelID string) bool {
+	s.dropLogMu.Lock()
+	defer s.dropLogMu.Unlock()
+	if s.dropLogAt == nil {
+		s.dropLogAt = map[string]time.Time{}
+	}
+	now := time.Now()
+	if now.Sub(s.dropLogAt[channelID]) < dropLogEvery {
+		return false
+	}
+	s.dropLogAt[channelID] = now
+	return true
 }
 
 // hubFor returns the live hub of a lobby channel, or nil while draining.

@@ -231,6 +231,26 @@ export function ChannelForm({
             onChange={(e) => set("partySizeMax", e.target.value)}
             required
           />
+          <TextInput
+            label="View range (tiles, 1–256; empty = whole zone)"
+            description="Area of interest: a player sees peers within this many tiles on both axes. Enter/leave, positions and zone chat all follow the view."
+            type="number"
+            min={1}
+            max={256}
+            value={form.aoiRange}
+            onChange={(e) => set("aoiRange", e.target.value)}
+            disabled={!form.capPos}
+          />
+          <TextInput
+            label="Visible peers cap (1–256)"
+            description="Nearest peers shown when more than this are within range."
+            type="number"
+            min={1}
+            max={256}
+            value={form.aoiMaxPeers}
+            onChange={(e) => set("aoiMaxPeers", e.target.value)}
+            disabled={!form.capPos || form.aoiRange.trim() === ""}
+          />
         </>
       )}
       {kind === "match" && (
