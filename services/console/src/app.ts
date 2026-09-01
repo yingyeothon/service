@@ -929,6 +929,8 @@ export function createConsoleApp({
     access,
     cdnBaseUrl: cdn,
     siteCdnUrl: siteCdn,
+    baseUrl: base,
+    posters,
     clock,
     kv,
     audit,

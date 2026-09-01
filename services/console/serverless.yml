@@ -174,6 +174,9 @@ provider:
               s3:prefix:
                 - posters/*
                 - site-uploads/*
+                # The show sweep lists this prefix and deletes what nothing
+                # references; without it the list is denied, not empty.
+                - shots/*
         # Site zips are staged in the same private bucket (presigned PUT,
         # read once by the worker, deleted after).
         - Effect: Allow
@@ -182,6 +185,14 @@ provider:
             - s3:GetObject
             - s3:DeleteObject
           Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/site-uploads/*"]]
+        # Show screenshots: same bucket, its own prefix. A separate statement
+        # because each object statement pins a single `!Join` Resource.
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/shots/*"]]
         # Site bucket: the worker writes `{slug}/…` and prunes; the api lists
         # a prefix before minting a slug and wipes it on delete.
         - Effect: Allow

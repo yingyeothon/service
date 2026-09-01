@@ -282,11 +282,14 @@ export interface ShowsDb {
   /** `live` shots of several entries in one query (a page of cards). */
   listLiveShotsOf(entryIds: readonly string[]): Promise<ShowShotRow[]>;
   /**
-   * Slots the entry holds: `live` rows plus unexpired `pending` reservations.
-   * Counting the reservations is what stops a caller pipelining presigns
-   * (`rules/data.md`: a grant is a reservation).
+   * Unexpired `pending` reservations only — deliberately **not** the live
+   * rows. The live set is capped by the commit, which replaces it wholesale;
+   * counting live rows here would mean an entry already holding the maximum
+   * could never presign a replacement, which is the whole flow. What this
+   * bounds is pipelined presigns (`rules/data.md`: a grant is a reservation),
+   * and an expired reservation returns its slot.
    */
-  countShotSlots(entryId: string, now: number): Promise<number>;
+  countPendingShots(entryId: string, now: number): Promise<number>;
   /**
    * The wholesale replace: promotes `keys` to `live` in the given order,
    * retires every other `live` **or** `pending` row of the entry and bumps the
@@ -304,6 +307,18 @@ export interface ShowsDb {
     id: string,
     patch: { replacedAt?: number | null; deletedAt?: number | null },
   ): Promise<boolean>;
+  /**
+   * Drops reservation rows by object key — what a commit does when an upload
+   * fails validation: the object is deleted, so its row must go too or the
+   * slot stays taken until the reservation expires.
+   */
+  deleteShotsByKeys(keys: readonly string[]): Promise<number>;
+  /**
+   * Marks a batch of rows' objects gone. One statement, not one per row: a
+   * commit that retires a backlog of dead reservations would otherwise spend
+   * two round trips per row inside a request.
+   */
+  markShotsDeleted(ids: readonly string[], at: number): Promise<number>;
   /**
    * Retired rows whose object still exists (the S3 delete failed): the sweep
    * retries them. Bounded — the table only grows, so an unbounded read here
@@ -935,15 +950,13 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
           })
         ).map(toShot);
       }),
-    countShotSlots: (entryId, now) =>
+    countPendingShots: (entryId, now) =>
       run(() =>
         prisma.show_entry_shots.count({
           where: {
             entry_id: entryId,
-            OR: [
-              { status: "live" },
-              { status: "pending", expires_at: { gt: now } },
-            ],
+            status: "pending",
+            expires_at: { gt: now },
           },
         }),
       ),
@@ -955,26 +968,32 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
         return prisma.$transaction(async (tx) => {
           // Only `tx` inside: the pool holds one connection and the outer
           // client would wait on it forever (`rules/data.md`).
-          //
-          // The parent row goes first, before any child row, so this and a
-          // concurrent `deleteEntry` cascade take their locks in one order.
-          // The SPA also uses `updatedAt` as the image cache-buster.
-          await tx.show_entries.updateMany({
-            where: { id: entryId },
-            data: { updated_at: at },
-          });
           const named =
             keys.length === 0
               ? []
               : await tx.show_entry_shots.findMany({
-                  // A key whose object the sweep already deleted is not a key
-                  // any more: promoting it back would give the entry a `live`
-                  // screenshot pointing at nothing, invisible to both the
-                  // delete queue and the snapshot.
-                  where: { object_key: { in: [...keys] }, deleted_at: null },
+                  where: {
+                    object_key: { in: [...keys] },
+                    // `live` or `pending` only. A `replaced` row is already in
+                    // the sweep's delete queue, and promoting one back would
+                    // race that delete into a `live` row pointing at nothing —
+                    // invisible to the queue (wrong status) and to the age
+                    // pass (no object), so permanently broken.
+                    status: { in: ["live", "pending"] },
+                    deleted_at: null,
+                  },
                 });
           if (named.length !== keys.length) return undefined;
           if (named.some((r) => r.entry_id !== entryId)) return undefined;
+          // Only now the parent row, and before any child write, so this and a
+          // concurrent `deleteEntry` cascade take their locks in one order. A
+          // refused commit must not move `updated_at`: returning from a Prisma
+          // interactive transaction does not roll it back.
+          // The SPA uses `updatedAt` as the image cache-buster.
+          await tx.show_entries.updateMany({
+            where: { id: entryId },
+            data: { updated_at: at },
+          });
           const keep = new Set(named.map((r) => r.id));
           const retired = (
             await tx.show_entry_shots.findMany({
@@ -1018,6 +1037,23 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
           data,
         });
         return r.count > 0;
+      }),
+    deleteShotsByKeys: (keys) =>
+      run(async () => {
+        if (keys.length === 0) return 0;
+        const r = await prisma.show_entry_shots.deleteMany({
+          where: { object_key: { in: [...keys] } },
+        });
+        return r.count;
+      }),
+    markShotsDeleted: (ids, at) =>
+      run(async () => {
+        if (ids.length === 0) return 0;
+        const r = await prisma.show_entry_shots.updateMany({
+          where: { id: { in: [...ids] } },
+          data: { deleted_at: at },
+        });
+        return r.count;
       }),
     listPendingShotDeletes: (limit) =>
       run(async () =>
@@ -1501,18 +1537,22 @@ export function createMemoryShowsDb(
           (a, b) =>
             cmp(a.entryId, b.entryId) || a.ord - b.ord || cmp(a.id, b.id),
         ),
-    countShotSlots: async (entryId, now) =>
+    countPendingShots: async (entryId, now) =>
       entryShots(entryId).filter(
-        (s) =>
-          s.status === "live" || (s.status === "pending" && s.expiresAt > now),
+        (s) => s.status === "pending" && s.expiresAt > now,
       ).length,
     replaceShots: async (entryId, keys, at) => {
       checkShotKeys(keys);
       const named = [...shots.values()].filter(
-        (s) => keys.includes(s.key) && s.deletedAt === null,
+        (s) =>
+          keys.includes(s.key) &&
+          s.deletedAt === null &&
+          (s.status === "live" || s.status === "pending"),
       );
       if (named.length !== keys.length) return undefined;
       if (named.some((s) => s.entryId !== entryId)) return undefined;
+      const e = entries.get(entryId);
+      if (e) entries.set(entryId, { ...e, updatedAt: at });
       const keep = new Set(named.map((s) => s.id));
       const retired = entryShots(entryId).filter(
         (s) =>
@@ -1524,8 +1564,6 @@ export function createMemoryShowsDb(
       }
       for (const s of retired)
         shots.set(s.id, { ...s, status: "replaced", replacedAt: at });
-      const e = entries.get(entryId);
-      if (e) entries.set(entryId, { ...e, updatedAt: at });
       return retired.map((s) => ({
         ...s,
         status: "replaced" as const,
@@ -1547,6 +1585,25 @@ export function createMemoryShowsDb(
           : {}),
       });
       return true;
+    },
+    deleteShotsByKeys: async (keys) => {
+      let n = 0;
+      for (const [k, x] of shots)
+        if (keys.includes(x.key)) {
+          shots.delete(k);
+          n++;
+        }
+      return n;
+    },
+    markShotsDeleted: async (ids, at) => {
+      let n = 0;
+      for (const id of ids) {
+        const x = shots.get(id);
+        if (!x) continue;
+        shots.set(id, { ...x, deletedAt: at });
+        n++;
+      }
+      return n;
     },
     listPendingShotDeletes: async (limit) =>
       [...shots.values()]
