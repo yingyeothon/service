@@ -5,7 +5,7 @@
 // deleting per run would leave one dead team behind per run instead of one
 // live team per script. Never prints tokens or secrets.
 
-/** Sleeps past the 500 ms recorded-write slot (`mdRate`) before a team write. */
+/** Sleeps past the 500 ms recorded-write slot (`write-slot.ts`) before a team write. */
 export const settle = () => new Promise((r) => setTimeout(r, 550));
 
 /**
