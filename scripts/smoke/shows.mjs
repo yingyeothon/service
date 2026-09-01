@@ -326,6 +326,87 @@ try {
     );
   }
 
+  /* ---- 4b. likes, comments and both sort orders ---- */
+  const like = (u, id, method = "PUT") =>
+    req(`/shows/${show}/entries/${id}/like`, { method, headers: as(u) });
+  check("like", (await like(other, entries.app)).status === 204);
+  check(
+    "liking twice is idempotent",
+    (await like(other, entries.app)).status === 204,
+  );
+  check(
+    "a pending member may not react",
+    (await like(pending, entries.app)).status === 403,
+  );
+  await like(admin, entries.app);
+  await like(other, entries.bundle);
+  const seen = await req(`/shows/${show}/entries/${entries.app}`, {
+    headers: as(other),
+  });
+  check(
+    "the entry carries its derived counts and the caller's own like",
+    seen.body?.likes === 2 && seen.body?.liked === true,
+    JSON.stringify({ likes: seen.body?.likes, liked: seen.body?.liked }),
+  );
+  check(
+    "anonymous sees the count but nobody's `liked`",
+    (await req(`/shows/${show}/entries/${entries.app}`)).body?.liked === false,
+  );
+
+  const comment = await req(`/shows/${show}/entries/${entries.app}/comments`, {
+    method: "POST",
+    headers: as(other),
+    body: { bodyMd: "nice work" },
+  });
+  check("comment", comment.status === 201, comment.text.slice(0, 160));
+  const cid = comment.body?.id;
+  const withComment = await req(`/shows/${show}/entries/${entries.app}`);
+  check(
+    "the entry embeds its comments",
+    withComment.body?.comments?.length === 1,
+    JSON.stringify(withComment.body?.comments?.length),
+  );
+  check(
+    "another entry's path cannot reach that comment",
+    (
+      await req(`/shows/${show}/entries/${entries.bundle}/comments/${cid}`, {
+        method: "DELETE",
+        headers: as(other),
+        body: {},
+      })
+    ).status === 404,
+  );
+
+  const byNew = await req(`/shows/${show}/entries?sort=new`);
+  const byLikes = await req(`/shows/${show}/entries?sort=likes`);
+  check(
+    "sort=likes ranks the most-liked entry first",
+    byLikes.body?.entries?.[0]?.id === entries.app,
+    JSON.stringify(byLikes.body?.entries?.map((e) => [e.id, e.likes])),
+  );
+  check(
+    "sort=new is unaffected and covers the same set",
+    byNew.body?.entries?.length === byLikes.body?.entries?.length,
+    String(byNew.body?.entries?.length),
+  );
+  check(
+    "a cursor from one sort order is refused by the other",
+    (
+      await req(
+        `/shows/${show}/entries?sort=new&cursor=${encodeURIComponent(byLikes.body?.next ?? "l0:x")}`,
+      )
+    ).status === 400,
+  );
+  const firstPage = await req(`/shows/${show}/entries?sort=likes&limit=1`);
+  const nextPage = await req(
+    `/shows/${show}/entries?sort=likes&limit=1&cursor=${encodeURIComponent(firstPage.body?.next ?? "")}`,
+  );
+  check(
+    "the likes cursor pages without repeating",
+    firstPage.body?.entries?.[0]?.id !== nextPage.body?.entries?.[0]?.id,
+    `${firstPage.body?.entries?.[0]?.id} ${nextPage.body?.entries?.[0]?.id}`,
+  );
+
   /* ---- 5. a deleted target leaves the entry standing ---- */
   const gone = await req(`/sites/${targets.site}`, {
     method: "DELETE",
@@ -427,6 +508,46 @@ try {
     "with a reason it goes through",
     withReason.status === 204,
     String(withReason.status),
+  );
+
+  /* ---- 10. the audit log's read side ---- */
+  check(
+    "the audit read is admin-only",
+    (await req("/admin/audit")).status === 401 &&
+      (await req("/admin/audit", { headers: as(other) })).status === 403,
+  );
+  const log = await req("/admin/audit?actionPrefix=show.", {
+    headers: as(admin),
+  });
+  check(
+    "an admin reads it, uncached, with logins and no detail",
+    log.status === 200 &&
+      log.headers.get("cache-control") === "no-store" &&
+      (log.body?.rows ?? []).some((r) => r.action === "show.entry.update") &&
+      !("detail" in (log.body?.rows?.[0] ?? {})),
+    `${log.status} ${log.headers.get("cache-control")}`,
+  );
+  check(
+    "the two action filters are exclusive",
+    (
+      await req("/admin/audit?action=show.create&actionPrefix=show.", {
+        headers: as(admin),
+      })
+    ).status === 400,
+  );
+  check(
+    "a LIKE pattern is refused rather than scanned",
+    (await req("/admin/audit?actionPrefix=%25", { headers: as(admin) }))
+      .status === 400,
+  );
+  const row = (log.body?.rows ?? []).find(
+    (r) => r.action === "show.entry.update",
+  );
+  const detail = await req(`/admin/audit/${row?.id}`, { headers: as(admin) });
+  check(
+    "the by-id read carries the reason",
+    detail.status === 200 && detail.text.includes("smoke moderation"),
+    String(detail.status),
   );
 } finally {
   for (const id of shows) {

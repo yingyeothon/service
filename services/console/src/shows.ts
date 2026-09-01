@@ -6,6 +6,7 @@ import type {
   EventsDb,
   ShowEntryRow,
   ShowListRow,
+  ShowCommentRow,
   ShowRow,
   ShowShotRow,
   ShowTargetKind,
@@ -13,6 +14,10 @@ import type {
   SitesDb,
 } from "@yyt/console-db";
 import {
+  AUDIT_PAGE_MAX,
+  decodeHistoryCursor as decodeCursor,
+  encodeHistoryCursor as encodeCursor,
+  ENTRY_PAGE_DEFAULT,
   ENTRY_PAGE_MAX,
   ENTRY_SHOTS_MAX,
   SHOW_PAGE_MAX,
@@ -37,7 +42,7 @@ import {
 } from "./poster.js";
 import { sitePublicUrl } from "./site-deploy.js";
 import type { TeamAccessHelpers } from "./team-access.js";
-import { MD_BODY_MAX } from "./team.js";
+import { COMMENT_MAX, MD_BODY_MAX } from "./team.js";
 import { createWriteSlot } from "./write-slot.js";
 
 /**
@@ -57,6 +62,29 @@ export const INLINE_DELETE_MAX = 20;
 export const OPEN_SHOWS_PER_MEMBER = 5;
 export const ENTRIES_PER_SHOW = 200;
 export const GRANTS_PER_SHOW = 100;
+export const COMMENTS_PER_ENTRY = 200;
+/**
+ * How much of an audit row's `detail_json` the by-id read hands back. A show
+ * deletion snapshot is already bounded at `SHOW_SNAPSHOT_MAX_BYTES` (256 KB),
+ * so the record decision 8 promises is reachable whole; what this bounds is
+ * the writers that are not — an `event.delete` row carries every revision and
+ * comment body. Well inside API Gateway's 6 MB.
+ */
+export const AUDIT_DETAIL_MAX_BYTES = 512 * 1024;
+
+/** Cuts on a byte budget without splitting a character. */
+export function truncateUtf8(
+  s: string,
+  maxBytes: number,
+): { text: string; truncated: boolean } {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= maxBytes) return { text: s, truncated: false };
+  // `toString` on a cut buffer would leave a replacement character at the
+  // seam; drop the trailing continuation bytes instead.
+  let end = maxBytes;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
+  return { text: buf.subarray(0, end).toString("utf8"), truncated: true };
+}
 
 const title = z.string().trim().min(1).max(200);
 const bodyMd = z.string().max(MD_BODY_MAX);
@@ -90,8 +118,31 @@ const showsQuery = z
   .passthrough();
 const entriesQuery = z
   .object({
+    sort: z.enum(["new", "likes"]).optional(),
     cursor: z.string().max(80).optional(),
     limit: z.coerce.number().int().min(1).max(ENTRY_PAGE_MAX).optional(),
+  })
+  .passthrough();
+const commentBody = z
+  .object({ bodyMd: z.string().trim().min(1).max(COMMENT_MAX) })
+  .strict();
+const commentPatchBody = z
+  .object({
+    bodyMd: z.string().trim().min(1).max(COMMENT_MAX),
+    reason: reason.optional(),
+  })
+  .strict();
+const auditQuery = z
+  .object({
+    action: z.string().max(64).optional(),
+    actionPrefix: z.string().max(64).optional(),
+    target: z.string().max(255).optional(),
+    /** A GitHub login; the response never carries member ids either. */
+    actor: z.string().trim().min(1).max(100).optional(),
+    from: z.coerce.number().int().nonnegative().optional(),
+    to: z.coerce.number().int().nonnegative().optional(),
+    cursor: z.string().max(80).optional(),
+    limit: z.coerce.number().int().min(1).max(AUDIT_PAGE_MAX).optional(),
   })
   .passthrough();
 const entryCreateBody = z
@@ -285,6 +336,21 @@ export function createShowRoutes({
       throw new AppError("conflict", "show is closed");
   }
 
+  /**
+   * Comments and likes: any signed-in non-`pending` reader (decision 10), and
+   * a closed show is read-only, so this is a 409 like every other write.
+   */
+  async function reactableShow(
+    ctx: RouteContext,
+  ): Promise<{ id: ConsoleIdentity; show: ShowRow; now: number }> {
+    const { show, now } = await visibleShow(ctx);
+    const id = requireRole(ctx, "member");
+    if (!canReact(show, id))
+      throw new AppError("forbidden", "sign in to react to a show");
+    requireOpen(show);
+    return { id, show, now };
+  }
+
   async function manageableShow(
     ctx: RouteContext,
   ): Promise<{ id: ConsoleIdentity; show: ShowRow; now: number }> {
@@ -307,6 +373,17 @@ export function createShowRoutes({
     const row = await shows.findEntry(ctx.params.entry!);
     if (!row || row.showId !== show.id)
       throw new AppError("not_found", "entry not found");
+    return row;
+  }
+
+  /** Every nested comment route asserts its entry, for the same reason. */
+  async function commentOf(
+    ctx: RouteContext,
+    entry: ShowEntryRow,
+  ): Promise<ShowCommentRow> {
+    const row = await shows.findComment(ctx.params.id!);
+    if (!row || row.entryId !== entry.id)
+      throw new AppError("not_found", "comment not found");
     return row;
   }
 
@@ -426,7 +503,8 @@ export function createShowRoutes({
     closedAt: s.closedAt,
     closedBy: loginOf(logins, s.closedBy),
     entryCount: extra.entryCount,
-    canWrite: extra.write,
+    /** "May put something up right now": a closed show refuses with 409. */
+    canWrite: s.closedAt === null && extra.write,
     canManage: canManage(s, id),
   });
 
@@ -446,7 +524,13 @@ export function createShowRoutes({
     logins: Map<string, string>,
     target: TargetView,
     shots: readonly ShowShotRow[] = [],
+    counts: { likes: number; commentCount: number; liked: boolean } = {
+      likes: 0,
+      commentCount: 0,
+      liked: false,
+    },
   ) => ({
+    ...counts,
     id: e.id,
     showId: e.showId,
     title: e.title,
@@ -463,6 +547,50 @@ export function createShowRoutes({
       size: x.size,
       url: shotUrl(e.showId, e.id, x.id),
     })),
+  });
+
+  /**
+   * Derived counts for a page: two `groupBy`s plus the caller's own likes.
+   * Nothing is stored — a denormalised counter would drift against the
+   * cascades (decision 10).
+   */
+  async function reactionsOf(
+    entries: readonly ShowEntryRow[],
+    id: ConsoleIdentity | undefined,
+    known?: Record<string, number>,
+  ): Promise<
+    Map<string, { likes: number; commentCount: number; liked: boolean }>
+  > {
+    const ids = entries.map((e) => e.id);
+    // The likes-sorted page already counted them for the whole show; reusing
+    // that saves a second `groupBy` and keeps the rank and the badge
+    // consistent with each other.
+    const likes = known ?? (await shows.countLikes(ids));
+    const comments = await shows.countComments(ids);
+    const mine = new Set(
+      id === undefined ? [] : await shows.listLikedBy(id.subject, ids),
+    );
+    return new Map(
+      entries.map((e) => [
+        e.id,
+        {
+          likes: likes[e.id] ?? 0,
+          // Not `comments`: the detail route puts the thread under that name,
+          // and one field must not be a number on one route and an array on
+          // its sibling.
+          commentCount: comments[e.id] ?? 0,
+          liked: mine.has(e.id),
+        },
+      ]),
+    );
+  }
+
+  const commentView = (c: ShowCommentRow, logins: Map<string, string>) => ({
+    id: c.id,
+    bodyMd: c.bodyMd,
+    createdBy: loginOf(logins, c.createdBy),
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
   });
 
   /** `live` shots of a page of entries, grouped, in one query. */
@@ -536,17 +664,37 @@ export function createShowRoutes({
       path: "/shows/{show}/entries",
       query: entriesQuery,
       handler: async (ctx) => {
-        const { show } = await visibleShow(ctx);
-        const page = await shows.listEntries(show.id, {
-          cursor: ctx.query.cursor,
-          limit: ctx.query.limit,
-        });
+        const { id, show } = await visibleShow(ctx);
+        const sort = ctx.query.sort ?? "new";
+        const cursor = untagCursor(sort, ctx.query.cursor);
+        const raw: {
+          rows: ShowEntryRow[];
+          next?: string;
+          counts?: Record<string, number>;
+        } =
+          sort === "likes"
+            ? await byLikes(show.id, cursor, ctx.query.limit)
+            : await shows.listEntries(show.id, {
+                cursor,
+                limit: ctx.query.limit,
+              });
+        const page = {
+          rows: raw.rows,
+          next: raw.next === undefined ? undefined : tagCursor(sort, raw.next),
+        };
         const logins = await loginsOf(...page.rows.map((e) => e.createdBy));
         const targets = await targetViews(page.rows);
         const shots = await shotsOf(page.rows);
+        const counts = await reactionsOf(page.rows, id, raw.counts);
         return {
           entries: page.rows.map((e) =>
-            entryView(e, logins, targets.get(e.id)!, shots.get(e.id)),
+            entryView(
+              e,
+              logins,
+              targets.get(e.id)!,
+              shots.get(e.id),
+              counts.get(e.id),
+            ),
           ),
           next: page.next ?? null,
         };
@@ -558,16 +706,28 @@ export function createShowRoutes({
       handler: async (ctx) => {
         const { id, show } = await visibleShow(ctx);
         const entry = await entryOf(ctx, show);
-        const logins = await loginsOf(entry.createdBy);
         const targets = await targetViews([entry]);
+        const counts = await reactionsOf([entry], id);
+        // Bounded by `COMMENTS_PER_ENTRY`; the bodies are capped at
+        // `COMMENT_MAX`, so the page is bounded too.
+        const comments = await shows.listComments(entry.id);
+        const logins = await loginsOf(
+          entry.createdBy,
+          ...comments.map((c) => c.createdBy),
+        );
         return {
           ...entryView(
             entry,
             logins,
             targets.get(entry.id)!,
             await shows.listShots(entry.id, ["live"]),
+            counts.get(entry.id),
           ),
-          canWrite: await canWrite(show, id),
+          comments: comments.map((c) => commentView(c, logins)),
+          // "may do this **now**", closedness included: these are what the SPA
+          // enables its controls from, and a closed show refuses both with 409.
+          canWrite: show.closedAt === null && (await canWrite(show, id)),
+          canReact: show.closedAt === null && canReact(show, id),
         };
       },
     },
@@ -876,6 +1036,203 @@ export function createShowRoutes({
         return undefined;
       },
     }),
+
+    // ---- reactions --------------------------------------------------------
+    {
+      method: "PUT",
+      path: "/shows/{show}/entries/{entry}/like",
+      auth: true,
+      handler: async (ctx) => {
+        const { id, show, now } = await reactableShow(ctx);
+        const entry = await entryOf(ctx, show);
+        // Rate-limited like every write, but deliberately **not** audited:
+        // too high-volume to be worth a row each (decision 10).
+        await writeSlot(id);
+        await shows.insertLike(entry.id, id.subject, now);
+        return undefined;
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/shows/{show}/entries/{entry}/like",
+      auth: true,
+      handler: async (ctx) => {
+        const { id, show } = await reactableShow(ctx);
+        const entry = await entryOf(ctx, show);
+        await writeSlot(id);
+        await shows.deleteLike(entry.id, id.subject);
+        return undefined;
+      },
+    },
+    defineRoute({
+      method: "POST",
+      path: "/shows/{show}/entries/{entry}/comments",
+      auth: true,
+      body: commentBody,
+      handler: async (ctx) => {
+        const { id, show, now } = await reactableShow(ctx);
+        const entry = await entryOf(ctx, show);
+        if (
+          ((await shows.countComments([entry.id]))[entry.id] ?? 0) >=
+          COMMENTS_PER_ENTRY
+        )
+          throw new AppError(
+            "conflict",
+            `too many comments (max ${COMMENTS_PER_ENTRY} per entry)`,
+          );
+        await writeSlot(id);
+        const commentId = `sc_${ulid().toLowerCase()}`;
+        await shows.insertComment({
+          id: commentId,
+          entryId: entry.id,
+          bodyMd: ctx.body.bodyMd,
+          createdBy: id.subject,
+          createdAt: now,
+          updatedAt: now,
+        });
+        await audit(id.subject, "show.comment.create", commentId, {
+          showId: show.id,
+          entryId: entry.id,
+        });
+        return created({ id: commentId });
+      },
+    }),
+    defineRoute({
+      method: "PATCH",
+      path: "/shows/{show}/entries/{entry}/comments/{id}",
+      auth: true,
+      body: commentPatchBody,
+      handler: async (ctx) => {
+        const { id, show, now } = await reactableShow(ctx);
+        const entry = await entryOf(ctx, show);
+        const c = await commentOf(ctx, entry);
+        if (c.createdBy !== id.subject && !canManage(show, id))
+          throw new AppError("forbidden", "not your comment");
+        const mod = moderation(id, c.createdBy, ctx.body.reason);
+        await writeSlot(id);
+        await shows.updateComment(c.id, ctx.body.bodyMd, now);
+        await audit(id.subject, "show.comment.update", c.id, {
+          showId: show.id,
+          entryId: entry.id,
+          ...mod,
+        });
+        return undefined;
+      },
+    }),
+    defineRoute({
+      method: "DELETE",
+      path: "/shows/{show}/entries/{entry}/comments/{id}",
+      auth: true,
+      body: moderateBody,
+      handler: async (ctx) => {
+        const { id, show } = await reactableShow(ctx);
+        const entry = await entryOf(ctx, show);
+        const c = await commentOf(ctx, entry);
+        if (c.createdBy !== id.subject && !canManage(show, id))
+          throw new AppError("forbidden", "not your comment");
+        const mod = moderation(id, c.createdBy, ctx.body.reason);
+        await writeSlot(id);
+        await shows.deleteComment(c.id);
+        await audit(id.subject, "show.comment.delete", c.id, {
+          showId: show.id,
+          entryId: entry.id,
+          ...mod,
+        });
+        return undefined;
+      },
+    }),
+
+    // ---- the audit log's first read side (admin only) ----------------------
+    defineRoute({
+      method: "GET",
+      path: "/admin/audit",
+      auth: true,
+      query: auditQuery,
+      handler: async (ctx) => {
+        const me = requireRole(ctx, "admin");
+        const q = ctx.query;
+        // A login, never a member id — on the way in as well as out.
+        const actor =
+          q.actor === undefined
+            ? undefined
+            : await db.findMemberByLogin(q.actor);
+        const noStore = (body: unknown) => ({
+          statusCode: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+          body: JSON.stringify(body),
+        });
+        // Same shape and the same header as a match: an early return that
+        // skips the hand-built response loses `no-store`.
+        if (q.actor !== undefined && !actor)
+          return noStore({ rows: [], next: null, me: me.login });
+        const page = await db.listAudit({
+          action: q.action,
+          actionPrefix: q.actionPrefix,
+          target: q.target,
+          actorId: actor?.id,
+          from: q.from,
+          to: q.to,
+          cursor: q.cursor,
+          limit: q.limit,
+        });
+        const logins = await loginsOf(...page.rows.map((r) => r.actorId));
+        return noStore({
+          rows: page.rows.map((r) => ({
+            id: r.id,
+            actor: loginOf(logins, r.actorId),
+            action: r.action,
+            target: r.target,
+            at: r.at,
+          })),
+          next: page.next ?? null,
+          me: me.login,
+        });
+      },
+    }),
+    /**
+     * The raw record, not a view of it. Every *resource* response in this
+     * service carries GitHub logins only, but `audit_log.detail_json` is what
+     * was written at the time — an `event.delete` snapshot holds member ids and
+     * markdown bodies, and rewriting it here would make the log a worse record
+     * than the thing it records. Admin-only for exactly that reason
+     * (`rules/security.md`).
+     */
+    {
+      method: "GET",
+      path: "/admin/audit/{id}",
+      auth: true,
+      handler: async (ctx) => {
+        requireRole(ctx, "admin");
+        const row = await db.findAudit(ctx.params.id!);
+        if (!row) throw new AppError("not_found", "audit row not found");
+        const logins = await loginsOf(row.actorId);
+        // A deletion snapshot can be hundreds of kilobytes, and the response
+        // budget is 6 MB for the one route operators reach for during an
+        // incident — hand back a preview and say it is one.
+        const cut = truncateUtf8(row.detailJson ?? "", AUDIT_DETAIL_MAX_BYTES);
+        return {
+          statusCode: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+          body: JSON.stringify({
+            id: row.id,
+            actor: loginOf(logins, row.actorId),
+            action: row.action,
+            target: row.target,
+            at: row.at,
+            detail: row.detailJson === null ? null : cut.text,
+            // A truncated detail is a JSON *fragment*: the flag is how a
+            // reader knows not to parse it.
+            detailTruncated: cut.truncated,
+          }),
+        };
+      },
+    },
 
     // ---- screenshots ------------------------------------------------------
     {
@@ -1186,6 +1543,71 @@ export function createShowRoutes({
       },
     }),
   ];
+
+  /**
+   * Entry cursors carry their sort order. The two orders encode completely
+   * different `at` values — a creation time and a like count — so a cursor
+   * from one fed to the other is not merely wrong, it silently pages forever
+   * (a `new` cursor's `at` is larger than every like count, so the filter
+   * matches everything and the client gets page 1 back with a fresh cursor).
+   */
+  // `function`, not `const`: these live below the route array's `return`,
+  // where a `const` would stay in its temporal dead zone forever and every
+  // call would be a `ReferenceError` at request time.
+  function tagCursor(sort: "new" | "likes", raw: string): string {
+    return `${sort === "likes" ? "l" : "n"}${raw}`;
+  }
+  function untagCursor(
+    sort: "new" | "likes",
+    tagged: string | undefined,
+  ): string | undefined {
+    if (tagged === undefined) return undefined;
+    if (tagged[0] !== (sort === "likes" ? "l" : "n"))
+      throw new AppError("bad_request", "cursor is for another sort order");
+    return tagged.slice(1);
+  }
+
+  /**
+   * `sort=likes` cannot page on a count computed per page: the next page's
+   * counts are unknown until it is read. With entries capped at
+   * `ENTRIES_PER_SHOW` the honest implementation is to rank the whole show —
+   * the ids and one `groupBy` — and page with a `(likes, id)` cursor.
+   */
+  async function byLikes(
+    showId: string,
+    cursor: string | undefined,
+    limit: number | undefined,
+  ): Promise<{
+    rows: ShowEntryRow[];
+    next?: string;
+    counts: Record<string, number>;
+  }> {
+    const take = Math.min(
+      ENTRY_PAGE_MAX,
+      Math.max(1, limit ?? ENTRY_PAGE_DEFAULT),
+    );
+    const ids = await shows.listEntryIds(showId);
+    const counts = await shows.countLikes(ids);
+    const ranked = ids
+      .map((id) => ({ id, likes: counts[id] ?? 0 }))
+      .sort((a, b) => b.likes - a.likes || (a.id < b.id ? 1 : -1));
+    // Validated, not silently ignored: every other cursor in this file
+    // answers `bad_request` for a malformed one.
+    const c = cursor === undefined ? undefined : decodeCursor(cursor);
+    if (cursor !== undefined && !c)
+      throw new AppError("bad_request", "invalid cursor");
+    const rest = c
+      ? ranked.filter(
+          (r) => r.likes < c.at || (r.likes === c.at && r.id < c.id),
+        )
+      : ranked;
+    const page = rest.slice(0, take);
+    const rows = await shows.listEntriesByIds(page.map((r) => r.id));
+    const last = page[page.length - 1];
+    return rest.length > take && last
+      ? { rows, counts, next: encodeCursor({ at: last.likes, id: last.id }) }
+      : { rows, counts };
+  }
 
   /** The exhibited build, pinned at submit time (decision 5); a site links live. */
   async function pinnedRef(
