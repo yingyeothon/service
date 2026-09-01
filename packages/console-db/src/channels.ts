@@ -361,7 +361,9 @@ export interface ConsoleDb {
   /**
    * By GitHub login, case-insensitively (`github_login` sits on the database
    * default collation, which is what GitHub's own semantics want). One query
-   * instead of reading every row and comparing in JS.
+   * instead of reading every row into the Lambda and comparing in JS — the
+   * column carries no index, so the server still scans, which is fine at a
+   * members table of this size and is the thing to revisit if it is not.
    */
   findMemberByLogin(login: string): Promise<MemberRow | undefined>;
   listMembers(): Promise<MemberRow[]>;

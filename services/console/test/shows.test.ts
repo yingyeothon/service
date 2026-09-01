@@ -61,8 +61,18 @@ async function setup() {
   return { h, admin, owner, other, pending, t, show: parse(r).id as string };
 }
 
-const get = (h: H, path: string, u?: User) =>
-  app(h, ev("GET", path, u ? { headers: u.cookie } : {}));
+/** `path` may carry a query string; `ev` wants it as an object. */
+const get = (h: H, path: string, u?: User) => {
+  const [p, qs] = path.split("?");
+  const query = Object.fromEntries(new URLSearchParams(qs ?? ""));
+  return app(
+    h,
+    ev("GET", p!, {
+      ...(u ? { headers: u.cookie } : {}),
+      ...(qs ? { query } : {}),
+    }),
+  );
+};
 const post = (h: H, u: User, path: string, body?: unknown) =>
   app(h, ev("POST", path, { headers: u.cookie, ...(body ? { body } : {}) }));
 
@@ -689,6 +699,265 @@ describe("shows: spawned from an event", () => {
     expect(parse(await get(h, `/shows/${showId}`))).toMatchObject({
       eventId: null,
     });
+  });
+});
+
+describe("shows: likes, comments and sorting", () => {
+  async function withTwo() {
+    const s = await setup();
+    const a = parse(
+      await submit(s.h, s.owner, s.show, {
+        targetKind: "site",
+        targetId: s.t.site,
+        title: "site entry",
+      }),
+    ).id as string;
+    const b = parse(
+      await submit(s.h, s.owner, s.show, {
+        targetKind: "app",
+        targetId: s.t.app,
+        title: "app entry",
+      }),
+    ).id as string;
+    return { ...s, a, b };
+  }
+
+  it("likes are idempotent set membership and never audited", async () => {
+    const { h, other, pending, show, a } = await withTwo();
+    const like = (u: User, method: "PUT" | "DELETE" = "PUT") =>
+      app(
+        h,
+        ev(method, `/shows/${show}/entries/${a}/like`, { headers: u.cookie }),
+      );
+    expect((await like(other)).statusCode).toBe(204);
+    expect((await like(other)).statusCode).toBe(204);
+    // `pending` may read a public show but is not a reader who may react.
+    expect((await like(pending)).statusCode).toBe(403);
+    expect(
+      (await app(h, ev("PUT", `/shows/${show}/entries/${a}/like`, {})))
+        .statusCode,
+    ).toBe(401);
+
+    const seen = parse(await get(h, `/shows/${show}/entries/${a}`, other));
+    expect(seen.likes).toBe(1);
+    expect(seen.liked).toBe(true);
+    // Anonymous sees the count but never somebody else's `liked`.
+    expect(parse(await get(h, `/shows/${show}/entries/${a}`)).liked).toBe(
+      false,
+    );
+    expect((await like(other, "DELETE")).statusCode).toBe(204);
+    expect((await like(other, "DELETE")).statusCode).toBe(204);
+    expect(parse(await get(h, `/shows/${show}/entries/${a}`)).likes).toBe(0);
+    expect(h.db.audits.some((x) => x.action.startsWith("show.like"))).toBe(
+      false,
+    );
+  });
+
+  it("sorts by likes with a cursor that does not skip or repeat", async () => {
+    const { h, admin, other, show, a, b } = await withTwo();
+    await app(
+      h,
+      ev("PUT", `/shows/${show}/entries/${b}/like`, { headers: other.cookie }),
+    );
+    await app(
+      h,
+      ev("PUT", `/shows/${show}/entries/${b}/like`, { headers: admin.cookie }),
+    );
+    await app(
+      h,
+      ev("PUT", `/shows/${show}/entries/${a}/like`, { headers: other.cookie }),
+    );
+    // Assert the status too: a helper in a temporal dead zone answers 500 and
+    // `parse` of an error body reads as "no entries" (`rules/testing.md`).
+    const rankedRes = await get(h, `/shows/${show}/entries?sort=likes`);
+    expect(rankedRes.statusCode, rankedRes.body).toBe(200);
+    const ranked = parse(rankedRes);
+    expect(ranked.entries.map((e: Json) => e.id)).toEqual([b, a]);
+    expect(ranked.entries[0].likes).toBe(2);
+    // Paged, the two halves are disjoint and cover everything.
+    const first = parse(
+      await get(h, `/shows/${show}/entries?sort=likes&limit=1`),
+    );
+    expect(first.entries.map((e: Json) => e.id)).toEqual([b]);
+    expect(first.next).toBeTruthy();
+    const rest = parse(
+      await get(
+        h,
+        `/shows/${show}/entries?sort=likes&limit=1&cursor=${first.next}`,
+      ),
+    );
+    expect(rest.entries.map((e: Json) => e.id)).toEqual([a]);
+    expect(rest.next).toBeNull();
+    // A cursor belongs to its sort order: mixing them silently paged forever.
+    expect(
+      (await get(h, `/shows/${show}/entries?sort=new&cursor=${first.next}`))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (await get(h, `/shows/${show}/entries?sort=likes&cursor=junk`))
+        .statusCode,
+    ).toBe(400);
+    // `new` is unaffected: newest first.
+    expect(
+      parse(await get(h, `/shows/${show}/entries`)).entries.map(
+        (e: Json) => e.id,
+      ),
+    ).toEqual([b, a]);
+  });
+
+  it("comments belong to their entry, and moderating one needs a reason", async () => {
+    const { h, admin, owner, other, pending, show, a, b } = await withTwo();
+    const post = (u: User, entry: string, bodyMd: string) =>
+      app(
+        h,
+        ev("POST", `/shows/${show}/entries/${entry}/comments`, {
+          headers: u.cookie,
+          body: { bodyMd },
+        }),
+      );
+    expect((await post(pending, a, "hi")).statusCode).toBe(403);
+    const made = await post(other, a, "nice work");
+    expect(made.statusCode, made.body).toBe(201);
+    const cid = parse(made).id as string;
+    expect(
+      parse(await get(h, `/shows/${show}/entries/${a}`)).comments,
+    ).toMatchObject([{ bodyMd: "nice work", createdBy: "bob" }]);
+
+    // The other entry's path cannot reach this comment.
+    expect(
+      (
+        await app(
+          h,
+          ev("PATCH", `/shows/${show}/entries/${b}/comments/${cid}`, {
+            headers: other.cookie,
+            body: { bodyMd: "moved" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    // The show owner may moderate without a reason (decision 12 scopes the
+    // requirement to admins).
+    expect(
+      (
+        await app(
+          h,
+          ev("PATCH", `/shows/${show}/entries/${a}/comments/${cid}`, {
+            headers: owner.cookie,
+            body: { bodyMd: "hijack" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(204);
+    // An admin moderating somebody else's comment must say why.
+    expect(
+      (
+        await app(
+          h,
+          ev("DELETE", `/shows/${show}/entries/${a}/comments/${cid}`, {
+            headers: admin.cookie,
+            body: {},
+          }),
+        )
+      ).statusCode,
+    ).toBe(400);
+    const removed = await app(
+      h,
+      ev("DELETE", `/shows/${show}/entries/${a}/comments/${cid}`, {
+        headers: admin.cookie,
+        body: { reason: "off topic" },
+      }),
+    );
+    expect(removed.statusCode, removed.body).toBe(204);
+    expect(
+      h.db.audits.find((x) => x.action === "show.comment.delete")!.detail,
+    ).toMatchObject({ reason: "off topic" });
+  });
+
+  it("a closed show takes no reactions either", async () => {
+    const { h, owner, other, show, a } = await withTwo();
+    await post(h, owner, `/shows/${show}/close`, {});
+    expect(
+      (
+        await app(
+          h,
+          ev("PUT", `/shows/${show}/entries/${a}/like`, {
+            headers: other.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(409);
+    expect(
+      (
+        await app(
+          h,
+          ev("POST", `/shows/${show}/entries/${a}/comments`, {
+            headers: other.cookie,
+            body: { bodyMd: "late" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(409);
+  });
+});
+
+describe("GET /admin/audit", () => {
+  it("is admin-only, never cached, and resolves actors to logins", async () => {
+    const { h, admin, owner, other, show } = await setup();
+    expect((await get(h, "/admin/audit")).statusCode).toBe(401);
+    expect((await get(h, "/admin/audit", owner)).statusCode).toBe(403);
+    expect((await get(h, "/admin/audit", other)).statusCode).toBe(403);
+
+    const r = await get(h, "/admin/audit", admin);
+    expect(r.statusCode).toBe(200);
+    expect(r.headers?.["cache-control"]).toBe("no-store");
+    const rows = parse(r).rows as Json[];
+    expect(rows.some((x) => x.action === "show.create")).toBe(true);
+    // Logins, never internal member ids.
+    expect(
+      rows.every((x) => x.actor === null || !String(x.actor).startsWith("m_")),
+    ).toBe(true);
+    // A listed row carries no detail at all: the by-id read is the way to it.
+    expect(rows[0]).not.toHaveProperty("detail");
+
+    const byPrefix = parse(
+      await get(h, "/admin/audit?actionPrefix=show.", admin),
+    );
+    expect(
+      (byPrefix.rows as Json[]).every((x) =>
+        String(x.action).startsWith("show."),
+      ),
+    ).toBe(true);
+    // The two action filters are exclusive, and a pattern character is refused.
+    expect(
+      (
+        await get(
+          h,
+          "/admin/audit?action=show.create&actionPrefix=show.",
+          admin,
+        )
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (await get(h, "/admin/audit?actionPrefix=%25", admin)).statusCode,
+    ).toBe(400);
+    // An unknown actor is an empty page, not everybody's rows.
+    expect(
+      parse(await get(h, "/admin/audit?actor=nobody-here", admin)).rows,
+    ).toEqual([]);
+    expect(
+      (
+        parse(await get(h, `/admin/audit?actor=alice`, admin)).rows as Json[]
+      ).every((x) => x.actor === "alice"),
+    ).toBe(true);
+
+    const one = await get(h, `/admin/audit/${rows[0]!.id}`, admin);
+    expect(one.statusCode).toBe(200);
+    expect(parse(one)).toMatchObject({ detailTruncated: false });
+    expect((await get(h, "/admin/audit/nope", admin)).statusCode).toBe(404);
+    expect(
+      (await get(h, `/admin/audit/${rows[0]!.id}`, owner)).statusCode,
+    ).toBe(403);
+    expect(show).toBeTruthy();
   });
 });
 
