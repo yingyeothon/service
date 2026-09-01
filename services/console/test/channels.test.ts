@@ -893,4 +893,22 @@ describe("channels: caps and history hygiene (todo/17 P7 review)", () => {
     ])
       expect(hist.body).not.toContain(leak);
   });
+  it("refuses every id-shaped channel name the CLI would read as an id", async () => {
+    const h = harness();
+    const owner = await h.team("alice");
+    // One grammar in three places (`team.ts`, `channels.ts`,
+    // `cli/internal/cmd/context.go`): `st_`/`sd_` were missing here, so a
+    // channel could be named `st_foo` and the CLI would resolve that name as
+    // a site id.
+    for (const bad of ["st_foo", "sd_foo", "ca_foo", "team_foo", "auth_foo"]) {
+      h.clock.tick(1);
+      const r = await h.app(
+        ev("POST", `/projects/${owner.prjId}/channels`, {
+          headers: owner.cookie,
+          body: { kind: "auth", name: bad, config: { audience: "aud" } },
+        }),
+      );
+      expect(r.statusCode, `${bad}: ${r.body}`).toBe(400);
+    }
+  });
 });
