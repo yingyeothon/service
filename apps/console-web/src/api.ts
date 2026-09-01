@@ -394,6 +394,12 @@ export function createApiClient({
         optionIds,
       }),
     unvote: (id: string) => del(`/events/${enc(id)}/vote`),
+    /** Platform admin: ends the vote now. `optionId` overrides the tally. */
+    closeEventVote: (id: string, reason: string, optionId?: string) =>
+      post<EventDetail>(`/events/${enc(id)}/close-vote`, {
+        reason,
+        ...(optionId !== undefined ? { optionId } : {}),
+      }),
     eventRevisions: (id: string) =>
       get<{ revisions: EventRevision[] }>(`/events/${enc(id)}/revisions`).then(
         (r) => r.revisions,

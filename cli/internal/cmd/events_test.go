@@ -146,6 +146,55 @@ func TestEventsCreateUpdateVote(t *testing.T) {
 	}
 }
 
+func TestEventsCloseVote(t *testing.T) {
+	f := newFake(t, map[string]func(recorded) (int, any){
+		"POST /events/ev_1/close-vote": func(r recorded) (int, any) {
+			e := map[string]any{}
+			for k, v := range sampleEvent {
+				e[k] = v
+			}
+			e["id"] = "ev_1"
+			e["voteClosedAt"] = 1756000400
+			e["voteClosedBy"] = "boss"
+			e["voteClosedReason"] = r.Body["reason"]
+			if o, ok := r.Body["optionId"]; ok {
+				e["startsAt"] = 1756200000
+				_ = o
+			}
+			return 200, e
+		},
+	})
+	// the reason is not optional, and no request is made without it
+	if _, _, err := run(t, f, "events", "close-vote", "ev_1"); err == nil || !strings.Contains(err.Error(), "--reason is required") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, _, err := run(t, f, "events", "close-vote", "ev_1", "--reason", "  "); err == nil {
+		t.Fatal("a blank reason should be refused")
+	}
+	if len(f.reqs) != 0 {
+		t.Fatalf("no request should have been sent: %v", f.reqs)
+	}
+	out, _, err := run(t, f, "events", "close-vote", "ev_1", "--reason", "venue deadline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "events_close_vote", out)
+	last := f.reqs[len(f.reqs)-1]
+	if last.Method != "POST" || last.Path != "/events/ev_1/close-vote" || last.Body["reason"] != "venue deadline" {
+		t.Fatalf("close=%v", last)
+	}
+	if _, ok := last.Body["optionId"]; ok {
+		t.Fatalf("optionId must be omitted when not given: %v", last.Body)
+	}
+	out, _, err = run(t, f, "events", "close-vote", "ev_1", "--reason", "only the hall is free", "--option", "eo_2", "--json")
+	if err != nil || !strings.Contains(out, `"voteClosedReason": "only the hall is free"`) {
+		t.Fatalf("out=%s err=%v", out, err)
+	}
+	if last = f.reqs[len(f.reqs)-1]; last.Body["optionId"] != "eo_2" {
+		t.Fatalf("option=%v", last.Body)
+	}
+}
+
 func TestEventsHistoryDiffComments(t *testing.T) {
 	rev := func(n int, title, body string) map[string]any {
 		return map[string]any{"revision": n, "editedBy": "octo", "editedAt": 1756000000 + int64(n), "title": title, "place": "Seoul", "placeUrl": nil, "durationHours": 8, "posterKey": nil, "bodyMd": body}

@@ -268,6 +268,7 @@ export function ConfirmWithReason({
   confirmLabel = "Confirm",
   required,
   placeholder = "Why?",
+  maxLength,
   onConfirm,
   disabled,
 }: {
@@ -276,6 +277,8 @@ export function ConfirmWithReason({
   /** Demand a reason before the confirm button does anything. */
   required: boolean;
   placeholder?: string;
+  /** The server's cap, so an over-long reason is stopped here, not by a 400. */
+  maxLength?: number;
   onConfirm: (reason: string | undefined) => void | Promise<void>;
   disabled?: boolean;
 }) {
@@ -299,6 +302,7 @@ export function ConfirmWithReason({
         size="xs"
         placeholder={placeholder}
         value={reason}
+        maxLength={maxLength}
         aria-label="Reason"
         onChange={(e: ChangeEvent<HTMLInputElement>) =>
           setReason(e.currentTarget.value)

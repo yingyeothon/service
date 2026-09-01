@@ -55,6 +55,8 @@ export const DURATION_HOURS_MAX = 72;
 export const REVISIONS_MAX = 200;
 export const COMMENTS_PER_EVENT = 500;
 export const COMMENT_MAX = 10_000;
+/** The width of `events.vote_closed_reason`. */
+export const REASON_MAX = 500;
 /** Calendar days are counted in Asia/Seoul, which has no DST. */
 export const KST_OFFSET_SEC = 9 * 3600;
 
@@ -99,6 +101,24 @@ export const eventPatchBody = z
   })
   .strict();
 const voteBody = z.object({ optionIds: idList.min(1) }).strict();
+/** `optionId` overrides the tally; omitted, the standing rule decides. */
+const closeVoteBody = z
+  .object({
+    /*
+     * Unlike the show moderation reasons, this one is served back and printed:
+     * `yyt events get` puts it in a `key: value` table and the CLI's `Clean`
+     * keeps `\n`/`\t` on purpose, so a reason with a newline would forge a
+     * row. Refuse control characters at the door instead.
+     */
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(REASON_MAX)
+      .refine((v) => !/\p{Cc}/u.test(v), "no control characters"),
+    optionId: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict();
 const commentBody = z
   .object({ bodyMd: z.string().min(1).max(COMMENT_MAX) })
   .strict();
@@ -432,6 +452,25 @@ export function createEventRoutes({
       cancelledAt: row.cancelledAt,
       cancelledBy: loginOf(logins, row.cancelledBy),
       /**
+       * Non-null only when an admin ended the vote early. Shown to everyone —
+       * `docs/decisions.md` requires a forced decision to be visible on the
+       * page, not only in the admin-only audit log.
+       */
+      voteClosedAt: row.voteClosedAt,
+      voteClosedBy: loginOf(logins, row.voteClosedBy),
+      voteClosedReason: row.voteClosedReason,
+      /*
+       * Whether the early close also overrode the tally. An admin ending a
+       * vote early usually lets the standing rule decide, and a page that
+       * says "an admin decided the date" either way misreports the common
+       * case — while suppressing the tie-break explanation exactly when it
+       * is the only thing that explains the date (nobody had voted). Derived
+       * rather than stored: the tally is frozen once the vote is over.
+       */
+      ...(row.voteClosedAt !== null
+        ? { voteOverridden: decideStart(opts, votes) !== row.startsAt }
+        : {}),
+      /**
        * The gallery this event spawned, if any. Resolved through an injected
        * lookup rather than a `ShowsDb` handle: an event knows it may have a
        * show, not what a show is (`docs/decisions.md` decision 11).
@@ -729,6 +768,70 @@ export function createEventRoutes({
         return eventView(await reload(row, now), id);
       },
     },
+    defineRoute({
+      method: "POST",
+      path: "/events/{id}/close-vote",
+      auth: true,
+      body: closeVoteBody,
+      handler: async (ctx) => {
+        // Platform admin, not owner-or-admin: ending a vote early overrides
+        // what the members decided, so it is not the organizer's to take.
+        const id = requireRole(ctx, "admin");
+        const { row, now } = await visibleEvent(ctx);
+        if (row.status !== "voting")
+          throw new AppError("conflict", `event is ${row.status}`);
+        const opts = await events.listOptions(row.id);
+        // Always computed: the audit row keeps what the standing rule would
+        // have picked, which is the only record that an override overrode
+        // anything once `voteUntil` has been moved.
+        const tallyStartsAt = decideStart(opts, await events.listVotes(row.id));
+        let startsAt: number | null;
+        if (ctx.body.optionId !== undefined) {
+          const picked = opts.find((o) => o.id === ctx.body.optionId);
+          if (!picked)
+            throw new AppError("bad_request", "option is not in this event");
+          startsAt = picked.startsAt;
+        } else {
+          startsAt = tallyStartsAt;
+        }
+        if (startsAt === null)
+          throw new AppError("conflict", "event has no options");
+        await writeSlot(id);
+        /*
+         * `voteUntil` moves to now so the row stays self-consistent: the
+         * derivation keys off `startsAt`, not the deadline, but a `waiting`
+         * event still advertising a future deadline is a lie every client
+         * renders. Every option starts after the original (later) deadline,
+         * so the "options start after voteUntil" invariant survives.
+         *
+         * No day-conflict check: `takenDays` counts every option of a voting
+         * event as claimed, so deciding one of them only releases days.
+         */
+        const ok = await events.updateEvent(
+          row.id,
+          {
+            startsAt,
+            status: "waiting",
+            voteUntil: now,
+            voteClosedAt: now,
+            voteClosedBy: id.subject,
+            voteClosedReason: ctx.body.reason,
+          },
+          now,
+          "voting",
+        );
+        if (!ok) throw new AppError("conflict", "event changed concurrently");
+        await audit(id.subject, "event.vote.close", row.id, {
+          reason: ctx.body.reason,
+          startsAt,
+          decided: ctx.body.optionId !== undefined ? "chosen" : "tally",
+          // How much of the vote was cut off, and what it would have decided.
+          previousVoteUntil: row.voteUntil,
+          tallyStartsAt,
+        });
+        return eventView(await reload(row, now), id);
+      },
+    }),
     {
       method: "POST",
       path: "/events/{id}/cancel",

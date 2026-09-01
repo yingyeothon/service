@@ -42,9 +42,15 @@ type event struct {
 	PublishedAt   *int64        `json:"publishedAt"`
 	CancelledAt   *int64        `json:"cancelledAt,omitempty"`
 	CancelledBy   *string       `json:"cancelledBy,omitempty"`
-	PosterURL     *string       `json:"posterUrl,omitempty"`
-	HasPoster     bool          `json:"hasPoster,omitempty"`
-	Comments      []comment     `json:"comments,omitempty"`
+	// Set only when a platform admin ended the vote before its deadline.
+	VoteClosedAt     *int64  `json:"voteClosedAt,omitempty"`
+	VoteClosedBy     *string `json:"voteClosedBy,omitempty"`
+	VoteClosedReason *string `json:"voteClosedReason,omitempty"`
+	// True when that close also picked a date the tally would not have.
+	VoteOverridden bool      `json:"voteOverridden,omitempty"`
+	PosterURL      *string   `json:"posterUrl,omitempty"`
+	HasPoster      bool      `json:"hasPoster,omitempty"`
+	Comments       []comment `json:"comments,omitempty"`
 }
 
 type eventOption struct {
@@ -151,6 +157,13 @@ func newEvents(a *App) *cobra.Command {
 		)
 		if e.CancelledAt != nil {
 			pairs = append(pairs, [2]string{"cancelled", output.Time(*e.CancelledAt) + " by " + output.Str(e.CancelledBy)})
+		}
+		if e.VoteClosedAt != nil {
+			line := output.Time(*e.VoteClosedAt) + " by " + output.Str(e.VoteClosedBy) + ": " + output.Str(e.VoteClosedReason)
+			if e.VoteOverridden {
+				line += " (date chosen, not the tally's)"
+			}
+			pairs = append(pairs, [2]string{"vote closed early", line})
 		}
 		if e.PosterURL != nil {
 			pairs = append(pairs, [2]string{"poster", *e.PosterURL})
@@ -345,6 +358,36 @@ func newEvents(a *App) *cobra.Command {
 	}
 	c.AddCommand(simple("publish", "Open the date vote (owner/admin, draft → voting)", "publish"))
 	c.AddCommand(simple("cancel", "Cancel the event before it closes (owner/admin)", "cancel"))
+	{
+		var reason, option string
+		cv := &cobra.Command{
+			Use:   "close-vote <event-id>",
+			Short: "End the date vote now and fix the date (platform admin)",
+			Long: "Ends a running vote before its deadline and decides the start.\n" +
+				"Without --option the standing rule decides (most votes; ties go to\n" +
+				"the earliest date); --option names a candidate outright, even one\n" +
+				"that lost. The reason is required and is published on the event page\n" +
+				"for everyone to read; it cannot be edited afterwards.",
+			Args: cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if strings.TrimSpace(reason) == "" {
+					return fmt.Errorf("--reason is required to close a vote early")
+				}
+				in := map[string]any{"reason": reason}
+				if option != "" {
+					in["optionId"] = option
+				}
+				var e event
+				if err := do(cmd, http.MethodPost, eventPath(args[0])+"/close-vote", in, &e); err != nil {
+					return err
+				}
+				return printEvent(e)
+			},
+		}
+		cv.Flags().StringVar(&reason, "reason", "", "why the vote is ending early (required; shown publicly on the event page)")
+		cv.Flags().StringVar(&option, "option", "", "decide this candidate instead of the most-voted one")
+		c.AddCommand(cv)
+	}
 	c.AddCommand(&cobra.Command{
 		Use:     "delete <event-id>",
 		Aliases: []string{"rm"},

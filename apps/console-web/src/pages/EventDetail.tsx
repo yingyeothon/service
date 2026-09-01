@@ -21,7 +21,13 @@ import { Comments } from "../components/Comments";
 import { EventForm } from "../components/EventForm";
 import { EntryGrid } from "../components/EntryGrid";
 import { Markdown } from "../components/Markdown";
-import { Badge, Confirm, Notice, Spinner } from "../components/ui";
+import {
+  Badge,
+  Confirm,
+  ConfirmWithReason,
+  Notice,
+  Spinner,
+} from "../components/ui";
 import { diffLines, revisionText } from "../lib/diff";
 import { formFromEvent } from "../lib/eventForm";
 import { fmtTime } from "../lib/format";
@@ -128,6 +134,9 @@ export function EventDetailPage() {
           act={act}
         />
       )}
+      {hasRole(me, "admin") && e.status === "voting" && (
+        <CloseVotePanel e={e} onClosed={ev.reload} act={act} />
+      )}
       {hasRole(me, "admin") && (
         <Group mb="md">
           <Confirm
@@ -232,6 +241,70 @@ function StatusSteps({ status }: { status: EventStatus }) {
 
 type Act = ReturnType<typeof useAction>;
 
+/**
+ * Platform admin only: ends a running vote now. Without a pick the standing
+ * rule decides; picking a candidate overrides the tally, so the reason is
+ * required and lands on the page for every participant to read
+ * (`docs/decisions.md` *Hackathon workflow*, early close).
+ */
+function CloseVotePanel({
+  e,
+  onClosed,
+  act,
+}: {
+  e: EventDetail;
+  onClosed: () => Promise<void>;
+  act: Act;
+}) {
+  // "" is the standing rule; the API rejects an empty `optionId`, so the
+  // empty string must never leave this component.
+  const [optionId, setOptionId] = useState<string>("");
+  return (
+    <Card withBorder mb="md">
+      <Title order={5} mb="xs">
+        Close the vote now (admin)
+      </Title>
+      <Text size="sm" c="dimmed" mb="xs">
+        Ends the vote before {fmtTime(e.voteUntil)} and fixes the date. Members
+        can no longer change their picks. Unlike the other reasons you give as
+        an admin, <strong>this one is shown publicly on the event page</strong>{" "}
+        and cannot be edited afterwards.
+      </Text>
+      <Group gap="sm" align="flex-start">
+        <Select
+          size="xs"
+          aria-label="Decided date"
+          value={optionId}
+          onChange={(v) => setOptionId(v ?? "")}
+          data={[
+            { value: "", label: "Most votes (the standing rule)" },
+            ...e.options.map((o) => ({
+              value: o.id,
+              label: fmtTime(o.startsAt),
+            })),
+          ]}
+          style={{ minWidth: 260 }}
+        />
+        <ConfirmWithReason
+          label="Close the vote"
+          confirmLabel="Yes, close it"
+          required
+          placeholder="Why is it ending early?"
+          maxLength={500}
+          disabled={act.busy}
+          onConfirm={async (reason) => {
+            if (reason === undefined) return;
+            await act.run(() =>
+              api.closeEventVote(e.id, reason, optionId || undefined),
+            );
+            await onClosed();
+          }}
+        />
+      </Group>
+    </Card>
+  );
+}
+
 function VotePanel({
   e,
   member,
@@ -281,6 +354,20 @@ function VotePanel({
           {fmtTime(e.voteUntil)}. Tallies are shown once the vote closes.
         </Text>
       )}
+      {e.voteClosedAt !== null && (
+        <Notice kind="warn">
+          Vote closed early by {e.voteClosedBy ?? "an admin"} on{" "}
+          {fmtTime(e.voteClosedAt)} — {e.voteClosedReason}
+          {e.voteOverridden === true && (
+            <>
+              {" "}
+              <strong>
+                The date was chosen, not the one the votes point to.
+              </strong>
+            </>
+          )}
+        </Notice>
+      )}
       <Stack gap={6}>
         {e.options.map((o) => (
           <Group key={o.id} gap="sm">
@@ -318,8 +405,15 @@ function VotePanel({
       </Stack>
       {counted && e.voters !== undefined && (
         <Text size="xs" c="dimmed" mt="xs">
-          {e.voters} voter{e.voters === 1 ? "" : "s"} · ties go to the earliest
-          date.
+          {e.voters} voter{e.voters === 1 ? "" : "s"}
+          {/*
+           * The tie rule still explains the date on an early close that did
+           * not override the tally — and that is the case where it explains
+           * the most, since an early close often finds nobody has voted.
+           */}
+          {e.voteOverridden === true
+            ? " · an admin picked this date."
+            : " · ties go to the earliest date."}
         </Text>
       )}
       {voting && member && (

@@ -199,6 +199,9 @@ model events {
   cancelled_at    BigInt?
   cancelled_by    String?           @db.VarChar(64)
   revision        Int               @default(1)
+  vote_closed_at  BigInt?
+  vote_closed_by  String?           @db.VarChar(64)
+  vote_closed_reason String?        @db.VarChar(500)
   members         members           @relation(fields: [created_by], references: [id], onUpdate: Restrict, map: "events_creator")
   event_options   event_options[]
   event_votes     event_votes[]
