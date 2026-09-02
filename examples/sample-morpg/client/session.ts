@@ -153,8 +153,11 @@ export function createSession(o: SessionOptions): Session {
     changed();
   };
   const run = (effects: LobbyEffect[]): void => {
-    for (const e of effects)
+    for (const e of effects) {
       if (e.kind === "startDungeon") void enterDungeon(e.gameId);
+      else if (e.kind === "trace")
+        trace(e.ev, { frame: e.frame, userId: e.userId });
+    }
   };
 
   // ------------------------------------------------------------ lobby

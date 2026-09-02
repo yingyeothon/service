@@ -296,7 +296,29 @@ func (b *Bridge) Join(ctx context.Context, gameID, connID, memberID string, sock
 		return nil
 	}
 	item, _ := json.Marshal(map[string]string{"type": "enter", "connectionId": connID, "memberId": memberID})
-	return b.push(ctx, g, cl, item)
+	if err := b.push(ctx, g, cl, item); err != nil {
+		// The actor never heard `enter`, so no `leave` is owed; but the
+		// server closes the socket (1011) without calling Leave, and a
+		// connection left in the game would keep the gauge, the
+		// subscription and Empty() wrong for as long as the game lives.
+		b.mu.Lock()
+		if g.conns[connID] == cl {
+			delete(g.conns, connID)
+			if g.byMember[memberID] == cl {
+				delete(g.byMember, memberID)
+			}
+			b.stats.Connections.Add(-1)
+			if len(g.conns) == 0 {
+				b.dropGameLocked(g)
+			}
+		}
+		b.mu.Unlock()
+		if rerr := b.rdb.ReleaseSession(ctx, "q", b.channelID, memberID, connID); rerr != nil {
+			b.redisErr("release session", rerr)
+		}
+		return err
+	}
+	return nil
 }
 
 // Leave pushes `leave`, releases the session and unsubscribes when the last

@@ -204,6 +204,8 @@ describe("lobby/q channels", () => {
       { authChannelId, capabilities: { say: ["shout"] } },
       { authChannelId, aoi: { range: 0 } },
       { authChannelId, aoi: { range: 10, cellSize: 4 } },
+      { authChannelId, maxPeers: 0 },
+      { authChannelId, maxPeers: 257 },
       {
         authChannelId,
         aoi: { range: 10 },
@@ -263,7 +265,8 @@ describe("lobby/q channels", () => {
       partySizeMax: 4,
       mapUrl: "",
     });
-    // The area-of-interest box is optional and fills its own default.
+    // The view cap always applies; the area-of-interest box is optional.
+    expect(patched.config.maxPeers).toBe(64);
     const boxed = parse(
       await h.app(
         ev("PATCH", `/channels/${lobby.id}`, {
@@ -272,13 +275,41 @@ describe("lobby/q channels", () => {
         }),
       ),
     );
-    expect(boxed.config.aoi).toEqual({ range: 10, maxPeers: 64 });
+    expect(boxed.config.aoi).toEqual({ range: 10 });
+    expect(boxed.config.maxPeers).toBe(64);
     const gw = await h.app(
       ev("GET", `/gw/channels/${lobby.id}`, {
         headers: { authorization: `Bearer ${GATEWAY_TOKEN}` },
       }),
     );
-    expect(parse(gw).config.aoi).toEqual({ range: 10, maxPeers: 64 });
+    expect(parse(gw).config.aoi).toEqual({ range: 10 });
+    expect(parse(gw).config.maxPeers).toBe(64);
+    // A client from before the cap moved still lands on the top-level field.
+    const legacy = parse(
+      await h.app(
+        ev("PATCH", `/channels/${lobby.id}`, {
+          headers: a.cookie,
+          body: { config: { authChannelId, aoi: { range: 10, maxPeers: 8 } } },
+        }),
+      ),
+    );
+    expect(legacy.config).toMatchObject({ aoi: { range: 10 }, maxPeers: 8 });
+    // An explicit top-level value wins over the legacy nested one, 64 included.
+    const explicit = parse(
+      await h.app(
+        ev("PATCH", `/channels/${lobby.id}`, {
+          headers: a.cookie,
+          body: {
+            config: {
+              authChannelId,
+              maxPeers: 64,
+              aoi: { range: 10, maxPeers: 8 },
+            },
+          },
+        }),
+      ),
+    );
+    expect(explicit.config).toMatchObject({ aoi: { range: 10 }, maxPeers: 64 });
     expect(
       JSON.parse(h.db.channels.get(lobby.id as string)!.secretJson),
     ).toEqual({});

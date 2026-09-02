@@ -129,6 +129,7 @@ describe("buildConfig lobby/q", () => {
       partySizeMax: 6,
       defaultZone: "town",
       mapUrl: "https://d.test/map.json",
+      maxPeers: 64,
     },
   };
 
@@ -167,13 +168,35 @@ describe("buildConfig lobby/q", () => {
   it("carries the area-of-interest box only when a range is given", () => {
     const f = formFromChannel(lobby);
     expect(f.aoiRange).toBe("");
+    expect(f.maxPeers).toBe("64");
     expect(buildConfig("lobby", f, "patch", lobby)).not.toHaveProperty("aoi");
+    expect(buildConfig("lobby", f, "patch", lobby)).toMatchObject({
+      maxPeers: 64,
+    });
     expect(
-      buildConfig("lobby", { ...f, aoiRange: "10" }, "patch", lobby),
-    ).toMatchObject({ aoi: { range: 10, maxPeers: 64 } });
+      buildConfig(
+        "lobby",
+        { ...f, aoiRange: "10", maxPeers: "8" },
+        "patch",
+        lobby,
+      ),
+    ).toMatchObject({ aoi: { range: 10 }, maxPeers: 8 });
+    // A legacy row keeps its cap inside `aoi`; the form must not reset it.
+    const legacy: Channel = {
+      ...lobby,
+      config: {
+        ...lobby.config,
+        maxPeers: undefined,
+        aoi: { range: 3, maxPeers: 32 },
+      },
+    };
+    expect(formFromChannel(legacy).maxPeers).toBe("32");
+    expect(
+      buildConfig("lobby", formFromChannel(legacy), "patch", legacy),
+    ).toMatchObject({ aoi: { range: 3 }, maxPeers: 32 });
     const withAoi: Channel = {
       ...lobby,
-      config: { ...lobby.config, aoi: { range: 12, maxPeers: 8 } },
+      config: { ...lobby.config, aoi: { range: 12 }, maxPeers: 8 },
     };
     expect(
       buildConfig("lobby", formFromChannel(withAoi), "patch", withAoi),

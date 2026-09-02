@@ -69,7 +69,18 @@ describe("reduceLobby", () => {
     expect(s.lobby.peers[PEER]).toMatchObject({ x: 3 });
     expect(s.lobby.peers.zzz).toBeUndefined();
     reduceLobby(s, { t: "peerEnter", peer: { userId: LEADER, x: 5, y: 5 } });
-    reduceLobby(s, { t: "peerLeave", userId: PEER });
+    expect(reduceLobby(s, { t: "peerLeave", userId: PEER })).toEqual([]);
+    expect(Object.keys(s.lobby.peers)).toEqual([LEADER]);
+    // A frame for a peer the gateway never introduced is not rendered, but
+    // it is evidence of a broken view: the reducer hands it to the trace.
+    expect(
+      reduceLobby(s, { t: "peerMove", peers: [{ userId: "zzz", x: 1, y: 1 }] }),
+    ).toEqual([
+      { kind: "trace", ev: "view_violation", frame: "pos", userId: "zzz" },
+    ]);
+    expect(reduceLobby(s, { t: "peerLeave", userId: "zzz" })).toEqual([
+      { kind: "trace", ev: "view_violation", frame: "leave", userId: "zzz" },
+    ]);
     expect(Object.keys(s.lobby.peers)).toEqual([LEADER]);
     // a reconnect starts from an empty peer set
     reduceLobby(s, { t: "connected", hello });

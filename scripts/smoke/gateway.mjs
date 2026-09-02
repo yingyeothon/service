@@ -243,7 +243,7 @@ check(
   JSON.stringify(helloA?.capabilities),
 );
 check(
-  "hello carries the aoi box",
+  "hello carries the view rule",
   helloA?.aoi?.range === 5 && helloA.aoi.maxPeers === 64,
   JSON.stringify(helloA?.aoi),
 );
@@ -335,6 +335,19 @@ const a2 = await connect(lobbyUrl, alice);
 const helloA2 = await a2.next();
 check("replaced socket closes 4000", (await a.waitClose()) === 4000);
 check("reconnect keeps the party", helloA2?.partyId === roster?.partyId);
+// A replaced socket leaves like any other and its successor (restored at the
+// retained position) enters fresh — in that order, with nothing in between:
+// the view invariant (`gateway/README.md`) says a peer is never re-entered
+// while still in view.
+const leaveOld = await b.until("leave");
+const enterNew = await b.next();
+check(
+  "replacement is leave then enter for a viewer",
+  leaveOld?.userId === "alice" &&
+    enterNew?.type === "enter" &&
+    enterNew.userId === "alice",
+  JSON.stringify([leaveOld, enterNew]),
+);
 a2.close();
 const leave = await b.until("leave");
 check("leave announced on disconnect", leave?.userId === "alice");

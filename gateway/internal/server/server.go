@@ -367,6 +367,12 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			}
 		},
 		OnQueueDepth: s.reg.Gauges.RecordQueueDepth,
+		// Counted only: the hook runs under the hub lock, and the
+		// "disconnected" line below carries the 4005.
+		OnTooSlow: func() {
+			s.reg.Counters.TooSlow.Add(1)
+			stats.TooSlow.Add(1)
+		},
 	})
 	s.reg.Counters.ConnectionsAccepted.Add(1)
 	s.reg.Gauges.Connections.Add(1)

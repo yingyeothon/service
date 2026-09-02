@@ -653,9 +653,9 @@ func TestChannelsGatewayKinds(t *testing.T) {
 		t.Fatalf("merged config %v", cfg)
 	}
 
-	// aoi: `--aoi-range` creates the nested object with the server default
-	// for maxPeers; on update a lone `--aoi-max-peers` merges into it and
-	// `--aoi-range 0` removes it.
+	// aoi: `--aoi-range` creates the box object; the peer cap is a
+	// top-level field (`--max-peers`, `--aoi-max-peers` as the old spelling)
+	// and `--aoi-range 0` removes the box on update.
 	if _, _, err := run(t, f, "channels", "create", "--kind", "lobby", "--name", "l",
 		"--auth-channel", "auth_0123", "--aoi-range", "10"); err != nil {
 		t.Fatal(err)
@@ -663,12 +663,22 @@ func TestChannelsGatewayKinds(t *testing.T) {
 	if aoi := sent["config"].(map[string]any)["aoi"].(map[string]any); aoi["range"] != float64(10) || aoi["maxPeers"] != nil {
 		t.Fatalf("aoi create %v", aoi)
 	}
-	lobbyCh["config"].(map[string]any)["aoi"] = map[string]any{"range": 10, "maxPeers": 64}
+	if sent["config"].(map[string]any)["maxPeers"] != nil {
+		t.Fatalf("maxPeers defaults server-side: %v", sent["config"])
+	}
+	lobbyCh["config"].(map[string]any)["aoi"] = map[string]any{"range": 10}
+	lobbyCh["config"].(map[string]any)["maxPeers"] = 64
 	if _, _, err := run(t, f, "channels", "update", "lobby_1", "--aoi-max-peers", "8"); err != nil {
 		t.Fatal(err)
 	}
-	if aoi := sent["config"].(map[string]any)["aoi"].(map[string]any); aoi["range"] != float64(10) || aoi["maxPeers"] != float64(8) {
-		t.Fatalf("aoi merge %v", aoi)
+	if cfg := sent["config"].(map[string]any); cfg["maxPeers"] != float64(8) || cfg["aoi"].(map[string]any)["range"] != float64(10) {
+		t.Fatalf("max-peers update keeps the box %v", cfg)
+	}
+	if _, _, err := run(t, f, "channels", "update", "lobby_1", "--max-peers", "5"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := sent["config"].(map[string]any); cfg["maxPeers"] != float64(5) {
+		t.Fatalf("max-peers %v", cfg)
 	}
 	if _, _, err := run(t, f, "channels", "update", "lobby_1", "--aoi-range", "0"); err != nil {
 		t.Fatal(err)
@@ -700,7 +710,8 @@ func TestChannelsGatewayKinds(t *testing.T) {
 		{"channels", "create", "--kind", "q", "--name", "q", "--auth-channel", "a", "--aoi-range", "10"},
 		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--callback-url", "https://x/"},
 		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--aoi-range", "0"},
-		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--aoi-max-peers", "8"},
+		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--max-peers", "0"},
+		{"channels", "create", "--kind", "lobby", "--name", "l", "--auth-channel", "a", "--max-peers", "8", "--aoi-max-peers", "9"},
 	} {
 		if _, _, err := run(t, f, args...); err == nil {
 			t.Errorf("expected error for %v", args)

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -21,9 +22,12 @@ import (
 )
 
 // Socket is what the hub needs from a connection; `*conn.Conn` satisfies it
-// and tests use a recorder.
+// and tests use a recorder. Send is droppable under backpressure (positions:
+// newest wins); SendCtl is never dropped (view and chat frames: a client
+// that misses one holds a wrong peer set for good).
 type Socket interface {
 	Send(v any) bool
+	SendCtl(v any) bool
 	SendError(code, message string)
 	Close(code int, reason string)
 	Allow() bool
@@ -40,6 +44,11 @@ const (
 	badLimit = 50
 	// inviteCapFactor bounds pending invites to partySizeMax × this.
 	inviteCapFactor = 2
+	// snapshotOver is the view diff size above which a refresh sends one
+	// `snapshot` instead of one `enter`/`leave` per peer: a config change or
+	// a crowd arriving must not burst hundreds of control frames into a
+	// queue that then has nothing left to drop (`conn.CloseTooSlow`).
+	snapshotOver = 32
 )
 
 type client struct {
@@ -56,6 +65,9 @@ type client struct {
 	// `enter`/`leave` is a diff of this set, so a peer that leaves the view
 	// box without leaving the zone still produces a `leave` (`todo/26`).
 	visible map[string]struct{}
+	// resync marks a client whose last snapshot was refused: the next flush
+	// re-derives its view even if nothing moved (`todo/28`).
+	resync bool
 }
 
 // cellKey buckets positions so a view lookup reads 3×3 cells instead of the
@@ -169,23 +181,27 @@ func normalize(cfg console.LobbyConfig) console.LobbyConfig {
 			cfg.AOI = nil
 		} else {
 			a := *cfg.AOI
-			if a.MaxPeers <= 0 {
-				a.MaxPeers = 64
+			if cfg.MaxPeers <= 0 && a.MaxPeers > 0 {
+				cfg.MaxPeers = a.MaxPeers
 			}
+			a.MaxPeers = 0
 			cfg.AOI = &a
 		}
+	}
+	if cfg.MaxPeers <= 0 {
+		cfg.MaxPeers = 64
 	}
 	return cfg
 }
 
-// Reconfigure applies a refreshed channel config. A changed AOI re-buckets
-// every position and re-derives every view, so clients get the `enter`/
-// `leave` frames that make their peer maps match the new box.
+// Reconfigure applies a refreshed channel config. A changed view rule
+// (AOI box or peer cap) re-buckets every position and re-derives every
+// view, so clients get the frames that make their peer maps match.
 func (h *Hub) Reconfigure(cfg console.LobbyConfig) {
 	cfg = normalize(cfg)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	changed := !sameAOI(h.cfg.AOI, cfg.AOI)
+	changed := !sameAOI(h.cfg.AOI, cfg.AOI) || h.cfg.MaxPeers != cfg.MaxPeers
 	h.cfg = cfg
 	if changed {
 		h.rebuildViewsLocked()
@@ -196,7 +212,7 @@ func sameAOI(a, b *console.LobbyAOI) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.Range == b.Range && a.MaxPeers == b.MaxPeers
+	return a.Range == b.Range
 }
 
 // persist schedules a Redis write for after the lock is released.
@@ -262,6 +278,8 @@ func (h *Hub) Join(ctx context.Context, connID, userID string, sock Socket) bool
 	}
 	if old, ok := h.byUser[userID]; ok {
 		h.detachLocked(old, false)
+		// Viewers got their `leave`; the successor's entry below (or its
+		// first `pos`) is a fresh `enter`.
 		old.sock.Close(conn.CloseReplaced, "replaced by a newer connection")
 		h.reg.Counters.SessionsReplaced.Add(1)
 		// The replaced socket's Leave finds nothing to detach, so account here.
@@ -273,8 +291,8 @@ func (h *Hub) Join(ctx context.Context, connID, userID string, sock Socket) bool
 	cfg := h.cfg
 	// `hello` goes out before the lock is released: once the client is in
 	// `byUser` a whisper or a roster change could otherwise be queued first.
-	sock.Send(Hello{Type: THello, UserID: userID, ConnectionID: connID, Tick: cfg.FlushIntervalMs, MapURL: cfg.MapURL,
-		Capabilities: capabilities(cfg.Capabilities), Zone: cfg.DefaultZone, PartyID: h.partyOf[userID], AOI: helloAOI(cfg.AOI)})
+	sock.SendCtl(Hello{Type: THello, UserID: userID, ConnectionID: connID, Tick: cfg.FlushIntervalMs, MapURL: cfg.MapURL,
+		Capabilities: capabilities(cfg.Capabilities), Zone: cfg.DefaultZone, PartyID: h.partyOf[userID], AOI: helloAOI(cfg)})
 	h.mu.Unlock()
 	h.stats.Connections.Add(1)
 	// The replaced socket's pending position is written here, in order,
@@ -332,7 +350,10 @@ func (h *Hub) Join(ctx context.Context, connID, userID string, sock Socket) bool
 			h.reg.Gauges.Parties.Add(1)
 		}
 	}
-	if restored != nil {
+	// The client's own `pos` wins over the retained one: the server starts
+	// the read loop after Join returns, so today nothing can have entered a
+	// zone here, but a second entry without a leave would double-index it.
+	if restored != nil && cl.zone == "" {
 		h.enterZoneLocked(cl, restoredZone, *restored)
 	}
 	if pid := h.partyOf[userID]; pid != "" {
@@ -361,24 +382,28 @@ func (h *Hub) Leave(ctx context.Context, connID string) {
 	}
 }
 
-func (h *Hub) detachLocked(cl *client, announce bool) {
+// detachLocked removes a socket. Its zone viewers always get a `leave`
+// (a view is a diff of frames, so a replaced socket leaves like any other
+// and the successor enters fresh); the party roster is re-broadcast only
+// when the user is really gone, since a successor re-sends it on Join.
+func (h *Hub) detachLocked(cl *client, announceParty bool) {
 	delete(h.conns, cl.id)
 	if h.byUser[cl.userID] == cl {
 		delete(h.byUser, cl.userID)
 	}
 	if cl.zone != "" {
-		h.leaveZoneLocked(cl, announce)
+		h.leaveZoneLocked(cl)
 	}
 	// A pending invite dies with the invitee's socket.
 	for _, p := range h.parties {
 		if p.invited[cl.userID] {
 			delete(p.invited, cl.userID)
-			if announce {
+			if announceParty {
 				h.broadcastRosterLocked(p)
 			}
 		}
 	}
-	if announce {
+	if announceParty {
 		if pid := h.partyOf[cl.userID]; pid != "" {
 			h.broadcastRosterLocked(h.parties[pid])
 		}
@@ -411,7 +436,7 @@ func (h *Hub) Handle(ctx context.Context, connID string, raw []byte) {
 	cfg := h.cfg
 	switch in.Type {
 	case "ping":
-		cl.sock.Send(Pong{Type: TPong})
+		cl.sock.SendCtl(Pong{Type: TPong})
 	case TPos:
 		h.handlePosLocked(cl, cfg, in)
 	case TSay:
@@ -473,7 +498,7 @@ func (h *Hub) handlePosLocked(cl *client, cfg console.LobbyConfig, in Inbound) {
 	// Zone change (or first position): leave-from-old, enter-to-new, from
 	// retained state — the decision itself was the game HTTP API's (§2.3).
 	if cl.zone != "" {
-		h.leaveZoneLocked(cl, true)
+		h.leaveZoneLocked(cl)
 	}
 	h.enterZoneLocked(cl, in.Zone, p)
 }
@@ -489,21 +514,7 @@ func (h *Hub) enterZoneLocked(cl *client, zone string, p Peer) {
 	peers[cl.userID] = cl
 	h.indexLocked(cl)
 	// The joiner's first view is the snapshot, never a burst of `enter`.
-	view := h.viewLocked(cl)
-	snap := Snapshot{Type: TSnapshot, Zone: zone, Peers: make([]Peer, 0, len(view))}
-	visible := make(map[string]struct{}, len(view))
-	for _, other := range view {
-		snap.Peers = append(snap.Peers, *other.pos)
-		visible[other.userID] = struct{}{}
-	}
-	// A snapshot the socket refused (over the outbound cap) taught the
-	// client nothing: keep the view empty so the next refresh introduces
-	// each peer with its own `enter` instead of assuming they were seen.
-	if cl.sock.Send(snap) {
-		cl.visible = visible
-	} else {
-		cl.visible = map[string]struct{}{}
-	}
+	h.snapshotLocked(cl)
 	// Everyone whose view could contain the joiner learns of it now.
 	for _, other := range h.neighboursLocked(cl) {
 		h.refreshViewLocked(other)
@@ -511,12 +522,42 @@ func (h *Hub) enterZoneLocked(cl *client, zone string, p Peer) {
 	h.markDirtyLocked(zone, p)
 }
 
-// leaveZoneLocked removes cl from its zone. With announce, every viewer
-// gets a `leave`; without it (a replaced socket) viewers silently forget
-// the peer so that the successor's entry produces a fresh `enter`, exactly
-// as before views existed.
-func (h *Hub) leaveZoneLocked(cl *client, announce bool) {
+// snapshotLocked sends cl its whole current view as one `snapshot` and
+// makes that the view. A snapshot the socket refused (over the outbound
+// cap — impossible under the MaxPeers cap, kept as a guard) taught the
+// client nothing: the view stays empty and `resync` makes the next flush
+// re-derive it, introducing each peer with its own `enter`.
+func (h *Hub) snapshotLocked(cl *client) {
+	view := h.viewLocked(cl)
+	snap := Snapshot{Type: TSnapshot, Zone: cl.zone, Peers: make([]Peer, 0, len(view))}
+	visible := make(map[string]struct{}, len(view))
+	for _, other := range view {
+		snap.Peers = append(snap.Peers, *other.pos)
+		visible[other.userID] = struct{}{}
+	}
+	if cl.sock.SendCtl(snap) {
+		cl.visible = visible
+		cl.resync = false
+	} else {
+		cl.visible = map[string]struct{}{}
+		cl.resync = true
+	}
+}
+
+// leaveZoneLocked removes cl from its zone; every viewer holding it gets a
+// `leave` and has its view re-derived (a freed slot may admit another).
+func (h *Hub) leaveZoneLocked(cl *client) {
 	zone := cl.zone
+	cl.zone = ""
+	cl.visible = nil
+	cl.resync = false
+	peers := h.zones[zone]
+	if peers == nil || peers[cl.userID] != cl {
+		// Not the client the zone holds for this user (a successor already
+		// took the seat): its dirty entry, its retained position and its
+		// viewers all belong to the live one now.
+		return
+	}
 	// A leaving position is persisted at once: the retained value is what a
 	// reconnect resumes from, and the persist window must not lose it.
 	moved := false
@@ -533,43 +574,33 @@ func (h *Hub) leaveZoneLocked(cl *client, announce bool) {
 	if moved && cl.pos != nil {
 		h.persistPosLocked(map[string]pendingPos{cl.userID: {zone: zone, peer: *cl.pos}})
 	}
-	peers := h.zones[zone]
-	if peers != nil && peers[cl.userID] == cl {
-		delete(peers, cl.userID)
-		h.unindexLocked(cl)
-		if len(peers) == 0 {
-			delete(h.zones, zone)
-			delete(h.cells, zone)
-			delete(h.dirty, zone)
-		}
+	delete(peers, cl.userID)
+	h.unindexLocked(cl, zone)
+	if len(peers) == 0 {
+		delete(h.zones, zone)
+		delete(h.cells, zone)
+		delete(h.dirty, zone)
 	}
-	if peers != nil {
-		for _, other := range h.viewersLocked(cl) {
-			if announce {
-				h.refreshViewLocked(other)
-			} else {
-				delete(other.visible, cl.userID)
-			}
-		}
+	for _, other := range h.viewersLocked(cl, zone) {
+		h.refreshViewLocked(other)
 	}
-	cl.zone = ""
-	cl.visible = nil
 }
 
 // viewersLocked is neighboursLocked plus every client in the zone whose
 // view still holds cl: views are derived at flush time, and a peer can move
 // out of a viewer's 3×3 cells and leave the zone before the next flush —
-// that viewer must still get its `leave`, or the character freezes.
-func (h *Hub) viewersLocked(cl *client) []*client {
+// that viewer must still get its `leave`, or the character freezes. zone is
+// passed because the caller may already have cleared cl.zone.
+func (h *Hub) viewersLocked(cl *client, zone string) []*client {
+	out := h.neighboursInLocked(cl, zone)
 	if h.cfg.AOI == nil {
-		return h.neighboursLocked(cl)
+		return out
 	}
-	out := h.neighboursLocked(cl)
 	seen := make(map[*client]struct{}, len(out))
 	for _, other := range out {
 		seen[other] = struct{}{}
 	}
-	for _, other := range h.zones[cl.zone] {
+	for _, other := range h.zones[zone] {
 		if _, dup := seen[other]; dup || other == cl {
 			continue
 		}
@@ -612,8 +643,8 @@ func (h *Hub) indexLocked(cl *client) {
 	bucket[cl.userID] = cl
 }
 
-func (h *Hub) unindexLocked(cl *client) {
-	cells := h.cells[cl.zone]
+func (h *Hub) unindexLocked(cl *client, zone string) {
+	cells := h.cells[zone]
 	if cells == nil {
 		return
 	}
@@ -628,24 +659,26 @@ func (h *Hub) unindexLocked(cl *client) {
 // moveCellLocked re-buckets cl after a same-zone move.
 func (h *Hub) moveCellLocked(cl *client) {
 	if next := h.cellOf(cl.pos); next != cl.cell {
-		h.unindexLocked(cl)
+		h.unindexLocked(cl, cl.zone)
 		h.indexLocked(cl)
 	}
 }
 
 // neighboursLocked lists every other client whose view could include cl:
-// the zone without AOI, the 3×3 cells around cl with it.
-func (h *Hub) neighboursLocked(cl *client) []*client {
+// the zone without an AOI box, the 3×3 cells around cl with one.
+func (h *Hub) neighboursLocked(cl *client) []*client { return h.neighboursInLocked(cl, cl.zone) }
+
+func (h *Hub) neighboursInLocked(cl *client, zone string) []*client {
 	if h.cfg.AOI == nil {
-		out := make([]*client, 0, len(h.zones[cl.zone]))
-		for _, other := range h.zones[cl.zone] {
+		out := make([]*client, 0, len(h.zones[zone]))
+		for _, other := range h.zones[zone] {
 			if other != cl {
 				out = append(out, other)
 			}
 		}
 		return out
 	}
-	cells := h.cells[cl.zone]
+	cells := h.cells[zone]
 	var out []*client
 	for dx := -1; dx <= 1; dx++ {
 		for dy := -1; dy <= 1; dy++ {
@@ -659,9 +692,10 @@ func (h *Hub) neighboursLocked(cl *client) []*client {
 	return out
 }
 
-// viewLocked computes who cl can see, sorted by userID: without AOI the
-// whole zone; with it the peers within the box, nearest first up to
-// MaxPeers (ties by userID, so the cut is deterministic).
+// viewLocked computes who cl can see, sorted by userID: the peers within
+// the AOI box (the whole zone without one), nearest first up to MaxPeers
+// (ties by userID, so the cut is deterministic). The cap always applies,
+// so a snapshot or a pos batch never outgrows the outbound frame cap.
 func (h *Hub) viewLocked(cl *client) []*client {
 	out := h.neighboursLocked(cl)
 	if aoi := h.cfg.AOI; aoi != nil {
@@ -672,36 +706,46 @@ func (h *Hub) viewLocked(cl *client) []*client {
 			}
 		}
 		out = kept
-		if len(out) > aoi.MaxPeers {
-			dist := func(o *client) float64 {
-				return math.Max(math.Abs(o.pos.X-cl.pos.X), math.Abs(o.pos.Y-cl.pos.Y))
-			}
-			sort.Slice(out, func(i, j int) bool {
-				di, dj := dist(out[i]), dist(out[j])
-				if di != dj {
-					return di < dj
-				}
-				return out[i].userID < out[j].userID
-			})
-			out = out[:aoi.MaxPeers]
+	}
+	if len(out) > h.cfg.MaxPeers {
+		dist := func(o *client) float64 {
+			return math.Max(math.Abs(o.pos.X-cl.pos.X), math.Abs(o.pos.Y-cl.pos.Y))
 		}
+		sort.Slice(out, func(i, j int) bool {
+			di, dj := dist(out[i]), dist(out[j])
+			if di != dj {
+				return di < dj
+			}
+			return out[i].userID < out[j].userID
+		})
+		out = out[:h.cfg.MaxPeers]
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].userID < out[j].userID })
 	return out
 }
 
+// viewIsZoneLocked reports whether cl's view can only change when someone
+// enters or leaves its zone: no AOI box and the zone within the cap. Those
+// events refresh the view themselves, so a flush can skip it.
+func (h *Hub) viewIsZoneLocked(cl *client) bool {
+	return h.cfg.AOI == nil && len(h.zones[cl.zone]) <= h.cfg.MaxPeers+1
+}
+
 // refreshViewLocked re-derives cl's view and sends the diff: `enter` for
-// each peer now in view, `leave` for each that dropped out.
+// each peer now in view, `leave` for each that dropped out — or one fresh
+// `snapshot` when the diff is large (snapshotOver), so a wholesale change
+// costs one control frame instead of hundreds.
 func (h *Hub) refreshViewLocked(cl *client) {
 	if cl.zone == "" || cl.pos == nil {
 		return
 	}
 	view := h.viewLocked(cl)
 	next := make(map[string]struct{}, len(view))
+	var enters []*client
 	for _, other := range view {
 		next[other.userID] = struct{}{}
 		if _, had := cl.visible[other.userID]; !had {
-			cl.sock.Send(Enter{Type: TEnter, Zone: cl.zone, Peer: *other.pos})
+			enters = append(enters, other)
 		}
 	}
 	var gone []string
@@ -710,15 +754,25 @@ func (h *Hub) refreshViewLocked(cl *client) {
 			gone = append(gone, id)
 		}
 	}
+	if len(enters)+len(gone) > snapshotOver {
+		h.snapshotLocked(cl)
+		return
+	}
+	// A control frame is never dropped for room; SendCtl only fails for a
+	// socket that is already closing, whose view no longer matters.
+	for _, other := range enters {
+		cl.sock.SendCtl(Enter{Type: TEnter, Zone: cl.zone, Peer: *other.pos})
+	}
 	sort.Strings(gone)
 	for _, id := range gone {
-		cl.sock.Send(Leave{Type: TLeave, Zone: cl.zone, UserID: id})
+		cl.sock.SendCtl(Leave{Type: TLeave, Zone: cl.zone, UserID: id})
 	}
 	cl.visible = next
+	cl.resync = false
 }
 
 // rebuildViewsLocked re-buckets every position and refreshes every view
-// after the AOI config changed.
+// after the view rule changed.
 func (h *Hub) rebuildViewsLocked() {
 	h.cells = map[string]map[cellKey]map[string]*client{}
 	for _, peers := range h.zones {
@@ -771,6 +825,11 @@ func (h *Hub) flushLoop() {
 // re-deriving views so that `enter`/`leave` precede the positions; then
 // persists moved positions at most once per posPersistEvery. Exported for
 // tests.
+//
+// The batches are enqueued while the hub lock is held: the lock is the one
+// order every peer frame shares, and a batch decided under it but sent
+// after it could land behind a `leave` for the same peer (`todo/28`). The
+// enqueue is non-blocking, so the lock only pays for the marshal.
 func (h *Hub) Flush(ctx context.Context) {
 	type delivery struct {
 		to    *client
@@ -778,15 +837,24 @@ func (h *Hub) Flush(ctx context.Context) {
 		peers []Peer
 	}
 	h.mu.Lock()
+	started := h.now()
 	var out []delivery
+	// A client whose snapshot was refused is re-derived even if nothing
+	// moved; the dirty loop below would not reach a quiet zone.
+	for _, c := range h.conns {
+		if c.resync {
+			h.refreshViewLocked(c)
+		}
+	}
 	for zone, d := range h.dirty {
 		if len(d) == 0 {
 			continue
 		}
 		for _, c := range h.zones[zone] {
-			if h.cfg.AOI != nil {
-				// Without AOI a view only changes on enter/leave, which
-				// already refreshed it.
+			// A move can flip a view (the box, or the nearest-first cut);
+			// a zone-wide view within the cap only changes on enter/leave,
+			// which already refreshed it.
+			if !h.viewIsZoneLocked(c) {
 				h.refreshViewLocked(c)
 			}
 			peers := make([]Peer, 0, len(d))
@@ -807,23 +875,25 @@ func (h *Hub) Flush(ctx context.Context) {
 		delete(h.dirty, zone)
 	}
 	if len(h.pending) > 0 {
-		if now := h.now(); h.lastPersist.IsZero() || now.Sub(h.lastPersist) >= posPersistEvery {
-			h.lastPersist = now
+		if h.lastPersist.IsZero() || started.Sub(h.lastPersist) >= posPersistEvery {
+			h.lastPersist = started
 			batch := h.pending
 			h.pending = map[string]pendingPos{}
 			h.persistPosLocked(batch)
 		}
 	}
-	h.mu.Unlock()
 	// Recipients with the same peer list share one marshalled frame: the
 	// whole zone without AOI, a cell's worth of viewers with it. Keyed per
 	// zone first, so a zone name containing the separator cannot alias.
 	shared := map[string]map[string][]byte{}
+	var kb strings.Builder
 	for _, dl := range out {
-		key := ""
+		kb.Reset()
 		for _, p := range dl.peers {
-			key += p.UserID + "\x00"
+			kb.WriteString(p.UserID)
+			kb.WriteByte(0)
 		}
+		key := kb.String()
 		if shared[dl.zone] == nil {
 			shared[dl.zone] = map[string][]byte{}
 		}
@@ -841,6 +911,8 @@ func (h *Hub) Flush(ctx context.Context) {
 			dl.to.sock.Send(PosBatch{Type: TPos, Zone: dl.zone, Peers: dl.peers})
 		}
 	}
+	h.reg.Gauges.RecordFlushHold(h.now().Sub(started).Microseconds())
+	h.mu.Unlock()
 	h.runAfter()
 }
 
@@ -875,10 +947,10 @@ func (h *Hub) scopeTargetsLocked(cl *client, scope, to string) ([]*client, strin
 		}
 		out := make([]*client, 0, len(h.zones[cl.zone]))
 		for _, c := range h.zones[cl.zone] {
-			// With AOI, zone chat reaches whoever has the speaker in view
-			// (plus the speaker): views are receiver-owned, so this is the
-			// same rule as `pos` (`todo/26` Q6).
-			if _, sees := c.visible[cl.userID]; c == cl || h.cfg.AOI == nil || sees {
+			// Zone chat reaches whoever has the speaker in view (plus the
+			// speaker): views are receiver-owned, so this is the same rule
+			// as `pos` (`todo/26` Q6) — never the zone map.
+			if _, sees := c.visible[cl.userID]; c == cl || sees {
 				out = append(out, c)
 			}
 		}
@@ -934,7 +1006,7 @@ func (h *Hub) handleSayLocked(cl *client, cfg console.LobbyConfig, in Inbound) {
 		frame.To = ""
 	}
 	for _, c := range targets {
-		c.sock.Send(frame)
+		c.sock.SendCtl(frame)
 	}
 }
 
@@ -961,7 +1033,7 @@ func (h *Hub) handleEventLocked(cl *client, cfg console.LobbyConfig, in Inbound)
 		frame.To = in.To
 	}
 	for _, c := range targets {
-		c.sock.Send(frame)
+		c.sock.SendCtl(frame)
 	}
 }
 
@@ -1005,7 +1077,7 @@ func (h *Hub) handlePartyLocked(ctx context.Context, cl *client, cfg console.Lob
 		}
 		if p.invited[in.UserID] {
 			// Already pending: no second frame, so a leader cannot spam.
-			cl.sock.Send(h.rosterLocked(p))
+			cl.sock.SendCtl(h.rosterLocked(p))
 			return
 		}
 		if len(p.invited) >= cfg.PartySizeMax*inviteCapFactor {
@@ -1013,7 +1085,7 @@ func (h *Hub) handlePartyLocked(ctx context.Context, cl *client, cfg console.Lob
 			return
 		}
 		p.invited[in.UserID] = true
-		target.sock.Send(Invite{Type: TInvite, PartyID: p.id, From: cl.userID})
+		target.sock.SendCtl(Invite{Type: TInvite, PartyID: p.id, From: cl.userID})
 		h.broadcastRosterLocked(p)
 	case "party.accept":
 		p := h.parties[in.PartyID]
@@ -1047,7 +1119,7 @@ func (h *Hub) handlePartyLocked(ctx context.Context, cl *client, cfg console.Lob
 		}
 		delete(p.invited, cl.userID)
 		if leader, ok := h.byUser[p.leader]; ok {
-			leader.sock.Send(Declined{Type: TDeclined, PartyID: p.id, UserID: cl.userID})
+			leader.sock.SendCtl(Declined{Type: TDeclined, PartyID: p.id, UserID: cl.userID})
 		}
 		h.broadcastRosterLocked(p)
 	case "party.leave":
@@ -1058,14 +1130,14 @@ func (h *Hub) handlePartyLocked(ctx context.Context, cl *client, cfg console.Lob
 			return
 		}
 		h.removeMemberLocked(ctx, p, cl.userID)
-		cl.sock.Send(Roster{Type: TParty, PartyID: "", Members: []Member{}})
+		cl.sock.SendCtl(Roster{Type: TParty, PartyID: "", Members: []Member{}})
 	case "party.list":
 		p := h.parties[h.partyOf[cl.userID]]
 		if p == nil {
-			cl.sock.Send(Roster{Type: TParty, PartyID: "", Members: []Member{}})
+			cl.sock.SendCtl(Roster{Type: TParty, PartyID: "", Members: []Member{}})
 			return
 		}
-		cl.sock.Send(h.rosterLocked(p))
+		cl.sock.SendCtl(h.rosterLocked(p))
 	}
 }
 
@@ -1116,7 +1188,7 @@ func (h *Hub) broadcastRosterLocked(p *party) {
 	r := h.rosterLocked(p)
 	for _, m := range p.members {
 		if c, ok := h.byUser[m]; ok {
-			c.sock.Send(r)
+			c.sock.SendCtl(r)
 		}
 	}
 }
@@ -1195,11 +1267,14 @@ func (h *Hub) redisErr(op string, err error) {
 // logEvery is the per-op log throttle for Redis errors.
 const logEvery = 5 * time.Second
 
-func helloAOI(a *console.LobbyAOI) *AOI {
-	if a == nil {
-		return nil
+// helloAOI is the view rule as `hello` states it: the cap always, the box
+// only when the channel has one.
+func helloAOI(cfg console.LobbyConfig) *AOI {
+	out := &AOI{MaxPeers: cfg.MaxPeers}
+	if cfg.AOI != nil {
+		out.Range = cfg.AOI.Range
 	}
-	return &AOI{Range: a.Range, MaxPeers: a.MaxPeers}
+	return out
 }
 
 func capabilities(c console.Capabilities) Capabilities {

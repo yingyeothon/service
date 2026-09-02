@@ -202,3 +202,84 @@ func TestIdleTimeoutClosesReader(t *testing.T) {
 		t.Fatalf("client saw %v", err)
 	}
 }
+
+// queued returns the pending frames in delivery order.
+func (c *Conn) pending() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, q := range c.queue[c.head:] {
+		out = append(out, string(q.b))
+	}
+	return out
+}
+
+// A queue that never drains (no write loop) shows the overflow policy
+// exactly: droppable frames go oldest first, control frames never, and a
+// queue of nothing but control frames ends the socket with 4005.
+func TestOverflowDropsOnlyDroppableFrames(t *testing.T) {
+	var dropped, tooSlow atomic.Int32
+	lim := DefaultLimits()
+	lim.QueueDepth = 3
+	c := &Conn{limits: lim, hooks: Hooks{OnDropped: func() { dropped.Add(1) }, OnTooSlow: func() { tooSlow.Add(1) }},
+		now: time.Now, signal: make(chan struct{}, 1), done: make(chan struct{})}
+	c.SendRawCtl([]byte("c1"))
+	c.SendRaw([]byte("p1"))
+	c.SendRaw([]byte("p2"))
+	if !c.SendRaw([]byte("p3")) || dropped.Load() != 1 {
+		t.Fatalf("p3 should replace p1: %v", c.pending())
+	}
+	if got := strings.Join(c.pending(), ","); got != "c1,p2,p3" {
+		t.Fatalf("oldest droppable dropped, control kept: %s", got)
+	}
+	// A control frame behind droppable ones evicts the oldest droppable,
+	// not the control frame at the head.
+	if !c.SendRawCtl([]byte("c2")) || !c.SendRawCtl([]byte("c3")) {
+		t.Fatal("control frames refused while droppable ones were pending")
+	}
+	if got := strings.Join(c.pending(), ","); got != "c1,c2,c3" || dropped.Load() != 3 {
+		t.Fatalf("after evicting every position: %s (dropped %d)", got, dropped.Load())
+	}
+	if c.SendRawCtl([]byte("c4")) || tooSlow.Load() != 1 || c.CloseCode() != CloseTooSlow || !c.Closed() {
+		t.Fatalf("control-only overflow must close with 4005: code=%d tooSlow=%d", c.CloseCode(), tooSlow.Load())
+	}
+	if c.SendRaw([]byte("late")) || c.SendRawCtl([]byte("late")) || tooSlow.Load() != 1 {
+		t.Fatal("sends after the too-slow close must fail without a second report")
+	}
+	if got := c.pending(); len(got) != 0 {
+		t.Fatalf("a too-slow close discards the backlog the client never drained: %v", got)
+	}
+}
+
+// End to end: a client that never reads is closed with 4005 once the
+// queue holds only control frames, and the pending frames precede the
+// close frame on the wire.
+func TestTooSlowClosesTheSocket(t *testing.T) {
+	var tooSlow atomic.Int32
+	lim := DefaultLimits()
+	lim.QueueDepth = 3
+	c, cl := pair(t, lim, Hooks{OnTooSlow: func() { tooSlow.Add(1) }})
+	go func() { _ = c.ReadLoop(func([]byte) {}) }()
+	big := []byte(`"` + strings.Repeat("x", lim.MaxOutbound-10) + `"`)
+	refused := false
+	for i := 0; i < 400 && !refused; i++ {
+		refused = !c.SendRawCtl(big)
+	}
+	if !refused || tooSlow.Load() != 1 || c.CloseCode() != CloseTooSlow {
+		t.Fatalf("stalled reader not closed: refused=%v tooSlow=%d code=%d", refused, tooSlow.Load(), c.CloseCode())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = cl.SetReadDeadline(time.Now().Add(time.Second))
+		_, _, err := cl.ReadMessage()
+		if err == nil {
+			continue
+		}
+		var ce *websocket.CloseError
+		if !asClose(err, &ce) || ce.Code != CloseTooSlow || ce.Text != "too_slow" {
+			t.Fatalf("close: %v", err)
+		}
+		return
+	}
+	t.Fatal("close frame never arrived")
+}

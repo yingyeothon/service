@@ -131,16 +131,21 @@ func TestDecodeRejects(t *testing.T) {
 
 func TestDecodeLobbyAOIDefaultsAndClamps(t *testing.T) {
 	ch, err := decode([]byte(`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{"aoi":{"range":10}}}`))
-	if err != nil || ch.Lobby.AOI == nil || ch.Lobby.AOI.Range != 10 || ch.Lobby.AOI.MaxPeers != 64 {
+	if err != nil || ch.Lobby.AOI == nil || ch.Lobby.AOI.Range != 10 || ch.Lobby.MaxPeers != 64 {
 		t.Fatalf("aoi defaults: %+v %v", ch.Lobby.AOI, err)
 	}
 	ch, err = decode([]byte(`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{"aoi":{"range":1e-300,"maxPeers":100000}}}`))
-	if err != nil || ch.Lobby.AOI.Range != 1 || ch.Lobby.AOI.MaxPeers != 256 {
+	if err != nil || ch.Lobby.AOI.Range != 1 || ch.Lobby.MaxPeers != 256 || ch.Lobby.AOI.MaxPeers != 0 {
 		t.Fatalf("aoi clamp: %+v %v", ch.Lobby.AOI, err)
 	}
 	ch, err = decode([]byte(`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{}}`))
-	if err != nil || ch.Lobby.AOI != nil {
+	if err != nil || ch.Lobby.AOI != nil || ch.Lobby.MaxPeers != 64 {
 		t.Fatalf("no aoi: %+v %v", ch.Lobby.AOI, err)
+	}
+	// The cap moved to the top level; a newer console writes it there.
+	ch, err = decode([]byte(`{"id":"x","kind":"lobby","authVerifyUrl":"https://a/v","config":{"maxPeers":8,"aoi":{"range":10,"maxPeers":3}}}`))
+	if err != nil || ch.Lobby.MaxPeers != 8 || ch.Lobby.AOI.MaxPeers != 0 {
+		t.Fatalf("top-level maxPeers wins: %+v %v", ch.Lobby, err)
 	}
 }
 

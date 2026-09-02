@@ -20,15 +20,18 @@ type Counters struct {
 	OutboundFrames      atomic.Int64 `json:"outboundFrames"`
 	DroppedFrames       atomic.Int64 `json:"droppedFrames"`
 	OversizedFrames     atomic.Int64 `json:"oversizedFrames"`
-	RateLimited         atomic.Int64 `json:"rateLimited"`
-	BadMessages         atomic.Int64 `json:"badMessages"`
-	VerifyCalls         atomic.Int64 `json:"verifyCalls"`
-	VerifyCacheHits     atomic.Int64 `json:"verifyCacheHits"`
-	ConfigFetches       atomic.Int64 `json:"configFetches"`
-	QueuePushes         atomic.Int64 `json:"queuePushes"`
-	Aborts              atomic.Int64 `json:"aborts"`
-	SessionsReplaced    atomic.Int64 `json:"sessionsReplaced"`
-	RedisErrors         atomic.Int64 `json:"redisErrors"`
+	// TooSlow counts sockets closed with 4005: the outbound queue was full of
+	// control frames the client had not drained.
+	TooSlow          atomic.Int64 `json:"tooSlow"`
+	RateLimited      atomic.Int64 `json:"rateLimited"`
+	BadMessages      atomic.Int64 `json:"badMessages"`
+	VerifyCalls      atomic.Int64 `json:"verifyCalls"`
+	VerifyCacheHits  atomic.Int64 `json:"verifyCacheHits"`
+	ConfigFetches    atomic.Int64 `json:"configFetches"`
+	QueuePushes      atomic.Int64 `json:"queuePushes"`
+	Aborts           atomic.Int64 `json:"aborts"`
+	SessionsReplaced atomic.Int64 `json:"sessionsReplaced"`
+	RedisErrors      atomic.Int64 `json:"redisErrors"`
 	// `GET /parties/{id}`: answered rosters and refusals, so an operator can
 	// see whether a game's entry API reaches the gateway at all.
 	PartyReads    atomic.Int64 `json:"partyReads"`
@@ -55,6 +58,20 @@ type Gauges struct {
 	OutboundQueueMax atomic.Int64 `json:"outboundQueueMax"`
 	// LastAbortUnix is when the last actor abort happened (0 = never).
 	LastAbortUnix atomic.Int64 `json:"lastAbortUnix"`
+	// FlushHoldMaxMicros is the longest a lobby flush held its hub lock
+	// (views re-derived, batches marshalled and enqueued): the number that
+	// says whether sending under the lock is still cheap.
+	FlushHoldMaxMicros atomic.Int64 `json:"flushHoldMaxMicros"`
+}
+
+// RecordFlushHold raises FlushHoldMaxMicros if micros is a new high.
+func (g *Gauges) RecordFlushHold(micros int64) {
+	for {
+		cur := g.FlushHoldMaxMicros.Load()
+		if micros <= cur || g.FlushHoldMaxMicros.CompareAndSwap(cur, micros) {
+			return
+		}
+	}
 }
 
 // RecordQueueDepth raises OutboundQueueMax if depth is a new high.
@@ -101,6 +118,7 @@ type ChannelStats struct {
 	Inbound       atomic.Int64 `json:"inbound"`
 	Outbound      atomic.Int64 `json:"outbound"`
 	Dropped       atomic.Int64 `json:"dropped"`
+	TooSlow       atomic.Int64 `json:"tooSlow"`
 	QueueDepthMax atomic.Int64 `json:"queueDepthMax"`
 }
 
@@ -157,6 +175,7 @@ func (r *Registry) snapshot(channels bool) snapshot {
 			"outboundFrames":      c.OutboundFrames.Load(),
 			"droppedFrames":       c.DroppedFrames.Load(),
 			"oversizedFrames":     c.OversizedFrames.Load(),
+			"tooSlow":             c.TooSlow.Load(),
 			"rateLimited":         c.RateLimited.Load(),
 			"badMessages":         c.BadMessages.Load(),
 			"verifyCalls":         c.VerifyCalls.Load(),
@@ -176,13 +195,14 @@ func (r *Registry) snapshot(channels bool) snapshot {
 			"rejectedOther":       c.RejectedOther.Load(),
 		},
 		Gauges: map[string]int64{
-			"connections":      g.Connections.Load(),
-			"lobbyChannels":    g.LobbyChannels.Load(),
-			"games":            g.Games.Load(),
-			"subscriptions":    g.Subscriptions.Load(),
-			"parties":          g.Parties.Load(),
-			"outboundQueueMax": g.OutboundQueueMax.Load(),
-			"lastAbortUnix":    g.LastAbortUnix.Load(),
+			"connections":        g.Connections.Load(),
+			"lobbyChannels":      g.LobbyChannels.Load(),
+			"games":              g.Games.Load(),
+			"subscriptions":      g.Subscriptions.Load(),
+			"parties":            g.Parties.Load(),
+			"outboundQueueMax":   g.OutboundQueueMax.Load(),
+			"lastAbortUnix":      g.LastAbortUnix.Load(),
+			"flushHoldMaxMicros": g.FlushHoldMaxMicros.Load(),
 		},
 		Runtime: runtimeStats(),
 	}
@@ -197,6 +217,7 @@ func (r *Registry) snapshot(channels bool) snapshot {
 			"inbound":       ch.Inbound.Load(),
 			"outbound":      ch.Outbound.Load(),
 			"dropped":       ch.Dropped.Load(),
+			"tooSlow":       ch.TooSlow.Load(),
 			"queueDepthMax": ch.QueueDepthMax.Load(),
 		}
 	}

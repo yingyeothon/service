@@ -266,7 +266,10 @@ export interface LobbyConfig {
   partySizeMax: number;
   defaultZone: string;
   mapUrl: string;
-  aoi?: { range: number; maxPeers: number };
+  /** Nearest peers in view, always applied (1–256); rows saved before it existed omit it (64). */
+  maxPeers?: number;
+  /** Optional area-of-interest box in tiles; `maxPeers` inside it is a legacy row (read only). */
+  aoi?: { range: number; maxPeers?: number };
 }
 export interface QConfig {
   authChannelId: string;
