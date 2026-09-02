@@ -102,8 +102,10 @@ describe("CatalogAppPage", () => {
       "href",
       "https://cdn.example/a.apk",
     );
-    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
-    await waitFor(() => expect(mockApi.catalogSettings).toHaveBeenCalled());
+    const editBtn = await screen.findByRole("button", { name: "Edit" });
+    // Edit waits for the settings: the drawer seeds its fields from them.
+    await waitFor(() => expect(editBtn).toBeEnabled());
+    await userEvent.click(editBtn);
     const drawer = await screen.findByRole("dialog");
     expect(
       await within(drawer).findByLabelText("Slack webhook URL"),
@@ -174,18 +176,44 @@ describe("CatalogAppPage", () => {
     );
   });
 
-  it("deletes the app from the overflow menu and returns to the project's catalog", async () => {
+  it("keeps Edit disabled until the settings are known, so a save cannot wipe them", async () => {
+    let resolveSettings: (v: unknown) => void = () => {};
+    vi.mocked(mockApi.catalogSettings).mockReturnValue(
+      new Promise((r) => {
+        resolveSettings = r;
+      }) as never,
+    );
+    open();
+    const editBtn = await screen.findByRole("button", { name: "Edit" });
+    expect(editBtn).toBeDisabled();
+    resolveSettings({
+      slackHookUrl: "https://hooks.example/x",
+      slackChannel: "#ops",
+      messageTemplate: null,
+      keepRecentVersions: 9,
+    });
+    await waitFor(() => expect(editBtn).toBeEnabled());
+    await userEvent.click(editBtn);
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByLabelText("Slack channel")).toHaveValue("#ops");
+    expect(within(drawer).getByLabelText("Keep recent versions")).toHaveValue(
+      "9",
+    );
+  });
+
+  it("deletes the app from the drawer danger zone and returns to the project's catalog", async () => {
     vi.mocked(mockApi.deleteCatalogApp).mockResolvedValue(undefined);
     open();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
     await userEvent.click(
-      await screen.findByRole("button", { name: "More actions" }),
+      within(drawer).getByRole("button", { name: "Delete app" }),
     );
+    const modal = (await screen.findByText("Delete app?")).closest(
+      '[role="dialog"]',
+    ) as HTMLElement;
     await userEvent.click(
-      await screen.findByRole("menuitem", { name: "Delete app" }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Delete app" }),
+      within(modal).getByRole("button", { name: "Delete app" }),
     );
     await waitFor(() =>
       expect(mockApi.deleteCatalogApp).toHaveBeenCalledWith("ca_1"),

@@ -66,7 +66,6 @@ export function TeamsPage() {
   const act = useAction();
   const create = useDrawerForm(() => ({ name: "", description: "" }));
   const join = useDrawerForm(() => ({ name: "" }));
-  const [joined, setJoined] = useState<string | null>(null);
   // Captured once: the history entry is scrubbed right after, so a reload or
   // back/forward never resurrects the rotation list.
   const [left] = useState<LeftState | null>(
@@ -96,7 +95,7 @@ export function TeamsPage() {
     const r = await act.run(() => api.joinTeam(join.form.name.trim()));
     if (!r) return;
     join.close();
-    setJoined(r.name);
+    notify.done(`Requested to join ${r.name}; an owner has to approve it`);
     await list.reload();
   };
 
@@ -106,8 +105,21 @@ export function TeamsPage() {
         title="Teams"
         description="A team owns projects; a project owns channels, catalog apps, asset bundles and sites. Every member of a team may read and write all of it. There is no public list of teams: ask an owner to add you, or request to join by the exact name."
         actions={[
-          { label: "New team", primary: true, onClick: create.open },
-          { label: "Request to join", onClick: join.open },
+          {
+            label: "New team",
+            primary: true,
+            onClick: () => {
+              act.clear();
+              create.open();
+            },
+          },
+          {
+            label: "Request to join",
+            onClick: () => {
+              act.clear();
+              join.open();
+            },
+          },
         ]}
       />
       {left && (
@@ -115,12 +127,6 @@ export function TeamsPage() {
           <Notice kind="success">You left {left.left}.</Notice>
           <RotationNotice rotate={left.rotate} who="You" />
         </>
-      )}
-      {joined && (
-        <Notice kind="success">
-          Requested to join <strong>{joined}</strong>. An owner has to approve
-          it.
-        </Notice>
       )}
       {me?.role === "admin" && (
         <FilterBar>

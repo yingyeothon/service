@@ -114,11 +114,8 @@ export function EventsPage() {
         opened={creating}
         onClose={() => setCreating(false)}
         title="New event"
-        submitLabel="Create draft"
-        onSubmit={() => {}}
         size="lg"
         plain
-        error={creating ? act.error : null}
       >
         {act.error && <Notice kind="error">{act.error}</Notice>}
         {creating && (

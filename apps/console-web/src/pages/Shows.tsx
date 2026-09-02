@@ -7,7 +7,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import type { ShowAcl, ShowSummary } from "../types";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
@@ -30,13 +30,14 @@ export function AclField({
   onChange: (v: ShowAcl) => void;
   description?: string;
 }) {
+  const id = useId();
   return (
     <div>
-      <Text size="sm" fw={500} mb={4} id="acl-label">
+      <Text size="sm" fw={500} mb={4} id={id}>
         Who may see it
       </Text>
       <SegmentedControl
-        aria-labelledby="acl-label"
+        aria-labelledby={id}
         value={value}
         onChange={(v) => onChange(v as ShowAcl)}
         data={[
@@ -118,7 +119,16 @@ export function ShowsPage() {
         }
         actions={
           hasRole(me, "member")
-            ? [{ label: "New show", primary: true, onClick: create.open }]
+            ? [
+                {
+                  label: "New show",
+                  primary: true,
+                  onClick: () => {
+                    act.clear();
+                    create.open();
+                  },
+                },
+              ]
             : []
         }
       />

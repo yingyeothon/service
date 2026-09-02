@@ -1,6 +1,12 @@
 import { Button, Group, Stack, Text, TextInput } from "@mantine/core";
 import { modals } from "@mantine/modals";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 /*
  * The one confirmation mechanism of the console: a modal whose confirm button
@@ -75,18 +81,29 @@ function ReasonConfirm({
  * the list it would have reloaded.
  */
 export function useConfirm() {
-  useEffect(() => () => modals.closeAll(), []);
+  // Only the modals this hook opened are closed on unmount: a row menu
+  // unmounting under someone else's confirm must not dismiss it.
+  const mine = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const opened = mine.current;
+    return () => {
+      for (const id of opened) modals.close(id);
+      opened.clear();
+    };
+  }, []);
   return useCallback(
     (opts: ConfirmOptions) =>
       new Promise<ConfirmResult>((resolve) => {
         let settled = false;
+        let id = "";
         const settle = (r: ConfirmResult) => {
           if (settled) return;
           settled = true;
+          mine.current.delete(id);
           resolve(r);
         };
         if (opts.reason) {
-          const id = modals.open({
+          id = modals.open({
             title: opts.title,
             onClose: () => settle({ ok: false }),
             children: (
@@ -99,9 +116,10 @@ export function useConfirm() {
               />
             ),
           });
+          mine.current.add(id);
           return;
         }
-        modals.openConfirmModal({
+        id = modals.openConfirmModal({
           title: opts.title,
           children: opts.message ? (
             <Text size="sm">{opts.message}</Text>
@@ -116,6 +134,7 @@ export function useConfirm() {
           onCancel: () => settle({ ok: false }),
           onClose: () => settle({ ok: false }),
         });
+        mine.current.add(id);
       }),
     [],
   );

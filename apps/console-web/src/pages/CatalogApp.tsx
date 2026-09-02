@@ -225,8 +225,7 @@ function CleanupSection({
             Preview (dry run)
           </Button>
           <Button
-            variant="outline"
-            color="red"
+            variant="default"
             onClick={() => void runForReal()}
             disabled={act.busy}
           >
@@ -289,7 +288,6 @@ export function CatalogAppPage() {
     { enabled: standing.canWrite },
   );
   const act = useAction();
-  const confirm = useConfirm();
   const iosDevice = isIosUserAgent(navigator.userAgent);
   const a = app.data;
   const s = settings.data ?? null;
@@ -377,15 +375,6 @@ export function CatalogAppPage() {
         : "/teams",
     );
   };
-  const removeFromMenu = async () => {
-    const r = await confirm({
-      title: `Delete ${a.name}?`,
-      message: "Every artifact goes with it.",
-      confirmLabel: "Delete app",
-      danger: true,
-    });
-    if (r.ok) await remove();
-  };
   const removeArtifact = async (artifactId: string) => {
     const ok = await act.run(async () => {
       await api.deleteCatalogArtifact(a.id, artifactId);
@@ -404,14 +393,18 @@ export function CatalogAppPage() {
       first: i === 0,
     })),
   );
+  // The drawer seeds its settings fields from `s`; opening it before the
+  // settings arrived would diff blanks against them and wipe them on save.
+  const settingsPending = canWrite && settings.data === undefined;
   const actions: HeaderAction[] = canWrite
     ? [
-        { label: "Edit", onClick: edit.open },
         {
-          label: "Delete app",
-          danger: true,
-          onClick: removeFromMenu,
-          disabled: act.busy,
+          label: "Edit",
+          onClick: () => {
+            act.clear();
+            edit.open();
+          },
+          disabled: settingsPending,
         },
       ]
     : [];
@@ -524,8 +517,12 @@ export function CatalogAppPage() {
         submitLabel="Save"
         onSubmit={save}
         busy={act.busy}
-        disabled={!edit.form.name.trim() || !edit.form.path.trim()}
-        error={edit.opened ? act.error : null}
+        error={edit.opened ? (act.error ?? settings.error) : null}
+        disabled={
+          !edit.form.name.trim() ||
+          !edit.form.path.trim() ||
+          settings.error !== null
+        }
         danger={{
           label: "Delete app",
           description: "Every artifact goes with it.",

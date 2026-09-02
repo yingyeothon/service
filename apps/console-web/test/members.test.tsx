@@ -107,7 +107,7 @@ describe("MembersPage", () => {
     );
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Promote" }),
+      within(dialog).getByRole("button", { name: "Promote to admin" }),
     );
     await waitFor(() =>
       expect(mockApi.memberAction).toHaveBeenCalledWith("u2", "promote"),

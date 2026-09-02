@@ -90,6 +90,7 @@ export function ChannelDetailPage() {
   const startEdit = () => {
     setForm(formFromChannel(c));
     setLocalError(null);
+    act.clear();
     setEditing(true);
   };
   const save = async (e: FormEvent) => {
@@ -157,10 +158,13 @@ export function ChannelDetailPage() {
     if (ok.ok) await remove();
   };
 
-  const actions: HeaderAction[] = [
-    { label: "Extend +7 days", onClick: extend, disabled: act.busy },
-  ];
+  const actions: HeaderAction[] = [];
   if (owner) actions.push({ label: "Edit", onClick: startEdit });
+  actions.push({
+    label: "Extend +7 days",
+    onClick: extend,
+    disabled: act.busy,
+  });
   if (owner && hasSecret)
     actions.push({
       label: `Rotate ${secretLabel.toLowerCase()}`,
@@ -168,12 +172,15 @@ export function ChannelDetailPage() {
       onClick: rotate,
       disabled: act.busy,
     });
-  actions.push({
-    label: "Delete channel",
-    danger: true,
-    onClick: removeFromMenu,
-    disabled: act.busy,
-  });
+  // Owners delete from the drawer's danger zone; a seatless admin has no
+  // drawer, so the verb sits in the overflow menu for them.
+  if (!owner)
+    actions.push({
+      label: "Delete channel",
+      danger: true,
+      onClick: removeFromMenu,
+      disabled: act.busy,
+    });
 
   return (
     <>
@@ -472,7 +479,7 @@ function CredentialActions({
     const r = await confirm({
       title: `Revoke the ${what}?`,
       message: "Whatever holds it stops working at once.",
-      confirmLabel: "Revoke",
+      confirmLabel: `Revoke ${what}`,
       danger: true,
     });
     if (r.ok) await onRevoke();
@@ -483,12 +490,7 @@ function CredentialActions({
         {state.issued ? "Re-issue" : "Issue"}
       </Button>
       {state.issued && (
-        <Button
-          variant="outline"
-          color="red"
-          disabled={busy}
-          onClick={() => void revoke()}
-        >
+        <Button variant="default" disabled={busy} onClick={() => void revoke()}>
           Revoke
         </Button>
       )}

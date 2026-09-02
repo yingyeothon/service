@@ -129,18 +129,19 @@ describe("SitePage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("deletes from the overflow menu after a confirmation and returns to the project's sites", async () => {
+  it("deletes from the drawer danger zone after a confirmation and returns to the project's sites", async () => {
     vi.mocked(mockApi.deleteSite).mockResolvedValue(undefined);
     open();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
     await userEvent.click(
-      await screen.findByRole("button", { name: "More actions" }),
+      within(drawer).getByRole("button", { name: "Delete site" }),
     );
+    const modal = (await screen.findByText("Delete site?")).closest(
+      '[role="dialog"]',
+    ) as HTMLElement;
     await userEvent.click(
-      await screen.findByRole("menuitem", { name: "Delete site" }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Delete site" }),
+      within(modal).getByRole("button", { name: "Delete site" }),
     );
     await waitFor(() =>
       expect(mockApi.deleteSite).toHaveBeenCalledWith("site_1"),

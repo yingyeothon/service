@@ -47,12 +47,23 @@ export function Comments({
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!draft.trim()) return;
-    if (await act.run(() => onAdd(draft))) setDraft("");
+    if (
+      await act.run(async () => {
+        await onAdd(draft);
+        return true;
+      })
+    )
+      setDraft("");
   };
   const saveEdit = async (e: FormEvent) => {
     e.preventDefault();
     if (!editing || !editing.bodyMd.trim()) return;
-    if (await act.run(() => onEdit(editing.id, editing.bodyMd)))
+    if (
+      await act.run(async () => {
+        await onEdit(editing.id, editing.bodyMd);
+        return true;
+      })
+    )
       setEditing(null);
   };
   const items = (c: Comment): RowMenuItem[] => {
@@ -72,7 +83,7 @@ export function Comments({
         },
         confirm: {
           title: "Delete this comment?",
-          confirmLabel: "Delete",
+          confirmLabel: "Delete comment",
           danger: true,
           reason:
             reasonOnForeignDelete && !c.mine

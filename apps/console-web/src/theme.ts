@@ -189,6 +189,11 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
     "--mantine-color-body": "#ffffff",
     "--mantine-color-default-border": HAIRLINE,
     "--mantine-color-default-hover": SURFACE_SOFT,
+    // Light-variant badges and alerts: DESIGN.md `success` and a mustard
+    // dark enough for AA on the tinted surface, instead of Mantine's shade 6.
+    "--mantine-color-green-light-color": "#006400",
+    "--mantine-color-yellow-light-color": "#7a5200",
+    "--mantine-color-yellow-light": "rgba(244, 211, 94, 0.25)",
   },
   dark: {},
 });

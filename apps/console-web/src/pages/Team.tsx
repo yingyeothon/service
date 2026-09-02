@@ -143,7 +143,31 @@ export function TeamPage() {
   };
 
   const actions: HeaderAction[] = [];
-  if (t.owner) actions.push({ label: "Edit", onClick: edit.open });
+  if (t.owner)
+    actions.push({
+      label: "Edit",
+      onClick: () => {
+        act.clear();
+        edit.open();
+      },
+    });
+  // A seatless platform admin may delete but not edit: the drawer's danger
+  // zone is out of reach, so the verb sits in the overflow menu.
+  if (canDelete && !t.owner)
+    actions.push({
+      label: "Delete team",
+      danger: true,
+      disabled: act.busy,
+      onClick: async () => {
+        const r = await confirm({
+          title: `Delete ${team.name}?`,
+          message: "Deleting a team is refused while it still has projects.",
+          confirmLabel: "Delete team",
+          danger: true,
+        });
+        if (r.ok) await remove();
+      },
+    });
   if (admin)
     actions.push({
       label: team.adminLocked ? "Remove admin lock" : "Admin-lock team",
@@ -314,7 +338,13 @@ function ProjectsTab({
   return (
     <Section
       title="Projects"
-      actions={canWrite && <Button onClick={create.open}>New project</Button>}
+      actions={
+        canWrite && (
+          <Button variant="default" onClick={create.open}>
+            New project
+          </Button>
+        )
+      }
     >
       <DataTable
         columns={[
@@ -417,7 +447,13 @@ function MembersTab({
   };
   const setRoleOf = async (m: TeamMember, to: "member" | "owner") => {
     if (await act.run(() => api.setTeamMemberRole(team.id, m.id, to))) {
-      notify.saved(`${m.login ?? m.id}'s seat`);
+      notify.done(
+        to === "owner"
+          ? `${m.login ?? m.id} is now an owner`
+          : m.role === "pending"
+            ? `${m.login ?? m.id} approved`
+            : `${m.login ?? m.id} is now a member`,
+      );
       await refresh();
     }
   };
@@ -526,7 +562,11 @@ function MembersTab({
       description="Kicking or leaving revokes nothing: the person still knows every channel secret they saw. The response lists what to rotate."
       actions={
         <>
-          {owner && <Button onClick={add.open}>Add member</Button>}
+          {owner && (
+            <Button variant="default" onClick={add.open}>
+              Add member
+            </Button>
+          )}
           {admin && (
             <Button variant="default" onClick={appoint.open}>
               Appoint owner
@@ -680,7 +720,11 @@ function DiscussionsTab({
     <Section
       title="Discussions"
       actions={
-        canWrite && <Button onClick={create.open}>New discussion</Button>
+        canWrite && (
+          <Button variant="default" onClick={create.open}>
+            New discussion
+          </Button>
+        )
       }
     >
       <DataTable

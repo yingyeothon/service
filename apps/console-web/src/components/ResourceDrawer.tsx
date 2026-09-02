@@ -109,9 +109,9 @@ export function ResourceDrawer({
   onClose: () => void;
   /** "New team" / "Edit team". */
   title: string;
-  /** "Create team" / "Save". */
-  submitLabel: string;
-  onSubmit: (e: FormEvent) => void | Promise<void>;
+  /** "Create team" / "Save"; unused when `plain`. */
+  submitLabel?: string;
+  onSubmit?: (e: FormEvent) => void | Promise<void>;
   busy?: boolean;
   disabled?: boolean;
   error?: string | null;
@@ -145,7 +145,7 @@ export function ResourceDrawer({
       title={title}
       size={size === "lg" ? "lg" : "md"}
     >
-      <form onSubmit={(e) => void onSubmit(e)}>
+      <form onSubmit={(e) => void onSubmit?.(e)}>
         <Stack gap="md">{children}</Stack>
         {error && (
           <Box mt="md">
@@ -164,7 +164,7 @@ export function ResourceDrawer({
             }}
           >
             <FormFooter
-              submitLabel={submitLabel}
+              submitLabel={submitLabel ?? "Save"}
               busy={busy}
               disabled={disabled}
               onCancel={onClose}

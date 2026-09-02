@@ -12,7 +12,6 @@ import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { Section } from "../components/Section";
 import { Badge, CopyField, DropZone, Notice } from "../components/ui";
 import { fmtSize } from "../lib/catalog";
-import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
@@ -118,7 +117,6 @@ export function SitePage() {
   const site = useApiQuery(["sites", "site", id], () => api.site(id));
   const standing = useTeamStanding(site.data?.teamId);
   const act = useAction();
-  const confirm = useConfirm();
   const s = site.data;
   const edit = useDrawerForm(() => ({
     name: s?.name ?? "",
@@ -147,15 +145,6 @@ export function SitePage() {
         ? projectUrl(s.teamId, s.projectId, "sites")
         : "/teams",
     );
-  };
-  const removeFromMenu = async () => {
-    const r = await confirm({
-      title: `Delete ${s?.name ?? "site"}?`,
-      message: "Every deploy and the public URL go with it.",
-      confirmLabel: "Delete site",
-      danger: true,
-    });
-    if (r.ok) await remove();
   };
 
   const saveInfo = async (e: FormEvent) => {
@@ -197,12 +186,12 @@ export function SitePage() {
   const canWrite = standing.canWrite;
   const actions: HeaderAction[] = canWrite
     ? [
-        { label: "Edit", onClick: edit.open },
         {
-          label: "Delete site",
-          danger: true,
-          onClick: removeFromMenu,
-          disabled: act.busy || s.busy,
+          label: "Edit",
+          onClick: () => {
+            act.clear();
+            edit.open();
+          },
         },
       ]
     : [];

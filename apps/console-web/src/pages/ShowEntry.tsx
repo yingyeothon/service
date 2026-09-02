@@ -1,4 +1,4 @@
-import { Anchor, Group, Text, TextInput } from "@mantine/core";
+import { Anchor, Button, Group, Text, TextInput } from "@mantine/core";
 import { IconHeart, IconHeartFilled } from "@tabler/icons-react";
 import { type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -65,7 +65,13 @@ export function ShowEntryPage() {
     ev.preventDefault();
     const f = edit.form;
     const r = await act.run(() =>
-      api.updateEntry(id, eid, { title: f.title.trim(), bodyMd: f.bodyMd }),
+      api
+        .updateEntry(id, eid, {
+          title: f.title.trim(),
+          bodyMd: f.bodyMd,
+          ...(foreign ? { reason: f.reason.trim() } : {}),
+        })
+        .then(() => true),
     );
     if (!r) return;
     edit.close();
@@ -98,18 +104,7 @@ export function ShowEntryPage() {
     await q.reload();
   };
 
-  const actions: HeaderAction[] = [
-    {
-      label: `${e.likes}`,
-      onClick: like,
-      disabled: !e.canReact || act.busy,
-      icon: e.liked ? (
-        <IconHeartFilled size={16} aria-label="Liked" />
-      ) : (
-        <IconHeart size={16} aria-label="Like" />
-      ),
-    },
-  ];
+  const actions: HeaderAction[] = [];
   if (e.canEdit) actions.push({ label: "Edit", onClick: edit.open });
   if (mine || e.canEdit || admin)
     actions.push({
@@ -150,7 +145,27 @@ export function ShowEntryPage() {
           </>
         }
         actions={actions}
-      />
+      >
+        <Group gap="xs">
+          <Button
+            variant={e.liked ? "filled" : "default"}
+            size="compact-md"
+            disabled={!e.canReact || act.busy}
+            aria-pressed={e.liked}
+            aria-label={e.liked ? "Unlike" : "Like"}
+            leftSection={
+              e.liked ? (
+                <IconHeartFilled size={16} aria-hidden="true" />
+              ) : (
+                <IconHeart size={16} aria-hidden="true" />
+              )
+            }
+            onClick={() => void like()}
+          >
+            {e.likes}
+          </Button>
+        </Group>
+      </PageHeader>
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
       {e.bodyMd && <Markdown text={e.bodyMd} />}
 
