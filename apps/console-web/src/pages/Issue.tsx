@@ -1,16 +1,21 @@
-import { Button, Card, Group, NativeSelect, Text, Title } from "@mantine/core";
-import { useState, type FormEvent } from "react";
+import { Box, NativeSelect, Text } from "@mantine/core";
+import { type FormEvent } from "react";
 import { useParams } from "react-router";
 import { api } from "../api";
 import { Comments } from "../components/Comments";
 import { Crumbs } from "../components/Crumbs";
+import { PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
-import { Badge, Confirm, Notice, Spinner } from "../components/ui";
-import { DraftForm } from "../components/ResourceForms";
+import { PageHeader, type HeaderAction } from "../components/PageHeader";
+import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
+import { Badge, Notice } from "../components/ui";
+import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
+import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { useTeamStanding } from "../lib/team";
 import type { Version } from "../types";
+import { DiscussionFields } from "./Team";
 
 export const ISSUE_TONE = { open: "ok", closed: "neutral" } as const;
 
@@ -47,120 +52,114 @@ export function IssuePage() {
   const issue = useApiQuery(["issue", prj, n], () => api.issue(prj, n));
   const versions = useApiQuery(["versions", prj], () => api.versions(prj));
   const act = useAction();
-  const [draft, setDraft] = useState<{
-    title: string;
-    bodyMd: string;
-    versionId: string | null;
-  } | null>(null);
-
-  if (issue.error) return <Notice kind="error">{issue.error}</Notice>;
-  if (!issue.data) return <Spinner />;
+  const confirm = useConfirm();
   const i = issue.data;
+  const edit = useDrawerForm(() => ({
+    title: i?.title ?? "",
+    bodyMd: i?.bodyMd ?? "",
+    versionId: i?.versionId ?? null,
+  }));
+  const crumbs = (
+    <Crumbs
+      crumbs={{
+        teamId,
+        teamName: project.data?.teamName ?? t.team?.name ?? null,
+        projectId: prj,
+        projectName: project.data?.name ?? null,
+      }}
+      current={i ? `#${i.number}` : undefined}
+    />
+  );
+
+  if (issue.error)
+    return (
+      <>
+        {crumbs}
+        <PageHeader />
+        <Notice kind="error">{issue.error}</Notice>
+      </>
+    );
+  if (!i)
+    return (
+      <>
+        {crumbs}
+        <PageHeader />
+        <PageSkeleton />
+      </>
+    );
   const versionName = (id: string | null) =>
     id ? (versions.data?.find((v) => v.id === id)?.name ?? id) : null;
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    if (!draft) return;
     const r = await act.run(() =>
       api.updateIssue(prj, n, {
-        title: draft.title.trim(),
-        bodyMd: draft.bodyMd,
-        versionId: draft.versionId,
+        title: edit.form.title.trim(),
+        bodyMd: edit.form.bodyMd,
+        versionId: edit.form.versionId,
       }),
+    );
+    if (!r) return;
+    issue.set({ ...i, ...r });
+    edit.close();
+    notify.saved("issue");
+  };
+  const toggle = async () => {
+    const closing = i.status === "open";
+    const ok = await confirm({
+      title: closing ? `Close #${i.number}?` : `Reopen #${i.number}?`,
+      confirmLabel: closing ? "Close issue" : "Reopen issue",
+    });
+    if (!ok.ok) return;
+    const r = await act.run(() =>
+      api.setIssueStatus(prj, n, closing ? "close" : "reopen"),
     );
     if (r) {
       issue.set({ ...i, ...r });
-      setDraft(null);
+      notify.done(closing ? "Issue closed" : "Issue reopened");
     }
   };
-  const toggle = async () => {
-    const r = await act.run(() =>
-      api.setIssueStatus(prj, n, i.status === "open" ? "close" : "reopen"),
-    );
-    if (r) issue.set({ ...i, ...r });
-  };
+
+  const actions: HeaderAction[] = t.canWrite
+    ? [
+        { label: "Edit", onClick: edit.open },
+        {
+          label: i.status === "open" ? "Close issue" : "Reopen issue",
+          menu: true,
+          onClick: toggle,
+        },
+      ]
+    : [];
 
   return (
     <>
-      <Crumbs
-        crumbs={{
-          teamId,
-          teamName: project.data?.teamName ?? t.team?.name ?? null,
-          projectId: prj,
-          projectName: project.data?.name ?? null,
-        }}
-        current={`Issue #${i.number}`}
-      />
-      <Group gap="xs" mb="xs" align="center">
-        <Title order={2}>
-          #{i.number} {i.title}
-        </Title>
-        <Badge tone={ISSUE_TONE[i.status]}>{i.status}</Badge>
-      </Group>
-      <Text size="xs" c="dimmed" mb="sm">
-        {i.createdBy ?? "—"} · opened {fmtTime(i.createdAt)}
-        {i.closedAt !== null && ` · closed ${fmtTime(i.closedAt)}`}
-        {i.versionId && (
+      {crumbs}
+      <PageHeader
+        title={`#${i.number} ${i.title}`}
+        badges={<Badge tone={ISSUE_TONE[i.status]}>{i.status}</Badge>}
+        meta={
           <>
-            {" "}
-            · version <strong>{versionName(i.versionId)}</strong>
+            {i.createdBy ?? "—"} · opened {fmtTime(i.createdAt)}
+            {i.closedAt !== null && ` · closed ${fmtTime(i.closedAt)}`}
+            {i.versionId && (
+              <>
+                {" "}
+                · version <strong>{versionName(i.versionId)}</strong>
+              </>
+            )}
           </>
+        }
+        actions={actions}
+      />
+      {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
+      <Box mb="xl">
+        <Markdown text={i.bodyMd} />
+        {i.bodyMd.trim() === "" && (
+          <Text size="sm" c="dimmed">
+            No description.
+          </Text>
         )}
-      </Text>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {draft ? (
-        <DraftForm
-          draft={draft}
-          onChange={(next) => setDraft({ ...draft, ...next })}
-          onSubmit={save}
-          onCancel={() => setDraft(null)}
-          submitLabel="Save"
-          bodyLabel="Body"
-          busy={act.busy}
-          extra={
-            <VersionSelect
-              versions={versions.data ?? []}
-              value={draft.versionId}
-              onChange={(versionId) => setDraft({ ...draft, versionId })}
-            />
-          }
-        />
-      ) : (
-        <Card withBorder mb="md" padding="sm">
-          <Markdown text={i.bodyMd} />
-          {i.bodyMd.trim() === "" && (
-            <Text size="sm" c="dimmed">
-              No description.
-            </Text>
-          )}
-          {t.canWrite && (
-            <Group gap="xs" mt="xs">
-              <Button
-                size="compact-sm"
-                variant="default"
-                onClick={() =>
-                  setDraft({
-                    title: i.title,
-                    bodyMd: i.bodyMd,
-                    versionId: i.versionId,
-                  })
-                }
-              >
-                Edit
-              </Button>
-              <Confirm
-                label={i.status === "open" ? "Close issue" : "Reopen issue"}
-                confirmLabel={i.status === "open" ? "Close" : "Reopen"}
-                color="ink"
-                variant="default"
-                onConfirm={toggle}
-                disabled={act.busy}
-              />
-            </Group>
-          )}
-        </Card>
-      )}
+      </Box>
       <Comments
         comments={i.comments}
         canPost={t.canWrite}
@@ -178,6 +177,31 @@ export function IssuePage() {
           await issue.reload();
         }}
       />
+      <ResourceDrawer
+        opened={edit.opened}
+        onClose={edit.close}
+        title="Edit issue"
+        submitLabel="Save"
+        onSubmit={save}
+        busy={act.busy}
+        disabled={!edit.form.title.trim()}
+        error={edit.opened ? act.error : null}
+        size="lg"
+      >
+        <DiscussionFields
+          title={edit.form.title}
+          bodyMd={edit.form.bodyMd}
+          onChange={(p) => edit.patch(p)}
+          bodyLabel="Description"
+          extra={
+            <VersionSelect
+              versions={versions.data ?? []}
+              value={edit.form.versionId}
+              onChange={(versionId) => edit.patch({ versionId })}
+            />
+          }
+        />
+      </ResourceDrawer>
     </>
   );
 }

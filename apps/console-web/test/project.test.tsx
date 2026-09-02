@@ -1,9 +1,6 @@
-import { MantineProvider } from "@mantine/core";
-import { ModalsProvider } from "@mantine/modals";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type {
@@ -39,8 +36,7 @@ vi.mock("../src/api", () => ({
 
 const { ProjectPage } = await import("../src/pages/Project");
 const { IssuePage } = await import("../src/pages/Issue");
-const { theme } = await import("../src/theme");
-const { AuthProvider } = await import("../src/auth");
+const { mount: mountWith } = await import("./wrap");
 
 const TEAM: TeamDetail = { id: "team_1", name: "studio", role: "member" };
 const PROJECT: ProjectDetail = {
@@ -87,30 +83,15 @@ const ISSUE: IssueDetail = {
 };
 
 function mount(path: string) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <MantineProvider theme={theme} forceColorScheme="light">
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[path]}>
-          <AuthProvider client={mockApi}>
-            <ModalsProvider>
-              <Routes>
-                <Route
-                  path="/teams/:team/projects/:prj/:tab"
-                  element={<ProjectPage />}
-                />
-                <Route
-                  path="/teams/:team/projects/:prj/issues/:n"
-                  element={<IssuePage />}
-                />
-              </Routes>
-            </ModalsProvider>
-          </AuthProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    </MantineProvider>,
+  return mountWith(
+    <Routes>
+      <Route path="/teams/:team/projects/:prj/:tab" element={<ProjectPage />} />
+      <Route
+        path="/teams/:team/projects/:prj/issues/:n"
+        element={<IssuePage />}
+      />
+    </Routes>,
+    { client: mockApi, path },
   );
 }
 
@@ -154,7 +135,7 @@ describe("ProjectPage", () => {
     expect(await screen.findByText("v1.2.4")).toBeInTheDocument();
   });
 
-  it("opens the version modal with its links", async () => {
+  it("opens the version drawer with its links", async () => {
     vi.mocked(mockApi.version).mockResolvedValue({
       ...V1,
       links: [
@@ -218,12 +199,21 @@ describe("IssuePage", () => {
     expect(
       screen.getByRole("link", { name: "repro" }).getAttribute("rel"),
     ).toContain("noopener");
-    await userEvent.click(screen.getByRole("button", { name: "Close issue" }));
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Close issue" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Close issue" }),
+    );
     expect(mockApi.setIssueStatus).toHaveBeenCalledWith("prj_1", 1, "close");
     expect(await screen.findByText("closed")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "More actions" }));
     expect(
-      screen.getByRole("button", { name: "Reopen issue" }),
+      await screen.findByRole("menuitem", { name: "Reopen issue" }),
     ).toBeInTheDocument();
   });
 });

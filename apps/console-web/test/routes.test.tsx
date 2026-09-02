@@ -15,6 +15,12 @@ describe("routes", () => {
     expect(hidden).toEqual(["/channels", "/catalog", "/assets", "/sites"]);
     for (const h of hidden) expect(navMinRole(h)).toBe("member");
     expect(navMinRole("/teams")).toBe("member");
+    // The project sub-tree is guarded as one: a channel is created inside a
+    // project, so its route follows `/teams`, not the hidden `/channels`.
+    expect(
+      ROUTES.find((r) => r.path === "/teams/:team/projects/:prj/channels/new")
+        ?.guard,
+    ).toBe("/teams");
   });
 
   it("routes teams, projects, issues and discussions", () => {

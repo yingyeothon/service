@@ -1,9 +1,6 @@
-import { MantineProvider } from "@mantine/core";
-import { ModalsProvider } from "@mantine/modals";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type {
@@ -43,8 +40,7 @@ vi.mock("../src/api", () => ({
 
 const { ProjectPage } = await import("../src/pages/Project");
 const { SITE_SHARED_ORIGIN_WARNING } = await import("../src/pages/Site");
-const { theme } = await import("../src/theme");
-const { AuthProvider } = await import("../src/auth");
+const { mount: mountWith } = await import("./wrap");
 
 const TEAM: TeamDetail = { id: "team_1", name: "studio", role: "member" };
 const PROJECT: ProjectDetail = {
@@ -106,34 +102,27 @@ const SITE: Site = {
 };
 
 function mount(tab: string) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <MantineProvider theme={theme} forceColorScheme="light">
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/teams/team_1/projects/prj_1/${tab}`]}>
-          <AuthProvider client={mockApi}>
-            <ModalsProvider>
-              <Routes>
-                <Route
-                  path="/teams/:team/projects/:prj/:tab"
-                  element={<ProjectPage />}
-                />
-              </Routes>
-            </ModalsProvider>
-          </AuthProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    </MantineProvider>,
+  return mountWith(
+    <Routes>
+      <Route path="/teams/:team/projects/:prj/:tab" element={<ProjectPage />} />
+    </Routes>,
+    { client: mockApi, path: `/teams/team_1/projects/prj_1/${tab}` },
   );
+}
+
+/** Opens the tab's `New <noun>` drawer and returns it. */
+async function openDrawer(noun: string) {
+  await userEvent.click(
+    await screen.findByRole("button", { name: `New ${noun}` }),
+  );
+  return screen.findByRole("dialog");
 }
 
 const headers = () =>
   screen.getAllByRole("columnheader").map((h) => h.textContent);
 // Mantine appends a required marker to the label, so match its start.
-const input = (label: string) =>
-  screen.getByLabelText<HTMLInputElement>(new RegExp(`^${label}`));
+const input = (label: string, scope: HTMLElement) =>
+  within(scope).getByLabelText<HTMLInputElement>(new RegExp(`^${label}`));
 const limits = (el: HTMLInputElement) => ({
   placeholder: el.placeholder,
   required: el.required,
@@ -170,12 +159,13 @@ describe("catalog tab", () => {
       .getAllByRole("cell")
       .map((c) => c.textContent);
     expect(cells.slice(1, 3)).toEqual(["life.yyt.my-game", "alice"]);
-    expect(limits(input("New app"))).toEqual({
+    const drawer = await openDrawer("app");
+    expect(limits(input("Name", drawer))).toEqual({
       placeholder: "name (e.g. my-game)",
       required: true,
       maxLength: 64,
     });
-    expect(limits(input("Application id"))).toEqual({
+    expect(limits(input("Application id", drawer))).toEqual({
       placeholder: "life.yyt.my-game",
       required: true,
       maxLength: 200,
@@ -189,11 +179,12 @@ describe("catalog tab", () => {
       name: "next",
     });
     mount("catalog");
-    const button = await screen.findByRole("button", { name: "Create app" });
+    const drawer = await openDrawer("app");
+    const button = within(drawer).getByRole("button", { name: "Create app" });
     expect(button).toBeDisabled();
-    await userEvent.type(input("New app"), " next ");
+    await userEvent.type(input("Name", drawer), " next ");
     expect(button).toBeDisabled();
-    await userEvent.type(input("Application id"), "life.yyt.next ");
+    await userEvent.type(input("Application id", drawer), "life.yyt.next ");
     expect(button).toBeEnabled();
     await userEvent.click(button);
     expect(mockApi.createCatalogApp).toHaveBeenCalledWith("prj_1", {
@@ -203,8 +194,11 @@ describe("catalog tab", () => {
     await waitFor(() =>
       expect(mockApi.projectCatalogApps).toHaveBeenCalledTimes(2),
     );
-    expect(input("New app").value).toBe("");
-    expect(input("Application id").value).toBe("");
+    // The drawer closes on success and comes back empty.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const again = await openDrawer("app");
+    expect(input("Name", again).value).toBe("");
+    expect(input("Application id", again).value).toBe("");
   });
 
   it("says when there is nothing yet", async () => {
@@ -233,27 +227,30 @@ describe("assets tab", () => {
       .getAllByRole("cell")
       .map((c) => c.textContent);
     expect(cells.slice(1, 3)).toEqual(["tiles", "—"]);
-    expect(limits(input("New bundle"))).toEqual({
+    let drawer = await openDrawer("bundle");
+    expect(limits(input("Name", drawer))).toEqual({
       placeholder: "name (e.g. dungeon-maps)",
       required: true,
       maxLength: 64,
     });
-    expect(limits(input("Description"))).toEqual({
+    expect(limits(input("Description", drawer))).toEqual({
       placeholder: "optional",
       required: false,
       maxLength: 2000,
     });
-    const button = screen.getByRole("button", { name: "Create bundle" });
+    let button = within(drawer).getByRole("button", { name: "Create bundle" });
     expect(button).toBeDisabled();
-    await userEvent.type(input("New bundle"), "sounds");
-    await userEvent.type(input("Description"), "   ");
+    await userEvent.type(input("Name", drawer), "sounds");
+    await userEvent.type(input("Description", drawer), "   ");
     await userEvent.click(button);
     expect(mockApi.createAssetBundle).toHaveBeenCalledWith("prj_1", {
       name: "sounds",
     });
-    await waitFor(() => expect(input("New bundle").value).toBe(""));
-    await userEvent.type(input("New bundle"), "more");
-    await userEvent.type(input("Description"), " sfx ");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    drawer = await openDrawer("bundle");
+    button = within(drawer).getByRole("button", { name: "Create bundle" });
+    await userEvent.type(input("Name", drawer), "more");
+    await userEvent.type(input("Description", drawer), " sfx ");
     await userEvent.click(button);
     expect(mockApi.createAssetBundle).toHaveBeenLastCalledWith("prj_1", {
       name: "more",
@@ -294,12 +291,15 @@ describe("sites tab", () => {
     expect(live("draft")).toBe("empty");
     expect(live("rolling")).toBe("deploying");
     expect(screen.getByText(SITE_SHARED_ORIGIN_WARNING)).toBeInTheDocument();
-    expect(limits(input("New site"))).toEqual({
+    const drawer = await openDrawer("site");
+    expect(limits(input("Name", drawer))).toEqual({
       placeholder: "name (e.g. game-web)",
       required: true,
       maxLength: 64,
     });
-    expect(screen.getByRole("button", { name: "Create site" })).toBeDisabled();
+    expect(
+      within(drawer).getByRole("button", { name: "Create site" }),
+    ).toBeDisabled();
   });
 
   it("says when there is nothing yet", async () => {
@@ -313,9 +313,9 @@ describe("read-only standing", () => {
   it("hides every create form from a seatless admin", async () => {
     vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
     for (const [tab, label] of [
-      ["catalog", "Create app"],
-      ["assets", "Create bundle"],
-      ["sites", "Create site"],
+      ["catalog", "New app"],
+      ["assets", "New bundle"],
+      ["sites", "New site"],
     ] as const) {
       const r = mount(tab);
       await screen.findByRole("table");

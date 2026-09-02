@@ -1,8 +1,6 @@
-import { MantineProvider } from "@mantine/core";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type { TeamDetail, TeamMember } from "../src/types";
@@ -28,8 +26,7 @@ vi.mock("../src/api", () => ({
 
 const { TeamPage } = await import("../src/pages/Team");
 const { TeamsPage } = await import("../src/pages/Teams");
-const { theme } = await import("../src/theme");
-const { AuthProvider } = await import("../src/auth");
+const { mount: mountWith } = await import("./wrap");
 
 const TEAM: TeamDetail = {
   id: "team_1",
@@ -77,24 +74,24 @@ const MEMBERS: TeamMember[] = [
 ];
 
 function mount(path: string) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <MantineProvider theme={theme} forceColorScheme="light">
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[path]}>
-          <AuthProvider client={mockApi}>
-            <Routes>
-              <Route path="/teams" element={<TeamsPage />} />
-              <Route path="/teams/:team" element={<TeamPage />} />
-              <Route path="/teams/:team/:tab" element={<TeamPage />} />
-            </Routes>
-          </AuthProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    </MantineProvider>,
+  return mountWith(
+    <Routes>
+      <Route path="/teams" element={<TeamsPage />} />
+      <Route path="/teams/:team" element={<TeamPage />} />
+      <Route path="/teams/:team/:tab" element={<TeamPage />} />
+    </Routes>,
+    { client: mockApi, path },
   );
+}
+
+/** Opens a row's menu and picks a verb, then confirms it in the modal. */
+async function rowVerb(name: string, verb: string) {
+  await userEvent.click(
+    await screen.findByRole("button", { name: `Actions for ${name}` }),
+  );
+  await userEvent.click(await screen.findByRole("menuitem", { name: verb }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByRole("button", { name: verb }));
 }
 
 describe("TeamPage", () => {
@@ -137,8 +134,7 @@ describe("TeamPage", () => {
       rotate: [{ id: "auth_9", kind: "auth", name: "login" }],
     });
     mount("/teams/team_1/members");
-    await userEvent.click(await screen.findByRole("button", { name: "Kick" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await rowVerb("bob", "Kick");
     expect(
       await screen.findByText(/still knows the credentials/),
     ).toBeInTheDocument();
@@ -155,10 +151,17 @@ describe("TeamPage", () => {
       rotate: [{ id: "q_1", kind: "q", name: "dungeon" }],
     });
     mount("/teams/team_1/members");
+    // Leaving is the page's verb, not a row's: it sits in the header menu.
     await userEvent.click(
-      await screen.findByRole("button", { name: "Leave team" }),
+      await screen.findByRole("button", { name: "More actions" }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Leave team" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Leave team" }),
+    );
     expect(await screen.findByText("You left studio.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "dungeon" })).toBeInTheDocument();
   });
@@ -201,7 +204,8 @@ describe("TeamPage", () => {
     expect(
       await screen.findByRole("button", { name: "Appoint owner" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Kick" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add member" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
 });

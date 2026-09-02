@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -90,11 +90,12 @@ describe("DiscussionPage", () => {
     });
     open();
     await screen.findByRole("heading", { name: "Jam date" });
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const title = screen.getByLabelText(/Title/);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
+    const title = within(drawer).getByLabelText(/Title/);
     await userEvent.clear(title);
     await userEvent.type(title, " Jam date? ");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(within(drawer).getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(mockApi.updateDiscussion).toHaveBeenCalledWith("team_1", "d_1", {
         title: "Jam date?",
@@ -110,8 +111,18 @@ describe("DiscussionPage", () => {
     vi.mocked(mockApi.deleteDiscussion).mockResolvedValue(undefined);
     open();
     await screen.findByRole("heading", { name: "Jam date" });
-    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    // The author's delete is the danger zone of the edit drawer.
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Delete discussion" }),
+    );
+    const modal = (await screen.findByText("Delete discussion?")).closest(
+      '[role="dialog"]',
+    ) as HTMLElement;
+    await userEvent.click(
+      within(modal).getByRole("button", { name: "Delete discussion" }),
+    );
     await waitFor(() =>
       expect(mockApi.deleteDiscussion).toHaveBeenCalledWith("team_1", "d_1"),
     );
@@ -122,6 +133,36 @@ describe("DiscussionPage", () => {
     open({ ...DISC, mine: false });
     await screen.findByRole("heading", { name: "Jam date" });
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+  });
+});
+
+describe("DiscussionPage as a non-author owner", () => {
+  it("offers delete in the header menu without an edit", async () => {
+    vi.clearAllMocks();
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "u1",
+      login: "alice",
+      role: "member",
+      via: "session",
+    });
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "owner" });
+    vi.mocked(mockApi.deleteDiscussion).mockResolvedValue(undefined);
+    open({ ...DISC, mine: false });
+    await screen.findByRole("heading", { name: "Jam date" });
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete discussion" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Delete discussion" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.deleteDiscussion).toHaveBeenCalledWith("team_1", "d_1"),
+    );
   });
 });
