@@ -195,6 +195,16 @@ try {
     body: { title: "two" },
   });
   check("issue #2", i2.body?.number === 2, i2.text);
+  const byVersion = await call(
+    `/projects/${prjId}/issues?versionId=${bump.body?.id}`,
+    { headers: as(mate) },
+  );
+  check(
+    "issues?versionId keeps the referencing issue only",
+    byVersion.status === 200 &&
+      byVersion.body?.issues?.map((i) => i.number).join() === "1",
+    byVersion.text.slice(0, 120),
+  );
   // `updated_at` is second-precision and the tie-break is a random id: the
   // feed check below needs the close to land in a later second than issue 2.
   await new Promise((r) => setTimeout(r, 1100));

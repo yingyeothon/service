@@ -6,7 +6,7 @@
 // Device flow is interactive (GitHub approval) — manual procedure:
 //   1) curl -sX POST <base>/auth/device/start → open verificationUri, enter userCode
 //   2) curl -sX POST <base>/auth/device/token -d '{"handle":"..."}' until 201
-import { ensureTeam, seat } from "./_team.mjs";
+import { ensureTeam, seat, settle } from "./_team.mjs";
 import { asUser, createChecker, debugLogin, jsonClient } from "./_lib.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
@@ -48,6 +48,24 @@ check(
     app.body?.ownerLogin === undefined,
   app.text.slice(0, 200),
 );
+// The commits below create project versions `1.0.0`/`2.0.0`, and the team is
+// reused across runs: clear a previous run's rows so `created` is provable.
+const SMOKE_VERSIONS = ["1.0.0", "2.0.0"];
+async function deleteSmokeVersions() {
+  const vs = await call(`/projects/${team.prjId}/versions`, {
+    headers: as(owner),
+  });
+  for (const v of vs.body?.versions ?? []) {
+    if (!SMOKE_VERSIONS.includes(v.name)) continue;
+    await settle();
+    const del = await call(`/projects/${team.prjId}/versions/${v.id}`, {
+      method: "DELETE",
+      headers: as(owner),
+    });
+    check(`delete version ${v.name}`, del.status === 204, String(del.status));
+  }
+}
+await deleteSmokeVersions();
 check(
   "stranger cannot see the app",
   (await call(`/catalog/apps/${appId}`, { headers: as(other) })).status === 404,
@@ -171,6 +189,27 @@ if (up.status === 201) {
     "commit is idempotent",
     again.status === 200 && again.body?.id === artifact?.id,
   );
+  // The commit made the project version its tag names and linked the artifact.
+  check(
+    "commit created and linked the project version",
+    artifact?.version?.name === "1.0.0" &&
+      artifact?.version?.created === true &&
+      again.body?.version?.linkId === artifact?.version?.linkId &&
+      again.body?.version?.created === false,
+    JSON.stringify(artifact?.version ?? null),
+  );
+  const ver = await call(
+    `/projects/${team.prjId}/versions/${artifact?.version?.id}`,
+    { headers: as(mate) },
+  );
+  check(
+    "version detail names the artifact",
+    ver.status === 200 &&
+      ver.body?.artifactCount === 1 &&
+      ver.body?.links?.[0]?.artifactId === artifact?.id &&
+      ver.body?.links?.[0]?.artifact?.appId === appId,
+    ver.text.slice(0, 200),
+  );
 }
 
 // second version + cleanup with keepRecentVersions=1
@@ -247,6 +286,7 @@ check(
     })
   ).status === 204,
 );
+await deleteSmokeVersions();
 const hist = await call(`/teams/${team.teamId}/history?limit=50`, {
   headers: as(owner),
 });
