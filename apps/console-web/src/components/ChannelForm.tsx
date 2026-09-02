@@ -232,24 +232,25 @@ export function ChannelForm({
             required
           />
           <TextInput
+            label="Visible peers cap (1–256)"
+            description="A player sees at most this many peers, nearest first. Always applied, so every frame fits the gateway's cap; enter/leave, positions and zone chat all follow the view."
+            type="number"
+            min={1}
+            max={256}
+            value={form.maxPeers}
+            onChange={(e) => set("maxPeers", e.target.value)}
+            disabled={!form.capPos}
+            required
+          />
+          <TextInput
             label="View range (tiles, 1–256; empty = whole zone)"
-            description="Area of interest: a player sees peers within this many tiles on both axes. Enter/leave, positions and zone chat all follow the view."
+            description="Area of interest: only peers within this many tiles on both axes are candidates for the view."
             type="number"
             min={1}
             max={256}
             value={form.aoiRange}
             onChange={(e) => set("aoiRange", e.target.value)}
             disabled={!form.capPos}
-          />
-          <TextInput
-            label="Visible peers cap (1–256)"
-            description="Nearest peers shown when more than this are within range."
-            type="number"
-            min={1}
-            max={256}
-            value={form.aoiMaxPeers}
-            onChange={(e) => set("aoiMaxPeers", e.target.value)}
-            disabled={!form.capPos || form.aoiRange.trim() === ""}
           />
         </>
       )}

@@ -59,16 +59,21 @@ type LobbyConfig struct {
 	PartySizeMax    int          `json:"partySizeMax"`
 	DefaultZone     string       `json:"defaultZone"`
 	MapURL          string       `json:"mapUrl"`
-	// AOI is the area-of-interest filter (`todo/26`); nil relays zone-wide.
+	// MaxPeers caps every view: the nearest MaxPeers peers of the zone (or
+	// of the AOI box) are in view, ties by userId. Always applied, so every
+	// snapshot and pos batch fits the outbound cap (`todo/28`).
+	MaxPeers int `json:"maxPeers"`
+	// AOI is the optional area-of-interest box (`todo/26`); nil means the
+	// range is the whole zone (the MaxPeers cut still applies).
 	AOI *LobbyAOI `json:"aoi,omitempty"`
 }
 
 // LobbyAOI mirrors `LobbyChannelConfig.aoi`: a peer is in view when both
-// |dx| and |dy| are within Range of the viewer (a box, Chebyshev distance),
-// and at most MaxPeers nearest peers are shown.
+// |dx| and |dy| are within Range of the viewer (a box, Chebyshev distance).
+// MaxPeers is read only from rows written before it moved to the top level.
 type LobbyAOI struct {
 	Range    float64 `json:"range"`
-	MaxPeers int     `json:"maxPeers"`
+	MaxPeers int     `json:"maxPeers,omitempty"`
 }
 
 // Redis is the derived name block of a `q` channel (`gatewayRedis` in the
@@ -377,8 +382,8 @@ func decode(body []byte) (*Channel, error) {
 			lc.MaxMoveDelta = 3
 		}
 		if lc.AOI != nil {
-			// The console enforces 1..256 for both; clamp here too so a
-			// hand-edited row cannot blow up the grid or the frame cap.
+			// The console enforces 1..256; clamp here too so a hand-edited
+			// row cannot blow up the grid or the frame cap.
 			if lc.AOI.Range <= 0 {
 				return nil, errors.New("console: lobby aoi.range must be positive")
 			}
@@ -387,11 +392,16 @@ func decode(body []byte) (*Channel, error) {
 			} else if lc.AOI.Range > 256 {
 				lc.AOI.Range = 256
 			}
-			if lc.AOI.MaxPeers <= 0 {
-				lc.AOI.MaxPeers = 64
-			} else if lc.AOI.MaxPeers > 256 {
-				lc.AOI.MaxPeers = 256
+			// A row from before the cap moved to the top level.
+			if lc.MaxPeers <= 0 && lc.AOI.MaxPeers > 0 {
+				lc.MaxPeers = lc.AOI.MaxPeers
 			}
+			lc.AOI.MaxPeers = 0
+		}
+		if lc.MaxPeers <= 0 {
+			lc.MaxPeers = 64
+		} else if lc.MaxPeers > 256 {
+			lc.MaxPeers = 256
 		}
 		ch.Lobby = &lc
 		ch.AuthChannelID = lc.AuthChannelID

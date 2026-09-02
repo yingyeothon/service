@@ -38,9 +38,10 @@ export interface ChannelFormState {
   partySizeMax: string;
   defaultZone: string;
   mapUrl: string;
-  /** Empty = no area-of-interest filter (the whole zone is in view). */
+  /** Nearest peers in view; always applied. */
+  maxPeers: string;
+  /** Empty = no area-of-interest box (the whole zone is in range). */
   aoiRange: string;
-  aoiMaxPeers: string;
 }
 
 export const emptyForm: ChannelFormState = {
@@ -70,8 +71,8 @@ export const emptyForm: ChannelFormState = {
   partySizeMax: "4",
   defaultZone: "lobby",
   mapUrl: "",
+  maxPeers: "64",
   aoiRange: "",
-  aoiMaxPeers: "64",
 };
 
 /** Pre-fills the form from an existing channel (secrets are never returned, so they stay blank). */
@@ -109,8 +110,9 @@ export function formFromChannel(ch: Channel): ChannelFormState {
       partySizeMax: String(c.partySizeMax),
       defaultZone: c.defaultZone,
       mapUrl: c.mapUrl,
+      // A row saved before the cap moved to the top level keeps it in `aoi`.
+      maxPeers: String(c.maxPeers ?? c.aoi?.maxPeers ?? 64),
       aoiRange: c.aoi ? String(c.aoi.range) : "",
-      aoiMaxPeers: c.aoi ? String(c.aoi.maxPeers) : "64",
     };
   }
   const c = ch.config as MatchConfig;
@@ -205,14 +207,7 @@ export function buildConfig(
     if (aoiRange !== "" && !f.capPos)
       throw new Error("the view range needs positions enabled");
     const aoi =
-      aoiRange === ""
-        ? {}
-        : {
-            aoi: {
-              range: int(aoiRange, "view range"),
-              maxPeers: int(f.aoiMaxPeers, "visible peers"),
-            },
-          };
+      aoiRange === "" ? {} : { aoi: { range: int(aoiRange, "view range") } };
     return {
       authChannelId: f.authChannelId,
       capabilities: {
@@ -228,6 +223,7 @@ export function buildConfig(
       partySizeMax: int(f.partySizeMax, "max party size"),
       defaultZone: f.defaultZone.trim(),
       mapUrl: assetUrl(f.mapUrl.trim()),
+      maxPeers: int(f.maxPeers, "visible peers"),
       ...aoi,
     } satisfies LobbyConfig;
   }

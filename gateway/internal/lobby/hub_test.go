@@ -15,26 +15,39 @@ import (
 	"github.com/yingyeothon/service/gateway/internal/redisx"
 )
 
+// rec records a socket's frames and checks every one against the view
+// invariant (viewChecker). Like conn.Conn it refuses sends once closed.
 type rec struct {
+	t      *testing.T
 	mu     sync.Mutex
 	frames []map[string]any
+	// total counts frames since creation (reset does not clear it), so a
+	// violation names the frame's absolute index.
+	total  int
+	check  *viewChecker
 	closed int
 	reason string
 	allow  bool
 }
 
-func newRec() *rec { return &rec{allow: true} }
+func newRec(t *testing.T) *rec { return &rec{t: t, allow: true, check: newViewChecker()} }
 
 func (r *rec) Send(v any) bool {
 	b, _ := json.Marshal(v)
 	return r.SendRaw(b)
 }
+func (r *rec) SendCtl(v any) bool { return r.Send(v) }
 func (r *rec) SendRaw(b []byte) bool {
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed != 0 {
+		return false
+	}
 	r.frames = append(r.frames, m)
-	r.mu.Unlock()
+	r.check.apply(r.t, r.total, m)
+	r.total++
 	return true
 }
 func (r *rec) SendError(code, msg string) {
@@ -44,6 +57,17 @@ func (r *rec) Close(code int, reason string) {
 	r.mu.Lock()
 	r.closed, r.reason = code, reason
 	r.mu.Unlock()
+}
+
+// seen is the checker's current view, for comparing with the hub's.
+func (r *rec) seen() map[string]struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]struct{}, len(r.check.seen))
+	for id := range r.check.seen {
+		out[id] = struct{}{}
+	}
+	return out
 }
 func (r *rec) Allow() bool { return r.allow }
 
@@ -106,7 +130,7 @@ func send(h *Hub, id string, v any) {
 func TestHelloEnterLeaveAndFlush(t *testing.T) {
 	h, mr, _ := newHub(t, cfg())
 	ctx := context.Background()
-	a, b := newRec(), newRec()
+	a, b := newRec(t), newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	hello := a.last()
 	if hello["type"] != "hello" || hello["userId"] != "ua" || hello["zone"] != "Zone001" || hello["tick"].(float64) != 200 || hello["mapUrl"] != "https://d.example.com/m.json" {
@@ -177,7 +201,7 @@ func TestHelloEnterLeaveAndFlush(t *testing.T) {
 		t.Fatal("session should be released and pos retained")
 	}
 	// Reconnect restores the retained position and re-enters the zone.
-	a2 := newRec()
+	a2 := newRec(t)
 	b.reset()
 	h.Join(ctx, "i:a2", "ua", a2)
 	if a2.find("snapshot") == nil || b.find("enter") == nil {
@@ -192,7 +216,7 @@ func TestReplaceSessionAndCapabilityOff(t *testing.T) {
 	c.Capabilities.Party = false
 	h, _, _ := newHub(t, c)
 	ctx := context.Background()
-	a1, a2 := newRec(), newRec()
+	a1, a2 := newRec(t), newRec(t)
 	h.Join(ctx, "i:1", "ua", a1)
 	h.Join(ctx, "i:2", "ua", a2)
 	if a1.closed != 4000 {
@@ -234,7 +258,7 @@ func TestReplaceSessionAndCapabilityOff(t *testing.T) {
 func TestSayAndEventScopes(t *testing.T) {
 	h, _, _ := newHub(t, cfg())
 	ctx := context.Background()
-	a, b, c := newRec(), newRec(), newRec()
+	a, b, c := newRec(t), newRec(t), newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	h.Join(ctx, "i:b", "ub", b)
 	h.Join(ctx, "i:c", "uc", c)
@@ -293,7 +317,7 @@ func TestSayAndEventScopes(t *testing.T) {
 func TestPartyLifecycle(t *testing.T) {
 	h, mr, rx := newHub(t, cfg())
 	ctx := context.Background()
-	a, b, c := newRec(), newRec(), newRec()
+	a, b, c := newRec(t), newRec(t), newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	h.Join(ctx, "i:b", "ub", b)
 	h.Join(ctx, "i:c", "uc", c)
@@ -357,7 +381,7 @@ func TestPartyLifecycle(t *testing.T) {
 		t.Fatal("party dropped on disconnect")
 	}
 	// Reconnect: hello carries partyId, roster re-sent.
-	a2 := newRec()
+	a2 := newRec(t)
 	h.Join(ctx, "i:a2", "ua", a2)
 	if a2.find("hello")["partyId"] != "pty_id1" || a2.find("party") == nil {
 		t.Fatalf("reconnect party: %v", a2.types())
@@ -398,7 +422,7 @@ func TestPartyRestoredAfterRestart(t *testing.T) {
 	_ = rx.SetParty(context.Background(), "ch_l", "pty_old", []byte(`{"id":"pty_old","leaderId":"ua","members":["ua","ub"],"invited":[]}`), []string{"ua", "ub"})
 	h := New(Options{ChannelID: "ch_l", Config: cfg(), Redis: rx})
 	defer h.Stop(1001, "")
-	b := newRec()
+	b := newRec(t)
 	h.Join(context.Background(), "i:b", "ub", b)
 	// After a gateway restart the roster is not known when `hello` goes out;
 	// the `party` frame that follows carries it.
@@ -414,7 +438,7 @@ func TestPartyRestoredAfterRestart(t *testing.T) {
 func TestJoinRefusedAfterStop(t *testing.T) {
 	h, _, _ := newHub(t, cfg())
 	h.Stop(1001, "test")
-	if h.Join(context.Background(), "i:z", "uz", newRec()) {
+	if h.Join(context.Background(), "i:z", "uz", newRec(t)) {
 		t.Fatal("stopped hub accepted a join")
 	}
 }
@@ -422,7 +446,7 @@ func TestJoinRefusedAfterStop(t *testing.T) {
 func TestHelloIsFirstEvenWithTraffic(t *testing.T) {
 	h, _, _ := newHub(t, cfg())
 	ctx := context.Background()
-	a, b := newRec(), newRec()
+	a, b := newRec(t), newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	send(h, "i:a", map[string]any{"type": "party.create"})
 	h.Join(ctx, "i:b", "ub", b)

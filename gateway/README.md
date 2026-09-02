@@ -38,8 +38,10 @@ Endpoints:
   `sysBytes`, `goroutines`) for anyone; with `Authorization: Bearer
 <GATEWAY_TOKEN>` it adds the per-channel slice (channel ids are targeting
   material, so they are not public). Alarm on `counters.aborts`,
-  `counters.redisErrors`, `gauges.outboundQueueMax`, `runtime.sysBytes`
-  against the 256 MB cap, and `rejected5xx`.
+  `counters.redisErrors`, `counters.tooSlow` (clients forced to reconnect
+  with `4005`), `gauges.outboundQueueMax`, `runtime.sysBytes` against the
+  256 MB cap, and `rejected5xx`; `gauges.flushHoldMaxMicros` says how long a
+  lobby flush held its lock.
 - `GET /?channel={channelId}[&gameId={gameId}]` — the WebSocket endpoint
   (`x-game-id` is accepted as an alias of `gameId`).
 
@@ -83,6 +85,7 @@ Close codes the gateway sends:
 | `4002` | idle: no pong within 75 s                                   | reconnect                                                                        |
 | `4003` | policy: 50 refused messages on one socket                   | fix the client                                                                   |
 | `4004` | the channel expired or was disabled                         | stop                                                                             |
+| `4005` | too slow: the outbound queue filled with control frames     | reconnect (a fresh `snapshot` resyncs the peer map)                              |
 | `1000` | `q`: the game dropped you (`{op:"drop"}`) — a normal finish | show the result                                                                  |
 | `1001` | gateway restarting                                          | reconnect with backoff (do not stampede)                                         |
 | `1003` | binary frame received                                       | fix the client (text only)                                                       |
@@ -94,8 +97,13 @@ Both strategies: text frames only, 16 KB inbound cap, 32 KB outbound cap
 replaced by `error frame_too_large` so the client knows a gap exists),
 WebSocket ping every 30 s,
 per-connection token bucket (lobby: the channel's `rateLimit`/s; q: 20/s;
-burst 2×; over it → `error rate_limited`), and a 256-frame outbound queue
-that drops the **oldest** pending frame under backpressure. Every refusal is a typed frame
+burst 2×; over it → `error rate_limited`), and a 256-frame outbound queue.
+Under backpressure the queue drops the **oldest droppable** frame — a `pos`
+batch or a `q` game frame, where the newest wins — and never a control frame
+(`hello`, `snapshot`, `enter`, `leave`, `say`, `event`, `party*`, `error`): a
+client that missed one would hold a wrong peer set for good. When the queue
+holds nothing but control frames the socket is closed with `4005` and the
+client resyncs by reconnecting. Every refusal is a typed frame
 `{ "type": "error", "code": "…", "message": "…" }`, never silence.
 
 Connection ids are `{instance}:{random}`; `__FAKE_CONNECTION_ID__` is
@@ -129,8 +137,10 @@ First frame, always:
 ```
 
 `capabilities` is the channel's config object verbatim (the design sketch
-showed a flat list; the object keeps the `say` scopes). `aoi` is present only
-when the channel filters by area of interest (below). `partyId` is present
+showed a flat list; the object keeps the `say` scopes). `aoi` is the view
+rule: `maxPeers` always, `range` only when the channel has a box (below) —
+a channel without one sends `"aoi": { "maxPeers": 64 }`.
+`partyId` is present
 when the gateway already knows the reconnecting player's party; after a
 gateway restart the roster is loaded from Redis and arrives as the `party`
 frame right after `hello` instead. `{type:"ping"}` is answered with
@@ -151,18 +161,18 @@ Client → gateway:
 
 Gateway → client:
 
-| type             | fields                                                                                  | when                                                                                                             |
-| ---------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `snapshot`       | `zone`, `peers[]`                                                                       | you entered a zone (first `pos`, zone change, or reconnect with a retained position) — every peer in your view   |
-| `enter`          | `zone`, `userId`, `x`, `y`, `dir`                                                       | a peer came into your view (entered the zone, or with AOI walked into your box / a slot freed up)                |
-| `leave`          | `zone`, `userId`                                                                        | a peer left your view (zone change, disconnect, or with AOI walked out of your box / was cut by `maxPeers`)      |
-| `pos`            | `zone`, `peers[]`                                                                       | once per `flushIntervalMs` (`tick`), only peers in your view that moved; includes you — filter your own `userId` |
-| `error`          | `code: "frame_too_large"`                                                               | a frame meant for you exceeded 32 KB and was dropped (the message says how large)                                |
-| `say` / `event`  | `from`, `scope`, `to?`, …                                                               | mirrored to the routed set                                                                                       |
-| `party`          | `partyId` (`""` = no party), `leaderId`, `members[{userId,online}]`, `invited[]`, `max` | roster snapshot on every change, and on reconnect                                                                |
-| `party.invite`   | `partyId`, `from`                                                                       | you were invited                                                                                                 |
-| `party.declined` | `partyId`, `userId`                                                                     | (leader) an invite was refused                                                                                   |
-| `error`          | `code`, `message`                                                                       | any refusal                                                                                                      |
+| type             | fields                                                                                  | when                                                                                                                   |
+| ---------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `snapshot`       | `zone`, `peers[]`                                                                       | you entered a zone (first `pos`, zone change, or reconnect with a retained position) — every peer in your view         |
+| `enter`          | `zone`, `userId`, `x`, `y`, `dir`                                                       | a peer came into your view (entered the zone, or with AOI walked into your box / a slot freed up)                      |
+| `leave`          | `zone`, `userId`                                                                        | a peer left your view (zone change, disconnect, replaced by a newer socket, walked out of your box, cut by `maxPeers`) |
+| `pos`            | `zone`, `peers[]`                                                                       | once per `flushIntervalMs` (`tick`), only peers in your view that moved; includes you — filter your own `userId`       |
+| `error`          | `code: "frame_too_large"`                                                               | a frame meant for you exceeded 32 KB and was dropped (the message says how large)                                      |
+| `say` / `event`  | `from`, `scope`, `to?`, …                                                               | mirrored to the routed set                                                                                             |
+| `party`          | `partyId` (`""` = no party), `leaderId`, `members[{userId,online}]`, `invited[]`, `max` | roster snapshot on every change, and on reconnect                                                                      |
+| `party.invite`   | `partyId`, `from`                                                                       | you were invited                                                                                                       |
+| `party.declined` | `partyId`, `userId`                                                                     | (leader) an invite was refused                                                                                         |
+| `error`          | `code`, `message`                                                                       | any refusal                                                                                                            |
 
 A player has no zone until their first `pos`; `hello.zone` is only the
 default the game should start in. A zone change is decided by the game's HTTP
@@ -173,12 +183,14 @@ table and work across zones. **Zones are not private**: any client may
 announce itself into any zone name and receive that zone's snapshot — zone
 access is the game's rule, and the gateway does not enforce it.
 
-**Area of interest.** Without `aoi` in the channel config your view is the
-whole zone and the rows above read as they always did. With
-`aoi: { range, maxPeers }` your view is the box `|dx| ≤ range && |dy| ≤ range`
-around your last `pos` (Chebyshev distance, so a range of 10 is "10 tiles
-up, down, left and right"), nearest first when more than `maxPeers` peers
-are inside (equal distance is broken by `userId`, so the cut is predictable).
+**Area of interest.** Every lobby channel caps a view at `maxPeers`
+(default 64, at most 256): you see the nearest `maxPeers` peers of your zone
+(equal distance is broken by `userId`, so the cut is predictable), which
+keeps every `snapshot` and `pos` batch under the 32 KB frame cap. A zone
+with no more peers than that is simply the whole zone. With
+`aoi: { range }` the candidates are further limited to the box
+`|dx| ≤ range && |dy| ≤ range` around your last `pos` (Chebyshev distance,
+so a range of 10 is "10 tiles up, down, left and right").
 Views are **receiver-owned**: each socket's view is exactly the
 set of peers it was told about by `snapshot`/`enter` and not yet by `leave`,
 and every `enter`/`leave` is a diff of that set — a peer that walks out of
@@ -193,6 +205,21 @@ whoever has you in view, plus yourself. Because of `maxPeers` the relation
 can be asymmetric — B may see A while A's box is full. A client that keeps a
 peer map keyed by `userId` and applies `enter`/`leave`/`pos` as before needs
 no change (`@yingyeothon/gamebase-client` does exactly that).
+
+**View invariant.** For every socket and every peer `P`, each zone-scoped
+frame naming `P` — a `pos` entry, a zone `say`/`event` — arrives after the
+`snapshot`/`enter` that introduced `P` and before the `leave` that removed
+it; `enter` is never sent for a peer already in view, `leave` never for one
+that is not; and the frame's `zone` is the zone of your last `snapshot`. A
+replaced socket (`4000`) produces a `leave` for its viewers, and the
+successor's zone entry a fresh `enter`. The gateway sends these frames in
+one order per channel and never drops a control frame (see `4005` above).
+When a view changes wholesale — a config change, a crowd arriving — you get
+one fresh `snapshot` instead of a burst of `enter`/`leave`; treat every
+`snapshot` as "replace the peer map". Party frames and `say`/`event` with
+`scope:"party"|"user"` are routed by `userId` across zones and sit outside
+the rule. A client that receives a `pos` or `leave` for a peer it does not
+know has found a gateway bug: ignore the frame for rendering, but log it.
 
 Disconnect keeps the retained position (`gateway:{stage}:pos:…`, 30 min
 sliding, written at most once a second for all movers at once and at once
@@ -258,7 +285,13 @@ received for that connection. A push Redis refuses is answered with `error
 unavailable`; three in a row abort the game (`4001`). Outbound `GatewayCommand`s (`{op:"send", connectionId|connectionIds,
 message}` / `{op:"drop", connectionId}`) are fanned out; `message` is
 forwarded verbatim. On disconnect `{"type":"leave","connectionId"}` is pushed
-and the subscription is dropped with the last socket of the game.
+and the subscription is dropped with the last socket of the game. Two cases
+push `enter` with no matching `leave`, by contract: a member's newer socket
+replaces the old one (`4000`; the actor's `processEnter` rebinds the member,
+a `leave` naming the rebound connection would be misread) and an abort
+(`4001`; the queue is deleted). An `enter` push Redis refuses closes the
+socket with `1011` and detaches the connection, so the game is reaped when
+its last live member leaves.
 
 Actor death is detected from the depth `RPUSH` returns: depth > 200, or
 depth > 20 for more than 5 s without dipping back, aborts the game — every

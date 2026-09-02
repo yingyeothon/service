@@ -9,7 +9,7 @@ import (
 func TestConnectionStatBalances(t *testing.T) {
 	h, _, _ := newHub(t, cfg())
 	ctx := context.Background()
-	a, b, a2 := newRec(), newRec(), newRec()
+	a, b, a2 := newRec(t), newRec(t), newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	send(h, "i:a", map[string]any{"type": "pos", "zone": "town", "x": 1, "y": 1})
 	h.Join(ctx, "i:b", "ub", b)

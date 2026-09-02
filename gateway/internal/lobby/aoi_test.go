@@ -62,7 +62,7 @@ func peerIDs(f map[string]any) string {
 func TestAOIBoxViewAndCrossing(t *testing.T) {
 	h, _, _ := newHub(t, aoiCfg(10, 64))
 	ctx := context.Background()
-	a, b, c := newRec(), newRec(), newRec()
+	a, b, c := newRec(t), newRec(t), newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	if hello := a.find("hello"); hello["aoi"] == nil || hello["aoi"].(map[string]any)["range"].(float64) != 10 || hello["aoi"].(map[string]any)["maxPeers"].(float64) != 64 {
 		t.Fatalf("hello should carry the aoi box: %v", hello)
@@ -125,7 +125,7 @@ func TestAOIBoxViewAndCrossing(t *testing.T) {
 	}
 	// Negative coordinates bucket with floor, not truncation: (-1,-1) and
 	// (-11,-11) are 10 apart (in view); (-12,-12) is not.
-	n1, n2, n3 := newRec(), newRec(), newRec()
+	n1, n2, n3 := newRec(t), newRec(t), newRec(t)
 	h.Join(ctx, "i:n1", "n1", n1)
 	pos(h, "i:n1", -1, -1)
 	h.Join(ctx, "i:n2", "n2", n2)
@@ -163,11 +163,11 @@ func TestAOIBoxViewAndCrossing(t *testing.T) {
 func TestAOIMaxPeersNearestFirst(t *testing.T) {
 	h, _, _ := newHub(t, aoiCfg(10, 2))
 	ctx := context.Background()
-	v := newRec()
+	v := newRec(t)
 	peers := map[string]*rec{}
 	for i, x := range []float64{3, 1, 2} {
 		id := fmt.Sprintf("p%d", i)
-		r := newRec()
+		r := newRec(t)
 		peers[id] = r
 		h.Join(ctx, "i:"+id, id, r)
 		pos(h, "i:"+id, x, 0)
@@ -188,7 +188,7 @@ func TestAOIMaxPeersNearestFirst(t *testing.T) {
 		t.Fatalf("p0 view is full: %v", p0.types())
 	}
 	// Equal distance is cut by userID, so the cut is predictable.
-	e := newRec()
+	e := newRec(t)
 	h.Join(ctx, "i:e", "p0a", e) // x=1 like p1; "p0a" < "p1"
 	pos(h, "i:e", -1, 0)
 	if got := peerIDs(e.find("snapshot")); got != "p1,uv" {
@@ -218,7 +218,7 @@ func TestAOIMaxPeersNearestFirst(t *testing.T) {
 func TestAOIReconfigureRederivesViews(t *testing.T) {
 	h, _, _ := newHub(t, cfg())
 	ctx := context.Background()
-	a, b := newRec(), newRec()
+	a, b := newRec(t), newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	pos(h, "i:a", 0, 0)
 	h.Join(ctx, "i:b", "ub", b)
@@ -238,8 +238,8 @@ func TestAOIReconfigureRederivesViews(t *testing.T) {
 	if count(a, "enter") != 1 || count(b, "enter") != 1 {
 		t.Fatalf("turning aoi off must re-announce: a=%v b=%v", a.types(), b.types())
 	}
-	// A replaced socket re-enters and its viewers get a fresh enter, as
-	// without AOI.
+	// A replaced socket leaves like any other and the successor re-enters:
+	// a view is a diff of frames, never a silent swap.
 	h.Reconfigure(aoiCfg(10, 64))
 	pos(h, "i:b", 47, 0)
 	pos(h, "i:b", 44, 0)
@@ -261,10 +261,10 @@ func TestAOIReconfigureRederivesViews(t *testing.T) {
 	if _, ok := a.find("enter")["userId"]; ok {
 		t.Fatal("reset")
 	}
-	a2 := newRec()
+	a2 := newRec(t)
 	h.Join(ctx, "i:a2", "ua", a2)
-	if count(b, "leave") != 0 || count(b, "enter") != 1 {
-		t.Fatalf("replacement: viewer should get one enter and no leave: %v", b.types())
+	if got := b.types(); len(got) != 2 || got[0] != "leave" || got[1] != "enter" {
+		t.Fatalf("replacement: viewer should get leave then enter: %v", got)
 	}
 	if peerIDs(a2.find("snapshot")) != "ub" {
 		t.Fatalf("restored socket snapshot: %s", peerIDs(a2.find("snapshot")))
@@ -275,7 +275,7 @@ func TestPosPersistWindow(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	h, mr := newClockHub(t, cfg(), &now)
 	ctx := context.Background()
-	a := newRec()
+	a := newRec(t)
 	h.Join(ctx, "i:a", "ua", a)
 	pos(h, "i:a", 1, 0)
 	key := "gateway:test:pos:ch_l:ua"
@@ -303,7 +303,7 @@ func TestPosPersistWindow(t *testing.T) {
 		t.Fatalf("leave must persist the last position: %s", got)
 	}
 	// And a pending (flushed, not yet written) move on a zone change.
-	a2 := newRec()
+	a2 := newRec(t)
 	h.Join(ctx, "i:a2", "ua", a2)
 	now = now.Add(posPersistEvery)
 	pos(h, "i:a2", 5, 0)
@@ -323,7 +323,7 @@ func TestPosPersistWindow(t *testing.T) {
 func TestAOILeaveReachesViewersOutsideTheCells(t *testing.T) {
 	h, _, _ := newHub(t, aoiCfg(1, 64))
 	ctx := context.Background()
-	v, m := newRec(), newRec()
+	v, m := newRec(t), newRec(t)
 	h.Join(ctx, "i:v", "uv", v)
 	pos(h, "i:v", 0, 0)
 	h.Join(ctx, "i:m", "um", m)
@@ -341,7 +341,7 @@ func TestAOILeaveReachesViewersOutsideTheCells(t *testing.T) {
 		t.Fatalf("disconnect after leaving the cells: %v", got)
 	}
 	// Zone change, same shape.
-	m2 := newRec()
+	m2 := newRec(t)
 	h.Join(ctx, "i:m2", "um", m2) // restored at x=7: walk back within maxMoveDelta
 	pos(h, "i:m2", 4, 0)
 	pos(h, "i:m2", 1, 0)
@@ -355,25 +355,27 @@ func TestAOILeaveReachesViewersOutsideTheCells(t *testing.T) {
 	if got := v.types(); len(got) != 1 || got[0] != "leave" {
 		t.Fatalf("zone change after leaving the cells: %v", got)
 	}
-	// Replacement: viewers forget silently, then the successor re-enters.
+	// Replacement: the viewer still holding the peer gets its leave even
+	// though the successor is restored outside its box; walking back in is
+	// then a fresh enter.
 	send(h, "i:m2", map[string]any{"type": "pos", "zone": "Zone001", "x": 1, "y": 0})
 	h.Flush(ctx)
 	pos(h, "i:m2", 4, 0)
 	v.reset()
-	m3 := newRec()
+	m3 := newRec(t)
 	h.Join(ctx, "i:m3", "um", m3) // restored at x=4: outside v's box
-	if len(v.types()) != 0 {
-		t.Fatalf("replacement must be silent: %v", v.types())
+	if got := v.types(); len(got) != 1 || got[0] != "leave" {
+		t.Fatalf("replacement must announce leave to the viewer holding the peer: %v", got)
 	}
 	pos(h, "i:m3", 1, 0)
 	h.Flush(ctx)
-	if v.find("enter")["userId"] != "um" || count(v, "leave") != 0 {
+	if v.find("enter")["userId"] != "um" || count(v, "leave") != 1 {
 		t.Fatalf("successor walking back in must be a fresh enter: %v", v.types())
 	}
 }
 
-// refusing wraps a recorder whose Send refuses one frame type, the way
-// `conn.SendRaw` refuses a frame over the outbound cap.
+// refusing wraps a recorder whose sends refuse one frame type, the way
+// `conn` refuses a frame over the outbound cap.
 type refusing struct {
 	*rec
 	refuse string
@@ -384,25 +386,44 @@ func (r *refusing) Send(v any) bool {
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	if m["type"] == r.refuse {
+		if m["type"] == "snapshot" {
+			// The client got `error frame_too_large` instead and knows the
+			// zone from its own `pos`: it holds an empty peer map there.
+			r.mu.Lock()
+			r.check.zone, _ = m["zone"].(string)
+			r.check.seen = map[string]struct{}{}
+			r.mu.Unlock()
+		}
 		return false
 	}
 	return r.rec.SendRaw(b)
 }
+func (r *refusing) SendCtl(v any) bool { return r.Send(v) }
 
+// A refused snapshot taught the client nothing: the view stays empty and
+// the next flush re-derives it even when nobody moved — in a zone-wide
+// channel too, which has no other reason to refresh.
 func TestRefusedSnapshotDoesNotCountAsSeen(t *testing.T) {
-	h, _, _ := newHub(t, aoiCfg(10, 64))
-	ctx := context.Background()
-	a := newRec()
-	h.Join(ctx, "i:a", "ua", a)
-	pos(h, "i:a", 0, 0)
-	b := &refusing{rec: newRec(), refuse: "snapshot"}
-	h.Join(ctx, "i:b", "ub", b)
-	pos(h, "i:b", 1, 0)
-	if b.find("snapshot") != nil {
-		t.Fatal("test wrapper should have refused the snapshot")
-	}
-	h.Flush(ctx)
-	if e := b.find("enter"); e == nil || e["userId"] != "ua" {
-		t.Fatalf("a peer the client never saw must arrive as enter: %v", b.types())
+	for _, c := range []console.LobbyConfig{aoiCfg(10, 64), cfg()} {
+		h, _, _ := newHub(t, c)
+		ctx := context.Background()
+		a := newRec(t)
+		h.Join(ctx, "i:a", "ua", a)
+		pos(h, "i:a", 0, 0)
+		b := &refusing{rec: newRec(t), refuse: "snapshot"}
+		h.Join(ctx, "i:b", "ub", b)
+		pos(h, "i:b", 1, 0)
+		if b.find("snapshot") != nil {
+			t.Fatal("test wrapper should have refused the snapshot")
+		}
+		h.Flush(ctx) // a's position is dirty
+		h.Flush(ctx) // and now nothing is
+		if e := b.find("enter"); e == nil || e["userId"] != "ua" {
+			t.Fatalf("a peer the client never saw must arrive as enter: %v", b.types())
+		}
+		send(h, "i:a", map[string]any{"type": "say", "scope": "zone", "text": "hi"})
+		if b.find("say") == nil {
+			t.Fatalf("after the resync zone chat reaches the client: %v", b.types())
+		}
 	}
 }

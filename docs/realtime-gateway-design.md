@@ -22,13 +22,18 @@ that those do not repeat. Superseded the `todo/14` design draft on 2026-08-28.
   disconnects everyone; deploy before the event and make clients reconnect.
 - Area-of-interest filtering was deferred, not rejected (corrected
   2026-09-01) and built 2026-09-02 (`docs/decisions.md` _Realtime gateway_):
-  an optional per-channel box (`aoi.range`, `aoi.maxPeers`) inside the zone.
+  an optional per-channel box (`aoi.range`) inside the zone, plus a peer cap
+  (`maxPeers`) that applies to every lobby channel.
   The constraint that shaped it: what clients depend on is the synthesised
   `enter`/`leave`, so AOI had to redefine them — each connection owns its
   view, every `enter`/`leave` is a diff of that view, and a peer leaving your
   _view_ produces a `leave` even though it never left your zone, or the
   frozen-character bug those frames exist to prevent comes straight back.
-  Without `aoi` a channel relays zone-wide exactly as before.
+  The same bug is why the view invariant (`docs/decisions.md`, 2026-09-02)
+  is enforced structurally: peer frames are sent under the hub lock, control
+  frames are never dropped (`4005` closes a client that cannot drain them),
+  and the always-on `maxPeers` cap keeps every frame under the outbound cap.
+  Without `aoi.range` the range is the whole zone.
 - The gateway reads channel config over HTTP from the console rather than
   through a MariaDB driver: it stays out of the connection budget and does not
   become a second schema consumer. The cost is one HTTP hop per cache miss.

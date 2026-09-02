@@ -86,11 +86,13 @@ export interface LobbyChannelConfig {
   defaultZone: string;
   /** Immutable versioned asset announced in `hello`. Empty = this channel has no map. */
   mapUrl: string;
+  /** Nearest peers in view, always applied (1–256). */
+  maxPeers: number;
   /**
-   * Area-of-interest box: a peer is in view within `range` tiles on both axes,
-   * nearest `maxPeers` first. Absent = zone-wide relay.
+   * Area-of-interest box: a peer is in view within `range` tiles on both axes.
+   * Absent = the whole zone is in range (the `maxPeers` cut still applies).
    */
-  aoi?: { range: number; maxPeers: number };
+  aoi?: { range: number };
 }
 
 /**

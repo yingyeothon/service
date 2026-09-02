@@ -218,14 +218,22 @@ const lobbyConfig = z
     /** Empty = this channel has no map. */
     mapUrl: z.string().max(2048).default(""),
     /**
-     * Area-of-interest filter (`docs/decisions.md` *Realtime gateway*): a peer
-     * is in view when both |dx| and |dy| are within `range` tiles, nearest
-     * `maxPeers` first. Absent = the whole zone is in view, as before.
+     * View cap (`docs/decisions.md` *Realtime gateway*): every client sees at
+     * most the nearest `maxPeers` peers of its zone (or of its `aoi` box), so
+     * a snapshot or a pos batch never outgrows the gateway's outbound frame
+     * cap. Always applied; a zone within the cap behaves as if uncapped.
+     */
+    maxPeers: z.number().int().min(1).max(256).optional(),
+    /**
+     * Optional area-of-interest box: a peer is in view when both |dx| and
+     * |dy| are within `range` tiles. Absent = the whole zone is in range.
+     * `aoi.maxPeers` is accepted from older clients and folded into the
+     * top-level field.
      */
     aoi: z
       .object({
         range: z.number().int().min(1).max(256),
-        maxPeers: z.number().int().min(1).max(256).default(64),
+        maxPeers: z.number().int().min(1).max(256).optional(),
       })
       .strict()
       .optional(),
@@ -254,15 +262,22 @@ const lobbyConfig = z
           'say scope "zone" requires capabilities.pos (no pos, no zones)',
       });
   })
-  .transform((c) => ({
-    ...c,
-    capabilities: {
-      ...c.capabilities,
-      // Canonical order, duplicates collapsed: the stored config is compared
-      // and displayed as-is, so `["user","zone","zone"]` must not survive.
-      say: SAY_SCOPES.filter((sc) => c.capabilities.say.includes(sc)),
-    },
-  }));
+  .transform((c) => {
+    // Explicit top-level wins; a body from before the cap moved to the
+    // top level carries it in `aoi`; otherwise the default.
+    const maxPeers = c.maxPeers ?? c.aoi?.maxPeers ?? 64;
+    return {
+      ...c,
+      maxPeers,
+      ...(c.aoi ? { aoi: { range: c.aoi.range } } : {}),
+      capabilities: {
+        ...c.capabilities,
+        // Canonical order, duplicates collapsed: the stored config is compared
+        // and displayed as-is, so `["user","zone","zone"]` must not survive.
+        say: SAY_SCOPES.filter((sc) => c.capabilities.say.includes(sc)),
+      },
+    };
+  });
 // `mapUrl` is normalized in `buildChannel`/`patchChannel`, not here: the origin
 // it must be pinned to is deployment configuration, which a zod schema has no
 // access to.

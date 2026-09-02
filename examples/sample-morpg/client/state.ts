@@ -159,7 +159,14 @@ export type LobbyEvent =
   | { t: "conn"; status: ConnStatus };
 
 /** What the session must do after a reduce; the reducer itself stays pure. */
-export type LobbyEffect = { kind: "startDungeon"; gameId: string };
+export type LobbyEffect =
+  | { kind: "startDungeon"; gameId: string }
+  /**
+   * A frame that broke the gateway's view invariant (`gateway/README.md`):
+   * a `pos`/`leave` for a peer never introduced by `snapshot`/`enter`.
+   * Rendering ignores it; the trace keeps the evidence.
+   */
+  | { kind: "trace"; ev: "view_violation"; frame: string; userId: string };
 
 /** Pending invites kept (newest win); an inviter cannot grow the list without bound. */
 export const INVITES_KEPT = 5;
@@ -220,13 +227,31 @@ export function reduceLobby(
       if (ev.userId in lobby.peers) {
         delete lobby.peers[ev.userId];
         pushLog(state, "sys", `${shortId(ev.userId)} left`);
+        return [];
       }
-      return [];
-    case "peerMove":
-      for (const p of ev.peers)
-        if (p.userId !== state.userId && p.userId in lobby.peers)
-          lobby.peers[p.userId] = p;
-      return [];
+      return [
+        {
+          kind: "trace",
+          ev: "view_violation",
+          frame: "leave",
+          userId: ev.userId,
+        },
+      ];
+    case "peerMove": {
+      const unknown: LobbyEffect[] = [];
+      for (const p of ev.peers) {
+        if (p.userId === state.userId) continue;
+        if (p.userId in lobby.peers) lobby.peers[p.userId] = p;
+        else
+          unknown.push({
+            kind: "trace",
+            ev: "view_violation",
+            frame: "pos",
+            userId: p.userId,
+          });
+      }
+      return unknown;
+    }
     case "say": {
       const from = shortId(ev.frame.from);
       if (ev.frame.scope === "party")

@@ -257,3 +257,39 @@ func TestMemberIDStrippedAndRedisOutageSurfaced(t *testing.T) {
 		t.Fatalf("persistent outage did not abort: %d", a.code())
 	}
 }
+
+// A failed `enter` push must not leave the connection in the game: the
+// server closes the socket with 1011 and never calls Leave, so Join has to
+// undo its own registration or the game (and its subscription) lives on
+// with a dead member and Empty() never comes true.
+func TestEnterPushFailureDetaches(t *testing.T) {
+	b, mr, _, _ := setup(t)
+	ctx := context.Background()
+	a := newRec()
+	if err := b.Join(ctx, "g1", "i:a", "ua", a); err != nil {
+		t.Fatal(err)
+	}
+	mr.Close()
+	c := newRec()
+	if err := b.Join(ctx, "g1", "i:c", "ub", c); err == nil {
+		t.Fatal("push failure must surface")
+	}
+	if frames := c.all(); len(frames) == 0 || frames[len(frames)-1] != "error:unavailable" {
+		t.Fatalf("client not told: %v", frames)
+	}
+	b.mu.Lock()
+	g := b.games["g1"]
+	_, held := g.conns["i:c"]
+	_, member := g.byMember["ub"]
+	b.mu.Unlock()
+	if held || member {
+		t.Fatal("failed join left the connection in the game")
+	}
+	if got := b.stats.Connections.Load(); got != 1 {
+		t.Fatalf("connection gauge after the failed join: %d", got)
+	}
+	b.Leave(ctx, "g1", "i:a")
+	if !b.Empty() || b.stats.Connections.Load() != 0 {
+		t.Fatal("game not reaped once the surviving member left")
+	}
+}

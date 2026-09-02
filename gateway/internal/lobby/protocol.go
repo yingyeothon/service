@@ -31,14 +31,14 @@ type Hello struct {
 	Zone         string       `json:"zone"`
 	// PartyID is set when a reconnecting player still belongs to a party.
 	PartyID string `json:"partyId,omitempty"`
-	// AOI is the channel's view box when area-of-interest filtering is on;
-	// absent means every peer in the zone is in view.
-	AOI *AOI `json:"aoi,omitempty"`
+	// AOI is the channel's view rule: `maxPeers` always (the nearest that
+	// many peers are in view), `range` only when the channel has a box.
+	AOI *AOI `json:"aoi"`
 }
 
-// AOI is the `hello` form of the channel's area-of-interest config.
+// AOI is the `hello` form of the channel's view rule.
 type AOI struct {
-	Range    float64 `json:"range"`
+	Range    float64 `json:"range,omitempty"`
 	MaxPeers int     `json:"maxPeers"`
 }
 
