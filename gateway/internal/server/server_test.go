@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,12 +38,26 @@ type fixture struct {
 	rdb    *redis.Client
 	server *Server
 	gone   atomic.Bool
+	// authRelease parks every verify of the `ch_slow` auth channel until
+	// closed; authParked counts how many are waiting.
+	authRelease chan struct{}
+	authParked  atomic.Int32
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{}
+	f := &fixture{authRelease: make(chan struct{})}
 	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/c/ch_down/verify"):
+			w.WriteHeader(500)
+			return
+		case strings.HasSuffix(r.URL.Path, "/c/ch_slow/verify"):
+			f.authParked.Add(1)
+			<-f.authRelease
+			w.WriteHeader(401)
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/c/ch_auth/verify") {
 			w.WriteHeader(404)
 			return
@@ -80,6 +95,23 @@ func newFixture(t *testing.T) *fixture {
 		case "/gw/channels/q_0123456789abcdef":
 			fmt.Fprintf(w, `{"id":"q_0123456789abcdef","kind":"q","name":"q","expiresAt":9999999999,"config":{"authChannelId":"ch_auth"},"authVerifyUrl":%q,
 			"redis":{"eventKeyPrefix":"game:test:ch_q:event:","queueKeyPrefix":"game:test:ch_q:queue:","lockKeyPrefix":"game:test:ch_q:lock:","awaiterKeyPrefix":"game:test:ch_q:awaiter:","channelPrefix":"game:out:test:ch_q:"}}`, verify)
+		// Upstream trouble, one channel id per console answer.
+		case "/gw/channels/lobby_00000000000000a0":
+			w.WriteHeader(410)
+		case "/gw/channels/lobby_00000000000000a1":
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"details":{"reason":"gateway_not_configured"}}`))
+		case "/gw/channels/lobby_00000000000000a2":
+			w.WriteHeader(401)
+		case "/gw/channels/lobby_00000000000000a3":
+			w.WriteHeader(500)
+		case "/gw/channels/lobby_00000000000000a4", "/gw/channels/lobby_00000000000000a5":
+			// Auth unreachable (a4) or over budget (a5): the lobby config is
+			// fine, only its auth channel differs.
+			authCh := map[string]string{"lobby_00000000000000a4": "ch_down", "lobby_00000000000000a5": "ch_slow"}[strings.TrimPrefix(r.URL.Path, "/gw/channels/")]
+			fmt.Fprintf(w, `{"id":%q,"kind":"lobby","name":"l","expiresAt":9999999999,
+			"config":{"authChannelId":%q,"capabilities":{"pos":true},"flushIntervalMs":50,"maxMoveDelta":3,"rateLimit":50,"partySizeMax":4,"defaultZone":"Zone001","mapUrl":"https://d.example.com/m.json"},
+			"authVerifyUrl":%q}`, strings.TrimPrefix(r.URL.Path, "/gw/channels/"), authCh, auth.URL+"/c/"+authCh+"/verify")
 		default:
 			w.WriteHeader(404)
 		}
@@ -450,4 +482,102 @@ func TestPartyRoute(t *testing.T) {
 	if c := &f.server.reg.Counters; c.PartyReads.Load() != 2 || c.PartyRejected.Load() != 6 {
 		t.Fatalf("party counters: reads=%d rejected=%d", c.PartyReads.Load(), c.PartyRejected.Load())
 	}
+}
+
+// upstreamCases are the refusals the shared gauntlet (`channelFor`,
+// `identityFor`) derives from console and auth trouble; both entry points
+// must answer them with the same status.
+var upstreamCases = []struct {
+	name    string
+	channel string
+	status  int
+	message string
+}{
+	{"channel gone", "lobby_00000000000000a0", 410, "channel is expired or disabled"},
+	{"console not configured", "lobby_00000000000000a1", 503, "gateway is not configured"},
+	{"console refuses gateway token", "lobby_00000000000000a2", 503, "gateway is not configured"},
+	{"console down", "lobby_00000000000000a3", 502, "cannot read channel configuration"},
+	{"auth down", "lobby_00000000000000a4", 502, "cannot verify token"},
+}
+
+func TestHandshakeUpstreamRefusals(t *testing.T) {
+	f := newFixture(t)
+	for _, tc := range upstreamCases {
+		_, res, err := f.dial(t, "?channel="+tc.channel, "bearer", jwtUA)
+		if err == nil || res == nil || res.StatusCode != tc.status {
+			t.Errorf("%s: res %v err %v", tc.name, res, err)
+			continue
+		}
+		var m map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&m)
+		if m["message"] != tc.message {
+			t.Errorf("%s: message %v", tc.name, m["message"])
+		}
+	}
+	if c := &f.server.reg.Counters; c.ConnectionsRejected.Load() != int64(len(upstreamCases)) {
+		t.Fatalf("rejections counted: %d", c.ConnectionsRejected.Load())
+	}
+}
+
+func TestPartyRouteUpstreamRefusals(t *testing.T) {
+	f := newFixture(t)
+	for _, tc := range upstreamCases {
+		req, _ := http.NewRequest("GET", f.srv.URL+"/parties/pty_0123456789abcdef?channel="+tc.channel, nil)
+		req.Header.Set("Authorization", "Bearer "+jwtUA)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&m)
+		res.Body.Close()
+		if res.StatusCode != tc.status || m["message"] != tc.message {
+			t.Errorf("%s: %d %v", tc.name, res.StatusCode, m)
+		}
+	}
+	if c := &f.server.reg.Counters; c.PartyRejected.Load() != int64(len(upstreamCases)) {
+		t.Fatalf("party rejections counted: %d", c.PartyRejected.Load())
+	}
+}
+
+// Over the verify budget the handshake fails fast with 503 instead of
+// queueing behind auth; the party route shares the verifier, so it does too.
+func TestHandshakeAuthBudget(t *testing.T) {
+	f := newFixture(t)
+	slow := "?channel=lobby_00000000000000a5"
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ { // authn.maxInflight
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _, _ = f.dial(t, slow, "bearer", jwt(fmt.Sprintf("s%d", i)))
+		}(i)
+	}
+	for deadline := time.Now().Add(3 * time.Second); f.authParked.Load() < 8; {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d verifies parked", f.authParked.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, res, _ := f.dial(t, slow, "bearer", jwt("extra"))
+	if res == nil || res.StatusCode != 503 {
+		t.Fatalf("over budget: %v", res)
+	}
+	var m map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&m)
+	if m["message"] != "too many verifications in flight" {
+		t.Fatalf("message: %v", m)
+	}
+	req, _ := http.NewRequest("GET", f.srv.URL+"/parties/pty_0123456789abcdef"+slow, nil)
+	req.Header.Set("Authorization", "Bearer "+jwt("party"))
+	pres, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pres.Body.Close()
+	if pres.StatusCode != 503 {
+		t.Fatalf("party over budget: %d", pres.StatusCode)
+	}
+	close(f.authRelease)
+	wg.Wait()
 }
