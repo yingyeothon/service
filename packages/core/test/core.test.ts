@@ -56,3 +56,57 @@ describe("defaults", () => {
     nullLogger.error("e");
   });
 });
+
+describe("channel lifecycle", () => {
+  const clock = { now: () => 1_000_000 };
+  it("isActive needs no disabledAt and a future expiresAt", async () => {
+    const { isActive } = await import("../src/index.js");
+    expect(isActive({ expiresAt: 1_001, disabledAt: null }, clock)).toBe(true);
+    expect(isActive({ expiresAt: 1_000, disabledAt: null }, clock)).toBe(false);
+    expect(isActive({ expiresAt: 1_001, disabledAt: 5 }, clock)).toBe(false);
+  });
+  it("requireActive maps missing to 404 and inactive to 410", async () => {
+    const { requireActive } = await import("../src/index.js");
+    const live = { expiresAt: 1_001, disabledAt: null, id: "c" };
+    await expect(requireActive(async () => live, clock)).resolves.toBe(live);
+    await expect(
+      requireActive(async () => undefined, clock),
+    ).rejects.toMatchObject({ status: 404, message: "channel not found" });
+    await expect(
+      requireActive(async () => ({ ...live, disabledAt: 1 }), clock),
+    ).rejects.toMatchObject({
+      status: 410,
+      message: "channel expired or disabled",
+    });
+  });
+});
+
+describe("runtime helpers", () => {
+  it("createJsonLogger writes one JSON line per call; meta keys shadow level/m as the handlers always did", async () => {
+    const { createJsonLogger } = await import("../src/index.js");
+    const lines: Record<string, string[]> = {};
+    const sink = Object.fromEntries(
+      (["debug", "info", "warn", "error"] as const).map((l) => [
+        l,
+        (s: string) => (lines[l] ??= []).push(s),
+      ]),
+    ) as unknown as Console;
+    const log = createJsonLogger(sink);
+    log.debug("d", { a: 1 });
+    log.info("i");
+    log.warn("w", { m: "shadow" });
+    log.error("e", { level: "override" });
+    expect(lines.debug).toEqual(['{"level":"debug","m":"d","a":1}']);
+    expect(lines.info).toEqual(['{"level":"info","m":"i"}']);
+    expect(lines.warn).toEqual(['{"level":"warn","m":"shadow"}']);
+    expect(lines.error).toEqual(['{"level":"override","m":"e"}']);
+  });
+  it("requireEnv throws the handler's message on a missing or empty value", async () => {
+    const { requireEnv } = await import("../src/index.js");
+    expect(requireEnv({ STAGE: "dev" }, "STAGE")).toBe("dev");
+    expect(() => requireEnv({ STAGE: "" }, "STAGE")).toThrow(
+      "missing env STAGE",
+    );
+    expect(() => requireEnv({}, "X")).toThrow("missing env X");
+  });
+});

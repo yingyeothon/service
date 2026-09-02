@@ -20,6 +20,13 @@
 - Review the plan before the code when a change spans schema + services + clients (team/project rework, 2026-08-26): three fresh-context adversarial reviews of the plan document (consistency / security & permissions / operations & migration) found 6 blockers and ~20 majors, all real, before a line was written.
 - A phase must be a self-contained commit: when a schema column becomes required later, keep the input type optional in the expand phase — making it required early breaks every stack that bundles the same Prisma client (console, auth, state) in one commit.
 
+## Deduplication passes (`nose`, 2026-09-02)
+
+- `nose query . --exclude 'node_modules/**' --exclude 'dist/**' --exclude 'coverage/**' --exclude '**/*.md' --exclude '**/generated/**' --exclude '**/.serverless/**'` ranks duplicated families; `id=<fam> full` prints the copies with a diff, `group=dir` the concentration. Read every flagged region before acting: roughly a third of the families differ in policy (timeouts, cap semantics, required vs optional fields, the examples' deliberate copies) and folding those would change behaviour or need more parameters than lines saved.
+- A dedup refactor is behaviour-preserving only when each call site passes its **current** literal (message, TTL, flag) to the helper — the `git diff` at the call site must show the same string that was there before — and untested production code (handlers, S3 stores, SPA tabs) gets a test pinning today's output _before_ it is refactored.
+- `--baseline local/nose-baseline.json --fail-on new` is location-sensitive: any edit that shifts lines re-flags the families below it as "new", so it is not a CI gate here. Track progress by family id from the pre-pass report (`local/nose-before.md`) and re-write the baseline after each commit.
+- Copies that have silently drifted (one side gained a guard the other lacks) are findings for the owner, not things a dedup fixes in passing — list them in the todo doc and leave both sides as they are.
+
 ## Console SPA (`apps/console-web`)
 
 - `pnpm -r build` now runs `vite build`; `pnpm lint`/`typecheck` cover `.tsx` (type-aware ESLint via `projectService`). SPA tests run under the root `pnpm test` (`vitest.config.ts` projects include `apps/*`) but are excluded from the coverage thresholds on purpose.

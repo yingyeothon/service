@@ -23,6 +23,7 @@ import {
   redirect,
   type AnyRoute,
   type RouteContext,
+  json,
 } from "@yyt/http";
 import type { Kv } from "@yyt/redis";
 import { z } from "zod";
@@ -481,11 +482,7 @@ export function createEventRoutes({
     };
   }
 
-  const created = (body: unknown) => ({
-    statusCode: 201,
-    headers: { "content-type": "application/json; charset=utf-8" },
-    body: JSON.stringify(body),
-  });
+  const created = (body: unknown) => json(body, { status: 201 });
 
   function requirePosters(): PosterStore {
     if (!posters)

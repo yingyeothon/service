@@ -3,7 +3,7 @@ import {
   createPrismaClient,
   mysqlOptionsFromEnv,
 } from "@yyt/console-db";
-import { systemClock, type Logger } from "@yyt/core";
+import { createJsonLogger, requireEnv, systemClock } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createRedisKv, redisOptionsFromEnv } from "@yyt/redis";
 import { createPoster } from "@yyt/ws";
@@ -19,22 +19,9 @@ import { createTopicStore } from "./topics.js";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
 
-function env(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`missing env ${name}`);
-  return v;
-}
+const env = (name: string) => requireEnv(process.env, name);
 
-const logger: Logger = {
-  debug: (m, meta) =>
-    console.debug(JSON.stringify({ level: "debug", m, ...meta })),
-  info: (m, meta) =>
-    console.info(JSON.stringify({ level: "info", m, ...meta })),
-  warn: (m, meta) =>
-    console.warn(JSON.stringify({ level: "warn", m, ...meta })),
-  error: (m, meta) =>
-    console.error(JSON.stringify({ level: "error", m, ...meta })),
-};
+const logger = createJsonLogger(console);
 
 interface Built {
   app: TopicApp;

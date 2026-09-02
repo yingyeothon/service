@@ -296,5 +296,12 @@ describe("createHttpHandler", () => {
       statusCode: 201,
       body: '{"a":1}',
     });
+    expect(json({ a: 1 }).headers).toEqual({
+      "content-type": "application/json; charset=utf-8",
+    });
+    expect(json({ a: 1 }, { noStore: true, status: 200 }).headers).toEqual({
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    });
   });
 });

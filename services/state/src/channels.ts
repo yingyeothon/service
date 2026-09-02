@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import {
   docKeyChannelId,
-  nowSec,
+  isActive,
   sha256Hex,
   systemClock,
   type Clock,
@@ -34,10 +34,6 @@ export interface ChannelStore {
 export interface ChannelStoreOptions {
   db: ConsoleDb;
   clock?: Clock;
-}
-
-function isActive(ch: AuthChannel, clock: Clock): boolean {
-  return ch.disabledAt === null && ch.expiresAt > nowSec(clock);
 }
 
 /**

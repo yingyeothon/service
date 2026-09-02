@@ -26,6 +26,7 @@ import {
   type AnyRoute,
   type HttpResult,
   type RouteContext,
+  json,
 } from "@yyt/http";
 import { z } from "zod";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
@@ -223,14 +224,8 @@ export interface TeamRoutesOptions {
   ) => Promise<void>;
 }
 
-const noStore = (statusCode: number, body: unknown): HttpResult => ({
-  statusCode,
-  headers: {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
-  },
-  body: JSON.stringify(body),
-});
+const noStore = (statusCode: number, body: unknown): HttpResult =>
+  json(body, { status: statusCode, noStore: true });
 
 export function createTeamRoutes({
   db,

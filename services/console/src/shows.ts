@@ -27,6 +27,7 @@ import {
   redirect,
   type AnyRoute,
   type RouteContext,
+  json,
 } from "@yyt/http";
 import type { Kv } from "@yyt/redis";
 import { z } from "zod";
@@ -275,11 +276,7 @@ export function createShowRoutes({
   const { projectResource, memberTeamIds } = access;
   const identityOf = (ctx: RouteContext) =>
     ctx.identity as ConsoleIdentity | undefined;
-  const created = (body: unknown) => ({
-    statusCode: 201,
-    headers: { "content-type": "application/json; charset=utf-8" },
-    body: JSON.stringify(body),
-  });
+  const created = (body: unknown) => json(body, { status: 201 });
   /** The `mdrl:` slot shared by every route family that records rows. */
   const writeSlot = createWriteSlot({ kv, clock });
 
@@ -1206,14 +1203,7 @@ export function createShowRoutes({
           q.actor === undefined
             ? undefined
             : await db.findMemberByLogin(q.actor);
-        const noStore = (body: unknown) => ({
-          statusCode: 200,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store",
-          },
-          body: JSON.stringify(body),
-        });
+        const noStore = (body: unknown) => json(body, { noStore: true });
         // Same shape and the same header as a match: an early return that
         // skips the hand-built response loses `no-store`.
         if (q.actor !== undefined && !actor)

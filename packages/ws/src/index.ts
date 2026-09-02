@@ -14,3 +14,8 @@ export {
   denyPolicy,
   type AuthorizerResult,
 } from "./authorizer.js";
+export {
+  quietPoster,
+  createWsDispatcher,
+  type WsDispatcherOptions,
+} from "./dispatch.js";

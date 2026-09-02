@@ -7,7 +7,7 @@ import {
   type Logger,
 } from "@yyt/core";
 import { LockTimeoutError, type Kv } from "@yyt/redis";
-import type { Poster } from "@yyt/ws";
+import { quietPoster, type Poster } from "@yyt/ws";
 import type { ChannelStore, MatchChannelPublic } from "./channels.js";
 import type { Dispatcher } from "./dispatch.js";
 import type { Pool, Ticket } from "./pool.js";
@@ -78,16 +78,10 @@ export function createMatcher({
    * close overtakes the buffered frame), so the client closes after
    * `matched`/`failed` and the 10-minute idle timeout covers the rest.
    */
-  async function send(conn: string, msg: ServerMessage) {
-    try {
-      await poster.send(conn, msg);
-    } catch (e) {
-      logger.warn("post failed", {
-        connId: conn,
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
+  const send: (conn: string, msg: ServerMessage) => Promise<void> = quietPoster(
+    poster,
+    logger,
+  );
 
   /**
    * Records the party, removes it from the pool, calls back, and notifies

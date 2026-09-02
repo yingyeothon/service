@@ -5,6 +5,7 @@ import {
   systemClock,
   type Clock,
   type Logger,
+  isActive,
 } from "@yyt/core";
 import {
   createHttpHandler,
@@ -15,7 +16,7 @@ import {
 import type { Poster } from "@yyt/ws";
 import { z } from "zod";
 import { MAX_MESSAGE_BYTES, type Broadcaster } from "./app.js";
-import { isActive, type ChannelStore } from "./channels.js";
+import type { ChannelStore } from "./channels.js";
 import {
   DEFAULT_TTL_SEC,
   MAX_TTL_SEC,

@@ -1,10 +1,10 @@
-import { AppError, nowSec, type Clock, systemClock } from "@yyt/core";
+import { isActive, requireActive, type Clock, systemClock } from "@yyt/core";
 import type {
   ConsoleDb,
   MatchChannel,
   MatchChannelConfig,
 } from "@yyt/console-db";
-import type { Kv } from "@yyt/redis";
+import { cachedJson, type Kv } from "@yyt/redis";
 
 /** Match channel without its `apiKey`; safe to cache in Redis. */
 export interface MatchChannelPublic {
@@ -38,13 +38,6 @@ export interface ChannelStoreOptions {
   clock?: Clock;
 }
 
-function isActive(
-  ch: { expiresAt: number; disabledAt: number | null },
-  clock: Clock,
-): boolean {
-  return ch.disabledAt === null && ch.expiresAt > nowSec(clock);
-}
-
 export function createChannelStore({
   db,
   kv,
@@ -57,17 +50,15 @@ export function createChannelStore({
     disabledAt: m.disabledAt,
   });
   return {
-    getMatch: async (channelId) => {
-      const cached = await kv.get(cacheKey(channelId));
-      if (cached) return JSON.parse(cached) as MatchChannelPublic;
-      const m = await db.findMatchChannel(channelId);
-      if (!m) return undefined;
-      const pub = toPublic(m);
-      await kv.set(cacheKey(channelId), JSON.stringify(pub), {
-        ex: CHANNEL_CACHE_SEC,
-      });
-      return pub;
-    },
+    getMatch: (channelId) =>
+      cachedJson(kv, {
+        key: cacheKey(channelId),
+        ttlSec: CHANNEL_CACHE_SEC,
+        load: async () => {
+          const m = await db.findMatchChannel(channelId);
+          return m && toPublic(m);
+        },
+      }),
     getMatchWithSecret: (channelId) => db.findMatchChannel(channelId),
     getAuthVerifier: async (authChannelId) => {
       const a = await db.findAuthChannel(authChannelId);
@@ -83,9 +74,5 @@ export async function requireActiveMatch(
   channelId: string,
   clock: Clock = systemClock,
 ): Promise<MatchChannelPublic> {
-  const ch = await store.getMatch(channelId);
-  if (!ch) throw new AppError("not_found", "channel not found");
-  if (!isActive(ch, clock))
-    throw new AppError("gone", "channel expired or disabled");
-  return ch;
+  return requireActive(() => store.getMatch(channelId), clock);
 }
