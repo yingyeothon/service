@@ -66,9 +66,7 @@ const components: Components = {
   pre: ({ node: _node, children }) => <>{children}</>,
   table: ({ node: _node, children }) => (
     <Table.ScrollContainer minWidth={320}>
-      <Table striped withTableBorder>
-        {children}
-      </Table>
+      <Table withTableBorder>{children}</Table>
     </Table.ScrollContainer>
   ),
   thead: ({ node: _node, ...p }) => <Table.Thead {...p} />,
