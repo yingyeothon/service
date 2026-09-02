@@ -43,6 +43,7 @@ import {
   asUploadOwner,
 } from "./resources.js";
 import { notifyNewArtifact } from "./slack.js";
+import { createVersionLinker } from "./version-link.js";
 
 const INSTALLER_DOWNLOAD_LIMIT = 2;
 /**
@@ -257,6 +258,7 @@ export function createCatalogRoutes({
   fetchFn,
 }: CatalogRoutesOptions): AnyRoute[] {
   const { teamAccess, projectAccess, projectResource, memberTeamIds } = access;
+  const versions = createVersionLinker({ team, clock, logger });
 
   function requireStore(): ArtifactStore {
     if (!artifacts)
@@ -703,10 +705,25 @@ export function createCatalogRoutes({
       handler: async (ctx) => {
         const { id, row: app, upload } = await uploadWith(ctx);
         const store = requireStore();
+        // A fresh commit ensures + links the version its tag names; a
+        // repeated commit only reports what the first one made (an owner's
+        // deletion must not be undone by a retry).
+        const target = (a: CatalogArtifactRow) => ({
+          projectId: app.projectId!,
+          appId: app.id,
+          tag: a.tags.version,
+          artifactId: a.id,
+        });
         // Idempotent: a duplicate commit returns the existing artifact.
         if (upload.status === "completed" && upload.artifactId) {
           const existing = await catalog.findArtifact(upload.artifactId);
-          if (existing) return artifactView(existing);
+          if (existing)
+            return {
+              ...artifactView(existing),
+              version: app.projectId
+                ? await versions.findArtifactLink(target(existing))
+                : null,
+            };
         }
         if (upload.status !== "pending")
           throw new AppError("conflict", `upload is ${upload.status}`);
@@ -786,13 +803,17 @@ export function createCatalogRoutes({
           artifactId,
         });
         await store.delete(stagingKey).catch(() => undefined);
-        await audit(id.subject, "catalog.artifact.commit", artifactId, {
-          appId: app.id,
-        });
         const a = await catalog.findArtifact(artifactId);
         if (!a) throw new AppError("unavailable", "artifact vanished");
+        const version = app.projectId
+          ? await versions.linkArtifact({ ...target(a), actorId: id.subject })
+          : null;
+        await audit(id.subject, "catalog.artifact.commit", artifactId, {
+          appId: app.id,
+          ...(version ? { versionId: version.id } : {}),
+        });
         await notifyNewArtifact({ app, artifact: a, fetchFn, logger });
-        return artifactView(a);
+        return { ...artifactView(a), version };
       },
     },
     {

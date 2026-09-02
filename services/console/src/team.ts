@@ -78,7 +78,7 @@ export const resourceName = z
 
 /** Version names are compared byte-exactly (`utf8mb4_bin`); `+` for build metadata. */
 const VERSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
-const versionName = z
+export const versionName = z
   .string()
   .regex(VERSION_NAME, "1-64 version chars")
   .refine((s) => !ID_LIKE.test(s), RESOURCE_NAME_MESSAGE);
@@ -154,7 +154,10 @@ const issuePatchBody = z
   })
   .strict();
 const issuesQuery = searchQuery(ISSUE_SORT_KEYS)
-  .extend({ status: z.enum(ISSUE_STATUSES).optional() })
+  .extend({
+    status: z.enum(ISSUE_STATUSES).optional(),
+    versionId: ID.optional(),
+  })
   .passthrough();
 const teamIssuesQuery = searchQuery(ISSUE_SORT_KEYS)
   .extend({
@@ -349,6 +352,56 @@ export function createTeamRoutes({
     assetVersion: l.assetVersion,
     createdAt: l.createdAt,
   });
+  /**
+   * The detail's link rows name their target (a page cannot render `art_…`):
+   * one artifact batch read, then the distinct apps and bundles. `null` only
+   * when the target vanished — the FK cascade normally removes the link too.
+   */
+  async function linkViews(links: VersionLinkRow[]) {
+    const artIds = links.flatMap((l) => (l.artifactId ? [l.artifactId] : []));
+    const arts = new Map(
+      (artIds.length ? await catalog.listArtifactsByIds(artIds) : []).map(
+        (a) => [a.id, a] as const,
+      ),
+    );
+    const appIds = [...new Set([...arts.values()].map((a) => a.appId))];
+    const apps = new Map(
+      (await Promise.all(appIds.map((x) => catalog.findApp(x)))).flatMap((a) =>
+        a ? [[a.id, a] as const] : [],
+      ),
+    );
+    const bundleIds = [
+      ...new Set(links.flatMap((l) => (l.bundleId ? [l.bundleId] : []))),
+    ];
+    const bundles = new Map(
+      (await Promise.all(bundleIds.map((x) => assets.findBundle(x)))).flatMap(
+        (b) => (b ? [[b.id, b] as const] : []),
+      ),
+    );
+    return links.map((l) => {
+      const art = l.artifactId ? arts.get(l.artifactId) : undefined;
+      const app = art && apps.get(art.appId);
+      const bundle = l.bundleId ? bundles.get(l.bundleId) : undefined;
+      return {
+        ...linkView(l),
+        artifact:
+          art && app
+            ? {
+                appId: app.id,
+                appName: app.name,
+                platform: art.platform,
+                version: art.tags.version ?? null,
+                // What tells one build of a version from another.
+                abi: art.tags.abi ?? null,
+                buildType: art.tags.build_type ?? null,
+                url: art.url,
+                createdAt: art.createdAt,
+              }
+            : null,
+        bundleName: bundle?.name ?? null,
+      };
+    });
+  }
   /** The list row: everything but the markdown body (a list never reads it). */
   const issueListView = (i: IssueListRow, logins: Map<string, MemberRow>) => ({
     id: i.id,
@@ -1151,7 +1204,7 @@ export function createTeamRoutes({
           throw new AppError("not_found", "version not found");
         return {
           ...versionView(row, await loginMap()),
-          links: (await team.listVersionLinks(row.id)).map(linkView),
+          links: await linkViews(await team.listVersionLinks(row.id)),
         };
       },
     },
@@ -1188,7 +1241,7 @@ export function createTeamRoutes({
         const row = await team.findVersion(ctx.params.ver!);
         if (!row || row.projectId !== a.project.id)
           throw new AppError("not_found", "version not found");
-        return { links: (await team.listVersionLinks(row.id)).map(linkView) };
+        return { links: await linkViews(await team.listVersionLinks(row.id)) };
       },
     },
     defineRoute({
@@ -1276,6 +1329,7 @@ export function createTeamRoutes({
             await team.listIssues(a.project.id, {
               ...listParams(ctx.query),
               status: ctx.query.status,
+              versionId: ctx.query.versionId,
             })
           ).map((i) => issueListView(i, logins)),
         };

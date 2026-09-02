@@ -28,7 +28,7 @@ GET    /teams/{team}/issues?status=&limit=                        recent issues 
 GET|PATCH|DELETE /projects/{prj}      member / member / owner|admin (409 while resources exist, soft-deleted channels count)
 GET|POST /projects/{prj}/versions ; POST …/versions/bump {part} ; GET|PATCH|DELETE …/versions/{ver}
 GET|POST …/versions/{ver}/links ; DELETE …/links/{id}
-GET|POST /projects/{prj}/issues ; GET|PATCH …/issues/{n} ; POST …/issues/{n}/close|reopen ; comments as above
+GET|POST /projects/{prj}/issues[?status=&versionId=] ; GET|PATCH …/issues/{n} ; POST …/issues/{n}/close|reopen ; comments as above
 POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles | /projects/{prj}/sites
 GET|PUT  /admin/settings/installer-app   admin
 ```
@@ -70,7 +70,11 @@ Single-resource routes stay id-based and unchanged in path: `/channels/{id}`, `/
 
 Resource views carry `teamId, teamName, projectId, projectName, createdBy` (login) for breadcrumbs;
 `ownerId`, `ownerLogin`, `pending*` and `permissions` are gone. Version list/detail views carry
-`artifactCount`/`assetCount`, derived from live `project_version_links` (never stored).
+`artifactCount`/`assetCount`, derived from live `project_version_links` (never stored). The version detail's
+`links[]` name their target: `artifact {appId, appName, platform, version, abi, buildType, url, createdAt} | null` and
+`bundleName | null`. `POST /catalog/uploads/{id}/commit` answers the artifact plus
+`version: {id, name, linkId, created} | null` — the project version the artifact's `version` tag
+(`+build` stripped) names, created and linked by the commit itself (`docs/decisions.md` _Versions_).
 
 Compatibility routes for the installed installer, kept for one release and removed once every installed installer has moved (`rules/deployment.md`):
 `GET /catalog/apps` (flattened over the caller's teams), `GET /catalog/apps/{id|name}/artifacts*`
