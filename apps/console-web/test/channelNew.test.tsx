@@ -75,7 +75,7 @@ describe("ChannelNewPage", () => {
     expect(
       await screen.findByRole("heading", { name: "New channel" }),
     ).toBeInTheDocument();
-    const kind = screen.getByLabelText("Kind");
+    const kind = await screen.findByLabelText("Kind");
     expect(kind).toBeInTheDocument();
     expect(
       screen.getAllByRole<HTMLOptionElement>("option").map((o) => o.value),
@@ -93,14 +93,19 @@ describe("ChannelNewPage", () => {
   it("refuses a topic channel while the project has no auth channel", async () => {
     open();
     await screen.findByRole("heading", { name: "New channel" });
-    await userEvent.selectOptions(screen.getByLabelText("Kind"), "topic");
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Kind"),
+      "topic",
+    );
     await waitFor(() =>
       expect(mockApi.projectChannels).toHaveBeenCalledWith("prj_1", "auth"),
     );
     expect(
       await screen.findByText(/need an auth channel in this project/),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Create channel" }),
+    ).toBeDisabled();
     await userEvent.click(
       screen.getByRole("button", { name: "Create an auth channel" }),
     );
@@ -112,6 +117,8 @@ describe("ChannelNewPage", () => {
     open();
     await screen.findByRole("heading", { name: "New channel" });
     expect(await screen.findByText(/Read-only/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: "Create channel" }),
+    ).toBeDisabled();
   });
 });

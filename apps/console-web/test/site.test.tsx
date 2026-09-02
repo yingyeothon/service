@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -109,13 +109,15 @@ describe("SitePage", () => {
     expect(screen.getAllByText("/abc123/").length).toBeGreaterThan(0);
   });
 
-  it("saves only the changed fields", async () => {
+  it("saves only the changed fields from the edit drawer", async () => {
     vi.mocked(mockApi.updateSite).mockResolvedValue({ ...SITE, name: "web" });
     open();
-    const name = await screen.findByLabelText("Name");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
+    const name = within(drawer).getByLabelText(/^Name/);
     await userEvent.clear(name);
     await userEvent.type(name, "web");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(within(drawer).getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(mockApi.updateSite).toHaveBeenCalledWith("site_1", {
         name: "web",
@@ -124,17 +126,21 @@ describe("SitePage", () => {
     expect(
       await screen.findByRole("heading", { name: "web" }),
     ).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("deletes after a confirmation and returns to the project's sites", async () => {
+  it("deletes from the overflow menu after a confirmation and returns to the project's sites", async () => {
     vi.mocked(mockApi.deleteSite).mockResolvedValue(undefined);
     open();
-    await screen.findByRole("heading", { name: "game-web" });
     await userEvent.click(
-      await screen.findByRole("button", { name: "Delete site" }),
+      await screen.findByRole("button", { name: "More actions" }),
     );
     await userEvent.click(
-      screen.getByRole("button", { name: "Delete everything" }),
+      await screen.findByRole("menuitem", { name: "Delete site" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Delete site" }),
     );
     await waitFor(() =>
       expect(mockApi.deleteSite).toHaveBeenCalledWith("site_1"),
@@ -148,6 +154,7 @@ describe("SitePage", () => {
     await screen.findByRole("heading", { name: "game-web" });
     expect(await screen.findByText(/Read-only/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Deploy" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete site" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
   });
 });

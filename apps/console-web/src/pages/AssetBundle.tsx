@@ -1,28 +1,29 @@
 import {
   Anchor,
   Button,
-  Card,
   Code,
   Group,
   Table,
   Text,
   TextInput,
-  Title,
 } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
-import {
-  Confirm,
-  CopyField,
-  DropZone,
-  Notice,
-  Spinner,
-} from "../components/ui";
-import { ResourceInfoForm } from "../components/ResourceForms";
+import { DataTable } from "../components/DataTable";
+import { Loading, PageSkeleton } from "../components/Loading";
+import { NameDescriptionFields } from "../components/NameDescriptionFields";
+import { PageHeader, type HeaderAction } from "../components/PageHeader";
+import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
+import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
+import { RowMenu } from "../components/RowMenu";
+import { Section } from "../components/Section";
+import { CopyField, DropZone, Notice } from "../components/ui";
 import { fmtSize } from "../lib/catalog";
+import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
+import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
 
@@ -31,7 +32,7 @@ import { projectUrl, useTeamStanding } from "../lib/team";
  * folder that was dropped, so the relative references inside a map JSON keep
  * resolving once the files are on the CDN.
  */
-function UploadCard({
+function PublishSection({
   bundle,
   onUploaded,
 }: {
@@ -41,7 +42,6 @@ function UploadCard({
   const act = useAction();
   const [version, setVersion] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [done, setDone] = useState<string | null>(null);
 
   /**
    * `webkitRelativePath` is set when a directory was picked; it starts with the
@@ -55,10 +55,7 @@ function UploadCard({
     return cut < 0 ? rel : rel.slice(cut + 1);
   };
 
-  const pick = (list: FileList | null) => {
-    setDone(null);
-    setFiles(list ? [...list] : []);
-  };
+  const pick = (list: FileList | null) => setFiles(list ? [...list] : []);
 
   const upload = async (e: FormEvent) => {
     e.preventDefault();
@@ -80,22 +77,25 @@ function UploadCard({
     await onUploaded();
     if (!r) return;
     setVersion("");
-    setDone(`${r} file(s) published as ${v}`);
+    notify.done(`${r} file(s) published as ${v}`);
   };
 
   return (
-    <Card withBorder mb="md" padding="sm">
-      <Text size="sm" fw={600} mb={4}>
-        Publish a version
-      </Text>
+    <Section
+      title="Publish a version"
+      description="Allowed: .json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv — up to 2 MB per file. A published path is never overwritten."
+    >
       {act.error && <Notice kind="error">{act.error}</Notice>}
-      {done && <Notice kind="success">{done}</Notice>}
-      <DropZone label="Choose or drop the bundle files" multiple onFiles={pick}>
-        {files.length
-          ? files.map(pathOf).join(", ")
-          : "Drop the bundle files here, or click to choose"}
-      </DropZone>
       <form onSubmit={(e) => void upload(e)}>
+        <DropZone
+          label="Choose or drop the bundle files"
+          multiple
+          onFiles={pick}
+        >
+          {files.length
+            ? files.map(pathOf).join(", ")
+            : "Drop the bundle files here, or click to choose"}
+        </DropZone>
         <Group align="end" wrap="wrap">
           <TextInput
             label="Version"
@@ -104,20 +104,20 @@ function UploadCard({
             onChange={(e) => setVersion(e.target.value)}
             required
             maxLength={64}
+            autoComplete="off"
+            spellCheck={false}
           />
           <Button
             type="submit"
+            variant="default"
             disabled={act.busy || !version.trim() || files.length === 0}
+            loading={act.busy}
           >
             Upload {files.length || ""}
           </Button>
         </Group>
       </form>
-      <Text size="xs" c="dimmed" mt={6}>
-        Allowed: .json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv
-        — up to 2 MB per file. A published path is never overwritten.
-      </Text>
-    </Card>
+    </Section>
   );
 }
 
@@ -132,40 +132,34 @@ function VersionFiles({
     api.assetVersion(bundle, version),
   );
   if (files.error) return <Notice kind="error">{files.error}</Notice>;
-  if (!files.data) return <Spinner />;
+  if (!files.data) return <Loading />;
   return (
-    <Table.ScrollContainer minWidth={640}>
-      <Table striped>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Path</Table.Th>
-            <Table.Th>Type</Table.Th>
-            <Table.Th>Size</Table.Th>
-            <Table.Th>URL</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {files.data.files.map((f) => (
-            <Table.Tr key={f.id}>
-              <Table.Td>
-                <Code>{f.path}</Code>
-              </Table.Td>
-              <Table.Td>{f.contentType}</Table.Td>
-              <Table.Td>{fmtSize(f.size)}</Table.Td>
-              <Table.Td>
-                <Anchor
-                  href={f.url}
-                  size="sm"
-                  style={{ wordBreak: "break-all" }}
-                >
-                  {f.url}
-                </Anchor>
-              </Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-    </Table.ScrollContainer>
+    <DataTable
+      columns={[
+        { key: "path", label: "Path" },
+        { key: "type", label: "Type" },
+        { key: "size", label: "Size", align: "right" },
+        { key: "url", label: "URL" },
+      ]}
+      rows={files.data.files}
+      rowKey={(f) => f.id}
+      minWidth={640}
+      empty={{ title: "No files in this version." }}
+      render={(f) => (
+        <>
+          <Table.Td>
+            <Code>{f.path}</Code>
+          </Table.Td>
+          <Table.Td>{f.contentType}</Table.Td>
+          <Table.Td style={{ textAlign: "right" }}>{fmtSize(f.size)}</Table.Td>
+          <Table.Td>
+            <Anchor href={f.url} size="sm" style={{ wordBreak: "break-all" }}>
+              {f.url}
+            </Anchor>
+          </Table.Td>
+        </>
+      )}
+    />
   );
 }
 
@@ -177,9 +171,13 @@ export function AssetBundlePage() {
   );
   const standing = useTeamStanding(bundle.data?.teamId);
   const act = useAction();
+  const confirm = useConfirm();
   const [open, setOpen] = useState<string | null>(null);
-  const [name, setName] = useState<string | null>(null);
-  const [desc, setDesc] = useState<string | null>(null);
+  const b = bundle.data;
+  const edit = useDrawerForm(() => ({
+    name: b?.name ?? "",
+    description: b?.description ?? "",
+  }));
 
   const removeVersion = async (version: string) => {
     const ok = await act.run(async () => {
@@ -188,6 +186,7 @@ export function AssetBundlePage() {
     });
     if (!ok) return;
     if (open === version) setOpen(null);
+    notify.deleted(`version ${version}`);
     await bundle.reload();
   };
 
@@ -196,139 +195,205 @@ export function AssetBundlePage() {
       await api.deleteAssetBundle(id);
       return true;
     });
-    if (!ok || !bundle.data) return;
-    const b = bundle.data;
+    if (!ok || !b) return;
+    notify.deleted("bundle");
     void navigate(
       b.teamId && b.projectId
         ? projectUrl(b.teamId, b.projectId, "assets")
         : "/teams",
     );
   };
+  const removeFromMenu = async () => {
+    const r = await confirm({
+      title: `Delete ${b?.name ?? "bundle"}?`,
+      message: "Every version and file goes with it.",
+      confirmLabel: "Delete bundle",
+      danger: true,
+    });
+    if (r.ok) await removeBundle();
+  };
 
   const saveInfo = async (e: FormEvent) => {
     e.preventDefault();
-    if (!bundle.data) return;
-    const b = bundle.data;
+    if (!b) return;
     const body: { name?: string; description?: string | null } = {};
-    if (name !== null && name.trim() !== b.name) body.name = name.trim();
-    if (desc !== null) body.description = desc.trim() || null;
-    if (Object.keys(body).length === 0) return;
+    const name = edit.form.name.trim();
+    if (name !== b.name) body.name = name;
+    const desc = edit.form.description.trim();
+    if (desc !== (b.description ?? "")) body.description = desc || null;
+    if (Object.keys(body).length === 0) {
+      edit.close();
+      return;
+    }
     const r = await act.run(() => api.updateAssetBundle(id, body));
     if (!r) return;
     bundle.set({ ...b, ...r });
-    setName(null);
-    setDesc(null);
+    edit.close();
+    notify.saved("bundle");
   };
 
-  if (bundle.error) return <Notice kind="error">{bundle.error}</Notice>;
-  if (!bundle.data) return <Spinner />;
-  const b = bundle.data;
+  const crumbs = <Crumbs crumbs={b ?? {}} current={b?.name} />;
+  if (bundle.error)
+    return (
+      <>
+        {crumbs}
+        <PageHeader />
+        <Notice kind="error">{bundle.error}</Notice>
+      </>
+    );
+  if (!b)
+    return (
+      <>
+        {crumbs}
+        <PageHeader />
+        <PageSkeleton />
+      </>
+    );
   const canWrite = standing.canWrite;
+  const actions: HeaderAction[] = canWrite
+    ? [
+        { label: "Edit", onClick: edit.open },
+        {
+          label: "Delete bundle",
+          danger: true,
+          onClick: removeFromMenu,
+          disabled: act.busy,
+        },
+      ]
+    : [];
 
   return (
     <>
-      <Crumbs crumbs={b} current={b.name} />
-      <Group justify="space-between" align="start" mb="sm">
-        <div>
-          <Title order={2}>{b.name}</Title>
-          <Text size="sm" c="dimmed">
-            {b.description ?? "No description"} · created by{" "}
-            {b.createdBy ?? "—"} · {fmtSize(b.bytes)} of 20 MB
-          </Text>
-        </div>
-        {canWrite && (
-          <Confirm
-            label="Delete bundle"
-            confirmLabel="Delete everything"
-            onConfirm={() => void removeBundle()}
-            disabled={act.busy}
-          />
-        )}
-      </Group>
-      {!canWrite && !standing.loading && (
-        <Notice>
-          Read-only: you are not seated in this bundle&rsquo;s team.
-        </Notice>
-      )}
+      {crumbs}
+      <PageHeader
+        title={b.name}
+        description={b.description ?? undefined}
+        meta={
+          <>
+            Created by {b.createdBy ?? "—"} · {fmtSize(b.bytes)} of 20 MB · id{" "}
+            <Code>{b.id}</Code>
+          </>
+        }
+        actions={actions}
+      />
+      {!canWrite && !standing.loading && <ReadOnlyBanner />}
+      {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
       {canWrite && (
-        <ResourceInfoForm
-          name={name ?? b.name}
-          description={desc ?? b.description ?? ""}
-          onName={setName}
-          onDescription={setDesc}
-          onSubmit={saveInfo}
-          busy={act.busy}
-        />
+        <PublishSection bundle={id} onUploaded={() => bundle.reload()} />
       )}
-      <Text size="xs" c="dimmed" mb="sm">
-        Deleting a version or a bundle is refused while a lobby channel still
-        points at it — re-point the channel&rsquo;s map URL first. Clients cache
-        these URLs forever, so a deleted version is a game that cannot load.
-      </Text>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-
-      {canWrite && (
-        <UploadCard bundle={id} onUploaded={() => bundle.reload()} />
-      )}
-
-      {b.versions.length === 0 ? (
-        <Text size="sm" c="dimmed">
-          No versions published yet.
-        </Text>
-      ) : (
-        b.versions.map((v) => (
-          <Card withBorder mb="sm" padding="sm" key={v.version}>
-            <Group justify="space-between" wrap="wrap">
-              <Group gap="sm">
-                <Text fw={600}>{v.version}</Text>
-                <Text size="sm" c="dimmed">
-                  {v.files} file(s) · {fmtSize(v.bytes)} ·{" "}
-                  {fmtTime(v.createdAt)}
+      <Section
+        title="Versions"
+        description="Deleting a version or a bundle is refused while a lobby channel still points at it — re-point the channel’s map URL first. Clients cache these URLs forever, so a deleted version is a game that cannot load."
+      >
+        <DataTable
+          columns={[
+            { key: "version", label: "Version" },
+            { key: "files", label: "Files", align: "right" },
+            { key: "size", label: "Size", align: "right" },
+            { key: "created", label: "Created" },
+            { key: "show", label: "" },
+          ]}
+          rows={b.versions}
+          rowKey={(v) => v.version}
+          minWidth={560}
+          empty={{ title: "No versions published yet." }}
+          render={(v) => (
+            <>
+              <Table.Td>
+                <Text size="sm" fw={500}>
+                  {v.version}
                 </Text>
-              </Group>
-              <Group gap="xs">
+              </Table.Td>
+              <Table.Td style={{ textAlign: "right" }}>{v.files}</Table.Td>
+              <Table.Td style={{ textAlign: "right" }}>
+                {fmtSize(v.bytes)}
+              </Table.Td>
+              <Table.Td>{fmtTime(v.createdAt)}</Table.Td>
+              <Table.Td>
                 <Button
                   size="compact-sm"
-                  variant="default"
+                  variant="subtle"
+                  color="ink"
                   onClick={() => setOpen(open === v.version ? null : v.version)}
+                  aria-expanded={open === v.version}
                 >
                   {open === v.version ? "Hide files" : "Show files"}
                 </Button>
-                {canWrite && (
-                  <Confirm
-                    label="Delete version"
-                    confirmLabel="Delete"
-                    onConfirm={() => void removeVersion(v.version)}
-                    disabled={act.busy}
+              </Table.Td>
+            </>
+          )}
+          actions={
+            canWrite
+              ? (v) => (
+                  <RowMenu
+                    name={v.version}
+                    items={[
+                      {
+                        label: "Delete version",
+                        danger: true,
+                        disabled: act.busy,
+                        onClick: () => removeVersion(v.version),
+                        confirm: {
+                          title: `Delete ${v.version}?`,
+                          message:
+                            "Refused while a lobby channel still points at it.",
+                          confirmLabel: "Delete version",
+                          danger: true,
+                        },
+                      },
+                    ]}
                   />
-                )}
-              </Group>
-            </Group>
-            {open === v.version && (
-              <div style={{ marginTop: 8 }}>
-                <VersionFiles bundle={id} version={v.version} />
-              </div>
-            )}
-          </Card>
-        ))
-      )}
-
-      <Card withBorder mt="md" padding="sm">
-        <Text size="sm" fw={600} mb={4}>
-          Publishing a map
-        </Text>
-        <Text size="sm" c="dimmed" mb="xs">
-          Objects are cached forever and never overwritten. To ship a change,
-          upload a new version and paste its entry URL into the lobby
-          channel&rsquo;s <b>Map URL</b>: the live pointer is the channel
-          config, so nothing has to be invalidated.
-        </Text>
+                )
+              : undefined
+          }
+        />
+        {open && (
+          <div style={{ marginTop: 16 }}>
+            <Text size="sm" fw={500} mb="xs">
+              Files of {open}
+            </Text>
+            <VersionFiles bundle={id} version={open} />
+          </div>
+        )}
+      </Section>
+      <Section
+        title="Publishing a map"
+        description={
+          <>
+            Objects are cached forever and never overwritten. To ship a change,
+            upload a new version and paste its entry URL into the lobby
+            channel&rsquo;s <b>Map URL</b>: the live pointer is the channel
+            config, so nothing has to be invalidated. Versions published before
+            2026-08-26 keep their name-based prefix; the file list shows each
+            file&rsquo;s actual URL.
+          </>
+        }
+      >
         <CopyField label="CDN prefix" value={`assets/${b.id}/`} />
-        <Text size="xs" c="dimmed">
-          Versions published before 2026-08-26 keep their name-based prefix; the
-          file list shows each file&rsquo;s actual URL.
-        </Text>
-      </Card>
+      </Section>
+      <ResourceDrawer
+        opened={edit.opened}
+        onClose={edit.close}
+        title="Edit bundle"
+        submitLabel="Save"
+        onSubmit={saveInfo}
+        busy={act.busy}
+        disabled={!edit.form.name.trim()}
+        error={edit.opened ? act.error : null}
+        danger={{
+          label: "Delete bundle",
+          description: "Every version and file goes with it.",
+          onConfirm: removeBundle,
+          disabled: act.busy,
+        }}
+      >
+        <NameDescriptionFields
+          name={edit.form.name}
+          description={edit.form.description}
+          onName={(name) => edit.patch({ name })}
+          onDescription={(description) => edit.patch({ description })}
+        />
+      </ResourceDrawer>
     </>
   );
 }

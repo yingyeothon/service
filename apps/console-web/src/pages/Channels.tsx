@@ -1,19 +1,16 @@
-import {
-  Anchor,
-  Code,
-  Group,
-  NativeSelect,
-  Table,
-  Text,
-  Title,
-} from "@mantine/core";
+import { Anchor, Code, Table, Text } from "@mantine/core";
 import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Badge, Notice, Spinner } from "../components/ui";
+import { DataTable, NameCell } from "../components/DataTable";
+import { EnumFilter, FilterBar } from "../components/FilterBar";
+import { PageHeader } from "../components/PageHeader";
+import { RowMenu } from "../components/RowMenu";
+import { Badge, Notice } from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
-import { useApiQuery } from "../lib/query";
+import { notify } from "../lib/notify";
+import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl } from "../lib/team";
 import type { ChannelKind, ChannelStatus } from "../types";
 
@@ -31,110 +28,144 @@ export function ChannelsPage() {
   const list = useApiQuery(["channels", kind, all], () =>
     api.channels({ kind: kind || undefined, scope: all ? "all" : undefined }),
   );
+  const act = useAction();
+  const extend = async (id: string) => {
+    if (await act.run(() => api.extendChannel(id))) {
+      notify.done("Channel extended");
+      await list.reload();
+    }
+  };
+  const remove = async (id: string) => {
+    if (
+      await act.run(async () => {
+        await api.deleteChannel(id);
+        return true;
+      })
+    ) {
+      notify.deleted("channel");
+      await list.reload();
+    }
+  };
   return (
     <>
-      <Title order={2} mb="sm">
-        Channels
-      </Title>
-      <Text size="sm" c="dimmed" mb="sm">
-        Every channel of every team you sit in. New channels are created from a
-        project&rsquo;s <b>Channels</b> tab (
-        <Anchor component={Link} to="/teams">
-          Teams
-        </Anchor>
-        ). Channels expire 7 days after creation; extend them from the detail
-        page (up to 28 days ahead). Expired channels are disabled, then deleted
-        30 days later.
-      </Text>
-      <Group mb="md">
-        <NativeSelect
+      <PageHeader
+        title="Channels"
+        description={
+          <>
+            Every channel of every team you sit in. New channels are created
+            from a project&rsquo;s <b>Channels</b> tab (
+            <Anchor component={Link} to="/teams">
+              Teams
+            </Anchor>
+            ). Channels expire 7 days after creation; extend them from the
+            detail page (up to 28 days ahead). Expired channels are disabled,
+            then deleted 30 days later.
+          </>
+        }
+      />
+      <FilterBar>
+        <EnumFilter
           label="Kind"
           value={kind}
-          onChange={(e) => setKind(e.target.value as ChannelKind | "")}
-          data={[
-            { value: "", label: "all" },
+          options={[
+            { value: "", label: "All kinds" },
             { value: "auth", label: "auth" },
             { value: "topic", label: "topic" },
             { value: "match", label: "match" },
             { value: "lobby", label: "lobby" },
             { value: "q", label: "q" },
           ]}
+          onChange={(v) => setKind(v as ChannelKind | "")}
         />
         {me?.role === "admin" && (
-          <NativeSelect
+          <EnumFilter
             label="Scope"
             value={all ? "all" : "mine"}
-            onChange={(e) => setAll(e.target.value === "all")}
-            data={[
-              { value: "mine", label: "my teams" },
-              { value: "all", label: "every team (admin)" },
+            options={[
+              { value: "mine", label: "My teams" },
+              { value: "all", label: "Every team" },
+            ]}
+            onChange={(v) => setAll(v === "all")}
+          />
+        )}
+      </FilterBar>
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={[
+          { key: "name", label: "Name" },
+          { key: "kind", label: "Kind" },
+          { key: "project", label: "Project" },
+          { key: "id", label: "Id" },
+          { key: "status", label: "Status" },
+          { key: "expires", label: "Expires" },
+        ]}
+        rows={list.data}
+        loading={list.loading}
+        error={list.error}
+        rowKey={(c) => c.id}
+        minWidth={640}
+        empty={{
+          title: "No channels yet.",
+          hint: "Create one from a project's Channels tab.",
+        }}
+        render={(c) => (
+          <>
+            <NameCell to={`/channels/${encodeURIComponent(c.id)}`}>
+              {c.name}
+            </NameCell>
+            <Table.Td>{c.kind}</Table.Td>
+            <Table.Td>
+              {c.teamId && c.projectId ? (
+                <Anchor
+                  component={Link}
+                  to={projectUrl(c.teamId, c.projectId)}
+                  size="sm"
+                >
+                  {c.teamName ?? c.teamId} / {c.projectName ?? c.projectId}
+                </Anchor>
+              ) : (
+                <Text size="sm" c="dimmed">
+                  unassigned
+                </Text>
+              )}
+            </Table.Td>
+            <Table.Td>
+              <Code>{c.id}</Code>
+            </Table.Td>
+            <Table.Td>
+              <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
+            </Table.Td>
+            <Table.Td title={fmtTime(c.expiresAt)}>
+              {fmtRelative(c.expiresAt)}
+            </Table.Td>
+          </>
+        )}
+        actions={(c) => (
+          <RowMenu
+            name={c.name}
+            items={[
+              {
+                label: "Extend +7 days",
+                onClick: () => extend(c.id),
+                disabled: act.busy,
+              },
+              {
+                label: "Delete channel",
+                danger: true,
+                disabled: act.busy,
+                onClick: () => remove(c.id),
+                confirm: {
+                  title: `Delete ${c.name}?`,
+                  message:
+                    "Sockets on it are closed and its credentials stop working.",
+                  confirmLabel: "Delete channel",
+                  danger: true,
+                },
+              },
             ]}
           />
         )}
-      </Group>
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={640}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Name</Table.Th>
-                <Table.Th>Kind</Table.Th>
-                <Table.Th>Project</Table.Th>
-                <Table.Th>Id</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th>Expires</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((c) => (
-                <Table.Tr key={c.id}>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={`/channels/${encodeURIComponent(c.id)}`}
-                    >
-                      {c.name}
-                    </Anchor>
-                  </Table.Td>
-                  <Table.Td>{c.kind}</Table.Td>
-                  <Table.Td>
-                    {c.teamId && c.projectId ? (
-                      <Anchor
-                        component={Link}
-                        to={projectUrl(c.teamId, c.projectId)}
-                        size="sm"
-                      >
-                        {c.teamName ?? c.teamId} /{" "}
-                        {c.projectName ?? c.projectId}
-                      </Anchor>
-                    ) : (
-                      <Text size="sm" c="dimmed">
-                        unassigned
-                      </Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <Code>{c.id}</Code>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
-                  </Table.Td>
-                  <Table.Td title={fmtTime(c.expiresAt)}>
-                    {fmtRelative(c.expiresAt)}
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          No channels yet.
-        </Text>
-      )}
+      />
     </>
   );
 }
