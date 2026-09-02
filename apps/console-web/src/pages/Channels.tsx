@@ -4,12 +4,13 @@ import { Link } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { DataTable, NameCell } from "../components/DataTable";
-import { EnumFilter, FilterBar } from "../components/FilterBar";
+import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
 import { PageHeader } from "../components/PageHeader";
 import { RowMenu } from "../components/RowMenu";
 import { Badge, Notice } from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl } from "../lib/team";
 import type { ChannelKind, ChannelStatus } from "../types";
@@ -25,8 +26,16 @@ export function ChannelsPage() {
   const { me } = useAuth();
   const [kind, setKind] = useState<ChannelKind | "">("");
   const [all, setAll] = useState(false);
-  const list = useApiQuery(["channels", kind, all], () =>
-    api.channels({ kind: kind || undefined, scope: all ? "all" : undefined }),
+  const lq = useListQuery();
+  const list = useApiQuery(
+    ["channels", kind, all, lq.params],
+    () =>
+      api.channels({
+        kind: kind || undefined,
+        scope: all ? "all" : undefined,
+        ...lq.params,
+      }),
+    { keepPrevious: true },
   );
   const act = useAction();
   const extend = async (id: string) => {
@@ -88,26 +97,43 @@ export function ChannelsPage() {
             onChange={(v) => setAll(v === "all")}
           />
         )}
+        <TextFilter
+          value={lq.q}
+          onChange={lq.setQ}
+          placeholder="Channel or project name"
+        />
       </FilterBar>
       {act.error && <Notice kind="error">{act.error}</Notice>}
       <DataTable
         columns={[
-          { key: "name", label: "Name" },
-          { key: "kind", label: "Kind" },
-          { key: "project", label: "Project" },
-          { key: "id", label: "Id" },
-          { key: "status", label: "Status" },
-          { key: "expires", label: "Expires" },
+          { key: "name", label: "Name", sortKey: "name" },
+          { key: "kind", label: "Kind", sortKey: "kind" },
+          { key: "project", label: "Project", sortKey: "projectName" },
+          { key: "id", label: "Id", sortKey: "id" },
+          { key: "status", label: "Status", sortKey: "status" },
+          {
+            key: "expires",
+            label: "Expires",
+            sortKey: "expiresAt",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(c) => c.id}
         minWidth={640}
-        empty={{
-          title: "No channels yet.",
-          hint: "Create one from a project's Channels tab.",
-        }}
+        empty={
+          lq.filtering
+            ? noMatch(lq.params.q ?? "")
+            : {
+                title: "No channels yet.",
+                hint: "Create one from a project's Channels tab.",
+              }
+        }
         render={(c) => (
           <>
             <NameCell to={`/channels/${encodeURIComponent(c.id)}`}>

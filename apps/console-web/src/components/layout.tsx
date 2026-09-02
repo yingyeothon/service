@@ -15,10 +15,11 @@ import {
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { IconLogout } from "@tabler/icons-react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { NavLink as RouterNavLink, useLocation } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
+import { teamUrl, useMyTeams } from "../lib/team";
 import { NAV_ITEMS, isNavActive } from "../navigation";
 
 /** `next` for the login redirect: the SPA path (without the `/ui` base). */
@@ -30,9 +31,23 @@ export function currentPath(loc: { pathname: string; search: string }): string {
 const NAVBAR_WIDTH = 240;
 const HEADER_HEIGHT = 64;
 
+const navLinkProps = { variant: "light", color: "ink" } as const;
+
+/**
+ * The role-filtered menu, with the caller's own teams nested under _Teams_
+ * as an indented group of plain links. Not a collapsible: a Mantine
+ * `NavLink` given children swallows its click, so a parent that also
+ * navigates cannot be one. Pending seats are listed too (the team page
+ * shows the waiting notice); an empty or failed list renders nothing extra.
+ */
 function SideNavigation({ onNavigate }: { onNavigate: () => void }) {
   const { me } = useAuth();
   const location = useLocation();
+  const teams = useMyTeams(hasRole(me, "member"));
+  const myTeams = teams.data ?? [];
+  const activeTeam = myTeams.find((t) =>
+    isNavActive(location.pathname, teamUrl(t.id)),
+  );
   return (
     <ScrollArea>
       <Stack gap={2} p="sm" component="nav" aria-label="Main">
@@ -41,21 +56,46 @@ function SideNavigation({ onNavigate }: { onNavigate: () => void }) {
             !item.hidden &&
             (item.minRole === null || hasRole(me, item.minRole)),
         ).map((item) => (
-          <NavLink
-            key={item.path}
-            component={RouterNavLink}
-            to={item.path}
-            label={item.label}
-            leftSection={<item.icon size={18} aria-hidden="true" />}
-            active={isNavActive(location.pathname, item.path)}
-            onClick={onNavigate}
-            variant="light"
-            color="ink"
-            styles={{
-              root: { borderRadius: 6, minHeight: 44 },
-              label: { fontSize: 14 },
-            }}
-          />
+          <Fragment key={item.path}>
+            <NavLink
+              component={RouterNavLink}
+              to={item.path}
+              label={item.label}
+              leftSection={<item.icon size={18} aria-hidden="true" />}
+              // With a team open, only the team link is the current page.
+              end={item.path === "/teams" && !!activeTeam}
+              active={
+                isNavActive(location.pathname, item.path) &&
+                !(item.path === "/teams" && activeTeam)
+              }
+              onClick={onNavigate}
+              {...navLinkProps}
+              styles={{
+                root: { borderRadius: 6, minHeight: 44 },
+                label: { fontSize: 14 },
+              }}
+            />
+            {item.path === "/teams" && myTeams.length > 0 && (
+              <Stack gap={2} pl={28} role="group" aria-label="Your teams">
+                {myTeams.map((t) => (
+                  <NavLink
+                    key={t.id}
+                    component={RouterNavLink}
+                    to={teamUrl(t.id)}
+                    label={t.name}
+                    noWrap
+                    active={activeTeam?.id === t.id}
+                    onClick={onNavigate}
+                    {...navLinkProps}
+                    styles={{
+                      root: { borderRadius: 6, minHeight: 40 },
+                      label: { fontSize: 14 },
+                    }}
+                  />
+                ))}
+              </Stack>
+            )}
+          </Fragment>
         ))}
       </Stack>
     </ScrollArea>

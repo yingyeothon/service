@@ -8,10 +8,14 @@ import { RowMenu } from "../components/RowMenu";
 import { Notice, SecretOnce } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 
 export function TokensPage() {
-  const list = useApiQuery(["tokens"], () => api.tokens());
+  const lq = useListQuery();
+  const list = useApiQuery(["tokens", lq.params], () => api.tokens(lq.params), {
+    keepPrevious: true,
+  });
   const act = useAction();
   const create = useDrawerForm(() => ({ name: "" }));
   const [fresh, setFresh] = useState<{ name: string; token: string } | null>(
@@ -66,13 +70,26 @@ export function TokensPage() {
       )}
       <DataTable
         columns={[
-          { key: "name", label: "Name" },
-          { key: "id", label: "Id" },
-          { key: "created", label: "Created" },
-          { key: "used", label: "Last used" },
+          { key: "name", label: "Name", sortKey: "name" },
+          { key: "id", label: "Id", sortKey: "id" },
+          {
+            key: "created",
+            label: "Created",
+            sortKey: "createdAt",
+            defaultOrder: "desc",
+          },
+          {
+            key: "used",
+            label: "Last used",
+            sortKey: "lastUsedAt",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
+        sort={lq.sort}
+        onSort={lq.setSort}
         error={list.error}
         rowKey={(t) => t.id}
         empty={{

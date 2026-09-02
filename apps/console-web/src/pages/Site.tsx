@@ -14,6 +14,7 @@ import { Badge, CopyField, DropZone, Notice } from "../components/ui";
 import { fmtSize } from "../lib/catalog";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
 import type { SiteDeploy, SiteDeployStatus } from "../types";
@@ -116,6 +117,13 @@ export function SitePage() {
   const navigate = useNavigate();
   const site = useApiQuery(["sites", "site", id], () => api.site(id));
   const standing = useTeamStanding(site.data?.teamId);
+  // The detail embeds the newest deploys; a chosen order asks the list route.
+  const lq = useListQuery({ scope: id });
+  const ordered = useApiQuery(
+    ["sites", "site", id, "deploys", lq.params],
+    () => api.siteDeploys(id, lq.params),
+    { enabled: !!site.data && !!lq.sort, keepPrevious: true },
+  );
   const act = useAction();
   const s = site.data;
   const edit = useDrawerForm(() => ({
@@ -230,20 +238,47 @@ export function SitePage() {
         <DeploySection
           site={id}
           busy={s.busy}
-          onDeployed={() => site.reload()}
+          onDeployed={async () => {
+            // The sorted list is its own key; refresh it beside the detail.
+            await Promise.all([
+              site.reload(),
+              lq.sort ? ordered.reload() : undefined,
+            ]);
+          }}
         />
       )}
       <Section title="Deploys">
         <DataTable
           columns={[
-            { key: "id", label: "Deploy" },
-            { key: "status", label: "Status" },
-            { key: "files", label: "Files", align: "right" },
-            { key: "size", label: "Size", align: "right" },
+            { key: "id", label: "Deploy id", sortKey: "id" },
+            { key: "status", label: "Status", sortKey: "status" },
+            {
+              key: "files",
+              label: "Files",
+              align: "right",
+              sortKey: "files",
+              defaultOrder: "desc",
+            },
+            {
+              key: "size",
+              label: "Size",
+              align: "right",
+              sortKey: "size",
+              defaultOrder: "desc",
+            },
             { key: "error", label: "Error" },
-            { key: "created", label: "Created" },
+            {
+              key: "created",
+              label: "Created",
+              sortKey: "createdAt",
+              defaultOrder: "desc",
+            },
           ]}
-          rows={s.deploys}
+          rows={lq.sort ? (ordered.data ?? s.deploys) : s.deploys}
+          fetching={!!lq.sort && (ordered.loading || ordered.fetching)}
+          error={lq.sort ? ordered.error : undefined}
+          sort={lq.sort}
+          onSort={lq.setSort}
           rowKey={(d) => d.id}
           minWidth={640}
           empty={{ title: "No deploys yet." }}

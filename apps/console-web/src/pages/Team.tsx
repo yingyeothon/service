@@ -14,6 +14,7 @@ import { api } from "../api";
 import { useAuth } from "../auth";
 import { Crumbs } from "../components/Crumbs";
 import { DataTable, NameCell } from "../components/DataTable";
+import { FilterBar, TextFilter } from "../components/FilterBar";
 import { HistoryList } from "../components/HistoryList";
 import { PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
@@ -28,6 +29,7 @@ import { Badge, CopyField, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import {
   STANDING_TONE,
@@ -35,6 +37,7 @@ import {
   projectUrl,
   teamUrl,
   useTeamStanding,
+  useInvalidateTeams,
 } from "../lib/team";
 import type { Member, TeamDetail, TeamMember } from "../types";
 import { RotationNotice, type LeftState } from "./Teams";
@@ -49,6 +52,7 @@ export function TeamPage() {
   const t = useTeamStanding(teamId);
   const act = useAction();
   const confirm = useConfirm();
+  const invalidateTeams = useInvalidateTeams();
   const team = t.team;
   const edit = useDrawerForm(() => ({
     name: team?.name ?? "",
@@ -99,6 +103,8 @@ export function TeamPage() {
     const r = await act.run(() => api.updateTeam(team.id, body));
     if (!r) return;
     t.set({ ...team, ...r });
+    // The navigation shows the name too; `t.set` only writes this team's key.
+    void invalidateTeams();
     edit.close();
     notify.saved("team");
   };
@@ -109,6 +115,7 @@ export function TeamPage() {
     });
     if (!ok) return;
     notify.deleted("team");
+    void invalidateTeams();
     void nav("/teams");
   };
   const leave = async () => {
@@ -124,6 +131,7 @@ export function TeamPage() {
     );
     if (res === undefined) return;
     const state: LeftState = { left: team.name, rotate: res?.rotate ?? [] };
+    void invalidateTeams();
     void nav("/teams", { state });
   };
   const lock = async (locked: boolean) => {
@@ -276,6 +284,7 @@ function PendingNotice({ team }: { team: TeamDetail }) {
   const nav = useNavigate();
   const act = useAction();
   const confirm = useConfirm();
+  const invalidateTeams = useInvalidateTeams();
   const withdraw = async () => {
     const r = await confirm({
       title: "Withdraw the request?",
@@ -289,7 +298,9 @@ function PendingNotice({ team }: { team: TeamDetail }) {
       await api.removeTeamMember(team.id, me?.id ?? "");
       return true;
     });
-    if (ok) void nav("/teams");
+    if (!ok) return;
+    void invalidateTeams();
+    void nav("/teams");
   };
   return (
     <Notice kind="warn">
@@ -317,7 +328,12 @@ function ProjectsTab({
   team: TeamDetail;
   canWrite: boolean;
 }) {
-  const list = useApiQuery(["projects", team.id], () => api.projects(team.id));
+  const lq = useListQuery({ scope: team.id });
+  const list = useApiQuery(
+    ["projects", team.id, lq.params],
+    () => api.projects(team.id, lq.params),
+    { keepPrevious: true },
+  );
   const act = useAction();
   const nav = useNavigate();
   const create = useDrawerForm(() => ({ name: "", description: "" }));
@@ -346,24 +362,43 @@ function ProjectsTab({
         )
       }
     >
+      <FilterBar>
+        <TextFilter
+          value={lq.q}
+          onChange={lq.setQ}
+          placeholder="Name or description"
+        />
+      </FilterBar>
       <DataTable
         columns={[
-          { key: "name", label: "Project" },
-          { key: "desc", label: "Description" },
-          { key: "by", label: "Created by" },
-          { key: "updated", label: "Updated" },
+          { key: "name", label: "Project", sortKey: "name" },
+          { key: "desc", label: "Description", sortKey: "description" },
+          { key: "by", label: "Created by", sortKey: "createdBy" },
+          {
+            key: "updated",
+            label: "Updated",
+            sortKey: "updatedAt",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(p) => p.id}
         minWidth={480}
-        empty={{
-          title: "No projects yet.",
-          hint: canWrite
-            ? "A project holds channels, apps, bundles and sites."
-            : undefined,
-        }}
+        empty={
+          lq.filtering
+            ? noMatch(lq.params.q ?? "")
+            : {
+                title: "No projects yet.",
+                hint: canWrite
+                  ? "A project holds channels, apps, bundles and sites."
+                  : undefined,
+              }
+        }
         render={(p) => (
           <>
             <NameCell to={projectUrl(team.id, p.id)}>{p.name}</NameCell>
@@ -423,10 +458,16 @@ function MembersTab({
   onChanged: () => Promise<void>;
 }) {
   const { me } = useAuth();
-  const list = useApiQuery(["team", team.id, "members"], () =>
-    api.teamMembers(team.id),
+  const lq = useListQuery({ scope: team.id });
+  const list = useApiQuery(
+    ["team", team.id, "members", lq.params],
+    () => api.teamMembers(team.id, lq.params),
+    { keepPrevious: true },
   );
   const admin = team.role === "admin";
+  // A seat change can be the caller's own (an admin appointing themselves,
+  // "yourself included" in the add form): the navigation's list must follow.
+  const invalidateTeams = useInvalidateTeams();
   // Appointing needs a member id; the platform roster is admin-only anyway.
   const platform = useApiQuery(["members"], () => api.members(), {
     enabled: admin,
@@ -442,8 +483,7 @@ function MembersTab({
   } | null>(null);
 
   const refresh = async () => {
-    await list.reload();
-    await onChanged();
+    await Promise.all([list.reload(), onChanged(), invalidateTeams()]);
   };
   const setRoleOf = async (m: TeamMember, to: "member" | "owner") => {
     if (await act.run(() => api.setTeamMemberRole(team.id, m.id, to))) {
@@ -581,13 +621,21 @@ function MembersTab({
       {kicked && <RotationNotice rotate={kicked.rotate} who={kicked.who} />}
       <DataTable
         columns={[
-          { key: "login", label: "Login" },
-          { key: "role", label: "Role" },
-          { key: "since", label: "Since" },
+          { key: "login", label: "Login", sortKey: "login" },
+          { key: "role", label: "Role", sortKey: "role" },
+          {
+            key: "since",
+            label: "Since",
+            sortKey: "since",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data ? seated : undefined}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(m) => m.id}
         minWidth={520}
         empty={{ title: "No seats yet." }}
@@ -697,8 +745,11 @@ function DiscussionsTab({
   team: TeamDetail;
   canWrite: boolean;
 }) {
-  const list = useApiQuery(["discussions", team.id], () =>
-    api.discussions(team.id),
+  const lq = useListQuery({ scope: team.id });
+  const list = useApiQuery(
+    ["discussions", team.id, lq.params],
+    () => api.discussions(team.id, lq.params),
+    { keepPrevious: true },
   );
   const act = useAction();
   const nav = useNavigate();
@@ -727,18 +778,33 @@ function DiscussionsTab({
         )
       }
     >
+      <FilterBar>
+        <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Title" />
+      </FilterBar>
       <DataTable
         columns={[
-          { key: "title", label: "Title" },
-          { key: "by", label: "By" },
-          { key: "updated", label: "Updated" },
+          { key: "title", label: "Title", sortKey: "title" },
+          { key: "by", label: "By", sortKey: "createdBy" },
+          {
+            key: "updated",
+            label: "Updated",
+            sortKey: "updatedAt",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(d) => d.id}
         minWidth={480}
-        empty={{ title: "No discussions yet." }}
+        empty={
+          lq.filtering
+            ? noMatch(lq.params.q ?? "")
+            : { title: "No discussions yet." }
+        }
         render={(d) => (
           <>
             <NameCell to={discussionUrl(team.id, d.id)}>{d.title}</NameCell>

@@ -18,6 +18,7 @@ import { Badge, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import type { ShowAcl, ShowEntry, ShowTargetKind } from "../types";
 import { AclField } from "./Shows";
@@ -32,6 +33,13 @@ export function ShowDetailPage() {
   const confirm = useConfirm();
   const [sort, setSort] = useState<"new" | "likes">("new");
   const show = useApiQuery(["show", id, me?.id ?? null], () => api.show(id));
+  // The detail embeds the grants; a chosen order asks the list route.
+  const grantOrder = useListQuery({ scope: id });
+  const orderedGrants = useApiQuery(
+    ["show", id, "grants", grantOrder.params],
+    () => api.showGrants(id, grantOrder.params),
+    { enabled: !!show.data?.grants && !!grantOrder.sort, keepPrevious: true },
+  );
   // Cursor paging: the wall holds up to 200 entries and a page is 24, so
   // without this three quarters of a full show is unreachable.
   const [more, setMore] = useState<ShowEntry[]>([]);
@@ -117,6 +125,7 @@ export function ShowDetailPage() {
     edit.close();
     notify.saved("show");
     await show.reload();
+    if (grantOrder.sort) await orderedGrants.reload();
   };
   const grantAccess = async (e: FormEvent) => {
     e.preventDefault();
@@ -129,6 +138,7 @@ export function ShowDetailPage() {
     grant.close();
     notify.done(`${login} may put work up`);
     await show.reload();
+    if (grantOrder.sort) await orderedGrants.reload();
   };
   const revoke = async (login: string, reason?: string) => {
     if (
@@ -136,6 +146,8 @@ export function ShowDetailPage() {
     ) {
       notify.done(`${login} revoked`);
       await show.reload();
+      if (grantOrder.sort) await orderedGrants.reload();
+      if (grantOrder.sort) await orderedGrants.reload();
     }
   };
   const toggleClosed = async () => {
@@ -270,11 +282,27 @@ export function ShowDetailPage() {
         >
           <DataTable
             columns={[
-              { key: "login", label: "Login" },
-              { key: "by", label: "Granted by" },
-              { key: "at", label: "Since" },
+              { key: "login", label: "Login", sortKey: "login" },
+              { key: "by", label: "Granted by", sortKey: "grantedBy" },
+              {
+                key: "at",
+                label: "Since",
+                sortKey: "grantedAt",
+                defaultOrder: "desc",
+              },
             ]}
-            rows={s.grants ?? []}
+            rows={
+              grantOrder.sort
+                ? (orderedGrants.data ?? s.grants ?? [])
+                : (s.grants ?? [])
+            }
+            fetching={
+              !!grantOrder.sort &&
+              (orderedGrants.loading || orderedGrants.fetching)
+            }
+            error={grantOrder.sort ? orderedGrants.error : undefined}
+            sort={grantOrder.sort}
+            onSort={grantOrder.setSort}
             rowKey={(g) => g.login ?? String(g.grantedAt)}
             minWidth={420}
             empty={{ title: "Only you (and platform admins) may submit." }}

@@ -15,8 +15,13 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
-import { DataTable, NameCell, NumCell } from "../components/DataTable";
-import { EnumFilter, FilterBar } from "../components/FilterBar";
+import {
+  DataTable,
+  NameCell,
+  NumCell,
+  type Column,
+} from "../components/DataTable";
+import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
 import { Loading, PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
 import { MdField } from "../components/MdField";
@@ -34,9 +39,11 @@ import { Badge, CopyField, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { issueUrl, projectUrl, useTeamStanding } from "../lib/team";
 import type {
+  ListParams,
   ChannelStatus,
   IssueStatus,
   ProjectDetail,
@@ -253,8 +260,11 @@ function ChannelsTab({
   /** The header counts come from the project row: refresh it after a delete. */
   onCounts: () => Promise<void>;
 }) {
-  const list = useApiQuery(["project", project.id, "channels"], () =>
-    api.projectChannels(project.id),
+  const lq = useListQuery({ scope: project.id });
+  const list = useApiQuery(
+    ["project", project.id, "channels", lq.params],
+    () => api.projectChannels(project.id, undefined, lq.params),
+    { keepPrevious: true },
   );
   const act = useAction();
   const extend = async (id: string) => {
@@ -291,14 +301,25 @@ function ChannelsTab({
       }
     >
       {act.error && <Notice kind="error">{act.error}</Notice>}
+      <FilterBar>
+        <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Name" />
+      </FilterBar>
       <DataTable
         columns={[
-          { key: "name", label: "Name" },
-          { key: "kind", label: "Kind" },
-          { key: "id", label: "Id" },
-          { key: "status", label: "Status" },
-          { key: "expires", label: "Expires" },
+          { key: "name", label: "Name", sortKey: "name" },
+          { key: "kind", label: "Kind", sortKey: "kind" },
+          { key: "id", label: "Id", sortKey: "id" },
+          { key: "status", label: "Status", sortKey: "status" },
+          {
+            key: "expires",
+            label: "Expires",
+            sortKey: "expiresAt",
+            defaultOrder: "desc",
+          },
         ]}
+        sort={lq.sort}
+        onSort={lq.setSort}
+        fetching={list.fetching}
         rows={list.data}
         loading={list.loading}
         error={list.error}
@@ -384,7 +405,7 @@ function ResourceListTab<T extends { id: string }>({
   project: ProjectDetail;
   canWrite: boolean;
   queryKey: string;
-  load: (projectId: string) => Promise<T[]>;
+  load: (projectId: string, params: ListParams) => Promise<T[]>;
   /**
    * `second` arrives trimmed; empty when the optional field was left blank.
    * Must resolve to the created row: `useAction.run` reports failure as
@@ -403,13 +424,16 @@ function ResourceListTab<T extends { id: string }>({
     required: boolean;
     maxLength: number;
   };
-  columns: { key: string; label: string }[];
+  columns: Column[];
   /** The cells after the name cell. */
   row: (item: T) => ReactNode;
   emptyText: string;
 }) {
-  const list = useApiQuery(["project", project.id, queryKey], () =>
-    load(project.id),
+  const lq = useListQuery({ scope: project.id });
+  const list = useApiQuery(
+    ["project", project.id, queryKey, lq.params],
+    () => load(project.id, lq.params),
+    { keepPrevious: true },
   );
   const act = useAction();
   const drawer = useDrawerForm(() => ({ name: "", extra: "" }));
@@ -444,7 +468,10 @@ function ResourceListTab<T extends { id: string }>({
         columns={columns}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(item) => item.id}
         empty={{ title: emptyText }}
         render={row}
@@ -502,10 +529,15 @@ function CatalogTab(props: { project: ProjectDetail; canWrite: boolean }) {
         maxLength: 200,
       }}
       columns={[
-        { key: "name", label: "App" },
+        { key: "name", label: "App", sortKey: "name" },
         { key: "path", label: "Application id" },
-        { key: "by", label: "Created by" },
-        { key: "updated", label: "Updated" },
+        { key: "by", label: "Created by", sortKey: "createdBy" },
+        {
+          key: "updated",
+          label: "Updated",
+          sortKey: "updatedAt",
+          defaultOrder: "desc",
+        },
       ]}
       row={(a) => (
         <>
@@ -550,10 +582,15 @@ function AssetsTab(props: { project: ProjectDetail; canWrite: boolean }) {
         maxLength: 2000,
       }}
       columns={[
-        { key: "name", label: "Bundle" },
-        { key: "desc", label: "Description" },
-        { key: "by", label: "Created by" },
-        { key: "updated", label: "Updated" },
+        { key: "name", label: "Bundle", sortKey: "name" },
+        { key: "desc", label: "Description", sortKey: "description" },
+        { key: "by", label: "Created by", sortKey: "createdBy" },
+        {
+          key: "updated",
+          label: "Updated",
+          sortKey: "updatedAt",
+          defaultOrder: "desc",
+        },
       ]}
       row={(b) => (
         <>
@@ -591,10 +628,15 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
         maxLength: 2000,
       }}
       columns={[
-        { key: "name", label: "Site" },
-        { key: "url", label: "URL" },
+        { key: "name", label: "Site", sortKey: "name" },
+        { key: "url", label: "URL", sortKey: "url" },
         { key: "live", label: "Live" },
-        { key: "updated", label: "Updated" },
+        {
+          key: "updated",
+          label: "Updated",
+          sortKey: "updatedAt",
+          defaultOrder: "desc",
+        },
       ]}
       row={(s) => (
         <>
@@ -923,8 +965,11 @@ function VersionsTab({
   project: ProjectDetail;
   canWrite: boolean;
 }) {
-  const list = useApiQuery(["versions", project.id], () =>
-    api.versions(project.id),
+  const lq = useListQuery({ scope: project.id });
+  const list = useApiQuery(
+    ["versions", project.id, lq.params],
+    () => api.versions(project.id, lq.params),
+    { keepPrevious: true },
   );
   const act = useAction();
   const create = useDrawerForm(() => ({ name: "" }));
@@ -994,16 +1039,36 @@ function VersionsTab({
       {act.error && !create.opened && <Notice kind="error">{act.error}</Notice>}
       <DataTable
         columns={[
-          { key: "name", label: "Version" },
-          { key: "note", label: "Note" },
-          { key: "artifacts", label: "Artifacts", align: "right" },
-          { key: "assets", label: "Assets", align: "right" },
-          { key: "by", label: "By" },
-          { key: "created", label: "Created" },
+          { key: "name", label: "Version", sortKey: "name" },
+          { key: "note", label: "Note", sortKey: "note" },
+          {
+            key: "artifacts",
+            label: "Artifacts",
+            align: "right",
+            sortKey: "artifactCount",
+            defaultOrder: "desc",
+          },
+          {
+            key: "assets",
+            label: "Assets",
+            align: "right",
+            sortKey: "assetCount",
+            defaultOrder: "desc",
+          },
+          { key: "by", label: "By", sortKey: "createdBy" },
+          {
+            key: "created",
+            label: "Created",
+            sortKey: "createdAt",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(v) => v.id}
         minWidth={560}
         empty={{ title: "No versions yet." }}
@@ -1100,8 +1165,11 @@ function IssuesTab({
   canWrite: boolean;
 }) {
   const [status, setStatus] = useState<IssueStatus | "">("open");
-  const list = useApiQuery(["issues", project.id, status], () =>
-    api.issues(project.id, status || undefined),
+  const lq = useListQuery({ scope: project.id });
+  const list = useApiQuery(
+    ["issues", project.id, status, lq.params],
+    () => api.issues(project.id, status || undefined, lq.params),
+    { keepPrevious: true },
   );
   const versions = useApiQuery(["versions", project.id], () =>
     api.versions(project.id),
@@ -1153,22 +1221,41 @@ function IssuesTab({
           ]}
           onChange={(v) => setStatus(v as IssueStatus | "")}
         />
+        <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Title" />
       </FilterBar>
       {act.error && !create.opened && <Notice kind="error">{act.error}</Notice>}
       <DataTable
         columns={[
-          { key: "n", label: "#", align: "right" },
-          { key: "title", label: "Title" },
-          { key: "status", label: "Status" },
-          { key: "version", label: "Version" },
-          { key: "by", label: "By" },
-          { key: "updated", label: "Updated" },
+          {
+            key: "n",
+            label: "#",
+            align: "right",
+            sortKey: "number",
+            defaultOrder: "desc",
+          },
+          { key: "title", label: "Title", sortKey: "title" },
+          { key: "status", label: "Status", sortKey: "status" },
+          { key: "version", label: "Version", sortKey: "version" },
+          { key: "by", label: "By", sortKey: "createdBy" },
+          {
+            key: "updated",
+            label: "Updated",
+            sortKey: "updatedAt",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(i) => i.id}
-        empty={{ title: `No ${status || ""} issues.`.replace("  ", " ") }}
+        empty={
+          lq.filtering
+            ? noMatch(lq.params.q ?? "")
+            : { title: `No ${status || ""} issues.`.replace("  ", " ") }
+        }
         render={(i) => (
           <>
             <NumCell>{i.number}</NumCell>

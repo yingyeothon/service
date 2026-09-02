@@ -1,4 +1,5 @@
 import type {
+  ListParams,
   ApiToken,
   AuditDetail,
   AuditFilter,
@@ -143,10 +144,14 @@ export function createApiClient({
   const del = <T = void>(path: string, body?: unknown) =>
     call<T>("DELETE", path, body);
   const enc = encodeURIComponent;
-  const qs = (params: Record<string, string | number | undefined>) => {
+  // Any plain object of scalars (`ListParams` has no index signature, hence
+  // `object`); `undefined` and empty strings are dropped, so an idle search
+  // box or an unset sort adds nothing to the URL.
+  const qs = (params: object) => {
     const q = new URLSearchParams();
-    for (const [k, v] of Object.entries(params))
-      if (v !== undefined && v !== "") q.set(k, String(v));
+    for (const [k, v] of Object.entries(params) as [string, unknown][])
+      if ((typeof v === "string" && v !== "") || typeof v === "number")
+        q.set(k, String(v));
     const s = q.toString();
     return s ? `?${s}` : "";
   };
@@ -196,21 +201,24 @@ export function createApiClient({
     logout: () => post<void>("/logout"),
     loginUrl: (next: string) => `${base}/auth/github/start?next=${enc(next)}`,
 
-    members: () =>
-      get<{ members: Member[] }>("/members").then((r) => r.members),
+    members: (p: ListParams = {}) =>
+      get<{ members: Member[] }>(`/members${qs(p)}`).then((r) => r.members),
     memberAction: (id: string, action: "approve" | "promote" | "demote") =>
       post<Pick<Member, "id" | "login" | "role">>(
         `/members/${enc(id)}/${action}`,
       ),
 
-    tokens: () => get<{ tokens: ApiToken[] }>("/tokens").then((r) => r.tokens),
+    tokens: (p: ListParams = {}) =>
+      get<{ tokens: ApiToken[] }>(`/tokens${qs(p)}`).then((r) => r.tokens),
     createToken: (name: string) =>
       post<ApiToken & { token: string }>("/tokens", { name }),
     revokeToken: (id: string) => del(`/tokens/${enc(id)}`),
 
     // ---- teams -------------------------------------------------------------
-    teams: (scope?: "mine" | "all") =>
-      get<{ teams: Team[] }>(`/teams${qs({ scope })}`).then((r) => r.teams),
+    teams: (scope?: "mine" | "all", p: ListParams = {}) =>
+      get<{ teams: Team[] }>(`/teams${qs({ scope, ...p })}`).then(
+        (r) => r.teams,
+      ),
     createTeam: (body: { name: string; description?: string | null }) =>
       post<Team>("/teams", body),
     /** 202 with the name-only view; 404 hides unknown and not-allowed alike. */
@@ -223,8 +231,8 @@ export function createApiClient({
     deleteTeam: (team: string) => del(teamPath(team)),
     setTeamAdminLock: (team: string, locked: boolean) =>
       put<Team>(`${teamPath(team)}/admin-lock`, { locked }),
-    teamMembers: (team: string) =>
-      get<{ members: TeamMember[] }>(`${teamPath(team)}/members`).then(
+    teamMembers: (team: string, p: ListParams = {}) =>
+      get<{ members: TeamMember[] }>(`${teamPath(team)}/members${qs(p)}`).then(
         (r) => r.members,
       ),
     addTeamMember: (team: string, login: string, role: "owner" | "member") =>
@@ -242,10 +250,10 @@ export function createApiClient({
         `${teamPath(team)}/history${qs({ cursor, limit: limit ? String(limit) : undefined })}`,
       ),
 
-    discussions: (team: string) =>
-      get<{ discussions: Discussion[] }>(`${teamPath(team)}/discussions`).then(
-        (r) => r.discussions,
-      ),
+    discussions: (team: string, p: ListParams = {}) =>
+      get<{ discussions: Discussion[] }>(
+        `${teamPath(team)}/discussions${qs(p)}`,
+      ).then((r) => r.discussions),
     createDiscussion: (team: string, body: { title: string; bodyMd: string }) =>
       post<Discussion>(`${teamPath(team)}/discussions`, body),
     discussion: (team: string, id: string) =>
@@ -272,8 +280,8 @@ export function createApiClient({
       del(`${discussionPath(team, id)}/comments/${enc(cid)}`),
 
     // ---- projects ----------------------------------------------------------
-    projects: (team: string) =>
-      get<{ projects: Project[] }>(`${teamPath(team)}/projects`).then(
+    projects: (team: string, p: ListParams = {}) =>
+      get<{ projects: Project[] }>(`${teamPath(team)}/projects${qs(p)}`).then(
         (r) => r.projects,
       ),
     createProject: (
@@ -287,8 +295,8 @@ export function createApiClient({
     ) => patch<Project>(projectPath(prj), body),
     deleteProject: (prj: string) => del(projectPath(prj)),
 
-    versions: (prj: string) =>
-      get<{ versions: Version[] }>(`${projectPath(prj)}/versions`).then(
+    versions: (prj: string, p: ListParams = {}) =>
+      get<{ versions: Version[] }>(`${projectPath(prj)}/versions${qs(p)}`).then(
         (r) => r.versions,
       ),
     createVersion: (
@@ -310,14 +318,14 @@ export function createApiClient({
 
     teamIssues: (
       team: string,
-      q: { status?: IssueStatus; limit?: number } = {},
+      q: { status?: IssueStatus; limit?: number } & ListParams = {},
     ) =>
       get<{ issues: Issue[] }>(
-        `${teamPath(team)}/issues${qs({ status: q.status, limit: q.limit === undefined ? undefined : String(q.limit) })}`,
+        `${teamPath(team)}/issues${qs({ ...q, limit: q.limit === undefined ? undefined : String(q.limit) })}`,
       ).then((r) => r.issues),
-    issues: (prj: string, status?: IssueStatus) =>
+    issues: (prj: string, status?: IssueStatus, p: ListParams = {}) =>
       get<{ issues: Issue[] }>(
-        `${projectPath(prj)}/issues${qs({ status })}`,
+        `${projectPath(prj)}/issues${qs({ status, ...p })}`,
       ).then((r) => r.issues),
     createIssue: (
       prj: string,
@@ -346,13 +354,15 @@ export function createApiClient({
 
     // ---- channels ----------------------------------------------------------
     /** Every channel of every team the caller sits in; `scope: "all"` is admin only. */
-    channels: (opts: { kind?: ChannelKind; scope?: "mine" | "all" } = {}) =>
+    channels: (
+      opts: { kind?: ChannelKind; scope?: "mine" | "all" } & ListParams = {},
+    ) =>
+      get<{ channels: Channel[] }>(`/channels${qs(opts)}`).then(
+        (r) => r.channels,
+      ),
+    projectChannels: (prj: string, kind?: ChannelKind, p: ListParams = {}) =>
       get<{ channels: Channel[] }>(
-        `/channels${qs({ kind: opts.kind, scope: opts.scope })}`,
-      ).then((r) => r.channels),
-    projectChannels: (prj: string, kind?: ChannelKind) =>
-      get<{ channels: Channel[] }>(
-        `${projectPath(prj)}/channels${qs({ kind })}`,
+        `${projectPath(prj)}/channels${qs({ kind, ...p })}`,
       ).then((r) => r.channels),
     channel: (id: string) => get<Channel>(`/channels/${enc(id)}`),
     createChannel: (
@@ -379,8 +389,8 @@ export function createApiClient({
       del<{ revoked: boolean }>(`/channels/${enc(id)}/doc-key`),
 
     // ---- events ------------------------------------------------------------
-    events: () =>
-      get<{ events: EventSummary[] }>("/events").then((r) => r.events),
+    events: (p: ListParams = {}) =>
+      get<{ events: EventSummary[] }>(`/events${qs(p)}`).then((r) => r.events),
     event: (id: string) => get<EventDetail>(`/events/${enc(id)}`),
     createEvent: (body: EventInput) => post<EventDetail>("/events", body),
     updateEvent: (id: string, body: Partial<EventInput>) =>
@@ -431,10 +441,10 @@ export function createApiClient({
     deletePoster: (id: string) => del(`/events/${enc(id)}/poster`),
 
     // ---- shows (the gallery; platform-global, so no team in the path) ------
-    shows: (q: { state?: "open" | "closed"; cursor?: string } = {}) =>
-      get<{ shows: ShowSummary[]; next: string | null }>(
-        `/shows${qs({ state: q.state, cursor: q.cursor })}`,
-      ),
+    /** `q` only: the list is cursor-paged, so the order is the server's; re-send `q` with `cursor`. */
+    shows: (
+      q: { state?: "open" | "closed"; cursor?: string; q?: string } = {},
+    ) => get<{ shows: ShowSummary[]; next: string | null }>(`/shows${qs(q)}`),
     show: (id: string) => get<ShowDetail>(`/shows/${enc(id)}`),
     createShow: (body: { title: string; bodyMd?: string; acl?: ShowAcl }) =>
       post<{ id: string }>("/shows", body),
@@ -451,8 +461,8 @@ export function createApiClient({
     openShowForEvent: (eventId: string) =>
       post<{ id: string }>(`/events/${enc(eventId)}/show`, {}),
 
-    showGrants: (id: string) =>
-      get<{ grants: ShowGrant[] }>(`/shows/${enc(id)}/grants`).then(
+    showGrants: (id: string, p: ListParams = {}) =>
+      get<{ grants: ShowGrant[] }>(`/shows/${enc(id)}/grants${qs(p)}`).then(
         (r) => r.grants,
       ),
     grantShow: (id: string, login: string, reason?: string) =>
@@ -570,10 +580,10 @@ export function createApiClient({
     auditRow: (id: string) => get<AuditDetail>(`/admin/audit/${enc(id)}`),
 
     // ---- binary catalog (apps are addressed by id) -------------------------
-    projectCatalogApps: (prj: string) =>
-      get<{ apps: CatalogApp[] }>(`${projectPath(prj)}/catalog/apps`).then(
-        (r) => r.apps,
-      ),
+    projectCatalogApps: (prj: string, p: ListParams = {}) =>
+      get<{ apps: CatalogApp[] }>(
+        `${projectPath(prj)}/catalog/apps${qs(p)}`,
+      ).then((r) => r.apps),
     createCatalogApp: (
       prj: string,
       body: { name: string; path: string; description?: string },
@@ -588,9 +598,9 @@ export function createApiClient({
       get<CatalogSettings>(`/catalog/apps/${enc(id)}/settings`),
     updateCatalogSettings: (id: string, body: Partial<CatalogSettings>) =>
       patch<CatalogSettings>(`/catalog/apps/${enc(id)}/settings`, body),
-    catalogArtifacts: (id: string) =>
+    catalogArtifacts: (id: string, p: ListParams = {}) =>
       get<{ artifacts: CatalogArtifact[] }>(
-        `/catalog/apps/${enc(id)}/artifacts`,
+        `/catalog/apps/${enc(id)}/artifacts${qs(p)}`,
       ).then((r) => r.artifacts),
     deleteCatalogArtifact: (id: string, artifactId: string) =>
       del(`/catalog/apps/${enc(id)}/artifacts/${enc(artifactId)}`),
@@ -620,9 +630,9 @@ export function createApiClient({
       ).then((r) => r.downloads),
 
     // ---- assets (bundles are addressed by id) ------------------------------
-    projectAssetBundles: (prj: string) =>
+    projectAssetBundles: (prj: string, p: ListParams = {}) =>
       get<{ bundles: AssetBundle[] }>(
-        `${projectPath(prj)}/assets/bundles`,
+        `${projectPath(prj)}/assets/bundles${qs(p)}`,
       ).then((r) => r.bundles),
     createAssetBundle: (
       prj: string,
@@ -660,8 +670,10 @@ export function createApiClient({
       return post<AssetFile>(`/assets/uploads/${enc(grant.uploadId)}/commit`);
     },
     // ---- static sites (addressed by id) -------------------------------------
-    projectSites: (prj: string) =>
-      get<{ sites: Site[] }>(`${projectPath(prj)}/sites`).then((r) => r.sites),
+    projectSites: (prj: string, p: ListParams = {}) =>
+      get<{ sites: Site[] }>(`${projectPath(prj)}/sites${qs(p)}`).then(
+        (r) => r.sites,
+      ),
     createSite: (prj: string, body: { name: string; description?: string }) =>
       post<Site & { warning: string }>(`${projectPath(prj)}/sites`, body),
     site: (id: string) => get<SiteDetail>(`/sites/${enc(id)}`),
@@ -670,8 +682,8 @@ export function createApiClient({
       body: { name?: string; description?: string | null },
     ) => patch<Site>(`/sites/${enc(id)}`, body),
     deleteSite: (id: string) => del(`/sites/${enc(id)}`),
-    siteDeploys: (id: string) =>
-      get<{ deploys: SiteDeploy[] }>(`/sites/${enc(id)}/deploys`).then(
+    siteDeploys: (id: string, p: ListParams = {}) =>
+      get<{ deploys: SiteDeploy[] }>(`/sites/${enc(id)}/deploys${qs(p)}`).then(
         (r) => r.deploys,
       ),
     siteDeploy: (id: string, deployId: string) =>

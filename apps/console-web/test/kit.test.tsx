@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { DataTable, NameCell } from "../src/components/DataTable";
-import { EnumFilter, FilterBar } from "../src/components/FilterBar";
+import { EnumFilter, FilterBar, TextFilter } from "../src/components/FilterBar";
 import { PageHeader } from "../src/components/PageHeader";
 import { ReadOnlyBanner } from "../src/components/ReadOnlyBanner";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../src/components/ResourceDrawer";
 import { RowMenu } from "../src/components/RowMenu";
 import { Section } from "../src/components/Section";
-import { mount } from "./wrap";
+import { mount, Providers } from "./wrap";
 
 /*
  * The page grammar kit: what every list and detail page is built from. These
@@ -204,7 +204,94 @@ describe("DataTable", () => {
   });
 });
 
+describe("DataTable sorting", () => {
+  const columns = [
+    { key: "name", label: "Name", sortKey: "name" },
+    {
+      key: "n",
+      label: "Count",
+      sortKey: "count",
+      defaultOrder: "desc" as const,
+    },
+    { key: "plain", label: "Plain" },
+  ];
+  const row = (r: { id: string }) => (
+    <>
+      <NameCell to={`/things/${r.id}`}>{r.id}</NameCell>
+      <Table.Td>1</Table.Td>
+      <Table.Td>x</Table.Td>
+    </>
+  );
+  it("cycles a header through its default order, the other, and none; marks the th", async () => {
+    const onSort = vi.fn();
+    const { rerender } = mount(
+      <DataTable
+        columns={columns}
+        rows={[{ id: "a" }]}
+        rowKey={(r) => r.id}
+        render={row}
+        empty={{ title: "None." }}
+        sort={null}
+        onSort={onSort}
+      />,
+      { auth: false },
+    );
+    // A column without `sortKey` is plain text.
+    expect(screen.queryByRole("button", { name: "Plain" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(onSort).toHaveBeenLastCalledWith({ key: "name", order: "asc" });
+    // Times and counts start descending.
+    await userEvent.click(screen.getByRole("button", { name: "Count" }));
+    expect(onSort).toHaveBeenLastCalledWith({ key: "count", order: "desc" });
+    const table = (sort: { key: string; order: "asc" | "desc" } | null) => (
+      <Providers auth={false}>
+        <DataTable
+          columns={columns}
+          rows={[{ id: "a" }]}
+          rowKey={(r) => r.id}
+          render={row}
+          empty={{ title: "None." }}
+          sort={sort}
+          onSort={onSort}
+        />
+      </Providers>
+    );
+    rerender(table({ key: "count", order: "desc" }));
+    expect(screen.getByRole("columnheader", { name: "Count" })).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+    expect(
+      screen.getByRole("columnheader", { name: "Name" }),
+    ).not.toHaveAttribute("aria-sort");
+    await userEvent.click(screen.getByRole("button", { name: "Count" }));
+    expect(onSort).toHaveBeenLastCalledWith({ key: "count", order: "asc" });
+    rerender(table({ key: "count", order: "asc" }));
+    expect(screen.getByRole("columnheader", { name: "Count" })).toHaveAttribute(
+      "aria-sort",
+      "ascending",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Count" }));
+    expect(onSort).toHaveBeenLastCalledWith(null);
+  });
+});
+
 describe("FilterBar", () => {
+  it("renders the search box with a clear button that empties it", async () => {
+    const onChange = vi.fn();
+    mount(
+      <FilterBar>
+        <TextFilter value="dun" onChange={onChange} placeholder="Name" />
+      </FilterBar>,
+      { auth: false },
+    );
+    const box = screen.getByRole("searchbox", { name: "Search" });
+    expect(box).toHaveValue("dun");
+    await userEvent.type(box, "g");
+    expect(onChange).toHaveBeenLastCalledWith("dung");
+    await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(onChange).toHaveBeenLastCalledWith("");
+  });
   it("uses a segmented control up to four values and a select beyond", () => {
     mount(
       <FilterBar>
