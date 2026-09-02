@@ -183,6 +183,19 @@ export interface VersionLink {
   bundleId: string | null;
   assetVersion: string | null;
   createdAt: number;
+  /** The detail names its targets; the create response does not. `null` = vanished. */
+  artifact?: {
+    appId: string;
+    appName: string;
+    platform: CatalogPlatform;
+    version: string | null;
+    /** What tells one build of a version from another (per-ABI, debug/release). */
+    abi: string | null;
+    buildType: string | null;
+    url: string;
+    createdAt: number;
+  } | null;
+  bundleName?: string | null;
 }
 
 export interface VersionDetail extends Version {
@@ -510,6 +523,16 @@ export interface CatalogArtifact {
   tags: Record<string, string>;
   createdAt: number;
   ios?: { manifestUrl: string; installUrl: string };
+}
+
+/** The commit's answer: the artifact plus the project version it was linked to. */
+export interface CatalogArtifactCommit extends CatalogArtifact {
+  version: {
+    id: string;
+    name: string;
+    linkId: string;
+    created: boolean;
+  } | null;
 }
 
 export interface CatalogUploadGrant {

@@ -11,6 +11,7 @@ import { EventsPage } from "./pages/Events";
 import { HomePage } from "./pages/Home";
 import { InstallerPage } from "./pages/Installer";
 import { IssuePage } from "./pages/Issue";
+import { VersionPage } from "./pages/Version";
 import { MembersPage } from "./pages/Members";
 import { ProjectPage } from "./pages/Project";
 import { SitePage } from "./pages/Site";
@@ -77,6 +78,11 @@ export const ROUTES: AppRoute[] = [
     path: "/teams/:team/projects/:prj/issues/:n",
     guard: "/teams",
     element: <IssuePage />,
+  },
+  {
+    path: "/teams/:team/projects/:prj/versions/:ver",
+    guard: "/teams",
+    element: <VersionPage />,
   },
   { path: "/channels", guard: "/channels", element: <ChannelsPage /> },
   { path: "/channels/:id", guard: "/channels", element: <ChannelDetailPage /> },

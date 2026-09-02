@@ -2,10 +2,6 @@ import {
   Anchor,
   Button,
   Code,
-  Drawer,
-  Group,
-  NativeSelect,
-  Stack,
   Table,
   Tabs,
   Text,
@@ -22,17 +18,12 @@ import {
   type Column,
 } from "../components/DataTable";
 import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
-import { Loading, PageSkeleton } from "../components/Loading";
+import { PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
-import { MdField } from "../components/MdField";
 import { NameDescriptionFields } from "../components/NameDescriptionFields";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
-import {
-  FormFooter,
-  ResourceDrawer,
-  useDrawerForm,
-} from "../components/ResourceDrawer";
+import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { Badge, CopyField, Notice } from "../components/ui";
@@ -41,14 +32,13 @@ import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
-import { issueUrl, projectUrl, useTeamStanding } from "../lib/team";
+import { issueUrl, projectUrl, useTeamStanding, versionUrl } from "../lib/team";
 import type {
   ListParams,
   ChannelStatus,
   IssueStatus,
   ProjectDetail,
   Version,
-  VersionLink,
 } from "../types";
 import { ISSUE_TONE, VersionSelect } from "./Issue";
 import { SITE_SHARED_ORIGIN_WARNING } from "./Site";
@@ -672,292 +662,6 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
 
 /* ---- versions ------------------------------------------------------------ */
 
-function linkLabel(l: VersionLink): string {
-  return l.kind === "artifact"
-    ? `artifact ${l.artifactId ?? ""}`
-    : `asset ${l.bundleId ?? ""} @ ${l.assetVersion ?? ""}`;
-}
-
-/**
- * One version's note and links, in a drawer. A link may only point inside
- * the same project (the API checks); the pickers list what the project has.
- * Two forms live here, so it is a plain drawer rather than a `ResourceDrawer`.
- */
-export function VersionDrawer({
-  project,
-  version,
-  canWrite,
-  onChanged,
-  onClose,
-}: {
-  project: ProjectDetail;
-  version: Version | null;
-  canWrite: boolean;
-  onChanged: () => Promise<void>;
-  onClose: () => void;
-}) {
-  return (
-    <Drawer
-      opened={version !== null}
-      onClose={onClose}
-      title={version ? `Version ${version.name}` : ""}
-      size="lg"
-    >
-      {version && (
-        <VersionBody
-          key={version.id}
-          project={project}
-          version={version}
-          canWrite={canWrite}
-          onChanged={onChanged}
-        />
-      )}
-    </Drawer>
-  );
-}
-
-function VersionBody({
-  project,
-  version,
-  canWrite,
-  onChanged,
-}: {
-  project: ProjectDetail;
-  version: Version;
-  canWrite: boolean;
-  onChanged: () => Promise<void>;
-}) {
-  const detail = useApiQuery(["version", project.id, version.id], () =>
-    api.version(project.id, version.id),
-  );
-  const apps = useApiQuery(["project", project.id, "apps"], () =>
-    api.projectCatalogApps(project.id),
-  );
-  const bundles = useApiQuery(["project", project.id, "bundles"], () =>
-    api.projectAssetBundles(project.id),
-  );
-  const act = useAction();
-  const [note, setNote] = useState<string | null>(null);
-  const [kind, setKind] = useState<"artifact" | "asset_version">("artifact");
-  const [appId, setAppId] = useState("");
-  const [artifactId, setArtifactId] = useState("");
-  const [bundleId, setBundleId] = useState("");
-  const [assetVersion, setAssetVersion] = useState("");
-  const artifacts = useApiQuery(
-    ["catalog", "app", appId, "artifacts"],
-    () => api.catalogArtifacts(appId),
-    { enabled: kind === "artifact" && appId !== "" },
-  );
-  const bundle = useApiQuery(
-    ["assets", "bundle", bundleId],
-    () => api.assetBundle(bundleId),
-    { enabled: kind === "asset_version" && bundleId !== "" },
-  );
-
-  const saveNote = async (e: FormEvent) => {
-    e.preventDefault();
-    if (note === null) return;
-    const r = await act.run(() =>
-      api.updateVersion(project.id, version.id, note === "" ? null : note),
-    );
-    if (r) {
-      setNote(null);
-      notify.saved("release note");
-      await detail.reload();
-      await onChanged();
-    }
-  };
-  const addLink = async (e: FormEvent) => {
-    e.preventDefault();
-    const body =
-      kind === "artifact"
-        ? ({ kind, artifactId } as const)
-        : ({ kind, bundleId, assetVersion } as const);
-    if (await act.run(() => api.addVersionLink(project.id, version.id, body))) {
-      setArtifactId("");
-      setAssetVersion("");
-      notify.done("Link added");
-      await detail.reload();
-      await onChanged(); // list counts
-    }
-  };
-  const removeLink = async (id: string) => {
-    if (
-      await act.run(async () => {
-        await api.removeVersionLink(project.id, version.id, id);
-        return true;
-      })
-    ) {
-      notify.done("Link removed");
-      await detail.reload();
-      await onChanged(); // list counts
-    }
-  };
-  const canAdd =
-    kind === "artifact"
-      ? artifactId !== ""
-      : bundleId !== "" && assetVersion !== "";
-
-  return (
-    <Stack gap="lg">
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      <Text size="sm" c="dimmed">
-        {version.createdBy ?? "—"} · {fmtTime(version.createdAt)}
-      </Text>
-      {canWrite ? (
-        <form onSubmit={(e) => void saveNote(e)}>
-          <Stack gap="sm">
-            <MdField
-              label="Release note"
-              value={note ?? version.note ?? ""}
-              onChange={setNote}
-              minRows={3}
-            />
-            <FormFooter
-              submitLabel="Save note"
-              busy={act.busy}
-              disabled={note === null}
-            />
-          </Stack>
-        </form>
-      ) : (
-        <Markdown text={version.note ?? ""} />
-      )}
-      <Section title="Links">
-        {detail.error && <Notice kind="error">{detail.error}</Notice>}
-        {!detail.data ? (
-          <Loading />
-        ) : detail.data.links.length === 0 ? (
-          <Text size="sm" c="dimmed">
-            Nothing linked yet.
-          </Text>
-        ) : (
-          <Table.ScrollContainer minWidth={420}>
-            <Table>
-              <Table.Tbody>
-                {detail.data.links.map((l) => (
-                  <Table.Tr key={l.id}>
-                    <Table.Td>
-                      <Code>{linkLabel(l)}</Code>
-                    </Table.Td>
-                    <Table.Td>{fmtTime(l.createdAt)}</Table.Td>
-                    <Table.Td style={{ textAlign: "right" }}>
-                      {canWrite && (
-                        <RowMenu
-                          name={linkLabel(l)}
-                          items={[
-                            {
-                              label: "Unlink",
-                              danger: true,
-                              disabled: act.busy,
-                              onClick: () => removeLink(l.id),
-                              confirm: {
-                                title: "Unlink?",
-                                message: linkLabel(l),
-                                confirmLabel: "Unlink",
-                                danger: true,
-                              },
-                            },
-                          ]}
-                        />
-                      )}
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
-        )}
-        {canWrite && (
-          <form onSubmit={(e) => void addLink(e)}>
-            <Group align="end" wrap="wrap" mt="md">
-              <NativeSelect
-                label="Link"
-                value={kind}
-                onChange={(e) =>
-                  setKind(e.target.value as "artifact" | "asset_version")
-                }
-                data={[
-                  { value: "artifact", label: "catalog artifact" },
-                  { value: "asset_version", label: "asset version" },
-                ]}
-              />
-              {kind === "artifact" ? (
-                <>
-                  <NativeSelect
-                    label="App"
-                    value={appId}
-                    onChange={(e) => {
-                      setAppId(e.target.value);
-                      setArtifactId("");
-                    }}
-                    data={[
-                      { value: "", label: "— choose —" },
-                      ...(apps.data ?? []).map((a) => ({
-                        value: a.id,
-                        label: a.name,
-                      })),
-                    ]}
-                  />
-                  <NativeSelect
-                    label="Artifact"
-                    value={artifactId}
-                    onChange={(e) => setArtifactId(e.target.value)}
-                    data={[
-                      { value: "", label: "— choose —" },
-                      ...(artifacts.data ?? []).map((a) => ({
-                        value: a.id,
-                        label: `${a.tags.version ?? "?"} ${a.platform} (${fmtTime(a.createdAt)})`,
-                      })),
-                    ]}
-                  />
-                </>
-              ) : (
-                <>
-                  <NativeSelect
-                    label="Bundle"
-                    value={bundleId}
-                    onChange={(e) => {
-                      setBundleId(e.target.value);
-                      setAssetVersion("");
-                    }}
-                    data={[
-                      { value: "", label: "— choose —" },
-                      ...(bundles.data ?? []).map((b) => ({
-                        value: b.id,
-                        label: b.name,
-                      })),
-                    ]}
-                  />
-                  <NativeSelect
-                    label="Version"
-                    value={assetVersion}
-                    onChange={(e) => setAssetVersion(e.target.value)}
-                    data={[
-                      { value: "", label: "— choose —" },
-                      ...(bundle.data?.versions ?? []).map((v) => ({
-                        value: v.version,
-                        label: v.version,
-                      })),
-                    ]}
-                  />
-                </>
-              )}
-              <Button
-                type="submit"
-                variant="default"
-                disabled={act.busy || !canAdd}
-              >
-                Add link
-              </Button>
-            </Group>
-          </form>
-        )}
-      </Section>
-    </Stack>
-  );
-}
-
 function VersionsTab({
   project,
   canWrite,
@@ -973,7 +677,6 @@ function VersionsTab({
   );
   const act = useAction();
   const create = useDrawerForm(() => ({ name: "" }));
-  const [open, setOpen] = useState<Version | null>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (
@@ -1074,17 +777,9 @@ function VersionsTab({
         empty={{ title: "No versions yet." }}
         render={(v) => (
           <>
-            <Table.Td>
-              <Anchor
-                component="button"
-                type="button"
-                size="sm"
-                fw={500}
-                onClick={() => setOpen(v)}
-              >
-                {v.name}
-              </Anchor>
-            </Table.Td>
+            <NameCell to={versionUrl(project.teamId, project.id, v.id)}>
+              {v.name}
+            </NameCell>
             <Table.Td>
               <Text size="sm" lineClamp={1}>
                 {v.note ?? "—"}
@@ -1119,15 +814,6 @@ function VersionsTab({
               )
             : undefined
         }
-      />
-      <VersionDrawer
-        project={project}
-        version={
-          open ? (list.data?.find((v) => v.id === open.id) ?? open) : null
-        }
-        canWrite={canWrite}
-        onChanged={list.reload}
-        onClose={() => setOpen(null)}
       />
       <ResourceDrawer
         opened={create.opened}
@@ -1265,7 +951,19 @@ function IssuesTab({
             <Table.Td>
               <Badge tone={ISSUE_TONE[i.status]}>{i.status}</Badge>
             </Table.Td>
-            <Table.Td>{versionName(i.versionId)}</Table.Td>
+            <Table.Td>
+              {i.versionId ? (
+                <Anchor
+                  component={Link}
+                  to={versionUrl(project.teamId, project.id, i.versionId)}
+                  size="sm"
+                >
+                  {versionName(i.versionId)}
+                </Anchor>
+              ) : (
+                "—"
+              )}
+            </Table.Td>
             <Table.Td>{i.createdBy ?? "—"}</Table.Td>
             <Table.Td>{fmtTime(i.updatedAt)}</Table.Td>
           </>

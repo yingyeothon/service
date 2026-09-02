@@ -24,6 +24,7 @@ import type {
   AssetUploadGrant,
   CatalogApp,
   CatalogArtifact,
+  CatalogArtifactCommit,
   CatalogCleanupResult,
   CatalogPlatform,
   CatalogSettings,
@@ -323,7 +324,11 @@ export function createApiClient({
       get<{ issues: Issue[] }>(
         `${teamPath(team)}/issues${qs({ ...q, limit: q.limit === undefined ? undefined : String(q.limit) })}`,
       ).then((r) => r.issues),
-    issues: (prj: string, status?: IssueStatus, p: ListParams = {}) =>
+    issues: (
+      prj: string,
+      status?: IssueStatus,
+      p: ListParams & { versionId?: string } = {},
+    ) =>
       get<{ issues: Issue[] }>(
         `${projectPath(prj)}/issues${qs({ status, ...p })}`,
       ).then((r) => r.issues),
@@ -614,13 +619,13 @@ export function createApiClient({
       file: File,
       platform: CatalogPlatform,
       tags: Record<string, string>,
-    ): Promise<CatalogArtifact> {
+    ): Promise<CatalogArtifactCommit> {
       const grant = await post<CatalogUploadGrant>(
         `/catalog/apps/${enc(id)}/artifacts`,
         { platform, filename: file.name, size: file.size, tags },
       );
       await putToGrant(grant, file, "artifact");
-      return post<CatalogArtifact>(
+      return post<CatalogArtifactCommit>(
         `/catalog/uploads/${enc(grant.uploadId)}/commit`,
       );
     },
