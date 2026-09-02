@@ -57,7 +57,12 @@ const JSON_H = { headers: { "content-type": "application/json" } };
 export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const clock = fakeClock();
   const kv = createMemoryKv({ clock });
-  const db = createMemoryConsoleDb();
+  // The channel list sorts by project name; the real table joins `projects`.
+  const db = createMemoryConsoleDb({
+    projectName: (id) => teamDb.projects.get(id)?.name,
+  });
+  // The `createdBy`/`login` sorts join `members.github_login` on the real DB.
+  const loginOf = (id: string) => db.members.get(id)?.githubLogin ?? id;
   const events = createMemoryEventsDb(
     (id) => db.members.has(id),
     // `shows.event_id` is `ON DELETE SET NULL`: the gallery outlives its event.
@@ -65,14 +70,18 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
       for (const [k, s] of shows.shows)
         if (s.eventId === eventId) shows.shows.set(k, { ...s, eventId: null });
     },
+    { loginOf },
   );
   const shows = createMemoryShowsDb({
     memberExists: (id) => db.members.has(id),
     eventExists: (id) => events.events.has(id),
+    loginOf,
   });
-  const catalog = createMemoryCatalogDb((id) => db.members.has(id));
-  const assets = createMemoryAssetsDb((id) => db.members.has(id));
-  const sites = createMemorySitesDb((id) => db.members.has(id));
+  const catalog = createMemoryCatalogDb((id) => db.members.has(id), {
+    loginOf,
+  });
+  const assets = createMemoryAssetsDb((id) => db.members.has(id), { loginOf });
+  const sites = createMemorySitesDb((id) => db.members.has(id), { loginOf });
   const posters = createMemoryPosterStore();
   const siteStore = createMemorySiteStore({ distributionId: "EDIST" });
   /** Deploy ids the app asked the worker for; tests run `runSiteDeploy` themselves. */
@@ -91,6 +100,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   });
   const teamDb = createMemoryTeamDb({
     memberExists: (id) => db.members.has(id),
+    loginOf,
     artifactExists: (id) => catalog.artifacts.has(id),
     bundleExists: (id) => assets.bundles.has(id),
     countResources: (projectId) => countIn((r) => r.projectId === projectId),

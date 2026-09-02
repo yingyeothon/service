@@ -6,9 +6,16 @@ import {
   type Clock,
   type Logger,
 } from "@yyt/core";
-import type { SiteDeployRow, SiteRow, SitesDb } from "@yyt/console-db";
+import {
+  DEPLOY_SORT_KEYS,
+  SITE_SORT_KEYS,
+  type SiteDeployRow,
+  type SiteRow,
+  type SitesDb,
+} from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext, json } from "@yyt/http";
 import { z } from "zod";
+import { listParams, listQuery } from "./list-query.js";
 import { requireRole } from "./identity.js";
 import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
 import { resourceName } from "./team.js";
@@ -37,6 +44,8 @@ export const SITE_SHARED_ORIGIN_WARNING =
 /** Newest deploys a site view / list answers. */
 export const SITE_DEPLOY_LIST_LIMIT = 20;
 
+const sitesQuery = listQuery(SITE_SORT_KEYS).passthrough();
+const deploysQuery = listQuery(DEPLOY_SORT_KEYS).passthrough();
 const SITE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const siteName = resourceName.refine(
   (s) => SITE_NAME.test(s),
@@ -230,19 +239,23 @@ export function createSiteRoutes({
         return { sites: await siteViews(await sites.listSites({ teamIds })) };
       },
     },
-    {
+    defineRoute({
       method: "GET",
       path: "/projects/{prj}/sites",
       auth: true,
+      query: sitesQuery,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
         return {
           sites: await siteViews(
-            await sites.listSites({ projectId: a.project.id }),
+            await sites.listSites({
+              ...listParams(ctx.query),
+              projectId: a.project.id,
+            }),
           ),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/projects/{prj}/sites",
@@ -381,19 +394,25 @@ export function createSiteRoutes({
         return undefined;
       },
     },
-    {
+    defineRoute({
       method: "GET",
       path: "/sites/{site}/deploys",
       auth: true,
+      query: deploysQuery,
       handler: async (ctx) => {
         const { row } = await siteWith(ctx, false);
         return {
+          // The newest N (the repository cuts the window first), ordered as asked.
           deploys: (
-            await sites.listDeploys(row.id, SITE_DEPLOY_LIST_LIMIT)
+            await sites.listDeploys(
+              row.id,
+              SITE_DEPLOY_LIST_LIMIT,
+              listParams(ctx.query),
+            )
           ).map(deployView),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/sites/{site}/deploys",

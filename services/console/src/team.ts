@@ -1,7 +1,13 @@
 import { AppError, nowSec, randomHex, ulid, type Clock } from "@yyt/core";
 import {
+  DISCUSSION_SORT_KEYS,
   HISTORY_PAGE_MAX,
+  ISSUE_SORT_KEYS,
   ISSUE_STATUSES,
+  PROJECT_SORT_KEYS,
+  TEAM_MEMBER_SORT_KEYS,
+  TEAM_SORT_KEYS,
+  VERSION_SORT_KEYS,
   type Actor,
   type AssetsDb,
   type SitesDb,
@@ -9,7 +15,9 @@ import {
   type ChannelRow,
   type CommentRow,
   type ConsoleDb,
+  type DiscussionListRow,
   type DiscussionRow,
+  type IssueListRow,
   type IssueRow,
   type MemberRow,
   type TeamDb,
@@ -29,6 +37,7 @@ import {
   json,
 } from "@yyt/http";
 import { z } from "zod";
+import { listParams, listQuery, searchQuery } from "./list-query.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import { createTeamAccess, type Standing } from "./team-access.js";
 import { createWriteSlot } from "./write-slot.js";
@@ -93,9 +102,13 @@ const teamPatchBody = z
   })
   .strict();
 const teamJoinBody = z.object({ name: resourceName }).strict();
-const teamsQuery = z
-  .object({ scope: z.enum(["mine", "all"]).optional() })
+const teamsQuery = searchQuery(TEAM_SORT_KEYS)
+  .extend({ scope: z.enum(["mine", "all"]).optional() })
   .passthrough();
+const projectsQuery = searchQuery(PROJECT_SORT_KEYS).passthrough();
+const membersQuery = listQuery(TEAM_MEMBER_SORT_KEYS).passthrough();
+const discussionsQuery = searchQuery(DISCUSSION_SORT_KEYS).passthrough();
+const versionsQuery = listQuery(VERSION_SORT_KEYS).passthrough();
 const memberAddBody = z
   .object({ login: z.string().trim().min(1).max(100), role: teamRoleBody })
   .strict();
@@ -140,11 +153,11 @@ const issuePatchBody = z
     versionId: ID.nullable().optional(),
   })
   .strict();
-const issuesQuery = z
-  .object({ status: z.enum(ISSUE_STATUSES).optional() })
+const issuesQuery = searchQuery(ISSUE_SORT_KEYS)
+  .extend({ status: z.enum(ISSUE_STATUSES).optional() })
   .passthrough();
-const teamIssuesQuery = z
-  .object({
+const teamIssuesQuery = searchQuery(ISSUE_SORT_KEYS)
+  .extend({
     status: z.enum(ISSUE_STATUSES).optional(),
     limit: z.coerce.number().int().min(1).max(TEAM_ISSUE_FEED_MAX).optional(),
   })
@@ -336,18 +349,22 @@ export function createTeamRoutes({
     assetVersion: l.assetVersion,
     createdAt: l.createdAt,
   });
-  const issueView = (i: IssueRow, logins: Map<string, MemberRow>) => ({
+  /** The list row: everything but the markdown body (a list never reads it). */
+  const issueListView = (i: IssueListRow, logins: Map<string, MemberRow>) => ({
     id: i.id,
     projectId: i.projectId,
     number: i.number,
     title: i.title,
-    bodyMd: i.bodyMd,
     status: i.status,
     versionId: i.versionId,
     createdBy: loginOf(logins, i.createdBy),
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
     closedAt: i.closedAt,
+  });
+  const issueView = (i: IssueRow, logins: Map<string, MemberRow>) => ({
+    ...issueListView(i, logins),
+    bodyMd: i.bodyMd,
   });
   const commentView = (
     c: CommentRow,
@@ -361,20 +378,24 @@ export function createTeamRoutes({
     updatedAt: c.updatedAt,
     mine: c.createdBy === viewer,
   });
-  const discussionView = (
-    d: DiscussionRow,
+  const discussionListView = (
+    d: DiscussionListRow,
     logins: Map<string, MemberRow>,
     viewer: string,
   ) => ({
     id: d.id,
     teamId: d.teamId,
     title: d.title,
-    bodyMd: d.bodyMd,
     createdBy: loginOf(logins, d.createdBy),
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     mine: d.createdBy === viewer,
   });
+  const discussionView = (
+    d: DiscussionRow,
+    logins: Map<string, MemberRow>,
+    viewer: string,
+  ) => ({ ...discussionListView(d, logins, viewer), bodyMd: d.bodyMd });
 
   /**
    * Channels of the team whose credentials a departing member still knows.
@@ -408,12 +429,18 @@ export function createTeamRoutes({
       handler: async (ctx) => {
         const id = requireRole(ctx, "member");
         const logins = await loginMap();
+        const { sort, ...params } = listParams(ctx.query);
         if (ctx.query.scope === "all") {
           // There is no member-visible global listing on purpose: seeded team
           // names are GitHub logins, so a listing is the member roster.
           if (id.role !== "admin")
             throw new AppError("forbidden", "scope=all requires admin");
-          const rows = await team.listAllTeams();
+          // `role` is the caller's seat, which this listing synthesizes.
+          if (sort === "role")
+            throw new AppError("bad_request", "sort=role needs scope=mine");
+          const rows = await team.listAllTeams(
+            sort === undefined ? params : { ...params, sort },
+          );
           // One membership query, not one per team: the pool holds a single
           // connection, so a `Promise.all` here would only serialize.
           const mine = new Map(
@@ -427,7 +454,10 @@ export function createTeamRoutes({
             ),
           };
         }
-        const rows = await team.listTeamsForMember(id.subject);
+        const rows = await team.listTeamsForMember(
+          id.subject,
+          sort === undefined ? params : { ...params, sort },
+        );
         return {
           teams: rows
             .filter((o) => o.state === "active")
@@ -586,20 +616,21 @@ export function createTeamRoutes({
       },
     }),
     // ---- members ----------------------------------------------------
-    {
+    defineRoute({
       method: "GET",
       path: "/teams/{team}/members",
       auth: true,
+      query: membersQuery,
       handler: async (ctx) => {
         const a = await teamAccess(ctx, ctx.params.team!);
         const logins = await loginMap();
         return {
-          members: (await team.listTeamMembers(a.team.id)).map((m) =>
-            memberView(m, logins),
-          ),
+          members: (
+            await team.listTeamMembers(a.team.id, listParams(ctx.query))
+          ).map((m) => memberView(m, logins)),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/teams/{team}/members",
@@ -747,28 +778,30 @@ export function createTeamRoutes({
         return {
           issues: (
             await team.listTeamIssues(a.team.id, {
+              ...listParams(ctx.query),
               status: ctx.query.status,
               // The feed spans up to 20 × 2000 issues; never ship it whole.
               limit: ctx.query.limit ?? TEAM_ISSUE_FEED_MAX,
             })
-          ).map((i) => issueView(i, logins)),
+          ).map((i) => issueListView(i, logins)),
         };
       },
     }),
-    {
+    defineRoute({
       method: "GET",
       path: "/teams/{team}/discussions",
       auth: true,
+      query: discussionsQuery,
       handler: async (ctx) => {
         const a = await teamAccess(ctx, ctx.params.team!);
         const logins = await loginMap();
         return {
-          discussions: (await team.listDiscussions(a.team.id)).map((d) =>
-            discussionView(d, logins, a.id.subject),
-          ),
+          discussions: (
+            await team.listDiscussions(a.team.id, listParams(ctx.query))
+          ).map((d) => discussionListView(d, logins, a.id.subject)),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/teams/{team}/discussions",
@@ -904,20 +937,21 @@ export function createTeamRoutes({
 
   /* ---- projects --------------------------------------------------- */
   const projectRoutes: AnyRoute[] = [
-    {
+    defineRoute({
       method: "GET",
       path: "/teams/{team}/projects",
       auth: true,
+      query: projectsQuery,
       handler: async (ctx) => {
         const a = await teamAccess(ctx, ctx.params.team!);
         const logins = await loginMap();
         return {
-          projects: (await team.listProjects(a.team.id)).map((p) =>
-            projectView(p, a.team, logins),
-          ),
+          projects: (
+            await team.listProjects(a.team.id, listParams(ctx.query))
+          ).map((p) => projectView(p, a.team, logins)),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/teams/{team}/projects",
@@ -1030,20 +1064,21 @@ export function createTeamRoutes({
   }
 
   const versionRoutes: AnyRoute[] = [
-    {
+    defineRoute({
       method: "GET",
       path: "/projects/{prj}/versions",
       auth: true,
+      query: versionsQuery,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
         const logins = await loginMap();
         return {
-          versions: (await team.listVersions(a.project.id)).map((v) =>
-            versionView(v, logins),
-          ),
+          versions: (
+            await team.listVersions(a.project.id, listParams(ctx.query))
+          ).map((v) => versionView(v, logins)),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/projects/{prj}/versions",
@@ -1238,8 +1273,11 @@ export function createTeamRoutes({
         const logins = await loginMap();
         return {
           issues: (
-            await team.listIssues(a.project.id, { status: ctx.query.status })
-          ).map((i) => issueView(i, logins)),
+            await team.listIssues(a.project.id, {
+              ...listParams(ctx.query),
+              status: ctx.query.status,
+            })
+          ).map((i) => issueListView(i, logins)),
         };
       },
     }),

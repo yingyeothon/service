@@ -1,4 +1,9 @@
 import {
+  CHANNEL_SORT_KEYS,
+  MEMBER_SORT_KEYS,
+  TOKEN_SORT_KEYS,
+} from "@yyt/console-db";
+import {
   AppError,
   nowSec,
   nullLogger,
@@ -33,6 +38,7 @@ import {
 } from "@yyt/http";
 import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import { z } from "zod";
+import { listParams, listQuery, searchQuery } from "./list-query.js";
 import {
   buildChannel,
   channelView,
@@ -152,16 +158,18 @@ const deviceTokenBody = z
     tokenName: z.string().trim().min(1).max(100).optional(),
   })
   .strict();
-const channelsQuery = z
-  .object({
+const channelsQuery = searchQuery(CHANNEL_SORT_KEYS)
+  .extend({
     kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional(),
     /** admin only: `all` lists every team's channels. */
     scope: z.enum(["mine", "all"]).optional(),
   })
   .passthrough();
-const projectChannelsQuery = z
-  .object({ kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional() })
+const projectChannelsQuery = searchQuery(CHANNEL_SORT_KEYS)
+  .extend({ kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional() })
   .passthrough();
+const membersQuery = listQuery(MEMBER_SORT_KEYS).passthrough();
+const tokensQuery = listQuery(TOKEN_SORT_KEYS).passthrough();
 
 export function createConsoleApp({
   baseUrl,
@@ -569,14 +577,15 @@ export function createConsoleApp({
       },
     },
     // ---- members (admin) ----------------------------------------------
-    {
+    defineRoute({
       method: "GET",
       path: "/members",
       auth: true,
+      query: membersQuery,
       handler: async (ctx) => {
         requireRole(ctx, "admin");
         return {
-          members: (await db.listMembers()).map((m) => ({
+          members: (await db.listMembers(listParams(ctx.query))).map((m) => ({
             id: m.id,
             login: m.githubLogin,
             role: m.role,
@@ -586,7 +595,7 @@ export function createConsoleApp({
           })),
         };
       },
-    },
+    }),
     ...(["approve", "promote", "demote"] as const).map((action) => ({
       method: "POST" as const,
       path: `/members/{id}/${action}`,
@@ -623,14 +632,17 @@ export function createConsoleApp({
       },
     })),
     // ---- API tokens (member+) ----------------------------------------
-    {
+    defineRoute({
       method: "GET",
       path: "/tokens",
       auth: true,
+      query: tokensQuery,
       handler: async (ctx) => {
         const id = requireRole(ctx, "pending");
         return {
-          tokens: (await db.listApiTokens(id.subject)).map((t) => ({
+          tokens: (
+            await db.listApiTokens(id.subject, listParams(ctx.query))
+          ).map((t) => ({
             id: t.id,
             name: t.name,
             createdAt: t.createdAt,
@@ -638,7 +650,7 @@ export function createConsoleApp({
           })),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/tokens",
@@ -707,7 +719,12 @@ export function createConsoleApp({
         // (no team) is visible to admins only, through `scope=all`.
         const teamIds = all ? undefined : await memberTeamIds(id);
         if (teamIds && teamIds.length === 0) return { channels: [] };
-        const rows = await db.listChannels({ kind: ctx.query.kind, teamIds });
+        const rows = await db.listChannels({
+          ...listParams(ctx.query),
+          kind: ctx.query.kind,
+          teamIds,
+          now: nowSec(clock),
+        });
         return { channels: await views(rows) };
       },
     }),
@@ -719,8 +736,10 @@ export function createConsoleApp({
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
         const rows = await db.listChannels({
+          ...listParams(ctx.query),
           kind: ctx.query.kind,
           projectId: a.project.id,
+          now: nowSec(clock),
         });
         return { channels: await views(rows) };
       },
