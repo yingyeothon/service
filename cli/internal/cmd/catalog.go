@@ -57,6 +57,28 @@ type catalogArtifact struct {
 		ManifestURL string `json:"manifestUrl"`
 		InstallURL  string `json:"installUrl"`
 	} `json:"ios,omitempty"`
+	// Version is set only by the commit response: the project version the
+	// artifact's version tag names, created and linked by the console.
+	Version *artifactVersion `json:"version,omitempty"`
+}
+
+type artifactVersion struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	LinkID  string `json:"linkId"`
+	Created bool   `json:"created"`
+}
+
+// reportVersionLink says on stderr which project version the console linked
+// the artifact to (stdout keeps the artifact itself).
+func (a *App) reportVersionLink(art *catalogArtifact) {
+	if art == nil || art.Version == nil {
+		return
+	}
+	if art.Version.Created {
+		fmt.Fprintf(a.Err, "created version %s (%s)\n", art.Version.Name, art.Version.ID)
+	}
+	fmt.Fprintf(a.Err, "linked to version %s (%s)\n", art.Version.Name, art.Version.ID)
 }
 
 type uploadGrant struct {
@@ -506,6 +528,7 @@ func newCatalog(a *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				a.reportVersionLink(v)
 				return printArtifact(*v)
 			},
 		}
@@ -942,6 +965,7 @@ directory (created when missing).`,
 					if err != nil {
 						return err
 					}
+					a.reportVersionLink(art)
 					uploaded = append(uploaded, *art)
 				}
 			}
@@ -1059,6 +1083,7 @@ func typedUpload(a *App, appID appResolver, platform string, tagFlags []struct{ 
 			if err != nil {
 				return err
 			}
+			a.reportVersionLink(v)
 			if a.jsonOut {
 				return a.printer().JSONValue(v)
 			}

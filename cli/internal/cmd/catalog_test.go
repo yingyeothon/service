@@ -131,13 +131,21 @@ func TestCatalogArtifactUploadFlow(t *testing.T) {
 				"url":       "https://dev-d.yyt.life/my-game/u1/app.zip",
 				"objectKey": "my-game/u1/app.zip", "size": 7, "hash": "h",
 				"tags": map[string]string{"version": "1.0.0", "stage": "beta"}, "createdAt": 1756000200,
+				"version": map[string]any{"id": "ver_1", "name": "1.0.0", "linkId": "lnk_1", "created": true},
 			}
 		},
 	}, nil, []any{sampleApp}, nil))
-	out, _, err := run(t, f, "catalog", "artifact", "upload", "my-game", file,
+	out, stderr, err := run(t, f, "catalog", "artifact", "upload", "my-game", file,
 		"--platform", "bin", "--version", "1.0.0", "--tag", "stage=beta")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The console's version bookkeeping is reported on stderr, never stdout.
+	if stderr != "created version 1.0.0 (ver_1)\nlinked to version 1.0.0 (ver_1)\n" {
+		t.Fatalf("stderr=%q", stderr)
+	}
+	if strings.Contains(out, "linked to version") {
+		t.Fatalf("stdout must not carry the version line:\n%s", out)
 	}
 	if putBody != "yes" {
 		t.Fatal("presigned PUT was never sent")
