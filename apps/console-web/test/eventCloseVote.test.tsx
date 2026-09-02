@@ -134,14 +134,18 @@ describe("closing a date vote early", () => {
     // The owner may edit and cancel their event, but not overrule the vote.
     signedInAs("member");
     const owned = mount();
-    expect(await screen.findByText("Hackathon 36")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Hackathon 36" }),
+    ).toBeTruthy();
     expect(screen.queryByText("Close the vote now (admin)")).toBeNull();
     owned.unmount();
 
     signedInAs("admin");
     vi.mocked(mockApi.event).mockResolvedValue(FORCED);
     mount();
-    expect(await screen.findByText("Hackathon 36")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Hackathon 36" }),
+    ).toBeTruthy();
     expect(screen.queryByText("Close the vote now (admin)")).toBeNull();
   });
 
@@ -152,13 +156,13 @@ describe("closing a date vote early", () => {
     // The confirm is disabled until a reason is typed — assert the attribute,
     // not just that nothing was sent: the panel's own `reason === undefined`
     // guard would swallow the call even with `required` dropped.
-    expect(screen.getByText("Yes, close it").closest("button")?.disabled).toBe(
-      true,
-    );
+    expect(
+      (await screen.findByText("Yes, close it")).closest("button")?.disabled,
+    ).toBe(true);
     await userEvent.click(screen.getByText("Yes, close it"));
     expect(vi.mocked(mockApi.closeEventVote)).not.toHaveBeenCalled();
     await userEvent.type(
-      screen.getByLabelText("Reason"),
+      await screen.findByLabelText("Reason"),
       "the venue moved its deadline",
     );
     await userEvent.click(screen.getByText("Yes, close it"));
@@ -198,7 +202,7 @@ describe("closing a date vote early", () => {
       options.find((o) => o.textContent === fmtTime(200 * HOUR))!,
     );
     await userEvent.click(screen.getByText("Close the vote"));
-    await userEvent.type(screen.getByLabelText("Reason"), "hall only");
+    await userEvent.type(await screen.findByLabelText("Reason"), "hall only");
     await userEvent.click(screen.getByText("Yes, close it"));
     expect(vi.mocked(mockApi.closeEventVote)).toHaveBeenCalledWith(
       "ev_1",

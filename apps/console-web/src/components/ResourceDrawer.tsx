@@ -103,6 +103,7 @@ export function ResourceDrawer({
   danger,
   size = "md",
   hideFooter,
+  plain,
 }: {
   opened: boolean;
   onClose: () => void;
@@ -119,7 +120,24 @@ export function ResourceDrawer({
   size?: "md" | "lg";
   /** A read-only view of the same drawer (no form to submit). */
   hideFooter?: boolean;
+  /**
+   * The child brings its own `<form>` and `FormFooter` (the event form
+   * validates before it submits): no form wrapper, no footer here.
+   */
+  plain?: boolean;
 }) {
+  if (plain)
+    return (
+      <Drawer
+        opened={opened}
+        onClose={onClose}
+        title={title}
+        size={size === "lg" ? "lg" : "md"}
+      >
+        <Stack gap="md">{children}</Stack>
+        {danger && <DangerZone action={danger} />}
+      </Drawer>
+    );
   return (
     <Drawer
       opened={opened}
