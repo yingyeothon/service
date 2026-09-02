@@ -167,7 +167,7 @@ export function MembersPage() {
                     {m.role === "member" && (
                       <Confirm
                         label="Promote to admin"
-                        color="brand"
+                        color="ink"
                         variant="default"
                         onConfirm={() => go(m.id, "promote")}
                         disabled={act.busy}

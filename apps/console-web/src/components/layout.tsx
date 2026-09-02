@@ -1,8 +1,9 @@
 import {
+  ActionIcon,
   Anchor,
   AppShell,
+  Avatar,
   Box,
-  Badge,
   Burger,
   Button,
   Group,
@@ -10,12 +11,11 @@ import {
   NavLink,
   ScrollArea,
   Stack,
-  Title,
-  useMantineTheme,
+  Text,
 } from "@mantine/core";
-import { useDisclosure, useMediaQuery } from "@mantine/hooks";
-import { IconLogout, IconUser } from "@tabler/icons-react";
-import { useCallback, type ReactNode } from "react";
+import { useDisclosure } from "@mantine/hooks";
+import { IconLogout } from "@tabler/icons-react";
+import type { ReactNode } from "react";
 import { NavLink as RouterNavLink, useLocation } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
@@ -26,14 +26,16 @@ export function currentPath(loc: { pathname: string; search: string }): string {
   return `${loc.pathname}${loc.search}` || "/";
 }
 
-const NAVBAR_WIDTH = 220;
+/** DESIGN.md `topic-filter-rail` width and `top-nav` height. */
+const NAVBAR_WIDTH = 240;
+const HEADER_HEIGHT = 64;
 
-function SideNavigation({ onNavigate }: { onNavigate?: () => void }) {
+function SideNavigation({ onNavigate }: { onNavigate: () => void }) {
   const { me } = useAuth();
   const location = useLocation();
   return (
     <ScrollArea>
-      <Stack gap={0} p="xs" component="nav" aria-label="Main">
+      <Stack gap={2} p="sm" component="nav" aria-label="Main">
         {NAV_ITEMS.filter(
           (item) =>
             !item.hidden &&
@@ -44,9 +46,15 @@ function SideNavigation({ onNavigate }: { onNavigate?: () => void }) {
             component={RouterNavLink}
             to={item.path}
             label={item.label}
-            leftSection={<item.icon size={18} />}
+            leftSection={<item.icon size={18} aria-hidden="true" />}
             active={isNavActive(location.pathname, item.path)}
             onClick={onNavigate}
+            variant="light"
+            color="ink"
+            styles={{
+              root: { borderRadius: 6, minHeight: 44 },
+              label: { fontSize: 14 },
+            }}
           />
         ))}
       </Stack>
@@ -64,12 +72,13 @@ function HeaderBar({
   const { me, loading, logout } = useAuth();
   const loc = useLocation();
   return (
-    <Group h="100%" px="md" justify="space-between">
-      <Group gap="sm">
+    <Group h="100%" px="md" justify="space-between" wrap="nowrap">
+      <Group gap="sm" wrap="nowrap">
         <Burger
           opened={opened}
           onClick={toggle}
           size="sm"
+          hiddenFrom="sm"
           aria-label="Menu"
           aria-expanded={opened}
         />
@@ -81,24 +90,27 @@ function HeaderBar({
               width={28}
               height={28}
             />
-            <Title order={4}>yyt console</Title>
+            <Text fw={500} size="lg">
+              yyt console
+            </Text>
           </Group>
         </Anchor>
       </Group>
       {loading ? null : me ? (
-        <Menu position="bottom-end">
+        <Menu position="bottom-end" withinPortal>
           <Menu.Target>
-            <Button variant="subtle" leftSection={<IconUser size={16} />}>
-              {me.login}{" "}
-              <Badge ml={6} size="xs" variant="light">
-                {me.role}
-              </Badge>
-            </Button>
+            <ActionIcon aria-label={`Account menu for ${me.login}`} size={40}>
+              <Avatar radius="xl" size={32} color="ink">
+                {me.login.slice(0, 1).toUpperCase()}
+              </Avatar>
+            </ActionIcon>
           </Menu.Target>
           <Menu.Dropdown>
+            <Menu.Label>
+              {me.login} · {me.role}
+            </Menu.Label>
             <Menu.Item
-              leftSection={<IconLogout size={14} />}
-              color="red"
+              leftSection={<IconLogout size={14} aria-hidden="true" />}
               onClick={() => void logout()}
             >
               Sign out
@@ -119,39 +131,30 @@ function HeaderBar({
 }
 
 export function AppShellLayout({ children }: { children: ReactNode }) {
-  const theme = useMantineTheme();
-  // Mobile: closed by default / desktop: open by default.
-  const [mobileOpened, { toggle: toggleMobile, close: closeMobile }] =
-    useDisclosure(false);
-  const [desktopOpened, { toggle: toggleDesktop }] = useDisclosure(true);
-  const isMobile = useMediaQuery(`(max-width: ${theme.breakpoints.sm})`);
-  const opened = isMobile ? mobileOpened : desktopOpened;
-
-  const handleToggle = useCallback(() => {
-    (isMobile ? toggleMobile : toggleDesktop)();
-  }, [isMobile, toggleMobile, toggleDesktop]);
-  const handleNavigate = useCallback(() => {
-    if (isMobile) closeMobile();
-  }, [isMobile, closeMobile]);
-
+  // The navigation is always visible from the `sm` breakpoint up; below it
+  // the burger opens it as an overlay that closes after a choice.
+  const [opened, { toggle, close }] = useDisclosure(false);
   return (
     <AppShell
-      header={{ height: 52 }}
+      header={{ height: HEADER_HEIGHT }}
       navbar={{
         width: NAVBAR_WIDTH,
         breakpoint: "sm",
-        collapsed: { mobile: !mobileOpened, desktop: !desktopOpened },
+        collapsed: { mobile: !opened, desktop: false },
       }}
-      padding="md"
+      padding="lg"
     >
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
       <AppShell.Header>
-        <HeaderBar opened={opened} toggle={handleToggle} />
+        <HeaderBar opened={opened} toggle={toggle} />
       </AppShell.Header>
       <AppShell.Navbar>
-        <SideNavigation onNavigate={handleNavigate} />
+        <SideNavigation onNavigate={close} />
       </AppShell.Navbar>
-      <AppShell.Main>
-        <Box maw={960} mx="auto">
+      <AppShell.Main id="main">
+        <Box maw={1080} mx="auto">
           {children}
         </Box>
       </AppShell.Main>

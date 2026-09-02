@@ -428,7 +428,7 @@ function MembersTab({
                         {owner && m.role === "member" && (
                           <Confirm
                             label="Promote to owner"
-                            color="brand"
+                            color="ink"
                             variant="default"
                             onConfirm={() => setRoleOf(m, "owner")}
                             disabled={act.busy}
@@ -437,7 +437,7 @@ function MembersTab({
                         {owner && m.role === "owner" && (
                           <Confirm
                             label="Demote"
-                            color="brand"
+                            color="ink"
                             variant="default"
                             onConfirm={() => setRoleOf(m, "member")}
                             disabled={act.busy}

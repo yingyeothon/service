@@ -187,7 +187,7 @@ export function ChannelDetailPage() {
           {owner && hasSecret && (
             <Confirm
               label={`Rotate ${secretLabel.toLowerCase()}`}
-              color="brand"
+              color="ink"
               variant="default"
               onConfirm={rotate}
               disabled={act.busy}

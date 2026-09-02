@@ -1,36 +1,194 @@
-import { createTheme, type MantineColorsTuple } from "@mantine/core";
+import {
+  ActionIcon,
+  Alert,
+  Anchor,
+  AppShell,
+  Badge,
+  Button,
+  Card,
+  Drawer,
+  Input,
+  Modal,
+  Notification,
+  Paper,
+  SegmentedControl,
+  Skeleton,
+  Table,
+  Tabs,
+  createTheme,
+  rem,
+  type CSSVariablesResolver,
+  type MantineColorsTuple,
+} from "@mantine/core";
 
-/** yyt accent (#2f5bea) as a Mantine 10-shade palette; index 6 is primary. */
-const brand: MantineColorsTuple = [
-  "#eaeffe",
-  "#d3ddfb",
-  "#a5b9f6",
-  "#7392f2",
-  "#4a71ee",
-  "#345dec",
-  "#2f5bea",
-  "#204ad0",
-  "#1941bb",
-  "#0637a5",
+/*
+ * The design system lives in `DESIGN.md` (this directory); this file maps its
+ * tokens onto Mantine. Two palettes carry the whole console: `ink` is the
+ * near-black primary (buttons, active tabs, headings), `link` is the blue of
+ * inline links and the focus ring — never a button colour.
+ */
+
+/** DESIGN.md `primary` #181d26 at index 6, `primary-active` #0d1218 at 7. */
+const ink: MantineColorsTuple = [
+  "#f8fafc",
+  "#e0e2e6",
+  "#c5c9cf",
+  "#9297a0",
+  "#6b7079",
+  "#41454d",
+  "#181d26",
+  "#0d1218",
+  "#0a0e14",
+  "#05080c",
 ];
 
-/** Compact, light-only theme (small type scale, `size: sm` form defaults). */
+/** DESIGN.md `link` #1b61c9 at index 6, `info-border` #458fff at 4. */
+const link: MantineColorsTuple = [
+  "#e8f0fc",
+  "#c9dbf7",
+  "#9bbdf0",
+  "#6c9ee8",
+  "#458fff",
+  "#254fad",
+  "#1b61c9",
+  "#1a3866",
+  "#142a4d",
+  "#0d1b33",
+];
+
+export const HAIRLINE = "#dddddd";
+export const SURFACE_SOFT = "#f8fafc";
+export const INFO_BORDER = "#458fff";
+
 export const theme = createTheme({
-  fontFamily:
-    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  fontSizes: { xs: "11px", sm: "13px", md: "14px", lg: "16px", xl: "18px" },
-  colors: { brand },
-  primaryColor: "brand",
+  primaryColor: "ink",
   primaryShade: 6,
-  defaultRadius: "sm",
-  components: {
-    Button: { defaultProps: { size: "sm" } },
-    TextInput: { defaultProps: { size: "sm" } },
-    NumberInput: { defaultProps: { size: "sm" } },
-    Select: { defaultProps: { size: "sm" } },
-    NativeSelect: { defaultProps: { size: "sm" } },
-    Textarea: { defaultProps: { size: "sm" } },
-    PasswordInput: { defaultProps: { size: "sm" } },
-    Table: { defaultProps: { verticalSpacing: 6, horizontalSpacing: "sm" } },
+  colors: { ink, link },
+  // Inter stands in for Haas Grotesk (DESIGN.md, font substitutes); it has no
+  // Hangul, so user text in Korean falls through to the system faces.
+  fontFamily:
+    '"Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif',
+  fontSizes: { xs: "12px", sm: "14px", md: "14px", lg: "16px", xl: "18px" },
+  lineHeights: { xs: "1.25", sm: "1.25", md: "1.4", lg: "1.5", xl: "1.5" },
+  headings: {
+    fontWeight: "400",
+    sizes: {
+      h1: { fontSize: "24px", lineHeight: "1.35", fontWeight: "400" },
+      h2: { fontSize: "18px", lineHeight: "1.4", fontWeight: "500" },
+      h3: { fontSize: "16px", lineHeight: "1.4", fontWeight: "500" },
+      h4: { fontSize: "14px", lineHeight: "1.4", fontWeight: "500" },
+      h5: { fontSize: "14px", lineHeight: "1.4", fontWeight: "500" },
+      h6: { fontSize: "14px", lineHeight: "1.4", fontWeight: "500" },
+    },
   },
+  radius: { xs: "2px", sm: "6px", md: "10px", lg: "12px", xl: "12px" },
+  defaultRadius: "sm",
+  spacing: { xs: "8px", sm: "12px", md: "16px", lg: "24px", xl: "32px" },
+  // Colour-block first, shadow second: depth comes from hairlines and surfaces.
+  shadows: { xs: "none", sm: "none", md: "none", lg: "none", xl: "none" },
+  components: {
+    Button: Button.extend({
+      defaultProps: { radius: "lg", size: "md" },
+      styles: { root: { fontWeight: 500 } },
+    }),
+    ActionIcon: ActionIcon.extend({
+      defaultProps: { radius: "xl", variant: "default", size: "lg" },
+    }),
+    Input: Input.extend({
+      defaultProps: { size: "md" },
+      vars: (_theme, props) => ({
+        wrapper: {
+          "--input-height": props.multiline ? undefined : rem(44),
+          "--input-radius": rem(6),
+          "--input-bd": HAIRLINE,
+          "--input-bd-focus": INFO_BORDER,
+        },
+      }),
+    }),
+    InputWrapper: {
+      defaultProps: { size: "md" },
+      styles: {
+        label: { fontWeight: 500, fontSize: rem(14), marginBottom: rem(4) },
+        description: { fontSize: rem(14) },
+      },
+    },
+    Card: Card.extend({
+      defaultProps: { withBorder: true, radius: "md", padding: "lg" },
+      styles: { root: { borderColor: HAIRLINE } },
+    }),
+    Paper: Paper.extend({
+      defaultProps: { radius: "md" },
+      styles: { root: { borderColor: HAIRLINE } },
+    }),
+    Table: Table.extend({
+      defaultProps: {
+        verticalSpacing: "sm",
+        horizontalSpacing: "md",
+        withRowBorders: true,
+        borderColor: HAIRLINE,
+      },
+      styles: {
+        table: { fontVariantNumeric: "tabular-nums" },
+        th: { fontWeight: 500, color: "#41454d" },
+      },
+    }),
+    Tabs: Tabs.extend({
+      defaultProps: { variant: "default" },
+      styles: { tab: { fontWeight: 500, paddingBlock: rem(12) } },
+    }),
+    Drawer: Drawer.extend({
+      defaultProps: {
+        position: "right",
+        size: "md",
+        padding: "lg",
+        overlayProps: { backgroundOpacity: 0.35 },
+      },
+      styles: { title: { fontSize: rem(20), fontWeight: 400 } },
+    }),
+    Modal: Modal.extend({
+      // Above the drawer (200): a danger-zone confirm opens over its drawer.
+      defaultProps: {
+        radius: "md",
+        zIndex: 300,
+        overlayProps: { backgroundOpacity: 0.35 },
+      },
+      styles: { title: { fontSize: rem(18), fontWeight: 500 } },
+    }),
+    Badge: Badge.extend({
+      defaultProps: { variant: "light", radius: "sm" },
+      styles: {
+        root: { textTransform: "none", fontWeight: 500, letterSpacing: 0 },
+      },
+    }),
+    Notification: Notification.extend({
+      defaultProps: { radius: "md", withBorder: true },
+    }),
+    Alert: Alert.extend({ defaultProps: { radius: "md", variant: "light" } }),
+    Anchor: Anchor.extend({ defaultProps: { underline: "hover" } }),
+    SegmentedControl: SegmentedControl.extend({
+      defaultProps: { radius: "sm", size: "sm" },
+      styles: { root: { backgroundColor: SURFACE_SOFT } },
+    }),
+    Skeleton: Skeleton.extend({ defaultProps: { radius: "sm" } }),
+    AppShell: AppShell.extend({
+      styles: {
+        header: { borderColor: HAIRLINE },
+        navbar: { borderColor: HAIRLINE },
+      },
+    }),
+  },
+});
+
+/** Body, dimmed and link colours from DESIGN.md; a soft hover on default buttons. */
+export const cssVariablesResolver: CSSVariablesResolver = () => ({
+  variables: {},
+  light: {
+    "--mantine-color-text": "#333840",
+    "--mantine-color-dimmed": "#41454d",
+    "--mantine-color-anchor": "#1b61c9",
+    "--mantine-color-body": "#ffffff",
+    "--mantine-color-default-border": HAIRLINE,
+    "--mantine-color-default-hover": SURFACE_SOFT,
+  },
+  dark: {},
 });

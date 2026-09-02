@@ -493,7 +493,7 @@ function OwnerPanel({
           <Confirm
             label="Publish (open the date vote)"
             confirmLabel="Yes, publish"
-            color="brand"
+            color="ink"
             variant="filled"
             onConfirm={publish}
             disabled={act.busy}
