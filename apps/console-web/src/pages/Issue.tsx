@@ -152,7 +152,7 @@ export function IssuePage() {
               <Confirm
                 label={i.status === "open" ? "Close issue" : "Reopen issue"}
                 confirmLabel={i.status === "open" ? "Close" : "Reopen"}
-                color="brand"
+                color="ink"
                 variant="default"
                 onConfirm={toggle}
                 disabled={act.busy}

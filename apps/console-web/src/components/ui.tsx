@@ -6,7 +6,6 @@ import {
   Card,
   Code,
   Group,
-  Loader,
   Paper,
   Stack,
   Table,
@@ -29,12 +28,13 @@ import {
   type ReactNode,
 } from "react";
 import { Link } from "react-router";
+import { Loading } from "./Loading";
 
 const NOTICE: Record<
   "info" | "error" | "success" | "warn",
   { color: string; icon: ReactNode }
 > = {
-  info: { color: "brand", icon: <IconInfoCircle size={18} /> },
+  info: { color: "link", icon: <IconInfoCircle size={18} /> },
   error: { color: "red", icon: <IconX size={18} /> },
   success: { color: "green", icon: <IconCheck size={18} /> },
   warn: { color: "yellow", icon: <IconAlertTriangle size={18} /> },
@@ -60,15 +60,9 @@ export function Notice({
   );
 }
 
-export function Spinner({ label = "Loading…" }: { label?: string }) {
-  return (
-    <Group gap="xs" role="status" aria-live="polite" my="sm">
-      <Loader size="xs" />
-      <Text size="sm" c="dimmed">
-        {label}
-      </Text>
-    </Group>
-  );
+/** @deprecated Use `Loading` (inline) or `PageSkeleton` (page body). */
+export function Spinner({ label }: { label?: string }) {
+  return <Loading label={label} />;
 }
 
 /** A secret shown exactly once: the API never returns it again. */
@@ -81,23 +75,35 @@ export function SecretOnce({
   value: string;
   onDismiss: () => void;
 }) {
+  // The cream signature surface (DESIGN.md): the one moment the console
+  // must make a reader stop, so it is the only place this colour appears
+  // besides the Home hero.
   return (
-    <Notice kind="warn">
-      <Text size="sm">
+    <Paper
+      role="alert"
+      p="lg"
+      mb="md"
+      withBorder={false}
+      style={{
+        background: "var(--yyt-signature-cream)",
+        color: "var(--yyt-ink)",
+      }}
+    >
+      <Text size="sm" mb="xs">
         <strong>{label}</strong> — shown once. Copy it now; it cannot be
         retrieved later.
       </Text>
       <CopyField label={label} value={value} />
-      <Button size="compact-sm" variant="default" onClick={onDismiss}>
+      <Button variant="default" mt="xs" onClick={onDismiss}>
         I have copied it
       </Button>
-    </Notice>
+    </Paper>
   );
 }
 
 const TONE_COLOR: Record<string, string> = {
   neutral: "gray",
-  accent: "brand",
+  accent: "ink",
   ok: "green",
   warn: "yellow",
   danger: "red",
@@ -453,7 +459,8 @@ export function DropZone({
       style={{
         borderStyle: "dashed",
         cursor: "pointer",
-        background: over ? "var(--mantine-color-brand-0)" : undefined,
+        background: over ? "var(--yyt-surface-soft)" : undefined,
+        borderRadius: 10,
         textAlign: "center",
       }}
       onClick={() => inputRef.current?.click()}

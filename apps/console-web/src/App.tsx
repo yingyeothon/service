@@ -3,7 +3,8 @@ import { Navigate, Route, Routes, useLocation } from "react-router";
 import { api } from "./api";
 import { hasRole, useAuth } from "./auth";
 import { AppShellLayout, currentPath } from "./components/layout";
-import { Notice, Spinner } from "./components/ui";
+import { PageSkeleton } from "./components/Loading";
+import { Notice } from "./components/ui";
 import { navMinRole } from "./navigation";
 import { ROUTES } from "./routes";
 import type { Role } from "./types";
@@ -19,7 +20,7 @@ function RequireRole({
 }) {
   const { me, loading } = useAuth();
   const loc = useLocation();
-  if (loading) return <Spinner />;
+  if (loading) return <PageSkeleton />;
   if (!me)
     return (
       <Notice>

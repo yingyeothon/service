@@ -1,9 +1,82 @@
-/* Mantine owns the look; only tiny globals live here. */
-body {
-  background: var(--mantine-color-gray-0);
+/* Tokens from DESIGN.md; Mantine is themed from them in theme.ts. */
+:root {
+  --yyt-canvas: #ffffff;
+  --yyt-surface-soft: #f8fafc;
+  --yyt-surface-strong: #e0e2e6;
+  --yyt-hairline: #dddddd;
+  --yyt-border-strong: #9297a0;
+  --yyt-ink: #181d26;
+  --yyt-body: #333840;
+  --yyt-muted: #41454d;
+  --yyt-link: #1b61c9;
+  --yyt-info: #254fad;
+  --yyt-info-border: #458fff;
+  --yyt-success: #006400;
+  --yyt-signature-coral: #aa2d00;
+  --yyt-signature-forest: #0a2e0e;
+  --yyt-signature-cream: #f5e9d4;
+  --yyt-signature-peach: #fcab79;
+  --yyt-signature-mint: #a8d8c4;
+  --yyt-signature-yellow: #f4d35e;
+  --yyt-signature-mustard: #d9a441;
 }
 
-/* Markdown output (sanitized): lists and quotes keep the small type scale. */
+body {
+  background: var(--yyt-canvas);
+  color: var(--yyt-body);
+  -webkit-tap-highlight-color: transparent;
+}
+
+a,
+button {
+  touch-action: manipulation;
+}
+
+/* Keyboard focus is the info-border blue, not the ink primary. */
+:focus-visible,
+.mantine-focus-auto:focus-visible {
+  outline: 2px solid var(--yyt-info-border);
+  outline-offset: 2px;
+}
+
+/* Emphasis is 500, never bold (DESIGN.md typography principles). */
+strong,
+b {
+  font-weight: 500;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 1000;
+  padding: 8px 12px;
+  background: var(--yyt-canvas);
+  color: var(--yyt-ink);
+  border: 1px solid var(--yyt-hairline);
+  border-radius: 6px;
+}
+.skip-link:focus {
+  left: 8px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sections stack with a hairline between them, never nested cards. */
+.yyt-section + .yyt-section {
+  border-top: 1px solid var(--yyt-hairline);
+  padding-top: 24px;
+}
+
+/* Markdown output (sanitized) on the body scale. */
 .markdown {
   overflow-wrap: anywhere;
 }
@@ -16,6 +89,6 @@ body {
 .markdown blockquote {
   margin: 0 0 0.6em;
   padding-left: 0.8em;
-  border-left: 3px solid var(--mantine-color-gray-4);
-  color: var(--mantine-color-dimmed);
+  border-left: 3px solid var(--yyt-hairline);
+  color: var(--yyt-muted);
 }
