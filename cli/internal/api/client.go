@@ -14,6 +14,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/yingyeothon/service/cli/internal/textsafe"
 )
 
 // Version is set by cli/scripts/build-release.sh via -ldflags; `go install`
@@ -126,12 +128,7 @@ func sanitize(raw []byte) string {
 	if len(s) > 512 {
 		s = s[:512] + "…"
 	}
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
-			return -1
-		}
-		return r
-	}, s)
+	return textsafe.Clean(s)
 }
 
 // PathID escapes a user-supplied id for use in a URL path segment.

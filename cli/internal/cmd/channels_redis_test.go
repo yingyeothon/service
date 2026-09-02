@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -101,5 +102,28 @@ func TestChannelsRedisUserDegradedStates(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "not persisted") {
 		t.Fatalf("missing warning: %q", errOut)
+	}
+}
+
+func TestCredentialRevokeJSON(t *testing.T) {
+	f := newFake(t, map[string]func(recorded) (int, any){
+		"DELETE /channels/q_1/redis-user": func(recorded) (int, any) { return 200, map[string]any{"revoked": true} },
+		"DELETE /channels/auth_1/doc-key": func(recorded) (int, any) { return 200, map[string]any{"revoked": false} },
+	})
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"channels", "redis-user", "revoke", "q_1", "--json"}, true},
+		{[]string{"channels", "doc-key", "revoke", "auth_1", "--json"}, false},
+	} {
+		out, _, err := run(t, f, tc.args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var j map[string]any
+		if json.Unmarshal([]byte(out), &j) != nil || j["revoked"] != tc.want {
+			t.Fatalf("%v: %s", tc.args, out)
+		}
 	}
 }

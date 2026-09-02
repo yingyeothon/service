@@ -69,6 +69,15 @@ type discussion struct {
 	Comments  []comment `json:"comments,omitempty"`
 }
 
+// commentPairs renders a comment thread as `comment <id>: by time: body` rows.
+func commentPairs(cms []comment) [][2]string {
+	pairs := make([][2]string, 0, len(cms))
+	for _, cm := range cms {
+		pairs = append(pairs, [2]string{"comment " + cm.ID, output.Str(cm.CreatedBy) + " " + output.Time(cm.CreatedAt) + ": " + cm.BodyMd})
+	}
+	return pairs
+}
+
 // readBody returns a markdown body given inline or as @file.
 func readBody(s string) (string, error) {
 	if strings.HasPrefix(s, "@") {
@@ -725,12 +734,14 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 // commentCmd is shared by discussions and issues: `comment add|update|rm`.
 func (a *App) commentCmd(parentKind string, parentPath func(cmd *cobra.Command, parent string) (*ctxClient, string, error)) *cobra.Command {
 	c := &cobra.Command{Use: "comment", Aliases: []string{"comments"}, Short: "Comments on a " + parentKind}
-	{
+	// withBody is `<verb> <parent> [...] --body`: read the markdown first (a
+	// bad @file must not cost a request), then resolve, then send it.
+	withBody := func(use, short string, nargs int, method string, path func(p string, args []string) string) *cobra.Command {
 		var body string
-		add := &cobra.Command{
-			Use:   "add <" + parentKind + "> --body <md|@file>",
-			Short: "Add a comment",
-			Args:  cobra.ExactArgs(1),
+		cmd := &cobra.Command{
+			Use:   use,
+			Short: short,
+			Args:  cobra.ExactArgs(nargs),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(body)
 				if err != nil {
@@ -741,42 +752,20 @@ func (a *App) commentCmd(parentKind string, parentPath func(cmd *cobra.Command, 
 					return err
 				}
 				var cm comment
-				if err := cc.cl.Do(cmd.Context(), http.MethodPost, p, map[string]any{"bodyMd": md}, &cm); err != nil {
+				if err := cc.cl.Do(cmd.Context(), method, path(p, args), map[string]any{"bodyMd": md}, &cm); err != nil {
 					return err
 				}
 				return a.printComment(cm)
 			},
 		}
-		add.Flags().StringVar(&body, "body", "", "markdown body, or @file")
-		_ = add.MarkFlagRequired("body")
-		c.AddCommand(add)
+		cmd.Flags().StringVar(&body, "body", "", "markdown body, or @file")
+		_ = cmd.MarkFlagRequired("body")
+		return cmd
 	}
-	{
-		var body string
-		update := &cobra.Command{
-			Use:   "update <" + parentKind + "> <comment-id> --body <md|@file>",
-			Short: "Edit your comment",
-			Args:  cobra.ExactArgs(2),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				md, err := readBody(body)
-				if err != nil {
-					return err
-				}
-				cc, p, err := parentPath(cmd, args[0])
-				if err != nil {
-					return err
-				}
-				var cm comment
-				if err := cc.cl.Do(cmd.Context(), http.MethodPatch, p+"/"+api.PathID(args[1]), map[string]any{"bodyMd": md}, &cm); err != nil {
-					return err
-				}
-				return a.printComment(cm)
-			},
-		}
-		update.Flags().StringVar(&body, "body", "", "markdown body, or @file")
-		_ = update.MarkFlagRequired("body")
-		c.AddCommand(update)
-	}
+	c.AddCommand(withBody("add <"+parentKind+"> --body <md|@file>", "Add a comment", 1, http.MethodPost,
+		func(p string, _ []string) string { return p }))
+	c.AddCommand(withBody("update <"+parentKind+"> <comment-id> --body <md|@file>", "Edit your comment", 2, http.MethodPatch,
+		func(p string, args []string) string { return p + "/" + api.PathID(args[1]) }))
 	c.AddCommand(&cobra.Command{
 		Use:     "delete <" + parentKind + "> <comment-id>",
 		Aliases: []string{"rm"},

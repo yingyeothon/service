@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -56,32 +55,13 @@ type assetFile struct {
 // the bundle, which is what the map JSON's relative references resolve
 // against — not the local filename.
 func uploadAssetFile(ctx context.Context, cl *api.Client, bundle, version, path, localPath string) (*assetFile, error) {
-	f, err := os.Open(localPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	var grant uploadGrant
-	err = cl.Do(ctx, http.MethodPost, "/assets/bundles/"+api.PathID(bundle)+"/files", map[string]any{
-		"version": version,
-		"path":    path,
-		"size":    st.Size(),
-	}, &grant)
-	if err != nil {
-		return nil, err
-	}
-	if err := putPresigned(ctx, cl, grant, f, st.Size()); err != nil {
-		return nil, err
-	}
-	var file assetFile
-	if err := cl.Do(ctx, http.MethodPost, "/assets/uploads/"+api.PathID(grant.UploadID)+"/commit", map[string]any{}, &file); err != nil {
-		return nil, err
-	}
-	return &file, nil
+	return uploadFile[assetFile](ctx, cl, localPath, "/assets/bundles/"+api.PathID(bundle)+"/files", func(size int64) map[string]any {
+		return map[string]any{
+			"version": version,
+			"path":    path,
+			"size":    size,
+		}
+	}, "/assets/uploads/")
 }
 
 func newAssets(a *App) *cobra.Command {
@@ -119,8 +99,7 @@ func newAssets(a *App) *cobra.Command {
 	return group(c)
 }
 
-// bundleResolver turns <bundle> into an id; write=true means the command mutates.
-type bundleResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
+type bundleResolver = idResolver
 
 func (a *App) printBundle(b assetBundle) error {
 	if a.jsonOut {
@@ -220,80 +199,15 @@ func newAssetCreate(a *App) *cobra.Command {
 }
 
 func newAssetGet(a *App, bundleID bundleResolver) *cobra.Command {
-	return &cobra.Command{
-		Use:   "get <bundle>",
-		Short: "Show one bundle with its versions",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, id, err := bundleID(cmd, args[0], false)
-			if err != nil {
-				return err
-			}
-			var b assetBundle
-			if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/assets/bundles/"+api.PathID(id), nil, &b); err != nil {
-				return err
-			}
-			return a.printBundle(b)
-		},
-	}
+	return newResourceGet(bundleID, "get <bundle>", "Show one bundle with its versions", "/assets/bundles", a.printBundle)
 }
 
 func newAssetUpdate(a *App, bundleID bundleResolver) *cobra.Command {
-	var name, description string
-	c := &cobra.Command{
-		Use:   "update <bundle>",
-		Short: "Rename a bundle or change its description (empty --description clears it)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			body := map[string]any{}
-			if cmd.Flags().Changed("name") {
-				body["name"] = name
-			}
-			if cmd.Flags().Changed("description") {
-				if description == "" {
-					body["description"] = nil
-				} else {
-					body["description"] = description
-				}
-			}
-			if len(body) == 0 {
-				return fmt.Errorf("nothing to update: pass --name and/or --description")
-			}
-			cc, id, err := bundleID(cmd, args[0], true)
-			if err != nil {
-				return err
-			}
-			var b assetBundle
-			if err := cc.cl.Do(cmd.Context(), http.MethodPatch, "/assets/bundles/"+api.PathID(id), body, &b); err != nil {
-				return err
-			}
-			return a.printBundle(b)
-		},
-	}
-	f := c.Flags()
-	f.StringVar(&name, "name", "", "new bundle name (unique within the team)")
-	f.StringVar(&description, "description", "", "new description (empty clears it)")
-	return c
+	return newResourceUpdate(bundleID, "update <bundle>", "Rename a bundle or change its description (empty --description clears it)", "new bundle name (unique within the team)", "/assets/bundles", a.printBundle)
 }
 
 func newAssetDelete(a *App, bundleID bundleResolver) *cobra.Command {
-	return &cobra.Command{
-		Use:     "delete <bundle>",
-		Aliases: []string{"rm", "remove"},
-		Short:   "Delete a bundle with every version and object it holds",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, id, err := bundleID(cmd, args[0], true)
-			if err != nil {
-				return err
-			}
-			if err := cc.cl.Do(cmd.Context(), http.MethodDelete, "/assets/bundles/"+api.PathID(id), nil, nil); err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "deleted %s\n", args[0])
-			return nil
-		},
-	}
+	return newResourceDelete(a, bundleID, "delete <bundle>", "Delete a bundle with every version and object it holds", "/assets/bundles")
 }
 
 func (a *App) printFiles(bundle, version string, files []assetFile) error {

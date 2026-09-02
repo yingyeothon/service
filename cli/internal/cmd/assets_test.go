@@ -170,3 +170,34 @@ func TestAssetUpdateRequiresAFlagAndClearsDescription(t *testing.T) {
 		t.Fatalf("expected description:null, got %#v", sent)
 	}
 }
+
+func TestResourceDeleteAndUpdateDescription(t *testing.T) {
+	var sent map[string]any
+	var deleted []string
+	withProject(t)
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"PATCH /assets/bundles/ab_1":  func(r recorded) (int, any) { sent = r.Body; return 200, sampleBundle },
+		"DELETE /assets/bundles/ab_1": func(r recorded) (int, any) { deleted = append(deleted, r.Path); return 204, nil },
+		"PATCH /sites/st_1":           func(r recorded) (int, any) { sent = r.Body; return 200, sampleSite },
+		"DELETE /sites/st_1":          func(r recorded) (int, any) { deleted = append(deleted, r.Path); return 204, nil },
+		"GET /projects/prj_1/sites":   func(recorded) (int, any) { return 200, map[string]any{"sites": []any{sampleSite}} },
+	}, nil, nil, []any{sampleBundle}))
+	for _, tc := range []struct{ noun, arg string }{{"asset", "dungeon-maps"}, {"site", "game-web"}} {
+		out, _, err := run(t, f, tc.noun, "rm", tc.arg)
+		if err != nil || out != "deleted "+tc.arg+"\n" {
+			t.Fatalf("%s rm: %v %q", tc.noun, err, out)
+		}
+		if _, _, err := run(t, f, tc.noun, "update", tc.arg, "--name", "n2", "--description", "d2"); err != nil {
+			t.Fatalf("%s update: %v", tc.noun, err)
+		}
+		if sent["name"] != "n2" || sent["description"] != "d2" {
+			t.Fatalf("%s update body %v", tc.noun, sent)
+		}
+		if _, _, err := run(t, f, tc.noun, "update", tc.arg); err == nil || !strings.Contains(err.Error(), "nothing to update") {
+			t.Fatalf("%s: %v", tc.noun, err)
+		}
+	}
+	if len(deleted) != 2 || deleted[0] != "/assets/bundles/ab_1" || deleted[1] != "/sites/st_1" {
+		t.Fatalf("deletes %v", deleted)
+	}
+}

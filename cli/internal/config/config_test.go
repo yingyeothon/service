@@ -208,3 +208,51 @@ func TestLoadCorrupt(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestSetContextPinsAndClears(t *testing.T) {
+	setConfig(t)
+	if err := SaveProfile("dev", Profile{API: "https://x", Token: "yyt_abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetContext("nope", nil, nil); err == nil || !strings.Contains(err.Error(), `unknown profile "nope"`) {
+		t.Fatalf("expected unknown profile, got %v", err)
+	}
+	team, project := "team_1", "prj_1"
+	if err := SetContext("dev", &team, &project); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := LoadFile()
+	if f.Profiles["dev"].Team != "team_1" || f.Profiles["dev"].Project != "prj_1" {
+		t.Fatalf("%+v", f.Profiles["dev"])
+	}
+	// Setting the team alone clears the project pinned under the old team.
+	other := "team_2"
+	if err := SetContext("dev", &other, nil); err != nil {
+		t.Fatal(err)
+	}
+	f, _ = LoadFile()
+	if f.Profiles["dev"].Team != "team_2" || f.Profiles["dev"].Project != "" {
+		t.Fatalf("%+v", f.Profiles["dev"])
+	}
+	// Renaming to the same name writes nothing and is not an error.
+	if err := RenameProfile("dev", "dev"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRenameSameNameWritesNothing(t *testing.T) {
+	p := setConfig(t)
+	if err := SaveProfile("dev", Profile{API: "https://x", Token: "yyt_abc"}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(p)
+	_ = os.Chmod(p, 0o400) // a write would now fail
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	if err := RenameProfile("dev", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(p)
+	if string(before) != string(after) {
+		t.Fatal("file rewritten")
+	}
+}

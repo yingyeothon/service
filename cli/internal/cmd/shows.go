@@ -60,15 +60,6 @@ type showShot struct {
 	URL         string `json:"url"`
 }
 
-type showComment struct {
-	ID        string  `json:"id"`
-	BodyMd    string  `json:"bodyMd"`
-	CreatedBy *string `json:"createdBy"`
-	CreatedAt int64   `json:"createdAt"`
-	UpdatedAt int64   `json:"updatedAt"`
-	Mine      bool    `json:"mine"`
-}
-
 type showEntry struct {
 	ID           string     `json:"id"`
 	ShowID       string     `json:"showId"`
@@ -85,11 +76,11 @@ type showEntry struct {
 	// Only on the detail route.
 	// No `omitempty` on these: `false` is the answer a closed show gives, and
 	// a missing key would read as "the route did not say".
-	Comments    []showComment `json:"comments"`
-	CanWrite    bool          `json:"canWrite"`
-	CanEdit     bool          `json:"canEdit"`
-	CanModerate bool          `json:"canModerate"`
-	CanReact    bool          `json:"canReact"`
+	Comments    []comment `json:"comments"`
+	CanWrite    bool      `json:"canWrite"`
+	CanEdit     bool      `json:"canEdit"`
+	CanModerate bool      `json:"canModerate"`
+	CanReact    bool      `json:"canReact"`
 }
 
 type shotGrant struct {
@@ -220,9 +211,7 @@ func newShows(a *App) *cobra.Command {
 		if e.BodyMd != "" {
 			pairs = append(pairs, [2]string{"body", e.BodyMd})
 		}
-		for _, cm := range e.Comments {
-			pairs = append(pairs, [2]string{"comment " + cm.ID, output.Str(cm.CreatedBy) + " " + output.Time(cm.CreatedAt) + ": " + cm.BodyMd})
-		}
+		pairs = append(pairs, commentPairs(e.Comments)...)
 		return p().KV(pairs)
 	}
 
@@ -284,7 +273,7 @@ func newShows(a *App) *cobra.Command {
 	create.Flags().StringVar(&createBody, "body", "", "markdown page, or @file")
 	create.Flags().StringVar(&createACL, "acl", "public", "who may see it: public|member_only")
 	create.RunE = func(cmd *cobra.Command, args []string) error {
-		md, err := bodyArg(createBody)
+		md, err := readBody(createBody)
 		if err != nil {
 			return err
 		}
@@ -324,7 +313,7 @@ func newShows(a *App) *cobra.Command {
 			in["title"] = upTitle
 		}
 		if upBody != "" {
-			md, err := bodyArg(upBody)
+			md, err := readBody(upBody)
 			if err != nil {
 				return err
 			}
@@ -624,7 +613,7 @@ func newShowEntries(
 		if err != nil {
 			return err
 		}
-		md, err := bodyArg(subBody)
+		md, err := readBody(subBody)
 		if err != nil {
 			return err
 		}
@@ -693,7 +682,7 @@ func newShowEntries(
 			in["title"] = upTitle
 		}
 		if upBody != "" {
-			md, err := bodyArg(upBody)
+			md, err := readBody(upBody)
 			if err != nil {
 				return err
 			}
@@ -822,7 +811,7 @@ func newShowEntryComments(
 	add.Flags().StringVar(&addBody, "body", "", "markdown, or @file (required)")
 	_ = add.MarkFlagRequired("body")
 	add.RunE = func(cmd *cobra.Command, args []string) error {
-		md, err := bodyArg(addBody)
+		md, err := readBody(addBody)
 		if err != nil {
 			return err
 		}
@@ -847,7 +836,7 @@ func newShowEntryComments(
 	edit.Flags().StringVar(&editReason, "reason", "", "required when an admin edits somebody else's comment")
 	_ = edit.MarkFlagRequired("body")
 	edit.RunE = func(cmd *cobra.Command, args []string) error {
-		md, err := bodyArg(editBody)
+		md, err := readBody(editBody)
 		if err != nil {
 			return err
 		}

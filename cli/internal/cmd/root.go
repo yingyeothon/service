@@ -36,11 +36,19 @@ type App struct {
 func (a *App) printer() output.Printer { return output.Printer{W: a.Out, JSON: a.jsonOut} }
 
 func (a *App) client() (*api.Client, error) {
+	_, cl, err := a.resolveClient()
+	return cl, err
+}
+
+// resolveClient resolves the profile/flag configuration and the API client it
+// yields; context-aware commands need both, plain ones only the client.
+func (a *App) resolveClient() (config.Config, *api.Client, error) {
 	cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
 	if err != nil {
-		return nil, err
+		return cfg, nil, err
 	}
-	return a.clientFor(cfg)
+	cl, err := a.clientFor(cfg)
+	return cfg, cl, err
 }
 
 func (a *App) clientFor(cfg config.Config) (*api.Client, error) {

@@ -107,3 +107,21 @@ func TestPathID(t *testing.T) {
 		t.Fatal(PathID("a/b c"))
 	}
 }
+
+func TestDoErrorPlainIsCappedAndCleaned(t *testing.T) {
+	long := strings.Repeat("x", 600) + "\x1b[2Jtail"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(502)
+		_, _ = w.Write([]byte(long))
+	}))
+	defer srv.Close()
+	err := New(srv.URL, "t").Do(context.Background(), "GET", "/x", nil, nil)
+	var ae *Error
+	if !errors.As(err, &ae) {
+		t.Fatalf("%v", err)
+	}
+	// 512 bytes kept, an ellipsis appended, the escape and everything after the cap dropped.
+	if !strings.HasPrefix(ae.Message, strings.Repeat("x", 512)+"…") || strings.ContainsRune(ae.Message, 0x1b) || strings.Contains(ae.Message, "tail") {
+		t.Fatalf("message %q", ae.Message)
+	}
+}
