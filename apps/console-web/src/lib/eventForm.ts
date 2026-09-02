@@ -1,14 +1,12 @@
 import type { EventDetail, EventInput } from "../types";
+import { formatLocal } from "./format";
 
 export const OPTIONS_MAX = 10;
 export const DURATION_HOURS_MAX = 72;
 
 /** Unix seconds → `datetime-local` value in the browser's zone (`YYYY-MM-DDTHH:mm`). */
 export function toLocalInput(sec: number | null | undefined): string {
-  if (sec === null || sec === undefined) return "";
-  const d = new Date(sec * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  return formatLocal(sec, "T", "");
 }
 
 /** `datetime-local` value → unix seconds; `null` when empty or unparseable. */

@@ -4,7 +4,6 @@ import {
   Card,
   Group,
   NativeSelect,
-  Stack,
   Switch,
   Table,
   Tabs,
@@ -18,8 +17,16 @@ import { api } from "../api";
 import { useAuth } from "../auth";
 import { HistoryList } from "../components/HistoryList";
 import { Markdown } from "../components/Markdown";
-import { MdField } from "../components/MdField";
-import { Badge, Confirm, CopyField, Notice, Spinner } from "../components/ui";
+import { DraftForm, SettingsForm } from "../components/ResourceForms";
+import {
+  Badge,
+  Confirm,
+  CopyField,
+  DangerCard,
+  LinkCell,
+  Notice,
+  Spinner,
+} from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
 import {
@@ -204,15 +211,7 @@ function ProjectsTab({
             <Table.Tbody>
               {list.data.map((p) => (
                 <Table.Tr key={p.id}>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={projectUrl(team.id, p.id)}
-                      size="sm"
-                    >
-                      {p.name}
-                    </Anchor>
-                  </Table.Td>
+                  <LinkCell to={projectUrl(team.id, p.id)}>{p.name}</LinkCell>
                   <Table.Td>
                     <Text size="sm" lineClamp={1}>
                       {p.description ?? "—"}
@@ -514,35 +513,15 @@ function DiscussionsTab({
         </Button>
       )}
       {draft && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void create(e)}>
-            <Stack gap="xs">
-              <TextInput
-                label="Title"
-                value={draft.title}
-                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                required
-                maxLength={200}
-              />
-              <MdField
-                label="Body"
-                value={draft.bodyMd}
-                onChange={(bodyMd) => setDraft({ ...draft, bodyMd })}
-              />
-              <Group>
-                <Button
-                  type="submit"
-                  disabled={act.busy || !draft.title.trim()}
-                >
-                  Post
-                </Button>
-                <Button variant="default" onClick={() => setDraft(null)}>
-                  Cancel
-                </Button>
-              </Group>
-            </Stack>
-          </form>
-        </Card>
+        <DraftForm
+          draft={draft}
+          onChange={setDraft}
+          onSubmit={create}
+          onCancel={() => setDraft(null)}
+          submitLabel="Post"
+          bodyLabel="Body"
+          busy={act.busy}
+        />
       )}
       {list.error && <Notice kind="error">{list.error}</Notice>}
       {list.loading && !list.data ? (
@@ -560,15 +539,9 @@ function DiscussionsTab({
             <Table.Tbody>
               {list.data.map((d) => (
                 <Table.Tr key={d.id}>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={discussionUrl(team.id, d.id)}
-                      size="sm"
-                    >
-                      {d.title}
-                    </Anchor>
-                  </Table.Td>
+                  <LinkCell to={discussionUrl(team.id, d.id)}>
+                    {d.title}
+                  </LinkCell>
                   <Table.Td>{d.createdBy ?? "—"}</Table.Td>
                   <Table.Td>{fmtTime(d.updatedAt)}</Table.Td>
                 </Table.Tr>
@@ -640,29 +613,14 @@ function SettingsTab({
         </Text>
       </Card>
       {owner && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void save(e)}>
-            <Stack gap="xs">
-              <TextInput
-                label="Name"
-                value={name ?? team.name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                maxLength={64}
-              />
-              <MdField
-                label="Description"
-                value={desc ?? team.description ?? ""}
-                onChange={setDesc}
-              />
-              <Group>
-                <Button type="submit" disabled={act.busy}>
-                  Save
-                </Button>
-              </Group>
-            </Stack>
-          </form>
-        </Card>
+        <SettingsForm
+          name={name ?? team.name}
+          description={desc ?? team.description ?? ""}
+          onName={setName}
+          onDescription={setDesc}
+          onSubmit={save}
+          busy={act.busy}
+        />
       )}
       {admin && (
         <Card withBorder mb="md" padding="sm">
@@ -676,17 +634,9 @@ function SettingsTab({
         </Card>
       )}
       {canDelete && (
-        <Card withBorder padding="sm">
-          <Text size="sm" mb="xs">
-            Deleting a team is refused while it still has projects.
-          </Text>
-          <Confirm
-            label="Delete team"
-            confirmLabel="Delete"
-            onConfirm={remove}
-            disabled={act.busy}
-          />
-        </Card>
+        <DangerCard label="Delete team" onConfirm={remove} disabled={act.busy}>
+          Deleting a team is refused while it still has projects.
+        </DangerCard>
       )}
     </>
   );

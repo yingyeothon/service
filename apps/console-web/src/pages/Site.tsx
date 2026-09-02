@@ -4,23 +4,23 @@ import {
   Card,
   Code,
   Group,
-  Paper,
   Table,
   Text,
-  TextInput,
   Title,
 } from "@mantine/core";
-import {
-  useEffect,
-  useRef,
-  useState,
-  type DragEvent,
-  type FormEvent,
-} from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
-import { Badge, Confirm, CopyField, Notice, Spinner } from "../components/ui";
+import {
+  Badge,
+  Confirm,
+  CopyField,
+  DropZone,
+  Notice,
+  Spinner,
+} from "../components/ui";
+import { ResourceInfoForm } from "../components/ResourceForms";
 import { fmtSize } from "../lib/catalog";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
@@ -76,14 +76,7 @@ function DeployCard({
 }) {
   const act = useAction();
   const [file, setFile] = useState<File | null>(null);
-  const [over, setOver] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   const pick = (list: FileList | null) => setFile(list?.[0] ?? null);
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault();
-    setOver(false);
-    pick(e.dataTransfer.files);
-  };
   const upload = async (e: FormEvent) => {
     e.preventDefault();
     if (!file) return;
@@ -98,44 +91,15 @@ function DeployCard({
         Deploy a zip
       </Text>
       {act.error && <Notice kind="error">{act.error}</Notice>}
-      <Paper
-        withBorder
-        p="md"
-        mb="sm"
-        role="button"
-        tabIndex={0}
-        aria-label="Choose or drop the build zip"
-        style={{
-          borderStyle: "dashed",
-          cursor: "pointer",
-          background: over ? "var(--mantine-color-brand-0)" : undefined,
-          textAlign: "center",
-        }}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) =>
-          (e.key === "Enter" || e.key === " ") &&
-          (e.preventDefault(), inputRef.current?.click())
-        }
-        onDragOver={(e) => {
-          e.preventDefault();
-          setOver(true);
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={onDrop}
+      <DropZone
+        label="Choose or drop the build zip"
+        accept=".zip,application/zip"
+        onFiles={pick}
       >
-        <Text size="sm">
-          {file
-            ? `${file.name} (${fmtSize(file.size)})`
-            : "Drop the build zip here, or click to choose"}
-        </Text>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".zip,application/zip"
-          hidden
-          onChange={(e) => pick(e.target.files)}
-        />
-      </Paper>
+        {file
+          ? `${file.name} (${fmtSize(file.size)})`
+          : "Drop the build zip here, or click to choose"}
+      </DropZone>
       <form onSubmit={(e) => void upload(e)}>
         <Group align="end" wrap="wrap">
           <Button type="submit" disabled={act.busy || !file || busy}>
@@ -290,29 +254,14 @@ export function SitePage() {
         <CopyField label="URL" value={s.publicUrl} />
       </Card>
       {canWrite && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void saveInfo(e)}>
-            <Group align="end" wrap="wrap">
-              <TextInput
-                label="Name"
-                value={name ?? s.name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={64}
-                w={200}
-              />
-              <TextInput
-                label="Description"
-                value={desc ?? s.description ?? ""}
-                onChange={(e) => setDesc(e.target.value)}
-                maxLength={2000}
-                w={280}
-              />
-              <Button type="submit" disabled={act.busy}>
-                Save
-              </Button>
-            </Group>
-          </form>
-        </Card>
+        <ResourceInfoForm
+          name={name ?? s.name}
+          description={desc ?? s.description ?? ""}
+          onName={setName}
+          onDescription={setDesc}
+          onSubmit={saveInfo}
+          busy={act.busy}
+        />
       )}
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {canWrite && (

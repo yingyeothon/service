@@ -1,20 +1,12 @@
-import {
-  Button,
-  Card,
-  Group,
-  Stack,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
+import { Button, Card, Group, Text, Title } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Comments } from "../components/Comments";
 import { Crumbs } from "../components/Crumbs";
 import { Markdown } from "../components/Markdown";
-import { MdField } from "../components/MdField";
 import { Confirm, Notice, Spinner } from "../components/ui";
+import { DraftForm } from "../components/ResourceForms";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
 import { teamUrl, useTeamStanding } from "../lib/team";
@@ -73,35 +65,15 @@ export function DiscussionPage() {
       </Text>
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {draft ? (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void save(e)}>
-            <Stack gap="xs">
-              <TextInput
-                label="Title"
-                value={draft.title}
-                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                required
-                maxLength={200}
-              />
-              <MdField
-                label="Body"
-                value={draft.bodyMd}
-                onChange={(bodyMd) => setDraft({ ...draft, bodyMd })}
-              />
-              <Group>
-                <Button
-                  type="submit"
-                  disabled={act.busy || !draft.title.trim()}
-                >
-                  Save
-                </Button>
-                <Button variant="default" onClick={() => setDraft(null)}>
-                  Cancel
-                </Button>
-              </Group>
-            </Stack>
-          </form>
-        </Card>
+        <DraftForm
+          draft={draft}
+          onChange={setDraft}
+          onSubmit={save}
+          onCancel={() => setDraft(null)}
+          submitLabel="Save"
+          bodyLabel="Body"
+          busy={act.busy}
+        />
       ) : (
         <Card withBorder mb="md" padding="sm">
           <Markdown text={disc.bodyMd} />

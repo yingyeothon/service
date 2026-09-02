@@ -5,7 +5,6 @@ import {
   Code,
   Group,
   NumberInput,
-  Paper,
   Select,
   Stack,
   Table,
@@ -13,11 +12,18 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
-import { useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api";
 import { Crumbs } from "../components/Crumbs";
-import { Badge, Confirm, CopyField, Notice, Spinner } from "../components/ui";
+import {
+  Badge,
+  Confirm,
+  CopyField,
+  DropZone,
+  Notice,
+  Spinner,
+} from "../components/ui";
 import {
   fmtSize,
   groupArtifactsByVersion,
@@ -56,8 +62,6 @@ function UploadCard({
   const [distribution, setDistribution] = useState<string | null>(null);
   const [bundleId, setBundleId] = useState("");
   const [buildNumber, setBuildNumber] = useState("");
-  const [over, setOver] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const pick = (f: File | null) => {
     setFile(f);
@@ -65,11 +69,6 @@ function UploadCard({
       const guessed = guessPlatform(f.name);
       if (guessed) setPlatform(guessed);
     }
-  };
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault();
-    setOver(false);
-    pick(e.dataTransfer.files[0] ?? null);
   };
 
   const upload = async (e: FormEvent) => {
@@ -99,43 +98,15 @@ function UploadCard({
         Upload artifact
       </Text>
       {act.error && <Notice kind="error">{act.error}</Notice>}
-      <Paper
-        withBorder
-        p="md"
-        mb="sm"
-        role="button"
-        tabIndex={0}
-        aria-label="Choose or drop a file"
-        style={{
-          borderStyle: "dashed",
-          cursor: "pointer",
-          background: over ? "var(--mantine-color-brand-0)" : undefined,
-          textAlign: "center",
-        }}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) =>
-          (e.key === "Enter" || e.key === " ") &&
-          (e.preventDefault(), inputRef.current?.click())
-        }
-        onDragOver={(e) => {
-          e.preventDefault();
-          setOver(true);
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={onDrop}
+      <DropZone
+        label="Choose or drop a file"
+        dimmed={!file}
+        onFiles={(l) => pick(l?.[0] ?? null)}
       >
-        <Text size="sm" c={file ? undefined : "dimmed"}>
-          {file
-            ? `${file.name} (${fmtSize(file.size)})`
-            : "Drag & drop a file here, or click to choose"}
-        </Text>
-        <input
-          ref={inputRef}
-          type="file"
-          hidden
-          onChange={(e) => pick(e.target.files?.[0] ?? null)}
-        />
-      </Paper>
+        {file
+          ? `${file.name} (${fmtSize(file.size)})`
+          : "Drag & drop a file here, or click to choose"}
+      </DropZone>
       <form onSubmit={(e) => void upload(e)}>
         <Group align="end" wrap="wrap">
           <Select

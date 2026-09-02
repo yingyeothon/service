@@ -9,6 +9,7 @@ import {
   Confirm,
   CopyBlock,
   CopyField,
+  FormActions,
   Notice,
   SecretOnce,
   Spinner,
@@ -214,14 +215,11 @@ export function ChannelDetailPage() {
                 editing
               />
               {localError && <Notice kind="error">{localError}</Notice>}
-              <Group>
-                <Button type="submit" disabled={act.busy}>
-                  Save
-                </Button>
-                <Button variant="default" onClick={() => setEditing(false)}>
-                  Cancel
-                </Button>
-              </Group>
+              <FormActions
+                submitLabel="Save"
+                disabled={act.busy}
+                onCancel={() => setEditing(false)}
+              />
             </Stack>
           </form>
         </Card>
@@ -396,28 +394,51 @@ function QRedisUserCard({
             wrong prefix fails <Code>NOPERM</Code> instead of reaching another
             game&apos;s queue.
           </Text>
-          {owner && q.data.configured !== false && (
-            <Group>
-              <Button
-                size="compact-sm"
-                variant="default"
-                disabled={act.busy}
-                onClick={() => void issue()}
-              >
-                {q.data.issued ? "Re-issue" : "Issue"}
-              </Button>
-              {q.data.issued && (
-                <Confirm
-                  label="Revoke"
-                  onConfirm={revoke}
-                  disabled={act.busy}
-                />
-              )}
-            </Group>
+          {owner && (
+            <CredentialActions
+              state={q.data}
+              busy={act.busy}
+              onIssue={issue}
+              onRevoke={revoke}
+            />
           )}
         </>
       )}
     </Card>
+  );
+}
+
+/**
+ * Issue / re-issue / revoke for a per-channel credential card. Hidden while
+ * the stage has no issuer (`configured === false`): the card still explains
+ * the credential, but nothing can be minted there yet.
+ */
+function CredentialActions({
+  state,
+  busy,
+  onIssue,
+  onRevoke,
+}: {
+  state: { configured?: boolean; issued?: boolean };
+  busy: boolean;
+  onIssue: () => Promise<void>;
+  onRevoke: () => Promise<void>;
+}) {
+  if (state.configured === false) return null;
+  return (
+    <Group>
+      <Button
+        size="compact-sm"
+        variant="default"
+        disabled={busy}
+        onClick={() => void onIssue()}
+      >
+        {state.issued ? "Re-issue" : "Issue"}
+      </Button>
+      {state.issued && (
+        <Confirm label="Revoke" onConfirm={onRevoke} disabled={busy} />
+      )}
+    </Group>
   );
 }
 
@@ -509,24 +530,13 @@ function AuthDocKeyCard({
             silently overwrite each other. Players read only their own document,
             with the channel JWT they already hold.
           </Text>
-          {owner && q.data.configured !== false && (
-            <Group>
-              <Button
-                size="compact-sm"
-                variant="default"
-                disabled={act.busy}
-                onClick={() => void issue()}
-              >
-                {q.data.issued ? "Re-issue" : "Issue"}
-              </Button>
-              {q.data.issued && (
-                <Confirm
-                  label="Revoke"
-                  onConfirm={revoke}
-                  disabled={act.busy}
-                />
-              )}
-            </Group>
+          {owner && (
+            <CredentialActions
+              state={q.data}
+              busy={act.busy}
+              onIssue={issue}
+              onRevoke={revoke}
+            />
           )}
         </>
       )}
