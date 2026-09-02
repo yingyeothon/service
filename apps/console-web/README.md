@@ -31,6 +31,27 @@ proposal bodies) is markdown rendered by `src/components/Markdown.tsx`
 (`services/console/serverless.yml`, `WebHeadersPolicy`); the built `index.html`
 must stay free of inline scripts for `script-src 'self'` to hold.
 
+## Design system
+
+`DESIGN.md` (this directory) holds the token system — colours, type scale,
+radius, spacing — and `src/theme.ts` maps it onto Mantine. Every page is one
+of four archetypes built from `src/components/{PageHeader,Section,DataTable,
+FilterBar,ResourceDrawer,RowMenu}.tsx`:
+
+- **List** — `PageHeader` with the one filled `New <noun>` button (opens a
+  right `ResourceDrawer`), an optional `FilterBar`, a `DataTable`.
+- **Detail** — `Crumbs`, `PageHeader` (`Edit` opens the drawer; its foot is
+  the danger zone; further actions sit in the overflow menu), optional route
+  tabs, `Section`s.
+- **Form page** — only `…/channels/new`.
+- **Utility** — Home, App login.
+
+Rules the kit enforces: the header renders before data (skeleton title);
+destructive actions confirm in a modal whose button repeats the verb
+(`src/lib/confirm.ts`); success is a notification (`src/lib/notify.ts`),
+errors stay inline; at most one filled button per viewport; every table
+scrolls inside `Table.ScrollContainer`.
+
 ## Development
 
 ```sh
