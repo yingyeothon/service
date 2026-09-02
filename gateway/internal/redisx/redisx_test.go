@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -223,6 +224,29 @@ func TestMaskAddresses(t *testing.T) {
 	for in, want := range cases {
 		if got := MaskAddresses(in); got != want {
 			t.Errorf("got %q want %q", got, want)
+		}
+	}
+}
+
+// Every transactional write helper reports Redis trouble the same way: a
+// `redis:` prefix and a sanitized cause, never a raw driver error.
+func TestTxWritesReportRedisErrors(t *testing.T) {
+	c, mr := newClient(t)
+	addr := mr.Addr()
+	// A closed server; the short deadline keeps go-redis from retrying for
+	// seconds, and the wrapper must still own the message.
+	mr.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	errs := map[string]error{
+		"SetPosBatch": c.SetPosBatch(ctx, "ch", map[string][]byte{"u": []byte("{}")}),
+		"SetParty":    c.SetParty(ctx, "ch", "p", []byte("{}"), []string{"u"}),
+		"DelParty":    c.DelParty(ctx, "ch", "p", []string{"u"}),
+	}
+	_, errs["Push"] = c.Push(ctx, "game:test:ch:queue:g", []byte("{}"))
+	for name, err := range errs {
+		if err == nil || !strings.HasPrefix(err.Error(), "redis: ") || strings.Contains(err.Error(), addr) {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }

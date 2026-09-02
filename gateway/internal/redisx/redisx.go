@@ -142,10 +142,18 @@ func (c *Client) SetPosBatch(ctx context.Context, channelID string, values map[s
 	if len(values) == 0 {
 		return nil
 	}
+	return c.tx(ctx, func(pipe redis.Pipeliner) {
+		for userID, v := range values {
+			pipe.Set(ctx, c.Key("pos", channelID, userID), v, PosTTL)
+		}
+	})
+}
+
+// tx runs one transactional pipeline and wraps its error the way every write
+// helper reports Redis trouble: `redis: <sanitized cause>`.
+func (c *Client) tx(ctx context.Context, fill func(pipe redis.Pipeliner)) error {
 	pipe := c.rdb.TxPipeline()
-	for userID, v := range values {
-		pipe.Set(ctx, c.Key("pos", channelID, userID), v, PosTTL)
-	}
+	fill(pipe)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("redis: %w", sanitize(err))
 	}
@@ -171,28 +179,22 @@ const PartyTTL = 30 * time.Minute
 
 // SetParty writes the roster and every member's reverse index atomically.
 func (c *Client) SetParty(ctx context.Context, channelID, partyID string, roster []byte, memberIDs []string) error {
-	pipe := c.rdb.TxPipeline()
-	pipe.Set(ctx, c.Key("party", channelID, partyID), roster, PartyTTL)
-	for _, m := range memberIDs {
-		pipe.Set(ctx, c.Key("partyOf", channelID, m), partyID, PartyTTL)
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("redis: %w", sanitize(err))
-	}
-	return nil
+	return c.tx(ctx, func(pipe redis.Pipeliner) {
+		pipe.Set(ctx, c.Key("party", channelID, partyID), roster, PartyTTL)
+		for _, m := range memberIDs {
+			pipe.Set(ctx, c.Key("partyOf", channelID, m), partyID, PartyTTL)
+		}
+	})
 }
 
 // DelParty removes the roster and the reverse index of the given members.
 func (c *Client) DelParty(ctx context.Context, channelID, partyID string, memberIDs []string) error {
-	pipe := c.rdb.TxPipeline()
-	pipe.Del(ctx, c.Key("party", channelID, partyID))
-	for _, m := range memberIDs {
-		pipe.Del(ctx, c.Key("partyOf", channelID, m))
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("redis: %w", sanitize(err))
-	}
-	return nil
+	return c.tx(ctx, func(pipe redis.Pipeliner) {
+		pipe.Del(ctx, c.Key("party", channelID, partyID))
+		for _, m := range memberIDs {
+			pipe.Del(ctx, c.Key("partyOf", channelID, m))
+		}
+	})
 }
 
 // DelPartyOf drops one member's reverse index (they left; the roster stays).
@@ -246,11 +248,12 @@ func (c *Client) GetRawMany(ctx context.Context, keys ...string) ([][]byte, erro
 // returns the new depth. Depth is free here (`RPUSH` replies with it), which
 // is what makes actor-death detection cheap.
 func (c *Client) Push(ctx context.Context, key string, payload []byte) (int64, error) {
-	pipe := c.rdb.TxPipeline()
-	push := pipe.RPush(ctx, key, payload)
-	pipe.Expire(ctx, key, QueueTTL)
-	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, fmt.Errorf("redis: %w", sanitize(err))
+	var push *redis.IntCmd
+	if err := c.tx(ctx, func(pipe redis.Pipeliner) {
+		push = pipe.RPush(ctx, key, payload)
+		pipe.Expire(ctx, key, QueueTTL)
+	}); err != nil {
+		return 0, err
 	}
 	return push.Val(), nil
 }

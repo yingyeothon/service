@@ -252,13 +252,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cheapest checks first: nothing below costs a console or auth call
 	// until the request is at least well-formed.
-	channelID := r.URL.Query().Get("channel")
-	if channelID == "" {
-		s.reject(w, http.StatusBadRequest, "channel query parameter is required")
-		return
-	}
-	if !console.ValidID(channelID) {
-		s.reject(w, http.StatusNotFound, "channel not found")
+	reject := func(status int, msg string) { s.reject(w, status, msg) }
+	channelID, ok := channelParam(r, reject)
+	if !ok {
 		return
 	}
 	bearer := bearerFromSubprotocols(r)
@@ -271,33 +267,12 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	ch, err := s.console.Get(ctx, channelID)
-	if err != nil {
-		switch {
-		case errors.Is(err, console.ErrNotFound):
-			s.reject(w, http.StatusNotFound, "channel not found")
-		case errors.Is(err, console.ErrGone):
-			s.reject(w, http.StatusGone, "channel is expired or disabled")
-		case errors.Is(err, console.ErrNotConfigured), errors.Is(err, console.ErrUnauthorized):
-			s.throttledLog("console-refused", slog.LevelError, "console refuses gateway reads", "err", err.Error())
-			s.reject(w, http.StatusServiceUnavailable, "gateway is not configured")
-		default:
-			s.throttledLog("console-down", slog.LevelWarn, "console unreachable", "err", err.Error())
-			s.reject(w, http.StatusBadGateway, "cannot read channel configuration")
-		}
+	ch, ok := s.channelFor(ctx, channelID, reject)
+	if !ok {
 		return
 	}
-	id, err := s.verifier.Verify(ctx, ch.AuthVerifyURL, bearer)
-	if err != nil {
-		switch {
-		case errors.Is(err, authn.ErrUnauthorized):
-			s.reject(w, http.StatusUnauthorized, "token rejected")
-		case errors.Is(err, authn.ErrBusy):
-			s.reject(w, http.StatusServiceUnavailable, "too many verifications in flight")
-		default:
-			s.throttledLog("auth-down", slog.LevelWarn, "auth unreachable", "channel", channelID, "err", err.Error())
-			s.reject(w, http.StatusBadGateway, "cannot verify token")
-		}
+	id, ok := s.identityFor(ctx, ch, channelID, bearer, reject)
+	if !ok {
 		return
 	}
 	var gameID string
@@ -489,13 +464,8 @@ func (s *Server) party(w http.ResponseWriter, r *http.Request) {
 		reject(http.StatusTooManyRequests, "too many requests")
 		return
 	}
-	channelID := r.URL.Query().Get("channel")
-	if channelID == "" {
-		reject(http.StatusBadRequest, "channel query parameter is required")
-		return
-	}
-	if !console.ValidID(channelID) {
-		reject(http.StatusNotFound, "channel not found")
+	channelID, ok := channelParam(r, reject)
+	if !ok {
 		return
 	}
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -504,37 +474,16 @@ func (s *Server) party(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	ch, err := s.console.Get(ctx, channelID)
-	if err != nil {
-		switch {
-		case errors.Is(err, console.ErrNotFound):
-			reject(http.StatusNotFound, "channel not found")
-		case errors.Is(err, console.ErrGone):
-			reject(http.StatusGone, "channel is expired or disabled")
-		case errors.Is(err, console.ErrNotConfigured), errors.Is(err, console.ErrUnauthorized):
-			s.throttledLog("console-refused", slog.LevelError, "console refuses gateway reads", "err", err.Error())
-			reject(http.StatusServiceUnavailable, "gateway is not configured")
-		default:
-			s.throttledLog("console-down", slog.LevelWarn, "console unreachable", "err", err.Error())
-			reject(http.StatusBadGateway, "cannot read channel configuration")
-		}
+	ch, ok := s.channelFor(ctx, channelID, reject)
+	if !ok {
 		return
 	}
 	if ch.Kind != console.KindLobby {
 		reject(http.StatusNotFound, "channel not found")
 		return
 	}
-	id, err := s.verifier.Verify(ctx, ch.AuthVerifyURL, bearer)
-	if err != nil {
-		switch {
-		case errors.Is(err, authn.ErrUnauthorized):
-			reject(http.StatusUnauthorized, "token rejected")
-		case errors.Is(err, authn.ErrBusy):
-			reject(http.StatusServiceUnavailable, "too many verifications in flight")
-		default:
-			s.throttledLog("auth-down", slog.LevelWarn, "auth unreachable", "channel", channelID, "err", err.Error())
-			reject(http.StatusBadGateway, "cannot verify token")
-		}
+	id, ok := s.identityFor(ctx, ch, channelID, bearer, reject)
+	if !ok {
 		return
 	}
 	roster, err := lobby.ReadRoster(ctx, s.rdb, channelID, r.PathValue("partyId"), id.UserID)
@@ -551,6 +500,65 @@ func (s *Server) party(w http.ResponseWriter, r *http.Request) {
 	}
 	s.reg.Counters.PartyReads.Add(1)
 	writeJSON(w, http.StatusOK, roster)
+}
+
+// rejectFn answers a request before any upgrade with an HTTP status; the
+// two handlers count refusals differently, so each passes its own.
+type rejectFn func(status int, msg string)
+
+// channelParam reads `?channel=`: required, and an ill-formed id is a 404
+// rather than a 400 so the shape of real ids is not advertised.
+func channelParam(r *http.Request, reject rejectFn) (string, bool) {
+	channelID := r.URL.Query().Get("channel")
+	if channelID == "" {
+		reject(http.StatusBadRequest, "channel query parameter is required")
+		return "", false
+	}
+	if !console.ValidID(channelID) {
+		reject(http.StatusNotFound, "channel not found")
+		return "", false
+	}
+	return channelID, true
+}
+
+// channelFor reads the channel from the console and maps every failure to
+// the status a client can act on; console trouble is logged, throttled.
+func (s *Server) channelFor(ctx context.Context, channelID string, reject rejectFn) (*console.Channel, bool) {
+	ch, err := s.console.Get(ctx, channelID)
+	if err == nil {
+		return ch, true
+	}
+	switch {
+	case errors.Is(err, console.ErrNotFound):
+		reject(http.StatusNotFound, "channel not found")
+	case errors.Is(err, console.ErrGone):
+		reject(http.StatusGone, "channel is expired or disabled")
+	case errors.Is(err, console.ErrNotConfigured), errors.Is(err, console.ErrUnauthorized):
+		s.throttledLog("console-refused", slog.LevelError, "console refuses gateway reads", "err", err.Error())
+		reject(http.StatusServiceUnavailable, "gateway is not configured")
+	default:
+		s.throttledLog("console-down", slog.LevelWarn, "console unreachable", "err", err.Error())
+		reject(http.StatusBadGateway, "cannot read channel configuration")
+	}
+	return nil, false
+}
+
+// identityFor verifies the bearer against the channel's auth service.
+func (s *Server) identityFor(ctx context.Context, ch *console.Channel, channelID, bearer string, reject rejectFn) (authn.Identity, bool) {
+	id, err := s.verifier.Verify(ctx, ch.AuthVerifyURL, bearer)
+	if err == nil {
+		return id, true
+	}
+	switch {
+	case errors.Is(err, authn.ErrUnauthorized):
+		reject(http.StatusUnauthorized, "token rejected")
+	case errors.Is(err, authn.ErrBusy):
+		reject(http.StatusServiceUnavailable, "too many verifications in flight")
+	default:
+		s.throttledLog("auth-down", slog.LevelWarn, "auth unreachable", "channel", channelID, "err", err.Error())
+		reject(http.StatusBadGateway, "cannot verify token")
+	}
+	return authn.Identity{}, false
 }
 
 func (s *Server) hubFor(ch *console.Channel) *lobby.Hub {
