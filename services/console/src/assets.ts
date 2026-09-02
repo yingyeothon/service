@@ -1,3 +1,4 @@
+import { BUNDLE_SORT_KEYS } from "@yyt/console-db";
 import {
   AppError,
   nowSec,
@@ -15,6 +16,7 @@ import type {
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
+import { listParams, listQuery } from "./list-query.js";
 import {
   ARTIFACT_UPLOAD_URL_TTL_SEC,
   type ArtifactStore,
@@ -75,6 +77,7 @@ export const ASSET_CONTENT_TYPES: Record<string, string> = {
 };
 
 /** Versions become object-key and URL path segments. */
+const bundlesQuery = listQuery(BUNDLE_SORT_KEYS).passthrough();
 const SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 /**
  * No dot: the bundle name is also a SPA route segment (`/ui/assets/{name}`) and
@@ -462,19 +465,23 @@ export function createAssetRoutes({
         };
       },
     },
-    {
+    defineRoute({
       method: "GET",
       path: "/projects/{prj}/assets/bundles",
       auth: true,
+      query: bundlesQuery,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
         return {
           bundles: await bundleViews(
-            await assets.listBundles({ projectId: a.project.id }),
+            await assets.listBundles({
+              ...listParams(ctx.query),
+              projectId: a.project.id,
+            }),
           ),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/projects/{prj}/assets/bundles",

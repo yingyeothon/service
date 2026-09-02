@@ -7,16 +7,18 @@ import {
   type Logger,
   type Role,
 } from "@yyt/core";
-import type {
-  ConsoleDb,
-  EventCommentRow,
-  EventOptionRow,
-  EventPage,
-  EventRevisionRow,
-  EventRow,
-  EventsDb,
-  EventStatus,
-  EventVoteRow,
+import {
+  effectiveStatus,
+  EVENT_SORT_KEYS,
+  type ConsoleDb,
+  type EventCommentRow,
+  type EventOptionRow,
+  type EventPage,
+  type EventRevisionRow,
+  type EventRow,
+  type EventsDb,
+  type EventStatus,
+  type EventVoteRow,
 } from "@yyt/console-db";
 import {
   defineRoute,
@@ -27,6 +29,7 @@ import {
 } from "@yyt/http";
 import type { Kv } from "@yyt/redis";
 import { z } from "zod";
+import { listParams, searchQuery } from "./list-query.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import { createWriteSlot } from "./write-slot.js";
 import {
@@ -64,6 +67,7 @@ export const KST_OFFSET_SEC = 9 * 3600;
 export const kstDay = (sec: number): number =>
   Math.floor((sec + KST_OFFSET_SEC) / 86400);
 
+const eventsQuery = searchQuery(EVENT_SORT_KEYS).passthrough();
 const title = z.string().trim().min(1).max(200);
 const bodyMd = z.string().max(20_000);
 const place = z.string().trim().min(1).max(200);
@@ -158,17 +162,8 @@ export interface EventRoutesOptions {
   ) => Promise<string | undefined>;
 }
 
-/** The status the clock says the event is in; `draft`/`cancelled` are final as stored. */
-export function effectiveStatus(
-  row: Pick<EventRow, "status" | "startsAt" | "durationHours">,
-  now: number,
-): EventStatus {
-  if (row.status === "draft" || row.status === "cancelled") return row.status;
-  if (row.startsAt === null) return "voting";
-  if (now < row.startsAt) return "waiting";
-  if (now < row.startsAt + row.durationHours * 3600) return "opened";
-  return "closed";
-}
+/** Lives in `@yyt/console-db` since the list sorts by it; re-exported for the callers here. */
+export { effectiveStatus };
 
 /** Most votes wins; ties (including no votes at all) go to the earliest start. */
 export function decideStart(
@@ -549,21 +544,27 @@ export function createEventRoutes({
 
   return [
     // ---- read -----------------------------------------------------------
-    {
+    defineRoute({
       method: "GET",
       path: "/events",
+      query: eventsQuery,
       handler: async (ctx) => {
         const id = identityOf(ctx);
         const now = nowSec(clock);
         const logins = await loginMap();
         const out = [];
-        for (const r of await events.listEvents()) {
+        // Ordered and filtered by the repository; `settle` may still decide a
+        // due vote, which the status order does not see until the next read.
+        for (const r of await events.listEvents([], {
+          ...listParams(ctx.query),
+          now,
+        })) {
           const row = await settle(r, now);
           if (canSee(id, row)) out.push(listView(row, logins, id));
         }
         return { events: out };
       },
-    },
+    }),
     {
       method: "GET",
       path: "/events/{id}",

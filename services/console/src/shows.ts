@@ -1,3 +1,4 @@
+import { GRANT_SORT_KEYS } from "@yyt/console-db";
 import { AppError, nowSec, ulid, type Clock, type Logger } from "@yyt/core";
 import type {
   AssetsDb,
@@ -31,6 +32,7 @@ import {
 } from "@yyt/http";
 import type { Kv } from "@yyt/redis";
 import { z } from "zod";
+import { listParams, listQuery, q } from "./list-query.js";
 import { artifactUrl } from "./catalog.js";
 import { ASSET_KEY_PREFIX } from "./assets.js";
 import { canSeeEvent, settleEvent } from "./events.js";
@@ -125,8 +127,11 @@ const showPatchBody = z
   .strict();
 const moderateBody = z.object({ reason: reason.optional() }).strict();
 const grantBody = moderateBody.optional();
+const grantsQuery = listQuery(GRANT_SORT_KEYS).passthrough();
 const showsQuery = z
   .object({
+    // `q` only: the cursor pins the order (docs/decisions.md *List sort and filter*).
+    q,
     state: z.enum(["open", "closed"]).optional(),
     cursor: z.string().max(80).optional(),
     limit: z.coerce.number().int().min(1).max(SHOW_PAGE_MAX).optional(),
@@ -691,6 +696,8 @@ export function createShowRoutes({
           acls:
             id !== undefined && id.role !== "pending" ? undefined : ["public"],
           state: ctx.query.state,
+          // `q` only: a `sort` here is an unknown key, not a parameter.
+          ...(ctx.query.q ? { q: ctx.query.q } : {}),
           cursor: ctx.query.cursor,
           limit: ctx.query.limit,
         });
@@ -813,12 +820,13 @@ export function createShowRoutes({
         };
       },
     },
-    {
+    defineRoute({
       method: "GET",
       path: "/shows/{show}/grants",
+      query: grantsQuery,
       handler: async (ctx) => {
         const { show } = await manageableShow(ctx);
-        const grants = await shows.listGrants(show.id);
+        const grants = await shows.listGrants(show.id, listParams(ctx.query));
         const logins = await loginsOf(
           ...grants.flatMap((g) => [g.memberId, g.grantedBy]),
         );
@@ -830,7 +838,7 @@ export function createShowRoutes({
           })),
         };
       },
-    },
+    }),
     {
       method: "GET",
       path: "/shows/{show}/submittable",

@@ -33,6 +33,37 @@ POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{pr
 GET|PUT  /admin/settings/installer-app   admin
 ```
 
+### List parameters (2026-09-02)
+
+Every list route above — plus `GET /members`, `/tokens`, `/events`, `/shows`, `/shows/{show}/grants`,
+`/sites/{site}/deploys` and `/catalog/apps/{app}/artifacts` — takes `?sort=<field>&order=asc|desc`, and the
+name/title lists also take `?q=<text>` (docs/decisions.md _List sort and filter_). `sort` is one of the
+response's own field names (anything else is `400 invalid query` naming `sort`); `order` defaults to `asc`
+and is ignored without `sort`; `q` is a trimmed, case-insensitive contains of at most 100 characters.
+Without `sort` a list keeps its historical order, which is what the CLI relies on. Keys per route:
+
+```
+/teams                        name role createdBy updatedAt          q: name, description (role is refused with ?scope=all)
+/teams/{team}/projects        name description createdBy updatedAt   q: name, description
+/teams/{team}/members         login role since
+/teams/{team}/discussions     title createdBy updatedAt              q: title
+/teams/{team}/issues, /projects/{prj}/issues
+                              number title status version createdBy updatedAt   q: title
+/projects/{prj}/versions      name note artifactCount assetCount createdBy createdAt
+/channels, /projects/{prj}/channels
+                              name kind projectName id status expiresAt        q: name, project name
+/events                       title status startsAt place createdBy            q: title
+/shows                        (cursor-paged: q only, re-sent with cursor)      q: title
+/shows/{show}/grants          login grantedBy grantedAt
+/projects/{prj}/catalog/apps, /projects/{prj}/assets/bundles
+                              name description createdBy updatedAt
+/projects/{prj}/sites         name url createdBy updatedAt
+/sites/{site}/deploys         id status files size createdAt         (the newest N, ordered as asked)
+/catalog/apps/{app}/artifacts version platform size createdAt
+/members                      login role createdAt approvedAt
+/tokens                       name id createdAt lastUsedAt
+```
+
 Single-resource routes stay id-based and unchanged in path: `/channels/{id}`, `/catalog/apps/{appId}`,
 `/assets/bundles/{bundleId}`, `/sites/{siteId}` (plus their sub-routes: deploys, deploys/{id}/commit, settings, extend, rotate-secret, redis-user, doc-key, artifacts, artifacts/cleanup; gateway lookups are top-level `GET /gw/health`, `GET /gw/channels/{id}`).
 `GET /channels` lists every channel across the caller's teams (`?scope=all` for admin).

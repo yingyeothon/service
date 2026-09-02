@@ -1,3 +1,4 @@
+import { APP_SORT_KEYS, ARTIFACT_SORT_KEYS } from "@yyt/console-db";
 import {
   AppError,
   nowSec,
@@ -16,6 +17,7 @@ import {
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
+import { listParams, listQuery } from "./list-query.js";
 import {
   ARTIFACT_MAX_BYTES,
   ARTIFACT_UPLOAD_URL_TTL_SEC,
@@ -105,12 +107,13 @@ export const uploadBody = z
       .default({}),
   })
   .strict();
-const artifactsQuery = z
-  .object({
+const artifactsQuery = listQuery(ARTIFACT_SORT_KEYS)
+  .extend({
     platform: z.enum(CATALOG_PLATFORMS).optional(),
     limit: z.coerce.number().int().positive().max(1000).optional(),
   })
   .passthrough();
+const appsQuery = listQuery(APP_SORT_KEYS).passthrough();
 const teamAppsQuery = z
   .object({
     artifacts: z.enum(["summary"]).optional(),
@@ -485,19 +488,23 @@ export function createCatalogRoutes({
         };
       },
     }),
-    {
+    defineRoute({
       method: "GET",
       path: "/projects/{prj}/catalog/apps",
       auth: true,
+      query: appsQuery,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!);
         return {
           apps: await appViews(
-            await catalog.listApps({ projectId: a.project.id }),
+            await catalog.listApps({
+              ...listParams(ctx.query),
+              projectId: a.project.id,
+            }),
           ),
         };
       },
-    },
+    }),
     defineRoute({
       method: "POST",
       path: "/projects/{prj}/catalog/apps",
@@ -621,6 +628,7 @@ export function createCatalogRoutes({
       handler: async (ctx) => {
         const { row: app } = await appWith(ctx, false);
         let rows = await catalog.listArtifacts(app.id, {
+          ...listParams(ctx.query),
           platform: ctx.query.platform,
         });
         if (ctx.query.limit) rows = rows.slice(0, ctx.query.limit);

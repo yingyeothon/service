@@ -1,8 +1,9 @@
 import { AppError, randomHex, type ChannelKind } from "@yyt/core";
-import type {
-  AuthChannelConfig,
-  AuthChannelSecret,
-  ChannelRow,
+import {
+  channelStatus,
+  type AuthChannelConfig,
+  type AuthChannelSecret,
+  type ChannelRow,
 } from "@yyt/console-db";
 import { z } from "zod";
 
@@ -537,13 +538,8 @@ export function rotateSecret(row: ChannelRow): {
   return { secret: { apiKey }, shown: { apiKey } };
 }
 
-export function channelStatus(
-  row: ChannelRow,
-  nowSec: number,
-): "active" | "expired" | "disabled" {
-  if (row.disabledAt !== null) return "disabled";
-  return row.expiresAt > nowSec ? "active" : "expired";
-}
+/** Lives in `@yyt/console-db` since the channel list sorts by it; re-exported for the callers here. */
+export { channelStatus };
 
 /** Drops trailing slashes so `{base}/path` never doubles up. */
 export function trim(u: string): string {
