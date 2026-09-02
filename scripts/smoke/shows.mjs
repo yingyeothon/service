@@ -7,60 +7,30 @@
 // tokens or presigned URLs; the presign and redirect routes are asserted on
 // their status codes, not their bodies.
 import { ensureTeam } from "./_team.mjs";
+import {
+  asUser,
+  createChecker,
+  debugLogin,
+  exitOnCrash,
+  jsonClient,
+  sleep,
+} from "./_lib.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: shows.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const crashed = (e) => {
-  console.error(e);
-  console.log("\n1 FAILED (crashed)");
-  process.exit(1);
-};
-process.on("uncaughtException", crashed);
-process.on("unhandledRejection", crashed);
+const { check, finish } = createChecker();
+exitOnCrash();
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * Every recorded write takes a 500 ms slot per member; space them out so the
  * smoke measures the contract, not the rate limit.
  */
-const req = async (url, { method = "GET", headers = {}, body } = {}) => {
-  if (method !== "GET") await sleep(550);
-  const res = await fetch(url.startsWith("http") ? url : `${base}${url}`, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    redirect: "manual",
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* not JSON */
-  }
-  return { status: res.status, body: json, text, headers: res.headers };
-};
-const login = async (name, role, githubId) => {
-  const r = await req("/debug/login", {
-    method: "POST",
-    headers: { "x-debug-key": debugKey },
-    body: { login: name, githubId, role },
-  });
-  check(`debug login ${name}/${role}`, r.status === 200, String(r.status));
-  return { cookie: r.body?.cookie, id: r.body?.memberId, login: name };
-};
-const as = (u) => ({ cookie: u.cookie, origin: base });
+const req = jsonClient({ base, writeSlotMs: 550, redirect: "manual" });
+const login = debugLogin(req, base, debugKey, check);
+const as = asUser(base);
 
 /** A 1x1 PNG, so the presigned PUT and the redirect carry real bytes. */
 const PNG = Buffer.from(
@@ -572,5 +542,4 @@ try {
       body: { login: u.login, githubId: gh, role: "pending" },
     });
 }
-console.log(failed === 0 ? "\nALL OK" : `\n${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish("\nALL OK", (n) => `\n${n} FAILED`);

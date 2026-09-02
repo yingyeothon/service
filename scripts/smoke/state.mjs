@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { ensureTeam } from "./_team.mjs";
+import { createChecker, jsonClient } from "./_lib.mjs";
 // Smoke test for the state stack on dev: create an auth channel (console debug
 // login) → issue its doc key → write, read and delete documents with enforced
 // compare-and-set → check that a player's token reads only its own row and
@@ -13,34 +14,8 @@ if (!docBase || !debugKey || !authBase || !consoleBase) {
   );
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const call = async (url, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* 204s and empty bodies */
-  }
-  return {
-    status: res.status,
-    body: json,
-    etag: res.headers.get("etag"),
-    cache: res.headers.get("cache-control"),
-  };
-};
+const { check, finish } = createChecker();
+const call = jsonClient();
 const dbg = { "x-debug-key": debugKey };
 /** `"3"` → 3. */
 const ver = (r) => (r.etag ? Number(r.etag.replace(/"/g, "")) : undefined);
@@ -310,7 +285,4 @@ try {
   await cleanup();
 }
 
-console.log(
-  failed === 0 ? "\nall checks passed" : `\n${failed} check(s) failed`,
-);
-process.exit(failed === 0 ? 0 : 1);
+finish("\nall checks passed", (n) => `\n${n} check(s) failed`);

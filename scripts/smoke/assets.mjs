@@ -6,52 +6,22 @@
 // Usage: scripts/smoke/assets.mjs <baseUrl> <debugKey>
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens.
 import { ensureTeam } from "./_team.mjs";
+import { asUser, createChecker, debugLogin, jsonClient } from "./_lib.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: assets.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const call = async (path, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    redirect: "manual",
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* not JSON */
-  }
-  return { status: res.status, body: json, text, headers: res.headers };
-};
-const req = (url, o) => call(url.replace(base, ""), o);
-const login = async (login, role, githubId) => {
-  const r = await call("/debug/login", {
-    method: "POST",
-    headers: { "x-debug-key": debugKey },
-    body: { login, githubId, role },
-  });
-  check(`debug login ${login}/${role}`, r.status === 200, String(r.status));
-  return { cookie: r.body?.cookie, id: r.body?.memberId };
-};
-const as = (u) => ({ cookie: u.cookie, origin: base });
+const { check, finish } = createChecker();
+const call = jsonClient({ base, redirect: "manual" });
+const login = debugLogin(call, base, debugKey, check);
+const as = asUser(base);
 
 const owner = await login("smoke-asset-owner", "member", -2101);
 const other = await login("smoke-asset-other", "member", -2102);
 const admin = await login("smoke-asset-admin", "admin", -2103);
-const team = await ensureTeam(req, base, as(owner), "smoke-assets", check);
+const team = await ensureTeam(call, base, as(owner), "smoke-assets", check);
 
 const suffix = Date.now().toString(36);
 const bundleName = `smoke-asset-${suffix}`;
@@ -387,5 +357,4 @@ try {
   await cleanup();
 }
 
-console.log(failed === 0 ? "ALL OK" : `${failed} FAILURES`);
-process.exit(failed === 0 ? 0 : 1);
+finish("ALL OK", (n) => `${n} FAILURES`);

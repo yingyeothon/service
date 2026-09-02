@@ -14,29 +14,17 @@
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
 import { readFileSync, writeFileSync } from "node:fs";
 import { ensureTeam } from "./_team.mjs";
+import {
+  createChecker,
+  jsonClient,
+  mintToken,
+  wsConnector,
+  wsRejected,
+} from "./_lib.mjs";
 
 const [mode, ...args] = process.argv.slice(2);
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const json = async (url, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(url, {
-    method,
-    signal: AbortSignal.timeout(10000),
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  return { status: res.status, body: await res.json().catch(() => null) };
-};
-const finish = () => {
-  console.log(failed === 0 ? "ALL OK" : `${failed} FAILED`);
-  process.exit(failed === 0 ? 0 : 1);
-};
+const { check, failed, finish } = createChecker();
+const json = jsonClient({ timeoutMs: 10000 });
 const login = async (consoleBase, debugKey) => {
   const r = await json(`${consoleBase}/debug/login`, {
     method: "POST",
@@ -156,7 +144,7 @@ if (mode === "setup") {
       String(cred.status),
     );
   }
-  if (failed) finish();
+  if (failed() > 0) finish("ALL OK", (n) => `${n} FAILED`);
   const redisLines = gateway
     ? [
         `REDIS_HOST=${cred.body.host}`,
@@ -199,7 +187,7 @@ if (mode === "setup") {
     { mode: 0o600 },
   );
   console.log(`wrote ${outEnv} and ${outState}`);
-  finish();
+  finish("ALL OK", (n) => `${n} FAILED`);
 }
 
 if (mode === "clean") {
@@ -227,7 +215,7 @@ if (mode === "clean") {
   console.log(
     "dungeon stack stays deployed; remove with `serverless remove --stage dev` in examples/sample-dungeon",
   );
-  finish();
+  finish("ALL OK", (n) => `${n} FAILED`);
 }
 
 if (mode !== "run") usage();
@@ -235,15 +223,7 @@ const [debugKey, authBase, consoleBase, matchWss, stateFile, callbackUrl] =
   args;
 if (!callbackUrl) usage();
 const state = JSON.parse(readFileSync(stateFile, "utf8"));
-const dbg = { "x-debug-key": debugKey };
-const mint = async (userId) =>
-  (
-    await json(`${authBase}/debug/token`, {
-      method: "POST",
-      headers: dbg,
-      body: { channelId: state.authChannelId, userId },
-    })
-  ).body?.jwt;
+const mint = mintToken(json, authBase, debugKey, state.authChannelId);
 
 // 1. point the match channels at the dungeon (match PATCH is a full config replace)
 const cookie = await login(consoleBase, debugKey);
@@ -271,66 +251,12 @@ if (state.topicMatchChannelId)
   await pointAt(state.topicMatchChannelId, topicCallbackUrl);
 
 // 2. websocket helper (Node 22+ global WebSocket)
-const connect = (url, token) =>
-  new Promise((resolve, reject) => {
-    const ws = new WebSocket(url, ["bearer", token]);
-    const messages = [];
-    const waiters = [];
-    let closed = false;
-    const handshake = setTimeout(() => {
-      ws.close();
-      reject(new Error("ws handshake timeout"));
-    }, 15000);
-    ws.addEventListener("open", () => {
-      clearTimeout(handshake);
-      resolve(client);
-    });
-    ws.addEventListener("error", () => {
-      clearTimeout(handshake);
-      reject(new Error("ws error"));
-    });
-    ws.addEventListener("message", (e) => {
-      const m = JSON.parse(e.data);
-      if (waiters.length > 0) waiters.splice(0).forEach((w) => w(m));
-      else messages.push(m);
-    });
-    ws.addEventListener("close", () => {
-      closed = true;
-      waiters.splice(0).forEach((w) => w(null));
-    });
-    const client = {
-      isClosed: () => closed,
-      next: (ms = 15000) =>
-        new Promise((r) => {
-          if (messages.length > 0) return r(messages.shift());
-          if (closed) return r(null);
-          const t = setTimeout(() => r(null), ms);
-          waiters.push((m) => {
-            clearTimeout(t);
-            r(m);
-          });
-        }),
-      /** Waits for a message satisfying `pred`, discarding others. */
-      until: async (pred, ms = 30000) => {
-        const deadline = Date.now() + ms;
-        for (;;) {
-          const m = await client.next(Math.max(1, deadline - Date.now()));
-          if (m === null || pred(m)) return m;
-        }
-      },
-      send: (m) => ws.send(JSON.stringify(m)),
-      close: () => ws.close(),
-    };
-  });
-const rejected = async (url, token) => {
-  try {
-    const c = await connect(url, token);
-    c.close();
-    return false;
-  } catch {
-    return true;
-  }
-};
+const connect = wsConnector({
+  nextMs: 15000,
+  untilMs: 30000,
+  handshakeMs: 15000,
+});
+const rejected = wsRejected(connect);
 
 // 3. match: two players → matched with the dungeon's {wsUrl, gameId}
 const tokenA = await mint("dungeon-a");
@@ -357,7 +283,7 @@ check(
   typeof result.wsUrl === "string" && result.gameId === ra?.matchId,
   JSON.stringify(result),
 );
-if (failed) finish();
+if (failed() > 0) finish("ALL OK", (n) => `${n} FAILED`);
 // API Gateway mode: `wss://…/dev?x-game-id=`; gateway mode: `wss://gw…/?channel=q_…&gameId=`.
 const viaGateway = /[?&]channel=/.test(result.wsUrl);
 const gameUrl = (gameId) =>
@@ -489,7 +415,7 @@ if (state.topicMatchChannelId) {
     d.close();
   }
 }
-finish();
+finish("ALL OK", (n) => `${n} FAILED`);
 
 function usage() {
   console.error(

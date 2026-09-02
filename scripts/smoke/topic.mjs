@@ -6,6 +6,15 @@
 // Usage: scripts/smoke/topic.mjs <topicHttpUrl> <debugKey> <authBaseUrl> <consoleBaseUrl>
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
 import { ensureTeam } from "./_team.mjs";
+import {
+  consoleLogin,
+  createChecker,
+  jsonClient,
+  mintToken,
+  sleep,
+  wsConnector,
+  wsRejected,
+} from "./_lib.mjs";
 
 const [topicBase, debugKey, authBase, consoleBase] = process.argv.slice(2);
 if (!topicBase || !debugKey || !authBase || !consoleBase) {
@@ -14,33 +23,18 @@ if (!topicBase || !debugKey || !authBase || !consoleBase) {
   );
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const json = async (url, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  return { status: res.status, body: await res.json().catch(() => null) };
-};
+const { check, finish } = createChecker();
+const json = jsonClient();
 const dbg = { "x-debug-key": debugKey };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 1. console login + a project of our own, then the auth channel seeded into it
-const login = await json(`${consoleBase}/debug/login`, {
-  method: "POST",
-  headers: dbg,
-  body: { login: "smoke-topic-admin", githubId: -1005, role: "admin" },
-});
-check("console debug login", login.status === 200);
-const cookie = { cookie: login.body?.cookie, origin: consoleBase };
+const cookie = await consoleLogin(
+  json,
+  consoleBase,
+  debugKey,
+  { login: "smoke-topic-admin", githubId: -1005, role: "admin" },
+  check,
+);
 const team = await ensureTeam(json, consoleBase, cookie, "smoke-topic", check);
 const seeded = await json(`${authBase}/debug/channels`, {
   method: "POST",
@@ -49,14 +43,7 @@ const seeded = await json(`${authBase}/debug/channels`, {
 });
 check("seed auth channel", seeded.status === 200, seeded.body?.channelId);
 const authId = seeded.body.channelId;
-const mint = async (userId) =>
-  (
-    await json(`${authBase}/debug/token`, {
-      method: "POST",
-      headers: dbg,
-      body: { channelId: authId, userId },
-    })
-  ).body?.jwt;
+const mint = mintToken(json, authBase, debugKey, authId);
 
 // 2. topic channel in the same project
 const ch = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
@@ -73,7 +60,7 @@ check(
   ch.status === 201,
   ch.body?.id ?? JSON.stringify(ch.body),
 );
-if (!seeded.body?.channelId || !login.body?.cookie || ch.status !== 201) {
+if (!seeded.body?.channelId || !cookie.cookie || ch.status !== 201) {
   console.log("FAIL prerequisites (auth/console debug hooks deployed?)");
   process.exit(1);
 }
@@ -83,59 +70,8 @@ const bearer = { authorization: `Bearer ${apiKey}` };
 check("console reports the ws host", /^wss:\/\/topic-ws/.test(ch.body.wsUrl));
 
 // 3. websocket helpers (Node 22+ global WebSocket)
-const connect = (wsUrl, token) =>
-  new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl, ["bearer", token]);
-    const messages = [];
-    const waiters = [];
-    ws.addEventListener("open", () => resolve(client));
-    ws.addEventListener("error", () => reject(new Error("ws error")));
-    ws.addEventListener("message", (e) => {
-      const m = JSON.parse(e.data);
-      if (waiters.length > 0) waiters.splice(0).forEach((w) => w(m));
-      else messages.push(m);
-    });
-    let closed = false;
-    ws.addEventListener("close", () => {
-      closed = true;
-      waiters.splice(0).forEach((w) => w(null));
-    });
-    const client = {
-      ws,
-      messages,
-      isClosed: () => closed,
-      next: (ms = 10000) =>
-        new Promise((r) => {
-          if (messages.length > 0) return r(messages.shift());
-          if (closed) return r(null);
-          const t = setTimeout(() => r(null), ms);
-          waiters.push((m) => {
-            clearTimeout(t);
-            r(m);
-          });
-        }),
-      send: (m) => ws.send(JSON.stringify(m)),
-      close: () => ws.close(),
-      waitClose: (ms = 10000) =>
-        new Promise((r) => {
-          if (closed) return r(true);
-          const t = setTimeout(() => r(false), ms);
-          ws.addEventListener("close", () => {
-            clearTimeout(t);
-            r(true);
-          });
-        }),
-    };
-  });
-const rejected = async (wsUrl, token) => {
-  try {
-    const c = await connect(wsUrl, token);
-    c.close();
-    return false;
-  } catch {
-    return true;
-  }
-};
+const connect = wsConnector({ nextMs: 10000 });
+const rejected = wsRejected(connect);
 
 try {
   // 4. HTTP: create + get + auth failures
@@ -312,5 +248,4 @@ try {
 }
 // Residue on dev: the `smoke-topic-admin` member, soft-deleted channels and
 // audit rows until the console sweep.
-console.log(failed === 0 ? "ALL OK" : `${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish("ALL OK", (n) => `${n} FAILED`);

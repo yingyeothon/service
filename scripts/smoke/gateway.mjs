@@ -7,9 +7,16 @@
 // Usage: scripts/smoke/gateway.mjs <gatewayWsUrl> <debugKey> <authBaseUrl> <consoleBaseUrl>
 //   gatewayWsUrl e.g. ws://127.0.0.1:8080 (local run) or wss://gw-dev.yyt.life
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
-import http from "node:http";
-import https from "node:https";
 import { ensureTeam } from "./_team.mjs";
+import {
+  consoleLogin,
+  createChecker,
+  jsonClient,
+  mintToken,
+  refusedUpgrade,
+  sleep,
+  wsConnector,
+} from "./_lib.mjs";
 
 const [gwArg, debugKey, authBase, consoleBase] = process.argv.slice(2);
 const gwBase = (gwArg ?? "").replace(/\/+$/, "");
@@ -19,34 +26,19 @@ if (!gwBase || !debugKey || !authBase || !consoleBase) {
   );
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const json = async (url, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  return { status: res.status, body: await res.json().catch(() => null) };
-};
+const { check, finish } = createChecker();
+const json = jsonClient();
 const dbg = { "x-debug-key": debugKey };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stamp = Date.now().toString(36);
 
 // 1. console login, team, seeded auth channel, lobby + q channels
-const login = await json(`${consoleBase}/debug/login`, {
-  method: "POST",
-  headers: dbg,
-  body: { login: "smoke-gateway-admin", githubId: -1009, role: "admin" },
-});
-check("console debug login", login.status === 200);
-const cookie = { cookie: login.body?.cookie, origin: consoleBase };
+const cookie = await consoleLogin(
+  json,
+  consoleBase,
+  debugKey,
+  { login: "smoke-gateway-admin", githubId: -1009, role: "admin" },
+  check,
+);
 const team = await ensureTeam(
   json,
   consoleBase,
@@ -61,14 +53,7 @@ const seeded = await json(`${authBase}/debug/channels`, {
 });
 check("seed auth channel", seeded.status === 200);
 const authId = seeded.body.channelId;
-const mint = async (userId) =>
-  (
-    await json(`${authBase}/debug/token`, {
-      method: "POST",
-      headers: dbg,
-      body: { channelId: authId, userId },
-    })
-  ).body?.jwt;
+const mint = mintToken(json, authBase, debugKey, authId);
 const lobby = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: cookie,
@@ -101,91 +86,23 @@ const q = await json(`${consoleBase}/projects/${team.prjId}/channels`, {
 check("create q channel", q.status === 201, String(q.status));
 
 // 2. websocket helper (Node 22+ global WebSocket)
-const connect = (url, token) =>
-  new Promise((resolve, reject) => {
-    const ws = new WebSocket(url, ["bearer", token]);
-    const messages = [];
-    const waiters = [];
-    let closeCode = null;
-    ws.addEventListener("open", () => resolve(client));
-    ws.addEventListener("error", () => reject(new Error("ws error")));
-    ws.addEventListener("message", (e) => {
-      const m = JSON.parse(e.data);
-      if (waiters.length > 0) waiters.splice(0).forEach((w) => w(m));
-      else messages.push(m);
-    });
-    ws.addEventListener("close", (e) => {
-      closeCode = e.code;
-      waiters.splice(0).forEach((w) => w(null));
-    });
-    const client = {
-      send: (m) => ws.send(JSON.stringify(m)),
-      close: () => ws.close(),
-      code: () => closeCode,
-      next: (ms = 5000) =>
-        new Promise((r) => {
-          if (messages.length > 0) return r(messages.shift());
-          if (closeCode !== null) return r(null);
-          const t = setTimeout(() => r(null), ms);
-          waiters.push((m) => {
-            clearTimeout(t);
-            r(m);
-          });
-        }),
-      until: async (type, ms = 5000) => {
-        const end = Date.now() + ms;
-        while (Date.now() < end) {
-          const m = await client.next(end - Date.now());
-          if (m === null) return null;
-          if (m.type === type) return m;
-        }
-        return null;
-      },
-      waitClose: (ms = 5000) =>
-        new Promise((r) => {
-          if (closeCode !== null) return r(closeCode);
-          const t = setTimeout(() => r(null), ms);
-          ws.addEventListener("close", (e) => {
-            clearTimeout(t);
-            r(e.code);
-          });
-        }),
-    };
-  });
-const refused = (url, protocols) =>
-  // fetch (undici) forbids the `connection`/`upgrade` headers, so the
-  // handshake status is read with a raw request instead.
-  new Promise((resolve) => {
-    const u = new URL(url);
-    const mod = u.protocol === "wss:" ? https : http;
-    const req = mod.request(
-      {
-        host: u.hostname,
-        port: u.port || (u.protocol === "wss:" ? 443 : 80),
-        path: u.pathname + u.search,
-        method: "GET",
-        headers: {
-          connection: "Upgrade",
-          upgrade: "websocket",
-          "sec-websocket-version": "13",
-          "sec-websocket-key": "AAAAAAAAAAAAAAAAAAAAAA==",
-          ...(protocols
-            ? { "sec-websocket-protocol": protocols.join(", ") }
-            : {}),
-        },
-      },
-      (res) => {
-        res.resume();
-        resolve(res.statusCode);
-      },
-    );
-    req.on("upgrade", (res, socket) => {
-      socket.destroy();
-      resolve(res.statusCode);
-    });
-    req.on("error", () => resolve(0));
-    req.end();
-  });
+const raw = wsConnector({ nextMs: 5000 });
+// This smoke reads close codes, so `waitClose` resolves to the code (or null),
+// and its `until` stops at the deadline without draining what is still queued.
+const connect = async (url, token) => {
+  const c = await raw(url, token);
+  const until = async (type, ms = 5000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const m = await c.next(end - Date.now());
+      if (m === null) return null;
+      if (m.type === type) return m;
+    }
+    return null;
+  };
+  return { ...c, until, waitClose: c.waitCloseCode };
+};
+const refused = (url, protocols) => refusedUpgrade(url, protocols);
 
 // 3. liveness, readiness, metrics
 const httpBase = gwBase.replace(/^ws/, "http");
@@ -394,5 +311,4 @@ for (const ch of [lobby, q]) {
   );
 }
 await sleep(100);
-console.log(failed === 0 ? "ALL OK" : `${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish("ALL OK", (n) => `${n} FAILED`);
