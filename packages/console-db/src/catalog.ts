@@ -1,4 +1,18 @@
 import { AppError } from "@yyt/core";
+import {
+  cmpBin,
+  cmpCi,
+  cmpNum,
+  dir,
+  enumRank,
+  nullable,
+  resourceKeys,
+  resourceOrderBy,
+  RESOURCE_SORT_KEYS,
+  sortRows,
+  type ListOrder,
+  type ResourceSortKey,
+} from "./list.js";
 import { num, nul, run, type PrismaClient } from "./prisma.js";
 import { Prisma } from "./generated/prisma/client.js";
 
@@ -12,6 +26,31 @@ export const CATALOG_PLATFORMS = [
   "linux",
 ] as const;
 export type CatalogPlatform = (typeof CATALOG_PLATFORMS)[number];
+
+export const APP_SORT_KEYS = RESOURCE_SORT_KEYS;
+export type AppSortKey = ResourceSortKey;
+/** `version` is the `version` tag inside `tags_json`, so it orders after the fetch. */
+export const ARTIFACT_SORT_KEYS = [
+  "version",
+  "platform",
+  "size",
+  "createdAt",
+] as const;
+export type ArtifactSortKey = (typeof ARTIFACT_SORT_KEYS)[number];
+
+const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
+const ARTIFACT_KEYS = {
+  version: (a: CatalogArtifactRow, b: CatalogArtifactRow) =>
+    nullable(cmpBin)(a.tags.version ?? null, b.tags.version ?? null),
+  platform: (a: CatalogArtifactRow, b: CatalogArtifactRow) =>
+    enumRank(CATALOG_PLATFORMS)(a.platform, b.platform),
+  size: (a: CatalogArtifactRow, b: CatalogArtifactRow) =>
+    nullable(cmpNum)(a.size, b.size),
+  createdAt: (a: CatalogArtifactRow, b: CatalogArtifactRow) =>
+    cmpNum(a.createdAt, b.createdAt),
+};
+const artifactsNewestFirst = (a: CatalogArtifactRow, b: CatalogArtifactRow) =>
+  b.createdAt - a.createdAt || b.id.localeCompare(a.id);
 
 export const CATALOG_UPLOAD_STATUSES = [
   "pending",
@@ -149,11 +188,13 @@ export interface CatalogDb {
     name: string,
   ): Promise<CatalogAppRow | undefined>;
   /** Name ascending; `teamId`/`teamIds`/`projectId` narrow. */
-  listApps(filter?: {
-    teamId?: string;
-    teamIds?: string[];
-    projectId?: string;
-  }): Promise<CatalogAppRow[]>;
+  listApps(
+    filter?: {
+      teamId?: string;
+      teamIds?: string[];
+      projectId?: string;
+    } & ListOrder<AppSortKey>,
+  ): Promise<CatalogAppRow[]>;
   /**
    * Rows for a page of ids, in one query, by id ascending; unknown ids are
    * simply absent. A show entry page resolves up to `ENTRY_PAGE_MAX` targets
@@ -176,9 +217,10 @@ export interface CatalogDb {
    */
   listArtifactsByIds(ids: readonly string[]): Promise<CatalogArtifactRow[]>;
   /** Newest first; `platform` narrows. */
+  /** Newest first; `version` orders by the artifact's `version` tag (byte order, missing first). */
   listArtifacts(
     appId: string,
-    filter?: { platform?: CatalogPlatform },
+    filter?: { platform?: CatalogPlatform } & ListOrder<ArtifactSortKey>,
   ): Promise<CatalogArtifactRow[]>;
   /**
    * Per app (only apps that have at least one matching artifact): the newest
@@ -340,7 +382,7 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
               ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
               ...(filter.projectId ? { project_id: filter.projectId } : {}),
             },
-            orderBy: [{ name: "asc" }, { id: "asc" }],
+            orderBy: resourceOrderBy(filter),
           })
         ).map(toApp),
       ),
@@ -414,17 +456,32 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
             ).map(toArtifact),
       ),
     listArtifacts: (appId, filter = {}) =>
-      run(async () =>
-        (
+      run(async () => {
+        const d = dir(filter);
+        const rows = (
           await prisma.catalog_artifacts.findMany({
             where: {
               app_id: appId,
               ...(filter.platform ? { platform: filter.platform } : {}),
             },
-            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+            orderBy:
+              filter.sort === "platform"
+                ? [{ platform: d }, { id: d }]
+                : filter.sort === "size"
+                  ? [{ size: d }, { id: d }]
+                  : filter.sort === "createdAt"
+                    ? [{ created_at: d }, { id: d }]
+                    : [
+                        { created_at: "desc" as const },
+                        { id: "desc" as const },
+                      ],
           })
-        ).map(toArtifact),
-      ),
+        ).map(toArtifact);
+        // The version tag lives inside `tags_json`, so it orders here.
+        return filter.sort === "version"
+          ? sortRows(rows, ARTIFACT_KEYS, filter, byId, artifactsNewestFirst)
+          : rows;
+      }),
     summarizeArtifacts: (appIds, filter = {}) =>
       run(async () => {
         if (appIds.length === 0) return [];
@@ -547,6 +604,7 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
 /** In-memory `CatalogDb` with the same contract as the MySQL repository. */
 export function createMemoryCatalogDb(
   memberExists: (id: string) => boolean = () => true,
+  deps: { loginOf?: (id: string) => string } = {},
 ): CatalogDb & {
   apps: Map<string, CatalogAppRow>;
   artifacts: Map<string, CatalogArtifactRow>;
@@ -564,7 +622,8 @@ export function createMemoryCatalogDb(
     if (ownerId != null && !memberExists(ownerId)) throw fk();
   };
   const byName = <T extends { name: string; id: string }>(a: T, b: T) =>
-    a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+    cmpCi(a.name, b.name) || cmpBin(a.id, b.id);
+  const loginOf = deps.loginOf ?? ((id: string) => id);
   /** Mirrors `catalog_apps_team_name`: unique per team, case-insensitive. */
   const nameTaken = (teamId: string, name: string, exceptId?: string) =>
     [...apps.values()].some(
@@ -604,16 +663,21 @@ export function createMemoryCatalogDb(
       return a && { ...a };
     },
     listApps: async (filter = {}) =>
-      [...apps.values()]
-        .filter(
-          (a) =>
-            (!filter.teamId || a.teamId === filter.teamId) &&
-            (!filter.teamIds ||
-              (a.teamId !== null && filter.teamIds.includes(a.teamId))) &&
-            (!filter.projectId || a.projectId === filter.projectId),
-        )
-        .map((a) => ({ ...a }))
-        .sort(byName),
+      sortRows(
+        [...apps.values()]
+          .filter(
+            (a) =>
+              (!filter.teamId || a.teamId === filter.teamId) &&
+              (!filter.teamIds ||
+                (a.teamId !== null && filter.teamIds.includes(a.teamId))) &&
+              (!filter.projectId || a.projectId === filter.projectId),
+          )
+          .map((a) => ({ ...a })),
+        resourceKeys(loginOf),
+        filter,
+        byId,
+        byName,
+      ),
     listAppsByIds: async (ids) =>
       [...ids].sort().flatMap((id) => {
         const a = apps.get(id);
@@ -668,14 +732,19 @@ export function createMemoryCatalogDb(
         return a ? [{ ...a }] : [];
       }),
     listArtifacts: async (appId, filter = {}) =>
-      [...artifacts.values()]
-        .filter(
-          (a) =>
-            a.appId === appId &&
-            (!filter.platform || a.platform === filter.platform),
-        )
-        .map((a) => ({ ...a, tags: { ...a.tags } }))
-        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),
+      sortRows(
+        [...artifacts.values()]
+          .filter(
+            (a) =>
+              a.appId === appId &&
+              (!filter.platform || a.platform === filter.platform),
+          )
+          .map((a) => ({ ...a, tags: { ...a.tags } })),
+        ARTIFACT_KEYS,
+        filter,
+        byId,
+        artifactsNewestFirst,
+      ),
     summarizeArtifacts: async (appIds, filter = {}) => {
       const rows = [...artifacts.values()]
         .filter(

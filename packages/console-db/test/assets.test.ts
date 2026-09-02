@@ -48,7 +48,66 @@ const upload = (
 });
 
 /** Behaviour shared by the fake and the real Prisma repository. */
-export function assetsContract(make: () => AssetsDb | Promise<AssetsDb>) {
+export function assetsContract(
+  make: () => AssetsDb | Promise<AssetsDb>,
+  seed: { login: (id: string, login: string) => Promise<void> } = {
+    login: async () => undefined,
+  },
+) {
+  describe("order", () => {
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+    it("bundles: name, a NULL description, a NULL owner, updatedAt", async () => {
+      const db = await make();
+      await seed.login("m1", "Zorro");
+      await seed.login("m2", "amy");
+      await seed.login("m3", "Amy");
+      const mk = (
+        id: string,
+        name: string,
+        description: string | null,
+        ownerId: string | null,
+        at: number,
+      ) => db.insertBundle({ ...bundle(id, at), name, description, ownerId });
+      await mk("b_b", "beta", null, "m1", 10);
+      await mk("b_a", "Alpha", "Zed", "m2", 20);
+      await mk("b_c", "alpha2", "100%", "m3", 30);
+      await mk("b_d", "ALPHA10", "apple", null, 30);
+      const list = (o: Parameters<AssetsDb["listBundles"]>[0]) =>
+        db.listBundles(o).then(ids);
+      expect(await list(undefined)).toEqual(["b_a", "b_d", "b_c", "b_b"]);
+      expect(await list({ sort: "name", order: "desc" })).toEqual([
+        "b_b",
+        "b_c",
+        "b_d",
+        "b_a",
+      ]);
+      expect(await list({ sort: "description" })).toEqual([
+        "b_b",
+        "b_c",
+        "b_d",
+        "b_a",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "b_d",
+        "b_a",
+        "b_c",
+        "b_b",
+      ]);
+      expect(await list({ sort: "createdBy", order: "desc" })).toEqual([
+        "b_b",
+        "b_c",
+        "b_a",
+        "b_d",
+      ]);
+      expect(await list({ sort: "updatedAt", order: "desc" })).toEqual([
+        "b_d",
+        "b_c",
+        "b_a",
+        "b_b",
+      ]);
+    });
+  });
+
   it("bundles: insert, unique name, list sorted, update, delete", async () => {
     const db = await make();
     await db.insertBundle(bundle("z1"));
@@ -233,7 +292,20 @@ export function assetsContract(make: () => AssetsDb | Promise<AssetsDb>) {
 }
 
 describe("memory assets repository", () => {
-  assetsContract(() => createMemoryAssetsDb());
+  const logins = new Map<string, string>();
+  assetsContract(
+    () => {
+      logins.clear();
+      return createMemoryAssetsDb(undefined, {
+        loginOf: (id) => logins.get(id) ?? `login-${id}`,
+      });
+    },
+    {
+      login: async (id, login) => {
+        logins.set(id, login);
+      },
+    },
+  );
   it("scopes the unique name to the team (`asset_bundles_team_name`)", async () => {
     const db = createMemoryAssetsDb();
     await db.insertBundle(bundle("b1"));

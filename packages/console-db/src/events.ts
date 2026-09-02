@@ -1,4 +1,17 @@
 import { AppError } from "@yyt/core";
+import {
+  cmpBin,
+  cmpCi,
+  cmpNum,
+  dir,
+  enumRank,
+  likeContains,
+  matchesQ,
+  normalizeQ,
+  nullable,
+  sortRows,
+  type ListQuery,
+} from "./list.js";
 import { num, nul, run, type PrismaClient } from "./prisma.js";
 
 /**
@@ -16,6 +29,43 @@ export const EVENT_STATUSES = [
   "cancelled",
 ] as const;
 export type EventStatus = (typeof EVENT_STATUSES)[number];
+
+/** List sort keys: the response field names (`status` is the effective one, so it needs `now`). */
+export const EVENT_SORT_KEYS = [
+  "title",
+  "status",
+  "startsAt",
+  "place",
+  "createdBy",
+] as const;
+export type EventSortKey = (typeof EVENT_SORT_KEYS)[number];
+
+/** The status the clock says the event is in; `draft`/`cancelled` are final as stored. */
+export function effectiveStatus(
+  row: Pick<EventRow, "status" | "startsAt" | "durationHours">,
+  now: number,
+): EventStatus {
+  if (row.status === "draft" || row.status === "cancelled") return row.status;
+  if (row.startsAt === null) return "voting";
+  if (now < row.startsAt) return "waiting";
+  if (now < row.startsAt + row.durationHours * 3600) return "opened";
+  return "closed";
+}
+
+/**
+ * Ordering shared by the repository and the fake for the keys that are not
+ * columns. `status` ranks the effective status at `now`; a row whose vote is
+ * due but not yet decided still ranks as `voting` here — deciding it is the
+ * route's read-side write, which runs after this list.
+ */
+export function eventListOptions(
+  opts: ListQuery<EventSortKey> & { now?: number },
+): { q: string | undefined; now: number | undefined } {
+  const q = normalizeQ(opts.q);
+  if (opts.sort === "status" && opts.now === undefined)
+    throw new AppError("bad_request", "sort=status needs now");
+  return { q, now: opts.now };
+}
 
 export interface EventRow {
   id: string;
@@ -125,8 +175,15 @@ export interface EventsDb {
   /** Creates the draft, its options and revision 1 in one transaction. */
   insertEvent(e: EventInput): Promise<void>;
   findEvent(id: string): Promise<EventRow | undefined>;
-  /** Newest first; `statuses` narrows the list (empty = every status). */
-  listEvents(statuses?: readonly EventStatus[]): Promise<EventRow[]>;
+  /**
+   * Newest first; `statuses` narrows the list (empty = every status); `q`
+   * matches the title; `sort: "status"` orders by the effective status at
+   * `now` (required for that key).
+   */
+  listEvents(
+    statuses?: readonly EventStatus[],
+    opts?: ListQuery<EventSortKey> & { now?: number },
+  ): Promise<EventRow[]>;
   /** Live drafts owned by `memberId` (the per-member cap). */
   countDrafts(memberId: string): Promise<number>;
   /**
@@ -354,16 +411,43 @@ export function createEventsDb(prisma: PrismaClient): EventsDb {
         const r = await prisma.events.findUnique({ where: { id } });
         return r ? toEvent(r) : undefined;
       }),
-    listEvents: (statuses = []) =>
-      run(async () =>
-        (
+    listEvents: (statuses = [], opts = {}) =>
+      run(async () => {
+        const { q, now } = eventListOptions(opts);
+        const o = dir(opts);
+        const rows = (
           await prisma.events.findMany({
-            where:
-              statuses.length === 0 ? {} : { status: { in: [...statuses] } },
-            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+            where: {
+              ...(statuses.length === 0
+                ? {}
+                : { status: { in: [...statuses] } }),
+              ...(q ? { title: likeContains(q) } : {}),
+            },
+            orderBy:
+              opts.sort === "title"
+                ? [{ title: o }, { id: o }]
+                : opts.sort === "place"
+                  ? [{ place: o }, { id: o }]
+                  : opts.sort === "startsAt"
+                    ? [{ starts_at: o }, { id: o }]
+                    : opts.sort === "createdBy"
+                      ? [{ members: { github_login: o } }, { id: o }]
+                      : [
+                          { created_at: "desc" as const },
+                          { id: "desc" as const },
+                        ],
           })
-        ).map(toEvent),
-      ),
+        ).map(toEvent);
+        return opts.sort === "status" && now !== undefined
+          ? sortRows(
+              rows,
+              { status: byEffectiveStatus(now) },
+              opts,
+              byId,
+              () => 0,
+            )
+          : rows;
+      }),
     countDrafts: (memberId) =>
       run(() =>
         prisma.events.count({
@@ -603,9 +687,14 @@ export function createEventsDb(prisma: PrismaClient): EventsDb {
  * gallery standing. A fake that skipped it would let a test pass that the
  * database fails (`rules/testing.md`).
  */
+const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
+const byEffectiveStatus = (now: number) => (a: EventRow, b: EventRow) =>
+  enumRank(EVENT_STATUSES)(effectiveStatus(a, now), effectiveStatus(b, now));
+
 export function createMemoryEventsDb(
   memberExists: (id: string) => boolean = () => true,
   onDeleted: (eventId: string) => void = () => {},
+  deps: { loginOf?: (id: string) => string } = {},
 ): EventsDb & {
   events: Map<string, EventRow>;
   options: Map<string, EventOptionRow>;
@@ -679,11 +768,30 @@ export function createMemoryEventsDb(
       const e = events.get(id);
       return e && { ...e };
     },
-    listEvents: async (statuses = []) =>
-      [...events.values()]
-        .filter((e) => statuses.length === 0 || statuses.includes(e.status))
-        .map((e) => ({ ...e }))
-        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),
+    listEvents: async (statuses = [], opts = {}) => {
+      const { q, now } = eventListOptions(opts);
+      const loginOf = deps.loginOf ?? ((id: string) => id);
+      return sortRows(
+        [...events.values()]
+          .filter(
+            (e) =>
+              (statuses.length === 0 || statuses.includes(e.status)) &&
+              (q === undefined || matchesQ(e.title, q)),
+          )
+          .map((e) => ({ ...e })),
+        {
+          title: (a, b) => cmpCi(a.title, b.title),
+          place: (a, b) => cmpCi(a.place, b.place),
+          startsAt: (a, b) => nullable(cmpNum)(a.startsAt, b.startsAt),
+          createdBy: (a, b) =>
+            cmpCi(loginOf(a.createdBy), loginOf(b.createdBy)),
+          ...(now === undefined ? {} : { status: byEffectiveStatus(now) }),
+        },
+        opts,
+        byId,
+        (a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id),
+      );
+    },
     countDrafts: async (memberId) =>
       [...events.values()].filter(
         (e) => e.createdBy === memberId && e.status === "draft",

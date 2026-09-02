@@ -1,5 +1,18 @@
 import { AppError } from "@yyt/core";
+import {
+  cmpBin,
+  cmpCi,
+  resourceKeys,
+  resourceOrderBy,
+  RESOURCE_SORT_KEYS,
+  sortRows,
+  type ListOrder,
+  type ResourceSortKey,
+} from "./list.js";
 import { num, run, type PrismaClient } from "./prisma.js";
+
+export const BUNDLE_SORT_KEYS = RESOURCE_SORT_KEYS;
+export type BundleSortKey = ResourceSortKey;
 
 export const ASSET_UPLOAD_STATUSES = [
   "pending",
@@ -115,11 +128,13 @@ export interface AssetsDb {
     name: string,
   ): Promise<AssetBundleRow | undefined>;
   /** Name ascending; `teamId`/`teamIds`/`projectId` narrow. */
-  listBundles(filter?: {
-    teamId?: string;
-    teamIds?: string[];
-    projectId?: string;
-  }): Promise<AssetBundleRow[]>;
+  listBundles(
+    filter?: {
+      teamId?: string;
+      teamIds?: string[];
+      projectId?: string;
+    } & ListOrder<BundleSortKey>,
+  ): Promise<AssetBundleRow[]>;
   /**
    * Rows for a page of ids, in one query, by id ascending; unknown ids are
    * simply absent. A show entry page resolves up to `ENTRY_PAGE_MAX` targets
@@ -285,7 +300,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
             ...(filter.projectId ? { project_id: filter.projectId } : {}),
           },
-          orderBy: [{ name: "asc" }, { id: "asc" }],
+          orderBy: resourceOrderBy(filter),
         });
         return rows.map(toBundle);
       }),
@@ -453,6 +468,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
 /** In-memory `AssetsDb` for tests: same contract as the Prisma repository. */
 export function createMemoryAssetsDb(
   memberExists: (id: string) => boolean = () => true,
+  deps: { loginOf?: (id: string) => string } = {},
 ): AssetsDb & {
   bundles: Map<string, AssetBundleRow>;
   files: Map<string, AssetFileRow>;
@@ -472,6 +488,10 @@ export function createMemoryAssetsDb(
    */
   const eqI = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
+  const byName = (a: AssetBundleRow, b: AssetBundleRow) =>
+    cmpCi(a.name, b.name) || byId(a, b);
+  const loginOf = deps.loginOf ?? ((id: string) => id);
   const checkOwner = (ownerId: string | null | undefined) => {
     if (ownerId != null && !memberExists(ownerId)) throw fk();
   };
@@ -509,18 +529,21 @@ export function createMemoryAssetsDb(
       return b && { ...b };
     },
     listBundles: async (filter = {}) =>
-      [...bundles.values()]
-        .filter(
-          (b) =>
-            (!filter.teamId || b.teamId === filter.teamId) &&
-            (!filter.teamIds ||
-              (b.teamId !== null && filter.teamIds.includes(b.teamId))) &&
-            (!filter.projectId || b.projectId === filter.projectId),
-        )
-        .map((b) => ({ ...b }))
-        .sort(
-          (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
-        ),
+      sortRows(
+        [...bundles.values()]
+          .filter(
+            (b) =>
+              (!filter.teamId || b.teamId === filter.teamId) &&
+              (!filter.teamIds ||
+                (b.teamId !== null && filter.teamIds.includes(b.teamId))) &&
+              (!filter.projectId || b.projectId === filter.projectId),
+          )
+          .map((b) => ({ ...b })),
+        resourceKeys(loginOf),
+        filter,
+        byId,
+        byName,
+      ),
     listBundlesByIds: async (ids) =>
       [...ids].sort().flatMap((id) => {
         const b = bundles.get(id);

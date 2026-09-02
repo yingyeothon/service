@@ -1,5 +1,14 @@
 import { AppError } from "@yyt/core";
 import {
+  cmpBin,
+  cmpCi,
+  cmpNum,
+  enumRank,
+  matchesQ,
+  nullable,
+  sortRows,
+} from "./list.js";
+import {
   AUDIT_PAGE_DEFAULT,
   AUDIT_PAGE_MAX,
   checkAuditFilter,
@@ -14,11 +23,20 @@ import {
   type ConsoleDb,
   type ExpiredChannel,
   type MemberRow,
+  byChannelStatus,
+  channelListOptions,
+  CHANNEL_KINDS,
+  MEMBER_ROLES,
 } from "./channels.js";
 import { decodeHistoryCursor, encodeHistoryCursor } from "./team.js";
 
 /** In-memory `ConsoleDb` for tests: same contract as the MySQL repository, no SQL. */
-export function createMemoryConsoleDb(): ConsoleDb & {
+export function createMemoryConsoleDb(
+  deps: {
+    /** A project's name, for the channel list's `projectName` sort and `q` (the real table joins `projects`). */
+    projectName?: (projectId: string) => string | undefined;
+  } = {},
+): ConsoleDb & {
   channels: Map<string, ChannelRow>;
   members: Map<string, MemberRow>;
   tokens: Map<string, ApiTokenRow>;
@@ -38,6 +56,7 @@ export function createMemoryConsoleDb(): ConsoleDb & {
         x.name.toLowerCase() === name.toLowerCase(),
     );
   const members = new Map<string, MemberRow>();
+  const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
   const tokens = new Map<string, ApiTokenRow>();
   const audits: AuditInput[] = [];
   /** Mirrors what `insertAudit` stores: `detail` is serialized into the column. */
@@ -131,10 +150,19 @@ export function createMemoryConsoleDb(): ConsoleDb & {
       );
       return m && { ...m };
     },
-    listMembers: async () =>
-      [...members.values()]
-        .map((m) => ({ ...m }))
-        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+    listMembers: async (opts = {}) =>
+      sortRows(
+        [...members.values()].map((m) => ({ ...m })),
+        {
+          login: (a, b) => cmpCi(a.githubLogin, b.githubLogin),
+          role: (a, b) => enumRank(MEMBER_ROLES)(a.role, b.role),
+          createdAt: (a, b) => cmpNum(a.createdAt, b.createdAt),
+          approvedAt: (a, b) => nullable(cmpNum)(a.approvedAt, b.approvedAt),
+        },
+        opts,
+        byId,
+        (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
+      ),
     setMemberRole: async (id, role, approval) => {
       const m = members.get(id);
       if (!m) return false;
@@ -166,11 +194,21 @@ export function createMemoryConsoleDb(): ConsoleDb & {
       );
       return t && { ...t };
     },
-    listApiTokens: async (memberId) =>
-      [...tokens.values()]
-        .filter((t) => t.memberId === memberId && t.revokedAt === null)
-        .map((t) => ({ ...t }))
-        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+    listApiTokens: async (memberId, opts = {}) =>
+      sortRows(
+        [...tokens.values()]
+          .filter((t) => t.memberId === memberId && t.revokedAt === null)
+          .map((t) => ({ ...t })),
+        {
+          name: (a, b) => cmpCi(a.name, b.name),
+          id: byId,
+          createdAt: (a, b) => cmpNum(a.createdAt, b.createdAt),
+          lastUsedAt: (a, b) => nullable(cmpNum)(a.lastUsedAt, b.lastUsedAt),
+        },
+        opts,
+        byId,
+        (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
+      ),
     revokeApiToken: async (id, memberId, at) => {
       const t = tokens.get(id);
       if (!t || t.memberId !== memberId || t.revokedAt !== null) return false;
@@ -181,19 +219,39 @@ export function createMemoryConsoleDb(): ConsoleDb & {
       const t = tokens.get(id);
       if (t) tokens.set(id, { ...t, lastUsedAt: at });
     },
-    listChannels: async (filter = {}) =>
-      [...channels.values()]
-        .filter(
-          (c) =>
-            (filter.includeDeleted || c.deletedAt === null) &&
-            (!filter.kind || c.kind === filter.kind) &&
-            (!filter.teamId || c.teamId === filter.teamId) &&
-            (!filter.teamIds ||
-              (c.teamId !== null && filter.teamIds.includes(c.teamId))) &&
-            (!filter.projectId || c.projectId === filter.projectId),
-        )
-        .map((c) => ({ ...c }))
-        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),
+    listChannels: async (filter = {}) => {
+      const { q, now } = channelListOptions(filter);
+      const projectName = (c: ChannelRow) =>
+        (c.projectId === null ? undefined : deps.projectName?.(c.projectId)) ??
+        "";
+      return sortRows(
+        [...channels.values()]
+          .filter(
+            (c) =>
+              (filter.includeDeleted || c.deletedAt === null) &&
+              (!filter.kind || c.kind === filter.kind) &&
+              (!filter.teamId || c.teamId === filter.teamId) &&
+              (!filter.teamIds ||
+                (c.teamId !== null && filter.teamIds.includes(c.teamId))) &&
+              (!filter.projectId || c.projectId === filter.projectId) &&
+              (q === undefined ||
+                matchesQ(c.name, q) ||
+                matchesQ(projectName(c), q)),
+          )
+          .map((c) => ({ ...c })),
+        {
+          name: (a, b) => cmpCi(a.name, b.name),
+          kind: (a, b) => enumRank(CHANNEL_KINDS)(a.kind, b.kind),
+          projectName: (a, b) => cmpCi(projectName(a), projectName(b)),
+          id: byId,
+          expiresAt: (a, b) => cmpNum(a.expiresAt, b.expiresAt),
+          ...(now === undefined ? {} : { status: byChannelStatus(now) }),
+        },
+        filter,
+        byId,
+        (a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id),
+      );
+    },
     updateChannel: async (id, patch) => {
       const c = channels.get(id);
       if (!c || c.deletedAt !== null) return false;

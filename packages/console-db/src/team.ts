@@ -1,4 +1,18 @@
 import { AppError } from "@yyt/core";
+import {
+  cmpBin,
+  cmpCi,
+  cmpNum,
+  dir,
+  enumRank,
+  likeContains,
+  matchesQ,
+  normalizeQ,
+  nullable,
+  sortRows,
+  type ListOrder,
+  type ListQuery,
+} from "./list.js";
 import { num, nul, run, type PrismaClient } from "./prisma.js";
 
 /*
@@ -22,6 +36,55 @@ export const ISSUE_STATUSES = ["open", "closed"] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 export const VERSION_LINK_KINDS = ["artifact", "asset_version"] as const;
 export type VersionLinkKind = (typeof VERSION_LINK_KINDS)[number];
+
+/*
+ * Sort keys per list (docs/decisions.md *List sort and filter*): the response
+ * field names, applied in SQL where the column exists and in the repository
+ * after the fetch where the value is derived (`since`, link counts).
+ */
+export const TEAM_SORT_KEYS = [
+  "name",
+  "role",
+  "createdBy",
+  "updatedAt",
+] as const;
+export type TeamSortKey = (typeof TEAM_SORT_KEYS)[number];
+/** `role` is the caller's seat, which an admin listing every team does not have. */
+export const ALL_TEAM_SORT_KEYS = ["name", "createdBy", "updatedAt"] as const;
+export type AllTeamSortKey = (typeof ALL_TEAM_SORT_KEYS)[number];
+export const PROJECT_SORT_KEYS = [
+  "name",
+  "description",
+  "createdBy",
+  "updatedAt",
+] as const;
+export type ProjectSortKey = (typeof PROJECT_SORT_KEYS)[number];
+export const TEAM_MEMBER_SORT_KEYS = ["login", "role", "since"] as const;
+export type TeamMemberSortKey = (typeof TEAM_MEMBER_SORT_KEYS)[number];
+export const DISCUSSION_SORT_KEYS = [
+  "title",
+  "createdBy",
+  "updatedAt",
+] as const;
+export type DiscussionSortKey = (typeof DISCUSSION_SORT_KEYS)[number];
+export const ISSUE_SORT_KEYS = [
+  "number",
+  "title",
+  "status",
+  "version",
+  "createdBy",
+  "updatedAt",
+] as const;
+export type IssueSortKey = (typeof ISSUE_SORT_KEYS)[number];
+export const VERSION_SORT_KEYS = [
+  "name",
+  "note",
+  "artifactCount",
+  "assetCount",
+  "createdBy",
+  "createdAt",
+] as const;
+export type VersionSortKey = (typeof VERSION_SORT_KEYS)[number];
 
 /** Which member action a history row records. Field names only in `detail`, never config or secrets. */
 export type TeamHistoryAction =
@@ -224,6 +287,9 @@ export interface IssueRow {
   closedAt: number | null;
 }
 
+/** A listed issue never carries its markdown body (2000 per project × MEDIUMTEXT). */
+export type IssueListRow = Omit<IssueRow, "bodyMd">;
+
 export interface IssueInput {
   id: string;
   projectId: string;
@@ -264,6 +330,9 @@ export interface DiscussionRow {
   updatedAt: number;
 }
 
+/** A listed discussion never carries its markdown body (500 per team × MEDIUMTEXT). */
+export type DiscussionListRow = Omit<DiscussionRow, "bodyMd">;
+
 export interface DiscussionInput {
   id: string;
   teamId: string;
@@ -298,10 +367,13 @@ export interface TeamDb {
   findTeam(id: string): Promise<TeamRow | undefined>;
   /** Case-insensitive, like the unique index. */
   findTeamByName(name: string): Promise<TeamRow | undefined>;
-  /** Every team this member has a row in (any role, any state), oldest first. */
-  listTeamsForMember(memberId: string): Promise<TeamMembershipRow[]>;
-  /** Admin-only listing; oldest first. */
-  listAllTeams(): Promise<TeamRow[]>;
+  /** Every team this member has a row in (any role, any state), oldest first; `q` matches name or description. */
+  listTeamsForMember(
+    memberId: string,
+    opts?: ListQuery<TeamSortKey>,
+  ): Promise<TeamMembershipRow[]>;
+  /** Admin-only listing; oldest first; `q` matches name or description. */
+  listAllTeams(opts?: ListQuery<AllTeamSortKey>): Promise<TeamRow[]>;
   countTeamsCreatedBy(memberId: string): Promise<number>;
   /** `false` when missing. Records `team.update` with the patched field names. */
   updateTeam(id: string, patch: TeamPatch, by: Actor): Promise<boolean>;
@@ -326,8 +398,14 @@ export interface TeamDb {
     teamId: string,
     memberId: string,
   ): Promise<TeamMemberRow | undefined>;
-  /** Every row of the team, any state, owners first then by request time. */
-  listTeamMembers(teamId: string): Promise<TeamMemberRow[]>;
+  /**
+   * Every row of the team, any state, owners first then by request time.
+   * `since` orders by `decidedAt ?? requestedAt`.
+   */
+  listTeamMembers(
+    teamId: string,
+    opts?: ListOrder<TeamMemberSortKey>,
+  ): Promise<TeamMemberRow[]>;
   /** Owners and members (`active`) only — the set that may read the team. */
   countActive(
     teamId: string,
@@ -398,7 +476,11 @@ export interface TeamDb {
     teamId: string,
     name: string,
   ): Promise<ProjectRow | undefined>;
-  listProjects(teamId: string): Promise<ProjectRow[]>;
+  /** Oldest first; `q` matches name or description. */
+  listProjects(
+    teamId: string,
+    opts?: ListQuery<ProjectSortKey>,
+  ): Promise<ProjectRow[]>;
   countProjects(teamId: string): Promise<number>;
   updateProject(id: string, patch: ProjectPatch, by: Actor): Promise<boolean>;
   /** `conflict` while any channel/app/bundle still points at it (the FKs say so too). */
@@ -408,8 +490,11 @@ export interface TeamDb {
   /* --- versions --- */
   createVersion(v: VersionInput, by: Actor): Promise<void>;
   findVersion(id: string): Promise<VersionRow | undefined>;
-  /** Newest first. */
-  listVersions(projectId: string): Promise<VersionRow[]>;
+  /** Newest first; the link-count keys order after the fetch. */
+  listVersions(
+    projectId: string,
+    opts?: ListOrder<VersionSortKey>,
+  ): Promise<VersionRow[]>;
   countVersions(projectId: string): Promise<number>;
   updateVersion(
     id: string,
@@ -436,16 +521,21 @@ export interface TeamDb {
   /** Allocates the next per-project number under the team row lock; returns it. */
   createIssue(i: IssueInput, by: Actor): Promise<number>;
   findIssue(projectId: string, number: number): Promise<IssueRow | undefined>;
+  /** Highest number first; `q` matches the title; `version` orders by the version's name (`_bin`). */
   listIssues(
     projectId: string,
-    filter?: { status?: IssueStatus },
-  ): Promise<IssueRow[]>;
+    filter?: { status?: IssueStatus } & ListQuery<IssueSortKey>,
+  ): Promise<IssueListRow[]>;
   countIssues(projectId: string): Promise<number>;
-  /** Every project of the team, most recently touched first (edit, status change, or new comment). */
+  /**
+   * Every project of the team, most recently touched first (edit, status
+   * change, or new comment); `limit` keeps the first rows of the requested
+   * order, not of the default one.
+   */
   listTeamIssues(
     teamId: string,
-    filter?: { status?: IssueStatus; limit?: number },
-  ): Promise<IssueRow[]>;
+    filter?: { status?: IssueStatus; limit?: number } & ListQuery<IssueSortKey>,
+  ): Promise<IssueListRow[]>;
   updateIssue(
     projectId: string,
     number: number,
@@ -469,7 +559,11 @@ export interface TeamDb {
   /* --- discussions --- */
   createDiscussion(d: DiscussionInput, by: Actor): Promise<void>;
   findDiscussion(id: string): Promise<DiscussionRow | undefined>;
-  listDiscussions(teamId: string): Promise<DiscussionRow[]>;
+  /** Most recently touched first; `q` matches the title. */
+  listDiscussions(
+    teamId: string,
+    opts?: ListQuery<DiscussionSortKey>,
+  ): Promise<DiscussionListRow[]>;
   countDiscussions(teamId: string): Promise<number>;
   updateDiscussion(
     id: string,
@@ -665,24 +759,22 @@ const toLink = (r: {
   createdAt: num(r.created_at),
 });
 
-const toIssue = (r: {
+const toIssueList = (r: {
   id: string;
   project_id: string;
   number: number;
   title: string;
-  body_md: string;
   status: string;
   version_id: string | null;
   created_by: string;
   created_at: bigint | number;
   updated_at: bigint | number;
   closed_at: bigint | number | null;
-}): IssueRow => ({
+}): IssueListRow => ({
   id: r.id,
   projectId: r.project_id,
   number: r.number,
   title: r.title,
-  bodyMd: r.body_md,
   status: r.status as IssueStatus,
   versionId: r.version_id,
   createdBy: r.created_by,
@@ -690,6 +782,24 @@ const toIssue = (r: {
   updatedAt: num(r.updated_at),
   closedAt: nul(r.closed_at),
 });
+
+const toIssue = (
+  r: Parameters<typeof toIssueList>[0] & { body_md: string },
+): IssueRow => ({ ...toIssueList(r), bodyMd: r.body_md });
+
+/** Everything but `body_md`: the list projection (rules/data.md). */
+const ISSUE_LIST_SELECT = {
+  id: true,
+  project_id: true,
+  number: true,
+  title: true,
+  status: true,
+  version_id: true,
+  created_by: true,
+  created_at: true,
+  updated_at: true,
+  closed_at: true,
+} as const;
 
 const toComment = (
   parentId: string,
@@ -709,23 +819,40 @@ const toComment = (
   updatedAt: num(r.updated_at),
 });
 
-const toDiscussion = (r: {
+const toDiscussionList = (r: {
   id: string;
   team_id: string;
   title: string;
-  body_md: string;
   created_by: string;
   created_at: bigint | number;
   updated_at: bigint | number;
-}): DiscussionRow => ({
+}): DiscussionListRow => ({
   id: r.id,
   teamId: r.team_id,
   title: r.title,
-  bodyMd: r.body_md,
   createdBy: r.created_by,
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
 });
+
+const toDiscussion = (
+  r: Parameters<typeof toDiscussionList>[0] & { body_md: string },
+): DiscussionRow => ({ ...toDiscussionList(r), bodyMd: r.body_md });
+
+const DISCUSSION_LIST_SELECT = {
+  id: true,
+  team_id: true,
+  title: true,
+  created_by: true,
+  created_at: true,
+  updated_at: true,
+} as const;
+
+/** `q` over the two text columns a team or project shows in its list. */
+const nameOrDescription = (q: string | undefined) =>
+  q
+    ? { OR: [{ name: likeContains(q) }, { description: likeContains(q) }] }
+    : {};
 
 export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
   const history = (tx: Tx, h: TeamHistoryInput) =>
@@ -895,30 +1022,59 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const r = await prisma.teams.findUnique({ where: { name } });
         return r ? toTeam(r) : undefined;
       }),
-    listTeamsForMember: (memberId) =>
+    listTeamsForMember: (memberId, opts = {}) =>
       run(async () => {
+        const q = normalizeQ(opts.q);
+        const o = dir(opts);
+        // The root stays `team_members`: `role` is the caller's seat.
+        const orderBy =
+          opts.sort === "name"
+            ? [{ teams: { name: o } }, { team_id: o }]
+            : opts.sort === "role"
+              ? [{ role: o }, { team_id: o }]
+              : opts.sort === "updatedAt"
+                ? [{ teams: { updated_at: o } }, { team_id: o }]
+                : opts.sort === "createdBy"
+                  ? [
+                      { teams: { members: { github_login: o } } },
+                      { team_id: o },
+                    ]
+                  : [
+                      { teams: { created_at: "asc" as const } },
+                      { team_id: "asc" as const },
+                    ];
         const rows = await prisma.team_members.findMany({
-          where: { member_id: memberId },
+          where: {
+            member_id: memberId,
+            ...(q ? { teams: nameOrDescription(q) } : {}),
+          },
+          orderBy,
           include: { teams: true },
         });
-        return rows
-          .map((r) => ({
-            ...toTeam(r.teams),
-            role: r.role,
-            state: r.state,
-          }))
-          .sort(
-            (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
-          );
+        return rows.map((r) => ({
+          ...toTeam(r.teams),
+          role: r.role,
+          state: r.state,
+        }));
       }),
-    listAllTeams: () =>
-      run(async () =>
-        (
+    listAllTeams: (opts = {}) =>
+      run(async () => {
+        const q = normalizeQ(opts.q);
+        const o = dir(opts);
+        return (
           await prisma.teams.findMany({
-            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            where: nameOrDescription(q),
+            orderBy:
+              opts.sort === "name"
+                ? [{ name: o }, { id: o }]
+                : opts.sort === "updatedAt"
+                  ? [{ updated_at: o }, { id: o }]
+                  : opts.sort === "createdBy"
+                    ? [{ members: { github_login: o } }, { id: o }]
+                    : [{ created_at: "asc" as const }, { id: "asc" as const }],
           })
-        ).map(toTeam),
-      ),
+        ).map(toTeam);
+      }),
     countTeamsCreatedBy: (memberId) =>
       run(() => prisma.teams.count({ where: { created_by: memberId } })),
     updateTeam: (id, patch, by) =>
@@ -973,12 +1129,31 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const r = await findMember(prisma, teamId, memberId);
         return r ? toTeamMember(r) : undefined;
       }),
-    listTeamMembers: (teamId) =>
-      run(async () =>
-        (await prisma.team_members.findMany({ where: { team_id: teamId } }))
-          .map(toTeamMember)
-          .sort(sortMembers),
-      ),
+    listTeamMembers: (teamId, opts = {}) =>
+      run(async () => {
+        const o = dir(opts);
+        const rows = (
+          await prisma.team_members.findMany({
+            where: { team_id: teamId },
+            orderBy:
+              opts.sort === "login"
+                ? [{ members: { github_login: o } }, { member_id: o }]
+                : opts.sort === "role"
+                  ? [{ role: o }, { member_id: o }]
+                  : undefined,
+          })
+        ).map(toTeamMember);
+        // `since` is a COALESCE Prisma cannot order by; the row set is one team.
+        if (opts.sort === "since")
+          return sortRows(
+            rows,
+            { since: bySince },
+            opts,
+            byMemberId,
+            sortMembers,
+          );
+        return opts.sort ? rows : rows.sort(sortMembers);
+      }),
     countActive: (teamId) =>
       run(async () => {
         const rows = await prisma.team_members.groupBy({
@@ -1224,15 +1399,29 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         });
         return r ? toProject(r) : undefined;
       }),
-    listProjects: (teamId) =>
-      run(async () =>
-        (
+    listProjects: (teamId, opts = {}) =>
+      run(async () => {
+        const q = normalizeQ(opts.q);
+        const o = dir(opts);
+        return (
           await prisma.projects.findMany({
-            where: { team_id: teamId },
-            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            where: { team_id: teamId, ...nameOrDescription(q) },
+            orderBy:
+              opts.sort === "name"
+                ? [{ name: o }, { id: o }]
+                : opts.sort === "description"
+                  ? [{ description: o }, { id: o }]
+                  : opts.sort === "updatedAt"
+                    ? [{ updated_at: o }, { id: o }]
+                    : opts.sort === "createdBy"
+                      ? [{ members: { github_login: o } }, { id: o }]
+                      : [
+                          { created_at: "asc" as const },
+                          { id: "asc" as const },
+                        ],
           })
-        ).map(toProject),
-      ),
+        ).map(toProject);
+      }),
     countProjects: (teamId) =>
       run(() => prisma.projects.count({ where: { team_id: teamId } })),
     updateProject: (id, patch, by) =>
@@ -1292,14 +1481,31 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const r = await prisma.project_versions.findUnique({ where: { id } });
         return r ? toVersion(r, (await linkCounts([id])).get(id)) : undefined;
       }),
-    listVersions: (projectId) =>
+    listVersions: (projectId, opts = {}) =>
       run(async () => {
+        const o = dir(opts);
         const rows = await prisma.project_versions.findMany({
           where: { project_id: projectId },
-          orderBy: [{ created_at: "desc" }, { id: "desc" }],
+          orderBy:
+            opts.sort === "name"
+              ? [{ name: o }, { id: o }]
+              : opts.sort === "note"
+                ? [{ note: o }, { id: o }]
+                : opts.sort === "createdAt"
+                  ? [{ created_at: o }, { id: o }]
+                  : opts.sort === "createdBy"
+                    ? [{ members: { github_login: o } }, { id: o }]
+                    : [
+                        { created_at: "desc" as const },
+                        { id: "desc" as const },
+                      ],
         });
         const counts = await linkCounts(rows.map((r) => r.id));
-        return rows.map((r) => toVersion(r, counts.get(r.id)));
+        const out = rows.map((r) => toVersion(r, counts.get(r.id)));
+        // Counts are derived (never stored), so their order is computed here.
+        return opts.sort === "artifactCount" || opts.sort === "assetCount"
+          ? sortRows(out, VERSION_COUNT_KEYS, opts, byId, () => 0)
+          : out;
       }),
     countVersions: (projectId) =>
       run(() =>
@@ -1361,7 +1567,7 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         (
           await prisma.project_version_links.findMany({
             where: { version_id: versionId },
-            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            orderBy: [{ created_at: "asc" as const }, { id: "asc" as const }],
           })
         ).map(toLink),
       ),
@@ -1435,32 +1641,41 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         return r ? toIssue(r) : undefined;
       }),
     listIssues: (projectId, filter = {}) =>
-      run(async () =>
-        (
+      run(async () => {
+        const q = normalizeQ(filter.q);
+        return (
           await prisma.issues.findMany({
+            select: ISSUE_LIST_SELECT,
             where: {
               project_id: projectId,
               ...(filter.status ? { status: filter.status } : {}),
+              ...(q ? { title: likeContains(q) } : {}),
             },
-            orderBy: [{ number: "desc" }],
+            orderBy: issueOrderBy(filter, [{ number: "desc" }, { id: "desc" }]),
           })
-        ).map(toIssue),
-      ),
+        ).map(toIssueList);
+      }),
     countIssues: (projectId) =>
       run(() => prisma.issues.count({ where: { project_id: projectId } })),
     listTeamIssues: (teamId, filter = {}) =>
-      run(async () =>
-        (
+      run(async () => {
+        const q = normalizeQ(filter.q);
+        return (
           await prisma.issues.findMany({
+            select: ISSUE_LIST_SELECT,
             where: {
               projects: { team_id: teamId },
               ...(filter.status ? { status: filter.status } : {}),
+              ...(q ? { title: likeContains(q) } : {}),
             },
-            orderBy: [{ updated_at: "desc" }, { id: "desc" }],
+            orderBy: issueOrderBy(filter, [
+              { updated_at: "desc" },
+              { id: "desc" },
+            ]),
             ...(filter.limit ? { take: filter.limit } : {}),
           })
-        ).map(toIssue),
-      ),
+        ).map(toIssueList);
+      }),
     updateIssue: (projectId, number, patch, by) =>
       tx(async (t) => {
         const teamId = await projectTeam(t, projectId);
@@ -1530,7 +1745,7 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         (
           await prisma.issue_comments.findMany({
             where: { issue_id: issueId },
-            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            orderBy: [{ created_at: "asc" as const }, { id: "asc" as const }],
           })
         ).map((r) => toComment(r.issue_id, r)),
       ),
@@ -1580,15 +1795,31 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const r = await prisma.discussions.findUnique({ where: { id } });
         return r ? toDiscussion(r) : undefined;
       }),
-    listDiscussions: (teamId) =>
-      run(async () =>
-        (
+    listDiscussions: (teamId, opts = {}) =>
+      run(async () => {
+        const q = normalizeQ(opts.q);
+        const o = dir(opts);
+        return (
           await prisma.discussions.findMany({
-            where: { team_id: teamId },
-            orderBy: [{ updated_at: "desc" }, { id: "desc" }],
+            select: DISCUSSION_LIST_SELECT,
+            where: {
+              team_id: teamId,
+              ...(q ? { title: likeContains(q) } : {}),
+            },
+            orderBy:
+              opts.sort === "title"
+                ? [{ title: o }, { id: o }]
+                : opts.sort === "updatedAt"
+                  ? [{ updated_at: o }, { id: o }]
+                  : opts.sort === "createdBy"
+                    ? [{ members: { github_login: o } }, { id: o }]
+                    : [
+                        { updated_at: "desc" as const },
+                        { id: "desc" as const },
+                      ],
           })
-        ).map(toDiscussion),
-      ),
+        ).map(toDiscussionList);
+      }),
     countDiscussions: (teamId) =>
       run(() => prisma.discussions.count({ where: { team_id: teamId } })),
     updateDiscussion: (id, patch, by) =>
@@ -1648,7 +1879,7 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         (
           await prisma.discussion_comments.findMany({
             where: { discussion_id: discussionId },
-            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            orderBy: [{ created_at: "asc" as const }, { id: "asc" as const }],
           })
         ).map((r) => toComment(r.discussion_id, r)),
       ),
@@ -1745,12 +1976,51 @@ function sortMembers(a: TeamMemberRow, b: TeamMemberRow): number {
   );
 }
 
+/* Shared by the repository and the fake for the keys that order after the fetch. */
+const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
+const byMemberId = (a: TeamMemberRow, b: TeamMemberRow) =>
+  cmpBin(a.memberId, b.memberId);
+const bySince = (a: TeamMemberRow, b: TeamMemberRow) =>
+  cmpNum(a.decidedAt ?? a.requestedAt, b.decidedAt ?? b.requestedAt);
+const VERSION_COUNT_KEYS = {
+  artifactCount: (a: VersionRow, b: VersionRow) =>
+    cmpNum(a.artifactCount, b.artifactCount),
+  assetCount: (a: VersionRow, b: VersionRow) =>
+    cmpNum(a.assetCount, b.assetCount),
+};
+
+/** The issue `orderBy` for a sort key, or `fallback` for the list's default. */
+function issueOrderBy(
+  o: ListOrder<IssueSortKey>,
+  fallback: Record<string, "asc" | "desc">[],
+) {
+  const d = dir(o);
+  switch (o.sort) {
+    case "number":
+      return [{ number: d }, { id: d }];
+    case "title":
+      return [{ title: d }, { id: d }];
+    case "status":
+      return [{ status: d }, { id: d }];
+    case "version":
+      return [{ project_versions: { name: d } }, { id: d }];
+    case "createdBy":
+      return [{ members: { github_login: d } }, { id: d }];
+    case "updatedAt":
+      return [{ updated_at: d }, { id: d }];
+    default:
+      return fallback;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* In-memory fake                                                      */
 /* ------------------------------------------------------------------ */
 
 export interface MemoryTeamDbDeps {
   memberExists?: (id: string) => boolean;
+  /** A member's GitHub login, for the `createdBy`/`login` sorts (the real table joins `members`). Default: the id. */
+  loginOf?: (id: string) => string;
   /** Link targets are foreign keys on the real table; the fake mirrors them when told how. */
   artifactExists?: (id: string) => boolean;
   bundleExists?: (id: string) => boolean;
@@ -1781,6 +2051,11 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
   settings: Map<string, PlatformSettingRow>;
 } {
   const memberExists = deps.memberExists ?? (() => true);
+  const loginOf = deps.loginOf ?? ((id: string) => id);
+  const byLogin =
+    <T>(pick: (r: T) => string) =>
+    (a: T, b: T) =>
+      cmpCi(loginOf(pick(a)), loginOf(pick(b)));
   const artifactExists = deps.artifactExists ?? (() => true);
   const bundleExists = deps.bundleExists ?? (() => true);
   const countResources =
@@ -1909,6 +2184,33 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
     }
     return { ...v, artifactCount, assetCount };
   };
+  const byCreatedAsc = (a: { createdAt: number; id: string }, b: typeof a) =>
+    a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+  const matchesNameOrDescription = (
+    r: { name: string; description: string | null },
+    q: string | undefined,
+  ) => q === undefined || matchesQ(r.name, q) || matchesQ(r.description, q);
+  const nullableDescription = (
+    a: { description: string | null },
+    b: { description: string | null },
+  ) => nullable(cmpCi)(a.description, b.description);
+  const issueListOf = ({ bodyMd: _body, ...rest }: IssueRow): IssueListRow =>
+    rest;
+  const issueKeys = {
+    number: (a: IssueListRow, b: IssueListRow) => cmpNum(a.number, b.number),
+    title: (a: IssueListRow, b: IssueListRow) => cmpCi(a.title, b.title),
+    status: (a: IssueListRow, b: IssueListRow) =>
+      enumRank(ISSUE_STATUSES)(a.status, b.status),
+    // The version name is `utf8mb4_bin`; a missing version is NULL (first asc).
+    version: (a: IssueListRow, b: IssueListRow) =>
+      nullable(cmpBin)(
+        a.versionId === null ? null : (versions.get(a.versionId)?.name ?? null),
+        b.versionId === null ? null : (versions.get(b.versionId)?.name ?? null),
+      ),
+    createdBy: byLogin((i: IssueListRow) => i.createdBy),
+    updatedAt: (a: IssueListRow, b: IssueListRow) =>
+      cmpNum(a.updatedAt, b.updatedAt),
+  };
   const issueOf = (id: string) => {
     const i = issues.get(id);
     const p = i && projects.get(i.projectId);
@@ -1965,15 +2267,44 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       const r = [...teams.values()].find((x) => ci(x.name) === ci(name));
       return r && { ...r };
     },
-    listTeamsForMember: async (memberId) =>
-      [...teamMembers.values()]
-        .filter((m) => m.memberId === memberId)
-        .map((m) => ({ ...teams.get(m.teamId)!, role: m.role, state: m.state }))
-        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
-    listAllTeams: async () =>
-      [...teams.values()]
-        .map((o) => ({ ...o }))
-        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+    listTeamsForMember: async (memberId, opts = {}) => {
+      const q = normalizeQ(opts.q);
+      return sortRows(
+        [...teamMembers.values()]
+          .filter((m) => m.memberId === memberId)
+          .map((m) => ({
+            ...teams.get(m.teamId)!,
+            role: m.role,
+            state: m.state,
+          }))
+          .filter((t) => matchesNameOrDescription(t, q)),
+        {
+          name: (a, b) => cmpCi(a.name, b.name),
+          role: (a, b) => enumRank(TEAM_ROLES)(a.role, b.role),
+          createdBy: byLogin((t) => t.createdBy),
+          updatedAt: (a, b) => cmpNum(a.updatedAt, b.updatedAt),
+        },
+        opts,
+        byId,
+        byCreatedAsc,
+      );
+    },
+    listAllTeams: async (opts = {}) => {
+      const q = normalizeQ(opts.q);
+      return sortRows(
+        [...teams.values()]
+          .map((o) => ({ ...o }))
+          .filter((t) => matchesNameOrDescription(t, q)),
+        {
+          name: (a, b) => cmpCi(a.name, b.name),
+          createdBy: byLogin((t) => t.createdBy),
+          updatedAt: (a, b) => cmpNum(a.updatedAt, b.updatedAt),
+        },
+        opts,
+        byId,
+        byCreatedAsc,
+      );
+    },
     countTeamsCreatedBy: async (memberId) =>
       [...teams.values()].filter((o) => o.createdBy === memberId).length,
     updateTeam: (id, patch, by) =>
@@ -2033,11 +2364,20 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       const r = teamMembers.get(mk(teamId, memberId));
       return r && { ...r };
     },
-    listTeamMembers: async (teamId) =>
-      [...teamMembers.values()]
-        .filter((m) => m.teamId === teamId)
-        .map((m) => ({ ...m }))
-        .sort(sortMembers),
+    listTeamMembers: async (teamId, opts = {}) =>
+      sortRows(
+        [...teamMembers.values()]
+          .filter((m) => m.teamId === teamId)
+          .map((m) => ({ ...m })),
+        {
+          login: byLogin((m) => m.memberId),
+          role: (a, b) => enumRank(TEAM_ROLES)(a.role, b.role),
+          since: bySince,
+        },
+        opts,
+        byMemberId,
+        sortMembers,
+      ),
     countActive: async (teamId) => {
       const rows = [...teamMembers.values()].filter(
         (m) => m.teamId === teamId && m.state === "active",
@@ -2253,11 +2593,24 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       );
       return r && { ...r };
     },
-    listProjects: async (teamId) =>
-      [...projects.values()]
-        .filter((p) => p.teamId === teamId)
-        .map((p) => ({ ...p }))
-        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+    listProjects: async (teamId, opts = {}) => {
+      const q = normalizeQ(opts.q);
+      return sortRows(
+        [...projects.values()]
+          .filter((p) => p.teamId === teamId)
+          .map((p) => ({ ...p }))
+          .filter((p) => matchesNameOrDescription(p, q)),
+        {
+          name: (a, b) => cmpCi(a.name, b.name),
+          description: nullableDescription,
+          createdBy: byLogin((p) => p.createdBy),
+          updatedAt: (a, b) => cmpNum(a.updatedAt, b.updatedAt),
+        },
+        opts,
+        byId,
+        byCreatedAsc,
+      );
+    },
     countProjects: async (teamId) =>
       [...projects.values()].filter((p) => p.teamId === teamId).length,
     updateProject: (id, patch, by) =>
@@ -2345,11 +2698,23 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       const r = versions.get(id);
       return r && withCounts(r);
     },
-    listVersions: async (projectId) =>
-      [...versions.values()]
-        .filter((v) => v.projectId === projectId)
-        .map(withCounts)
-        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)),
+    listVersions: async (projectId, opts = {}) =>
+      sortRows(
+        [...versions.values()]
+          .filter((v) => v.projectId === projectId)
+          .map(withCounts),
+        {
+          ...VERSION_COUNT_KEYS,
+          // `project_versions.name` is `utf8mb4_bin`.
+          name: (a, b) => cmpBin(a.name, b.name),
+          note: (a, b) => nullable(cmpCi)(a.note, b.note),
+          createdBy: byLogin((v) => v.createdBy),
+          createdAt: (a, b) => cmpNum(a.createdAt, b.createdAt),
+        },
+        opts,
+        byId,
+        (a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id),
+      ),
     countVersions: async (projectId) =>
       [...versions.values()].filter((v) => v.projectId === projectId).length,
     updateVersion: (id, patch, by) =>
@@ -2474,26 +2839,41 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       );
       return r && { ...r };
     },
-    listIssues: async (projectId, filter = {}) =>
-      [...issues.values()]
-        .filter(
-          (i) =>
-            i.projectId === projectId &&
-            (!filter.status || i.status === filter.status),
-        )
-        .map((i) => ({ ...i }))
-        .sort((a, b) => b.number - a.number),
+    listIssues: async (projectId, filter = {}) => {
+      const q = normalizeQ(filter.q);
+      return sortRows(
+        [...issues.values()]
+          .filter(
+            (i) =>
+              i.projectId === projectId &&
+              (!filter.status || i.status === filter.status) &&
+              (q === undefined || matchesQ(i.title, q)),
+          )
+          .map(issueListOf),
+        issueKeys,
+        filter,
+        byId,
+        (a, b) => b.number - a.number,
+      );
+    },
     countIssues: async (projectId) =>
       [...issues.values()].filter((i) => i.projectId === projectId).length,
     listTeamIssues: async (teamId, filter = {}) => {
-      const rows = [...issues.values()]
-        .filter(
-          (i) =>
-            projectOf(i.projectId)?.teamId === teamId &&
-            (!filter.status || i.status === filter.status),
-        )
-        .map((i) => ({ ...i }))
-        .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id));
+      const q = normalizeQ(filter.q);
+      const rows = sortRows(
+        [...issues.values()]
+          .filter(
+            (i) =>
+              projectOf(i.projectId)?.teamId === teamId &&
+              (!filter.status || i.status === filter.status) &&
+              (q === undefined || matchesQ(i.title, q)),
+          )
+          .map(issueListOf),
+        issueKeys,
+        filter,
+        byId,
+        (a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id),
+      );
       return filter.limit ? rows.slice(0, filter.limit) : rows;
     },
     updateIssue: (projectId, number, patch, by) =>
@@ -2598,11 +2978,25 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       const r = discussions.get(id);
       return r && { ...r };
     },
-    listDiscussions: async (teamId) =>
-      [...discussions.values()]
-        .filter((d) => d.teamId === teamId)
-        .map((d) => ({ ...d }))
-        .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id)),
+    listDiscussions: async (teamId, opts = {}) => {
+      const q = normalizeQ(opts.q);
+      return sortRows(
+        [...discussions.values()]
+          .filter(
+            (d) =>
+              d.teamId === teamId && (q === undefined || matchesQ(d.title, q)),
+          )
+          .map(({ bodyMd: _body, ...rest }) => rest),
+        {
+          title: (a, b) => cmpCi(a.title, b.title),
+          createdBy: byLogin((d) => d.createdBy),
+          updatedAt: (a, b) => cmpNum(a.updatedAt, b.updatedAt),
+        },
+        opts,
+        byId,
+        (a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id),
+      );
+    },
     countDiscussions: async (teamId) =>
       [...discussions.values()].filter((d) => d.teamId === teamId).length,
     updateDiscussion: (id, patch, by) =>

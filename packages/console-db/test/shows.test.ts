@@ -61,6 +61,8 @@ const shot = (
 
 export interface ShowsHarness {
   db: ShowsDb;
+  /** Renames a seeded member's GitHub login (the grant sorts join it). */
+  login?(id: string, login: string): Promise<void>;
   /** Creates the event row `id` so a show may link to it. */
   seedEvent(id: string): Promise<void>;
   /** Deletes it again, so the `ON DELETE SET NULL` on the link is exercised. */
@@ -69,6 +71,76 @@ export interface ShowsHarness {
 
 /** Behaviour shared by the fake and (via Docker) the real DB. */
 export function showsContract(make: () => Promise<ShowsHarness>) {
+  describe("order and q", () => {
+    it("lists shows matching q inside the cursor query, pages disjoint and complete", async () => {
+      const { db } = await make();
+      for (const [id, title, at] of [
+        ["sh1", "beta", 1],
+        ["sh2", "Alpha", 2],
+        ["sh3", "alpha2", 3],
+        ["sh4", "ALPHA10", 4],
+        ["sh5", "Gamma", 5],
+      ] as const)
+        await db.insertShow(show(id, { title, createdAt: at }));
+      const p1 = await db.listShows({ q: "alph", limit: 2 });
+      expect(p1.rows.map((r) => r.id)).toEqual(["sh4", "sh3"]);
+      expect(p1.next).toEqual(expect.any(String));
+      const p2 = await db.listShows({ q: "alph", limit: 2, cursor: p1.next });
+      expect(p2.rows.map((r) => r.id)).toEqual(["sh2"]);
+      expect(p2.next).toBeUndefined();
+      expect((await db.listShows({ q: "%" })).rows).toEqual([]);
+      expect((await db.listShows({ q: "  " })).rows).toHaveLength(5);
+      await expect(db.listShows({ q: "x".repeat(101) })).rejects.toMatchObject({
+        code: "bad_request",
+      });
+    });
+    it("orders grants by login, granter and time", async () => {
+      const h = await make();
+      await h.login?.("m1", "Zorro");
+      await h.login?.("m2", "amy");
+      await h.login?.("m3", "Amy");
+      await h.db.insertShow(show("sh1"));
+      await h.db.insertGrant({
+        showId: "sh1",
+        memberId: "m2",
+        grantedBy: "m1",
+        grantedAt: 30,
+      });
+      await h.db.insertGrant({
+        showId: "sh1",
+        memberId: "m3",
+        grantedBy: "m2",
+        grantedAt: 10,
+      });
+      await h.db.insertGrant({
+        showId: "sh1",
+        memberId: "m9",
+        grantedBy: "m3",
+        grantedAt: 20,
+      });
+      const list = (o: Parameters<ShowsDb["listGrants"]>[1]) =>
+        h.db.listGrants("sh1", o).then((r) => r.map((g) => g.memberId));
+      expect(await list(undefined)).toEqual(["m3", "m9", "m2"]);
+      expect(await list({ sort: "login" })).toEqual(["m2", "m3", "m9"]);
+      expect(await list({ sort: "login", order: "desc" })).toEqual([
+        "m9",
+        "m3",
+        "m2",
+      ]);
+      expect(await list({ sort: "grantedBy" })).toEqual(["m3", "m9", "m2"]);
+      expect(await list({ sort: "grantedBy", order: "desc" })).toEqual([
+        "m2",
+        "m9",
+        "m3",
+      ]);
+      expect(await list({ sort: "grantedAt", order: "desc" })).toEqual([
+        "m2",
+        "m9",
+        "m3",
+      ]);
+    });
+  });
+
   it("shows: insert, the nullable-unique event link, list filters and paging", async () => {
     const { db, seedEvent, dropEvent } = await make();
     await seedEvent("ev1");
@@ -566,12 +638,17 @@ export function showsContract(make: () => Promise<ShowsHarness>) {
 describe("memory shows db", () => {
   showsContract(async () => {
     const events = new Set<string>();
+    const logins = new Map<string, string>();
     const db = createMemoryShowsDb({
       memberExists: (id) => ["m1", "m2", "m3", "m9"].includes(id),
       eventExists: (id) => events.has(id),
+      loginOf: (id) => logins.get(id) ?? `login-${id}`,
     });
     return {
       db,
+      login: async (id, login) => {
+        logins.set(id, login);
+      },
       seedEvent: async (id) => {
         events.add(id);
       },

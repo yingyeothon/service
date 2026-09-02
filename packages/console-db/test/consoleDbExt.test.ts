@@ -330,10 +330,229 @@ export function memberLookupContract(
   });
 }
 
+/**
+ * Ordering and `q` on the console repository's three lists. The real
+ * `resetTestDb` seeds m1/m2/m3/m9 too, so member assertions look only at the
+ * `ml*` rows this contract creates.
+ */
+export function listOrderContract(
+  make: () => ConsoleDb | Promise<ConsoleDb>,
+  seed: { project: (id: string, name: string) => Promise<void> } = {
+    project: async () => undefined,
+  },
+) {
+  const mine = (rows: { id: string }[]) =>
+    rows.map((r) => r.id).filter((id) => /^(ml|tk_|ch_)/.test(id));
+  const members = async (db: ConsoleDb) => {
+    for (const [id, login, githubId, role, createdAt] of [
+      ["ml1", "Zorro", 9101, "member", 10],
+      ["ml2", "amy", 9102, "admin", 20],
+      ["ml3", "Amy", 9103, "pending", 30],
+    ] as const)
+      await db.upsertMember({
+        id,
+        githubId,
+        githubLogin: login,
+        role,
+        createdAt,
+      });
+    await db.setMemberRole("ml1", "member", { at: 5, by: "ml2" });
+    await db.setMemberRole("ml2", "admin", { at: 3, by: "ml2" });
+  };
+  it("members: login, role (declaration order), createdAt, a NULL approvedAt", async () => {
+    const db = await make();
+    await members(db);
+    const list = (o: Parameters<ConsoleDb["listMembers"]>[0]) =>
+      db.listMembers(o).then(mine);
+    expect(await list(undefined)).toEqual(["ml1", "ml2", "ml3"]);
+    expect(await list({ sort: "login" })).toEqual(["ml2", "ml3", "ml1"]);
+    expect(await list({ sort: "login", order: "desc" })).toEqual([
+      "ml1",
+      "ml3",
+      "ml2",
+    ]);
+    expect(await list({ sort: "role" })).toEqual(["ml2", "ml1", "ml3"]);
+    expect(await list({ sort: "createdAt", order: "desc" })).toEqual([
+      "ml3",
+      "ml2",
+      "ml1",
+    ]);
+    expect(await list({ sort: "approvedAt" })).toEqual(["ml3", "ml2", "ml1"]);
+    expect(await list({ sort: "approvedAt", order: "desc" })).toEqual([
+      "ml1",
+      "ml2",
+      "ml3",
+    ]);
+  });
+  it("tokens: name, id, createdAt, a NULL lastUsedAt", async () => {
+    const db = await make();
+    await members(db);
+    for (const [id, name, at] of [
+      ["tk_b", "beta", 10],
+      ["tk_a", "Alpha", 20],
+      ["tk_c", "alpha2", 30],
+      ["tk_d", "ALPHA10", 30],
+    ] as const)
+      await db.insertApiToken({
+        id,
+        memberId: "ml1",
+        tokenHash: `h-${id}`,
+        name,
+        createdAt: at,
+      });
+    await db.touchApiToken("tk_a", 100);
+    await db.touchApiToken("tk_c", 50);
+    const list = (o: Parameters<ConsoleDb["listApiTokens"]>[1]) =>
+      db.listApiTokens("ml1", o).then(mine);
+    expect(await list(undefined)).toEqual(["tk_b", "tk_a", "tk_c", "tk_d"]);
+    expect(await list({ sort: "name" })).toEqual([
+      "tk_a",
+      "tk_d",
+      "tk_c",
+      "tk_b",
+    ]);
+    expect(await list({ sort: "id", order: "desc" })).toEqual([
+      "tk_d",
+      "tk_c",
+      "tk_b",
+      "tk_a",
+    ]);
+    expect(await list({ sort: "createdAt", order: "desc" })).toEqual([
+      "tk_d",
+      "tk_c",
+      "tk_a",
+      "tk_b",
+    ]);
+    expect(await list({ sort: "lastUsedAt" })).toEqual([
+      "tk_b",
+      "tk_d",
+      "tk_c",
+      "tk_a",
+    ]);
+    expect(await list({ sort: "lastUsedAt", order: "desc" })).toEqual([
+      "tk_a",
+      "tk_c",
+      "tk_d",
+      "tk_b",
+    ]);
+  });
+  it("channels: name, kind, project name, status at now, expiresAt, and q over both names", async () => {
+    const db = await make();
+    await members(db);
+    await seed.project("prj_1", "game");
+    await seed.project("prj_2", "Zeta");
+    const mk = (
+      id: string,
+      name: string,
+      kind: "auth" | "topic" | "match" | "q",
+      projectId: string,
+      expiresAt: number,
+      createdAt: number,
+    ) =>
+      db.insertChannel({
+        id,
+        kind,
+        ownerId: "ml1",
+        teamId: "team_1",
+        projectId,
+        name,
+        config: {},
+        secret: {},
+        createdAt,
+        expiresAt,
+      });
+    await mk("ch_b", "beta", "auth", "prj_1", 100, 10);
+    await mk("ch_a", "Alpha", "topic", "prj_2", 300, 20);
+    await mk("ch_c", "alpha2", "match", "prj_1", 200, 30);
+    await mk("ch_d", "ALPHA10", "q", "prj_2", 400, 30);
+    await db.updateChannel("ch_c", { disabledAt: 35 });
+    const list = (o: Parameters<ConsoleDb["listChannels"]>[0]) =>
+      db.listChannels(o).then(mine);
+    expect(await list(undefined)).toEqual(["ch_d", "ch_c", "ch_a", "ch_b"]);
+    expect(await list({ sort: "name" })).toEqual([
+      "ch_a",
+      "ch_d",
+      "ch_c",
+      "ch_b",
+    ]);
+    expect(await list({ sort: "kind" })).toEqual([
+      "ch_b",
+      "ch_a",
+      "ch_c",
+      "ch_d",
+    ]);
+    expect(await list({ sort: "kind", order: "desc" })).toEqual([
+      "ch_d",
+      "ch_c",
+      "ch_a",
+      "ch_b",
+    ]);
+    expect(await list({ sort: "projectName" })).toEqual([
+      "ch_b",
+      "ch_c",
+      "ch_a",
+      "ch_d",
+    ]);
+    expect(await list({ sort: "projectName", order: "desc" })).toEqual([
+      "ch_d",
+      "ch_a",
+      "ch_c",
+      "ch_b",
+    ]);
+    expect(await list({ sort: "id", order: "desc" })).toEqual([
+      "ch_d",
+      "ch_c",
+      "ch_b",
+      "ch_a",
+    ]);
+    expect(await list({ sort: "expiresAt" })).toEqual([
+      "ch_b",
+      "ch_c",
+      "ch_a",
+      "ch_d",
+    ]);
+    // active(a, d) < expired(b) < disabled(c) at 250.
+    expect(await list({ sort: "status", now: 250 })).toEqual([
+      "ch_a",
+      "ch_d",
+      "ch_b",
+      "ch_c",
+    ]);
+    expect(await list({ sort: "status", order: "desc", now: 250 })).toEqual([
+      "ch_c",
+      "ch_b",
+      "ch_d",
+      "ch_a",
+    ]);
+    await expect(list({ sort: "status" })).rejects.toMatchObject({
+      code: "bad_request",
+    });
+    expect(await list({ q: "zeta" })).toEqual(["ch_d", "ch_a"]);
+    expect(await list({ q: "ALPHA", projectId: "prj_1" })).toEqual(["ch_c"]);
+    expect(await list({ q: "nope" })).toEqual([]);
+    expect(await list({ kind: "auth", q: "bet" })).toEqual(["ch_b"]);
+  });
+}
+
 describe("memory console db: audit read", () => {
   auditReadContract(() => createMemoryConsoleDb());
 });
 
 describe("memory console db: member lookups", () => {
   memberLookupContract(() => createMemoryConsoleDb());
+});
+
+describe("memory console db: list order", () => {
+  const projects = new Map<string, string>();
+  listOrderContract(
+    () => {
+      projects.clear();
+      return createMemoryConsoleDb({ projectName: (id) => projects.get(id) });
+    },
+    {
+      project: async (id, name) => {
+        projects.set(id, name);
+      },
+    },
+  );
 });

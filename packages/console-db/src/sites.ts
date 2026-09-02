@@ -1,5 +1,32 @@
 import { AppError } from "@yyt/core";
+import {
+  cmpBin,
+  cmpCi,
+  cmpNum,
+  dir,
+  enumRank,
+  nullable,
+  sortRows,
+  type ListOrder,
+} from "./list.js";
 import { num, run, type PrismaClient } from "./prisma.js";
+
+/** `url` orders by the `slug` (`utf8mb4_bin`), which is what the public URL is made of. */
+export const SITE_SORT_KEYS = [
+  "name",
+  "url",
+  "createdBy",
+  "updatedAt",
+] as const;
+export type SiteSortKey = (typeof SITE_SORT_KEYS)[number];
+export const DEPLOY_SORT_KEYS = [
+  "id",
+  "status",
+  "files",
+  "size",
+  "createdAt",
+] as const;
+export type DeploySortKey = (typeof DEPLOY_SORT_KEYS)[number];
 
 /**
  * `pending` = presign issued, zip not committed; `queued` = committed, worker
@@ -99,10 +126,12 @@ export interface SitesDb {
   findSiteByName(teamId: string, name: string): Promise<SiteRow | undefined>;
   findSiteBySlug(slug: string): Promise<SiteRow | undefined>;
   /** Name ascending; `teamIds`/`projectId` narrow. */
-  listSites(filter?: {
-    teamIds?: string[];
-    projectId?: string;
-  }): Promise<SiteRow[]>;
+  listSites(
+    filter?: {
+      teamIds?: string[];
+      projectId?: string;
+    } & ListOrder<SiteSortKey>,
+  ): Promise<SiteRow[]>;
   /**
    * Rows for a page of ids, in one query, by id ascending; unknown ids are
    * simply absent. A show entry page resolves up to `ENTRY_PAGE_MAX` targets
@@ -127,8 +156,12 @@ export interface SitesDb {
 
   insertDeploy(d: SiteDeployInput): Promise<void>;
   findDeploy(id: string): Promise<SiteDeployRow | undefined>;
-  /** Newest first (`created_at`, then id), at most `limit`. */
-  listDeploys(siteId: string, limit: number): Promise<SiteDeployRow[]>;
+  /** The newest `limit` rows (`created_at`, then id), ordered as asked within that window. */
+  listDeploys(
+    siteId: string,
+    limit: number,
+    opts?: ListOrder<DeploySortKey>,
+  ): Promise<SiteDeployRow[]>;
   /**
    * Compare-and-set on `status`: the row moves only when it is still in
    * `from`. The worker and the sweep both use it, so a deploy that the sweep
@@ -261,7 +294,7 @@ export function createSitesDb(prisma: PrismaClient): SitesDb {
             ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
             ...(filter.projectId ? { project_id: filter.projectId } : {}),
           },
-          orderBy: [{ name: "asc" }, { id: "asc" }],
+          orderBy: siteOrderBy(filter),
         });
         return rows.map(toSite);
       }),
@@ -340,14 +373,18 @@ export function createSitesDb(prisma: PrismaClient): SitesDb {
         const r = await prisma.site_deploys.findUnique({ where: { id } });
         return r ? toDeploy(r) : undefined;
       }),
-    listDeploys: (siteId, limit) =>
+    listDeploys: (siteId, limit, opts = {}) =>
       run(async () => {
-        const rows = await prisma.site_deploys.findMany({
-          where: { site_id: siteId },
-          orderBy: [{ created_at: "desc" }, { id: "desc" }],
-          take: limit,
-        });
-        return rows.map(toDeploy);
+        // The window is always the newest rows; the order applies inside it,
+        // or a status sort would surface the oldest `pending` over today's.
+        const rows = (
+          await prisma.site_deploys.findMany({
+            where: { site_id: siteId },
+            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+            take: limit,
+          })
+        ).map(toDeploy);
+        return sortRows(rows, DEPLOY_KEYS, opts, byId, newestFirst);
       }),
     transitionDeploy: (id, from, patch, at) =>
       run(async () => {
@@ -387,8 +424,39 @@ export function createSitesDb(prisma: PrismaClient): SitesDb {
 }
 
 /** In-memory `SitesDb` for tests: same contract as the Prisma repository. */
+function siteOrderBy(o: ListOrder<SiteSortKey>) {
+  const d = dir(o);
+  switch (o.sort) {
+    case "name":
+      return [{ name: d }, { id: d }];
+    case "url":
+      return [{ slug: d }, { id: d }];
+    case "createdBy":
+      return [{ members: { github_login: d } }, { id: d }];
+    case "updatedAt":
+      return [{ updated_at: d }, { id: d }];
+    default:
+      return [{ name: "asc" as const }, { id: "asc" as const }];
+  }
+}
+
+const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
+const newestFirst = (a: SiteDeployRow, b: SiteDeployRow) =>
+  b.createdAt - a.createdAt || byId(b, a);
+/** Shared by repository and fake: the order inside the newest-N window. */
+const DEPLOY_KEYS = {
+  id: byId,
+  status: (a: SiteDeployRow, b: SiteDeployRow) =>
+    enumRank(SITE_DEPLOY_STATUSES)(a.status, b.status),
+  files: (a: SiteDeployRow, b: SiteDeployRow) => cmpNum(a.files, b.files),
+  size: (a: SiteDeployRow, b: SiteDeployRow) => cmpNum(a.bytes, b.bytes),
+  createdAt: (a: SiteDeployRow, b: SiteDeployRow) =>
+    cmpNum(a.createdAt, b.createdAt),
+};
+
 export function createMemorySitesDb(
   memberExists: (id: string) => boolean = () => true,
+  deps: { loginOf?: (id: string) => string } = {},
 ): SitesDb & {
   sites: Map<string, SiteRow>;
   deploys: Map<string, SiteDeployRow>;
@@ -399,6 +467,7 @@ export function createMemorySitesDb(
   const fk = () => new AppError("unavailable", "database error");
   const eqI = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const loginOf = deps.loginOf ?? ((id: string) => id);
   const checkMember = (id: string | null | undefined) => {
     if (id != null && !memberExists(id)) throw fk();
   };
@@ -448,16 +517,28 @@ export function createMemorySitesDb(
       return s && { ...s };
     },
     listSites: async (filter = {}) =>
-      [...sites.values()]
-        .filter(
-          (s) =>
-            (!filter.teamIds || filter.teamIds.includes(s.teamId)) &&
-            (!filter.projectId || s.projectId === filter.projectId),
-        )
-        .map((s) => ({ ...s }))
-        .sort(
-          (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
-        ),
+      sortRows(
+        [...sites.values()]
+          .filter(
+            (s) =>
+              (!filter.teamIds || filter.teamIds.includes(s.teamId)) &&
+              (!filter.projectId || s.projectId === filter.projectId),
+          )
+          .map((s) => ({ ...s })),
+        {
+          name: (a, b) => cmpCi(a.name, b.name),
+          url: (a, b) => cmpBin(a.slug, b.slug),
+          createdBy: (a, b) =>
+            nullable(cmpCi)(
+              a.ownerId === null ? null : loginOf(a.ownerId),
+              b.ownerId === null ? null : loginOf(b.ownerId),
+            ),
+          updatedAt: (a, b) => cmpNum(a.updatedAt, b.updatedAt),
+        },
+        filter,
+        byId,
+        (a, b) => cmpCi(a.name, b.name) || byId(a, b),
+      ),
     listSitesByIds: async (ids) =>
       [...ids].sort().flatMap((id) => {
         const x = sites.get(id);
@@ -523,12 +604,17 @@ export function createMemorySitesDb(
       const d = deploys.get(id);
       return d && { ...d };
     },
-    listDeploys: async (siteId, limit) =>
-      [...deploys.values()]
-        .filter((d) => d.siteId === siteId)
-        .sort((a, b) => b.createdAt - a.createdAt || cmp(b.id, a.id))
-        .slice(0, limit)
-        .map((d) => ({ ...d })),
+    listDeploys: async (siteId, limit, opts = {}) =>
+      sortRows(
+        [...deploys.values()]
+          .filter((d) => d.siteId === siteId)
+          .sort(newestFirst)
+          .slice(0, limit),
+        DEPLOY_KEYS,
+        opts,
+        byId,
+        newestFirst,
+      ).map((d) => ({ ...d })),
     transitionDeploy: async (id, from, patch, at) => {
       const d = deploys.get(id);
       if (!d || d.status !== from) return false;
