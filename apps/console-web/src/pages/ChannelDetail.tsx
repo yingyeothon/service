@@ -1,21 +1,25 @@
-import { Button, Card, Code, Group, Stack, Text, Title } from "@mantine/core";
+import { Button, Code, Group, Text } from "@mantine/core";
 import { useEffect, useState, type FormEvent } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { ChannelForm } from "../components/ChannelForm";
 import { Crumbs } from "../components/Crumbs";
+import { Loading, PageSkeleton } from "../components/Loading";
+import { PageHeader, type HeaderAction } from "../components/PageHeader";
+import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
+import { ResourceDrawer } from "../components/ResourceDrawer";
+import { Section } from "../components/Section";
 import {
   Badge,
-  Confirm,
   CopyBlock,
   CopyField,
-  FormActions,
   Notice,
   SecretOnce,
-  Spinner,
 } from "../components/ui";
 import { buildConfig, emptyForm, formFromChannel } from "../lib/channelForm";
+import { useConfirm } from "../lib/confirm";
 import { errorMessage, fmtRelative, fmtTime } from "../lib/format";
+import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
 import { GATEWAY_KINDS } from "../types";
@@ -27,6 +31,8 @@ import type {
   QConfig,
   TopicConfig,
 } from "../types";
+
+const CHANNELS_CRUMB = [{ label: "Channels", to: "/channels" }];
 
 export function ChannelDetailPage() {
   const { id = "" } = useParams();
@@ -42,6 +48,7 @@ export function ChannelDetailPage() {
   );
   const standing = useTeamStanding(ch.data?.teamId);
   const act = useAction();
+  const confirm = useConfirm();
   const [shown, setShown] = useState<string | null>(
     (loc.state as { shown?: string } | null)?.shown ?? null,
   );
@@ -55,8 +62,22 @@ export function ChannelDetailPage() {
       void nav(loc.pathname, { replace: true, state: null });
   }, [loc.state, loc.pathname, nav]);
 
-  if (ch.error) return <Notice kind="error">{ch.error}</Notice>;
-  if (!ch.data) return <Spinner />;
+  if (ch.error)
+    return (
+      <>
+        <Crumbs trail={CHANNELS_CRUMB} />
+        <PageHeader />
+        <Notice kind="error">{ch.error}</Notice>
+      </>
+    );
+  if (!ch.data)
+    return (
+      <>
+        <Crumbs trail={CHANNELS_CRUMB} />
+        <PageHeader />
+        <PageSkeleton />
+      </>
+    );
   const c = ch.data;
   // Members of the team write (secrets included); a platform admin without a
   // seat, or anyone on a legacy row with no team, only reads.
@@ -68,6 +89,7 @@ export function ChannelDetailPage() {
 
   const startEdit = () => {
     setForm(formFromChannel(c));
+    setLocalError(null);
     setEditing(true);
   };
   const save = async (e: FormEvent) => {
@@ -86,17 +108,30 @@ export function ChannelDetailPage() {
     if (r) {
       ch.set(r);
       setEditing(false);
+      notify.saved("channel");
     }
   };
   const extend = async () => {
     const r = await act.run(() => api.extendChannel(c.id));
-    if (r) ch.set(r);
+    if (r) {
+      ch.set(r);
+      notify.done(`Extended to ${fmtTime(r.expiresAt)}`);
+    }
   };
   const rotate = async () => {
+    const ok = await confirm({
+      title: `Rotate the ${secretLabel.toLowerCase()}?`,
+      message:
+        "The current one stops working at once; every caller must be given the new value.",
+      confirmLabel: `Rotate ${secretLabel.toLowerCase()}`,
+      danger: true,
+    });
+    if (!ok.ok) return;
     const r = await act.run(() => api.rotateChannelSecret(c.id));
     if (r) {
       setShown(r.secret ?? r.apiKey ?? null);
       ch.set(r);
+      notify.done(`${secretLabel} rotated`);
     }
   };
   const remove = async () => {
@@ -104,13 +139,41 @@ export function ChannelDetailPage() {
       await api.deleteChannel(c.id);
       return true;
     });
-    if (ok)
-      void nav(
-        c.teamId && c.projectId
-          ? projectUrl(c.teamId, c.projectId, "channels")
-          : "/channels",
-      );
+    if (!ok) return;
+    notify.deleted("channel");
+    void nav(
+      c.teamId && c.projectId
+        ? projectUrl(c.teamId, c.projectId, "channels")
+        : "/channels",
+    );
   };
+  const removeFromMenu = async () => {
+    const ok = await confirm({
+      title: `Delete ${c.name}?`,
+      message: "Sockets on it are closed and its credentials stop working.",
+      confirmLabel: "Delete channel",
+      danger: true,
+    });
+    if (ok.ok) await remove();
+  };
+
+  const actions: HeaderAction[] = [
+    { label: "Extend +7 days", onClick: extend, disabled: act.busy },
+  ];
+  if (owner) actions.push({ label: "Edit", onClick: startEdit });
+  if (owner && hasSecret)
+    actions.push({
+      label: `Rotate ${secretLabel.toLowerCase()}`,
+      menu: true,
+      onClick: rotate,
+      disabled: act.busy,
+    });
+  actions.push({
+    label: "Delete channel",
+    danger: true,
+    onClick: removeFromMenu,
+    disabled: act.busy,
+  });
 
   return (
     <>
@@ -119,29 +182,38 @@ export function ChannelDetailPage() {
         current={c.name}
         fallback={{ label: "Channels", to: "/channels" }}
       />
-      <Group gap="xs" mb="sm">
-        <Title order={2}>{c.name}</Title>
-        <Badge>{c.kind}</Badge>
-        <Badge
-          tone={
-            c.status === "active"
-              ? "ok"
-              : c.status === "expired"
-                ? "warn"
-                : "danger"
-          }
-        >
-          {c.status}
-        </Badge>
-      </Group>
+      <PageHeader
+        title={c.name}
+        badges={
+          <>
+            <Badge>{c.kind}</Badge>
+            <Badge
+              tone={
+                c.status === "active"
+                  ? "ok"
+                  : c.status === "expired"
+                    ? "warn"
+                    : "danger"
+              }
+            >
+              {c.status}
+            </Badge>
+          </>
+        }
+        meta={
+          <>
+            Created by {c.createdBy ?? "—"} · {fmtTime(c.createdAt)} · Expires{" "}
+            {fmtTime(c.expiresAt)} ({fmtRelative(c.expiresAt)})
+            {c.disabledAt !== null && <> · Disabled {fmtTime(c.disabledAt)}</>}{" "}
+            · id <Code>{c.id}</Code>
+          </>
+        }
+        actions={actions}
+      />
       {!owner && !standing.loading && (
-        <Notice>
-          Read-only: you are not seated in this channel&rsquo;s team. Platform
-          admins can extend or delete, but never edit, rotate or issue
-          credentials.
-        </Notice>
+        <ReadOnlyBanner detail="Platform admins can extend or delete, but never edit, rotate or issue credentials." />
       )}
-      {act.error && <Notice kind="error">{act.error}</Notice>}
+      {act.error && !editing && <Notice kind="error">{act.error}</Notice>}
       {shown && (
         <SecretOnce
           label={secretLabel}
@@ -150,80 +222,49 @@ export function ChannelDetailPage() {
         />
       )}
 
-      <Card withBorder mb="md">
+      <Section title="Endpoints">
         <CopyField label="Channel id" value={c.id} />
-        <Text size="sm" c="dimmed">
-          Created by {c.createdBy ?? "—"}
-        </Text>
         {c.kind === "auth" && <AuthDetails c={c} />}
         {c.kind === "topic" && <TopicDetails c={c} />}
         {c.kind === "match" && <MatchDetails c={c} />}
         {c.kind === "lobby" && <LobbyDetails c={c} />}
         {c.kind === "q" && <QDetails c={c} />}
-        <Text size="sm" c="dimmed" my="xs">
-          Created {fmtTime(c.createdAt)} · Expires {fmtTime(c.expiresAt)} (
-          {fmtRelative(c.expiresAt)})
-          {c.disabledAt !== null && <> · Disabled {fmtTime(c.disabledAt)}</>}
-        </Text>
-        <Group>
-          <Button
-            size="compact-sm"
-            variant="default"
-            disabled={act.busy}
-            onClick={() => void extend()}
-          >
-            Extend +7 days
-          </Button>
-          {owner && !editing && (
-            <Button
-              size="compact-sm"
-              variant="default"
-              disabled={act.busy}
-              onClick={startEdit}
-            >
-              Edit
-            </Button>
-          )}
-          {owner && hasSecret && (
-            <Confirm
-              label={`Rotate ${secretLabel.toLowerCase()}`}
-              color="ink"
-              variant="default"
-              onConfirm={rotate}
-              disabled={act.busy}
-            />
-          )}
-          <Confirm label="Delete" onConfirm={remove} disabled={act.busy} />
-        </Group>
-      </Card>
+      </Section>
 
       {c.kind === "q" && <QRedisUserCard channel={c} owner={owner} />}
       {c.kind === "auth" && c.docUrl && (
         <AuthDocKeyCard channel={c} owner={owner} />
       )}
 
-      {editing && (
-        <Card withBorder>
-          <form onSubmit={(e) => void save(e)}>
-            <Stack gap="sm">
-              <Title order={4}>Edit</Title>
-              <ChannelForm
-                kind={c.kind}
-                form={form}
-                onChange={setForm}
-                authChannels={auths.data ?? []}
-                editing
-              />
-              {localError && <Notice kind="error">{localError}</Notice>}
-              <FormActions
-                submitLabel="Save"
-                disabled={act.busy}
-                onCancel={() => setEditing(false)}
-              />
-            </Stack>
-          </form>
-        </Card>
-      )}
+      <ResourceDrawer
+        opened={editing}
+        onClose={() => setEditing(false)}
+        title="Edit channel"
+        submitLabel="Save"
+        onSubmit={save}
+        busy={act.busy}
+        error={editing ? (localError ?? act.error) : null}
+        size="lg"
+        danger={
+          owner
+            ? {
+                label: "Delete channel",
+                description:
+                  "Sockets on it are closed and its credentials stop working.",
+                onConfirm: remove,
+                disabled: act.busy,
+              }
+            : undefined
+        }
+      >
+        <ChannelForm
+          kind={c.kind}
+          form={form}
+          onChange={setForm}
+          authChannels={auths.data ?? []}
+          editing
+        />
+      </ResourceDrawer>
     </>
   );
 }
@@ -355,14 +396,11 @@ function QRedisUserCard({
   };
 
   return (
-    <Card withBorder mb="md">
-      <Title order={4} mb="xs">
-        Redis account
-      </Title>
+    <Section title="Redis account">
       {q.error ? (
         <Notice kind="error">{q.error}</Notice>
       ) : !q.data ? (
-        <Spinner />
+        <Loading />
       ) : (
         <>
           {act.error && <Notice kind="error">{act.error}</Notice>}
@@ -400,11 +438,12 @@ function QRedisUserCard({
               busy={act.busy}
               onIssue={issue}
               onRevoke={revoke}
+              what="Redis account"
             />
           )}
         </>
       )}
-    </Card>
+    </Section>
   );
 }
 
@@ -418,25 +457,40 @@ function CredentialActions({
   busy,
   onIssue,
   onRevoke,
+  what,
 }: {
   state: { configured?: boolean; issued?: boolean };
   busy: boolean;
   onIssue: () => Promise<void>;
   onRevoke: () => Promise<void>;
+  /** Names the credential in the confirm: "Revoke the Redis account?". */
+  what: string;
 }) {
+  const confirm = useConfirm();
   if (state.configured === false) return null;
+  const revoke = async () => {
+    const r = await confirm({
+      title: `Revoke the ${what}?`,
+      message: "Whatever holds it stops working at once.",
+      confirmLabel: "Revoke",
+      danger: true,
+    });
+    if (r.ok) await onRevoke();
+  };
   return (
-    <Group>
-      <Button
-        size="compact-sm"
-        variant="default"
-        disabled={busy}
-        onClick={() => void onIssue()}
-      >
+    <Group mt="sm">
+      <Button variant="default" disabled={busy} onClick={() => void onIssue()}>
         {state.issued ? "Re-issue" : "Issue"}
       </Button>
       {state.issued && (
-        <Confirm label="Revoke" onConfirm={onRevoke} disabled={busy} />
+        <Button
+          variant="outline"
+          color="red"
+          disabled={busy}
+          onClick={() => void revoke()}
+        >
+          Revoke
+        </Button>
       )}
     </Group>
   );
@@ -488,14 +542,11 @@ function AuthDocKeyCard({
   };
 
   return (
-    <Card withBorder mb="md">
-      <Title order={4} mb="xs">
-        Document storage
-      </Title>
+    <Section title="Document storage">
       {q.error ? (
         <Notice kind="error">{q.error}</Notice>
       ) : !q.data ? (
-        <Spinner />
+        <Loading />
       ) : (
         <>
           {act.error && <Notice kind="error">{act.error}</Notice>}
@@ -536,11 +587,12 @@ function AuthDocKeyCard({
               busy={act.busy}
               onIssue={issue}
               onRevoke={revoke}
+              what="document API key"
             />
           )}
         </>
       )}
-    </Card>
+    </Section>
   );
 }
 

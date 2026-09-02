@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -97,10 +97,13 @@ describe("AssetBundlePage", () => {
       expect(mockApi.assetVersion).toHaveBeenCalledWith("ab_1", "v1"),
     );
     expect(await screen.findByText("maps/a.json")).toBeInTheDocument();
-    for (const col of ["Path", "Type", "Size", "URL"])
+    for (const col of ["Path", "Type", "URL"])
       expect(
         screen.getByRole("columnheader", { name: col }),
       ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Hide files" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the empty state", async () => {
@@ -110,40 +113,52 @@ describe("AssetBundlePage", () => {
     ).toBeInTheDocument();
   });
 
-  it("saves the description and deletes a version after confirmation", async () => {
+  it("saves the description from the edit drawer and deletes a version from its row menu", async () => {
     vi.mocked(mockApi.updateAssetBundle).mockResolvedValue({
       ...BUNDLE,
       description: "all maps",
     });
     vi.mocked(mockApi.deleteAssetVersion).mockResolvedValue(undefined);
     open();
-    const desc = await screen.findByLabelText("Description");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
+    const desc = within(drawer).getByLabelText("Description");
     await userEvent.clear(desc);
     await userEvent.type(desc, "all maps");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(within(drawer).getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(mockApi.updateAssetBundle).toHaveBeenCalledWith("ab_1", {
         description: "all maps",
       }),
     );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await userEvent.click(
-      screen.getByRole("button", { name: "Delete version" }),
+      screen.getByRole("button", { name: "Actions for v1" }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete version" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Delete version" }),
+    );
     await waitFor(() =>
       expect(mockApi.deleteAssetVersion).toHaveBeenCalledWith("ab_1", "v1"),
     );
   });
 
-  it("deletes the bundle and returns to the project's assets", async () => {
+  it("deletes the bundle from the overflow menu and returns to the project's assets", async () => {
     vi.mocked(mockApi.deleteAssetBundle).mockResolvedValue(undefined);
     open();
-    await screen.findByRole("heading", { name: "dungeon-maps" });
     await userEvent.click(
-      await screen.findByRole("button", { name: "Delete bundle" }),
+      await screen.findByRole("button", { name: "More actions" }),
     );
     await userEvent.click(
-      screen.getByRole("button", { name: "Delete everything" }),
+      await screen.findByRole("menuitem", { name: "Delete bundle" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Delete bundle" }),
     );
     await waitFor(() =>
       expect(mockApi.deleteAssetBundle).toHaveBeenCalledWith("ab_1"),
@@ -157,6 +172,7 @@ describe("AssetBundlePage", () => {
     await screen.findByRole("heading", { name: "dungeon-maps" });
     expect(await screen.findByText(/Read-only/)).toBeInTheDocument();
     expect(screen.queryByText("Publish a version")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete bundle" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
   });
 });

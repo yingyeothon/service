@@ -1,8 +1,6 @@
-import { MantineProvider } from "@mantine/core";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type { Channel, ChannelDocKey } from "../src/types";
@@ -27,8 +25,7 @@ vi.mock("../src/api", () => ({
 }));
 
 const { ChannelDetailPage } = await import("../src/pages/ChannelDetail");
-const { theme } = await import("../src/theme");
-const { AuthProvider } = await import("../src/auth");
+const { mount: mountWith } = await import("./wrap");
 
 const CHANNEL: Channel = {
   id: "auth_9",
@@ -63,21 +60,11 @@ const BLOCK: ChannelDocKey = {
 };
 
 function mount() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <MantineProvider theme={theme} forceColorScheme="light">
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/channels/auth_9"]}>
-          <AuthProvider client={mockApi}>
-            <Routes>
-              <Route path="/channels/:id" element={<ChannelDetailPage />} />
-            </Routes>
-          </AuthProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    </MantineProvider>,
+  return mountWith(
+    <Routes>
+      <Route path="/channels/:id" element={<ChannelDetailPage />} />
+    </Routes>,
+    { client: mockApi, path: "/channels/auth_9" },
   );
 }
 
@@ -150,12 +137,12 @@ describe("auth channel document key", () => {
     );
     expect(await screen.findByText(apiKey)).toBeInTheDocument();
 
-    // Confirm is two clicks: the trigger, then the confirmation.
+    // Revoking confirms in a modal whose button repeats the verb.
     await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
-    const confirm = screen
-      .getAllByRole("button")
-      .find((b) => /confirm|revoke/i.test(b.textContent ?? ""));
-    await userEvent.click(confirm!);
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Revoke" }),
+    );
 
     // Leaving it up would show a key that no longer authenticates anything.
     await screen.findByText(/Not issued yet/);

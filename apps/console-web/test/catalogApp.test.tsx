@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -91,7 +91,7 @@ describe("CatalogAppPage", () => {
     });
   });
 
-  it("shows the app, its artifacts grouped by version and the settings", async () => {
+  it("shows the app, its artifacts grouped by version and the settings in the drawer", async () => {
     open();
     expect(
       await screen.findByRole("heading", { name: "my-game" }),
@@ -102,30 +102,70 @@ describe("CatalogAppPage", () => {
       "href",
       "https://cdn.example/a.apk",
     );
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await waitFor(() => expect(mockApi.catalogSettings).toHaveBeenCalled());
+    const drawer = await screen.findByRole("dialog");
     expect(
-      await screen.findByLabelText("Slack webhook URL"),
+      await within(drawer).findByLabelText("Slack webhook URL"),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Keep recent versions")).toHaveValue("5");
+    expect(within(drawer).getByLabelText("Keep recent versions")).toHaveValue(
+      "5",
+    );
   });
 
-  it("saves the changed info fields and deletes an artifact after confirmation", async () => {
+  it("saves only the changed info fields, and only the changed settings", async () => {
     vi.mocked(mockApi.updateCatalogApp).mockResolvedValue({
       ...APP,
       path: "life.yyt.game",
     });
-    vi.mocked(mockApi.deleteCatalogArtifact).mockResolvedValue(undefined);
+    vi.mocked(mockApi.updateCatalogSettings).mockResolvedValue({
+      slackHookUrl: null,
+      slackChannel: "#releases",
+      messageTemplate: null,
+      keepRecentVersions: 5,
+    });
     open();
-    const path = await screen.findByLabelText("Application id");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    let drawer = await screen.findByRole("dialog");
+    const path = within(drawer).getByLabelText(/^Application id/);
     await userEvent.clear(path);
     await userEvent.type(path, "life.yyt.game");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(within(drawer).getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(mockApi.updateCatalogApp).toHaveBeenCalledWith("ca_1", {
         path: "life.yyt.game",
       }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(mockApi.updateCatalogSettings).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    drawer = await screen.findByRole("dialog");
+    await userEvent.type(
+      await within(drawer).findByLabelText("Slack channel"),
+      "#releases",
+    );
+    await userEvent.click(within(drawer).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mockApi.updateCatalogSettings).toHaveBeenCalledWith("ca_1", {
+        slackChannel: "#releases",
+      }),
+    );
+    expect(mockApi.updateCatalogApp).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes an artifact from its row menu after confirmation", async () => {
+    vi.mocked(mockApi.deleteCatalogArtifact).mockResolvedValue(undefined);
+    open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Actions for 1.0.0 android" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete artifact" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Delete artifact" }),
+    );
     await waitFor(() =>
       expect(mockApi.deleteCatalogArtifact).toHaveBeenCalledWith(
         "ca_1",
@@ -134,48 +174,34 @@ describe("CatalogAppPage", () => {
     );
   });
 
-  it("saves settings", async () => {
-    vi.mocked(mockApi.updateCatalogSettings).mockResolvedValue({
-      slackHookUrl: null,
-      slackChannel: "#releases",
-      messageTemplate: null,
-      keepRecentVersions: 5,
-    });
-    open();
-    const ch = await screen.findByLabelText("Slack channel");
-    await userEvent.type(ch, "#releases");
-    await userEvent.click(
-      screen.getByRole("button", { name: "Save settings" }),
-    );
-    await waitFor(() =>
-      expect(mockApi.updateCatalogSettings).toHaveBeenCalledWith("ca_1", {
-        slackChannel: "#releases",
-      }),
-    );
-  });
-
-  it("deletes the app and returns to the project's catalog", async () => {
+  it("deletes the app from the overflow menu and returns to the project's catalog", async () => {
     vi.mocked(mockApi.deleteCatalogApp).mockResolvedValue(undefined);
     open();
-    await screen.findByRole("heading", { name: "my-game" });
     await userEvent.click(
-      await screen.findByRole("button", { name: "Delete app" }),
+      await screen.findByRole("button", { name: "More actions" }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete app" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Delete app" }),
+    );
     await waitFor(() =>
       expect(mockApi.deleteCatalogApp).toHaveBeenCalledWith("ca_1"),
     );
     expect(await screen.findByText("project tab")).toBeInTheDocument();
   });
 
-  it("hides upload, settings and cleanup from a seatless admin", async () => {
+  it("hides upload, edit and cleanup from a seatless admin", async () => {
     vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
     open();
     await screen.findByRole("heading", { name: "my-game" });
     expect(await screen.findByText(/Read-only/)).toBeInTheDocument();
     expect(screen.queryByText("Upload artifact")).toBeNull();
-    expect(screen.queryByLabelText("Slack webhook URL")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Run cleanup" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete app" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    expect(mockApi.catalogSettings).not.toHaveBeenCalled();
   });
 });
