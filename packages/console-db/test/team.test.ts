@@ -626,6 +626,13 @@ export function teamContract(
         note: "n",
         createdBy: M1,
       });
+      // By name: byte-exact within the project, PAD SPACE like the index.
+      expect((await db.findVersionByName("prj_1", "v1"))?.id).toBe("ver_1");
+      expect((await db.findVersionByName("prj_1", "V1"))?.id).toBe("ver_3");
+      expect((await db.findVersionByName("prj_2", "v1"))?.id).toBe("ver_4");
+      expect((await db.findVersionByName("prj_1", "v1 "))?.id).toBe("ver_1");
+      expect(await db.findVersionByName("prj_1", "v2")).toBeUndefined();
+      expect(await db.findVersionByName("nope", "v1")).toBeUndefined();
       expect(await db.updateVersion("ver_1", { note: null }, by(M1, 35))).toBe(
         true,
       );
@@ -879,6 +886,16 @@ export function teamContract(
       expect((await db.listIssues("prj_1")).map((i) => i.number)).toEqual([
         3, 2, 1,
       ]);
+      // `versionId` keeps the referencing issues; a foreign id is just empty.
+      expect(
+        (await db.listIssues("prj_1", { versionId: "ver_1" })).map(
+          (i) => i.number,
+        ),
+      ).toEqual([2]);
+      expect(
+        await db.listIssues("prj_1", { versionId: "ver_1", status: "closed" }),
+      ).toEqual([]);
+      expect(await db.listIssues("prj_2", { versionId: "ver_1" })).toEqual([]);
       expect(await db.countIssues("prj_1")).toBe(3);
       // Team-wide: latest activity first across projects, capped by limit.
       expect((await db.listTeamIssues("team_1")).map((i) => i.id)).toEqual([

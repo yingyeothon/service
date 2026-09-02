@@ -490,6 +490,11 @@ export interface TeamDb {
   /* --- versions --- */
   createVersion(v: VersionInput, by: Actor): Promise<void>;
   findVersion(id: string): Promise<VersionRow | undefined>;
+  /** Byte-exact (`utf8mb4_bin`, PAD SPACE like the index); the catalog commit's lookup. */
+  findVersionByName(
+    projectId: string,
+    name: string,
+  ): Promise<VersionRow | undefined>;
   /** Newest first; the link-count keys order after the fetch. */
   listVersions(
     projectId: string,
@@ -521,10 +526,16 @@ export interface TeamDb {
   /** Allocates the next per-project number under the team row lock; returns it. */
   createIssue(i: IssueInput, by: Actor): Promise<number>;
   findIssue(projectId: string, number: number): Promise<IssueRow | undefined>;
-  /** Highest number first; `q` matches the title; `version` orders by the version's name (`_bin`). */
+  /**
+   * Highest number first; `q` matches the title; `version` orders by the
+   * version's name (`_bin`); `versionId` keeps the issues referencing it.
+   */
   listIssues(
     projectId: string,
-    filter?: { status?: IssueStatus } & ListQuery<IssueSortKey>,
+    filter?: {
+      status?: IssueStatus;
+      versionId?: string;
+    } & ListQuery<IssueSortKey>,
   ): Promise<IssueListRow[]>;
   countIssues(projectId: string): Promise<number>;
   /**
@@ -1481,6 +1492,15 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const r = await prisma.project_versions.findUnique({ where: { id } });
         return r ? toVersion(r, (await linkCounts([id])).get(id)) : undefined;
       }),
+    findVersionByName: (projectId, name) =>
+      run(async () => {
+        const r = await prisma.project_versions.findUnique({
+          where: { project_id_name: { project_id: projectId, name } },
+        });
+        return r
+          ? toVersion(r, (await linkCounts([r.id])).get(r.id))
+          : undefined;
+      }),
     listVersions: (projectId, opts = {}) =>
       run(async () => {
         const o = dir(opts);
@@ -1649,6 +1669,7 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
             where: {
               project_id: projectId,
               ...(filter.status ? { status: filter.status } : {}),
+              ...(filter.versionId ? { version_id: filter.versionId } : {}),
               ...(q ? { title: likeContains(q) } : {}),
             },
             orderBy: issueOrderBy(filter, [{ number: "desc" }, { id: "desc" }]),
@@ -2698,6 +2719,12 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       const r = versions.get(id);
       return r && withCounts(r);
     },
+    findVersionByName: async (projectId, name) => {
+      const r = [...versions.values()].find(
+        (v) => v.projectId === projectId && bin(v.name) === bin(name),
+      );
+      return r && withCounts(r);
+    },
     listVersions: async (projectId, opts = {}) =>
       sortRows(
         [...versions.values()]
@@ -2847,6 +2874,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
             (i) =>
               i.projectId === projectId &&
               (!filter.status || i.status === filter.status) &&
+              (!filter.versionId || i.versionId === filter.versionId) &&
               (q === undefined || matchesQ(i.title, q)),
           )
           .map(issueListOf),
