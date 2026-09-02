@@ -935,6 +935,17 @@ describe("versions", () => {
     );
     expect(detail.links).toHaveLength(2);
     expect(detail).toMatchObject({ artifactCount: 1, assetCount: 1 });
+    // The detail names each target so a page never shows a bare id.
+    expect(detail.links[0]).toMatchObject({
+      kind: "artifact",
+      artifact: { appName: "here", platform: "android" },
+      bundleName: null,
+    });
+    expect(detail.links[1]).toMatchObject({
+      kind: "asset_version",
+      artifact: null,
+      bundleName: "maps",
+    });
     const unlink = await h.app(
       ev("DELETE", `${links}/${parse(l1).id}`, { headers: member.cookie }),
     );
@@ -1038,6 +1049,26 @@ describe("issues and discussions", () => {
       ),
     );
     expect(open.issues.map((i: Json) => i.number)).toEqual([2]);
+    // By version: only the referencing issues; a foreign id is just empty.
+    const byVersion = parse(
+      await h.app(
+        ev("GET", `${p}/issues`, {
+          query: { versionId: v.id },
+          headers: member.cookie,
+        }),
+      ),
+    );
+    expect(byVersion.issues.map((i: Json) => i.number)).toEqual([1]);
+    expect(
+      parse(
+        await h.app(
+          ev("GET", `${p}/issues`, {
+            query: { versionId: "ver_nope" },
+            headers: member.cookie,
+          }),
+        ),
+      ).issues,
+    ).toEqual([]);
     expect(
       (
         await h.app(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nullLogger } from "@yyt/core";
+import { AppError, nullLogger } from "@yyt/core";
 import {
   CATALOG_PLATFORMS,
   createMemoryCatalogDb,
@@ -628,6 +628,148 @@ describe("catalog uploads", () => {
       ),
     ) as { status: string; artifactId: string };
     expect(st).toMatchObject({ status: "completed", artifactId: art.id });
+  });
+
+  it("links the committed artifact to the project version its tag names, creating it once", async () => {
+    const h = harness();
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
+    const commitWith = async (tags: Record<string, string>) => {
+      const up = await startUpload(h, owner, app.id, { ...uploadBody, tags });
+      h.artifacts.putObject(up.key, { contentLength: 1234, etag: "e" });
+      const r = await h.app(
+        ev("POST", `/catalog/uploads/${up.uploadId}/commit`, {
+          headers: owner.cookie,
+        }),
+      );
+      expect(r.statusCode, r.body).toBe(200);
+      return { up, body: j(r) as { id: string; version: unknown } };
+    };
+
+    // `+build` is the artifact's own tag; the version is the semver part.
+    const first = await commitWith({ version: "1.2.3+45" });
+    expect(first.body.version).toMatchObject({ name: "1.2.3", created: true });
+    const ver = first.body.version as { id: string; linkId: string };
+    expect(h.teamDb.versions.size).toBe(1);
+    expect(h.teamDb.links.size).toBe(1);
+    const detail = j(
+      await h.app(
+        ev("GET", `/projects/${owner.prjId}/versions/${ver.id}`, {
+          headers: owner.cookie,
+        }),
+      ),
+    ) as { artifactCount: number; createdBy: string; links: unknown[] };
+    expect(detail.artifactCount).toBe(1);
+    expect(detail.createdBy).toBe("owner");
+    expect(detail.links[0]).toMatchObject({
+      id: ver.linkId,
+      kind: "artifact",
+      artifactId: first.body.id,
+      artifact: { appName: "myapp", platform: "android", version: "1.2.3+45" },
+      bundleName: null,
+    });
+    expect(
+      h.teamDb.history
+        .map((x) => x.action)
+        .filter((a) => a.startsWith("version")),
+    ).toEqual(["version.create", "version.link"]);
+
+    // A second build of the same version links to the same row.
+    const second = await commitWith({ version: "1.2.3" });
+    expect(second.body.version).toMatchObject({
+      id: ver.id,
+      name: "1.2.3",
+      created: false,
+    });
+    expect(h.teamDb.versions.size).toBe(1);
+    expect(h.teamDb.links.size).toBe(2);
+
+    // Re-committing is idempotent: the same link, no new rows.
+    const again = j(
+      await h.app(
+        ev("POST", `/catalog/uploads/${first.up.uploadId}/commit`, {
+          headers: owner.cookie,
+        }),
+      ),
+    ) as { version: { linkId: string; created: boolean } };
+    expect(again.version).toMatchObject({ linkId: ver.linkId, created: false });
+    expect(h.teamDb.links.size).toBe(2);
+
+    // A repeated commit never writes: after the owner deletes the version,
+    // re-committing reports no link and recreates nothing.
+    const del = await h.app(
+      ev("DELETE", `/projects/${owner.prjId}/versions/${ver.id}`, {
+        headers: owner.cookie,
+      }),
+    );
+    expect(del.statusCode).toBe(204);
+    const afterDelete = j(
+      await h.app(
+        ev("POST", `/catalog/uploads/${first.up.uploadId}/commit`, {
+          headers: owner.cookie,
+        }),
+      ),
+    ) as { version: unknown };
+    expect(afterDelete.version).toBeNull();
+    expect(h.teamDb.versions.size).toBe(0);
+    expect(h.teamDb.links.size).toBe(0);
+
+    // Not a version name (a space, an id shape): the artifact lands, no link.
+    for (const version of ["1.0 beta", "ver_1"]) {
+      const r = await commitWith({ version });
+      expect(r.body.version).toBeNull();
+    }
+    expect(h.teamDb.versions.size).toBe(0);
+  });
+
+  it("never fails a commit for its version bookkeeping", async () => {
+    const warned: string[] = [];
+    const h = harness({
+      logger: { ...nullLogger, warn: (m) => void warned.push(m) },
+    });
+    const owner = await h.team("owner");
+    const app = await makeApp(h, owner);
+    const up = await startUpload(h, owner, app.id);
+    h.artifacts.putObject(up.key, { contentLength: 1234, etag: "e" });
+    const realLink = h.teamDb.addVersionLink;
+    h.teamDb.addVersionLink = async () => {
+      throw new AppError("unavailable", "db down");
+    };
+    const r = await h.app(
+      ev("POST", `/catalog/uploads/${up.uploadId}/commit`, {
+        headers: owner.cookie,
+      }),
+    );
+    expect(r.statusCode, r.body).toBe(200);
+    expect((j(r) as { version: unknown }).version).toBeNull();
+    expect(warned).toContain("catalog.version_link_skipped");
+    expect(h.catalog.artifacts.size).toBe(1);
+    expect(h.teamDb.versions.size).toBe(1); // the version itself was made
+
+    // A lost race on the version name resolves to the winner's row.
+    h.teamDb.addVersionLink = realLink;
+    const realCreate = h.teamDb.createVersion;
+    h.teamDb.createVersion = async (v, by) => {
+      await realCreate({ ...v, id: "ver_winner" }, by);
+      throw new AppError("conflict", "duplicate key");
+    };
+    const up2 = await startUpload(h, owner, app.id, {
+      ...uploadBody,
+      tags: { version: "2.0.0" },
+    });
+    h.artifacts.putObject(up2.key, { contentLength: 1234, etag: "e" });
+    const r2 = await h.app(
+      ev("POST", `/catalog/uploads/${up2.uploadId}/commit`, {
+        headers: owner.cookie,
+      }),
+    );
+    expect(r2.statusCode, r2.body).toBe(200);
+    expect((j(r2) as { version: unknown }).version).toMatchObject({
+      id: "ver_winner",
+      name: "2.0.0",
+      created: false,
+    });
+    expect(h.teamDb.links.size).toBe(1);
   });
 
   it("rolls the claim back when the copy fails, and resumes its own half-done commit", async () => {
