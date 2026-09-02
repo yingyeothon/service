@@ -1,8 +1,8 @@
 import {
   Anchor,
   Button,
-  Card,
   Code,
+  Drawer,
   Group,
   NativeSelect,
   Stack,
@@ -10,28 +10,31 @@ import {
   Tabs,
   Text,
   TextInput,
-  Title,
 } from "@mantine/core";
-import { modals } from "@mantine/modals";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
+import { DataTable, NameCell, NumCell } from "../components/DataTable";
+import { EnumFilter, FilterBar } from "../components/FilterBar";
+import { Loading, PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
 import { MdField } from "../components/MdField";
-import { DraftForm, SettingsForm } from "../components/ResourceForms";
+import { NameDescriptionFields } from "../components/NameDescriptionFields";
+import { PageHeader } from "../components/PageHeader";
+import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import {
-  Badge,
-  Confirm,
-  CopyField,
-  DangerCard,
-  LinkCell,
-  Notice,
-  Spinner,
-} from "../components/ui";
+  FormFooter,
+  ResourceDrawer,
+  useDrawerForm,
+} from "../components/ResourceDrawer";
+import { RowMenu } from "../components/RowMenu";
+import { Section } from "../components/Section";
+import { Badge, CopyField, Notice } from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
+import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
-import { issueUrl, projectUrl, teamUrl, useTeamStanding } from "../lib/team";
+import { issueUrl, projectUrl, useTeamStanding } from "../lib/team";
 import type {
   ChannelStatus,
   IssueStatus,
@@ -41,27 +44,68 @@ import type {
 } from "../types";
 import { ISSUE_TONE, VersionSelect } from "./Issue";
 import { SITE_SHARED_ORIGIN_WARNING } from "./Site";
+import { DiscussionFields } from "./Team";
 
-const TABS = [
-  "channels",
-  "catalog",
-  "assets",
-  "sites",
-  "versions",
-  "issues",
-  "settings",
-];
+const TABS = ["channels", "catalog", "assets", "sites", "versions", "issues"];
 
 export function ProjectPage() {
   const { team: teamId = "", prj = "", tab = "channels" } = useParams();
   const nav = useNavigate();
   const t = useTeamStanding(teamId);
   const p = useApiQuery(["project", prj], () => api.project(prj));
-
-  if (p.error) return <Notice kind="error">{p.error}</Notice>;
-  if (!p.data) return <Spinner />;
+  const act = useAction();
   const project = p.data;
+  const edit = useDrawerForm(() => ({
+    name: project?.name ?? "",
+    description: project?.description ?? "",
+  }));
+
+  if (p.error)
+    return (
+      <>
+        <Crumbs crumbs={{ teamId, teamName: t.team?.name ?? null }} />
+        <PageHeader />
+        <Notice kind="error">{p.error}</Notice>
+      </>
+    );
+  if (!project)
+    return (
+      <>
+        <Crumbs crumbs={{ teamId, teamName: t.team?.name ?? null }} />
+        <PageHeader />
+        <PageSkeleton />
+      </>
+    );
   const canWrite = t.canWrite;
+  const canDelete = t.owner || t.standing === "admin";
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const body: { name?: string; description?: string | null } = {};
+    const name = edit.form.name.trim();
+    if (name !== project.name) body.name = name;
+    if (edit.form.description !== (project.description ?? ""))
+      body.description =
+        edit.form.description === "" ? null : edit.form.description;
+    if (Object.keys(body).length === 0) {
+      edit.close();
+      return;
+    }
+    const r = await act.run(() => api.updateProject(project.id, body));
+    if (!r) return;
+    p.set({ ...project, ...r });
+    edit.close();
+    notify.saved("project");
+  };
+  const remove = async () => {
+    const ok = await act.run(async () => {
+      await api.deleteProject(project.id);
+      return true;
+    });
+    if (!ok) return;
+    notify.deleted("project");
+    void nav(`/teams/${encodeURIComponent(project.teamId)}`);
+  };
 
   return (
     <>
@@ -69,17 +113,23 @@ export function ProjectPage() {
         crumbs={{ teamId: project.teamId, teamName: project.teamName }}
         current={project.name}
       />
-      <Group gap="xs" mb="xs" align="center">
-        <Title order={2}>{project.name}</Title>
-        {!canWrite && !t.loading && <Badge tone="warn">read-only</Badge>}
-      </Group>
-      <Markdown text={project.description ?? ""} />
-      <Text size="xs" c="dimmed" mb="sm">
-        Created by {project.createdBy ?? "—"} · {fmtTime(project.createdAt)} ·{" "}
-        {project.counts.channels} channel(s), {project.counts.apps} app(s),{" "}
-        {project.counts.bundles} bundle(s), {project.counts.sites} site(s),{" "}
-        {project.counts.versions} version(s), {project.counts.issues} issue(s)
-      </Text>
+      <PageHeader
+        title={project.name}
+        badges={!canWrite && !t.loading && <Badge tone="warn">read-only</Badge>}
+        meta={
+          <>
+            Created by {project.createdBy ?? "—"} · {fmtTime(project.createdAt)}{" "}
+            · {project.counts.channels} channel(s), {project.counts.apps}{" "}
+            app(s), {project.counts.bundles} bundle(s), {project.counts.sites}{" "}
+            site(s), {project.counts.versions} version(s),{" "}
+            {project.counts.issues} issue(s) · id <Code>{project.id}</Code>
+          </>
+        }
+        actions={canWrite ? [{ label: "Edit", onClick: edit.open }] : []}
+      />
+      {!canWrite && !t.loading && <ReadOnlyBanner />}
+      {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
+      {project.description && <Markdown text={project.description} />}
       <Tabs
         value={TABS.includes(tab) ? tab : "channels"}
         onChange={(v) => void nav(projectUrl(teamId, prj, v ?? undefined))}
@@ -93,35 +143,64 @@ export function ProjectPage() {
           <Tabs.Tab value="sites">Sites</Tabs.Tab>
           <Tabs.Tab value="versions">Versions</Tabs.Tab>
           <Tabs.Tab value="issues">Issues</Tabs.Tab>
-          <Tabs.Tab value="settings">Settings</Tabs.Tab>
         </Tabs.List>
-        <Tabs.Panel value="channels" pt="sm">
+        <Tabs.Panel value="channels" pt="lg">
           <ChannelsTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
-        <Tabs.Panel value="catalog" pt="sm">
+        <Tabs.Panel value="catalog" pt="lg">
           <CatalogTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
-        <Tabs.Panel value="assets" pt="sm">
+        <Tabs.Panel value="assets" pt="lg">
           <AssetsTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
-        <Tabs.Panel value="sites" pt="sm">
+        <Tabs.Panel value="sites" pt="lg">
           <SitesTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
-        <Tabs.Panel value="versions" pt="sm">
+        <Tabs.Panel value="versions" pt="lg">
           <VersionsTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
-        <Tabs.Panel value="issues" pt="sm">
+        <Tabs.Panel value="issues" pt="lg">
           <IssuesTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
-        <Tabs.Panel value="settings" pt="sm">
-          <SettingsTab
-            project={project}
-            canWrite={canWrite}
-            canDelete={t.owner || t.standing === "admin"}
-            onChange={p.set}
-          />
-        </Tabs.Panel>
       </Tabs>
+      <ResourceDrawer
+        opened={edit.opened}
+        onClose={edit.close}
+        title="Edit project"
+        submitLabel="Save"
+        onSubmit={save}
+        busy={act.busy}
+        disabled={!edit.form.name.trim()}
+        error={edit.opened ? act.error : null}
+        danger={
+          canDelete
+            ? {
+                label: "Delete project",
+                description:
+                  "Deleting a project is refused while a channel, app, bundle or site still belongs to it — including channels deleted less than a day ago, until the sweep purges them.",
+                onConfirm: remove,
+                disabled: act.busy,
+              }
+            : undefined
+        }
+      >
+        <div>
+          <CopyField label="Project id" value={project.id} />
+          <CopyField label="Team id" value={project.teamId} />
+          <Text size="xs" c="dimmed">
+            For the CLI: <code>yyt project use {project.id}</code> or{" "}
+            <code>{`.yyt.json {"team":"${project.teamId}","project":"${project.id}"}`}</code>
+            .
+          </Text>
+        </div>
+        <NameDescriptionFields
+          name={edit.form.name}
+          description={edit.form.description}
+          onName={(name) => edit.patch({ name })}
+          onDescription={(description) => edit.patch({ description })}
+          markdown
+        />
+      </ResourceDrawer>
     </>
   );
 }
@@ -142,85 +221,126 @@ function ChannelsTab({
   const list = useApiQuery(["project", project.id, "channels"], () =>
     api.projectChannels(project.id),
   );
+  const act = useAction();
+  const extend = async (id: string) => {
+    if (await act.run(() => api.extendChannel(id))) {
+      notify.done("Channel extended");
+      await list.reload();
+    }
+  };
+  const remove = async (id: string) => {
+    if (
+      await act.run(async () => {
+        await api.deleteChannel(id);
+        return true;
+      })
+    ) {
+      notify.deleted("channel");
+      await list.reload();
+    }
+  };
   return (
-    <>
-      <Group justify="space-between" mb="sm">
-        <Text size="sm" c="dimmed">
-          Channels expire 7 days after creation; extend them from the detail
-          page (up to 28 days ahead).
-        </Text>
-        {canWrite && (
+    <Section
+      title="Channels"
+      description="Channels expire 7 days after creation; extend them from the detail page (up to 28 days ahead)."
+      actions={
+        canWrite && (
           <Button
             component={Link}
             to={`${projectUrl(project.teamId, project.id)}/channels/new`}
-            size="compact-sm"
           >
             New channel
           </Button>
+        )
+      }
+    >
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={[
+          { key: "name", label: "Name" },
+          { key: "kind", label: "Kind" },
+          { key: "id", label: "Id" },
+          { key: "status", label: "Status" },
+          { key: "expires", label: "Expires" },
+        ]}
+        rows={list.data}
+        loading={list.loading}
+        error={list.error}
+        rowKey={(c) => c.id}
+        empty={{
+          title: "No channels yet.",
+          hint: canWrite
+            ? "An auth channel comes first; topic, match, lobby and q channels hang off it."
+            : undefined,
+        }}
+        render={(c) => (
+          <>
+            <NameCell to={`/channels/${encodeURIComponent(c.id)}`}>
+              {c.name}
+            </NameCell>
+            <Table.Td>{c.kind}</Table.Td>
+            <Table.Td>
+              <Code>{c.id}</Code>
+            </Table.Td>
+            <Table.Td>
+              <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
+            </Table.Td>
+            <Table.Td title={fmtTime(c.expiresAt)}>
+              {fmtRelative(c.expiresAt)}
+            </Table.Td>
+          </>
         )}
-      </Group>
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={560}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Name</Table.Th>
-                <Table.Th>Kind</Table.Th>
-                <Table.Th>Id</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th>Expires</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((c) => (
-                <Table.Tr key={c.id}>
-                  <LinkCell to={`/channels/${encodeURIComponent(c.id)}`}>
-                    {c.name}
-                  </LinkCell>
-                  <Table.Td>{c.kind}</Table.Td>
-                  <Table.Td>
-                    <Code>{c.id}</Code>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
-                  </Table.Td>
-                  <Table.Td title={fmtTime(c.expiresAt)}>
-                    {fmtRelative(c.expiresAt)}
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          No channels yet.
-        </Text>
-      )}
-    </>
+        actions={
+          canWrite
+            ? (c) => (
+                <RowMenu
+                  name={c.name}
+                  items={[
+                    {
+                      label: "Extend +7 days",
+                      onClick: () => extend(c.id),
+                      disabled: act.busy,
+                    },
+                    {
+                      label: "Delete channel",
+                      danger: true,
+                      disabled: act.busy,
+                      onClick: () => remove(c.id),
+                      confirm: {
+                        title: `Delete ${c.name}?`,
+                        message:
+                          "Sockets on it are closed and its credentials stop working.",
+                        confirmLabel: "Delete channel",
+                        danger: true,
+                      },
+                    },
+                  ]}
+                />
+              )
+            : undefined
+        }
+      />
+    </Section>
   );
 }
 
 /**
- * The three list-and-create tabs (catalog apps, asset bundles, sites) are
- * one screen with different columns: an intro line, a create card for
- * writers with a name and one more field, then the table or an empty line.
+ * The three list-and-create tabs (catalog apps, asset bundles, sites) are one
+ * screen with different columns: a section with the `New <noun>` button, a
+ * drawer with a name and one more field, and the table.
  */
-function ResourceTab<T extends { id: string }>({
+function ResourceListTab<T extends { id: string }>({
   project,
   canWrite,
   queryKey,
   load,
   create,
+  noun,
+  title,
   intro,
   warn,
-  nameLabel,
   namePlaceholder,
   second,
-  submitLabel,
   columns,
   row,
   emptyText,
@@ -235,9 +355,11 @@ function ResourceTab<T extends { id: string }>({
    * `undefined`, so a 204 here would read as a failed create.
    */
   create: (projectId: string, name: string, second: string) => Promise<object>;
+  /** "app" → `New app`, `Create app`, "App created". */
+  noun: string;
+  title: string;
   intro: ReactNode;
   warn?: ReactNode;
-  nameLabel: string;
   namePlaceholder: string;
   second: {
     label: string;
@@ -245,8 +367,7 @@ function ResourceTab<T extends { id: string }>({
     required: boolean;
     maxLength: number;
   };
-  submitLabel: string;
-  columns: string[];
+  columns: { key: string; label: string }[];
   /** The cells after the name cell. */
   row: (item: T) => ReactNode;
   emptyText: string;
@@ -255,95 +376,82 @@ function ResourceTab<T extends { id: string }>({
     load(project.id),
   );
   const act = useAction();
-  const [name, setName] = useState("");
-  const [extra, setExtra] = useState("");
+  const drawer = useDrawerForm(() => ({ name: "", extra: "" }));
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const r = await act.run(() =>
-      create(project.id, name.trim(), extra.trim()),
+      create(project.id, drawer.form.name.trim(), drawer.form.extra.trim()),
     );
     if (!r) return;
-    setName("");
-    setExtra("");
+    drawer.close();
+    notify.created(noun);
     await list.reload();
   };
+  const canSubmit =
+    !!drawer.form.name.trim() &&
+    (!second.required || !!drawer.form.extra.trim());
   return (
-    <>
-      <Text size="sm" c="dimmed" mb="sm">
-        {intro}
-      </Text>
+    <Section
+      title={title}
+      description={intro}
+      actions={canWrite && <Button onClick={drawer.open}>New {noun}</Button>}
+    >
       {warn}
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {canWrite && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void submit(e)}>
-            <Group align="end" wrap="wrap">
-              <TextInput
-                label={nameLabel}
-                placeholder={namePlaceholder}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                maxLength={64}
-              />
-              <TextInput
-                label={second.label}
-                placeholder={second.placeholder}
-                value={extra}
-                onChange={(e) => setExtra(e.target.value)}
-                required={second.required}
-                maxLength={second.maxLength}
-              />
-              <Button
-                type="submit"
-                disabled={
-                  act.busy || !name.trim() || (second.required && !extra.trim())
-                }
-              >
-                {submitLabel}
-              </Button>
-            </Group>
-          </form>
-        </Card>
-      )}
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={560}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                {columns.map((c) => (
-                  <Table.Th key={c}>{c}</Table.Th>
-                ))}
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((item) => (
-                <Table.Tr key={item.id}>{row(item)}</Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          {emptyText}
-        </Text>
-      )}
-    </>
+      {act.error && !drawer.opened && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={columns}
+        rows={list.data}
+        loading={list.loading}
+        error={list.error}
+        rowKey={(item) => item.id}
+        empty={{ title: emptyText }}
+        render={row}
+      />
+      <ResourceDrawer
+        opened={drawer.opened}
+        onClose={drawer.close}
+        title={`New ${noun}`}
+        submitLabel={`Create ${noun}`}
+        onSubmit={submit}
+        busy={act.busy}
+        disabled={!canSubmit}
+        error={drawer.opened ? act.error : null}
+      >
+        <TextInput
+          label="Name"
+          placeholder={namePlaceholder}
+          value={drawer.form.name}
+          onChange={(e) => drawer.patch({ name: e.currentTarget.value })}
+          required
+          maxLength={64}
+          autoComplete="off"
+          spellCheck={false}
+          data-autofocus
+        />
+        <TextInput
+          label={second.label}
+          placeholder={second.placeholder}
+          value={drawer.form.extra}
+          onChange={(e) => drawer.patch({ extra: e.currentTarget.value })}
+          required={second.required}
+          maxLength={second.maxLength}
+          autoComplete="off"
+        />
+      </ResourceDrawer>
+    </Section>
   );
 }
 
 function CatalogTab(props: { project: ProjectDetail; canWrite: boolean }) {
   return (
-    <ResourceTab
+    <ResourceListTab
       {...props}
       queryKey="apps"
       load={api.projectCatalogApps}
       create={(prj, name, path) => api.createCatalogApp(prj, { name, path })}
+      noun="app"
+      title="Catalog"
       intro="Binary distribution: apps hold build artifacts served from the public CDN."
-      nameLabel="New app"
       namePlaceholder="name (e.g. my-game)"
       second={{
         label: "Application id",
@@ -351,13 +459,17 @@ function CatalogTab(props: { project: ProjectDetail; canWrite: boolean }) {
         required: true,
         maxLength: 200,
       }}
-      submitLabel="Create app"
-      columns={["App", "Application id", "Created by", "Updated"]}
+      columns={[
+        { key: "name", label: "App" },
+        { key: "path", label: "Application id" },
+        { key: "by", label: "Created by" },
+        { key: "updated", label: "Updated" },
+      ]}
       row={(a) => (
         <>
-          <LinkCell to={`/catalog/apps/${encodeURIComponent(a.id)}`}>
+          <NameCell to={`/catalog/apps/${encodeURIComponent(a.id)}`}>
             {a.name}
-          </LinkCell>
+          </NameCell>
           <Table.Td>
             <Code>{a.path}</Code>
           </Table.Td>
@@ -378,15 +490,16 @@ const withDescription = (name: string, description: string) => ({
 
 function AssetsTab(props: { project: ProjectDetail; canWrite: boolean }) {
   return (
-    <ResourceTab
+    <ResourceListTab
       {...props}
       queryKey="bundles"
       load={api.projectAssetBundles}
       create={(prj, name, description) =>
         api.createAssetBundle(prj, withDescription(name, description))
       }
+      noun="bundle"
+      title="Assets"
       intro="Game content on the public CDN: maps, tilesets, sounds. Every object is versioned, world-readable and cached forever — publishing a fix means uploading a new version and pointing a lobby channel’s map URL at it."
-      nameLabel="New bundle"
       namePlaceholder="name (e.g. dungeon-maps)"
       second={{
         label: "Description",
@@ -394,13 +507,17 @@ function AssetsTab(props: { project: ProjectDetail; canWrite: boolean }) {
         required: false,
         maxLength: 2000,
       }}
-      submitLabel="Create bundle"
-      columns={["Bundle", "Description", "Created by", "Updated"]}
+      columns={[
+        { key: "name", label: "Bundle" },
+        { key: "desc", label: "Description" },
+        { key: "by", label: "Created by" },
+        { key: "updated", label: "Updated" },
+      ]}
       row={(b) => (
         <>
-          <LinkCell to={`/assets/${encodeURIComponent(b.id)}`}>
+          <NameCell to={`/assets/${encodeURIComponent(b.id)}`}>
             {b.name}
-          </LinkCell>
+          </NameCell>
           <Table.Td>{b.description ?? "—"}</Table.Td>
           <Table.Td>{b.createdBy ?? "—"}</Table.Td>
           <Table.Td>{fmtTime(b.updatedAt)}</Table.Td>
@@ -413,16 +530,17 @@ function AssetsTab(props: { project: ProjectDetail; canWrite: boolean }) {
 
 function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
   return (
-    <ResourceTab
+    <ResourceListTab
       {...props}
       queryKey="sites"
       load={api.projectSites}
       create={(prj, name, description) =>
         api.createSite(prj, withDescription(name, description))
       }
+      noun="site"
+      title="Sites"
       intro="Static web builds (a browser game client, a landing page) served at the shared static host under a random path. One live tree per site: a deploy replaces the previous files."
       warn={<Notice kind="warn">{SITE_SHARED_ORIGIN_WARNING}</Notice>}
-      nameLabel="New site"
       namePlaceholder="name (e.g. game-web)"
       second={{
         label: "Description",
@@ -430,13 +548,17 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
         required: false,
         maxLength: 2000,
       }}
-      submitLabel="Create site"
-      columns={["Site", "URL", "Live", "Updated"]}
+      columns={[
+        { key: "name", label: "Site" },
+        { key: "url", label: "URL" },
+        { key: "live", label: "Live" },
+        { key: "updated", label: "Updated" },
+      ]}
       row={(s) => (
         <>
-          <LinkCell to={`/sites/${encodeURIComponent(s.id)}`}>
+          <NameCell to={`/sites/${encodeURIComponent(s.id)}`}>
             {s.name}
-          </LinkCell>
+          </NameCell>
           <Table.Td>
             <Anchor
               href={s.publicUrl}
@@ -473,10 +595,44 @@ function linkLabel(l: VersionLink): string {
 }
 
 /**
- * One version's note and links, in a modal. A link may only point inside the
- * same project (the API checks); the pickers list what the project has.
+ * One version's note and links, in a drawer. A link may only point inside
+ * the same project (the API checks); the pickers list what the project has.
+ * Two forms live here, so it is a plain drawer rather than a `ResourceDrawer`.
  */
-export function VersionModal({
+export function VersionDrawer({
+  project,
+  version,
+  canWrite,
+  onChanged,
+  onClose,
+}: {
+  project: ProjectDetail;
+  version: Version | null;
+  canWrite: boolean;
+  onChanged: () => Promise<void>;
+  onClose: () => void;
+}) {
+  return (
+    <Drawer
+      opened={version !== null}
+      onClose={onClose}
+      title={version ? `Version ${version.name}` : ""}
+      size="lg"
+    >
+      {version && (
+        <VersionBody
+          key={version.id}
+          project={project}
+          version={version}
+          canWrite={canWrite}
+          onChanged={onChanged}
+        />
+      )}
+    </Drawer>
+  );
+}
+
+function VersionBody({
   project,
   version,
   canWrite,
@@ -522,6 +678,7 @@ export function VersionModal({
     );
     if (r) {
       setNote(null);
+      notify.saved("release note");
       await detail.reload();
       await onChanged();
     }
@@ -535,6 +692,7 @@ export function VersionModal({
     if (await act.run(() => api.addVersionLink(project.id, version.id, body))) {
       setArtifactId("");
       setAssetVersion("");
+      notify.done("Link added");
       await detail.reload();
       await onChanged(); // list counts
     }
@@ -546,6 +704,7 @@ export function VersionModal({
         return true;
       })
     ) {
+      notify.done("Link removed");
       await detail.reload();
       await onChanged(); // list counts
     }
@@ -556,150 +715,159 @@ export function VersionModal({
       : bundleId !== "" && assetVersion !== "";
 
   return (
-    <Stack gap="sm">
+    <Stack gap="lg">
       {act.error && <Notice kind="error">{act.error}</Notice>}
-      <Text size="xs" c="dimmed">
+      <Text size="sm" c="dimmed">
         {version.createdBy ?? "—"} · {fmtTime(version.createdAt)}
       </Text>
       {canWrite ? (
         <form onSubmit={(e) => void saveNote(e)}>
-          <Stack gap="xs">
+          <Stack gap="sm">
             <MdField
               label="Release note"
               value={note ?? version.note ?? ""}
               onChange={setNote}
               minRows={3}
             />
-            <Group>
-              <Button
-                type="submit"
-                size="compact-sm"
-                disabled={act.busy || note === null}
-              >
-                Save note
-              </Button>
-            </Group>
+            <FormFooter
+              submitLabel="Save note"
+              busy={act.busy}
+              disabled={note === null}
+            />
           </Stack>
         </form>
       ) : (
         <Markdown text={version.note ?? ""} />
       )}
-      <Title order={5}>Links</Title>
-      {detail.error && <Notice kind="error">{detail.error}</Notice>}
-      {!detail.data ? (
-        <Spinner />
-      ) : detail.data.links.length === 0 ? (
-        <Text size="sm" c="dimmed">
-          Nothing linked yet.
-        </Text>
-      ) : (
-        <Table>
-          <Table.Tbody>
-            {detail.data.links.map((l) => (
-              <Table.Tr key={l.id}>
-                <Table.Td>
-                  <Code>{linkLabel(l)}</Code>
-                </Table.Td>
-                <Table.Td>{fmtTime(l.createdAt)}</Table.Td>
-                <Table.Td>
-                  {canWrite && (
-                    <Confirm
-                      label="Unlink"
-                      onConfirm={() => removeLink(l.id)}
-                      disabled={act.busy}
-                    />
-                  )}
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      )}
-      {canWrite && (
-        <form onSubmit={(e) => void addLink(e)}>
-          <Group align="end" wrap="wrap">
-            <NativeSelect
-              label="Link"
-              value={kind}
-              onChange={(e) =>
-                setKind(e.target.value as "artifact" | "asset_version")
-              }
-              data={[
-                { value: "artifact", label: "catalog artifact" },
-                { value: "asset_version", label: "asset version" },
-              ]}
-            />
-            {kind === "artifact" ? (
-              <>
-                <NativeSelect
-                  label="App"
-                  value={appId}
-                  onChange={(e) => {
-                    setAppId(e.target.value);
-                    setArtifactId("");
-                  }}
-                  data={[
-                    { value: "", label: "— choose —" },
-                    ...(apps.data ?? []).map((a) => ({
-                      value: a.id,
-                      label: a.name,
-                    })),
-                  ]}
-                />
-                <NativeSelect
-                  label="Artifact"
-                  value={artifactId}
-                  onChange={(e) => setArtifactId(e.target.value)}
-                  data={[
-                    { value: "", label: "— choose —" },
-                    ...(artifacts.data ?? []).map((a) => ({
-                      value: a.id,
-                      label: `${a.tags.version ?? "?"} ${a.platform} (${fmtTime(a.createdAt)})`,
-                    })),
-                  ]}
-                />
-              </>
-            ) : (
-              <>
-                <NativeSelect
-                  label="Bundle"
-                  value={bundleId}
-                  onChange={(e) => {
-                    setBundleId(e.target.value);
-                    setAssetVersion("");
-                  }}
-                  data={[
-                    { value: "", label: "— choose —" },
-                    ...(bundles.data ?? []).map((b) => ({
-                      value: b.id,
-                      label: b.name,
-                    })),
-                  ]}
-                />
-                <NativeSelect
-                  label="Version"
-                  value={assetVersion}
-                  onChange={(e) => setAssetVersion(e.target.value)}
-                  data={[
-                    { value: "", label: "— choose —" },
-                    ...(bundle.data?.versions ?? []).map((v) => ({
-                      value: v.version,
-                      label: v.version,
-                    })),
-                  ]}
-                />
-              </>
-            )}
-            <Button
-              type="submit"
-              size="compact-sm"
-              disabled={act.busy || !canAdd}
-            >
-              Add link
-            </Button>
-          </Group>
-        </form>
-      )}
+      <Section title="Links">
+        {detail.error && <Notice kind="error">{detail.error}</Notice>}
+        {!detail.data ? (
+          <Loading />
+        ) : detail.data.links.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            Nothing linked yet.
+          </Text>
+        ) : (
+          <Table>
+            <Table.Tbody>
+              {detail.data.links.map((l) => (
+                <Table.Tr key={l.id}>
+                  <Table.Td>
+                    <Code>{linkLabel(l)}</Code>
+                  </Table.Td>
+                  <Table.Td>{fmtTime(l.createdAt)}</Table.Td>
+                  <Table.Td style={{ textAlign: "right" }}>
+                    {canWrite && (
+                      <RowMenu
+                        name={linkLabel(l)}
+                        items={[
+                          {
+                            label: "Unlink",
+                            danger: true,
+                            disabled: act.busy,
+                            onClick: () => removeLink(l.id),
+                            confirm: {
+                              title: "Unlink?",
+                              message: linkLabel(l),
+                              confirmLabel: "Unlink",
+                              danger: true,
+                            },
+                          },
+                        ]}
+                      />
+                    )}
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+        {canWrite && (
+          <form onSubmit={(e) => void addLink(e)}>
+            <Group align="end" wrap="wrap" mt="md">
+              <NativeSelect
+                label="Link"
+                value={kind}
+                onChange={(e) =>
+                  setKind(e.target.value as "artifact" | "asset_version")
+                }
+                data={[
+                  { value: "artifact", label: "catalog artifact" },
+                  { value: "asset_version", label: "asset version" },
+                ]}
+              />
+              {kind === "artifact" ? (
+                <>
+                  <NativeSelect
+                    label="App"
+                    value={appId}
+                    onChange={(e) => {
+                      setAppId(e.target.value);
+                      setArtifactId("");
+                    }}
+                    data={[
+                      { value: "", label: "— choose —" },
+                      ...(apps.data ?? []).map((a) => ({
+                        value: a.id,
+                        label: a.name,
+                      })),
+                    ]}
+                  />
+                  <NativeSelect
+                    label="Artifact"
+                    value={artifactId}
+                    onChange={(e) => setArtifactId(e.target.value)}
+                    data={[
+                      { value: "", label: "— choose —" },
+                      ...(artifacts.data ?? []).map((a) => ({
+                        value: a.id,
+                        label: `${a.tags.version ?? "?"} ${a.platform} (${fmtTime(a.createdAt)})`,
+                      })),
+                    ]}
+                  />
+                </>
+              ) : (
+                <>
+                  <NativeSelect
+                    label="Bundle"
+                    value={bundleId}
+                    onChange={(e) => {
+                      setBundleId(e.target.value);
+                      setAssetVersion("");
+                    }}
+                    data={[
+                      { value: "", label: "— choose —" },
+                      ...(bundles.data ?? []).map((b) => ({
+                        value: b.id,
+                        label: b.name,
+                      })),
+                    ]}
+                  />
+                  <NativeSelect
+                    label="Version"
+                    value={assetVersion}
+                    onChange={(e) => setAssetVersion(e.target.value)}
+                    data={[
+                      { value: "", label: "— choose —" },
+                      ...(bundle.data?.versions ?? []).map((v) => ({
+                        value: v.version,
+                        label: v.version,
+                      })),
+                    ]}
+                  />
+                </>
+              )}
+              <Button
+                type="submit"
+                variant="default"
+                disabled={act.busy || !canAdd}
+              >
+                Add link
+              </Button>
+            </Group>
+          </form>
+        )}
+      </Section>
     </Stack>
   );
 }
@@ -715,19 +883,26 @@ function VersionsTab({
     api.versions(project.id),
   );
   const act = useAction();
-  const [name, setName] = useState("");
-  const create = async (e: FormEvent) => {
+  const create = useDrawerForm(() => ({ name: "" }));
+  const [open, setOpen] = useState<Version | null>(null);
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (
-      await act.run(() => api.createVersion(project.id, { name: name.trim() }))
+      await act.run(() =>
+        api.createVersion(project.id, { name: create.form.name.trim() }),
+      )
     ) {
-      setName("");
+      create.close();
+      notify.created("version");
       await list.reload();
     }
   };
   const bump = async (part: "patch" | "minor" | "major") => {
-    if (await act.run(() => api.bumpVersion(project.id, part)))
+    const r = await act.run(() => api.bumpVersion(project.id, part));
+    if (r) {
+      notify.created(`version ${r.name}`);
       await list.reload();
+    }
   };
   const remove = async (v: Version) => {
     if (
@@ -735,121 +910,135 @@ function VersionsTab({
         await api.deleteVersion(project.id, v.id);
         return true;
       })
-    )
+    ) {
+      notify.deleted("version");
       await list.reload();
+    }
   };
-  const open = (v: Version) =>
-    modals.open({
-      title: `Version ${v.name}`,
-      size: "lg",
-      children: (
-        <VersionModal
-          project={project}
-          version={v}
-          canWrite={canWrite}
-          onChanged={list.reload}
-        />
-      ),
-    });
 
   return (
-    <>
-      <Text size="sm" c="dimmed" mb="sm">
-        Versions are free strings, unique within the project. <b>Bump</b> takes
-        the greatest semver-shaped one (<Code>1.2.3</Code> or{" "}
-        <Code>v1.2.3</Code>) and adds one; a version links to the artifacts and
-        asset versions that make it up.
-      </Text>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {canWrite && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void create(e)}>
-            <Group align="end" wrap="wrap">
-              <TextInput
-                label="New version"
-                placeholder="v1.0.0"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                maxLength={64}
-              />
-              <Button type="submit" disabled={act.busy || !name.trim()}>
-                Create
+    <Section
+      title="Versions"
+      description={
+        <>
+          Versions are free strings, unique within the project. <b>Bump</b>{" "}
+          takes the greatest semver-shaped one (<Code>1.2.3</Code> or{" "}
+          <Code>v1.2.3</Code>) and adds one; a version links to the artifacts
+          and asset versions that make it up.
+        </>
+      }
+      actions={
+        canWrite && (
+          <>
+            {(["patch", "minor", "major"] as const).map((part) => (
+              <Button
+                key={part}
+                variant="default"
+                disabled={act.busy}
+                onClick={() => void bump(part)}
+              >
+                Bump {part}
               </Button>
-              <Group gap="xs">
-                {(["patch", "minor", "major"] as const).map((part) => (
-                  <Button
-                    key={part}
-                    variant="default"
-                    disabled={act.busy}
-                    onClick={() => void bump(part)}
-                  >
-                    Bump {part}
-                  </Button>
-                ))}
-              </Group>
-            </Group>
-          </form>
-        </Card>
-      )}
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={480}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Version</Table.Th>
-                <Table.Th>Note</Table.Th>
-                <Table.Th>Artifacts</Table.Th>
-                <Table.Th>Assets</Table.Th>
-                <Table.Th>By</Table.Th>
-                <Table.Th>Created</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((v) => (
-                <Table.Tr key={v.id}>
-                  <Table.Td>
-                    <Anchor
-                      component="button"
-                      size="sm"
-                      onClick={() => open(v)}
-                    >
-                      {v.name}
-                    </Anchor>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="sm" lineClamp={1}>
-                      {v.note ?? "—"}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>{v.artifactCount}</Table.Td>
-                  <Table.Td>{v.assetCount}</Table.Td>
-                  <Table.Td>{v.createdBy ?? "—"}</Table.Td>
-                  <Table.Td>{fmtTime(v.createdAt)}</Table.Td>
-                  <Table.Td>
-                    {canWrite && (
-                      <Confirm
-                        label="Delete"
-                        onConfirm={() => remove(v)}
-                        disabled={act.busy}
-                      />
-                    )}
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          No versions yet.
-        </Text>
-      )}
-    </>
+            ))}
+            <Button onClick={create.open}>New version</Button>
+          </>
+        )
+      }
+    >
+      {act.error && !create.opened && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={[
+          { key: "name", label: "Version" },
+          { key: "note", label: "Note" },
+          { key: "artifacts", label: "Artifacts", align: "right" },
+          { key: "assets", label: "Assets", align: "right" },
+          { key: "by", label: "By" },
+          { key: "created", label: "Created" },
+        ]}
+        rows={list.data}
+        loading={list.loading}
+        error={list.error}
+        rowKey={(v) => v.id}
+        minWidth={560}
+        empty={{ title: "No versions yet." }}
+        render={(v) => (
+          <>
+            <Table.Td>
+              <Anchor
+                component="button"
+                type="button"
+                size="sm"
+                fw={500}
+                onClick={() => setOpen(v)}
+              >
+                {v.name}
+              </Anchor>
+            </Table.Td>
+            <Table.Td>
+              <Text size="sm" lineClamp={1}>
+                {v.note ?? "—"}
+              </Text>
+            </Table.Td>
+            <NumCell>{v.artifactCount}</NumCell>
+            <NumCell>{v.assetCount}</NumCell>
+            <Table.Td>{v.createdBy ?? "—"}</Table.Td>
+            <Table.Td>{fmtTime(v.createdAt)}</Table.Td>
+          </>
+        )}
+        actions={
+          canWrite
+            ? (v) => (
+                <RowMenu
+                  name={v.name}
+                  items={[
+                    {
+                      label: "Delete version",
+                      danger: true,
+                      disabled: act.busy,
+                      onClick: () => remove(v),
+                      confirm: {
+                        title: `Delete ${v.name}?`,
+                        message: "Its links go with it; issues keep the id.",
+                        confirmLabel: "Delete version",
+                        danger: true,
+                      },
+                    },
+                  ]}
+                />
+              )
+            : undefined
+        }
+      />
+      <VersionDrawer
+        project={project}
+        version={open}
+        canWrite={canWrite}
+        onChanged={list.reload}
+        onClose={() => setOpen(null)}
+      />
+      <ResourceDrawer
+        opened={create.opened}
+        onClose={create.close}
+        title="New version"
+        submitLabel="Create version"
+        onSubmit={submit}
+        busy={act.busy}
+        disabled={!create.form.name.trim()}
+        error={create.opened ? act.error : null}
+      >
+        <TextInput
+          label="Name"
+          placeholder="v1.0.0"
+          value={create.form.name}
+          onChange={(e) => create.patch({ name: e.currentTarget.value })}
+          required
+          maxLength={64}
+          autoComplete="off"
+          spellCheck={false}
+          data-autofocus
+        />
+      </ResourceDrawer>
+    </Section>
   );
 }
 
@@ -871,183 +1060,101 @@ function IssuesTab({
   );
   const act = useAction();
   const nav = useNavigate();
-  const [draft, setDraft] = useState<{
-    title: string;
-    bodyMd: string;
-    versionId: string | null;
-  } | null>(null);
+  const create = useDrawerForm(() => ({
+    title: "",
+    bodyMd: "",
+    versionId: null as string | null,
+  }));
   const versionName = (id: string | null) =>
     id ? (versions.data?.find((v) => v.id === id)?.name ?? id) : "—";
 
-  const create = async (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!draft) return;
     const r = await act.run(() =>
       api.createIssue(project.id, {
-        title: draft.title.trim(),
-        bodyMd: draft.bodyMd,
-        versionId: draft.versionId,
+        title: create.form.title.trim(),
+        bodyMd: create.form.bodyMd,
+        versionId: create.form.versionId,
       }),
     );
-    if (r) void nav(issueUrl(project.teamId, project.id, r.number));
+    if (!r) return;
+    create.close();
+    notify.created("issue");
+    void nav(issueUrl(project.teamId, project.id, r.number));
   };
 
   return (
-    <>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      <Group justify="space-between" align="end" mb="sm">
-        <NativeSelect
+    <Section
+      title="Issues"
+      actions={canWrite && <Button onClick={create.open}>New issue</Button>}
+    >
+      <FilterBar>
+        <EnumFilter
           label="Status"
           value={status}
-          onChange={(e) => setStatus(e.target.value as IssueStatus | "")}
-          data={[
-            { value: "open", label: "open" },
-            { value: "closed", label: "closed" },
-            { value: "", label: "all" },
+          options={[
+            { value: "open", label: "Open" },
+            { value: "closed", label: "Closed" },
+            { value: "", label: "All" },
           ]}
+          onChange={(v) => setStatus(v as IssueStatus | "")}
         />
-        {canWrite && !draft && (
-          <Button
-            size="compact-sm"
-            onClick={() => setDraft({ title: "", bodyMd: "", versionId: null })}
-          >
-            New issue
-          </Button>
+      </FilterBar>
+      {act.error && !create.opened && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={[
+          { key: "n", label: "#", align: "right" },
+          { key: "title", label: "Title" },
+          { key: "status", label: "Status" },
+          { key: "version", label: "Version" },
+          { key: "by", label: "By" },
+          { key: "updated", label: "Updated" },
+        ]}
+        rows={list.data}
+        loading={list.loading}
+        error={list.error}
+        rowKey={(i) => i.id}
+        empty={{ title: `No ${status || ""} issues.`.replace("  ", " ") }}
+        render={(i) => (
+          <>
+            <NumCell>{i.number}</NumCell>
+            <NameCell to={issueUrl(project.teamId, project.id, i.number)}>
+              {i.title}
+            </NameCell>
+            <Table.Td>
+              <Badge tone={ISSUE_TONE[i.status]}>{i.status}</Badge>
+            </Table.Td>
+            <Table.Td>{versionName(i.versionId)}</Table.Td>
+            <Table.Td>{i.createdBy ?? "—"}</Table.Td>
+            <Table.Td>{fmtTime(i.updatedAt)}</Table.Td>
+          </>
         )}
-      </Group>
-      {draft && (
-        <DraftForm
-          draft={draft}
-          onChange={(next) => setDraft({ ...draft, ...next })}
-          onSubmit={create}
-          onCancel={() => setDraft(null)}
-          submitLabel="Open issue"
+      />
+      <ResourceDrawer
+        opened={create.opened}
+        onClose={create.close}
+        title="New issue"
+        submitLabel="Open issue"
+        onSubmit={submit}
+        busy={act.busy}
+        disabled={!create.form.title.trim()}
+        error={create.opened ? act.error : null}
+        size="lg"
+      >
+        <DiscussionFields
+          title={create.form.title}
+          bodyMd={create.form.bodyMd}
+          onChange={(p) => create.patch(p)}
           bodyLabel="Description"
-          busy={act.busy}
           extra={
             <VersionSelect
               versions={versions.data ?? []}
-              value={draft.versionId}
-              onChange={(versionId) => setDraft({ ...draft, versionId })}
+              value={create.form.versionId}
+              onChange={(versionId) => create.patch({ versionId })}
             />
           }
         />
-      )}
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={560}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>#</Table.Th>
-                <Table.Th>Title</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th>Version</Table.Th>
-                <Table.Th>By</Table.Th>
-                <Table.Th>Updated</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((i) => (
-                <Table.Tr key={i.id}>
-                  <Table.Td>{i.number}</Table.Td>
-                  <LinkCell to={issueUrl(project.teamId, project.id, i.number)}>
-                    {i.title}
-                  </LinkCell>
-                  <Table.Td>
-                    <Badge tone={ISSUE_TONE[i.status]}>{i.status}</Badge>
-                  </Table.Td>
-                  <Table.Td>{versionName(i.versionId)}</Table.Td>
-                  <Table.Td>{i.createdBy ?? "—"}</Table.Td>
-                  <Table.Td>{fmtTime(i.updatedAt)}</Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          No {status || ""} issues.
-        </Text>
-      )}
-    </>
-  );
-}
-
-/* ---- settings ------------------------------------------------------------ */
-
-function SettingsTab({
-  project,
-  canWrite,
-  canDelete,
-  onChange,
-}: {
-  project: ProjectDetail;
-  canWrite: boolean;
-  canDelete: boolean;
-  onChange: (p: ProjectDetail) => void;
-}) {
-  const nav = useNavigate();
-  const act = useAction();
-  const [name, setName] = useState<string | null>(null);
-  const [desc, setDesc] = useState<string | null>(null);
-
-  const save = async (e: FormEvent) => {
-    e.preventDefault();
-    const body: { name?: string; description?: string | null } = {};
-    if (name !== null && name.trim() !== project.name) body.name = name.trim();
-    if (desc !== null && desc !== (project.description ?? ""))
-      body.description = desc === "" ? null : desc;
-    if (Object.keys(body).length === 0) return;
-    const r = await act.run(() => api.updateProject(project.id, body));
-    if (!r) return;
-    onChange({ ...project, ...r });
-    setName(null);
-    setDesc(null);
-  };
-  const remove = async () => {
-    const ok = await act.run(async () => {
-      await api.deleteProject(project.id);
-      return true;
-    });
-    if (ok) void nav(teamUrl(project.teamId));
-  };
-
-  return (
-    <>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      <Card withBorder mb="md" padding="sm">
-        <CopyField label="Project id" value={project.id} />
-        <CopyField label="Team id" value={project.teamId} />
-        <Text size="xs" c="dimmed">
-          For the CLI: <code>yyt project use {project.id}</code> or{" "}
-          <code>{`.yyt.json {"team":"${project.teamId}","project":"${project.id}"}`}</code>
-          .
-        </Text>
-      </Card>
-      {canWrite && (
-        <SettingsForm
-          name={name ?? project.name}
-          description={desc ?? project.description ?? ""}
-          onName={setName}
-          onDescription={setDesc}
-          onSubmit={save}
-          busy={act.busy}
-        />
-      )}
-      {canDelete && (
-        <DangerCard
-          label="Delete project"
-          onConfirm={remove}
-          disabled={act.busy}
-        >
-          Deleting a project is refused while a channel, app or bundle still
-          belongs to it — including channels deleted less than a day ago, until
-          the sweep purges them.
-        </DangerCard>
-      )}
-    </>
+      </ResourceDrawer>
+    </Section>
   );
 }

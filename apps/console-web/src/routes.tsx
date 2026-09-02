@@ -70,7 +70,7 @@ export const ROUTES: AppRoute[] = [
   },
   {
     path: "/teams/:team/projects/:prj/channels/new",
-    guard: "/channels",
+    guard: "/teams",
     element: <ChannelNewPage />,
   },
   {
