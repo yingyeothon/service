@@ -1,9 +1,0 @@
-# Standalone pnpm root (not part of the service workspace); @yingyeothon/* comes from npm.
-packages:
-  - "."
-allowBuilds:
-  esbuild: true
-  "@parcel/watcher": false
-# @yingyeothon/* is our own library; skip pnpm's release-age gate for it.
-minimumReleaseAgeExclude:
-  - "@yingyeothon/*"

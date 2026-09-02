@@ -9,5 +9,3 @@ layers/*/nodejs
 packages/console-db/src/generated
 packages/console-db/prisma/migrations
 apps/console-app
-# Written by examples/sample-morpg/scripts/pack-assets.mjs (byte-identical re-runs).
-examples/sample-morpg/assets/view/*.json

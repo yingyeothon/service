@@ -1,6 +1,6 @@
 # Contest-day playbook — a game server in 2–3 hours
 
-Verified end to end on `dev` with `examples/sample-dungeon` (2026-08-23): auth JWT → match → signed callback → dungeon actor, and the server-less variant (callback → topic room). Follow the order; each step has a check.
+Verified end to end on `dev` with `sample-dungeon` from [`yingyeothon/examples`](https://github.com/yingyeothon/examples) (2026-08-23): auth JWT → match → signed callback → dungeon actor, and the server-less variant (callback → topic room). Follow the order; each step has a check.
 
 ## 0. Before the day (organizer)
 
@@ -31,7 +31,8 @@ Check: `yyt channels list` shows all `active`.
 ## 2. Copy the sample (5 min)
 
 ```sh
-rsync -a --exclude node_modules --exclude .serverless examples/sample-dungeon/ ~/teamA-server/ && cd ~/teamA-server
+git clone https://github.com/yingyeothon/examples.git && mkdir -p ~/teamA-server
+git -C examples archive HEAD sample-dungeon | tar -x -C ~/teamA-server --strip-components=1 && cd ~/teamA-server
 sed -i 's/^service: .*/service: teamA-dungeon/' serverless.yml
 pnpm install && pnpm typecheck && pnpm test
 ```
@@ -62,7 +63,7 @@ From the service repo, against `dev` with debug hooks (organizer machine), or by
 2. Both connect `wss://match.yyt.life/?channel=<match-id>` with subprotocols `["bearer", jwt]` → both receive `{"type":"matched","result":{"wsUrl","gameId"}}`.
 3. Each connects `${wsUrl}?x-game-id=${gameId}` with the same `["bearer", jwt]` → `stage wait` → `running` → send `{"type":"attack"}` → `result`.
 
-Automated equivalent: `scripts/smoke/dungeon.mjs setup|run|clean` (`rules/manual-verification.md`). A reconnect with the same JWT gets a `snapshot`; an outsider's JWT is refused at `$connect`.
+Automated equivalent (organizer only): the `dungeon` smoke in `yingyeothon/examples` `local/smoke/` (`rules/manual-verification.md`). A reconnect with the same JWT gets a `snapshot`; an outsider's JWT is refused at `$connect`.
 
 ## 6. Build the game (rest of the day)
 
@@ -87,8 +88,8 @@ Logs: `serverless logs -f <authorizer|ws|actor|matchCallback> --stage dev`. Tear
 ## AI-agent prompt template
 
 ```
-You are setting up a game server for the Yingyeothon contest. Repository: <path to copied examples/sample-dungeon>.
-Contract docs: docs/auth-game-contract.md and examples/sample-dungeon/README.md in yingyeothon/service.
+You are setting up a game server for the Yingyeothon contest. Repository: <path to the copied sample-dungeon>.
+Contract docs: docs/auth-game-contract.md in yingyeothon/service and sample-dungeon/README.md in yingyeothon/examples.
 Do not change src/handler.ts's $connect wiring or the /match-callback handler. Implement the game in src/game.ts
 and the hooks in src/actor.ts: <describe the rules and the client messages>. Keep pure rules testable in vitest
 (test/game.test.ts). Deploy with `scripts/deploy.sh <env-file> dev` and verify with two WebSocket clients as in

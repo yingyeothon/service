@@ -3,7 +3,7 @@
 Rationale and rejected alternatives behind the `lobby`/`q` gateway. The settled
 decisions are in `docs/decisions.md` (_Realtime gateway_, _Storage shapes_); the
 wire protocol, configuration and release process are in `gateway/README.md`;
-the reference game is `examples/sample-morpg/README.md`; the tslib half of the
+the reference game is `sample-morpg` in `yingyeothon/examples`; the tslib half of the
 contract is documented in the tslib repo. This file only keeps the reasoning
 that those do not repeat. Superseded the `todo/14` design draft on 2026-08-28.
 

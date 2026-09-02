@@ -261,7 +261,7 @@ route reads Redis only (one `GET` + one `MGET`) — it never touches the
 in-memory hub — and has its own per-address bucket, so a game's Lambda egress
 address and the players behind one NAT do not spend each other's budget.
 `/metrics` counts it as `partyReads` / `partyRejected`.
-`examples/sample-morpg/src/entry.ts` is the reference consumer.
+[`sample-morpg/src/entry.ts`](https://github.com/yingyeothon/examples/blob/main/sample-morpg/src/entry.ts) (`yingyeothon/examples`) is the reference consumer.
 
 ## `q` protocol
 
