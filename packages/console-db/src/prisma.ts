@@ -52,7 +52,12 @@ export function createPrismaClient(o: MysqlOptions): PrismaClient {
     acquireTimeout: 5000,
     idleTimeout: 60,
     keepAliveDelay: 10000,
-    initSql: "SET SESSION max_statement_time=5",
+    initSql: [
+      "SET SESSION max_statement_time=5",
+      // `escapeLike` (src/list.ts) relies on `\` being the LIKE escape, which
+      // `NO_BACKSLASH_ESCAPES` would switch off; pin it off for our session.
+      "SET SESSION sql_mode=REPLACE(@@sql_mode,'NO_BACKSLASH_ESCAPES','')",
+    ],
     allowPublicKeyRetrieval: true,
   });
   return new PrismaClient({ adapter });

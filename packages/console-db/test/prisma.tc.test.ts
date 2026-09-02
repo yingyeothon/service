@@ -20,6 +20,7 @@ import { eventsContract } from "./events.test.js";
 import { showsContract } from "./shows.test.js";
 import {
   auditReadContract,
+  listOrderContract,
   memberLookupContract,
 } from "./consoleDbExt.test.js";
 import { teamContract } from "./team.test.js";
@@ -48,11 +49,21 @@ describe.skipIf(!dockerAvailable())(
       await db?.stop();
     });
 
-    describe("events contract", () => {
-      eventsContract(async () => {
-        await resetTestDb(db.client);
-        return createEventsDb(db.client);
+    const login = async (id: string, login: string) => {
+      await db.client.members.update({
+        where: { id },
+        data: { github_login: login },
       });
+    };
+
+    describe("events contract", () => {
+      eventsContract(
+        async () => {
+          await resetTestDb(db.client);
+          return createEventsDb(db.client);
+        },
+        { login },
+      );
     });
 
     describe("shows contract", () => {
@@ -61,6 +72,7 @@ describe.skipIf(!dockerAvailable())(
         const events = createEventsDb(db.client);
         return {
           db: createShowsDb(db.client),
+          login,
           // Seeded through the real repository so both sides of the contract
           // see the same row (the fake mirrors it with a set).
           seedEvent: async (id: string) => {
@@ -86,27 +98,36 @@ describe.skipIf(!dockerAvailable())(
     });
 
     describe("catalog contract", () => {
-      catalogContract(async () => {
-        await resetTestDb(db.client);
-        await seedTeamProject(db.client);
-        return createCatalogDb(db.client);
-      });
+      catalogContract(
+        async () => {
+          await resetTestDb(db.client);
+          await seedTeamProject(db.client);
+          return createCatalogDb(db.client);
+        },
+        { login },
+      );
     });
 
     describe("assets contract", () => {
-      assetsContract(async () => {
-        await resetTestDb(db.client);
-        await seedTeamProject(db.client);
-        return createAssetsDb(db.client);
-      });
+      assetsContract(
+        async () => {
+          await resetTestDb(db.client);
+          await seedTeamProject(db.client);
+          return createAssetsDb(db.client);
+        },
+        { login },
+      );
     });
 
     describe("sites contract", () => {
-      sitesContract(async () => {
-        await resetTestDb(db.client);
-        await seedTeamProject(db.client);
-        return createSitesDb(db.client);
-      });
+      sitesContract(
+        async () => {
+          await resetTestDb(db.client);
+          await seedTeamProject(db.client);
+          return createSitesDb(db.client);
+        },
+        { login },
+      );
     });
 
     describe("state contract", () => {
@@ -178,6 +199,7 @@ describe.skipIf(!dockerAvailable())(
           deleteArtifact: async (id) => {
             await createCatalogDb(db.client).deleteArtifact(id);
           },
+          login,
         },
       );
     });
@@ -542,6 +564,32 @@ describe.skipIf(!dockerAvailable())(
         await resetTestDb(db.client);
         return createConsoleDb(db.client);
       });
+    });
+
+    describe("list order contract", () => {
+      listOrderContract(
+        async () => {
+          await resetTestDb(db.client);
+          await seedTeamProject(db.client);
+          return createConsoleDb(db.client);
+        },
+        {
+          project: async (id, name) => {
+            await db.client.projects.upsert({
+              where: { id },
+              update: { name },
+              create: {
+                id,
+                team_id: "team_1",
+                name,
+                created_by: "m1",
+                created_at: 1,
+                updated_at: 1,
+              },
+            });
+          },
+        },
+      );
     });
 
     describe("member lookup contract", () => {

@@ -19,7 +19,106 @@ const ev = (id: string, createdAt = 1, createdBy = "m1") => ({
 });
 
 /** Behaviour shared by the fake and (via Docker) the real DB. */
-export function eventsContract(make: () => EventsDb | Promise<EventsDb>) {
+export function eventsContract(
+  make: () => EventsDb | Promise<EventsDb>,
+  seed: { login: (id: string, login: string) => Promise<void> } = {
+    login: async () => undefined,
+  },
+) {
+  describe("order and q", () => {
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+    it("orders by every key both ways incl. the effective status, keeps the default, matches q", async () => {
+      const db = await make();
+      await seed.login("m1", "Zorro");
+      await seed.login("m2", "amy");
+      await seed.login("m3", "Amy");
+      const mk = async (
+        id: string,
+        title: string,
+        place: string,
+        createdBy: string,
+        createdAt: number,
+      ) => db.insertEvent({ ...ev(id, createdAt, createdBy), title, place });
+      await mk("e_b", "beta", "Seoul", "m1", 10);
+      await mk("e_a", "Alpha", "Busan", "m2", 20);
+      await mk("e_c", "alpha2", "seoul", "m3", 30);
+      await mk("e_d", "ALPHA10", "Daegu", "m2", 30);
+      await db.updateEvent("e_b", { status: "cancelled" }, 40);
+      await db.updateEvent("e_c", { status: "voting" }, 40);
+      await db.updateEvent("e_d", { status: "waiting", startsAt: 1000 }, 40);
+      const list = (o: Parameters<EventsDb["listEvents"]>[1]) =>
+        db.listEvents([], o).then(ids);
+      expect(await list(undefined)).toEqual(["e_d", "e_c", "e_a", "e_b"]);
+      expect(await list({ sort: "title" })).toEqual([
+        "e_a",
+        "e_d",
+        "e_c",
+        "e_b",
+      ]);
+      expect(await list({ sort: "title", order: "desc" })).toEqual([
+        "e_b",
+        "e_c",
+        "e_d",
+        "e_a",
+      ]);
+      expect(await list({ sort: "place" })).toEqual([
+        "e_a",
+        "e_d",
+        "e_b",
+        "e_c",
+      ]);
+      expect(await list({ sort: "startsAt" })).toEqual([
+        "e_a",
+        "e_b",
+        "e_c",
+        "e_d",
+      ]);
+      expect(await list({ sort: "startsAt", order: "desc" })).toEqual([
+        "e_d",
+        "e_c",
+        "e_b",
+        "e_a",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "e_a",
+        "e_c",
+        "e_d",
+        "e_b",
+      ]);
+      expect(await list({ sort: "createdBy", order: "desc" })).toEqual([
+        "e_b",
+        "e_d",
+        "e_c",
+        "e_a",
+      ]);
+      // draft(a) < voting(c) < waiting(d at 500; opened at 1500) < cancelled(b).
+      expect(await list({ sort: "status", now: 500 })).toEqual([
+        "e_a",
+        "e_c",
+        "e_d",
+        "e_b",
+      ]);
+      expect(await list({ sort: "status", order: "desc", now: 1500 })).toEqual([
+        "e_b",
+        "e_d",
+        "e_c",
+        "e_a",
+      ]);
+      await expect(list({ sort: "status" })).rejects.toMatchObject({
+        code: "bad_request",
+      });
+      expect(await list({ q: "alph" })).toEqual(["e_d", "e_c", "e_a"]);
+      expect(await list({ q: "BETA" })).toEqual(["e_b"]);
+      expect(await list({ q: "seoul" })).toEqual([]);
+      expect(
+        await db.listEvents(["draft", "voting"], { sort: "title" }).then(ids),
+      ).toEqual(["e_a", "e_c"]);
+      await expect(list({ q: "x".repeat(101) })).rejects.toMatchObject({
+        code: "bad_request",
+      });
+    });
+  });
+
   it("events: insert with options + revision 1, list, drafts per member, conditional update", async () => {
     const db = await make();
     await db.insertEvent(ev("e1", 1));
@@ -253,7 +352,20 @@ export function eventsContract(make: () => EventsDb | Promise<EventsDb>) {
 }
 
 describe("memory events db", () => {
-  eventsContract(() => createMemoryEventsDb());
+  const logins = new Map<string, string>();
+  eventsContract(
+    () => {
+      logins.clear();
+      return createMemoryEventsDb(undefined, undefined, {
+        loginOf: (id) => logins.get(id) ?? `login-${id}`,
+      });
+    },
+    {
+      login: async (id, login) => {
+        logins.set(id, login);
+      },
+    },
+  );
   it("rejects an unknown creator like a foreign key would", async () => {
     const db = createMemoryEventsDb((id) => id === "m1");
     await expect(

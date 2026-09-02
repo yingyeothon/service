@@ -23,7 +23,146 @@ const art = (id: string, appId: string, at = 1) => ({
 });
 
 /** Behaviour shared by the fake and the real Prisma repository (`team_1`/`prj_1` seeded). */
-export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
+export function catalogContract(
+  make: () => CatalogDb | Promise<CatalogDb>,
+  seed: { login: (id: string, login: string) => Promise<void> } = {
+    login: async () => undefined,
+  },
+) {
+  describe("order", () => {
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+    it("apps: name, a NULL description, a NULL owner, updatedAt", async () => {
+      const db = await make();
+      await seed.login("m1", "Zorro");
+      await seed.login("m2", "amy");
+      await seed.login("m3", "Amy");
+      const mk = (
+        id: string,
+        name: string,
+        description: string | null,
+        ownerId: string | null,
+        at: number,
+      ) => db.insertApp({ ...app(id, at), name, description, ownerId });
+      await mk("a_b", "beta", null, "m1", 10);
+      await mk("a_a", "Alpha", "Zed", "m2", 20);
+      await mk("a_c", "alpha2", "100%", "m3", 30);
+      await mk("a_d", "ALPHA10", "apple", null, 30);
+      const list = (o: Parameters<CatalogDb["listApps"]>[0]) =>
+        db.listApps(o).then(ids);
+      expect(await list(undefined)).toEqual(["a_a", "a_d", "a_c", "a_b"]);
+      expect(await list({ sort: "name", order: "desc" })).toEqual([
+        "a_b",
+        "a_c",
+        "a_d",
+        "a_a",
+      ]);
+      expect(await list({ sort: "description" })).toEqual([
+        "a_b",
+        "a_c",
+        "a_d",
+        "a_a",
+      ]);
+      expect(await list({ sort: "description", order: "desc" })).toEqual([
+        "a_a",
+        "a_d",
+        "a_c",
+        "a_b",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "a_d",
+        "a_a",
+        "a_c",
+        "a_b",
+      ]);
+      expect(await list({ sort: "createdBy", order: "desc" })).toEqual([
+        "a_b",
+        "a_c",
+        "a_a",
+        "a_d",
+      ]);
+      expect(await list({ sort: "updatedAt", order: "desc" })).toEqual([
+        "a_d",
+        "a_c",
+        "a_a",
+        "a_b",
+      ]);
+      expect(await list({ projectId: "prj_1", sort: "updatedAt" })).toEqual([
+        "a_b",
+        "a_a",
+        "a_c",
+        "a_d",
+      ]);
+    });
+    it("artifacts: the version tag (byte order, missing first), platform, size, createdAt, default", async () => {
+      const db = await make();
+      await db.insertApp(app("a_1"));
+      const mk = (
+        id: string,
+        platform: "android" | "ios" | "bin",
+        size: number | null,
+        version: string | undefined,
+        at: number,
+      ) =>
+        db.insertArtifact({
+          ...art(id, "a_1", at),
+          platform,
+          size,
+          tags: version === undefined ? {} : { version },
+        });
+      await mk("art_1", "android", 10, "1.0.0", 10);
+      await mk("art_2", "ios", null, undefined, 20);
+      await mk("art_3", "bin", 5, "1.0.10", 30);
+      await mk("art_4", "android", 10, "1.0.2", 30);
+      const list = (o: Parameters<CatalogDb["listArtifacts"]>[1]) =>
+        db.listArtifacts("a_1", o).then(ids);
+      expect(await list(undefined)).toEqual([
+        "art_4",
+        "art_3",
+        "art_2",
+        "art_1",
+      ]);
+      expect(await list({ sort: "version" })).toEqual([
+        "art_2",
+        "art_1",
+        "art_3",
+        "art_4",
+      ]);
+      expect(await list({ sort: "version", order: "desc" })).toEqual([
+        "art_4",
+        "art_3",
+        "art_1",
+        "art_2",
+      ]);
+      expect(await list({ sort: "platform" })).toEqual([
+        "art_1",
+        "art_4",
+        "art_2",
+        "art_3",
+      ]);
+      expect(await list({ sort: "size" })).toEqual([
+        "art_2",
+        "art_3",
+        "art_1",
+        "art_4",
+      ]);
+      expect(await list({ sort: "size", order: "desc" })).toEqual([
+        "art_4",
+        "art_1",
+        "art_3",
+        "art_2",
+      ]);
+      expect(await list({ sort: "createdAt" })).toEqual([
+        "art_1",
+        "art_2",
+        "art_3",
+        "art_4",
+      ]);
+      expect(
+        await list({ platform: "android", sort: "version", order: "desc" }),
+      ).toEqual(["art_4", "art_1"]);
+    });
+  });
+
   it("apps: defaults, team/project narrow, team-scoped ci name, settings, delete cascades", async () => {
     const db = await make();
     await db.insertApp(app("a1"));
@@ -273,7 +412,20 @@ export function catalogContract(make: () => CatalogDb | Promise<CatalogDb>) {
 }
 
 describe("memory catalog db", () => {
-  catalogContract(() => createMemoryCatalogDb());
+  const logins = new Map<string, string>();
+  catalogContract(
+    () => {
+      logins.clear();
+      return createMemoryCatalogDb(undefined, {
+        loginOf: (id) => logins.get(id) ?? `login-${id}`,
+      });
+    },
+    {
+      login: async (id, login) => {
+        logins.set(id, login);
+      },
+    },
+  );
   it("scopes the unique name to the team (`catalog_apps_team_name`)", async () => {
     const db = createMemoryCatalogDb();
     await db.insertApp(app("a1"));

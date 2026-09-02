@@ -36,10 +36,13 @@ export function teamContract(
     /** Creates artifact `id`; `deleteArtifact` must cascade its version links. */
     artifact: (id: string) => Promise<void>;
     deleteArtifact: (id: string) => Promise<void>;
+    /** Renames a seeded member's GitHub login (the `createdBy`/`login` sorts join it). */
+    login: (id: string, login: string) => Promise<void>;
   } = {
     bundle: async () => undefined,
     artifact: async () => undefined,
     deleteArtifact: async () => undefined,
+    login: async () => undefined,
   },
 ) {
   describe("teams", () => {
@@ -1081,6 +1084,534 @@ export function teamContract(
     });
   });
 
+  /*
+   * Ordering and `q` (docs/decisions.md *List sort and filter*). The fixtures
+   * are ASCII with distinct case on purpose: `utf8mb4_unicode_ci` folds case,
+   * so case-equal names tie and fall back to the id; NULL is the smallest
+   * value; ENUMs order by declaration; `_bin` columns by code point.
+   */
+  describe("order and q", () => {
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+    /** Zorro, amy and Amy: two case-equal logins force the id tiebreak. */
+    const logins = async () => {
+      await seed.login(M1, "Zorro");
+      await seed.login(M2, "amy");
+      await seed.login(M3, "Amy");
+    };
+    /** M1 is owner of b, member of a and d, pending in c. */
+    const seedTeams = async (db: TeamDb) => {
+      await logins();
+      await db.createTeam(
+        { id: "team_b", name: "beta", createdBy: M1, createdAt: 10 },
+        10,
+      );
+      await db.createTeam(
+        {
+          id: "team_a",
+          name: "Alpha",
+          description: "Zed",
+          createdBy: M2,
+          createdAt: 20,
+        },
+        20,
+      );
+      await db.addMember("team_a", M1, "member", by(M2, 21));
+      await db.createTeam(
+        {
+          id: "team_c",
+          name: "alpha2",
+          description: "100%",
+          createdBy: M3,
+          createdAt: 30,
+        },
+        30,
+      );
+      await db.requestJoin("team_c", M1, 31, 0);
+      await db.createTeam(
+        {
+          id: "team_d",
+          name: "ALPHA10",
+          description: "apple",
+          createdBy: M2,
+          createdAt: 30,
+        },
+        30,
+      );
+      await db.addMember("team_d", M1, "member", by(M2, 32));
+    };
+
+    it("teams of a member: every key both ways, the default, and q", async () => {
+      const db = await make();
+      await seedTeams(db);
+      const list = (o: Parameters<TeamDb["listTeamsForMember"]>[1]) =>
+        db.listTeamsForMember(M1, o).then(ids);
+      expect(await list(undefined)).toEqual([
+        "team_b",
+        "team_a",
+        "team_c",
+        "team_d",
+      ]);
+      expect(await list({ sort: "name" })).toEqual([
+        "team_a",
+        "team_d",
+        "team_c",
+        "team_b",
+      ]);
+      expect(await list({ sort: "name", order: "desc" })).toEqual([
+        "team_b",
+        "team_c",
+        "team_d",
+        "team_a",
+      ]);
+      expect(await list({ sort: "role" })).toEqual([
+        "team_b",
+        "team_a",
+        "team_d",
+        "team_c",
+      ]);
+      expect(await list({ sort: "role", order: "desc" })).toEqual([
+        "team_c",
+        "team_d",
+        "team_a",
+        "team_b",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "team_a",
+        "team_c",
+        "team_d",
+        "team_b",
+      ]);
+      expect(await list({ sort: "createdBy", order: "desc" })).toEqual([
+        "team_b",
+        "team_d",
+        "team_c",
+        "team_a",
+      ]);
+      expect(await list({ sort: "updatedAt" })).toEqual([
+        "team_b",
+        "team_a",
+        "team_c",
+        "team_d",
+      ]);
+      expect(await list({ sort: "updatedAt", order: "desc" })).toEqual([
+        "team_d",
+        "team_c",
+        "team_a",
+        "team_b",
+      ]);
+      expect(await list({ q: "ALPH" })).toEqual(["team_a", "team_c", "team_d"]);
+      expect(await list({ q: "zed" })).toEqual(["team_a"]);
+      expect(await list({ q: "0%" })).toEqual(["team_c"]);
+      expect(await list({ q: "zzz" })).toEqual([]);
+      expect(await list({ q: "  " })).toEqual([
+        "team_b",
+        "team_a",
+        "team_c",
+        "team_d",
+      ]);
+      expect(await list({ q: "a", sort: "name", order: "desc" })).toEqual([
+        "team_b",
+        "team_c",
+        "team_d",
+        "team_a",
+      ]);
+      await expect(list({ q: "x".repeat(101) })).rejects.toMatchObject({
+        code: "bad_request",
+      });
+    });
+
+    it("every team: keys, default and q", async () => {
+      const db = await make();
+      await seedTeams(db);
+      const list = (o: Parameters<TeamDb["listAllTeams"]>[0]) =>
+        db.listAllTeams(o).then(ids);
+      expect(await list(undefined)).toEqual([
+        "team_b",
+        "team_a",
+        "team_c",
+        "team_d",
+      ]);
+      expect(await list({ sort: "name" })).toEqual([
+        "team_a",
+        "team_d",
+        "team_c",
+        "team_b",
+      ]);
+      expect(await list({ sort: "createdBy", order: "desc" })).toEqual([
+        "team_b",
+        "team_d",
+        "team_c",
+        "team_a",
+      ]);
+      expect(await list({ sort: "updatedAt", order: "desc" })).toEqual([
+        "team_d",
+        "team_c",
+        "team_a",
+        "team_b",
+      ]);
+      expect(await list({ q: "apple" })).toEqual(["team_d"]);
+    });
+
+    it("projects: keys incl. a NULL description, default and q with literal wildcards", async () => {
+      const db = await make();
+      await logins();
+      await seedTeam(db);
+      await db.createProject(
+        { id: "prj_b", teamId: "team_1", name: "beta" },
+        by(M1, 10),
+      );
+      await db.createProject(
+        { id: "prj_a", teamId: "team_1", name: "Alpha", description: "Zed" },
+        by(M2, 20),
+      );
+      await db.createProject(
+        { id: "prj_c", teamId: "team_1", name: "alpha2", description: "100%" },
+        by(M3, 30),
+      );
+      await db.createProject(
+        {
+          id: "prj_d",
+          teamId: "team_1",
+          name: "ALPHA10",
+          description: "apple",
+        },
+        by(M2, 30),
+      );
+      const list = (o: Parameters<TeamDb["listProjects"]>[1]) =>
+        db.listProjects("team_1", o).then(ids);
+      expect(await list(undefined)).toEqual([
+        "prj_b",
+        "prj_a",
+        "prj_c",
+        "prj_d",
+      ]);
+      expect(await list({ sort: "name" })).toEqual([
+        "prj_a",
+        "prj_d",
+        "prj_c",
+        "prj_b",
+      ]);
+      expect(await list({ sort: "name", order: "desc" })).toEqual([
+        "prj_b",
+        "prj_c",
+        "prj_d",
+        "prj_a",
+      ]);
+      // NULL first ascending, last descending; then apple < Zed.
+      expect(await list({ sort: "description" })).toEqual([
+        "prj_b",
+        "prj_c",
+        "prj_d",
+        "prj_a",
+      ]);
+      expect(await list({ sort: "description", order: "desc" })).toEqual([
+        "prj_a",
+        "prj_d",
+        "prj_c",
+        "prj_b",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "prj_a",
+        "prj_c",
+        "prj_d",
+        "prj_b",
+      ]);
+      expect(await list({ sort: "updatedAt", order: "desc" })).toEqual([
+        "prj_d",
+        "prj_c",
+        "prj_a",
+        "prj_b",
+      ]);
+      expect(await list({ q: "alph" })).toEqual(["prj_a", "prj_c", "prj_d"]);
+      expect(await list({ q: "ZED" })).toEqual(["prj_a"]);
+      expect(await list({ q: "0%" })).toEqual(["prj_c"]);
+      expect(await list({ q: "nothing" })).toEqual([]);
+      await expect(list({ q: "x".repeat(101) })).rejects.toMatchObject({
+        code: "bad_request",
+      });
+      // `_` is a literal, not a one-character wildcard.
+      await db.createProject(
+        { id: "prj_u", teamId: "team_1", name: "a_b" },
+        by(M1, 40),
+      );
+      await db.createProject(
+        { id: "prj_x", teamId: "team_1", name: "axb" },
+        by(M1, 41),
+      );
+      expect(await list({ q: "a_b" })).toEqual(["prj_u"]);
+      expect(await list({ q: "\\" })).toEqual([]);
+    });
+
+    it("members: login, role and since", async () => {
+      const db = await make();
+      await logins();
+      await seedTeam(db);
+      await db.addMember("team_1", M2, "member", by(M1, 70));
+      await db.requestJoin("team_1", M3, 50, 0);
+      const list = (o: Parameters<TeamDb["listTeamMembers"]>[1]) =>
+        db.listTeamMembers("team_1", o).then((r) => r.map((m) => m.memberId));
+      expect(await list(undefined)).toEqual([M1, M2, M3]);
+      expect(await list({ sort: "login" })).toEqual([M2, M3, M1]);
+      expect(await list({ sort: "login", order: "desc" })).toEqual([
+        M1,
+        M3,
+        M2,
+      ]);
+      expect(await list({ sort: "role" })).toEqual([M1, M2, M3]);
+      expect(await list({ sort: "role", order: "desc" })).toEqual([M3, M2, M1]);
+      expect(await list({ sort: "since" })).toEqual([M1, M3, M2]);
+      expect(await list({ sort: "since", order: "desc" })).toEqual([
+        M2,
+        M3,
+        M1,
+      ]);
+    });
+
+    it("discussions: keys, default, q, and no body in the list", async () => {
+      const db = await make();
+      await logins();
+      await seedTeam(db);
+      const mk = (id: string, title: string, who: string, at: number) =>
+        db.createDiscussion(
+          { id, teamId: "team_1", title, bodyMd: "body" },
+          by(who, at),
+        );
+      await mk("dsc_b", "beta", M1, 10);
+      await mk("dsc_a", "Alpha", M2, 20);
+      await mk("dsc_c", "alpha", M3, 30);
+      await mk("dsc_d", "ALPHA2", M2, 30);
+      const list = (o: Parameters<TeamDb["listDiscussions"]>[1]) =>
+        db.listDiscussions("team_1", o).then(ids);
+      expect(await list(undefined)).toEqual([
+        "dsc_d",
+        "dsc_c",
+        "dsc_a",
+        "dsc_b",
+      ]);
+      expect(await list({ sort: "title" })).toEqual([
+        "dsc_a",
+        "dsc_c",
+        "dsc_d",
+        "dsc_b",
+      ]);
+      expect(await list({ sort: "createdBy", order: "desc" })).toEqual([
+        "dsc_b",
+        "dsc_d",
+        "dsc_c",
+        "dsc_a",
+      ]);
+      expect(await list({ sort: "updatedAt" })).toEqual([
+        "dsc_b",
+        "dsc_a",
+        "dsc_c",
+        "dsc_d",
+      ]);
+      expect(await list({ q: "ALPHA2" })).toEqual(["dsc_d"]);
+      expect(await list({ q: "body" })).toEqual([]);
+      expect((await db.listDiscussions("team_1"))[0]).not.toHaveProperty(
+        "bodyMd",
+      );
+    });
+
+    it("issues: keys incl. the version name (_bin, nullable) and status, q, and limit after order", async () => {
+      const db = await make();
+      await logins();
+      await seedTeam(db);
+      await seedProject(db, "team_1");
+      await db.createVersion(
+        { id: "ver_1", projectId: "prj_1", name: "v1" },
+        by(M1, 5),
+      );
+      await db.createVersion(
+        { id: "ver_2", projectId: "prj_1", name: "V2" },
+        by(M1, 6),
+      );
+      const mk = (
+        id: string,
+        title: string,
+        who: string,
+        at: number,
+        versionId?: string,
+      ) =>
+        db.createIssue(
+          { id, projectId: "prj_1", title, bodyMd: "body", versionId },
+          by(who, at),
+        );
+      await mk("iss_1", "beta", M1, 10, "ver_2");
+      await mk("iss_2", "Alpha", M2, 20);
+      await mk("iss_3", "alpha", M3, 30, "ver_1");
+      await mk("iss_4", "ALPHA2", M2, 30);
+      await db.setIssueStatus("prj_1", 2, "closed", by(M1, 40));
+      const list = (o: Parameters<TeamDb["listIssues"]>[1]) =>
+        db.listIssues("prj_1", o).then(ids);
+      expect(await list(undefined)).toEqual([
+        "iss_4",
+        "iss_3",
+        "iss_2",
+        "iss_1",
+      ]);
+      expect(await list({ sort: "number" })).toEqual([
+        "iss_1",
+        "iss_2",
+        "iss_3",
+        "iss_4",
+      ]);
+      expect(await list({ sort: "title" })).toEqual([
+        "iss_2",
+        "iss_3",
+        "iss_4",
+        "iss_1",
+      ]);
+      expect(await list({ sort: "status" })).toEqual([
+        "iss_1",
+        "iss_3",
+        "iss_4",
+        "iss_2",
+      ]);
+      expect(await list({ sort: "status", order: "desc" })).toEqual([
+        "iss_2",
+        "iss_4",
+        "iss_3",
+        "iss_1",
+      ]);
+      expect(await list({ sort: "version" })).toEqual([
+        "iss_2",
+        "iss_4",
+        "iss_1",
+        "iss_3",
+      ]);
+      expect(await list({ sort: "version", order: "desc" })).toEqual([
+        "iss_3",
+        "iss_1",
+        "iss_4",
+        "iss_2",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "iss_2",
+        "iss_3",
+        "iss_4",
+        "iss_1",
+      ]);
+      expect(await list({ sort: "updatedAt", order: "desc" })).toEqual([
+        "iss_2",
+        "iss_4",
+        "iss_3",
+        "iss_1",
+      ]);
+      expect(await list({ q: "alpha", status: "open" })).toEqual([
+        "iss_4",
+        "iss_3",
+      ]);
+      expect(await list({ q: "body" })).toEqual([]);
+      expect((await db.listIssues("prj_1"))[0]).not.toHaveProperty("bodyMd");
+      const team = (o: Parameters<TeamDb["listTeamIssues"]>[1]) =>
+        db.listTeamIssues("team_1", o).then(ids);
+      expect(await team(undefined)).toEqual([
+        "iss_2",
+        "iss_4",
+        "iss_3",
+        "iss_1",
+      ]);
+      expect(await team({ sort: "number", limit: 2 })).toEqual([
+        "iss_1",
+        "iss_2",
+      ]);
+      expect(await team({ q: "ALPHA2" })).toEqual(["iss_4"]);
+    });
+
+    it("versions: name (_bin), a NULL note, creator, and the derived link counts", async () => {
+      const db = await make();
+      await logins();
+      await seedTeam(db);
+      await seedProject(db, "team_1");
+      const mk = (
+        id: string,
+        name: string,
+        note: string | null,
+        who: string,
+        at: number,
+      ) =>
+        db.createVersion({ id, projectId: "prj_1", name, note }, by(who, at));
+      await mk("ver_1", "v1", null, M1, 10);
+      await mk("ver_2", "V2", "beta", M2, 20);
+      await mk("ver_3", "a10", "Alpha", M3, 30);
+      await mk("ver_4", "a9", "alpha", M2, 30);
+      for (const [lnk, ver, art] of [
+        ["lnk_1", "ver_1", "art_1"],
+        ["lnk_2", "ver_1", "art_2"],
+        ["lnk_3", "ver_4", "art_3"],
+      ] as const) {
+        await seed.artifact(art);
+        await db.addVersionLink(
+          { id: lnk, versionId: ver, kind: "artifact", artifactId: art },
+          by(M1, 50),
+        );
+      }
+      const list = (o: Parameters<TeamDb["listVersions"]>[1]) =>
+        db.listVersions("prj_1", o).then(ids);
+      expect(await list(undefined)).toEqual([
+        "ver_4",
+        "ver_3",
+        "ver_2",
+        "ver_1",
+      ]);
+      expect(await list({ sort: "name" })).toEqual([
+        "ver_2",
+        "ver_3",
+        "ver_4",
+        "ver_1",
+      ]);
+      expect(await list({ sort: "name", order: "desc" })).toEqual([
+        "ver_1",
+        "ver_4",
+        "ver_3",
+        "ver_2",
+      ]);
+      expect(await list({ sort: "note" })).toEqual([
+        "ver_1",
+        "ver_3",
+        "ver_4",
+        "ver_2",
+      ]);
+      expect(await list({ sort: "note", order: "desc" })).toEqual([
+        "ver_2",
+        "ver_4",
+        "ver_3",
+        "ver_1",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "ver_2",
+        "ver_3",
+        "ver_4",
+        "ver_1",
+      ]);
+      expect(await list({ sort: "createdAt" })).toEqual([
+        "ver_1",
+        "ver_2",
+        "ver_3",
+        "ver_4",
+      ]);
+      expect(await list({ sort: "artifactCount" })).toEqual([
+        "ver_2",
+        "ver_3",
+        "ver_4",
+        "ver_1",
+      ]);
+      expect(await list({ sort: "artifactCount", order: "desc" })).toEqual([
+        "ver_1",
+        "ver_4",
+        "ver_3",
+        "ver_2",
+      ]);
+      expect(await list({ sort: "assetCount" })).toEqual([
+        "ver_1",
+        "ver_2",
+        "ver_3",
+        "ver_4",
+      ]);
+    });
+  });
+
   describe("platform settings", () => {
     it("upserts one row per key", async () => {
       const db = await make();
@@ -1107,11 +1638,14 @@ export function teamContract(
 
 describe("memory team db", () => {
   const artifacts = new Set<string>();
+  const logins = new Map<string, string>();
   teamContract(
     () => {
       artifacts.clear();
+      logins.clear();
       return createMemoryTeamDb({
         memberExists: (id) => ["m1", "m2", "m3", "m9"].includes(id),
+        loginOf: (id) => logins.get(id) ?? `login-${id}`,
         bundleExists: (id) => id === "ab_1",
         artifactExists: (id) => artifacts.has(id),
       });
@@ -1123,6 +1657,9 @@ describe("memory team db", () => {
       },
       deleteArtifact: async (id) => {
         artifacts.delete(id);
+      },
+      login: async (id, login) => {
+        logins.set(id, login);
       },
     },
   );

@@ -1,5 +1,81 @@
 import { AppError, type ChannelKind, type Role } from "@yyt/core";
 import {
+  cmpBin,
+  dir,
+  enumRank,
+  likeContains,
+  normalizeQ,
+  sortRows,
+  type ListOrder,
+  type ListQuery,
+} from "./list.js";
+
+/** Declaration order of the `members_role` / `channels_kind` enums (the fakes rank by it). */
+export const MEMBER_ROLES = [
+  "admin",
+  "member",
+  "pending",
+] as const satisfies readonly Role[];
+export const CHANNEL_KINDS = [
+  "auth",
+  "topic",
+  "match",
+  "lobby",
+  "q",
+] as const satisfies readonly ChannelKind[];
+
+export const CHANNEL_STATUSES = ["active", "expired", "disabled"] as const;
+export type ChannelStatus = (typeof CHANNEL_STATUSES)[number];
+
+/** Derived at read time from `disabledAt`/`expiresAt`; shared with the console routes. */
+export function channelStatus(
+  row: Pick<ChannelRow, "disabledAt" | "expiresAt">,
+  nowSec: number,
+): ChannelStatus {
+  if (row.disabledAt !== null) return "disabled";
+  return row.expiresAt > nowSec ? "active" : "expired";
+}
+
+/** List sort keys (response field names); `status` needs `now`, `projectName` joins the project. */
+export const CHANNEL_SORT_KEYS = [
+  "name",
+  "kind",
+  "projectName",
+  "id",
+  "status",
+  "expiresAt",
+] as const;
+export type ChannelSortKey = (typeof CHANNEL_SORT_KEYS)[number];
+export const MEMBER_SORT_KEYS = [
+  "login",
+  "role",
+  "createdAt",
+  "approvedAt",
+] as const;
+export type MemberSortKey = (typeof MEMBER_SORT_KEYS)[number];
+export const TOKEN_SORT_KEYS = [
+  "name",
+  "id",
+  "createdAt",
+  "lastUsedAt",
+] as const;
+export type TokenSortKey = (typeof TOKEN_SORT_KEYS)[number];
+
+/** Shared guard: `q` normalised, `now` required for the derived-status key. */
+export function channelListOptions(
+  opts: ListQuery<ChannelSortKey> & { now?: number },
+): { q: string | undefined; now: number | undefined } {
+  const q = normalizeQ(opts.q);
+  if (opts.sort === "status" && opts.now === undefined)
+    throw new AppError("bad_request", "sort=status needs now");
+  return { q, now: opts.now };
+}
+
+const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
+export const byChannelStatus =
+  (now: number) => (a: ChannelRow, b: ChannelRow) =>
+    enumRank(CHANNEL_STATUSES)(channelStatus(a, now), channelStatus(b, now));
+import {
   isConflict,
   num,
   nul,
@@ -373,7 +449,8 @@ export interface ConsoleDb {
    * members table of this size and is the thing to revisit if it is not.
    */
   findMemberByLogin(login: string): Promise<MemberRow | undefined>;
-  listMembers(): Promise<MemberRow[]>;
+  /** Oldest first. */
+  listMembers(opts?: ListOrder<MemberSortKey>): Promise<MemberRow[]>;
   /**
    * Returns `false` when the member does not exist. `approval` `null` clears
    * `approved_at/by`, `undefined` leaves them untouched.
@@ -387,13 +464,22 @@ export interface ConsoleDb {
   insertApiToken(t: ApiTokenInput): Promise<void>;
   /** Non-revoked token by hash; `undefined` otherwise. */
   findApiTokenByHash(tokenHash: string): Promise<ApiTokenRow | undefined>;
-  listApiTokens(memberId: string): Promise<ApiTokenRow[]>;
+  /** Live tokens, oldest first. */
+  listApiTokens(
+    memberId: string,
+    opts?: ListOrder<TokenSortKey>,
+  ): Promise<ApiTokenRow[]>;
   /** Scoped to the owner; `false` when unknown or already revoked. */
   revokeApiToken(id: string, memberId: string, at: number): Promise<boolean>;
   touchApiToken(id: string, at: number): Promise<void>;
 
-  /** Non-deleted channels, newest first. */
-  listChannels(filter?: ChannelFilter): Promise<ChannelRow[]>;
+  /**
+   * Non-deleted channels, newest first; `q` matches the channel name or its project's name;
+   * `sort: "status"` orders by `channelStatus(row, now)` (required for that key).
+   */
+  listChannels(
+    filter?: ChannelFilter & ListQuery<ChannelSortKey> & { now?: number },
+  ): Promise<ChannelRow[]>;
   /** `false` when the channel is missing or deleted. */
   updateChannel(id: string, patch: ChannelPatch): Promise<boolean>;
   /**
@@ -503,6 +589,22 @@ type ChannelModel = {
   deleted_at: bigint | number | null;
 };
 
+function memberOrderBy(o: ListOrder<MemberSortKey>) {
+  const d = dir(o);
+  switch (o.sort) {
+    case "login":
+      return [{ github_login: d }, { id: d }];
+    case "role":
+      return [{ role: d }, { id: d }];
+    case "createdAt":
+      return [{ created_at: d }, { id: d }];
+    case "approvedAt":
+      return [{ approved_at: d }, { id: d }];
+    default:
+      return [{ created_at: "asc" as const }, { id: "asc" as const }];
+  }
+}
+
 export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
   const toRow = (r: ChannelModel): ChannelRow => ({
     id: r.id,
@@ -603,11 +705,11 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
         });
         return r ? toMember(r) : undefined;
       }),
-    listMembers: () =>
+    listMembers: (opts = {}) =>
       run(async () =>
         (
           await prisma.members.findMany({
-            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            orderBy: memberOrderBy(opts),
           })
         ).map(toMember),
       ),
@@ -643,15 +745,28 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
         });
         return r ? toToken(r) : undefined;
       }),
-    listApiTokens: (memberId) =>
-      run(async () =>
-        (
+    listApiTokens: (memberId, opts = {}) =>
+      run(async () => {
+        const o = dir(opts);
+        return (
           await prisma.api_tokens.findMany({
             where: { member_id: memberId, revoked_at: null },
-            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            orderBy:
+              opts.sort === "name"
+                ? [{ name: o }, { id: o }]
+                : opts.sort === "id"
+                  ? [{ id: o }]
+                  : opts.sort === "createdAt"
+                    ? [{ created_at: o }, { id: o }]
+                    : opts.sort === "lastUsedAt"
+                      ? [{ last_used_at: o }, { id: o }]
+                      : [
+                          { created_at: "asc" as const },
+                          { id: "asc" as const },
+                        ],
           })
-        ).map(toToken),
-      ),
+        ).map(toToken);
+      }),
     revokeApiToken: (id, memberId, at) =>
       run(async () => {
         const r = await prisma.api_tokens.updateMany({
@@ -668,8 +783,10 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
         });
       }),
     listChannels: (filter = {}) =>
-      run(async () =>
-        (
+      run(async () => {
+        const { q, now } = channelListOptions(filter);
+        const o = dir(filter);
+        const rows = (
           await prisma.channels.findMany({
             where: {
               ...(filter.includeDeleted ? {} : { deleted_at: null }),
@@ -677,11 +794,42 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
               ...(filter.teamId ? { team_id: filter.teamId } : {}),
               ...(filter.teamIds ? { team_id: { in: filter.teamIds } } : {}),
               ...(filter.projectId ? { project_id: filter.projectId } : {}),
+              ...(q
+                ? {
+                    OR: [
+                      { name: likeContains(q) },
+                      { projects: { name: likeContains(q) } },
+                    ],
+                  }
+                : {}),
             },
-            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+            orderBy:
+              filter.sort === "name"
+                ? [{ name: o }, { id: o }]
+                : filter.sort === "kind"
+                  ? [{ kind: o }, { id: o }]
+                  : filter.sort === "projectName"
+                    ? [{ projects: { name: o } }, { id: o }]
+                    : filter.sort === "id"
+                      ? [{ id: o }]
+                      : filter.sort === "expiresAt"
+                        ? [{ expires_at: o }, { id: o }]
+                        : [
+                            { created_at: "desc" as const },
+                            { id: "desc" as const },
+                          ],
           })
-        ).map(toRow),
-      ),
+        ).map(toRow);
+        return filter.sort === "status" && now !== undefined
+          ? sortRows(
+              rows,
+              { status: byChannelStatus(now) },
+              filter,
+              byId,
+              () => 0,
+            )
+          : rows;
+      }),
     updateChannel: async (id, patch) => {
       const data: Record<string, string | number | null> = {};
       if (patch.name !== undefined) data.name = patch.name;

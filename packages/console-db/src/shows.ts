@@ -1,4 +1,15 @@
 import { AppError } from "@yyt/core";
+import {
+  cmpBin,
+  cmpCi,
+  cmpNum,
+  dir,
+  likeContains,
+  matchesQ,
+  normalizeQ,
+  sortRows,
+  type ListOrder,
+} from "./list.js";
 import { isConflict, num, nul, run, type PrismaClient } from "./prisma.js";
 import { decodeHistoryCursor, encodeHistoryCursor } from "./team.js";
 
@@ -76,9 +87,14 @@ export interface ShowListFilter {
   /** Which ACL levels the caller may see; omitted = every level. */
   acls?: readonly ShowAcl[];
   state?: "open" | "closed";
+  /** Title contains; applied inside the same query as the cursor so pages stay disjoint. */
+  q?: string;
   cursor?: string;
   limit?: number;
 }
+
+export const GRANT_SORT_KEYS = ["login", "grantedBy", "grantedAt"] as const;
+export type GrantSortKey = (typeof GRANT_SORT_KEYS)[number];
 
 /**
  * A listed show never carries its markdown body: at `SHOW_PAGE_MAX` that is
@@ -235,8 +251,11 @@ export interface ShowsDb {
     showId: string,
     memberId: string,
   ): Promise<ShowGrantRow | undefined>;
-  /** Oldest first. */
-  listGrants(showId: string): Promise<ShowGrantRow[]>;
+  /** Oldest first; `login`/`grantedBy` order by the members' GitHub logins. */
+  listGrants(
+    showId: string,
+    opts?: ListOrder<GrantSortKey>,
+  ): Promise<ShowGrantRow[]>;
   countGrants(showId: string): Promise<number>;
   deleteGrant(showId: string, memberId: string): Promise<boolean>;
 
@@ -616,6 +635,7 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
       run(async () => {
         const limit = pageLimit(filter.limit, SHOW_PAGE_DEFAULT, SHOW_PAGE_MAX);
         const c = cursorOf(filter.cursor);
+        const q = normalizeQ(filter.q);
         const rows = await prisma.shows.findMany({
           // Everything but `body_md`: see `ShowListRow`.
           select: {
@@ -633,6 +653,7 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
             ...(filter.acls ? { acl: { in: [...filter.acls] } } : {}),
             ...(filter.state === "open" ? { closed_at: null } : {}),
             ...(filter.state === "closed" ? { closed_at: { not: null } } : {}),
+            ...(q ? { title: likeContains(q) } : {}),
             ...beforeCursor(c),
           },
           orderBy: [{ created_at: "desc" }, { id: "desc" }],
@@ -788,15 +809,26 @@ export function createShowsDb(prisma: PrismaClient): ShowsDb {
         });
         return r ? toGrant(r) : undefined;
       }),
-    listGrants: (showId) =>
-      run(async () =>
-        (
+    listGrants: (showId, opts = {}) =>
+      run(async () => {
+        const o = dir(opts);
+        return (
           await prisma.show_grants.findMany({
             where: { show_id: showId },
-            orderBy: [{ granted_at: "asc" }, { member_id: "asc" }],
+            orderBy:
+              opts.sort === "login"
+                ? [{ member: { github_login: o } }, { member_id: o }]
+                : opts.sort === "grantedBy"
+                  ? [{ granter: { github_login: o } }, { member_id: o }]
+                  : opts.sort === "grantedAt"
+                    ? [{ granted_at: o }, { member_id: o }]
+                    : [
+                        { granted_at: "asc" as const },
+                        { member_id: "asc" as const },
+                      ],
           })
-        ).map(toGrant),
-      ),
+        ).map(toGrant);
+      }),
     countGrants: (showId) =>
       run(() => prisma.show_grants.count({ where: { show_id: showId } })),
     deleteGrant: (showId, memberId) =>
@@ -1189,6 +1221,8 @@ export function createMemoryShowsDb(
   hooks: {
     memberExists?: (id: string) => boolean;
     eventExists?: (id: string) => boolean;
+    /** GitHub login of a member, for the grant sorts. Default: the id. */
+    loginOf?: (id: string) => string;
   } = {},
 ): ShowsDb & {
   shows: Map<string, ShowRow>;
@@ -1217,6 +1251,7 @@ export function createMemoryShowsDb(
    * would pass a contract test the database fails.
    */
   const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const loginOf = hooks.loginOf ?? ((id: string) => id);
   /**
    * Every column but `object_key` keeps the database default
    * `utf8mb4_unicode_ci`, so the unique index over `(show_id, target_kind,
@@ -1304,8 +1339,9 @@ export function createMemoryShowsDb(
       const s = [...shows.values()].find((x) => x.eventId === eventId);
       return s && { ...s };
     },
-    listShows: async (filter = {}) =>
-      page(
+    listShows: async (filter = {}) => {
+      const q = normalizeQ(filter.q);
+      return page(
         [...shows.values()]
           .map(({ bodyMd: _body, ...rest }) => rest)
           .filter(
@@ -1314,12 +1350,14 @@ export function createMemoryShowsDb(
               (filter.state === undefined ||
                 (filter.state === "open"
                   ? s.closedAt === null
-                  : s.closedAt !== null)),
+                  : s.closedAt !== null)) &&
+              (q === undefined || matchesQ(s.title, q)),
           )
           .sort(desc),
         filter.cursor,
         pageLimit(filter.limit, SHOW_PAGE_DEFAULT, SHOW_PAGE_MAX),
-      ),
+      );
+    },
     countOpenShows: async (memberId) =>
       [...shows.values()].filter(
         (s) => s.createdBy === memberId && s.closedAt === null,
@@ -1433,13 +1471,21 @@ export function createMemoryShowsDb(
       const g = grants.get(gkey(showId, memberId));
       return g && { ...g };
     },
-    listGrants: async (showId) =>
-      [...grants.values()]
-        .filter((g) => g.showId === showId)
-        .map((g) => ({ ...g }))
-        .sort(
-          (a, b) => a.grantedAt - b.grantedAt || cmp(a.memberId, b.memberId),
-        ),
+    listGrants: async (showId, opts = {}) =>
+      sortRows(
+        [...grants.values()]
+          .filter((g) => g.showId === showId)
+          .map((g) => ({ ...g })),
+        {
+          login: (a, b) => cmpCi(loginOf(a.memberId), loginOf(b.memberId)),
+          grantedBy: (a, b) =>
+            cmpCi(loginOf(a.grantedBy), loginOf(b.grantedBy)),
+          grantedAt: (a, b) => cmpNum(a.grantedAt, b.grantedAt),
+        },
+        opts,
+        (a, b) => cmpBin(a.memberId, b.memberId),
+        (a, b) => a.grantedAt - b.grantedAt || cmp(a.memberId, b.memberId),
+      ),
     countGrants: async (showId) =>
       [...grants.values()].filter((g) => g.showId === showId).length,
     deleteGrant: async (showId, memberId) =>

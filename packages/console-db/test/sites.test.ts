@@ -26,7 +26,130 @@ const deploy = (
 });
 
 /** Behaviour shared by the fake and the real Prisma repository. */
-export function sitesContract(make: () => SitesDb | Promise<SitesDb>) {
+export function sitesContract(
+  make: () => SitesDb | Promise<SitesDb>,
+  seed: { login: (id: string, login: string) => Promise<void> } = {
+    login: async () => undefined,
+  },
+) {
+  describe("order", () => {
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+    it("sites: name, url (slug, byte order), a NULL owner, updatedAt", async () => {
+      const db = await make();
+      await seed.login("m1", "Zorro");
+      await seed.login("m2", "amy");
+      await seed.login("m3", "Amy");
+      const mk = (
+        id: string,
+        name: string,
+        slug: string,
+        ownerId: string | null,
+        at: number,
+      ) => db.insertSite({ ...site(id, slug, at), name, ownerId });
+      await mk("s_b", "beta", "zzzzzzzz1", "m1", 10);
+      await mk("s_a", "Alpha", "AAAAAAAA1", "m2", 20);
+      await mk("s_c", "alpha2", "aaaaaaaa2", "m3", 30);
+      await mk("s_d", "ALPHA10", "mmmmmmmm1", null, 30);
+      const list = (o: Parameters<SitesDb["listSites"]>[0]) =>
+        db.listSites(o).then(ids);
+      expect(await list(undefined)).toEqual(["s_a", "s_d", "s_c", "s_b"]);
+      expect(await list({ sort: "name", order: "desc" })).toEqual([
+        "s_b",
+        "s_c",
+        "s_d",
+        "s_a",
+      ]);
+      expect(await list({ sort: "url" })).toEqual(["s_a", "s_c", "s_d", "s_b"]);
+      expect(await list({ sort: "url", order: "desc" })).toEqual([
+        "s_b",
+        "s_d",
+        "s_c",
+        "s_a",
+      ]);
+      expect(await list({ sort: "createdBy" })).toEqual([
+        "s_d",
+        "s_a",
+        "s_c",
+        "s_b",
+      ]);
+      expect(await list({ sort: "updatedAt", order: "desc" })).toEqual([
+        "s_d",
+        "s_c",
+        "s_a",
+        "s_b",
+      ]);
+    });
+    it("deploys: status (declaration order), files, size, id, and limit after order", async () => {
+      const db = await make();
+      await db.insertSite(site("s1", "sssssssss"));
+      for (const [id, at] of [
+        ["d1", 10],
+        ["d2", 20],
+        ["d3", 30],
+        ["d4", 30],
+      ] as const)
+        await db.insertDeploy(deploy(id, "s1", { at }));
+      await db.transitionDeploy(
+        "d1",
+        "pending",
+        { status: "live", bytes: 500, files: 5 },
+        40,
+      );
+      await db.transitionDeploy(
+        "d2",
+        "pending",
+        { status: "failed", error: "bad_zip" },
+        41,
+      );
+      await db.transitionDeploy("d3", "pending", { status: "queued" }, 42);
+      const list = (limit: number, o: Parameters<SitesDb["listDeploys"]>[2]) =>
+        db.listDeploys("s1", limit, o).then(ids);
+      expect(await list(10, undefined)).toEqual(["d4", "d3", "d2", "d1"]);
+      expect(await list(10, { sort: "status" })).toEqual([
+        "d4",
+        "d3",
+        "d1",
+        "d2",
+      ]);
+      expect(await list(10, { sort: "status", order: "desc" })).toEqual([
+        "d2",
+        "d1",
+        "d3",
+        "d4",
+      ]);
+      expect(await list(10, { sort: "files" })).toEqual([
+        "d2",
+        "d3",
+        "d4",
+        "d1",
+      ]);
+      expect(await list(10, { sort: "size", order: "desc" })).toEqual([
+        "d1",
+        "d4",
+        "d3",
+        "d2",
+      ]);
+      expect(await list(10, { sort: "id" })).toEqual(["d1", "d2", "d3", "d4"]);
+      expect(await list(10, { sort: "createdAt" })).toEqual([
+        "d1",
+        "d2",
+        "d3",
+        "d4",
+      ]);
+      expect(await list(2, { sort: "status" })).toEqual(["d4", "d3"]);
+      // The window is the newest N before the order applies: with limit 2 a
+      // status sort cannot reach d1/d2 however it is ordered.
+      expect(await list(2, { sort: "status", order: "desc" })).toEqual([
+        "d3",
+        "d4",
+      ]);
+      expect(await list(2, { sort: "files", order: "desc" })).toEqual([
+        "d4",
+        "d3",
+      ]);
+    });
+  });
+
   it("sites: insert, unique name (ci) and slug (bin), list sorted, update, delete", async () => {
     const db = await make();
     await db.insertSite(site("z1", "zzzzzzzz1"));
@@ -195,5 +318,18 @@ export function sitesContract(make: () => SitesDb | Promise<SitesDb>) {
 }
 
 describe("memory sites db", () => {
-  sitesContract(() => createMemorySitesDb((id) => id !== "ghost"));
+  const logins = new Map<string, string>();
+  sitesContract(
+    () => {
+      logins.clear();
+      return createMemorySitesDb((id) => id !== "ghost", {
+        loginOf: (id) => logins.get(id) ?? `login-${id}`,
+      });
+    },
+    {
+      login: async (id, login) => {
+        logins.set(id, login);
+      },
+    },
+  );
 });
