@@ -1,18 +1,11 @@
-import {
-  Anchor,
-  Badge,
-  Button,
-  Card,
-  Group,
-  Stack,
-  Table,
-  Text,
-  Title,
-} from "@mantine/core";
+import { Anchor, Badge, Button, Card, Group, Table, Text } from "@mantine/core";
 import { IconDownload } from "@tabler/icons-react";
 import { Link } from "react-router";
 import { api, ApiError } from "../api";
-import { Notice, Spinner } from "../components/ui";
+import { DataTable } from "../components/DataTable";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
+import { Notice } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { useApiQuery } from "../lib/query";
 import type { InstallerDownload } from "../types";
@@ -64,10 +57,10 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
   const latest = latestDownload(list.data);
   if (!latest) return null;
   return (
-    <Card withBorder padding="md" mb="md">
+    <Card padding="md" mb="md">
       <Group justify="space-between" align="center" wrap="wrap">
         <div>
-          <Text fw={600}>잉여톤 app</Text>
+          <Text fw={500}>잉여톤 app</Text>
           <Text size="sm" c="dimmed">
             Installs the catalog apps on your device, keeps them updated, and
             tracks project issues. Latest: <strong>{latest.filename}</strong>
@@ -79,7 +72,8 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
           <Button
             component="a"
             href={latest.url}
-            leftSection={<IconDownload size={16} />}
+            variant="default"
+            leftSection={<IconDownload size={16} aria-hidden="true" />}
           >
             Download installer
             {latest.version ? ` v${latest.version}` : ""}
@@ -97,12 +91,13 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
 
 export function InstallerPage() {
   const list = useInstallerDownloads();
-  if (list.loading && !list.data) return <Spinner />;
+  const downloads = list.data?.downloads;
   return (
     <>
-      <Title order={2} mb="sm">
-        Installer
-      </Title>
+      <PageHeader
+        title="Installer"
+        description="Every published build of the device installer, newest first."
+      />
       {list.error && <Notice kind="error">{list.error}</Notice>}
       {list.data?.untrusted && (
         <Notice kind="warn">
@@ -113,56 +108,57 @@ export function InstallerPage() {
       {list.data &&
         !list.data.untrusted &&
         list.data.downloads.length === 0 && (
-          <Notice>
-            No installer build is published yet. An admin picks the installer
-            app under Members → Installer app; builds are listed here as soon as
-            one is uploaded.
-          </Notice>
+          <EmptyState
+            title="No installer build is published yet."
+            hint="An admin picks the installer app under Members → Installer app; builds are listed here as soon as one is uploaded."
+          />
         )}
       {/* Mounted only with data: a second observer while the query is in
           error state would refetch (staleTime 0), flip the page back to the
-          spinner, unmount itself, and loop. */}
+          skeleton, unmount itself, and loop. */}
       {list.data && <InstallerDownloadCard />}
-      {list.data && list.data.downloads.length > 0 && (
-        <Stack gap="xs">
-          {list.data.downloads.some((d) => d.platform === "android") && (
-            <Text size="sm" c="dimmed">
-              Android: open the APK on the device and allow installs from this
-              source when asked. The installer then signs in with the same
-              GitHub account and updates itself from this list.
-            </Text>
-          )}
-          <Table striped withTableBorder>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>File</Table.Th>
-                <Table.Th>Version</Table.Th>
-                <Table.Th>Platform</Table.Th>
-                <Table.Th>Published</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.downloads.map((d, i) => (
-                <Table.Tr key={d.url}>
-                  <Table.Td>
-                    <Anchor
-                      href={d.url}
-                      aria-label={
-                        i === 0 ? `${d.filename} (latest)` : undefined
-                      }
-                    >
-                      {d.filename}
-                    </Anchor>{" "}
-                    {i === 0 && <Badge size="xs">latest</Badge>}
-                  </Table.Td>
-                  <Table.Td>{d.version ?? "—"}</Table.Td>
-                  <Table.Td>{platformLabel(d.platform)}</Table.Td>
-                  <Table.Td>{fmtTime(d.createdAt)}</Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Stack>
+      {downloads?.some((d) => d.platform === "android") && (
+        <Text size="sm" c="dimmed" mb="md">
+          Android: open the APK on the device and allow installs from this
+          source when asked. The installer then signs in with the same GitHub
+          account and updates itself from this list.
+        </Text>
+      )}
+      {(list.loading || (downloads && downloads.length > 0)) && (
+        <DataTable
+          columns={[
+            { key: "file", label: "File" },
+            { key: "version", label: "Version" },
+            { key: "platform", label: "Platform" },
+            { key: "published", label: "Published" },
+          ]}
+          rows={downloads}
+          loading={list.loading && !list.data}
+          rowKey={(d) => d.url}
+          minWidth={560}
+          empty={{ title: "No installer build is published yet." }}
+          render={(d) => {
+            const i = downloads?.indexOf(d) ?? -1;
+            return (
+              <>
+                <Table.Td>
+                  <Anchor
+                    href={d.url}
+                    size="sm"
+                    fw={500}
+                    aria-label={i === 0 ? `${d.filename} (latest)` : undefined}
+                  >
+                    {d.filename}
+                  </Anchor>{" "}
+                  {i === 0 && <Badge size="xs">latest</Badge>}
+                </Table.Td>
+                <Table.Td>{d.version ?? "—"}</Table.Td>
+                <Table.Td>{platformLabel(d.platform)}</Table.Td>
+                <Table.Td>{fmtTime(d.createdAt)}</Table.Td>
+              </>
+            );
+          }}
+        />
       )}
     </>
   );

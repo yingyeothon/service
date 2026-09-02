@@ -57,7 +57,7 @@ describe("TokensPage", () => {
     expect(await screen.findByText("No tokens yet.")).toBeInTheDocument();
   });
 
-  it("creates a token and shows the secret once", async () => {
+  it("creates a token from the drawer and shows the secret once", async () => {
     vi.mocked(mockApi.createToken).mockResolvedValue({
       id: "tok_2",
       name: "phone",
@@ -67,25 +67,38 @@ describe("TokensPage", () => {
     });
     mount(<TokensPage />, { client: mockApi });
     await screen.findByText("laptop");
-    await userEvent.type(screen.getByLabelText("Token name"), "phone");
-    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
+    const drawer = await screen.findByRole("dialog");
+    await userEvent.type(within(drawer).getByLabelText(/^Token name/), "phone");
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Create token" }),
+    );
     await waitFor(() =>
       expect(mockApi.createToken).toHaveBeenCalledWith("phone"),
     );
-    const banner = await screen.findByRole("alert");
-    expect(within(banner).getByText("yyt_secret")).toBeInTheDocument();
+    const banner = (await screen.findByText("yyt_secret")).closest(
+      '[role="alert"]',
+    ) as HTMLElement;
     await userEvent.click(
       within(banner).getByRole("button", { name: "I have copied it" }),
     );
     expect(screen.queryByText("yyt_secret")).toBeNull();
   });
 
-  it("revokes after a confirmation", async () => {
+  it("revokes from the row menu after a confirmation", async () => {
     vi.mocked(mockApi.revokeToken).mockResolvedValue(undefined);
     mount(<TokensPage />, { client: mockApi });
     await screen.findByText("laptop");
-    await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for laptop" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Revoke token" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Revoke token" }),
+    );
     await waitFor(() =>
       expect(mockApi.revokeToken).toHaveBeenCalledWith("tok_1"),
     );

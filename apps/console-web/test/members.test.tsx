@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
@@ -94,11 +94,24 @@ describe("MembersPage", () => {
     await waitFor(() =>
       expect(mockApi.memberAction).toHaveBeenCalledWith("u3", "approve"),
     );
-    // alice (admin, the caller) has no Demote; bob has a promote.
-    expect(screen.queryByRole("button", { name: "Demote" })).toBeNull();
+    // alice (admin, the caller) has no menu; bob's menu promotes after a confirm.
     expect(
-      screen.getByRole("button", { name: "Promote to admin" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: "Actions for alice" }),
+    ).toBeNull();
+    vi.mocked(mockApi.memberAction).mockClear();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for bob" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Promote to admin" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Promote" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.memberAction).toHaveBeenCalledWith("u2", "promote"),
+    );
   });
 
   it("sets the installer app", async () => {
@@ -113,7 +126,7 @@ describe("MembersPage", () => {
     mount(<MembersPage />, { client: mockApi });
     await screen.findByText("carol");
     await userEvent.type(screen.getByLabelText("Catalog app id"), "ca_1");
-    await userEvent.click(screen.getByRole("button", { name: "Set" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(mockApi.setInstallerApp).toHaveBeenCalledWith("ca_1"),
     );

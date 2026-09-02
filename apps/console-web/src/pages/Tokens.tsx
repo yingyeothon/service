@@ -1,50 +1,53 @@
-import {
-  Button,
-  Code,
-  Group,
-  Table,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
+import { Code, Table, TextInput } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
-import { Confirm, Notice, SecretOnce, Spinner } from "../components/ui";
+import { DataTable } from "../components/DataTable";
+import { PageHeader } from "../components/PageHeader";
+import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
+import { RowMenu } from "../components/RowMenu";
+import { Notice, SecretOnce } from "../components/ui";
 import { fmtTime } from "../lib/format";
+import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 
 export function TokensPage() {
   const list = useApiQuery(["tokens"], () => api.tokens());
   const act = useAction();
-  const [name, setName] = useState("");
+  const create = useDrawerForm(() => ({ name: "" }));
   const [fresh, setFresh] = useState<{ name: string; token: string } | null>(
     null,
   );
 
-  const create = async (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const r = await act.run(() => api.createToken(name));
+    const r = await act.run(() => api.createToken(create.form.name.trim()));
     if (!r) return;
+    create.close();
     setFresh({ name: r.name, token: r.token });
-    setName("");
+    notify.created("token");
     await list.reload();
   };
   const revoke = async (id: string) => {
-    await act.run(() => api.revokeToken(id));
-    await list.reload();
+    if (await act.run(() => api.revokeToken(id).then(() => true))) {
+      notify.done("Token revoked");
+      await list.reload();
+    }
   };
 
   return (
     <>
-      <Title order={2} mb="sm">
-        API tokens
-      </Title>
-      <Text size="sm" c="dimmed" mb="sm">
-        Tokens authenticate the CLI:{" "}
-        <Code>yyt login --api {window.location.origin} --token yyt_…</Code>.
-        They carry your current role; revoke any you no longer use (max 20).
-      </Text>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
+      <PageHeader
+        title="API tokens"
+        description={
+          <>
+            Tokens authenticate the CLI:{" "}
+            <Code>yyt login --api {window.location.origin} --token yyt_…</Code>.
+            They carry your current role; revoke any you no longer use (max 20).
+          </>
+        }
+        actions={[{ label: "New token", primary: true, onClick: create.open }]}
+      />
+      {act.error && !create.opened && <Notice kind="error">{act.error}</Notice>}
       {fresh && (
         <SecretOnce
           label={`Token "${fresh.name}"`}
@@ -52,65 +55,74 @@ export function TokensPage() {
           onDismiss={() => setFresh(null)}
         />
       )}
-      <form onSubmit={(e) => void create(e)}>
-        <Group align="end" mb="md">
-          <TextInput
-            aria-label="Token name"
-            placeholder="name (e.g. laptop)"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-            maxLength={100}
+      <DataTable
+        columns={[
+          { key: "name", label: "Name" },
+          { key: "id", label: "Id" },
+          { key: "created", label: "Created" },
+          { key: "used", label: "Last used" },
+        ]}
+        rows={list.data}
+        loading={list.loading}
+        error={list.error}
+        rowKey={(t) => t.id}
+        empty={{
+          title: "No tokens yet.",
+          hint: "Create one to sign the CLI in.",
+        }}
+        render={(t) => (
+          <>
+            <Table.Td>{t.name}</Table.Td>
+            <Table.Td>
+              <Code>{t.id}</Code>
+            </Table.Td>
+            <Table.Td>{fmtTime(t.createdAt)}</Table.Td>
+            <Table.Td>{fmtTime(t.lastUsedAt)}</Table.Td>
+          </>
+        )}
+        actions={(t) => (
+          <RowMenu
+            name={t.name}
+            items={[
+              {
+                label: "Revoke token",
+                danger: true,
+                disabled: act.busy,
+                onClick: () => revoke(t.id),
+                confirm: {
+                  title: `Revoke "${t.name}"?`,
+                  message: "Anything signed in with it is signed out.",
+                  confirmLabel: "Revoke token",
+                  danger: true,
+                },
+              },
+            ]}
           />
-          <Button type="submit" disabled={act.busy || !name.trim()}>
-            Create token
-          </Button>
-        </Group>
-      </form>
-      <Title order={4} mb="xs">
-        Existing
-      </Title>
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={560}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Name</Table.Th>
-                <Table.Th>Id</Table.Th>
-                <Table.Th>Created</Table.Th>
-                <Table.Th>Last used</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((t) => (
-                <Table.Tr key={t.id}>
-                  <Table.Td>{t.name}</Table.Td>
-                  <Table.Td>
-                    <Code>{t.id}</Code>
-                  </Table.Td>
-                  <Table.Td>{fmtTime(t.createdAt)}</Table.Td>
-                  <Table.Td>{fmtTime(t.lastUsedAt)}</Table.Td>
-                  <Table.Td>
-                    <Confirm
-                      label="Revoke"
-                      onConfirm={() => revoke(t.id)}
-                      disabled={act.busy}
-                    />
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          No tokens yet.
-        </Text>
-      )}
+        )}
+      />
+      <ResourceDrawer
+        opened={create.opened}
+        onClose={create.close}
+        title="New token"
+        submitLabel="Create token"
+        onSubmit={submit}
+        busy={act.busy}
+        disabled={!create.form.name.trim()}
+        error={create.opened ? act.error : null}
+      >
+        <TextInput
+          label="Token name"
+          description="Where it will live: a machine, a CI job."
+          placeholder="laptop"
+          value={create.form.name}
+          onChange={(e) => create.patch({ name: e.currentTarget.value })}
+          required
+          maxLength={100}
+          autoComplete="off"
+          spellCheck={false}
+          data-autofocus
+        />
+      </ResourceDrawer>
     </>
   );
 }

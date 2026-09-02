@@ -4,7 +4,8 @@ import { api } from "../api";
 import { fmtTime } from "../lib/format";
 import { useAction } from "../lib/query";
 import type { TeamHistoryEntry } from "../types";
-import { Notice, Spinner } from "./ui";
+import { DataTable } from "./DataTable";
+import { Notice } from "./ui";
 
 const scalar = (x: unknown): string =>
   typeof x === "string"
@@ -51,53 +52,43 @@ export function HistoryList({ team }: { team: string }) {
     // `load` closes over `act.run`, which is stable; refetch only per team.
   }, [team]);
 
-  if (act.error && rows === null)
-    return <Notice kind="error">{act.error}</Notice>;
-  if (rows === null) return <Spinner />;
   return (
     <>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {rows.length === 0 ? (
-        <Text size="sm" c="dimmed">
-          No history yet.
-        </Text>
-      ) : (
-        <Table.ScrollContainer minWidth={640}>
-          <Table striped>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>When</Table.Th>
-                <Table.Th>Action</Table.Th>
-                <Table.Th>Actor</Table.Th>
-                <Table.Th>Subject</Table.Th>
-                <Table.Th>Detail</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {rows.map((h) => (
-                <Table.Tr key={h.id}>
-                  <Table.Td>{fmtTime(h.at)}</Table.Td>
-                  <Table.Td>
-                    <Code>{h.action}</Code>
-                  </Table.Td>
-                  <Table.Td>{h.actor ?? "—"}</Table.Td>
-                  <Table.Td>{h.subject ?? h.target ?? "—"}</Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed">
-                      {historyDetail(h.detail)}
-                    </Text>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      )}
+      {act.error && rows !== null && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={[
+          { key: "when", label: "When" },
+          { key: "action", label: "Action" },
+          { key: "actor", label: "Actor" },
+          { key: "subject", label: "Subject" },
+          { key: "detail", label: "Detail" },
+        ]}
+        rows={rows ?? undefined}
+        loading={rows === null && !act.error}
+        error={rows === null ? act.error : null}
+        rowKey={(h) => h.id}
+        minWidth={640}
+        empty={{ title: "No history yet." }}
+        render={(h) => (
+          <>
+            <Table.Td>{fmtTime(h.at)}</Table.Td>
+            <Table.Td>
+              <Code>{h.action}</Code>
+            </Table.Td>
+            <Table.Td>{h.actor ?? "—"}</Table.Td>
+            <Table.Td>{h.subject ?? h.target ?? "—"}</Table.Td>
+            <Table.Td>
+              <Text size="xs" c="dimmed">
+                {historyDetail(h.detail)}
+              </Text>
+            </Table.Td>
+          </>
+        )}
+      />
       {next && (
         <Button
-          size="compact-sm"
           variant="default"
-          mt="xs"
+          mt="md"
           disabled={act.busy}
           onClick={() => void load(next)}
         >
