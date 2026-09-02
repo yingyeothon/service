@@ -31,6 +31,8 @@ proposal bodies) is markdown rendered by `src/components/Markdown.tsx`
 (`services/console/serverless.yml`, `WebHeadersPolicy`); the built `index.html`
 must stay free of inline scripts for `script-src 'self'` to hold.
 
+Every list orders and searches on the server (`docs/decisions.md` _List sort and filter_): a column header with a sort icon is a button (`aria-sort` on the header), a search box under the header sends `q`, and the rows on screen stay while the re-fetch is in flight. The side navigation nests your teams under _Teams_.
+
 ## Design system
 
 `DESIGN.md` (this directory) holds the token system — colours, type scale,
