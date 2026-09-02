@@ -2,11 +2,10 @@ import { Button } from "@mantine/core";
 import { useRef, type ChangeEvent } from "react";
 
 /**
- * The hidden `<input type="file">` plus the button that clicks it — the shell
- * four uploaders in this app already spell out by hand. Extracted for the
- * screenshot field rather than retrofitted onto them: they each have their own
- * label and busy state, and rewriting four working uploaders to share this
- * would be a change with no user-visible effect.
+ * The hidden `<input type="file">` plus the button that clicks it, for fields
+ * that pick files without a drop target (the screenshot field, the poster
+ * button in `EventDetail`). The click-or-drop uploaders share `DropZone` in
+ * `ui.tsx` instead.
  */
 export function FilePicker({
   label,

@@ -1,9 +1,22 @@
-/** Unix seconds → local date-time (`YYYY-MM-DD HH:mm`). */
-export function fmtTime(sec: number | null | undefined): string {
-  if (sec === null || sec === undefined) return "—";
+/**
+ * Unix seconds → local `YYYY-MM-DD<sep>HH:mm` in the browser's zone, or
+ * `empty` for a missing value. The display form uses a space and an em dash;
+ * `datetime-local` inputs use `T` and an empty string.
+ */
+export function formatLocal(
+  sec: number | null | undefined,
+  sep: string,
+  empty: string,
+): string {
+  if (sec === null || sec === undefined) return empty;
   const d = new Date(sec * 1000);
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}${sep}${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Unix seconds → local date-time (`YYYY-MM-DD HH:mm`). */
+export function fmtTime(sec: number | null | undefined): string {
+  return formatLocal(sec, " ", "—");
 }
 
 /** "in 3d", "2h ago". */

@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 import { fmtTime } from "../lib/format";
 import { useAction } from "../lib/query";
 import type { Comment } from "../types";
-import { Confirm, ConfirmWithReason, Notice } from "./ui";
+import { Confirm, ConfirmWithReason, FormActions, Notice } from "./ui";
 import { Markdown } from "./Markdown";
 import { MdField } from "./MdField";
 
@@ -145,11 +145,10 @@ export function Comments({
               maxLength={10000}
               minRows={3}
             />
-            <Group>
-              <Button type="submit" disabled={act.busy || !draft.trim()}>
-                Comment
-              </Button>
-            </Group>
+            <FormActions
+              submitLabel="Comment"
+              disabled={act.busy || !draft.trim()}
+            />
           </Stack>
         </form>
       )}

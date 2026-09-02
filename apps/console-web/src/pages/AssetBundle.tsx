@@ -4,17 +4,23 @@ import {
   Card,
   Code,
   Group,
-  Paper,
   Table,
   Text,
   TextInput,
   Title,
 } from "@mantine/core";
-import { useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
-import { Confirm, CopyField, Notice, Spinner } from "../components/ui";
+import {
+  Confirm,
+  CopyField,
+  DropZone,
+  Notice,
+  Spinner,
+} from "../components/ui";
+import { ResourceInfoForm } from "../components/ResourceForms";
 import { fmtSize } from "../lib/catalog";
 import { fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
@@ -35,9 +41,7 @@ function UploadCard({
   const act = useAction();
   const [version, setVersion] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [over, setOver] = useState(false);
   const [done, setDone] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   /**
    * `webkitRelativePath` is set when a directory was picked; it starts with the
@@ -54,11 +58,6 @@ function UploadCard({
   const pick = (list: FileList | null) => {
     setDone(null);
     setFiles(list ? [...list] : []);
-  };
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault();
-    setOver(false);
-    pick(e.dataTransfer.files);
   };
 
   const upload = async (e: FormEvent) => {
@@ -91,44 +90,11 @@ function UploadCard({
       </Text>
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {done && <Notice kind="success">{done}</Notice>}
-      <Paper
-        withBorder
-        p="md"
-        mb="sm"
-        role="button"
-        tabIndex={0}
-        aria-label="Choose or drop the bundle files"
-        style={{
-          borderStyle: "dashed",
-          cursor: "pointer",
-          background: over ? "var(--mantine-color-brand-0)" : undefined,
-          textAlign: "center",
-        }}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) =>
-          (e.key === "Enter" || e.key === " ") &&
-          (e.preventDefault(), inputRef.current?.click())
-        }
-        onDragOver={(e) => {
-          e.preventDefault();
-          setOver(true);
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={onDrop}
-      >
-        <Text size="sm">
-          {files.length
-            ? files.map(pathOf).join(", ")
-            : "Drop the bundle files here, or click to choose"}
-        </Text>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          hidden
-          onChange={(e) => pick(e.target.files)}
-        />
-      </Paper>
+      <DropZone label="Choose or drop the bundle files" multiple onFiles={pick}>
+        {files.length
+          ? files.map(pathOf).join(", ")
+          : "Drop the bundle files here, or click to choose"}
+      </DropZone>
       <form onSubmit={(e) => void upload(e)}>
         <Group align="end" wrap="wrap">
           <TextInput
@@ -285,29 +251,14 @@ export function AssetBundlePage() {
         </Notice>
       )}
       {canWrite && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void saveInfo(e)}>
-            <Group align="end" wrap="wrap">
-              <TextInput
-                label="Name"
-                value={name ?? b.name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={64}
-                w={200}
-              />
-              <TextInput
-                label="Description"
-                value={desc ?? b.description ?? ""}
-                onChange={(e) => setDesc(e.target.value)}
-                maxLength={2000}
-                w={280}
-              />
-              <Button type="submit" disabled={act.busy}>
-                Save
-              </Button>
-            </Group>
-          </form>
-        </Card>
+        <ResourceInfoForm
+          name={name ?? b.name}
+          description={desc ?? b.description ?? ""}
+          onName={setName}
+          onDescription={setDesc}
+          onSubmit={saveInfo}
+          busy={act.busy}
+        />
       )}
       <Text size="xs" c="dimmed" mb="sm">
         Deleting a version or a bundle is refused while a lobby channel still

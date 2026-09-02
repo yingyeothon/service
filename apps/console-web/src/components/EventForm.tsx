@@ -18,7 +18,7 @@ import {
 } from "../lib/eventForm";
 import type { EventInput } from "../types";
 import { MdField } from "./MdField";
-import { Notice } from "./ui";
+import { FormActions, Notice } from "./ui";
 
 /**
  * Draft form (create) and page editor (edit). `schedule` is true only while
@@ -161,14 +161,11 @@ export function EventForm({
             value={f.bodyMd}
             onChange={(v) => set("bodyMd", v)}
           />
-          <Group>
-            <Button type="submit" disabled={busy}>
-              {submitLabel}
-            </Button>
-            <Button variant="default" onClick={onCancel}>
-              Cancel
-            </Button>
-          </Group>
+          <FormActions
+            submitLabel={submitLabel}
+            disabled={busy}
+            onCancel={onCancel}
+          />
         </Stack>
       </form>
     </Card>

@@ -1,11 +1,15 @@
 import {
   Alert,
+  Anchor,
   Badge as MantineBadge,
   Button,
+  Card,
   Code,
   Group,
   Loader,
+  Paper,
   Stack,
+  Table,
   Text,
   TextInput,
 } from "@mantine/core";
@@ -18,10 +22,13 @@ import {
 import {
   useEffect,
   useId,
+  useRef,
   useState,
   type ChangeEvent,
+  type DragEvent,
   type ReactNode,
 } from "react";
+import { Link } from "react-router";
 
 const NOTICE: Record<
   "info" | "error" | "success" | "warn",
@@ -334,5 +341,144 @@ export function ConfirmWithReason({
         Cancel
       </Button>
     </Group>
+  );
+}
+
+/** The submit row of every inline form: a submit button and, when the form can be dismissed, a Cancel. */
+export function FormActions({
+  submitLabel,
+  disabled,
+  onCancel,
+}: {
+  submitLabel: string;
+  disabled?: boolean;
+  onCancel?: () => void;
+}) {
+  return (
+    <Group>
+      <Button type="submit" disabled={disabled}>
+        {submitLabel}
+      </Button>
+      {onCancel && (
+        <Button variant="default" onClick={onCancel}>
+          Cancel
+        </Button>
+      )}
+    </Group>
+  );
+}
+
+/** A table cell whose content is an in-app link (the name column of every list). */
+export function LinkCell({
+  to,
+  children,
+}: {
+  to: string;
+  children: ReactNode;
+}) {
+  return (
+    <Table.Td>
+      <Anchor component={Link} to={to} size="sm">
+        {children}
+      </Anchor>
+    </Table.Td>
+  );
+}
+
+/** The last card of a settings tab: one sentence on what deletion refuses, then the confirm. */
+export function DangerCard({
+  label,
+  onConfirm,
+  disabled,
+  children,
+}: {
+  label: string;
+  onConfirm: () => void | Promise<void>;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <Card withBorder padding="sm">
+      <Text size="sm" mb="xs">
+        {children}
+      </Text>
+      <Confirm
+        label={label}
+        confirmLabel="Delete"
+        onConfirm={onConfirm}
+        disabled={disabled}
+      />
+    </Card>
+  );
+}
+
+/**
+ * The dashed click-or-drop target the uploaders share. It owns the hover
+ * state and the hidden input; the page decides what to do with the files
+ * (one or many) and what the zone says.
+ */
+export function DropZone({
+  label,
+  accept,
+  multiple,
+  dimmed,
+  onFiles,
+  children,
+}: {
+  /** Accessible name of the zone. */
+  label: string;
+  accept?: string;
+  multiple?: boolean;
+  /** Render the caption dimmed (nothing chosen yet). */
+  dimmed?: boolean;
+  /** The dropped or chosen files; `null` when the input reports none. */
+  onFiles: (files: FileList | null) => void;
+  children: ReactNode;
+}) {
+  const [over, setOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setOver(false);
+    onFiles(e.dataTransfer.files);
+  };
+  return (
+    <Paper
+      withBorder
+      p="md"
+      mb="sm"
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+      style={{
+        borderStyle: "dashed",
+        cursor: "pointer",
+        background: over ? "var(--mantine-color-brand-0)" : undefined,
+        textAlign: "center",
+      }}
+      onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) =>
+        (e.key === "Enter" || e.key === " ") &&
+        (e.preventDefault(), inputRef.current?.click())
+      }
+      onDragOver={(e) => {
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={onDrop}
+    >
+      <Text size="sm" c={dimmed ? "dimmed" : undefined}>
+        {children}
+      </Text>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        multiple={multiple}
+        hidden
+        onChange={(e) => onFiles(e.target.files)}
+      />
+    </Paper>
   );
 }

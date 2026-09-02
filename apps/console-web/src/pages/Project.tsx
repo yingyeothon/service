@@ -13,13 +13,22 @@ import {
   Title,
 } from "@mantine/core";
 import { modals } from "@mantine/modals";
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
 import { Markdown } from "../components/Markdown";
 import { MdField } from "../components/MdField";
-import { Badge, Confirm, CopyField, Notice, Spinner } from "../components/ui";
+import { DraftForm, SettingsForm } from "../components/ResourceForms";
+import {
+  Badge,
+  Confirm,
+  CopyField,
+  DangerCard,
+  LinkCell,
+  Notice,
+  Spinner,
+} from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { useAction, useApiQuery } from "../lib/query";
 import { issueUrl, projectUrl, teamUrl, useTeamStanding } from "../lib/team";
@@ -168,15 +177,9 @@ function ChannelsTab({
             <Table.Tbody>
               {list.data.map((c) => (
                 <Table.Tr key={c.id}>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={`/channels/${encodeURIComponent(c.id)}`}
-                      size="sm"
-                    >
-                      {c.name}
-                    </Anchor>
-                  </Table.Td>
+                  <LinkCell to={`/channels/${encodeURIComponent(c.id)}`}>
+                    {c.name}
+                  </LinkCell>
                   <Table.Td>{c.kind}</Table.Td>
                   <Table.Td>
                     <Code>{c.id}</Code>
@@ -201,64 +204,103 @@ function ChannelsTab({
   );
 }
 
-function CatalogTab({
+/**
+ * The three list-and-create tabs (catalog apps, asset bundles, sites) are
+ * one screen with different columns: an intro line, a create card for
+ * writers with a name and one more field, then the table or an empty line.
+ */
+function ResourceTab<T extends { id: string }>({
   project,
   canWrite,
+  queryKey,
+  load,
+  create,
+  intro,
+  warn,
+  nameLabel,
+  namePlaceholder,
+  second,
+  submitLabel,
+  columns,
+  row,
+  emptyText,
 }: {
   project: ProjectDetail;
   canWrite: boolean;
+  queryKey: string;
+  load: (projectId: string) => Promise<T[]>;
+  /**
+   * `second` arrives trimmed; empty when the optional field was left blank.
+   * Must resolve to the created row: `useAction.run` reports failure as
+   * `undefined`, so a 204 here would read as a failed create.
+   */
+  create: (projectId: string, name: string, second: string) => Promise<object>;
+  intro: ReactNode;
+  warn?: ReactNode;
+  nameLabel: string;
+  namePlaceholder: string;
+  second: {
+    label: string;
+    placeholder: string;
+    required: boolean;
+    maxLength: number;
+  };
+  submitLabel: string;
+  columns: string[];
+  /** The cells after the name cell. */
+  row: (item: T) => ReactNode;
+  emptyText: string;
 }) {
-  const list = useApiQuery(["project", project.id, "apps"], () =>
-    api.projectCatalogApps(project.id),
+  const list = useApiQuery(["project", project.id, queryKey], () =>
+    load(project.id),
   );
   const act = useAction();
   const [name, setName] = useState("");
-  const [path, setPath] = useState("");
-  const create = async (e: FormEvent) => {
+  const [extra, setExtra] = useState("");
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
     const r = await act.run(() =>
-      api.createCatalogApp(project.id, {
-        name: name.trim(),
-        path: path.trim(),
-      }),
+      create(project.id, name.trim(), extra.trim()),
     );
     if (!r) return;
     setName("");
-    setPath("");
+    setExtra("");
     await list.reload();
   };
   return (
     <>
       <Text size="sm" c="dimmed" mb="sm">
-        Binary distribution: apps hold build artifacts served from the public
-        CDN.
+        {intro}
       </Text>
+      {warn}
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {canWrite && (
         <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void create(e)}>
+          <form onSubmit={(e) => void submit(e)}>
             <Group align="end" wrap="wrap">
               <TextInput
-                label="New app"
-                placeholder="name (e.g. my-game)"
+                label={nameLabel}
+                placeholder={namePlaceholder}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
                 maxLength={64}
               />
               <TextInput
-                label="Application id"
-                placeholder="life.yyt.my-game"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-                required
-                maxLength={200}
+                label={second.label}
+                placeholder={second.placeholder}
+                value={extra}
+                onChange={(e) => setExtra(e.target.value)}
+                required={second.required}
+                maxLength={second.maxLength}
               />
               <Button
                 type="submit"
-                disabled={act.busy || !name.trim() || !path.trim()}
+                disabled={
+                  act.busy || !name.trim() || (second.required && !extra.trim())
+                }
               >
-                Create app
+                {submitLabel}
               </Button>
             </Group>
           </form>
@@ -272,265 +314,153 @@ function CatalogTab({
           <Table striped highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>App</Table.Th>
-                <Table.Th>Application id</Table.Th>
-                <Table.Th>Created by</Table.Th>
-                <Table.Th>Updated</Table.Th>
+                {columns.map((c) => (
+                  <Table.Th key={c}>{c}</Table.Th>
+                ))}
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {list.data.map((a) => (
-                <Table.Tr key={a.id}>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={`/catalog/apps/${encodeURIComponent(a.id)}`}
-                      size="sm"
-                    >
-                      {a.name}
-                    </Anchor>
-                  </Table.Td>
-                  <Table.Td>
-                    <Code>{a.path}</Code>
-                  </Table.Td>
-                  <Table.Td>{a.createdBy ?? "—"}</Table.Td>
-                  <Table.Td>{fmtTime(a.updatedAt)}</Table.Td>
-                </Table.Tr>
+              {list.data.map((item) => (
+                <Table.Tr key={item.id}>{row(item)}</Table.Tr>
               ))}
             </Table.Tbody>
           </Table>
         </Table.ScrollContainer>
       ) : (
         <Text size="sm" c="dimmed">
-          No apps yet.
+          {emptyText}
         </Text>
       )}
     </>
   );
 }
 
-function AssetsTab({
-  project,
-  canWrite,
-}: {
-  project: ProjectDetail;
-  canWrite: boolean;
-}) {
-  const list = useApiQuery(["project", project.id, "bundles"], () =>
-    api.projectAssetBundles(project.id),
-  );
-  const act = useAction();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const create = async (e: FormEvent) => {
-    e.preventDefault();
-    const r = await act.run(() =>
-      api.createAssetBundle(project.id, {
-        name: name.trim(),
-        ...(description.trim() ? { description: description.trim() } : {}),
-      }),
-    );
-    if (!r) return;
-    setName("");
-    setDescription("");
-    await list.reload();
-  };
+function CatalogTab(props: { project: ProjectDetail; canWrite: boolean }) {
   return (
-    <>
-      <Text size="sm" c="dimmed" mb="sm">
-        Game content on the public CDN: maps, tilesets, sounds. Every object is
-        versioned, world-readable and cached forever — publishing a fix means
-        uploading a new version and pointing a lobby channel&rsquo;s map URL at
-        it.
-      </Text>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {canWrite && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void create(e)}>
-            <Group align="end" wrap="wrap">
-              <TextInput
-                label="New bundle"
-                placeholder="name (e.g. dungeon-maps)"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                maxLength={64}
-              />
-              <TextInput
-                label="Description"
-                placeholder="optional"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                maxLength={2000}
-              />
-              <Button type="submit" disabled={act.busy || !name.trim()}>
-                Create bundle
-              </Button>
-            </Group>
-          </form>
-        </Card>
+    <ResourceTab
+      {...props}
+      queryKey="apps"
+      load={api.projectCatalogApps}
+      create={(prj, name, path) => api.createCatalogApp(prj, { name, path })}
+      intro="Binary distribution: apps hold build artifacts served from the public CDN."
+      nameLabel="New app"
+      namePlaceholder="name (e.g. my-game)"
+      second={{
+        label: "Application id",
+        placeholder: "life.yyt.my-game",
+        required: true,
+        maxLength: 200,
+      }}
+      submitLabel="Create app"
+      columns={["App", "Application id", "Created by", "Updated"]}
+      row={(a) => (
+        <>
+          <LinkCell to={`/catalog/apps/${encodeURIComponent(a.id)}`}>
+            {a.name}
+          </LinkCell>
+          <Table.Td>
+            <Code>{a.path}</Code>
+          </Table.Td>
+          <Table.Td>{a.createdBy ?? "—"}</Table.Td>
+          <Table.Td>{fmtTime(a.updatedAt)}</Table.Td>
+        </>
       )}
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={560}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Bundle</Table.Th>
-                <Table.Th>Description</Table.Th>
-                <Table.Th>Created by</Table.Th>
-                <Table.Th>Updated</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((b) => (
-                <Table.Tr key={b.id}>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={`/assets/${encodeURIComponent(b.id)}`}
-                      size="sm"
-                    >
-                      {b.name}
-                    </Anchor>
-                  </Table.Td>
-                  <Table.Td>{b.description ?? "—"}</Table.Td>
-                  <Table.Td>{b.createdBy ?? "—"}</Table.Td>
-                  <Table.Td>{fmtTime(b.updatedAt)}</Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          No asset bundles yet.
-        </Text>
-      )}
-    </>
+      emptyText="No apps yet."
+    />
   );
 }
 
-function SitesTab({
-  project,
-  canWrite,
-}: {
-  project: ProjectDetail;
-  canWrite: boolean;
-}) {
-  const list = useApiQuery(["project", project.id, "sites"], () =>
-    api.projectSites(project.id),
-  );
-  const act = useAction();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const create = async (e: FormEvent) => {
-    e.preventDefault();
-    const r = await act.run(() =>
-      api.createSite(project.id, {
-        name: name.trim(),
-        ...(description.trim() ? { description: description.trim() } : {}),
-      }),
-    );
-    if (!r) return;
-    setName("");
-    setDescription("");
-    await list.reload();
-  };
+/** An optional description travels only when the writer typed one. */
+const withDescription = (name: string, description: string) => ({
+  name,
+  ...(description ? { description } : {}),
+});
+
+function AssetsTab(props: { project: ProjectDetail; canWrite: boolean }) {
   return (
-    <>
-      <Text size="sm" c="dimmed" mb="sm">
-        Static web builds (a browser game client, a landing page) served at the
-        shared static host under a random path. One live tree per site: a deploy
-        replaces the previous files.
-      </Text>
-      <Notice kind="warn">{SITE_SHARED_ORIGIN_WARNING}</Notice>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {canWrite && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void create(e)}>
-            <Group align="end" wrap="wrap">
-              <TextInput
-                label="New site"
-                placeholder="name (e.g. game-web)"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                maxLength={64}
-              />
-              <TextInput
-                label="Description"
-                placeholder="optional"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                maxLength={2000}
-              />
-              <Button type="submit" disabled={act.busy || !name.trim()}>
-                Create site
-              </Button>
-            </Group>
-          </form>
-        </Card>
+    <ResourceTab
+      {...props}
+      queryKey="bundles"
+      load={api.projectAssetBundles}
+      create={(prj, name, description) =>
+        api.createAssetBundle(prj, withDescription(name, description))
+      }
+      intro="Game content on the public CDN: maps, tilesets, sounds. Every object is versioned, world-readable and cached forever — publishing a fix means uploading a new version and pointing a lobby channel’s map URL at it."
+      nameLabel="New bundle"
+      namePlaceholder="name (e.g. dungeon-maps)"
+      second={{
+        label: "Description",
+        placeholder: "optional",
+        required: false,
+        maxLength: 2000,
+      }}
+      submitLabel="Create bundle"
+      columns={["Bundle", "Description", "Created by", "Updated"]}
+      row={(b) => (
+        <>
+          <LinkCell to={`/assets/${encodeURIComponent(b.id)}`}>
+            {b.name}
+          </LinkCell>
+          <Table.Td>{b.description ?? "—"}</Table.Td>
+          <Table.Td>{b.createdBy ?? "—"}</Table.Td>
+          <Table.Td>{fmtTime(b.updatedAt)}</Table.Td>
+        </>
       )}
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : list.data?.length ? (
-        <Table.ScrollContainer minWidth={560}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Site</Table.Th>
-                <Table.Th>URL</Table.Th>
-                <Table.Th>Live</Table.Th>
-                <Table.Th>Updated</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data.map((s) => (
-                <Table.Tr key={s.id}>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={`/sites/${encodeURIComponent(s.id)}`}
-                      size="sm"
-                    >
-                      {s.name}
-                    </Anchor>
-                  </Table.Td>
-                  <Table.Td>
-                    <Anchor
-                      href={s.publicUrl}
-                      size="sm"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      {s.publicUrl}
-                    </Anchor>
-                  </Table.Td>
-                  <Table.Td>
-                    {s.busy ? (
-                      <Badge tone="warn">deploying</Badge>
-                    ) : s.currentDeployId ? (
-                      <Badge tone="ok">live</Badge>
-                    ) : (
-                      <Badge tone="neutral">empty</Badge>
-                    )}
-                  </Table.Td>
-                  <Table.Td>{fmtTime(s.updatedAt)}</Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      ) : (
-        <Text size="sm" c="dimmed">
-          No sites yet.
-        </Text>
+      emptyText="No asset bundles yet."
+    />
+  );
+}
+
+function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
+  return (
+    <ResourceTab
+      {...props}
+      queryKey="sites"
+      load={api.projectSites}
+      create={(prj, name, description) =>
+        api.createSite(prj, withDescription(name, description))
+      }
+      intro="Static web builds (a browser game client, a landing page) served at the shared static host under a random path. One live tree per site: a deploy replaces the previous files."
+      warn={<Notice kind="warn">{SITE_SHARED_ORIGIN_WARNING}</Notice>}
+      nameLabel="New site"
+      namePlaceholder="name (e.g. game-web)"
+      second={{
+        label: "Description",
+        placeholder: "optional",
+        required: false,
+        maxLength: 2000,
+      }}
+      submitLabel="Create site"
+      columns={["Site", "URL", "Live", "Updated"]}
+      row={(s) => (
+        <>
+          <LinkCell to={`/sites/${encodeURIComponent(s.id)}`}>
+            {s.name}
+          </LinkCell>
+          <Table.Td>
+            <Anchor
+              href={s.publicUrl}
+              size="sm"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {s.publicUrl}
+            </Anchor>
+          </Table.Td>
+          <Table.Td>
+            {s.busy ? (
+              <Badge tone="warn">deploying</Badge>
+            ) : s.currentDeployId ? (
+              <Badge tone="ok">live</Badge>
+            ) : (
+              <Badge tone="neutral">empty</Badge>
+            )}
+          </Table.Td>
+          <Table.Td>{fmtTime(s.updatedAt)}</Table.Td>
+        </>
       )}
-    </>
+      emptyText="No sites yet."
+    />
   );
 }
 
@@ -986,40 +916,22 @@ function IssuesTab({
         )}
       </Group>
       {draft && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void create(e)}>
-            <Stack gap="xs">
-              <TextInput
-                label="Title"
-                value={draft.title}
-                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                required
-                maxLength={200}
-              />
-              <VersionSelect
-                versions={versions.data ?? []}
-                value={draft.versionId}
-                onChange={(versionId) => setDraft({ ...draft, versionId })}
-              />
-              <MdField
-                label="Description"
-                value={draft.bodyMd}
-                onChange={(bodyMd) => setDraft({ ...draft, bodyMd })}
-              />
-              <Group>
-                <Button
-                  type="submit"
-                  disabled={act.busy || !draft.title.trim()}
-                >
-                  Open issue
-                </Button>
-                <Button variant="default" onClick={() => setDraft(null)}>
-                  Cancel
-                </Button>
-              </Group>
-            </Stack>
-          </form>
-        </Card>
+        <DraftForm
+          draft={draft}
+          onChange={(next) => setDraft({ ...draft, ...next })}
+          onSubmit={create}
+          onCancel={() => setDraft(null)}
+          submitLabel="Open issue"
+          bodyLabel="Description"
+          busy={act.busy}
+          extra={
+            <VersionSelect
+              versions={versions.data ?? []}
+              value={draft.versionId}
+              onChange={(versionId) => setDraft({ ...draft, versionId })}
+            />
+          }
+        />
       )}
       {list.error && <Notice kind="error">{list.error}</Notice>}
       {list.loading && !list.data ? (
@@ -1041,15 +953,9 @@ function IssuesTab({
               {list.data.map((i) => (
                 <Table.Tr key={i.id}>
                   <Table.Td>{i.number}</Table.Td>
-                  <Table.Td>
-                    <Anchor
-                      component={Link}
-                      to={issueUrl(project.teamId, project.id, i.number)}
-                      size="sm"
-                    >
-                      {i.title}
-                    </Anchor>
-                  </Table.Td>
+                  <LinkCell to={issueUrl(project.teamId, project.id, i.number)}>
+                    {i.title}
+                  </LinkCell>
                   <Table.Td>
                     <Badge tone={ISSUE_TONE[i.status]}>{i.status}</Badge>
                   </Table.Td>
@@ -1122,44 +1028,25 @@ function SettingsTab({
         </Text>
       </Card>
       {canWrite && (
-        <Card withBorder mb="md" padding="sm">
-          <form onSubmit={(e) => void save(e)}>
-            <Stack gap="xs">
-              <TextInput
-                label="Name"
-                value={name ?? project.name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                maxLength={64}
-              />
-              <MdField
-                label="Description"
-                value={desc ?? project.description ?? ""}
-                onChange={setDesc}
-              />
-              <Group>
-                <Button type="submit" disabled={act.busy}>
-                  Save
-                </Button>
-              </Group>
-            </Stack>
-          </form>
-        </Card>
+        <SettingsForm
+          name={name ?? project.name}
+          description={desc ?? project.description ?? ""}
+          onName={setName}
+          onDescription={setDesc}
+          onSubmit={save}
+          busy={act.busy}
+        />
       )}
       {canDelete && (
-        <Card withBorder padding="sm">
-          <Text size="sm" mb="xs">
-            Deleting a project is refused while a channel, app or bundle still
-            belongs to it — including channels deleted less than a day ago,
-            until the sweep purges them.
-          </Text>
-          <Confirm
-            label="Delete project"
-            confirmLabel="Delete"
-            onConfirm={remove}
-            disabled={act.busy}
-          />
-        </Card>
+        <DangerCard
+          label="Delete project"
+          onConfirm={remove}
+          disabled={act.busy}
+        >
+          Deleting a project is refused while a channel, app or bundle still
+          belongs to it — including channels deleted less than a day ago, until
+          the sweep purges them.
+        </DangerCard>
       )}
     </>
   );
