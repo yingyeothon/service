@@ -123,11 +123,11 @@ export interface Comment {
   mine: boolean;
 }
 
+/** A list row: the body travels only with the detail. */
 export interface Discussion {
   id: string;
   teamId: string;
   title: string;
-  bodyMd: string;
   createdBy: string | null;
   createdAt: number;
   updatedAt: number;
@@ -135,6 +135,7 @@ export interface Discussion {
 }
 
 export interface DiscussionDetail extends Discussion {
+  bodyMd: string;
   comments: Comment[];
 }
 
@@ -194,12 +195,12 @@ export type VersionLinkInput =
 
 export type IssueStatus = "open" | "closed";
 
+/** A list row: the body travels only with the detail. */
 export interface Issue {
   id: string;
   projectId: string;
   number: number;
   title: string;
-  bodyMd: string;
   status: IssueStatus;
   versionId: string | null;
   createdBy: string | null;
@@ -209,6 +210,7 @@ export interface Issue {
 }
 
 export interface IssueDetail extends Issue {
+  bodyMd: string;
   comments: Comment[];
 }
 
@@ -762,4 +764,19 @@ export interface AuditFilter {
   to?: number;
   cursor?: string;
   limit?: number;
+}
+
+/* ---- list ordering and search (docs/decisions.md *List sort and filter*) ---- */
+
+export type SortOrder = "asc" | "desc";
+
+/**
+ * What a list route accepts: `sort` is one of the response's field names,
+ * `order` defaults to `asc`, `q` is a case-insensitive contains where the
+ * route offers it. Empty values are dropped by the client's `qs`.
+ */
+export interface ListParams {
+  sort?: string;
+  order?: SortOrder;
+  q?: string;
 }

@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
 import { DataTable, NameCell } from "../components/DataTable";
+import { FilterBar, TextFilter } from "../components/FilterBar";
 import { EventForm } from "../components/EventForm";
 import { PageHeader } from "../components/PageHeader";
 import { ResourceDrawer } from "../components/ResourceDrawer";
@@ -11,6 +12,7 @@ import { Badge, Notice } from "../components/ui";
 import { emptyEventForm } from "../lib/eventForm";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import type { EventInput, EventStatus } from "../types";
 
@@ -26,7 +28,12 @@ export const STATUS_TONE: Record<EventStatus, string> = {
 export function EventsPage() {
   const { me, loading } = useAuth();
   const nav = useNavigate();
-  const list = useApiQuery(["events", me?.id ?? null], () => api.events());
+  const lq = useListQuery();
+  const list = useApiQuery(
+    ["events", me?.id ?? null, lq.params],
+    () => api.events(lq.params),
+    { keepPrevious: true },
+  );
   const act = useAction();
   const [creating, setCreating] = useState(false);
 
@@ -66,20 +73,33 @@ export function EventsPage() {
         }
       />
       {act.error && !creating && <Notice kind="error">{act.error}</Notice>}
+      <FilterBar>
+        <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Title" />
+      </FilterBar>
       <DataTable
         columns={[
-          { key: "title", label: "Title" },
-          { key: "status", label: "Status" },
-          { key: "when", label: "When" },
-          { key: "place", label: "Place" },
-          { key: "owner", label: "Owner" },
+          { key: "title", label: "Title", sortKey: "title" },
+          { key: "status", label: "Status", sortKey: "status" },
+          {
+            key: "when",
+            label: "When",
+            sortKey: "startsAt",
+            defaultOrder: "desc",
+          },
+          { key: "place", label: "Place", sortKey: "place" },
+          { key: "owner", label: "Owner", sortKey: "createdBy" },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(ev) => ev.id}
         minWidth={640}
-        empty={{ title: "No events." }}
+        empty={
+          lq.filtering ? noMatch(lq.params.q ?? "") : { title: "No events." }
+        }
         render={(ev) => (
           <>
             <NameCell

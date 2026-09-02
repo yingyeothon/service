@@ -4,15 +4,16 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { DataTable, NameCell } from "../components/DataTable";
-import { EnumFilter, FilterBar } from "../components/FilterBar";
+import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
 import { NameDescriptionFields } from "../components/NameDescriptionFields";
 import { PageHeader } from "../components/PageHeader";
 import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { Badge, Notice } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
-import { STANDING_TONE, teamUrl } from "../lib/team";
+import { STANDING_TONE, teamUrl, useInvalidateTeams } from "../lib/team";
 import type { RotationHint } from "../types";
 
 /** What `DELETE /teams/{id}/members/{me}` hands back when a member leaves. */
@@ -60,9 +61,13 @@ export function TeamsPage() {
   const nav = useNavigate();
   const loc = useLocation();
   const [all, setAll] = useState(false);
-  const list = useApiQuery(["teams", all], () =>
-    api.teams(all ? "all" : undefined),
+  const lq = useListQuery();
+  const list = useApiQuery(
+    ["teams", all ? "all" : "mine", lq.params],
+    () => api.teams(all ? "all" : undefined, lq.params),
+    { keepPrevious: true },
   );
+  const invalidateTeams = useInvalidateTeams();
   const act = useAction();
   const create = useDrawerForm(() => ({ name: "", description: "" }));
   const join = useDrawerForm(() => ({ name: "" }));
@@ -88,6 +93,8 @@ export function TeamsPage() {
     if (!r) return;
     create.close();
     notify.created("team");
+    // The navigation's team list is another query key.
+    void invalidateTeams();
     void nav(teamUrl(r.id));
   };
   const submitJoin = async (e: FormEvent) => {
@@ -96,7 +103,7 @@ export function TeamsPage() {
     if (!r) return;
     join.close();
     notify.done(`Requested to join ${r.name}; an owner has to approve it`);
-    await list.reload();
+    await invalidateTeams();
   };
 
   return (
@@ -128,8 +135,13 @@ export function TeamsPage() {
           <RotationNotice rotate={left.rotate} who="You" />
         </>
       )}
-      {me?.role === "admin" && (
-        <FilterBar>
+      <FilterBar>
+        <TextFilter
+          value={lq.q}
+          onChange={lq.setQ}
+          placeholder="Name or description"
+        />
+        {me?.role === "admin" && (
           <EnumFilter
             label="Scope"
             value={all ? "all" : "mine"}
@@ -137,26 +149,47 @@ export function TeamsPage() {
               { value: "mine", label: "Mine" },
               { value: "all", label: "Every team" },
             ]}
-            onChange={(v) => setAll(v === "all")}
+            onChange={(v) => {
+              // The every-team listing has no seat: the server refuses sort=role.
+              if (v === "all" && lq.sort?.key === "role") lq.setSort(null);
+              setAll(v === "all");
+            }}
           />
-        </FilterBar>
-      )}
+        )}
+      </FilterBar>
       <DataTable
         columns={[
-          { key: "name", label: "Team" },
-          { key: "role", label: "Your role" },
-          { key: "by", label: "Created by" },
-          { key: "updated", label: "Updated" },
+          { key: "name", label: "Team", sortKey: "name" },
+          // The admin's every-team listing has no seat to order by.
+          {
+            key: "role",
+            label: "Your role",
+            sortKey: all ? undefined : "role",
+          },
+          { key: "by", label: "Created by", sortKey: "createdBy" },
+          {
+            key: "updated",
+            label: "Updated",
+            sortKey: "updatedAt",
+            defaultOrder: "desc",
+          },
         ]}
         rows={list.data}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
         rowKey={(t) => t.id}
         minWidth={480}
-        empty={{
-          title: "You are not in any team yet.",
-          hint: "Create one, or request to join by its exact name.",
-        }}
+        empty={
+          lq.filtering
+            ? noMatch(lq.params.q ?? "")
+            : {
+                title: "You are not in any team yet.",
+                hint: "Create one, or request to join by its exact name.",
+              }
+        }
         render={(t) => (
           <>
             <NameCell

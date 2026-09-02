@@ -282,4 +282,21 @@ describe("team and project routes", () => {
     // It threw *before* the commit, so the entry keeps what it had.
     expect(seen.some((s) => s.startsWith("PUT https://x.test"))).toBe(false);
   });
+
+  it("serialises list params and drops the empty ones", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(jsonRes(200, { teams: [] })));
+    const api = createApiClient({ baseUrl: "https://x.test/", fetch });
+    await api.teams(undefined, { sort: "updatedAt", order: "desc", q: "dun" });
+    expect(fetch.mock.calls[0]![0]).toBe(
+      "https://x.test/teams?sort=updatedAt&order=desc&q=dun",
+    );
+    await api.teams("all", { q: "" });
+    expect(fetch.mock.calls[1]![0]).toBe("https://x.test/teams?scope=all");
+    await api.projects("team_1");
+    expect(fetch.mock.calls[2]![0]).toBe(
+      "https://x.test/teams/team_1/projects",
+    );
+  });
 });

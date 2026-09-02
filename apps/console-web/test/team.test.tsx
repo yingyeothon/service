@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -142,6 +142,53 @@ describe("TeamPage", () => {
       screen.getByRole("link", { name: "login" }).getAttribute("href"),
     ).toBe("/channels/auth_9");
     expect(mockApi.removeTeamMember).toHaveBeenCalledWith("team_1", "m_2");
+  });
+
+  it("TeamsPage asks the server for the clicked order and the typed search", async () => {
+    vi.mocked(mockApi.teams).mockResolvedValue([
+      {
+        ...TEAM,
+        id: "team_1",
+        name: "games",
+        role: "owner",
+        createdBy: "alice",
+        updatedAt: 10,
+      },
+    ]);
+    mount("/teams");
+    expect(
+      await screen.findByRole("link", { name: "games" }),
+    ).toBeInTheDocument();
+    expect(mockApi.teams).toHaveBeenLastCalledWith(undefined, {});
+    await userEvent.click(screen.getByRole("button", { name: "Updated" }));
+    await waitFor(() =>
+      expect(mockApi.teams).toHaveBeenLastCalledWith(undefined, {
+        sort: "updatedAt",
+        order: "desc",
+      }),
+    );
+    expect(
+      screen.getByRole("columnheader", { name: "Updated" }),
+    ).toHaveAttribute("aria-sort", "descending");
+    vi.mocked(mockApi.teams).mockResolvedValue([]);
+    await userEvent.type(
+      screen.getByRole("searchbox", { name: "Search" }),
+      "dun",
+    );
+    await waitFor(() =>
+      expect(mockApi.teams).toHaveBeenLastCalledWith(undefined, {
+        sort: "updatedAt",
+        order: "desc",
+        q: "dun",
+      }),
+    );
+    expect(await screen.findByText("No rows match “dun”.")).toBeInTheDocument();
+    // Debounced: the intermediate prefixes never reach the server.
+    for (const partial of ["d", "du"])
+      expect(mockApi.teams).not.toHaveBeenCalledWith(
+        undefined,
+        expect.objectContaining({ q: partial }),
+      );
   });
 
   it("leaving hands the rotation list to the Teams page", async () => {

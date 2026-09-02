@@ -11,6 +11,7 @@ import { Badge, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { teamUrl } from "../lib/team";
 import type { Member, Role } from "../types";
@@ -121,7 +122,12 @@ const TONE: Record<Role, string> = {
 
 export function MembersPage() {
   const { me } = useAuth();
-  const list = useApiQuery(["members"], () => api.members());
+  const lq = useListQuery();
+  const list = useApiQuery(
+    ["members", lq.params],
+    () => api.members(lq.params),
+    { keepPrevious: true },
+  );
   const act = useAction();
   const go = async (
     m: Member,
@@ -182,14 +188,27 @@ export function MembersPage() {
         )}
         <DataTable
           columns={[
-            { key: "login", label: "Login" },
-            { key: "role", label: "Role" },
-            { key: "signed", label: "Signed up" },
-            { key: "approved", label: "Approved" },
+            { key: "login", label: "Login", sortKey: "login" },
+            { key: "role", label: "Role", sortKey: "role" },
+            {
+              key: "signed",
+              label: "Signed up",
+              sortKey: "createdAt",
+              defaultOrder: "desc",
+            },
+            {
+              key: "approved",
+              label: "Approved",
+              sortKey: "approvedAt",
+              defaultOrder: "desc",
+            },
           ]}
           rows={list.data}
           loading={list.loading}
+          fetching={list.fetching}
           error={list.error}
+          sort={lq.sort}
+          onSort={lq.setSort}
           rowKey={(m) => m.id}
           minWidth={640}
           empty={{ title: "No members yet." }}

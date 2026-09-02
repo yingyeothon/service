@@ -101,7 +101,14 @@ describe("SitePage", () => {
       screen.getByRole("link", { name: "https://g.yyt.life/abc123/" }),
     ).toHaveAttribute("target", "_blank");
     expect(screen.getByText(SITE_SHARED_ORIGIN_WARNING)).toBeInTheDocument();
-    for (const col of ["Deploy", "Status", "Files", "Size", "Error", "Created"])
+    for (const col of [
+      "Deploy id",
+      "Status",
+      "Files",
+      "Size",
+      "Error",
+      "Created",
+    ])
       expect(
         screen.getByRole("columnheader", { name: col }),
       ).toBeInTheDocument();

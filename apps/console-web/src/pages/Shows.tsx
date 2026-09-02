@@ -12,12 +12,13 @@ import { useNavigate } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
 import { DataTable, NameCell } from "../components/DataTable";
-import { EnumFilter, FilterBar } from "../components/FilterBar";
+import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
 import { PageHeader } from "../components/PageHeader";
 import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { Badge, Notice } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
+import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 
 /** The "who may see it" choice, on the create and the edit drawer alike. */
@@ -62,8 +63,16 @@ export function ShowsPage() {
   const { me, loading } = useAuth();
   const nav = useNavigate();
   const [state, setState] = useState<"all" | "open" | "closed">("all");
-  const list = useApiQuery(["shows", state, me?.id ?? null], () =>
-    api.shows(state === "all" ? {} : { state }),
+  // `q` only: the cursor pins the order, and `q` rides along with `cursor`.
+  const lq = useListQuery();
+  const filter = {
+    ...(state === "all" ? {} : { state }),
+    ...(lq.params.q ? { q: lq.params.q } : {}),
+  };
+  const list = useApiQuery(
+    ["shows", state, me?.id ?? null, lq.params],
+    () => api.shows(filter),
+    { keepPrevious: true },
   );
   const act = useAction();
   const [more, setMore] = useState<ShowSummary[]>([]);
@@ -74,12 +83,7 @@ export function ShowsPage() {
   }, [list.data]);
   const loadMore = async () => {
     if (!next) return;
-    const page = await act.run(() =>
-      api.shows({
-        ...(state === "all" ? {} : { state }),
-        cursor: next,
-      }),
-    );
+    const page = await act.run(() => api.shows({ ...filter, cursor: next }));
     if (!page) return;
     setMore((prev) => [...prev, ...page.shows]);
     setNext(page.next);
@@ -144,6 +148,7 @@ export function ShowsPage() {
           ]}
           onChange={(v) => setState(v as typeof state)}
         />
+        <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Title" />
       </FilterBar>
       <DataTable
         columns={[
@@ -155,10 +160,13 @@ export function ShowsPage() {
         ]}
         rows={rows}
         loading={list.loading}
+        fetching={list.fetching}
         error={list.error}
         rowKey={(s) => s.id}
         minWidth={560}
-        empty={{ title: "No shows." }}
+        empty={
+          lq.filtering ? noMatch(lq.params.q ?? "") : { title: "No shows." }
+        }
         render={(s) => (
           <>
             <NameCell to={`/shows/${encodeURIComponent(s.id)}`}>
@@ -183,7 +191,9 @@ export function ShowsPage() {
         <Button
           variant="default"
           mt="md"
-          disabled={!next || act.busy}
+          // A `q` change keeps the old page as placeholder until the new one
+          // lands; a click then would pair the old cursor with the new `q`.
+          disabled={!next || act.busy || list.fetching}
           onClick={() => void loadMore()}
         >
           {next ? "Load more" : "That is all"}

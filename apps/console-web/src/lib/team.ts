@@ -1,6 +1,28 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 import { api } from "../api";
 import { useApiQuery } from "./query";
 import { canWriteTeam, isTeamOwner, type TeamStanding } from "../types";
+
+/**
+ * The caller's teams for the side navigation. Its key sits under `["teams"]`
+ * with every teams list, so one `useInvalidateTeams()` refreshes them all.
+ */
+export function useMyTeams(enabled: boolean) {
+  return useApiQuery(["teams", "nav"], () => api.teams(), { enabled });
+}
+
+/**
+ * After a team is created, renamed, left or deleted: `useApiQuery.reload`
+ * and `set` touch one key only, and the navigation's list is another key.
+ */
+export function useInvalidateTeams() {
+  const client = useQueryClient();
+  return useCallback(
+    () => client.invalidateQueries({ queryKey: ["teams"] }),
+    [client],
+  );
+}
 
 export const STANDING_TONE: Record<TeamStanding, string> = {
   owner: "accent",

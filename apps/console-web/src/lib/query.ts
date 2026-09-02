@@ -1,4 +1,5 @@
 import {
+  keepPreviousData,
   QueryClient,
   useQuery,
   useQueryClient,
@@ -26,6 +27,8 @@ export interface AsyncState<T> {
   data: T | undefined;
   error: string | null;
   loading: boolean;
+  /** A refetch is in flight while `data` still shows (only with `keepPrevious`). */
+  fetching: boolean;
   reload: () => Promise<void>;
   /** Replace the cached value without a round-trip. */
   set: (v: T) => void;
@@ -34,18 +37,22 @@ export interface AsyncState<T> {
 /**
  * TanStack Query wrapper keeping the previous `useAsync` surface: the key both
  * caches and decides when to refetch, `set` writes through to the cache so a
- * mutation response replaces the query data.
+ * mutation response replaces the query data. `keepPrevious` keeps the last
+ * rows on screen while a key change (a sort, a search) refetches — the
+ * answer to "a filter in the key flashes the skeleton" — and `fetching`
+ * says so.
  */
 export function useApiQuery<T>(
   key: QueryKey,
   fn: () => Promise<T>,
-  opts: { enabled?: boolean } = {},
+  opts: { enabled?: boolean; keepPrevious?: boolean } = {},
 ): AsyncState<T> {
   const client = useQueryClient();
   const q = useQuery({
     queryKey: key,
     queryFn: fn,
     enabled: opts.enabled,
+    placeholderData: opts.keepPrevious ? keepPreviousData : undefined,
   });
   const reload = useCallback(async () => {
     await q.refetch();
@@ -59,6 +66,7 @@ export function useApiQuery<T>(
     data: q.data,
     error: q.error ? errorMessage(q.error) : null,
     loading: q.isPending,
+    fetching: q.isFetching && !q.isPending,
     reload,
     set,
   };

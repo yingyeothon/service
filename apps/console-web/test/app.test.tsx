@@ -1,6 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
@@ -144,6 +144,54 @@ describe("App", () => {
     const nav = screen.getByRole("navigation", { name: "Main" });
     expect(nav.textContent).not.toContain("Channels");
     expect(screen.queryByRole("link", { name: "Members" })).toBeNull();
+  });
+
+  it("nests the member's teams under Teams and marks the open one", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "m_1",
+      login: "someone",
+      role: "member",
+      via: "session",
+    });
+    vi.mocked(mockApi.teams).mockResolvedValue([
+      {
+        id: "team_1",
+        name: "dooroo",
+        description: null,
+        adminLocked: false,
+        createdBy: "someone",
+        createdAt: 0,
+        updatedAt: 0,
+        role: "member",
+      },
+    ]);
+    mount("/teams");
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    const group = await within(nav).findByRole("group", {
+      name: "Your teams",
+    });
+    const link = within(group).getByRole("link", { name: "dooroo" });
+    expect(link).toHaveAttribute("href", "/teams/team_1");
+    // On the list page the parent is the active entry, not the team.
+    expect(link).not.toHaveAttribute("data-active");
+    expect(within(nav).getByRole("link", { name: "Teams" })).toHaveAttribute(
+      "data-active",
+    );
+  });
+
+  it("does not ask for teams before a member session", async () => {
+    // Mocks are shared across cases; count only this session's calls.
+    vi.mocked(mockApi.teams).mockClear();
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "m_1",
+      login: "someone",
+      role: "pending",
+      via: "session",
+    });
+    mount("/channels");
+    expect(await screen.findByText(/waiting for an admin/)).toBeInTheDocument();
+    expect(mockApi.teams).not.toHaveBeenCalled();
+    expect(screen.queryByRole("group", { name: "Your teams" })).toBeNull();
   });
 
   it("lets admins see the members page", async () => {
