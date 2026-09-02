@@ -1,32 +1,31 @@
-import {
-  Button,
-  Card,
-  Group,
-  Table,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
+import { Button, Group, Table, Text, TextInput } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Badge, Confirm, Notice, Spinner } from "../components/ui";
+import { DataTable } from "../components/DataTable";
+import { PageHeader } from "../components/PageHeader";
+import { RowMenu, type RowMenuItem } from "../components/RowMenu";
+import { Section } from "../components/Section";
+import { Badge, Notice } from "../components/ui";
+import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
+import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { teamUrl } from "../lib/team";
-import type { Role } from "../types";
+import type { Member, Role } from "../types";
 
 /**
  * Which catalog app `GET /catalog/installer/downloads` serves. Its team must
  * be admin-locked, or every member of that team could push the APK every
  * device self-updates to.
  */
-export function InstallerAppCard() {
+export function InstallerAppSection() {
   const setting = useApiQuery(["admin", "installer-app"], () =>
     api.installerApp(),
   );
   const act = useAction();
+  const confirm = useConfirm();
   const [appId, setAppId] = useState("");
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -34,17 +33,32 @@ export function InstallerAppCard() {
     if (!r) return;
     setting.set(r);
     setAppId("");
+    notify.saved("installer app");
+  };
+  const clear = async () => {
+    const ok = await confirm({
+      title: "Clear the installer app?",
+      message: "The downloads route answers 503 until another app is set.",
+      confirmLabel: "Clear",
+      danger: true,
+    });
+    if (!ok.ok) return;
+    const r = await act.run(() => api.setInstallerApp(null));
+    if (r) {
+      setting.set(r);
+      notify.done("Installer app cleared");
+    }
   };
   const s = setting.data;
   return (
-    <Card withBorder mb="md" padding="sm">
-      <Text size="sm" fw={600} mb={4}>
-        Installer app
-      </Text>
+    <Section
+      title="Installer app"
+      description="The catalog app whose builds the device installer downloads. Its team must be admin-locked."
+    >
       {setting.error && <Notice kind="error">{setting.error}</Notice>}
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {s && (
-        <Text size="sm" mb="xs">
+        <Text size="sm" mb="sm">
           {s.appId ? (
             <>
               <strong>{s.appName ?? s.appId}</strong> (<code>{s.appId}</code>)
@@ -74,23 +88,29 @@ export function InstallerAppCard() {
             value={appId}
             onChange={(e) => setAppId(e.target.value)}
             maxLength={64}
+            autoComplete="off"
+            spellCheck={false}
           />
-          <Button type="submit" disabled={act.busy || !appId.trim()}>
-            Set
+          <Button
+            type="submit"
+            variant="default"
+            disabled={act.busy || !appId.trim()}
+          >
+            Save
           </Button>
           {s?.appId && (
-            <Confirm
-              label="Clear"
-              onConfirm={async () => {
-                const r = await act.run(() => api.setInstallerApp(null));
-                if (r) setting.set(r);
-              }}
+            <Button
+              variant="outline"
+              color="red"
               disabled={act.busy}
-            />
+              onClick={() => void clear()}
+            >
+              Clear
+            </Button>
           )}
         </Group>
       </form>
-    </Card>
+    </Section>
   );
 }
 
@@ -104,89 +124,108 @@ export function MembersPage() {
   const { me } = useAuth();
   const list = useApiQuery(["members"], () => api.members());
   const act = useAction();
-  const go = async (id: string, action: "approve" | "promote" | "demote") => {
-    await act.run(() => api.memberAction(id, action));
-    await list.reload();
+  const go = async (
+    m: Member,
+    action: "approve" | "promote" | "demote",
+    done: string,
+  ) => {
+    if (await act.run(() => api.memberAction(m.id, action))) {
+      notify.done(`${m.login} ${done}`);
+      await list.reload();
+    }
   };
   const pending = list.data?.filter((m) => m.role === "pending") ?? [];
+  const items = (m: Member): RowMenuItem[] => {
+    if (m.role === "member")
+      return [
+        {
+          label: "Promote to admin",
+          onClick: () => go(m, "promote", "promoted"),
+          disabled: act.busy,
+          confirm: {
+            title: `Promote ${m.login} to admin?`,
+            message:
+              "Admins approve sign-ups, read every team and delete anything.",
+            confirmLabel: "Promote",
+          },
+        },
+      ];
+    if (m.role === "admin" && m.id !== me?.id)
+      return [
+        {
+          label: "Demote to member",
+          danger: true,
+          onClick: () => go(m, "demote", "demoted"),
+          disabled: act.busy,
+          confirm: {
+            title: `Demote ${m.login}?`,
+            confirmLabel: "Demote",
+            danger: true,
+          },
+        },
+      ];
+    return [];
+  };
   return (
     <>
-      <Title order={2} mb="sm">
-        Members
-      </Title>
-      <InstallerAppCard />
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {list.error && <Notice kind="error">{list.error}</Notice>}
-      {pending.length > 0 && (
-        <Notice kind="warn">
-          {pending.length} sign-up{pending.length > 1 ? "s" : ""} waiting for
-          approval.
-        </Notice>
-      )}
-      {list.loading && !list.data ? (
-        <Spinner />
-      ) : (
-        <Table.ScrollContainer minWidth={640}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Login</Table.Th>
-                <Table.Th>Role</Table.Th>
-                <Table.Th>Signed up</Table.Th>
-                <Table.Th>Approved</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {list.data?.map((m) => (
-                <Table.Tr key={m.id}>
-                  <Table.Td>
-                    {m.login}
-                    {m.id === me?.id && (
-                      <Text span size="sm" c="dimmed">
-                        {" "}
-                        (you)
-                      </Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge tone={TONE[m.role]}>{m.role}</Badge>
-                  </Table.Td>
-                  <Table.Td>{fmtTime(m.createdAt)}</Table.Td>
-                  <Table.Td>{fmtTime(m.approvedAt)}</Table.Td>
-                  <Table.Td>
-                    {m.role === "pending" && (
-                      <Button
-                        size="compact-sm"
-                        disabled={act.busy}
-                        onClick={() => void go(m.id, "approve")}
-                      >
-                        Approve
-                      </Button>
-                    )}
-                    {m.role === "member" && (
-                      <Confirm
-                        label="Promote to admin"
-                        color="ink"
-                        variant="default"
-                        onConfirm={() => go(m.id, "promote")}
-                        disabled={act.busy}
-                      />
-                    )}
-                    {m.role === "admin" && m.id !== me?.id && (
-                      <Confirm
-                        label="Demote"
-                        onConfirm={() => go(m.id, "demote")}
-                        disabled={act.busy}
-                      />
-                    )}
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      )}
+      <PageHeader
+        title="Members"
+        description="Everyone who signed in with GitHub. New sign-ups wait here until an admin approves them."
+      />
+      <InstallerAppSection />
+      <Section title="Platform members">
+        {act.error && <Notice kind="error">{act.error}</Notice>}
+        {pending.length > 0 && (
+          <Notice kind="warn">
+            {pending.length} sign-up{pending.length > 1 ? "s" : ""} waiting for
+            approval.
+          </Notice>
+        )}
+        <DataTable
+          columns={[
+            { key: "login", label: "Login" },
+            { key: "role", label: "Role" },
+            { key: "signed", label: "Signed up" },
+            { key: "approved", label: "Approved" },
+          ]}
+          rows={list.data}
+          loading={list.loading}
+          error={list.error}
+          rowKey={(m) => m.id}
+          minWidth={640}
+          empty={{ title: "No members yet." }}
+          render={(m) => (
+            <>
+              <Table.Td>
+                {m.login}
+                {m.id === me?.id && (
+                  <Text span size="sm" c="dimmed">
+                    {" "}
+                    (you)
+                  </Text>
+                )}
+              </Table.Td>
+              <Table.Td>
+                <Badge tone={TONE[m.role]}>{m.role}</Badge>
+                {m.role === "pending" && (
+                  <Button
+                    ml="sm"
+                    size="compact-sm"
+                    variant="default"
+                    disabled={act.busy}
+                    onClick={() => void go(m, "approve", "approved")}
+                  >
+                    Approve
+                  </Button>
+                )}
+              </Table.Td>
+              <Table.Td>{fmtTime(m.createdAt)}</Table.Td>
+              <Table.Td>{fmtTime(m.approvedAt)}</Table.Td>
+            </>
+          )}
+          actions={(m) => <RowMenu name={m.login} items={items(m)} />}
+        />
+      </Section>
     </>
   );
 }
