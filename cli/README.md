@@ -73,6 +73,8 @@ yyt project issue comment add <n> --body … | update <n> <cid> --body … | rm 
 
 ## Commands
 
+List commands print the server's default order. The console's `sort`/`order`/`q` list parameters (2026-09-02, `docs/team-project.md` _List parameters_) are not exposed here yet: name resolution needs the whole, unfiltered list, and a parameter-less call still returns exactly that.
+
 Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret`; `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
 
 ```
