@@ -14,6 +14,8 @@ import { IconHeart, IconMessage } from "@tabler/icons-react";
 import { Link } from "react-router";
 import { fmtTime } from "../lib/format";
 import type { ShowEntry } from "../types";
+import { EmptyState } from "./EmptyState";
+import { Loading } from "./Loading";
 
 /**
  * The card grid with its sort toggle, shared by the show page and the event
@@ -37,8 +39,8 @@ export function EntryGrid({
 }) {
   const toggle = onSort && sort && (
     <SegmentedControl
-      size="xs"
-      mb="xs"
+      mb="md"
+      aria-label="Sort entries"
       value={sort}
       onChange={(v) => onSort(v as "new" | "likes")}
       data={[
@@ -51,64 +53,73 @@ export function EntryGrid({
     return (
       <>
         {toggle}
-        <Text size="sm" c="dimmed">
-          Loading…
-        </Text>
+        <Loading />
       </>
     );
   if (entries.length === 0)
     return (
       <>
         {toggle}
-        <Text size="sm" c="dimmed">
-          Nothing on the wall yet.
-        </Text>
+        <EmptyState title="Nothing on the wall yet." />
       </>
     );
   return (
     <>
       {toggle}
-      <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
+      <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="lg">
         {entries.map((e) => (
-          <Card key={e.id} withBorder padding="sm">
-            <Stack gap={6}>
+          <Card key={e.id} padding="md">
+            <Stack gap={8}>
               {e.shots[0] ? (
                 <Image
                   src={e.shots[0].url}
-                  h={140}
+                  h={160}
                   fit="cover"
                   alt=""
                   radius="sm"
+                  loading="lazy"
                 />
               ) : (
-                <Text size="xs" c="dimmed" h={140}>
-                  No screenshot
-                </Text>
+                <Group
+                  h={160}
+                  justify="center"
+                  style={{
+                    background: "var(--yyt-surface-soft)",
+                    borderRadius: 6,
+                  }}
+                >
+                  <Text size="xs" c="dimmed">
+                    No screenshot
+                  </Text>
+                </Group>
               )}
               <Anchor
                 component={Link}
                 to={`/shows/${e.showId}/entries/${e.id}`}
-                fw={600}
+                fw={500}
+                size="lg"
               >
                 {e.title}
               </Anchor>
               <Group gap="xs">
-                <Badge size="xs" variant="light">
-                  {e.target.kind}
-                </Badge>
+                <Badge size="xs">{e.target.kind}</Badge>
                 <Text size="xs" c={e.target.available ? undefined : "dimmed"}>
                   {e.target.name}
                   {e.target.available ? "" : " (no longer available)"}
                 </Text>
               </Group>
-              <Group gap="md">
+              <Group gap="md" className="tabular">
                 <Group gap={4}>
-                  <IconHeart size={14} />
-                  <Text size="xs">{e.likes}</Text>
+                  <IconHeart size={14} aria-hidden="true" />
+                  <Text size="xs" aria-label={`${e.likes} likes`}>
+                    {e.likes}
+                  </Text>
                 </Group>
                 <Group gap={4}>
-                  <IconMessage size={14} />
-                  <Text size="xs">{e.commentCount}</Text>
+                  <IconMessage size={14} aria-hidden="true" />
+                  <Text size="xs" aria-label={`${e.commentCount} comments`}>
+                    {e.commentCount}
+                  </Text>
                 </Group>
                 <Text size="xs" c="dimmed">
                   {e.createdBy ?? "—"} · {fmtTime(e.createdAt)}
@@ -119,7 +130,7 @@ export function EntryGrid({
         ))}
       </SimpleGrid>
       {onMore && (
-        <Button size="compact-sm" variant="default" mt="sm" onClick={onMore}>
+        <Button variant="default" mt="md" onClick={onMore}>
           Load more
         </Button>
       )}

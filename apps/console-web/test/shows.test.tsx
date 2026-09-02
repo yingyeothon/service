@@ -207,7 +207,7 @@ describe("show pages", () => {
 
   it("shows the wall, and asks the API for the order it renders", async () => {
     mount("/shows/sh_1");
-    expect(await screen.findByText("Our game")).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Our game" })).toBeTruthy();
     // The card carries the derived counts, not a stored one.
     expect(screen.getByText("2")).toBeTruthy();
     expect(screen.getByText("3")).toBeTruthy();
@@ -232,7 +232,9 @@ describe("show pages", () => {
 
   it("draws entry controls from the entry-level flag, not the show-level one", async () => {
     mount("/shows/sh_1/entries/se_1");
-    expect(await screen.findByText("Our game")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Our game" }),
+    ).toBeTruthy();
     // `canWrite` is true (a grant holder may submit here) but `canEdit` is
     // false (this is somebody else's entry): offering Edit or the screenshot
     // field would be a button that always 403s.

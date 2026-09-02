@@ -100,19 +100,25 @@ export function DataTable<T>({
   );
 }
 
-/** The name column: the in-app link every list opens its rows with. */
+/**
+ * The name column: the in-app link every list opens its rows with. `after`
+ * sits beside the link, outside its accessible name (a badge, a marker).
+ */
 export function NameCell({
   to,
   children,
+  after,
 }: {
   to: string;
   children: ReactNode;
+  after?: ReactNode;
 }) {
   return (
     <Table.Td>
       <Anchor component={Link} to={to} size="sm" fw={500}>
         {children}
       </Anchor>
+      {after}
     </Table.Td>
   );
 }

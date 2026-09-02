@@ -47,7 +47,6 @@ function ReasonConfirm({
         placeholder={r.placeholder ?? "Why?"}
         value={reason}
         maxLength={r.maxLength}
-        required={r.required}
         onChange={(e) => setReason(e.currentTarget.value)}
         data-autofocus
       />

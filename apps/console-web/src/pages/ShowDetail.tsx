@@ -1,38 +1,35 @@
-import {
-  Anchor,
-  Button,
-  Divider,
-  Group,
-  SegmentedControl,
-  Stack,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
-import { useEffect, useState } from "react";
+import { Anchor, Button, Table, Text, TextInput } from "@mantine/core";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
+import { Crumbs } from "../components/Crumbs";
+import { DataTable } from "../components/DataTable";
 import { EntryGrid } from "../components/EntryGrid";
+import { PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
 import { MdField } from "../components/MdField";
+import { PageHeader, type HeaderAction } from "../components/PageHeader";
+import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
+import { RowMenu } from "../components/RowMenu";
+import { Section } from "../components/Section";
 import { TargetPicker, targetValue } from "../components/TargetPicker";
-import {
-  Badge,
-  Confirm,
-  ConfirmWithReason,
-  Notice,
-  Spinner,
-} from "../components/ui";
+import { Badge, Notice } from "../components/ui";
+import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
+import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
-import type { ShowEntry, ShowTargetKind } from "../types";
+import type { ShowAcl, ShowEntry, ShowTargetKind } from "../types";
+import { AclField } from "./Shows";
+
+const SHOWS_CRUMB = [{ label: "Shows", to: "/shows" }];
 
 export function ShowDetailPage() {
   const { id = "" } = useParams();
   const { me } = useAuth();
   const nav = useNavigate();
   const act = useAction();
+  const confirm = useConfirm();
   const [sort, setSort] = useState<"new" | "likes">("new");
   const show = useApiQuery(["show", id, me?.id ?? null], () => api.show(id));
   // Cursor paging: the wall holds up to 200 entries and a page is 24, so
@@ -64,129 +61,187 @@ export function ShowDetailPage() {
   const foreign =
     canManage && s !== undefined && s.createdBy !== (me?.login ?? null);
 
-  const [submitting, setSubmitting] = useState(false);
+  const submit = useDrawerForm(() => ({
+    target: null as string | null,
+    title: "",
+    bodyMd: "",
+  }));
   const submittable = useApiQuery(
     ["show-submittable", id],
     () => api.showSubmittable(id),
-    { enabled: submitting },
+    { enabled: submit.opened },
   );
-  const [target, setTarget] = useState<string | null>(null);
-  const [title, setTitle] = useState("");
-  const [bodyMd, setBodyMd] = useState("");
-  const [grantLogin, setGrantLogin] = useState("");
-  const [modReason, setModReason] = useState("");
-  const [editing, setEditing] = useState(false);
-  const [draftBody, setDraftBody] = useState("");
+  const edit = useDrawerForm<{ bodyMd: string; acl: ShowAcl; reason: string }>(
+    () => ({ bodyMd: s?.bodyMd ?? "", acl: s?.acl ?? "public", reason: "" }),
+  );
+  const grant = useDrawerForm(() => ({ login: "" }));
 
   const reload = async () => {
     await Promise.all([show.reload(), entries.reload()]);
   };
 
-  const submit = async () => {
-    if (!target || !title.trim()) return;
-    const [kind, ...rest] = target.split(":");
+  const submitEntry = async (e: FormEvent) => {
+    e.preventDefault();
+    const f = submit.form;
+    if (!f.target || !f.title.trim()) return;
+    const [kind, ...rest] = f.target.split(":");
     const r = await act.run(() =>
       api.submitEntry(id, {
         targetKind: kind as ShowTargetKind,
         targetId: rest.join(":"),
-        title: title.trim(),
-        bodyMd: bodyMd || undefined,
+        title: f.title.trim(),
+        bodyMd: f.bodyMd || undefined,
       }),
     );
     if (!r) return;
-    setSubmitting(false);
-    setTarget(null);
-    setTitle("");
-    setBodyMd("");
+    submit.close();
+    notify.done("Entry put up");
     await reload();
   };
+  const savePage = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!s) return;
+    const f = edit.form;
+    const body: { bodyMd?: string; acl?: ShowAcl; reason?: string } = {};
+    if (f.bodyMd !== s.bodyMd) body.bodyMd = f.bodyMd;
+    if (f.acl !== s.acl) body.acl = f.acl;
+    if (Object.keys(body).length === 0) {
+      edit.close();
+      return;
+    }
+    if (foreign) body.reason = f.reason.trim();
+    const r = await act.run(() => api.updateShow(id, body));
+    if (!r) return;
+    edit.close();
+    notify.saved("show");
+    await show.reload();
+  };
+  const grantAccess = async (e: FormEvent) => {
+    e.preventDefault();
+    const login = grant.form.login.trim();
+    const r = await act.run(() => api.grantShow(id, login).then(() => true));
+    if (!r) return;
+    grant.close();
+    notify.done(`${login} may put work up`);
+    await show.reload();
+  };
+  const revoke = async (login: string) => {
+    if (await act.run(() => api.revokeShow(id, login).then(() => true))) {
+      notify.done(`${login} revoked`);
+      await show.reload();
+    }
+  };
+  const toggleClosed = async () => {
+    if (!s) return;
+    const closed = s.closedAt !== null;
+    const r = await confirm({
+      title: closed ? "Reopen the show?" : "Close the show?",
+      message: closed
+        ? "Reopening changes nothing about who may see it."
+        : "A closed show is read-only; it can be reopened.",
+      confirmLabel: closed ? "Reopen show" : "Close show",
+      reason: foreign ? { required: true } : undefined,
+    });
+    if (!r.ok) return;
+    const ok = await act.run(() =>
+      (closed
+        ? api.reopenShow(id, r.reason)
+        : api.closeShow(id, r.reason)
+      ).then(() => true),
+    );
+    if (ok) {
+      notify.done(closed ? "Show reopened" : "Show closed");
+      await reload();
+    }
+  };
+  const remove = async () => {
+    const r = await confirm({
+      title: "Delete the show?",
+      message: "Every entry on the wall goes with it.",
+      confirmLabel: "Delete show",
+      danger: true,
+      reason: { required: true, placeholder: "Why is this being removed?" },
+    });
+    if (!r.ok || !r.reason) return;
+    if (await act.run(() => api.deleteShow(id, r.reason!).then(() => true))) {
+      notify.deleted("show");
+      void nav("/shows");
+    }
+  };
 
-  if (show.error) return <Notice kind="error">{show.error}</Notice>;
-  if (!s) return <Spinner />;
+  if (show.error)
+    return (
+      <>
+        <Crumbs trail={SHOWS_CRUMB} />
+        <PageHeader />
+        <Notice kind="error">{show.error}</Notice>
+      </>
+    );
+  if (!s)
+    return (
+      <>
+        <Crumbs trail={SHOWS_CRUMB} />
+        <PageHeader />
+        <PageSkeleton />
+      </>
+    );
 
   const closed = s.closedAt !== null;
+  const actions: HeaderAction[] = [];
+  if (s.canWrite && !closed)
+    actions.push({
+      label: "Put something up",
+      primary: true,
+      onClick: submit.open,
+    });
+  if (canManage) {
+    actions.push({ label: "Edit", onClick: edit.open });
+    actions.push({
+      label: closed ? "Reopen show" : "Close show",
+      menu: true,
+      onClick: toggleClosed,
+      disabled: act.busy,
+    });
+  }
+  if (hasRole(me, "admin"))
+    actions.push({
+      label: "Delete show",
+      danger: true,
+      onClick: remove,
+      disabled: act.busy,
+    });
+
   return (
-    <Stack gap="md">
-      <Group justify="space-between" align="flex-start">
-        <Stack gap={4}>
-          <Title order={2}>{s.title}</Title>
-          <Group gap="xs">
+    <>
+      <Crumbs trail={SHOWS_CRUMB} current={s.title} />
+      <PageHeader
+        title={s.title}
+        badges={
+          <>
             <Badge tone={s.acl === "public" ? "ok" : "neutral"}>
               {s.acl === "public" ? "everyone may see this" : "members only"}
             </Badge>
             {closed && <Badge tone="neutral">closed</Badge>}
-            <Text size="sm" c="dimmed">
-              {s.createdBy ?? "—"} · {fmtTime(s.createdAt)} · {s.entryCount}{" "}
-              {s.entryCount === 1 ? "entry" : "entries"}
-            </Text>
-          </Group>
-          {s.eventId && (
-            <Anchor component={Link} to={`/events/${s.eventId}`} size="sm">
-              From the event page
-            </Anchor>
-          )}
-        </Stack>
-        <Group gap="xs">
-          {s.canWrite && !closed && !submitting && (
-            <Button onClick={() => setSubmitting(true)}>
-              Put something up
-            </Button>
-          )}
-          {canManage && (
-            <Button
-              variant="default"
-              size="compact-sm"
-              onClick={() => {
-                setDraftBody(s.bodyMd);
-                setEditing((v) => !v);
-              }}
-            >
-              {editing ? "Stop editing" : "Edit page"}
-            </Button>
-          )}
-          {canManage && (
-            <Confirm
-              label={closed ? "Reopen" : "Close"}
-              color={closed ? "blue" : "orange"}
-              confirmLabel={closed ? "Reopen it" : "Close it"}
-              disabled={act.busy}
-              onConfirm={async () => {
-                const why = foreign ? modReason.trim() : undefined;
-                await act.run(() =>
-                  closed ? api.reopenShow(id, why) : api.closeShow(id, why),
-                );
-                await reload();
-              }}
-            />
-          )}
-          {hasRole(me, "admin") && (
-            <ConfirmWithReason
-              label="Delete show"
-              confirmLabel="Delete it"
-              required
-              placeholder="Why is this being removed?"
-              disabled={act.busy}
-              onConfirm={async (reason) => {
-                if (!reason) return;
-                if (
-                  await act.run(() =>
-                    api.deleteShow(id, reason).then(() => true),
-                  )
-                )
-                  void nav("/shows");
-              }}
-            />
-          )}
-        </Group>
-      </Group>
-      {act.error && <Notice kind="error">{act.error}</Notice>}
-      {foreign && (
-        <TextInput
-          label="Why are you acting on somebody else's show?"
-          description="Recorded with the action in the audit log."
-          value={modReason}
-          onChange={(e) => setModReason(e.currentTarget.value)}
-        />
+          </>
+        }
+        meta={
+          <>
+            {s.createdBy ?? "—"} · {fmtTime(s.createdAt)} · {s.entryCount}{" "}
+            {s.entryCount === 1 ? "entry" : "entries"}
+            {s.eventId && (
+              <>
+                {" · "}
+                <Anchor component={Link} to={`/events/${s.eventId}`} size="sm">
+                  From the event page
+                </Anchor>
+              </>
+            )}
+          </>
+        }
+        actions={actions}
+      />
+      {act.error && !submit.opened && !edit.opened && !grant.opened && (
+        <Notice kind="error">{act.error}</Notice>
       )}
       {closed && (
         <Notice kind="info">
@@ -194,165 +249,168 @@ export function ShowDetailPage() {
           about who may see it.
         </Notice>
       )}
-
-      {editing && canManage ? (
-        <Stack gap="xs">
-          <MdField
-            label="Page"
-            value={draftBody}
-            onChange={setDraftBody}
-            minRows={6}
-          />
-          <Group gap="xs">
-            <Button
-              size="compact-sm"
-              disabled={act.busy}
-              onClick={() =>
-                void (async () => {
-                  await act.run(() =>
-                    api.updateShow(id, { bodyMd: draftBody }),
-                  );
-                  setEditing(false);
-                  await show.reload();
-                })()
-              }
-            >
-              Save page
-            </Button>
-            <SegmentedControl
-              size="xs"
-              value={s.acl}
-              onChange={(v) =>
-                void (async () => {
-                  await act.run(() =>
-                    api.updateShow(id, {
-                      acl: v as typeof s.acl,
-                      ...(foreign ? { reason: modReason.trim() } : {}),
-                    }),
-                  );
-                  await show.reload();
-                })()
-              }
-              data={[
-                { value: "public", label: "Everyone" },
-                { value: "member_only", label: "Members only" },
-              ]}
-            />
-            <Text size="xs" c="dimmed">
-              Opening a show to everyone is refused once it has entries: people
-              submitted to the audience they were shown.
-            </Text>
-          </Group>
-        </Stack>
-      ) : (
-        s.bodyMd && <Markdown text={s.bodyMd} />
-      )}
+      {s.bodyMd && <Markdown text={s.bodyMd} />}
 
       {canManage && (
-        <Stack gap="xs">
-          <Divider label="Who may put work up" labelPosition="left" />
-          <Group gap="xs" align="flex-end">
-            <TextInput
-              size="xs"
-              label="GitHub login"
-              value={grantLogin}
-              onChange={(e) => setGrantLogin(e.currentTarget.value)}
-            />
-            <Button
-              size="compact-sm"
-              disabled={act.busy || !grantLogin.trim()}
-              onClick={() =>
-                void (async () => {
-                  await act.run(() => api.grantShow(id, grantLogin.trim()));
-                  setGrantLogin("");
-                  await show.reload();
-                })()
-              }
-            >
-              Grant
+        <Section
+          title="Who may put work up"
+          description="Only you and platform admins may submit unless you grant someone."
+          actions={
+            <Button variant="default" onClick={grant.open}>
+              Grant access
             </Button>
-          </Group>
-          <Group gap="xs">
-            {(s.grants ?? []).length === 0 ? (
-              <Text size="sm" c="dimmed">
-                Only you (and platform admins) may submit.
-              </Text>
-            ) : (
-              (s.grants ?? []).map((g) => (
-                <Group key={g.login ?? `?${String(g.grantedAt)}`} gap={4}>
-                  <Text size="sm">{g.login}</Text>
-                  <Confirm
-                    label="Revoke"
-                    disabled={act.busy}
-                    onConfirm={async () => {
-                      if (g.login)
-                        await act.run(() => api.revokeShow(id, g.login!));
-                      await show.reload();
-                    }}
-                  />
-                </Group>
-              ))
+          }
+        >
+          <DataTable
+            columns={[
+              { key: "login", label: "Login" },
+              { key: "by", label: "Granted by" },
+              { key: "at", label: "Since" },
+            ]}
+            rows={s.grants ?? []}
+            rowKey={(g) => g.login ?? String(g.grantedAt)}
+            minWidth={420}
+            empty={{ title: "Only you (and platform admins) may submit." }}
+            render={(g) => (
+              <>
+                <Table.Td>{g.login ?? "—"}</Table.Td>
+                <Table.Td>{g.grantedBy ?? "—"}</Table.Td>
+                <Table.Td>{fmtTime(g.grantedAt)}</Table.Td>
+              </>
             )}
-          </Group>
-        </Stack>
+            actions={(g) =>
+              g.login ? (
+                <RowMenu
+                  name={g.login}
+                  items={[
+                    {
+                      label: "Revoke",
+                      danger: true,
+                      disabled: act.busy,
+                      onClick: () => revoke(g.login!),
+                      confirm: {
+                        title: `Revoke ${g.login}?`,
+                        message: "What they already put up stays.",
+                        confirmLabel: "Revoke",
+                        danger: true,
+                      },
+                    },
+                  ]}
+                />
+              ) : null
+            }
+          />
+        </Section>
       )}
 
-      {submitting && (
-        <Stack gap="xs">
-          <Divider label="Put something up" labelPosition="left" />
-          {submittable.error && (
-            <Notice kind="error">{submittable.error}</Notice>
-          )}
-          <TargetPicker
-            targets={submittable.data ?? []}
-            value={target}
-            disabled={act.busy}
-            onChange={(v) => {
-              setTarget(v);
-              const picked = (submittable.data ?? []).find(
-                (t) => targetValue(t.kind, t.id) === v,
-              );
-              if (picked && !title) setTitle(picked.name);
-            }}
-          />
+      <Section title="On the wall">
+        {entries.error && <Notice kind="error">{entries.error}</Notice>}
+        <EntryGrid
+          entries={[...(entries.data?.entries ?? []), ...more]}
+          sort={sort}
+          onSort={setSort}
+          loading={entries.loading && !entries.data}
+          onMore={next ? () => void loadMore() : undefined}
+        />
+      </Section>
+
+      <ResourceDrawer
+        opened={submit.opened}
+        onClose={submit.close}
+        title="Put something up"
+        submitLabel="Submit entry"
+        onSubmit={submitEntry}
+        busy={act.busy}
+        disabled={!submit.form.target || !submit.form.title.trim()}
+        error={submit.opened ? (submittable.error ?? act.error) : null}
+        size="lg"
+      >
+        <TargetPicker
+          targets={submittable.data ?? []}
+          value={submit.form.target}
+          disabled={act.busy}
+          onChange={(v) => {
+            const picked = (submittable.data ?? []).find(
+              (t) => targetValue(t.kind, t.id) === v,
+            );
+            submit.patch({
+              target: v,
+              ...(picked && !submit.form.title ? { title: picked.name } : {}),
+            });
+          }}
+        />
+        <TextInput
+          label="Title"
+          value={submit.form.title}
+          onChange={(e) => submit.patch({ title: e.currentTarget.value })}
+          required
+          maxLength={200}
+          autoComplete="off"
+        />
+        <MdField
+          label="About it"
+          value={submit.form.bodyMd}
+          onChange={(bodyMd) => submit.patch({ bodyMd })}
+        />
+        <Text size="xs" c="dimmed">
+          Submitting is publication: the name and the link of what you pick
+          become visible to everyone who can see this show.
+        </Text>
+      </ResourceDrawer>
+
+      <ResourceDrawer
+        opened={edit.opened}
+        onClose={edit.close}
+        title="Edit show"
+        submitLabel="Save"
+        onSubmit={savePage}
+        busy={act.busy}
+        disabled={foreign && !edit.form.reason.trim()}
+        error={edit.opened ? act.error : null}
+        size="lg"
+      >
+        <MdField
+          label="Page"
+          value={edit.form.bodyMd}
+          onChange={(bodyMd) => edit.patch({ bodyMd })}
+          minRows={6}
+        />
+        <AclField
+          value={edit.form.acl}
+          onChange={(acl) => edit.patch({ acl })}
+          description="Opening a show to everyone is refused once it has entries: people submitted to the audience they were shown."
+        />
+        {foreign && (
           <TextInput
-            label="Title"
-            value={title}
-            onChange={(e) => setTitle(e.currentTarget.value)}
+            label="Why are you acting on somebody else's show?"
+            description="Recorded with the action in the audit log."
+            value={edit.form.reason}
+            onChange={(e) => edit.patch({ reason: e.currentTarget.value })}
+            required
           />
-          <MdField label="About it" value={bodyMd} onChange={setBodyMd} />
-          <Text size="xs" c="dimmed">
-            Submitting is publication: the name and the link of what you pick
-            become visible to everyone who can see this show.
-          </Text>
-          <Group gap="xs">
-            <Button
-              size="compact-sm"
-              disabled={act.busy || !target || !title.trim()}
-              onClick={() => void submit()}
-            >
-              Submit
-            </Button>
-            <Button
-              size="compact-sm"
-              variant="default"
-              onClick={() => setSubmitting(false)}
-            >
-              Cancel
-            </Button>
-          </Group>
-        </Stack>
-      )}
+        )}
+      </ResourceDrawer>
 
-      <Divider label="On the wall" labelPosition="left" />
-      {entries.error && <Notice kind="error">{entries.error}</Notice>}
-      <EntryGrid
-        entries={[...(entries.data?.entries ?? []), ...more]}
-        sort={sort}
-        onSort={setSort}
-        loading={entries.loading && !entries.data}
-        onMore={next ? () => void loadMore() : undefined}
-      />
-    </Stack>
+      <ResourceDrawer
+        opened={grant.opened}
+        onClose={grant.close}
+        title="Grant write access"
+        submitLabel="Grant access"
+        onSubmit={grantAccess}
+        busy={act.busy}
+        disabled={!grant.form.login.trim()}
+        error={grant.opened ? act.error : null}
+      >
+        <TextInput
+          label="GitHub login"
+          value={grant.form.login}
+          onChange={(e) => grant.patch({ login: e.currentTarget.value })}
+          required
+          autoComplete="off"
+          spellCheck={false}
+          data-autofocus
+        />
+      </ResourceDrawer>
+    </>
   );
 }

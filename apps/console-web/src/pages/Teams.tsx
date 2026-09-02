@@ -153,10 +153,21 @@ export function TeamsPage() {
         }}
         render={(t) => (
           <>
-            <NameCell to={teamUrl(t.id)}>{t.name}</NameCell>
+            <NameCell
+              to={teamUrl(t.id)}
+              after={
+                t.adminLocked && (
+                  <>
+                    {" "}
+                    <Badge tone="danger">admin-locked</Badge>
+                  </>
+                )
+              }
+            >
+              {t.name}
+            </NameCell>
             <Table.Td>
-              <Badge tone={STANDING_TONE[t.role]}>{t.role}</Badge>{" "}
-              {t.adminLocked && <Badge tone="danger">admin-locked</Badge>}
+              <Badge tone={STANDING_TONE[t.role]}>{t.role}</Badge>
             </Table.Td>
             <Table.Td>{t.createdBy ?? "—"}</Table.Td>
             <Table.Td>{fmtTime(t.updatedAt)}</Table.Td>

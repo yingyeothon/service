@@ -1,7 +1,6 @@
 import {
   ActionIcon,
   Button,
-  Card,
   Group,
   NumberInput,
   Stack,
@@ -18,7 +17,8 @@ import {
 } from "../lib/eventForm";
 import type { EventInput } from "../types";
 import { MdField } from "./MdField";
-import { FormActions, Notice } from "./ui";
+import { FormFooter } from "./ResourceDrawer";
+import { Notice } from "./ui";
 
 /**
  * Draft form (create) and page editor (edit). `schedule` is true only while
@@ -59,115 +59,111 @@ export function EventForm({
   };
 
   return (
-    <Card withBorder mb="md">
-      <form onSubmit={(e) => void submit(e)}>
-        <Stack gap="sm">
-          {error && <Notice kind="error">{error}</Notice>}
+    <form onSubmit={(e) => void submit(e)}>
+      <Stack gap="md">
+        {error && <Notice kind="error">{error}</Notice>}
+        <TextInput
+          label="Title"
+          value={f.title}
+          onChange={(e) => set("title", e.target.value)}
+          required
+          maxLength={200}
+          autoComplete="off"
+          data-autofocus
+        />
+        <Group grow align="start">
           <TextInput
-            label="Title"
-            value={f.title}
-            onChange={(e) => set("title", e.target.value)}
+            label="Place"
+            value={f.place}
+            onChange={(e) => set("place", e.target.value)}
             required
             maxLength={200}
           />
-          <Group grow align="start">
-            <TextInput
-              label="Place"
-              value={f.place}
-              onChange={(e) => set("place", e.target.value)}
-              required
-              maxLength={200}
-            />
-            <TextInput
-              label="Map link (optional)"
-              placeholder="https://"
-              value={f.placeUrl}
-              onChange={(e) => set("placeUrl", e.target.value)}
-              maxLength={1000}
-            />
-          </Group>
-          {schedule && (
-            <>
-              <Group grow align="start">
-                <NumberInput
-                  label="Duration (hours)"
-                  value={f.durationHours}
-                  onChange={(v) =>
-                    set("durationHours", typeof v === "number" ? v : 0)
-                  }
-                  min={1}
-                  max={DURATION_HOURS_MAX}
-                  required
-                />
-                <TextInput
-                  type="datetime-local"
-                  label="Vote until"
-                  value={f.voteUntil}
-                  onChange={(e) => set("voteUntil", e.target.value)}
-                  required
-                />
-              </Group>
-              <div>
-                <Text size="sm" fw={500}>
-                  Candidate dates{" "}
-                  <Text span size="xs" c="dimmed">
-                    (start time, one event per calendar day platform-wide; up to{" "}
-                    {OPTIONS_MAX})
-                  </Text>
+          <TextInput
+            label="Map link (optional)"
+            placeholder="https://"
+            value={f.placeUrl}
+            onChange={(e) => set("placeUrl", e.target.value)}
+            maxLength={1000}
+          />
+        </Group>
+        {schedule && (
+          <>
+            <Group grow align="start">
+              <NumberInput
+                label="Duration (hours)"
+                value={f.durationHours}
+                onChange={(v) =>
+                  set("durationHours", typeof v === "number" ? v : 0)
+                }
+                min={1}
+                max={DURATION_HOURS_MAX}
+                required
+              />
+              <TextInput
+                type="datetime-local"
+                label="Vote until"
+                value={f.voteUntil}
+                onChange={(e) => set("voteUntil", e.target.value)}
+                required
+              />
+            </Group>
+            <div>
+              <Text size="sm" fw={500}>
+                Candidate dates{" "}
+                <Text span size="xs" c="dimmed">
+                  (start time, one event per calendar day platform-wide; up to{" "}
+                  {OPTIONS_MAX})
                 </Text>
-                <Stack gap={4} mt={4}>
-                  {f.options.map((o, i) => (
-                    <Group key={i} gap="xs" wrap="nowrap">
-                      <TextInput
-                        type="datetime-local"
-                        aria-label={`Candidate date ${i + 1}`}
-                        value={o}
-                        onChange={(e) => setOption(i, e.target.value)}
-                        style={{ flex: 1 }}
-                      />
-                      <ActionIcon
-                        variant="subtle"
-                        color="gray"
-                        aria-label={`Remove candidate ${i + 1}`}
-                        disabled={f.options.length === 1}
-                        onClick={() =>
-                          set(
-                            "options",
-                            f.options.filter((_, j) => j !== i),
-                          )
-                        }
-                      >
-                        <IconX size={16} />
-                      </ActionIcon>
-                    </Group>
-                  ))}
-                  {f.options.length < OPTIONS_MAX && (
-                    <Button
-                      size="compact-sm"
-                      variant="default"
-                      leftSection={<IconPlus size={14} />}
-                      onClick={() => set("options", [...f.options, ""])}
-                      style={{ alignSelf: "start" }}
+              </Text>
+              <Stack gap={4} mt={4}>
+                {f.options.map((o, i) => (
+                  <Group key={i} gap="xs" wrap="nowrap">
+                    <TextInput
+                      type="datetime-local"
+                      aria-label={`Candidate date ${i + 1}`}
+                      value={o}
+                      onChange={(e) => setOption(i, e.target.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <ActionIcon
+                      variant="subtle"
+                      color="gray"
+                      aria-label={`Remove candidate ${i + 1}`}
+                      disabled={f.options.length === 1}
+                      onClick={() =>
+                        set(
+                          "options",
+                          f.options.filter((_, j) => j !== i),
+                        )
+                      }
                     >
-                      Add date
-                    </Button>
-                  )}
-                </Stack>
-              </div>
-            </>
-          )}
-          <MdField
-            label="Description"
-            value={f.bodyMd}
-            onChange={(v) => set("bodyMd", v)}
-          />
-          <FormActions
-            submitLabel={submitLabel}
-            disabled={busy}
-            onCancel={onCancel}
-          />
-        </Stack>
-      </form>
-    </Card>
+                      <IconX size={16} aria-hidden="true" />
+                    </ActionIcon>
+                  </Group>
+                ))}
+                {f.options.length < OPTIONS_MAX && (
+                  <Button
+                    size="compact-sm"
+                    variant="default"
+                    leftSection={<IconPlus size={14} aria-hidden="true" />}
+                    onClick={() => set("options", [...f.options, ""])}
+                    style={{ alignSelf: "start" }}
+                  >
+                    Add date
+                  </Button>
+                )}
+              </Stack>
+            </div>
+          </>
+        )}
+        <MdField
+          label="Description"
+          value={f.bodyMd}
+          onChange={(v) => set("bodyMd", v)}
+        />
+        <FormFooter submitLabel={submitLabel} busy={busy} onCancel={onCancel} />
+      </Stack>
+    </form>
   );
 }

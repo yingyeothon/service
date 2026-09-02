@@ -1,16 +1,20 @@
-import { Button, Card, Group, Stack, Text, Title } from "@mantine/core";
+import { Box, Group, Stack, Text } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { fmtTime } from "../lib/format";
 import { useAction } from "../lib/query";
 import type { Comment } from "../types";
-import { Confirm, ConfirmWithReason, FormActions, Notice } from "./ui";
 import { Markdown } from "./Markdown";
 import { MdField } from "./MdField";
+import { FormFooter } from "./ResourceDrawer";
+import { RowMenu, type RowMenuItem } from "./RowMenu";
+import { Section } from "./Section";
+import { Notice } from "./ui";
 
 /**
- * Comment thread under an issue or a discussion. Editing is the author's,
- * deleting is the author's or an owner's — the API decides, the props only
- * hide what would 403.
+ * Comment thread under an issue, a discussion, an event or an entry. Editing
+ * is the author's, deleting is the author's or an owner's — the API decides,
+ * the props only hide what would 403. Each comment's verbs sit in its menu;
+ * deleting confirms in a modal.
  */
 export function Comments({
   comments,
@@ -27,8 +31,7 @@ export function Comments({
   /**
    * Demand a stated reason before deleting somebody else's comment. Set only
    * where an operator may act beyond their own content (`docs/decisions.md`
-   * *Show (console)*, decision 12); the three older call sites leave it off
-   * and keep their plain confirm.
+   * *Show (console)*, decision 12).
    */
   reasonOnForeignDelete?: boolean;
   onAdd: (bodyMd: string) => Promise<unknown>;
@@ -52,92 +55,89 @@ export function Comments({
     if (await act.run(() => onEdit(editing.id, editing.bodyMd)))
       setEditing(null);
   };
+  const items = (c: Comment): RowMenuItem[] => {
+    const out: RowMenuItem[] = [];
+    if (c.mine && canPost)
+      out.push({
+        label: "Edit",
+        onClick: () => setEditing({ id: c.id, bodyMd: c.bodyMd }),
+      });
+    if (c.mine || owner)
+      out.push({
+        label: "Delete",
+        danger: true,
+        disabled: act.busy,
+        onClick: async (reason) => {
+          await act.run(() => onDelete(c.id, reason));
+        },
+        confirm: {
+          title: "Delete this comment?",
+          confirmLabel: "Delete",
+          danger: true,
+          reason:
+            reasonOnForeignDelete && !c.mine
+              ? { required: true, placeholder: "Why is this being removed?" }
+              : undefined,
+        },
+      });
+    return out;
+  };
 
   return (
-    <>
-      <Title order={4} mt="md" mb="xs">
-        Comments {comments.length ? `(${comments.length})` : ""}
-      </Title>
+    <Section
+      title={`Comments${comments.length ? ` (${comments.length})` : ""}`}
+    >
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {comments.length === 0 && (
         <Text size="sm" c="dimmed">
           No comments yet.
         </Text>
       )}
-      {comments.map((c) => (
-        <Card withBorder mb="xs" padding="sm" key={c.id}>
-          <Text size="xs" c="dimmed">
-            {c.createdBy ?? "—"} · {fmtTime(c.createdAt)}
-            {c.updatedAt !== c.createdAt && " · edited"}
-          </Text>
-          {editing?.id === c.id ? (
-            <form onSubmit={(e) => void saveEdit(e)}>
-              <Stack gap="xs" mt="xs">
-                <MdField
-                  label="Edit comment"
-                  value={editing.bodyMd}
-                  onChange={(bodyMd) => setEditing({ ...editing, bodyMd })}
-                  maxLength={10000}
-                  minRows={3}
-                />
-                <Group>
-                  <Button
-                    type="submit"
-                    size="compact-sm"
-                    disabled={act.busy || !editing.bodyMd.trim()}
-                  >
-                    Save
-                  </Button>
-                  <Button
-                    size="compact-sm"
-                    variant="default"
-                    onClick={() => setEditing(null)}
-                  >
-                    Cancel
-                  </Button>
-                </Group>
-              </Stack>
-            </form>
-          ) : (
-            <>
+      <Stack gap="md">
+        {comments.map((c) => (
+          <Box
+            key={c.id}
+            component="article"
+            pl="md"
+            style={{ borderLeft: "2px solid var(--yyt-hairline)" }}
+          >
+            <Group justify="space-between" align="center" mb={4}>
+              <Text size="xs" c="dimmed">
+                <strong>{c.createdBy ?? "—"}</strong> · {fmtTime(c.createdAt)}
+                {c.updatedAt !== c.createdAt && " · edited"}
+              </Text>
+              <RowMenu
+                name={`comment by ${c.createdBy ?? "unknown"}`}
+                items={items(c)}
+              />
+            </Group>
+            {editing?.id === c.id ? (
+              <form onSubmit={(e) => void saveEdit(e)}>
+                <Stack gap="sm">
+                  <MdField
+                    label="Edit comment"
+                    value={editing.bodyMd}
+                    onChange={(bodyMd) => setEditing({ ...editing, bodyMd })}
+                    maxLength={10000}
+                    minRows={3}
+                  />
+                  <FormFooter
+                    submitLabel="Save"
+                    busy={act.busy}
+                    disabled={!editing.bodyMd.trim()}
+                    onCancel={() => setEditing(null)}
+                  />
+                </Stack>
+              </form>
+            ) : (
               <Markdown text={c.bodyMd} />
-              {(c.mine || owner) && (
-                <Group gap="xs" mt={4}>
-                  {c.mine && canPost && (
-                    <Button
-                      size="compact-xs"
-                      variant="default"
-                      onClick={() => setEditing({ id: c.id, bodyMd: c.bodyMd })}
-                    >
-                      Edit
-                    </Button>
-                  )}
-                  {reasonOnForeignDelete && !c.mine ? (
-                    <ConfirmWithReason
-                      label="Delete"
-                      required
-                      placeholder="Why is this being removed?"
-                      disabled={act.busy}
-                      onConfirm={(reason) =>
-                        void act.run(() => onDelete(c.id, reason))
-                      }
-                    />
-                  ) : (
-                    <Confirm
-                      label="Delete"
-                      onConfirm={() => void act.run(() => onDelete(c.id))}
-                      disabled={act.busy}
-                    />
-                  )}
-                </Group>
-              )}
-            </>
-          )}
-        </Card>
-      ))}
+            )}
+          </Box>
+        ))}
+      </Stack>
       {canPost && (
         <form onSubmit={(e) => void submit(e)}>
-          <Stack gap="xs" mt="sm">
+          <Stack gap="sm" mt="lg">
             <MdField
               label="New comment"
               value={draft}
@@ -145,13 +145,16 @@ export function Comments({
               maxLength={10000}
               minRows={3}
             />
-            <FormActions
-              submitLabel="Comment"
-              disabled={act.busy || !draft.trim()}
-            />
+            <Group>
+              <FormFooter
+                submitLabel="Post comment"
+                busy={act.busy}
+                disabled={!draft.trim()}
+              />
+            </Group>
           </Stack>
         </form>
       )}
-    </>
+    </Section>
   );
 }
