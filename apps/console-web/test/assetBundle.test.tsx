@@ -147,18 +147,19 @@ describe("AssetBundlePage", () => {
     );
   });
 
-  it("deletes the bundle from the overflow menu and returns to the project's assets", async () => {
+  it("deletes the bundle from the drawer danger zone and returns to the project's assets", async () => {
     vi.mocked(mockApi.deleteAssetBundle).mockResolvedValue(undefined);
     open();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
     await userEvent.click(
-      await screen.findByRole("button", { name: "More actions" }),
+      within(drawer).getByRole("button", { name: "Delete bundle" }),
     );
+    const modal = (await screen.findByText("Delete bundle?")).closest(
+      '[role="dialog"]',
+    ) as HTMLElement;
     await userEvent.click(
-      await screen.findByRole("menuitem", { name: "Delete bundle" }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Delete bundle" }),
+      within(modal).getByRole("button", { name: "Delete bundle" }),
     );
     await waitFor(() =>
       expect(mockApi.deleteAssetBundle).toHaveBeenCalledWith("ab_1"),

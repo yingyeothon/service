@@ -158,7 +158,7 @@ describe("q channel redis account", () => {
     await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Revoke" }),
+      within(dialog).getByRole("button", { name: /^Revoke / }),
     );
 
     // Leaving it on screen would show a password for an account that is gone.

@@ -207,5 +207,10 @@ describe("TeamPage", () => {
     expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add member" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    // No drawer, so the delete verb sits in the overflow menu for the admin.
+    await userEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      await screen.findByRole("menuitem", { name: "Delete team" }),
+    ).toBeInTheDocument();
   });
 });

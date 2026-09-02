@@ -141,7 +141,7 @@ describe("auth channel document key", () => {
     await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Revoke" }),
+      within(dialog).getByRole("button", { name: /^Revoke / }),
     );
 
     // Leaving it up would show a key that no longer authenticates anything.

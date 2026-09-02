@@ -122,11 +122,18 @@ export function IssuePage() {
 
   const actions: HeaderAction[] = t.canWrite
     ? [
-        { label: "Edit", onClick: edit.open },
+        {
+          label: "Edit",
+          onClick: () => {
+            act.clear();
+            edit.open();
+          },
+        },
         {
           label: i.status === "open" ? "Close issue" : "Reopen issue",
           menu: true,
           onClick: toggle,
+          disabled: act.busy,
         },
       ]
     : [];

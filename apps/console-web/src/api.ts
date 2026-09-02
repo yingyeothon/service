@@ -455,10 +455,13 @@ export function createApiClient({
       get<{ grants: ShowGrant[] }>(`/shows/${enc(id)}/grants`).then(
         (r) => r.grants,
       ),
-    grantShow: (id: string, login: string) =>
-      put<void>(`/shows/${enc(id)}/grants/${enc(login)}`, {}),
-    revokeShow: (id: string, login: string) =>
-      del(`/shows/${enc(id)}/grants/${enc(login)}`),
+    grantShow: (id: string, login: string, reason?: string) =>
+      put<void>(
+        `/shows/${enc(id)}/grants/${enc(login)}`,
+        reason ? { reason } : {},
+      ),
+    revokeShow: (id: string, login: string, reason?: string) =>
+      del(`/shows/${enc(id)}/grants/${enc(login)}`, reason ? { reason } : {}),
     showSubmittable: (id: string) =>
       get<{ targets: ShowSubmittable[] }>(`/shows/${enc(id)}/submittable`).then(
         (r) => r.targets,

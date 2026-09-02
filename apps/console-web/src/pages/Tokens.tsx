@@ -45,7 +45,16 @@ export function TokensPage() {
             They carry your current role; revoke any you no longer use (max 20).
           </>
         }
-        actions={[{ label: "New token", primary: true, onClick: create.open }]}
+        actions={[
+          {
+            label: "New token",
+            primary: true,
+            onClick: () => {
+              act.clear();
+              create.open();
+            },
+          },
+        ]}
       />
       {act.error && !create.opened && <Notice kind="error">{act.error}</Notice>}
       {fresh && (

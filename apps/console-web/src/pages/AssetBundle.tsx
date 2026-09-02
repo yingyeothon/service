@@ -21,7 +21,6 @@ import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { CopyField, DropZone, Notice } from "../components/ui";
 import { fmtSize } from "../lib/catalog";
-import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
@@ -171,7 +170,6 @@ export function AssetBundlePage() {
   );
   const standing = useTeamStanding(bundle.data?.teamId);
   const act = useAction();
-  const confirm = useConfirm();
   const [open, setOpen] = useState<string | null>(null);
   const b = bundle.data;
   const edit = useDrawerForm(() => ({
@@ -202,15 +200,6 @@ export function AssetBundlePage() {
         ? projectUrl(b.teamId, b.projectId, "assets")
         : "/teams",
     );
-  };
-  const removeFromMenu = async () => {
-    const r = await confirm({
-      title: `Delete ${b?.name ?? "bundle"}?`,
-      message: "Every version and file goes with it.",
-      confirmLabel: "Delete bundle",
-      danger: true,
-    });
-    if (r.ok) await removeBundle();
   };
 
   const saveInfo = async (e: FormEvent) => {
@@ -252,12 +241,12 @@ export function AssetBundlePage() {
   const canWrite = standing.canWrite;
   const actions: HeaderAction[] = canWrite
     ? [
-        { label: "Edit", onClick: edit.open },
         {
-          label: "Delete bundle",
-          danger: true,
-          onClick: removeFromMenu,
-          disabled: act.busy,
+          label: "Edit",
+          onClick: () => {
+            act.clear();
+            edit.open();
+          },
         },
       ]
     : [];

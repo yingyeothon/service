@@ -21,7 +21,7 @@ import { Loading, PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
 import { MdField } from "../components/MdField";
 import { NameDescriptionFields } from "../components/NameDescriptionFields";
-import { PageHeader } from "../components/PageHeader";
+import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import {
   FormFooter,
@@ -31,6 +31,7 @@ import {
 import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { Badge, CopyField, Notice } from "../components/ui";
+import { useConfirm } from "../lib/confirm";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
@@ -54,6 +55,7 @@ export function ProjectPage() {
   const t = useTeamStanding(teamId);
   const p = useApiQuery(["project", prj], () => api.project(prj));
   const act = useAction();
+  const confirm = useConfirm();
   const project = p.data;
   const edit = useDrawerForm(() => ({
     name: project?.name ?? "",
@@ -106,6 +108,32 @@ export function ProjectPage() {
     notify.deleted("project");
     void nav(`/teams/${encodeURIComponent(project.teamId)}`);
   };
+  const actions: HeaderAction[] = [];
+  if (canWrite)
+    actions.push({
+      label: "Edit",
+      onClick: () => {
+        act.clear();
+        edit.open();
+      },
+    });
+  // A seatless platform admin may delete but not edit (see Team).
+  if (canDelete && !canWrite)
+    actions.push({
+      label: "Delete project",
+      danger: true,
+      disabled: act.busy,
+      onClick: async () => {
+        const r = await confirm({
+          title: `Delete ${project.name}?`,
+          message:
+            "Refused while a channel, app, bundle or site still belongs to it.",
+          confirmLabel: "Delete project",
+          danger: true,
+        });
+        if (r.ok) await remove();
+      },
+    });
 
   return (
     <>
@@ -125,7 +153,7 @@ export function ProjectPage() {
             {project.counts.issues} issue(s) · id <Code>{project.id}</Code>
           </>
         }
-        actions={canWrite ? [{ label: "Edit", onClick: edit.open }] : []}
+        actions={actions}
       />
       {!canWrite && !t.loading && <ReadOnlyBanner />}
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
@@ -145,7 +173,11 @@ export function ProjectPage() {
           <Tabs.Tab value="issues">Issues</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="channels" pt="lg">
-          <ChannelsTab project={project} canWrite={canWrite} />
+          <ChannelsTab
+            project={project}
+            canWrite={canWrite}
+            onCounts={p.reload}
+          />
         </Tabs.Panel>
         <Tabs.Panel value="catalog" pt="lg">
           <CatalogTab project={project} canWrite={canWrite} />
@@ -214,9 +246,12 @@ const STATUS_TONE: Record<ChannelStatus, string> = {
 function ChannelsTab({
   project,
   canWrite,
+  onCounts,
 }: {
   project: ProjectDetail;
   canWrite: boolean;
+  /** The header counts come from the project row: refresh it after a delete. */
+  onCounts: () => Promise<void>;
 }) {
   const list = useApiQuery(["project", project.id, "channels"], () =>
     api.projectChannels(project.id),
@@ -236,17 +271,18 @@ function ChannelsTab({
       })
     ) {
       notify.deleted("channel");
-      await list.reload();
+      await Promise.all([list.reload(), onCounts()]);
     }
   };
   return (
     <Section
       title="Channels"
-      description="Channels expire 7 days after creation; extend them from the detail page (up to 28 days ahead)."
+      description="Channels expire 7 days after creation; extend them from the row menu or the detail page (up to 28 days ahead)."
       actions={
         canWrite && (
           <Button
             component={Link}
+            variant="default"
             to={`${projectUrl(project.teamId, project.id)}/channels/new`}
           >
             New channel
@@ -394,7 +430,13 @@ function ResourceListTab<T extends { id: string }>({
     <Section
       title={title}
       description={intro}
-      actions={canWrite && <Button onClick={drawer.open}>New {noun}</Button>}
+      actions={
+        canWrite && (
+          <Button variant="default" onClick={drawer.open}>
+            New {noun}
+          </Button>
+        )
+      }
     >
       {warn}
       {act.error && !drawer.opened && <Notice kind="error">{act.error}</Notice>}
@@ -748,39 +790,41 @@ function VersionBody({
             Nothing linked yet.
           </Text>
         ) : (
-          <Table>
-            <Table.Tbody>
-              {detail.data.links.map((l) => (
-                <Table.Tr key={l.id}>
-                  <Table.Td>
-                    <Code>{linkLabel(l)}</Code>
-                  </Table.Td>
-                  <Table.Td>{fmtTime(l.createdAt)}</Table.Td>
-                  <Table.Td style={{ textAlign: "right" }}>
-                    {canWrite && (
-                      <RowMenu
-                        name={linkLabel(l)}
-                        items={[
-                          {
-                            label: "Unlink",
-                            danger: true,
-                            disabled: act.busy,
-                            onClick: () => removeLink(l.id),
-                            confirm: {
-                              title: "Unlink?",
-                              message: linkLabel(l),
-                              confirmLabel: "Unlink",
+          <Table.ScrollContainer minWidth={420}>
+            <Table>
+              <Table.Tbody>
+                {detail.data.links.map((l) => (
+                  <Table.Tr key={l.id}>
+                    <Table.Td>
+                      <Code>{linkLabel(l)}</Code>
+                    </Table.Td>
+                    <Table.Td>{fmtTime(l.createdAt)}</Table.Td>
+                    <Table.Td style={{ textAlign: "right" }}>
+                      {canWrite && (
+                        <RowMenu
+                          name={linkLabel(l)}
+                          items={[
+                            {
+                              label: "Unlink",
                               danger: true,
+                              disabled: act.busy,
+                              onClick: () => removeLink(l.id),
+                              confirm: {
+                                title: "Unlink?",
+                                message: linkLabel(l),
+                                confirmLabel: "Unlink",
+                                danger: true,
+                              },
                             },
-                          },
-                        ]}
-                      />
-                    )}
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+                          ]}
+                        />
+                      )}
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         )}
         {canWrite && (
           <form onSubmit={(e) => void addLink(e)}>
@@ -900,7 +944,7 @@ function VersionsTab({
   const bump = async (part: "patch" | "minor" | "major") => {
     const r = await act.run(() => api.bumpVersion(project.id, part));
     if (r) {
-      notify.created(`version ${r.name}`);
+      notify.created("version");
       await list.reload();
     }
   };
@@ -940,7 +984,9 @@ function VersionsTab({
                 Bump {part}
               </Button>
             ))}
-            <Button onClick={create.open}>New version</Button>
+            <Button variant="default" onClick={create.open}>
+              New version
+            </Button>
           </>
         )
       }
@@ -1011,7 +1057,9 @@ function VersionsTab({
       />
       <VersionDrawer
         project={project}
-        version={open}
+        version={
+          open ? (list.data?.find((v) => v.id === open.id) ?? open) : null
+        }
         canWrite={canWrite}
         onChanged={list.reload}
         onClose={() => setOpen(null)}
@@ -1086,7 +1134,13 @@ function IssuesTab({
   return (
     <Section
       title="Issues"
-      actions={canWrite && <Button onClick={create.open}>New issue</Button>}
+      actions={
+        canWrite && (
+          <Button variant="default" onClick={create.open}>
+            New issue
+          </Button>
+        )
+      }
     >
       <FilterBar>
         <EnumFilter

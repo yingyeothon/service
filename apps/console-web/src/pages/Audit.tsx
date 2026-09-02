@@ -104,7 +104,7 @@ export function AuditPage() {
           { key: "detail", label: "" },
         ]}
         rows={rows ?? undefined}
-        loading={rows === null}
+        loading={rows === null && !act.error}
         rowKey={(r) => r.id}
         minWidth={640}
         empty={{ title: "Nothing matches these filters." }}

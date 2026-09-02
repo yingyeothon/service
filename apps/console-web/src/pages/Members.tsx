@@ -39,7 +39,7 @@ export function InstallerAppSection() {
     const ok = await confirm({
       title: "Clear the installer app?",
       message: "The downloads route answers 503 until another app is set.",
-      confirmLabel: "Clear",
+      confirmLabel: "Clear installer app",
       danger: true,
     });
     if (!ok.ok) return;
@@ -100,8 +100,7 @@ export function InstallerAppSection() {
           </Button>
           {s?.appId && (
             <Button
-              variant="outline"
-              color="red"
+              variant="default"
               disabled={act.busy}
               onClick={() => void clear()}
             >
@@ -146,7 +145,7 @@ export function MembersPage() {
             title: `Promote ${m.login} to admin?`,
             message:
               "Admins approve sign-ups, read every team and delete anything.",
-            confirmLabel: "Promote",
+            confirmLabel: "Promote to admin",
           },
         },
       ];
@@ -159,7 +158,7 @@ export function MembersPage() {
           disabled: act.busy,
           confirm: {
             title: `Demote ${m.login}?`,
-            confirmLabel: "Demote",
+            confirmLabel: "Demote to member",
             danger: true,
           },
         },

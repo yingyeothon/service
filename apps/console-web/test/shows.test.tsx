@@ -242,6 +242,7 @@ describe("show pages", () => {
     expect(screen.queryByText("Save screenshots")).toBeNull();
     // A comment they did not write, and they are not a moderator: no Delete.
     expect(screen.queryByText("Delete")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
     // Reacting is theirs, though.
     expect(screen.getByText("2")).toBeTruthy();
   });

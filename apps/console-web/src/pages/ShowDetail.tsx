@@ -61,11 +61,12 @@ export function ShowDetailPage() {
   const foreign =
     canManage && s !== undefined && s.createdBy !== (me?.login ?? null);
 
-  const submit = useDrawerForm(() => ({
-    target: null as string | null,
-    title: "",
-    bodyMd: "",
-  }));
+  const submit = useDrawerForm<{
+    target: string | null;
+    title: string;
+    bodyMd: string;
+    reason: string;
+  }>(() => ({ target: null, title: "", bodyMd: "", reason: "" }));
   const submittable = useApiQuery(
     ["show-submittable", id],
     () => api.showSubmittable(id),
@@ -74,7 +75,7 @@ export function ShowDetailPage() {
   const edit = useDrawerForm<{ bodyMd: string; acl: ShowAcl; reason: string }>(
     () => ({ bodyMd: s?.bodyMd ?? "", acl: s?.acl ?? "public", reason: "" }),
   );
-  const grant = useDrawerForm(() => ({ login: "" }));
+  const grant = useDrawerForm(() => ({ login: "", reason: "" }));
 
   const reload = async () => {
     await Promise.all([show.reload(), entries.reload()]);
@@ -91,6 +92,7 @@ export function ShowDetailPage() {
         targetId: rest.join(":"),
         title: f.title.trim(),
         bodyMd: f.bodyMd || undefined,
+        ...(foreign ? { reason: f.reason.trim() } : {}),
       }),
     );
     if (!r) return;
@@ -110,7 +112,7 @@ export function ShowDetailPage() {
       return;
     }
     if (foreign) body.reason = f.reason.trim();
-    const r = await act.run(() => api.updateShow(id, body));
+    const r = await act.run(() => api.updateShow(id, body).then(() => true));
     if (!r) return;
     edit.close();
     notify.saved("show");
@@ -119,14 +121,19 @@ export function ShowDetailPage() {
   const grantAccess = async (e: FormEvent) => {
     e.preventDefault();
     const login = grant.form.login.trim();
-    const r = await act.run(() => api.grantShow(id, login).then(() => true));
+    const why = foreign ? grant.form.reason.trim() : undefined;
+    const r = await act.run(() =>
+      api.grantShow(id, login, why).then(() => true),
+    );
     if (!r) return;
     grant.close();
     notify.done(`${login} may put work up`);
     await show.reload();
   };
-  const revoke = async (login: string) => {
-    if (await act.run(() => api.revokeShow(id, login).then(() => true))) {
+  const revoke = async (login: string, reason?: string) => {
+    if (
+      await act.run(() => api.revokeShow(id, login, reason).then(() => true))
+    ) {
       notify.done(`${login} revoked`);
       await show.reload();
     }
@@ -287,12 +294,13 @@ export function ShowDetailPage() {
                       label: "Revoke",
                       danger: true,
                       disabled: act.busy,
-                      onClick: () => revoke(g.login!),
+                      onClick: (reason) => revoke(g.login!, reason),
                       confirm: {
                         title: `Revoke ${g.login}?`,
                         message: "What they already put up stays.",
-                        confirmLabel: "Revoke",
+                        confirmLabel: "Revoke access",
                         danger: true,
+                        reason: foreign ? { required: true } : undefined,
                       },
                     },
                   ]}
@@ -321,7 +329,11 @@ export function ShowDetailPage() {
         submitLabel="Submit entry"
         onSubmit={submitEntry}
         busy={act.busy}
-        disabled={!submit.form.target || !submit.form.title.trim()}
+        disabled={
+          !submit.form.target ||
+          !submit.form.title.trim() ||
+          (foreign && !submit.form.reason.trim())
+        }
         error={submit.opened ? (submittable.error ?? act.error) : null}
         size="lg"
       >
@@ -356,6 +368,14 @@ export function ShowDetailPage() {
           Submitting is publication: the name and the link of what you pick
           become visible to everyone who can see this show.
         </Text>
+        {foreign && (
+          <TextInput
+            label="Why are you acting on somebody else's show?"
+            value={submit.form.reason}
+            onChange={(e) => submit.patch({ reason: e.currentTarget.value })}
+            required
+          />
+        )}
       </ResourceDrawer>
 
       <ResourceDrawer
@@ -398,7 +418,9 @@ export function ShowDetailPage() {
         submitLabel="Grant access"
         onSubmit={grantAccess}
         busy={act.busy}
-        disabled={!grant.form.login.trim()}
+        disabled={
+          !grant.form.login.trim() || (foreign && !grant.form.reason.trim())
+        }
         error={grant.opened ? act.error : null}
       >
         <TextInput
@@ -410,6 +432,14 @@ export function ShowDetailPage() {
           spellCheck={false}
           data-autofocus
         />
+        {foreign && (
+          <TextInput
+            label="Why are you acting on somebody else's show?"
+            value={grant.form.reason}
+            onChange={(e) => grant.patch({ reason: e.currentTarget.value })}
+            required
+          />
+        )}
       </ResourceDrawer>
     </>
   );

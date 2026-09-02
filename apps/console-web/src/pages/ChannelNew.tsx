@@ -1,11 +1,4 @@
-import {
-  Anchor,
-  Button,
-  Group,
-  NativeSelect,
-  Paper,
-  Stack,
-} from "@mantine/core";
+import { Anchor, Box, Button, Group, NativeSelect, Stack } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
@@ -102,7 +95,7 @@ export function ChannelNewPage() {
       {!standing.canWrite && !standing.loading && (
         <ReadOnlyBanner detail="Creating a channel reveals its secret, so it takes a seat in this project’s team (platform admins are refused)." />
       )}
-      <Paper withBorder p="lg" maw={640}>
+      <Box maw={640}>
         <form onSubmit={(e) => void submit(e)}>
           <Stack gap="md">
             <NativeSelect
@@ -166,7 +159,7 @@ export function ChannelNewPage() {
             </Group>
           </Stack>
         </form>
-      </Paper>
+      </Box>
     </>
   );
 }

@@ -80,7 +80,14 @@ export function DiscussionPage() {
   const canEdit = disc.mine && t.canWrite;
   const canDelete = disc.mine || t.owner;
   const actions: HeaderAction[] = [];
-  if (canEdit) actions.push({ label: "Edit", onClick: edit.open });
+  if (canEdit)
+    actions.push({
+      label: "Edit",
+      onClick: () => {
+        act.clear();
+        edit.open();
+      },
+    });
   // An owner who is not the author cannot edit, so the danger zone of the
   // edit drawer is out of reach: give them the verb in the overflow menu.
   if (canDelete && !canEdit)

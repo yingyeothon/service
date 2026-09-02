@@ -39,7 +39,7 @@ export function DataTable<T>({
   /** Adds a trailing, unlabeled column holding the row's menu. */
   actions?: (row: T) => ReactNode;
 }) {
-  if (error) return <Notice kind="error">{error}</Notice>;
+  if (error && !rows) return <Notice kind="error">{error}</Notice>;
   if (!rows) {
     if (!loading) return null;
     return (
@@ -58,45 +58,54 @@ export function DataTable<T>({
       </Table.ScrollContainer>
     );
   }
-  if (rows.length === 0) return <EmptyState {...empty} />;
+  if (rows.length === 0)
+    return (
+      <>
+        {error && <Notice kind="error">{error}</Notice>}
+        <EmptyState {...empty} />
+      </>
+    );
   return (
-    <Table.ScrollContainer minWidth={minWidth}>
-      <Table>
-        <Table.Thead>
-          <Table.Tr>
-            {columns.map((c) => (
-              <Table.Th
-                key={c.key}
-                style={{
-                  textAlign: c.align ?? "left",
-                  width: c.width,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {c.label}
-              </Table.Th>
-            ))}
-            {actions && (
-              <Table.Th style={{ width: 48 }}>
-                <span className="mantine-visually-hidden">Actions</span>
-              </Table.Th>
-            )}
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {rows.map((row) => (
-            <Table.Tr key={rowKey(row)}>
-              {render(row)}
+    <>
+      {error && <Notice kind="error">{error}</Notice>}
+      <Table.ScrollContainer minWidth={minWidth}>
+        <Table>
+          <Table.Thead>
+            <Table.Tr>
+              {columns.map((c) => (
+                <Table.Th
+                  key={c.key}
+                  style={{
+                    textAlign: c.align ?? "left",
+                    width: c.width,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {c.label}
+                </Table.Th>
+              ))}
               {actions && (
-                <Table.Td style={{ textAlign: "right" }}>
-                  {actions(row)}
-                </Table.Td>
+                <Table.Th style={{ width: 48 }}>
+                  <span className="mantine-visually-hidden">Actions</span>
+                </Table.Th>
               )}
             </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-    </Table.ScrollContainer>
+          </Table.Thead>
+          <Table.Tbody>
+            {rows.map((row) => (
+              <Table.Tr key={rowKey(row)}>
+                {render(row)}
+                {actions && (
+                  <Table.Td style={{ textAlign: "right" }}>
+                    {actions(row)}
+                  </Table.Td>
+                )}
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+    </>
   );
 }
 

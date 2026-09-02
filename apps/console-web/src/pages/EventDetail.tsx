@@ -112,6 +112,7 @@ export function EventDetailPage() {
       title: "Cancel the event?",
       message: "Participants see it as cancelled; nothing is deleted.",
       confirmLabel: "Cancel event",
+      cancelLabel: "Keep event",
       danger: true,
     });
     if (!ok.ok) return;
@@ -181,11 +182,7 @@ export function EventDetailPage() {
       });
     actions.push({ label: "Edit", onClick: () => setEditing(true) });
     actions.push({
-      label: uploading
-        ? "Uploading…"
-        : e.posterUrl
-          ? "Replace poster"
-          : "Upload poster",
+      label: e.posterUrl ? "Replace poster" : "Upload poster",
       menu: true,
       disabled: uploading,
       onClick: () => fileRef.current?.click(),
@@ -316,8 +313,6 @@ export function EventDetailPage() {
         opened={editing}
         onClose={() => setEditing(false)}
         title={e.status === "draft" ? "Edit draft" : "Edit page"}
-        submitLabel="Save"
-        onSubmit={() => {}}
         size="lg"
         plain
       >
@@ -453,8 +448,7 @@ function CloseVotePanel({
           style={{ minWidth: 260 }}
         />
         <Button
-          variant="outline"
-          color="red"
+          variant="default"
           disabled={act.busy}
           onClick={() => void close()}
         >
