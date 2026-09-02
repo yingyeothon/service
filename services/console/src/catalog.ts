@@ -20,6 +20,7 @@ import {
   ARTIFACT_MAX_BYTES,
   ARTIFACT_UPLOAD_URL_TTL_SEC,
   type ArtifactStore,
+  uploadGrant,
 } from "./artifact-store.js";
 import { buildPreview, planDeletions } from "./catalog-cleanup.js";
 import { requireRole } from "./identity.js";
@@ -37,6 +38,7 @@ import {
   sameName,
   type CrumbResolver,
   type ResourceHistory,
+  asUploadOwner,
 } from "./resources.js";
 import { notifyNewArtifact } from "./slack.js";
 
@@ -298,18 +300,10 @@ export function createCatalogRoutes({
   ): Promise<ResourceAccess<"app"> & { upload: CatalogPendingUploadRow }> {
     const upload = await catalog.findPendingUpload(ctx.params.id!);
     if (!upload) throw new AppError("not_found", "upload not found");
-    try {
-      const a = await projectResource(
-        ctx,
-        { kind: "app", id: upload.appId },
-        { secret: true },
-      );
-      return { ...a, upload };
-    } catch (e) {
-      if (e instanceof AppError && e.code === "not_found")
-        throw new AppError("not_found", "upload not found");
-      throw e;
-    }
+    const a = await asUploadOwner(() =>
+      projectResource(ctx, { kind: "app", id: upload.appId }, { secret: true }),
+    );
+    return { ...a, upload };
   }
 
   /** Names are unique within the team (`docs/decisions.md`). */
@@ -345,6 +339,19 @@ export function createCatalogRoutes({
       },
       nowSec(clock),
     );
+
+  /** Update → audit (field names only) → team history → the row as re-read. */
+  async function applyAppPatch(
+    app: CatalogAppRow,
+    patch: Parameters<CatalogDb["updateApp"]>[1],
+    actorId: string,
+    action: "catalog.app.update" | "catalog.app.settings",
+  ): Promise<CatalogAppRow> {
+    await catalog.updateApp(app.id, patch, nowSec(clock));
+    await audit(actorId, action, app.id, { fields: Object.keys(patch) });
+    await appHistory(app, actorId, "resource.update", Object.keys(patch));
+    return (await catalog.findApp(app.id)) ?? app;
+  }
 
   // ---- views ---------------------------------------------------------------
 
@@ -553,18 +560,9 @@ export function createCatalogRoutes({
         if (ctx.body.path !== undefined) patch.path = ctx.body.path;
         if (ctx.body.description !== undefined)
           patch.description = ctx.body.description;
-        await catalog.updateApp(app.id, patch, nowSec(clock));
-        await audit(id.subject, "catalog.app.update", app.id, {
-          fields: Object.keys(patch),
-        });
-        await appHistory(
-          app,
-          id.subject,
-          "resource.update",
-          Object.keys(patch),
+        return appView(
+          await applyAppPatch(app, patch, id.subject, "catalog.app.update"),
         );
-        const after = (await catalog.findApp(app.id)) ?? app;
-        return appView(after);
       },
     }),
     {
@@ -608,19 +606,10 @@ export function createCatalogRoutes({
           patch.messageTemplate = ctx.body.messageTemplate;
         if (ctx.body.keepRecentVersions !== undefined)
           patch.keepRecentVersions = ctx.body.keepRecentVersions;
-        await catalog.updateApp(app.id, patch, nowSec(clock));
         // Never log the hook URL itself; history carries field names only.
-        await audit(id.subject, "catalog.app.settings", app.id, {
-          fields: Object.keys(patch),
-        });
-        await appHistory(
-          app,
-          id.subject,
-          "resource.update",
-          Object.keys(patch),
+        return settingsResult(
+          await applyAppPatch(app, patch, id.subject, "catalog.app.settings"),
         );
-        const after = (await catalog.findApp(app.id)) ?? app;
-        return settingsResult(after);
       },
     }),
     // ---- artifacts ---------------------------------------------------------
@@ -683,24 +672,14 @@ export function createCatalogRoutes({
           uploadId,
           platform: ctx.body.platform,
         });
-        return {
-          statusCode: 201,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store",
-          },
-          body: JSON.stringify({
-            uploadId,
-            key,
-            url,
-            method: "PUT",
-            headers: {
-              "content-type": "application/octet-stream",
-              "content-length": String(ctx.body.size),
-            },
-            expiresAt: now + ARTIFACT_UPLOAD_URL_TTL_SEC,
-          }),
-        };
+        return uploadGrant({
+          uploadId,
+          key,
+          url,
+          contentType: "application/octet-stream",
+          size: ctx.body.size,
+          expiresAt: now + ARTIFACT_UPLOAD_URL_TTL_SEC,
+        });
       },
     }),
     {

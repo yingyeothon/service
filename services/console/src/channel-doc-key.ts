@@ -11,11 +11,13 @@ import type {
   ConsoleDb,
   StateDb,
 } from "@yyt/console-db";
-import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
+import { defineRoute, type AnyRoute } from "@yyt/http";
 import { channelStatus } from "./channels.js";
-import type { ConsoleIdentity } from "./identity.js";
 import type { TeamAccessHelpers } from "./team-access.js";
-import type { ResourceHistory } from "./resources.js";
+import {
+  createChannelCredentialHelpers,
+  type ResourceHistory,
+} from "./resources.js";
 
 export interface ChannelDocKeyRoutesOptions {
   access: Pick<TeamAccessHelpers, "projectResource">;
@@ -72,37 +74,8 @@ export function createChannelDocKeyRoutes({
   audit,
   history,
 }: ChannelDocKeyRoutesOptions): AnyRoute[] {
-  /**
-   * `auth` only, and only a team member may mint (an admin without a
-   * membership may look, like every other secret-shaped surface). A channel
-   * of another kind is 404 rather than 400, so this cannot be used to probe
-   * which ids exist.
-   */
-  async function authChannel(
-    ctx: Pick<RouteContext, "requireIdentity" | "params">,
-    write: boolean,
-  ): Promise<{ id: ConsoleIdentity; row: ChannelRow }> {
-    const { id, row } = await access.projectResource(
-      ctx,
-      { kind: "channel", id: ctx.params.id ?? "" },
-      write ? { secret: true } : {},
-    );
-    if (row.kind !== "auth")
-      throw new AppError("not_found", "channel not found");
-    return { id, row };
-  }
-  const keyHistory = (row: ChannelRow, actorId: string, what: string) =>
-    history(
-      row.teamId,
-      actorId,
-      "resource.credential",
-      row.id,
-      {
-        resource: { kind: "channel:auth", id: row.id, name: row.name },
-        fields: [what],
-      },
-      nowSec(clock),
-    );
+  const { channel: authChannel, credentialHistory: keyHistory } =
+    createChannelCredentialHelpers({ access, history, clock, kind: "auth" });
 
   /** `secret_json` as an object, tolerating a row whose JSON went bad. */
   function secretOf(row: ChannelRow): Partial<AuthChannelSecret> {

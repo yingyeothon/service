@@ -450,9 +450,10 @@ describe("shows: closing and deletion", () => {
     expect((await post(h, owner, `/shows/${show}/close`, {})).statusCode).toBe(
       204,
     );
-    expect((await post(h, owner, `/shows/${show}/close`, {})).statusCode).toBe(
-      409,
-    );
+    expect(h.db.audits.at(-1)).toMatchObject({ action: "show.close" });
+    const again = await post(h, owner, `/shows/${show}/close`, {});
+    expect(again.statusCode).toBe(409);
+    expect(parse(again).error.message).toBe("show is already closed");
     expect(
       (
         await submit(h, owner, show, {
@@ -467,9 +468,10 @@ describe("shows: closing and deletion", () => {
     expect((await post(h, owner, `/shows/${show}/reopen`, {})).statusCode).toBe(
       204,
     );
-    expect((await post(h, owner, `/shows/${show}/reopen`, {})).statusCode).toBe(
-      409,
-    );
+    expect(h.db.audits.at(-1)).toMatchObject({ action: "show.reopen" });
+    const open = await post(h, owner, `/shows/${show}/reopen`, {});
+    expect(open.statusCode).toBe(409);
+    expect(parse(open).error.message).toBe("show is already open");
   });
 
   it("a closed show answers permission before state, on every route", async () => {

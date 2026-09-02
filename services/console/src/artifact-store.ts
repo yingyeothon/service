@@ -6,8 +6,9 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { AppError } from "@yyt/core";
+import { json, type HttpResult } from "@yyt/http";
+import { isMissingObject, listedObjects, presignPutUrl } from "./s3-util.js";
 
 /** Presigned upload URLs live one hour, matching the pending-upload TTL. */
 export const ARTIFACT_UPLOAD_URL_TTL_SEC = 3600;
@@ -17,6 +18,34 @@ export const ARTIFACT_UPLOAD_URL_TTL_SEC = 3600;
  * Bigger artifacts need an async commit design first.
  */
 export const ARTIFACT_MAX_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * The 201 a presign route answers: what the uploader must send, verbatim, and
+ * when the grant lapses. `no-store` because the URL is a bearer credential.
+ */
+export function uploadGrant(o: {
+  uploadId: string;
+  key: string;
+  url: string;
+  contentType: string;
+  size: number;
+  expiresAt: number;
+}): HttpResult {
+  return json(
+    {
+      uploadId: o.uploadId,
+      key: o.key,
+      url: o.url,
+      method: "PUT",
+      headers: {
+        "content-type": o.contentType,
+        "content-length": String(o.size),
+      },
+      expiresAt: o.expiresAt,
+    },
+    { status: 201, noStore: true },
+  );
+}
 
 export interface ArtifactObject {
   contentLength: number;
@@ -70,21 +99,13 @@ export function createS3ArtifactStore({
 }): ArtifactStore {
   return {
     presignPut: ({ key, contentLength, contentType }) =>
-      getSignedUrl(
-        client,
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: key,
-          ContentType: contentType ?? "application/octet-stream",
-          ContentLength: contentLength,
-        }),
-        {
-          expiresIn: ARTIFACT_UPLOAD_URL_TTL_SEC,
-          // Sign type+length so the uploader cannot change them; commit
-          // re-checks the object anyway.
-          signableHeaders: new Set(["content-type", "content-length"]),
-        },
-      ),
+      presignPutUrl(client, {
+        bucket,
+        key,
+        contentType: contentType ?? "application/octet-stream",
+        contentLength,
+        ttlSec: ARTIFACT_UPLOAD_URL_TTL_SEC,
+      }),
     head: async (key) => {
       try {
         const r = await client.send(
@@ -95,14 +116,7 @@ export function createS3ArtifactStore({
           etag: r.ETag ? r.ETag.replaceAll('"', "") : null,
         };
       } catch (e) {
-        const name = (e as { name?: string }).name;
-        if (
-          name === "NotFound" ||
-          name === "NoSuchKey" ||
-          name === "Forbidden" ||
-          name === "403"
-        )
-          return undefined;
+        if (isMissingObject(e)) return undefined;
         throw new AppError("unavailable", "artifact storage error", {
           cause: e,
         });
@@ -151,14 +165,7 @@ export function createS3ArtifactStore({
             ContinuationToken: token,
           }),
         );
-        for (const o of r.Contents ?? [])
-          if (o.Key)
-            out.push({
-              key: o.Key,
-              lastModifiedSec: Math.floor(
-                (o.LastModified?.getTime() ?? 0) / 1000,
-              ),
-            });
+        out.push(...listedObjects(r.Contents));
         token = r.NextContinuationToken;
         if (!token) break;
       }

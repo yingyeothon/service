@@ -18,6 +18,7 @@ import { z } from "zod";
 import {
   ARTIFACT_UPLOAD_URL_TTL_SEC,
   type ArtifactStore,
+  uploadGrant,
 } from "./artifact-store.js";
 import { artifactUrl } from "./catalog.js";
 import { requireRole } from "./identity.js";
@@ -27,6 +28,7 @@ import {
   BUNDLES_PER_PROJECT,
   type CrumbResolver,
   type ResourceHistory,
+  asUploadOwner,
 } from "./resources.js";
 
 /** Committed asset objects; never touched by the catalog retention sweep. */
@@ -238,18 +240,14 @@ export function createAssetRoutes({
   ): Promise<ResourceAccess<"bundle"> & { upload: AssetUploadRow }> {
     const upload = await assets.findUpload(ctx.params.id!);
     if (!upload) throw new AppError("not_found", "upload not found");
-    try {
-      const a = await projectResource(
+    const a = await asUploadOwner(() =>
+      projectResource(
         ctx,
         { kind: "bundle", id: upload.bundleId },
         { secret: true },
-      );
-      return { ...a, upload };
-    } catch (e) {
-      if (e instanceof AppError && e.code === "not_found")
-        throw new AppError("not_found", "upload not found");
-      throw e;
-    }
+      ),
+    );
+    return { ...a, upload };
   }
 
   /** Names are unique within the team across every kind (`docs/decisions.md`). */
@@ -711,24 +709,14 @@ export function createAssetRoutes({
           version: ctx.body.version,
           path: ctx.body.path,
         });
-        return {
-          statusCode: 201,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store",
-          },
-          body: JSON.stringify({
-            uploadId,
-            key,
-            url,
-            method: "PUT",
-            headers: {
-              "content-type": contentType,
-              "content-length": String(ctx.body.size),
-            },
-            expiresAt: now + ARTIFACT_UPLOAD_URL_TTL_SEC,
-          }),
-        };
+        return uploadGrant({
+          uploadId,
+          key,
+          url,
+          contentType,
+          size: ctx.body.size,
+          expiresAt: now + ARTIFACT_UPLOAD_URL_TTL_SEC,
+        });
       },
     }),
     {

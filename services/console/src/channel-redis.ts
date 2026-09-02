@@ -1,11 +1,13 @@
 import { AppError, nowSec, type Clock, type Logger } from "@yyt/core";
 import type { ChannelRow } from "@yyt/console-db";
-import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
+import { defineRoute, type AnyRoute } from "@yyt/http";
 import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import { channelStatus, gatewayRedis } from "./channels.js";
-import type { ConsoleIdentity } from "./identity.js";
 import type { TeamAccessHelpers } from "./team-access.js";
-import type { ResourceHistory } from "./resources.js";
+import {
+  createChannelCredentialHelpers,
+  type ResourceHistory,
+} from "./resources.js";
 
 /**
  * One issue per member **and per channel** per this many seconds. Every
@@ -97,36 +99,8 @@ export function createChannelRedisRoutes({
     return admin;
   }
 
-  /**
-   * `q` only, and only a team member may mint (an admin without a membership
-   * may look, like every other secret-shaped surface — `docs/decisions.md`
-   * "Console permission model"). A non-`q` channel is 404 rather than 400:
-   * this must not become a way to probe which ids exist under another kind.
-   */
-  async function qChannel(
-    ctx: Pick<RouteContext, "requireIdentity" | "params">,
-    write: boolean,
-  ): Promise<{ id: ConsoleIdentity; row: ChannelRow }> {
-    const { id, row } = await access.projectResource(
-      ctx,
-      { kind: "channel", id: ctx.params.id ?? "" },
-      write ? { secret: true } : {},
-    );
-    if (row.kind !== "q") throw new AppError("not_found", "channel not found");
-    return { id, row };
-  }
-  const credentialHistory = (row: ChannelRow, actorId: string, what: string) =>
-    history(
-      row.teamId,
-      actorId,
-      "resource.credential",
-      row.id,
-      {
-        resource: { kind: "channel:q", id: row.id, name: row.name },
-        fields: [what],
-      },
-      nowSec(clock),
-    );
+  const { channel: qChannel, credentialHistory } =
+    createChannelCredentialHelpers({ access, history, clock, kind: "q" });
 
   return [
     defineRoute({
