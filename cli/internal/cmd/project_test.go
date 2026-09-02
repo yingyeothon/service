@@ -157,6 +157,9 @@ func TestProjectIssues(t *testing.T) {
 	record := func(status int, resp any) func(recorded) (int, any) {
 		return func(r recorded) (int, any) { body, lastPath = r.Body, r.Path; return status, resp }
 	}
+	versions := []any{map[string]any{"id": "ver_1", "name": "1.0.0"}}
+	var versionPosts []string
+	versionLists, versionPostStatus, raceWinner := 0, 201, ""
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /projects/prj_1/issues": func(r recorded) (int, any) {
 			lastPath = r.Path
@@ -166,7 +169,20 @@ func TestProjectIssues(t *testing.T) {
 			return 200, map[string]any{"issues": []any{open}}
 		},
 		"GET /projects/prj_1/versions": func(recorded) (int, any) {
-			return 200, map[string]any{"versions": []any{map[string]any{"id": "ver_1", "name": "1.0.0"}}}
+			versionLists++
+			return 200, map[string]any{"versions": versions}
+		},
+		"POST /projects/prj_1/versions": func(r recorded) (int, any) {
+			name := r.Body["name"].(string)
+			versionPosts = append(versionPosts, name)
+			if versionPostStatus != 201 {
+				if raceWinner != "" {
+					// Someone else created the same name between the list and the POST.
+					versions = append(versions, map[string]any{"id": raceWinner, "name": name})
+				}
+				return versionPostStatus, map[string]any{"error": map[string]any{"code": "conflict", "message": "too many versions (max 500)"}}
+			}
+			return 201, map[string]any{"id": "ver_new", "name": name}
 		},
 		"POST /projects/prj_1/issues":                    record(201, open),
 		"GET /projects/prj_1/issues/1":                   func(recorded) (int, any) { return 200, detail },
@@ -199,6 +215,44 @@ func TestProjectIssues(t *testing.T) {
 		body["title"] != "Crash on start" || body["bodyMd"] != "steps…" || body["versionId"] != "ver_1" {
 		t.Fatalf("%v %v", err, body)
 	}
+	if len(versionPosts) != 0 {
+		t.Fatalf("a known name must not be created: %v", versionPosts)
+	}
+	// A missing name is created, and said so on stderr.
+	if _, stderr, err := run(t, f, "project", "issue", "create", "Regression", "--version", "2.0.0"); err != nil ||
+		body["versionId"] != "ver_new" || stderr != "created version 2.0.0 (ver_new)\n" {
+		t.Fatalf("%v %v %q", err, body, stderr)
+	}
+	if len(versionPosts) != 1 || versionPosts[0] != "2.0.0" {
+		t.Fatalf("posts=%v", versionPosts)
+	}
+	// An id is sent as it is, without a lookup.
+	versionLists = 0
+	if _, _, err := run(t, f, "project", "issue", "update", "1", "--version", "ver_9"); err != nil || body["versionId"] != "ver_9" || versionLists != 0 {
+		t.Fatalf("%v %v lists=%d", err, body, versionLists)
+	}
+	// `+build` is stripped before the lookup and the create, like the commit.
+	if _, stderr, err := run(t, f, "project", "issue", "update", "1", "--version", "1.0.0+7"); err != nil || body["versionId"] != "ver_1" || stderr != "" {
+		t.Fatalf("%v %v %q", err, body, stderr)
+	}
+	if _, stderr, err := run(t, f, "project", "issue", "update", "1", "--version", "2.5.0+9"); err != nil || versionPosts[len(versionPosts)-1] != "2.5.0" || stderr != "created version 2.5.0 (ver_new)\n" {
+		t.Fatalf("%v %v %q", err, versionPosts, stderr)
+	}
+	// A 409 from the create (someone else won the name) resolves by re-listing…
+	versionPostStatus, raceWinner = 409, "ver_race"
+	posts, lists := len(versionPosts), versionLists
+	if _, stderr, err := run(t, f, "project", "issue", "update", "1", "--version", "3.0.0"); err != nil || body["versionId"] != "ver_race" || stderr != "" {
+		t.Fatalf("%v %v %q", err, body, stderr)
+	}
+	if len(versionPosts) != posts+1 || versionLists != lists+2 {
+		t.Fatalf("posts=%d lists=%d", len(versionPosts)-posts, versionLists-lists)
+	}
+	// …and stays an error when the name is still absent (the cap).
+	raceWinner = ""
+	if _, _, err := run(t, f, "project", "issue", "update", "1", "--version", "4.0.0"); err == nil || !strings.Contains(err.Error(), "too many versions") {
+		t.Fatalf("err=%v", err)
+	}
+	versionPostStatus = 201
 	if _, _, err := run(t, f, "project", "issue", "update", "1", "--no-version"); err != nil {
 		t.Fatal(err)
 	}

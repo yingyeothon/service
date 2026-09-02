@@ -66,6 +66,7 @@ yyt project version ls | create <name> [--note md|@file] | bump [patch|minor|maj
 yyt project version link <version> --artifact <art-id> | --bundle <bundle> --asset-version <v>
 yyt project version unlink <version> <link-id>
 yyt project issue ls [--status open|closed] | create <title> [--body …] [--version v] | get|update|close|reopen <n>
+  # issue --version: id or name (`+build` stripped); a missing name is created, `created version …` on stderr
 yyt project issue comment add <n> --body … | update <n> <cid> --body … | rm <n> <cid>
 ```
 
@@ -158,7 +159,7 @@ yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|
 yyt catalog installer
 ```
 
-`deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, resolves the team (and project, if set) context (printing `deploying <app> to team …`), finds the app by name in the team or creates it (project: the context's, else the `--project-path` directory name, created when missing), removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
+`deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, resolves the team (and project, if set) context (printing `deploying <app> to team …`), finds the app by name in the team or creates it (project: the context's, else the `--project-path` directory name, created when missing), removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). The console links each committed artifact to the project version its `version` tag names (`+build` stripped), creating the version when missing: an upload whose tag names a version prints `linked to version <name> (<id>)` on stderr, preceded by `created version …` when the commit made it, and the commit's JSON carries it as `version` (`null` when the tag is not a version name). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
 
 `yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous). Since the team model (2026-08-26) `catalog group|permission`, `--group` and `--debug-only` are gone too — access is team membership — and every deploy script needs a team context: export `YYT_TEAM` (or add `.yyt.json` next to `pubspec.yaml`).
 

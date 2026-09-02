@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -506,5 +507,54 @@ func (c *ctxClient) version(ctx context.Context, projectID, arg string) (string,
 			return v.ID, nil
 		}
 	}
-	return "", &api.Error{Status: 404, Code: "not_found", Message: fmt.Sprintf("version %q not found", arg)}
+	return "", &missingVersion{err: &api.Error{Status: 404, Code: "not_found", Message: fmt.Sprintf("version %q not found", arg)}}
+}
+
+// missingVersion is version's own 404 — the name is not in the project's list —
+// as opposed to a 404 from the list route itself (project gone, no access).
+// It unwraps to the *api.Error so every other caller keeps its exit code.
+type missingVersion struct{ err *api.Error }
+
+func (m *missingVersion) Error() string { return m.err.Error() }
+func (m *missingVersion) Unwrap() error { return m.err }
+
+// versionNameArg is the name an issue's --version creates when missing: the
+// same rule the catalog commit applies to an artifact's version tag, so
+// `--version 1.0.7+8` and a deploy of pubspec 1.0.7+8 meet on `1.0.7`.
+func versionNameArg(arg string) string {
+	name := strings.TrimSpace(arg)
+	if i := strings.Index(name, "+"); i >= 0 {
+		name = name[:i]
+	}
+	return name
+}
+
+// ensureVersion is version for the commands that may create: a name the
+// project does not have is POSTed (`+build` stripped, like the catalog commit
+// does with an artifact's tag), and a 409 — a concurrent creator, or the cap —
+// is resolved by looking the name up once more. created reports a POST that
+// succeeded, so the caller can say so; name is what was looked up or made.
+func (c *ctxClient) ensureVersion(ctx context.Context, projectID, arg string) (id, name string, created bool, err error) {
+	if IsID(arg) {
+		return arg, arg, false, nil
+	}
+	name = versionNameArg(arg)
+	id, err = c.version(ctx, projectID, name)
+	var missing *missingVersion
+	if err == nil || !errors.As(err, &missing) {
+		return id, name, false, err
+	}
+	var v named
+	err = c.cl.Do(ctx, http.MethodPost, "/projects/"+api.PathID(projectID)+"/versions", map[string]any{"name": name}, &v)
+	if err == nil {
+		return v.ID, v.Name, true, nil
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 409 {
+		return "", name, false, err
+	}
+	if id, again := c.version(ctx, projectID, name); again == nil {
+		return id, name, false, nil
+	}
+	return "", name, false, err
 }

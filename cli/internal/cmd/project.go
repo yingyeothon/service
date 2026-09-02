@@ -577,6 +577,7 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 		var body, version string
 		create := &cobra.Command{
 			Use:   "create <title> [--body md|@file] [--version <id|name>]",
+			Long:  "Open an issue. --version takes a version id or name; a name the project does not have yet is created.",
 			Short: "Open an issue",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
@@ -590,9 +591,12 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 				}
 				in := map[string]any{"title": args[0], "bodyMd": md}
 				if version != "" {
-					id, err := cc.version(cmd.Context(), r.ProjectID, version)
+					id, name, created, err := cc.ensureVersion(cmd.Context(), r.ProjectID, version)
 					if err != nil {
 						return err
+					}
+					if created {
+						fmt.Fprintf(a.Err, "created version %s (%s)\n", name, id)
 					}
 					in["versionId"] = id
 				}
@@ -604,7 +608,7 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 			},
 		}
 		create.Flags().StringVar(&body, "body", "", "markdown body, or @file")
-		create.Flags().StringVar(&version, "version", "", "project version to attach (id or name)")
+		create.Flags().StringVar(&version, "version", "", "project version to attach (id or name; a missing name is created)")
 		c.AddCommand(create)
 	}
 	c.AddCommand(&cobra.Command{
@@ -656,9 +660,12 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 					return err
 				}
 				if version != "" {
-					id, err := cc.version(cmd.Context(), r.ProjectID, version)
+					id, name, created, err := cc.ensureVersion(cmd.Context(), r.ProjectID, version)
 					if err != nil {
 						return err
+					}
+					if created {
+						fmt.Fprintf(a.Err, "created version %s (%s)\n", name, id)
 					}
 					patch["versionId"] = id
 				}
@@ -671,7 +678,7 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 		}
 		update.Flags().StringVar(&title, "title", "", "new title")
 		update.Flags().StringVar(&body, "body", "", "markdown body, or @file")
-		update.Flags().StringVar(&version, "version", "", "project version to attach (id or name)")
+		update.Flags().StringVar(&version, "version", "", "project version to attach (id or name; a missing name is created)")
 		update.Flags().BoolVar(&noVersion, "no-version", false, "detach the version")
 		c.AddCommand(update)
 	}
