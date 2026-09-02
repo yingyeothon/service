@@ -90,7 +90,11 @@ function UploadSection({
     if (!r) return;
     setFile(null);
     setVersion("");
-    notify.done(`Artifact ${tags.version} uploaded`);
+    notify.done(
+      r.version
+        ? `Artifact ${tags.version} uploaded · linked to version ${r.version.name}`
+        : `Artifact ${tags.version} uploaded`,
+    );
     await onUploaded();
   };
 

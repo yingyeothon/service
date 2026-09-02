@@ -34,6 +34,7 @@ describe("routes", () => {
       "/teams/:team/projects/:prj/:tab",
       "/teams/:team/projects/:prj/channels/new",
       "/teams/:team/projects/:prj/issues/:n",
+      "/teams/:team/projects/:prj/versions/:ver",
       "/channels/:id",
       "/catalog/apps/:id",
       "/assets/:id",

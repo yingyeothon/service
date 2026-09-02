@@ -122,9 +122,9 @@ describe("ProjectPage", () => {
       .mockResolvedValue([{ ...V1, id: "ver_2", name: "v1.2.4" }, V1]);
     mount("/teams/team_1/projects/prj_1/versions");
     // The help text also says "v1.2.3"; wait for the row itself.
-    await screen.findByRole("button", { name: "v1.2.3" });
+    await screen.findByRole("link", { name: "v1.2.3" });
     // Live link counts sit in the list, no popup needed.
-    const row = screen.getByRole("button", { name: "v1.2.3" }).closest("tr")!;
+    const row = screen.getByRole("link", { name: "v1.2.3" }).closest("tr")!;
     const cells = within(row)
       .getAllByRole("cell")
       .map((c) => c.textContent);
@@ -135,29 +135,14 @@ describe("ProjectPage", () => {
     expect(await screen.findByText("v1.2.4")).toBeInTheDocument();
   });
 
-  it("opens the version drawer with its links", async () => {
-    vi.mocked(mockApi.version).mockResolvedValue({
-      ...V1,
-      links: [
-        {
-          id: "lnk_1",
-          versionId: "ver_1",
-          kind: "asset_version",
-          artifactId: null,
-          bundleId: "ab_1",
-          assetVersion: "v1",
-          createdAt: 0,
-        },
-      ],
-    });
-    vi.mocked(mockApi.projectCatalogApps).mockResolvedValue([]);
-    vi.mocked(mockApi.projectAssetBundles).mockResolvedValue([]);
+  it("links a version row to its page", async () => {
     mount("/teams/team_1/projects/prj_1/versions");
-    await userEvent.click(
-      await screen.findByRole("button", { name: "v1.2.3" }),
-    );
-    expect(await screen.findByText("asset ab_1 @ v1")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add link" })).toBeDisabled();
+    expect(
+      (await screen.findByRole("link", { name: "v1.2.3" })).getAttribute(
+        "href",
+      ),
+    ).toBe("/teams/team_1/projects/prj_1/versions/ver_1");
+    expect(mockApi.version).not.toHaveBeenCalled();
   });
 
   it("lists issues with their version and hides creation from a seatless admin", async () => {
@@ -166,7 +151,9 @@ describe("ProjectPage", () => {
     expect(
       await screen.findByRole("link", { name: "Crash on start" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("v1.2.3")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "v1.2.3" }).getAttribute("href"),
+    ).toBe("/teams/team_1/projects/prj_1/versions/ver_1");
     expect(screen.queryByRole("button", { name: "New issue" })).toBeNull();
     expect(screen.getByText("read-only")).toBeInTheDocument();
   });

@@ -62,5 +62,7 @@ export const projectUrl = (team: string, prj: string, tab?: string) =>
   `${teamUrl(team)}/projects/${encodeURIComponent(prj)}${tab ? `/${tab}` : ""}`;
 export const issueUrl = (team: string, prj: string, n: number) =>
   `${projectUrl(team, prj)}/issues/${n}`;
+export const versionUrl = (team: string, prj: string, ver: string) =>
+  `${projectUrl(team, prj)}/versions/${encodeURIComponent(ver)}`;
 export const discussionUrl = (team: string, id: string) =>
   `${teamUrl(team)}/discussions/${encodeURIComponent(id)}`;

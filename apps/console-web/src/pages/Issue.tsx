@@ -1,6 +1,6 @@
-import { Box, NativeSelect, Text } from "@mantine/core";
+import { Anchor, Box, NativeSelect, Text } from "@mantine/core";
 import { type FormEvent } from "react";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { api } from "../api";
 import { Comments } from "../components/Comments";
 import { Crumbs } from "../components/Crumbs";
@@ -13,7 +13,7 @@ import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
-import { useTeamStanding } from "../lib/team";
+import { useTeamStanding, versionUrl } from "../lib/team";
 import type { Version } from "../types";
 import { DiscussionFields } from "./Team";
 
@@ -151,7 +151,15 @@ export function IssuePage() {
             {i.versionId && (
               <>
                 {" "}
-                · version <strong>{versionName(i.versionId)}</strong>
+                · version{" "}
+                <Anchor
+                  component={Link}
+                  to={versionUrl(teamId, prj, i.versionId)}
+                  size="sm"
+                  fw={600}
+                >
+                  {versionName(i.versionId)}
+                </Anchor>
               </>
             )}
           </>
