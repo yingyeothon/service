@@ -86,18 +86,6 @@ type eventPoster struct {
 
 var posterTypes = map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
-// bodyArg resolves `--body` as literal markdown or `@file`.
-func bodyArg(s string) (string, error) {
-	if strings.HasPrefix(s, "@") {
-		b, err := os.ReadFile(s[1:])
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	}
-	return s, nil
-}
-
 // parseWhen accepts RFC3339 (`2026-09-12T14:00:00+09:00`), a date-time
 // without zone (`2026-09-12T14:00` or `2026-09-12 14:00`, local time) or a
 // bare unix-seconds integer.
@@ -171,9 +159,7 @@ func newEvents(a *App) *cobra.Command {
 		if e.BodyMd != "" {
 			pairs = append(pairs, [2]string{"body", e.BodyMd})
 		}
-		for _, cm := range e.Comments {
-			pairs = append(pairs, [2]string{"comment " + cm.ID, output.Str(cm.CreatedBy) + " " + output.Time(cm.CreatedAt) + ": " + cm.BodyMd})
-		}
+		pairs = append(pairs, commentPairs(e.Comments)...)
 		return p().KV(pairs)
 	}
 	do := func(cmd *cobra.Command, method, path string, in, out any) error {
@@ -232,7 +218,7 @@ func newEvents(a *App) *cobra.Command {
 			Short: "Create a draft (member; max 3 drafts): page + place + candidate dates + vote deadline",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				md, err := bodyArg(body)
+				md, err := readBody(body)
 				if err != nil {
 					return err
 				}
@@ -286,7 +272,7 @@ func newEvents(a *App) *cobra.Command {
 					patch["title"] = title
 				}
 				if cmd.Flags().Changed("body") {
-					md, err := bodyArg(body)
+					md, err := readBody(body)
 					if err != nil {
 						return err
 					}
@@ -501,7 +487,7 @@ func newEvents(a *App) *cobra.Command {
 			Short: "Post a comment",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				md, err := bodyArg(body)
+				md, err := readBody(body)
 				if err != nil {
 					return err
 				}
@@ -526,7 +512,7 @@ func newEvents(a *App) *cobra.Command {
 			Short: "Edit your comment",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				md, err := bodyArg(body)
+				md, err := readBody(body)
 				if err != nil {
 					return err
 				}

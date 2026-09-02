@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/yingyeothon/service/cli/internal/textsafe"
 )
 
 type Printer struct {
@@ -26,14 +28,7 @@ func (p Printer) JSONValue(v any) error {
 // Clean strips terminal control characters (keeping \n and \t) from text
 // that other members wrote — a discussion body or an issue title can carry
 // an escape sequence that retitles the terminal or writes the clipboard.
-func Clean(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
-			return -1
-		}
-		return r
-	}, s)
-}
+func Clean(s string) string { return textsafe.Clean(s) }
 
 // Table prints a header + rows with aligned columns; cells are cleaned.
 func (p Printer) Table(header []string, rows [][]string) error {

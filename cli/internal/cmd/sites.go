@@ -104,7 +104,7 @@ func newSites(a *App) *cobra.Command {
 	return group(c)
 }
 
-type siteResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
+type siteResolver = idResolver
 
 func (c *ctxClient) site(ctx context.Context, arg string, write bool) (string, error) {
 	return c.resource(ctx, "site", "/sites", "sites", arg, write)
@@ -222,80 +222,15 @@ func newSiteCreate(a *App) *cobra.Command {
 }
 
 func newSiteGet(a *App, siteID siteResolver) *cobra.Command {
-	return &cobra.Command{
-		Use:   "get <site>",
-		Short: "Show one site with its URL, base path and recent deploys",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, id, err := siteID(cmd, args[0], false)
-			if err != nil {
-				return err
-			}
-			var s site
-			if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/sites/"+api.PathID(id), nil, &s); err != nil {
-				return err
-			}
-			return a.printSite(s)
-		},
-	}
+	return newResourceGet(siteID, "get <site>", "Show one site with its URL, base path and recent deploys", "/sites", a.printSite)
 }
 
 func newSiteUpdate(a *App, siteID siteResolver) *cobra.Command {
-	var name, description string
-	c := &cobra.Command{
-		Use:   "update <site>",
-		Short: "Rename a site or change its description (empty --description clears it)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			body := map[string]any{}
-			if cmd.Flags().Changed("name") {
-				body["name"] = name
-			}
-			if cmd.Flags().Changed("description") {
-				if description == "" {
-					body["description"] = nil
-				} else {
-					body["description"] = description
-				}
-			}
-			if len(body) == 0 {
-				return fmt.Errorf("nothing to update: pass --name and/or --description")
-			}
-			cc, id, err := siteID(cmd, args[0], true)
-			if err != nil {
-				return err
-			}
-			var s site
-			if err := cc.cl.Do(cmd.Context(), http.MethodPatch, "/sites/"+api.PathID(id), body, &s); err != nil {
-				return err
-			}
-			return a.printSite(s)
-		},
-	}
-	f := c.Flags()
-	f.StringVar(&name, "name", "", "new site name (unique within the team)")
-	f.StringVar(&description, "description", "", "new description (empty clears it)")
-	return c
+	return newResourceUpdate(siteID, "update <site>", "Rename a site or change its description (empty --description clears it)", "new site name (unique within the team)", "/sites", a.printSite)
 }
 
 func newSiteDelete(a *App, siteID siteResolver) *cobra.Command {
-	return &cobra.Command{
-		Use:     "delete <site>",
-		Aliases: []string{"rm", "remove"},
-		Short:   "Delete a site and every file it serves (refused while a deploy is in flight)",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, id, err := siteID(cmd, args[0], true)
-			if err != nil {
-				return err
-			}
-			if err := cc.cl.Do(cmd.Context(), http.MethodDelete, "/sites/"+api.PathID(id), nil, nil); err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "deleted %s\n", args[0])
-			return nil
-		},
-	}
+	return newResourceDelete(a, siteID, "delete <site>", "Delete a site and every file it serves (refused while a deploy is in flight)", "/sites")
 }
 
 func newSiteDeploys(a *App, siteID siteResolver) *cobra.Command {

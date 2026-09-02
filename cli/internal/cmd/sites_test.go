@@ -175,3 +175,25 @@ func TestSiteDeployReportsFailure(t *testing.T) {
 		t.Fatalf("expected a refusal, got %v", err)
 	}
 }
+
+func TestSiteUpdateRequiresAFlagAndClearsDescription(t *testing.T) {
+	var sent map[string]any
+	withProject(t)
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"PATCH /sites/st_1": func(r recorded) (int, any) {
+			sent = r.Body
+			return 200, sampleSite
+		},
+	}, nil, nil, nil))
+	if _, _, err := run(t, f, "site", "update", "st_1"); err == nil {
+		t.Fatal("expected an error when no field is given")
+	}
+	if _, _, err := run(t, f, "site", "update", "st_1", "--description", ""); err != nil {
+		t.Fatal(err)
+	}
+	// An explicit empty --description clears the field rather than omitting it.
+	v, ok := sent["description"]
+	if !ok || v != nil {
+		t.Fatalf("expected description:null, got %#v", sent)
+	}
+}

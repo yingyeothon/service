@@ -181,39 +181,13 @@ func RemoveProfile(name string) error {
 	return SaveFile(f)
 }
 
-// RenameProfile renames a stored profile, moving the default marker with it.
-func RenameProfile(oldName, newName string) error {
-	f, err := LoadFile()
-	if err != nil {
-		return err
-	}
-	pr, ok := f.Profiles[oldName]
-	if !ok {
-		return fmt.Errorf("unknown profile %q (known: %s)", oldName, knownNames(f))
-	}
-	if newName == "" {
-		return fmt.Errorf("profile name must not be empty")
-	}
-	if oldName == newName {
-		return nil
-	}
-	if _, exists := f.Profiles[newName]; exists {
-		return fmt.Errorf("profile %q already exists", newName)
-	}
-	delete(f.Profiles, oldName)
-	f.Profiles[newName] = pr
-	if f.Default == oldName {
-		f.Default = newName
-	}
-	return SaveFile(f)
-}
+// errUnchanged tells withProfile that nothing needs saving.
+var errUnchanged = errors.New("unchanged")
 
-// SetContext stores the default team and/or project of an existing profile.
-// A nil pointer leaves that field alone; an empty string clears it. Setting
-// the team always clears the project: a project pin is only meaningful under
-// the team it was chosen in, and `yyt team use` is the user asking to start
-// over from the team.
-func SetContext(name string, team, project *string) error {
+// withProfile loads the file, hands `mutate` the named profile (the same
+// "unknown profile" error for a missing one) and saves unless it reports
+// errUnchanged. SaveFile stays the single write path.
+func withProfile(name string, mutate func(f *File, pr Profile) error) error {
 	f, err := LoadFile()
 	if err != nil {
 		return err
@@ -222,28 +196,61 @@ func SetContext(name string, team, project *string) error {
 	if !ok {
 		return fmt.Errorf("unknown profile %q (known: %s)", name, knownNames(f))
 	}
-	if team != nil {
-		pr.Team = *team
-		pr.Project = ""
+	if err := mutate(&f, pr); err != nil {
+		if errors.Is(err, errUnchanged) {
+			return nil
+		}
+		return err
 	}
-	if project != nil {
-		pr.Project = *project
-	}
-	f.Profiles[name] = pr
 	return SaveFile(f)
+}
+
+// RenameProfile renames a stored profile, moving the default marker with it.
+func RenameProfile(oldName, newName string) error {
+	return withProfile(oldName, func(f *File, pr Profile) error {
+		if newName == "" {
+			return fmt.Errorf("profile name must not be empty")
+		}
+		if oldName == newName {
+			return errUnchanged
+		}
+		if _, exists := f.Profiles[newName]; exists {
+			return fmt.Errorf("profile %q already exists", newName)
+		}
+		delete(f.Profiles, oldName)
+		f.Profiles[newName] = pr
+		if f.Default == oldName {
+			f.Default = newName
+		}
+		return nil
+	})
+}
+
+// SetContext stores the default team and/or project of an existing profile.
+// A nil pointer leaves that field alone; an empty string clears it. Setting
+// the team always clears the project: a project pin is only meaningful under
+// the team it was chosen in, and `yyt team use` is the user asking to start
+// over from the team.
+func SetContext(name string, team, project *string) error {
+	return withProfile(name, func(f *File, pr Profile) error {
+		if team != nil {
+			pr.Team = *team
+			pr.Project = ""
+		}
+		if project != nil {
+			pr.Project = *project
+		}
+		f.Profiles[name] = pr
+		return nil
+	})
 }
 
 // SetDefault marks an existing profile as the default.
 func SetDefault(name string) error {
-	f, err := LoadFile()
-	if err != nil {
-		return err
-	}
-	if _, ok := f.Profiles[name]; !ok {
-		return fmt.Errorf("unknown profile %q (known: %s)", name, knownNames(f))
-	}
-	f.Default = name
-	return SaveFile(f)
+	return withProfile(name, func(f *File, _ Profile) error {
+		f.Default = name
+		return nil
+	})
 }
 
 func knownNames(f File) string {

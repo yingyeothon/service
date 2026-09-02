@@ -786,3 +786,39 @@ func TestSelfVersionAndUpdateCheck(t *testing.T) {
 		t.Fatal("self commands must not call the console API")
 	}
 }
+
+func TestChannelActionsSecretHandling(t *testing.T) {
+	rotated := map[string]any{}
+	for k, v := range sampleChannel {
+		rotated[k] = v
+	}
+	rotated["secret"] = "n3w"
+	f := newFake(t, map[string]func(recorded) (int, any){
+		"POST /channels/auth_0123/extend":        func(recorded) (int, any) { return 200, rotated },
+		"POST /channels/auth_0123/rotate-secret": func(recorded) (int, any) { return 200, rotated },
+	})
+	out, errs, err := run(t, f, "channels", "extend", "auth_0123")
+	if err != nil || strings.Contains(out, "n3w") || errs != "" {
+		t.Fatalf("extend must not print the secret: %v out=%q errs=%q", err, out, errs)
+	}
+	out, errs, err = run(t, f, "channels", "rotate-secret", "auth_0123")
+	if err != nil || !strings.Contains(out, "secret:") || !strings.Contains(errs, "not shown again") {
+		t.Fatalf("%v out=%q errs=%q", err, out, errs)
+	}
+}
+
+func TestNotLoggedInContextCommand(t *testing.T) {
+	f := newFake(t, nil)
+	t.Setenv("YYT_CONFIG", filepath.Join(t.TempDir(), "c.json"))
+	t.Setenv("YYT_TOKEN", "")
+	t.Setenv("YYT_API", f.srv.URL)
+	var out strings.Builder
+	root := NewRoot(&App{Out: &out, Err: &out})
+	root.SetArgs([]string{"channels", "list"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "not logged in") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(f.reqs) != 0 {
+		t.Fatal("must not call the API without a token")
+	}
+}

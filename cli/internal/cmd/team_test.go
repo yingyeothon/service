@@ -255,3 +255,40 @@ func TestTeamHistoryPaging(t *testing.T) {
 	}
 	golden(t, "team_history", out)
 }
+
+func TestCommentBodyFileAndRequired(t *testing.T) {
+	var body map[string]any
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /teams/team_1/discussions/dsc_1/comments": func(r recorded) (int, any) {
+			body = r.Body
+			return 201, map[string]any{"id": "cmt_2", "bodyMd": r.Body["bodyMd"], "createdBy": "octo", "createdAt": 1, "updatedAt": 1, "mine": true}
+		},
+		"PATCH /projects/prj_1/issues/1/comments/cmt_2": func(r recorded) (int, any) {
+			body = r.Body
+			return 200, map[string]any{"id": "cmt_2", "bodyMd": r.Body["bodyMd"], "createdBy": "octo", "createdAt": 1, "updatedAt": 2, "mine": true}
+		},
+	}, nil, nil, nil))
+	t.Setenv("YYT_TEAM", "dooroo")
+	withProject(t)
+	md := filepath.Join(t.TempDir(), "c.md")
+	_ = os.WriteFile(md, []byte("from file\n"), 0o644)
+	if _, _, err := run(t, f, "team", "discussion", "comment", "add", "dsc_1", "--body", "@"+md); err != nil || body["bodyMd"] != "from file\n" {
+		t.Fatalf("%v %v", err, body)
+	}
+	if _, _, err := run(t, f, "project", "issue", "comment", "update", "1", "cmt_2", "--body", "@"+md); err != nil || body["bodyMd"] != "from file\n" {
+		t.Fatalf("%v %v", err, body)
+	}
+	n := len(f.reqs)
+	for _, args := range [][]string{
+		{"team", "discussion", "comment", "add", "dsc_1"},
+		{"project", "issue", "comment", "update", "1", "cmt_2"},
+		{"team", "discussion", "comment", "add", "dsc_1", "--body", "@" + filepath.Join(t.TempDir(), "missing.md")},
+	} {
+		if _, _, err := run(t, f, args...); err == nil {
+			t.Errorf("expected error for %v", args)
+		}
+	}
+	if len(f.reqs) != n {
+		t.Fatal("validation must not hit the API")
+	}
+}

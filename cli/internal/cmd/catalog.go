@@ -108,9 +108,11 @@ func putPresigned(ctx context.Context, cl *api.Client, grant uploadGrant, body i
 	return nil
 }
 
-// uploadArtifact runs presign → PUT file → commit. appID is the app's id.
-func uploadArtifact(ctx context.Context, cl *api.Client, appID, filePath, platform string, tags map[string]string) (*catalogArtifact, error) {
-	f, err := os.Open(filePath)
+// uploadFile runs presign → PUT file → commit for one local file. `presign`
+// is the route that grants the URL, `body` its request given the file size,
+// and `commitPrefix` the route the upload id is committed under.
+func uploadFile[T any](ctx context.Context, cl *api.Client, localPath, presign string, body func(size int64) map[string]any, commitPrefix string) (*T, error) {
+	f, err := os.Open(localPath)
 	if err != nil {
 		return nil, err
 	}
@@ -120,23 +122,29 @@ func uploadArtifact(ctx context.Context, cl *api.Client, appID, filePath, platfo
 		return nil, err
 	}
 	var grant uploadGrant
-	err = cl.Do(ctx, http.MethodPost, "/catalog/apps/"+api.PathID(appID)+"/artifacts", map[string]any{
-		"platform": platform,
-		"filename": filepath.Base(filePath),
-		"size":     st.Size(),
-		"tags":     tags,
-	}, &grant)
-	if err != nil {
+	if err := cl.Do(ctx, http.MethodPost, presign, body(st.Size()), &grant); err != nil {
 		return nil, err
 	}
 	if err := putPresigned(ctx, cl, grant, f, st.Size()); err != nil {
 		return nil, err
 	}
-	var artifact catalogArtifact
-	if err := cl.Do(ctx, http.MethodPost, "/catalog/uploads/"+api.PathID(grant.UploadID)+"/commit", map[string]any{}, &artifact); err != nil {
+	var out T
+	if err := cl.Do(ctx, http.MethodPost, commitPrefix+api.PathID(grant.UploadID)+"/commit", map[string]any{}, &out); err != nil {
 		return nil, err
 	}
-	return &artifact, nil
+	return &out, nil
+}
+
+// uploadArtifact runs presign → PUT file → commit. appID is the app's id.
+func uploadArtifact(ctx context.Context, cl *api.Client, appID, filePath, platform string, tags map[string]string) (*catalogArtifact, error) {
+	return uploadFile[catalogArtifact](ctx, cl, filePath, "/catalog/apps/"+api.PathID(appID)+"/artifacts", func(size int64) map[string]any {
+		return map[string]any{
+			"platform": platform,
+			"filename": filepath.Base(filePath),
+			"size":     size,
+			"tags":     tags,
+		}
+	}, "/catalog/uploads/")
 }
 
 func newCatalog(a *App) *cobra.Command {
@@ -560,8 +568,7 @@ func newCatalog(a *App) *cobra.Command {
 	return group(c)
 }
 
-// appResolver turns <app> into an id; write=true means the command mutates.
-type appResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
+type appResolver = idResolver
 
 func valOr[T any](p *T, def T) T {
 	if p == nil {

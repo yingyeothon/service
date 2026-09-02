@@ -585,38 +585,27 @@ func newChannels(a *App) *cobra.Command {
 	pf.bind(update)
 	c.AddCommand(update)
 
-	c.AddCommand(&cobra.Command{
-		Use:   "extend <channel>",
-		Short: "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, id, err := channelID(cmd, args[0], true)
-			if err != nil {
-				return err
-			}
-			var ch channel
-			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(id)+"/extend", nil, &ch); err != nil {
-				return err
-			}
-			return a.showChannel(ch, false)
-		},
-	})
-	c.AddCommand(&cobra.Command{
-		Use:   "rotate-secret <channel>",
-		Short: "Replace the channel secret/apiKey (owner only); the new value is printed once",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, id, err := channelID(cmd, args[0], true)
-			if err != nil {
-				return err
-			}
-			var ch channel
-			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(id)+"/rotate-secret", nil, &ch); err != nil {
-				return err
-			}
-			return a.showChannel(ch, true)
-		},
-	})
+	// postAction is a bodiless POST on the channel that answers with the channel.
+	postAction := func(use, short, suffix string, withSecret bool) *cobra.Command {
+		return &cobra.Command{
+			Use:   use,
+			Short: short,
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				cc, id, err := channelID(cmd, args[0], true)
+				if err != nil {
+					return err
+				}
+				var ch channel
+				if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(id)+suffix, nil, &ch); err != nil {
+					return err
+				}
+				return a.showChannel(ch, withSecret)
+			},
+		}
+	}
+	c.AddCommand(postAction("extend <channel>", "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel", "/extend", false))
+	c.AddCommand(postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (owner only); the new value is printed once", "/rotate-secret", true))
 	c.AddCommand(a.channelRedisUserCmd(channelID))
 	c.AddCommand(a.channelDocKeyCmd(channelID))
 	c.AddCommand(&cobra.Command{
@@ -727,79 +716,117 @@ func mergeCapabilities(current, incoming any) (map[string]any, bool) {
 	return out, true
 }
 
-// channelRedisUserCmd manages the scoped Redis account a `q` channel's game
-// Lambda logs in with. The account is not a channel secret — a `q` channel has
-// none — so this lives beside `rotate-secret` rather than inside it.
-// channelResolver turns <channel> into an id; write=true means the command mutates.
-type channelResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
+type channelResolver = idResolver
 
-func (a *App) channelRedisUserCmd(channelID channelResolver) *cobra.Command {
-	c := &cobra.Command{
-		Use:     "redis-user",
-		Aliases: []string{"redis"},
-		Short:   "Scoped Redis account for a `q` channel's game Lambda (owner issues; admins may read)",
-	}
-	call := func(cmd *cobra.Command, method, arg string) (redisUser, error) {
+// credentialSpec is what tells the two per-channel credential subtrees apart:
+// the route segment, the nouns in the messages, and how the value is shown.
+type credentialSpec[T revocable] struct {
+	use, short  string
+	aliases     []string
+	segment     string
+	noun        string
+	showShort   string
+	issueShort  string
+	revokeShort string
+	stored      string
+	show        func(T) error
+	// afterIssue runs between the "store it now" line and the block, when set.
+	afterIssue func(T)
+}
+
+type revocable interface{ revoked() *bool }
+
+func (u redisUser) revoked() *bool { return u.Revoked }
+func (k docKey) revoked() *bool    { return k.Revoked }
+
+// credentialCmd builds `show|issue|revoke <channel>` for one credential kind.
+// Only `issue`/`revoke` resolve with write=true; `show` is a read an admin may do.
+func credentialCmd[T revocable](a *App, channelID channelResolver, sp credentialSpec[T]) *cobra.Command {
+	c := &cobra.Command{Use: sp.use, Aliases: sp.aliases, Short: sp.short}
+	call := func(cmd *cobra.Command, method, arg string) (T, error) {
+		var v T
 		cc, id, err := channelID(cmd, arg, method != http.MethodGet)
 		if err != nil {
-			return redisUser{}, err
+			return v, err
 		}
-		var u redisUser
-		err = cc.cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/redis-user", nil, &u)
-		return u, err
+		err = cc.cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/"+sp.segment, nil, &v)
+		return v, err
 	}
 	c.AddCommand(&cobra.Command{
 		Use:   "show <channel>",
-		Short: "Show the connection block and whether an account has been issued",
+		Short: sp.showShort,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			u, err := call(cmd, http.MethodGet, args[0])
+			v, err := call(cmd, http.MethodGet, args[0])
 			if err != nil {
 				return err
 			}
-			return a.showRedisUser(u)
+			return sp.show(v)
 		},
 	})
 	c.AddCommand(&cobra.Command{
 		Use:     "issue <channel>",
 		Aliases: []string{"rotate"},
-		Short:   "Create or replace the account; the password is printed once",
+		Short:   sp.issueShort,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			u, err := call(cmd, http.MethodPost, args[0])
+			v, err := call(cmd, http.MethodPost, args[0])
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(a.Err, "store the password now; it is not shown again")
-			if u.Persisted != nil && !*u.Persisted {
-				// The account works right now but is not in Redis' ACL file.
-				fmt.Fprintln(a.Err, "WARNING: not persisted — this account disappears if Redis restarts; issue again once the host is healthy")
+			fmt.Fprintln(a.Err, sp.stored)
+			if sp.afterIssue != nil {
+				sp.afterIssue(v)
 			}
-			return a.showRedisUser(u)
+			return sp.show(v)
 		},
 	})
 	c.AddCommand(&cobra.Command{
 		Use:     "revoke <channel>",
 		Aliases: []string{"rm", "delete"},
-		Short:   "Delete the account; the game Lambda stops being able to log in",
+		Short:   sp.revokeShort,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			u, err := call(cmd, http.MethodDelete, args[0])
+			v, err := call(cmd, http.MethodDelete, args[0])
 			if err != nil {
 				return err
 			}
 			if a.jsonOut {
-				return a.printer().JSONValue(u)
+				return a.printer().JSONValue(v)
 			}
-			if u.Revoked != nil && *u.Revoked {
-				fmt.Fprintf(a.Out, "revoked the redis account of %s\n", args[0])
+			if r := v.revoked(); r != nil && *r {
+				fmt.Fprintf(a.Out, "revoked the %s of %s\n", sp.noun, args[0])
 			} else {
-				fmt.Fprintf(a.Out, "%s had no redis account\n", args[0])
+				fmt.Fprintf(a.Out, "%s had no %s\n", args[0], sp.noun)
 			}
 			return nil
 		},
 	})
 	return c
+}
+
+// channelRedisUserCmd manages the scoped Redis account a `q` channel's game
+// Lambda logs in with. The account is not a channel secret — a `q` channel has
+// none — so this lives beside `rotate-secret` rather than inside it.
+func (a *App) channelRedisUserCmd(channelID channelResolver) *cobra.Command {
+	return credentialCmd(a, channelID, credentialSpec[redisUser]{
+		use:         "redis-user",
+		aliases:     []string{"redis"},
+		short:       "Scoped Redis account for a `q` channel's game Lambda (owner issues; admins may read)",
+		segment:     "redis-user",
+		noun:        "redis account",
+		showShort:   "Show the connection block and whether an account has been issued",
+		issueShort:  "Create or replace the account; the password is printed once",
+		revokeShort: "Delete the account; the game Lambda stops being able to log in",
+		stored:      "store the password now; it is not shown again",
+		show:        a.showRedisUser,
+		afterIssue: func(u redisUser) {
+			if u.Persisted != nil && !*u.Persisted {
+				// The account works right now but is not in Redis' ACL file.
+				fmt.Fprintln(a.Err, "WARNING: not persisted — this account disappears if Redis restarts; issue again once the host is healthy")
+			}
+		},
+	})
 }
 
 func (a *App) showRedisUser(u redisUser) error {
@@ -838,68 +865,18 @@ func (a *App) showRedisUser(u redisUser) error {
 // `rotate-secret` because rotating the signing key must not invalidate this
 // one, and the reverse.
 func (a *App) channelDocKeyCmd(channelID channelResolver) *cobra.Command {
-	c := &cobra.Command{
-		Use:     "doc-key",
-		Aliases: []string{"doc"},
-		Short:   "Document API key for an `auth` channel (owner issues; admins may read)",
-	}
-	call := func(cmd *cobra.Command, method, arg string) (docKey, error) {
-		cc, id, err := channelID(cmd, arg, method != http.MethodGet)
-		if err != nil {
-			return docKey{}, err
-		}
-		var k docKey
-		err = cc.cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/doc-key", nil, &k)
-		return k, err
-	}
-	c.AddCommand(&cobra.Command{
-		Use:   "show <channel>",
-		Short: "Show the document endpoint and whether a key has been issued",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			k, err := call(cmd, http.MethodGet, args[0])
-			if err != nil {
-				return err
-			}
-			return a.showDocKey(k)
-		},
+	return credentialCmd(a, channelID, credentialSpec[docKey]{
+		use:         "doc-key",
+		aliases:     []string{"doc"},
+		short:       "Document API key for an `auth` channel (owner issues; admins may read)",
+		segment:     "doc-key",
+		noun:        "document key",
+		showShort:   "Show the document endpoint and whether a key has been issued",
+		issueShort:  "Create or replace the key; it is printed once",
+		revokeShort: "Delete the key; documents are kept",
+		stored:      "store the key now; it is not shown again",
+		show:        a.showDocKey,
 	})
-	c.AddCommand(&cobra.Command{
-		Use:     "issue <channel>",
-		Aliases: []string{"rotate"},
-		Short:   "Create or replace the key; it is printed once",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			k, err := call(cmd, http.MethodPost, args[0])
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(a.Err, "store the key now; it is not shown again")
-			return a.showDocKey(k)
-		},
-	})
-	c.AddCommand(&cobra.Command{
-		Use:     "revoke <channel>",
-		Aliases: []string{"rm", "delete"},
-		Short:   "Delete the key; documents are kept",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			k, err := call(cmd, http.MethodDelete, args[0])
-			if err != nil {
-				return err
-			}
-			if a.jsonOut {
-				return a.printer().JSONValue(k)
-			}
-			if k.Revoked != nil && *k.Revoked {
-				fmt.Fprintf(a.Out, "revoked the document key of %s\n", args[0])
-			} else {
-				fmt.Fprintf(a.Out, "%s had no document key\n", args[0])
-			}
-			return nil
-		},
-	})
-	return c
 }
 
 func (a *App) showDocKey(k docKey) error {

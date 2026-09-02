@@ -215,14 +215,15 @@ type ctxClient struct {
 	spec ctxSpec
 }
 
+// idResolver turns a <channel>/<app>/<bundle>/<site> argument into an id;
+// write=true means the command mutates, which is what separates
+// "auto-select the sole project" from "refuse with the hint".
+type idResolver func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error)
+
 // ctxClient resolves the credential and the context spec together; the two
 // are separate concerns but every context-aware command needs both.
 func (a *App) ctxClient(cmd *cobra.Command) (*ctxClient, error) {
-	cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
-	if err != nil {
-		return nil, err
-	}
-	cl, err := a.clientFor(cfg)
+	cfg, cl, err := a.resolveClient()
 	if err != nil {
 		return nil, err
 	}
