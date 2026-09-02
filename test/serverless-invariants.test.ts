@@ -12,7 +12,7 @@ const root = join(import.meta.dirname, "..");
 
 function stackFiles(): string[] {
   const out: string[] = [];
-  for (const dir of ["services", "examples"]) {
+  for (const dir of ["services"]) {
     for (const name of readdirSync(join(root, dir))) {
       const file = join(root, dir, name, "serverless.yml");
       try {
@@ -30,8 +30,6 @@ describe("serverless.yml invariants", () => {
 
   it("finds every stack", () => {
     expect(files.map((f) => f.slice(root.length + 1))).toEqual([
-      "examples/sample-dungeon/serverless.yml",
-      "examples/sample-morpg/serverless.yml",
       "services/auth/serverless.yml",
       "services/console/serverless.yml",
       "services/match/serverless.yml",

@@ -16,8 +16,6 @@ export default defineConfig(
     "**/postcss.config.cjs",
     "cli/**",
     "layers/**",
-    // Standalone pnpm root with its own eslint config (examples/sample-dungeon).
-    "examples/**",
     "local/**",
   ]),
   js.configs.recommended,

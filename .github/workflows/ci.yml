@@ -25,28 +25,6 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm coverage
-  # The examples are standalone pnpm projects (own lockfile, not in the root
-  # workspace), so the root gates never see them.
-  examples:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        example: [sample-morpg, sample-dungeon]
-    defaults:
-      run:
-        working-directory: examples/${{ matrix.example }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - if: matrix.example == 'sample-morpg'
-        run: pnpm web:build
   go:
     runs-on: ubuntu-latest
     steps:

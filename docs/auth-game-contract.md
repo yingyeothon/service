@@ -78,7 +78,7 @@ export const handler = (event) =>
 
 ## Reusing the auth service token (verified 2026-08-23)
 
-The auth service's JWT (`iss = yyt-auth/{channelId}`, `aud = channel.audience`, `sub = userId`) passes `createJwtRequestAuthorizer` unchanged, so the lobby step "sign JWT" disappears: the match callback returns `{wsUrl, gameId}` without a `token`, and the client connects to the game with the JWT it already used for the match socket. The game stack's `JWT_SECRET_KEY`/`JWT_ISSUER`/`JWT_AUDIENCE` are the auth channel's secret, `yyt-auth/{channelId}` and audience. `exp` is then the channel TTL rather than "match + 60 min" — longer, never shorter, which is the only direction the contract cares about. Reference implementation: `examples/sample-dungeon`.
+The auth service's JWT (`iss = yyt-auth/{channelId}`, `aud = channel.audience`, `sub = userId`) passes `createJwtRequestAuthorizer` unchanged, so the lobby step "sign JWT" disappears: the match callback returns `{wsUrl, gameId}` without a `token`, and the client connects to the game with the JWT it already used for the match socket. The game stack's `JWT_SECRET_KEY`/`JWT_ISSUER`/`JWT_AUDIENCE` are the auth channel's secret, `yyt-auth/{channelId}` and audience. `exp` is then the channel TTL rather than "match + 60 min" — longer, never shorter, which is the only direction the contract cares about. Reference implementation: `sample-dungeon` in [`yingyeothon/examples`](https://github.com/yingyeothon/examples).
 
 ## Handshake
 
@@ -139,11 +139,11 @@ The self-hosted WebSocket gateway (`docs/realtime-gateway-design.md`, `docs/deci
 ## Checklist
 
 - [x] lobby: channel issue API — console `channels` (auth channel = issuer/secret/audience)
-- [x] lobby: token on party confirm — the auth token is reused; `sub` and `members[].memberId` are the same `userId` (`examples/sample-dungeon/src/lobby.ts`)
+- [x] lobby: token on party confirm — the auth token is reused; `sub` and `members[].memberId` are the same `userId` (`sample-dungeon/src/lobby.ts` in [`yingyeothon/examples`](https://github.com/yingyeothon/examples))
 - [x] lobby: `exp` ≥ confirm + 60 min (channel `tokenTtlSec`)
 - [x] game: `authorizer.ts` with `createJwtRequestAuthorizer`, pinned `iss`/`aud`
 - [x] game: REQUEST authorizer on `$connect`, identity source `route.request.header.Sec-WebSocket-Protocol`; `resultTtlInSeconds: 0` declared (API Gateway v2 ignores the TTL for WebSocket authorizers — they only run on `$connect` anyway)
 - [x] game: `$connect` handler with `resolveMemberId` + `selectSubprotocol`
-- [x] client: `new WebSocket(wsUrl + "?x-game-id=" + gameId, ["bearer", token])`; reuse the token on reconnect (`scripts/smoke/dungeon.mjs`)
+- [x] client: `new WebSocket(wsUrl + "?x-game-id=" + gameId, ["bearer", token])`; reuse the token on reconnect (the organizers' `dungeon` smoke, gitignored `local/smoke/` in `yingyeothon/examples`)
 - [x] access logs do not include `$context.authorizer.*` (sample stack has no access logging)
 - [x] secrets reach participants through the console's one-time display (`secret`/`apiKey` on create and rotate)
