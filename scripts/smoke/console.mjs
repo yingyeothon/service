@@ -6,6 +6,7 @@
 // GATEWAY_TOKEN enables the GET /gw/channels checks; it comes through the environment
 // rather than argv because argv is visible in `ps` (docs/secrets.md).
 import { ensureTeam } from "./_team.mjs";
+import { createChecker, debugLogin, jsonClient } from "./_lib.mjs";
 
 const [base, debugKey, authBase] = process.argv.slice(2);
 const gatewayToken = process.env.GATEWAY_TOKEN ?? "";
@@ -15,39 +16,9 @@ if (!base || !debugKey) {
   );
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const call = async (path, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    redirect: "manual",
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* not JSON */
-  }
-  return { status: res.status, body: json, text, headers: res.headers };
-};
-const login = async (login, role, githubId) => {
-  const r = await call("/debug/login", {
-    method: "POST",
-    headers: { "x-debug-key": debugKey },
-    body: { login, githubId, role },
-  });
-  check(`debug login ${login}/${role}`, r.status === 200, String(r.status));
-  return { cookie: r.body?.cookie, id: r.body?.memberId };
-};
+const { check, finish } = createChecker();
+const call = jsonClient({ base, redirect: "manual" });
+const login = debugLogin(call, base, debugKey, check);
 
 check("unauthenticated /me", (await call("/me")).status === 401);
 check(
@@ -68,8 +39,7 @@ const pending = await login("smoke-pending", "pending", -1003);
 const as = (u, extra = {}) => ({ cookie: u.cookie, origin: base, ...extra });
 
 // Every channel lives in a project: the member's own `smoke-console` team.
-const req = (url, o) => call(url.replace(base, ""), o);
-const team = await ensureTeam(req, base, as(member), "smoke-console", check);
+const team = await ensureTeam(call, base, as(member), "smoke-console", check);
 const me = await call("/me", { headers: as(member) });
 check(
   "/me via session",
@@ -495,7 +465,7 @@ check(
   ).status === 404,
 );
 const theirs = await ensureTeam(
-  req,
+  call,
   base,
   as(pending),
   "smoke-console-2",
@@ -585,5 +555,4 @@ check(
 // rows stay until the sweep; reruns reset the pending member's role through
 // the debug hook (it re-applies `role`).
 
-console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");
-process.exit(failed ? 1 : 0);
+finish("\nall checks passed", (n) => `\n${n} check(s) failed`);

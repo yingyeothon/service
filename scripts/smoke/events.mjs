@@ -5,53 +5,29 @@
 // Usage: scripts/smoke/events.mjs <baseUrl> <debugKey>
 // Needs the console stack deployed with `--param debugHooks=1`. Never prints tokens.
 // Time-driven transitions are exercised with a vote deadline a few seconds out.
+import {
+  asUser,
+  createChecker,
+  debugLogin,
+  jsonClient,
+  sleep,
+} from "./_lib.mjs";
+
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: events.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const call = async (path, { method = "GET", headers = {}, body } = {}) => {
-  // Every recorded write takes a 500 ms slot per member; space them out so
-  // the smoke measures the contract, not the rate limit.
-  if (method !== "GET") await sleep(550);
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    redirect: "manual",
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* not JSON */
-  }
-  return { status: res.status, body: json, text, headers: res.headers };
-};
-const login = async (login, role, githubId) => {
-  const r = await call("/debug/login", {
-    method: "POST",
-    headers: { "x-debug-key": debugKey },
-    body: { login, githubId, role },
-  });
-  check(`debug login ${login}/${role}`, r.status === 200, String(r.status));
-  return { cookie: r.body?.cookie, id: r.body?.memberId };
-};
+const { check, finish } = createChecker();
+// Every recorded write takes a 500 ms slot per member; space them out so
+// the smoke measures the contract, not the rate limit.
+const call = jsonClient({ base, writeSlotMs: 550, redirect: "manual" });
+const login = debugLogin(call, base, debugKey, check);
 const admin = await login("smoke-admin", "admin", -1001);
 const owner = await login("smoke-member", "member", -1002);
 const other = await login("smoke-member2", "member", -1004);
 const pending = await login("smoke-pending", "pending", -1003);
-const as = (u) => ({ cookie: u.cookie, origin: base });
+const as = asUser(base);
 const now = Math.floor(Date.now() / 1000);
 const DAY = 86400;
 // A day far enough out that no real event should hold it; the run is seeded
@@ -622,5 +598,4 @@ try {
   }
 }
 
-console.log(failed === 0 ? "\nALL OK" : `\n${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+finish("\nALL OK", (n) => `\n${n} FAILED`);

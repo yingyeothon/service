@@ -7,47 +7,23 @@
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens.
 import { deflateRawSync, crc32 } from "node:zlib";
 import { ensureTeam } from "./_team.mjs";
+import {
+  asUser,
+  createChecker,
+  debugLogin,
+  jsonClient,
+  sleep,
+} from "./_lib.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: sites.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const call = async (path, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    redirect: "manual",
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* not JSON */
-  }
-  return { status: res.status, body: json, text, headers: res.headers };
-};
-const login = async (login, role, githubId) => {
-  const r = await call("/debug/login", {
-    method: "POST",
-    headers: { "x-debug-key": debugKey },
-    body: { login, githubId, role },
-  });
-  check(`debug login ${login}/${role}`, r.status === 200, String(r.status));
-  return { cookie: r.body?.cookie, id: r.body?.memberId };
-};
-const as = (u) => ({ cookie: u.cookie, origin: base });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { check, finish } = createChecker();
+const call = jsonClient({ base, redirect: "manual" });
+const login = debugLogin(call, base, debugKey, check);
+const as = asUser(base);
 
 /** Minimal zip writer (stored + deflate, central directory), like the console's test fixture. */
 function makeZip(entries) {
@@ -97,8 +73,7 @@ function makeZip(entries) {
 const owner = await login("smoke-site-owner", "member", -2301);
 const other = await login("smoke-site-other", "member", -2202);
 const admin = await login("smoke-site-admin", "admin", -2203);
-const req = (url, o) => call(url.replace(base, ""), o);
-const team = await ensureTeam(req, base, as(owner), "smoke-site", check);
+const team = await ensureTeam(call, base, as(owner), "smoke-site", check);
 
 const suffix = Date.now().toString(36);
 const siteName = `smoke-site-${suffix}`;
@@ -355,5 +330,4 @@ try {
   await cleanup();
 }
 
-console.log(failed === 0 ? "ALL OK" : `${failed} FAILURES`);
-process.exit(failed === 0 ? 0 : 1);
+finish("ALL OK", (n) => `${n} FAILURES`);

@@ -27,39 +27,28 @@
 // auth and console must be deployed on dev with `--param debugHooks=1`. Never prints tokens.
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import http from "node:http";
-import https from "node:https";
 import {
   buildGatewayUrl,
   createGatewayGameClient,
   createGatewayLobbyClient,
 } from "@yingyeothon/gamebase-client";
 import { ensureTeam } from "./_team.mjs";
+import {
+  createChecker,
+  jsonClient,
+  mintToken,
+  refusedUpgrade,
+} from "./_lib.mjs";
 
 const [mode, ...args] = process.argv.slice(2);
-let failed = 0;
-const check = (label, ok, extra = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${label} ${extra}`);
-  if (!ok) failed++;
-};
-const json = async (url, { method = "GET", headers = {}, body } = {}) => {
-  const res = await fetch(url, {
-    method,
-    signal: AbortSignal.timeout(15000),
-    headers: {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  return { status: res.status, body: await res.json().catch(() => null) };
-};
+const { check, failed } = createChecker();
+const json = jsonClient({ timeoutMs: 15000 });
 // Every SDK client `connect` opens, closed on any exit so a failed run never hangs.
 const sockets = [];
 const finish = () => {
   for (const ws of sockets) ws.close();
-  console.log(failed === 0 ? "ALL OK" : `${failed} FAILED`);
-  process.exit(failed === 0 ? 0 : 1);
+  console.log(failed() === 0 ? "ALL OK" : `${failed()} FAILED`);
+  process.exit(failed() === 0 ? 0 : 1);
 };
 // A rejected top-level await is an uncaughtException on Node >= 22, not an
 // unhandledRejection; handle both so a crash still prints the summary.
@@ -253,7 +242,7 @@ if (mode === "setup") {
   );
   check("world bundle url", mapUrl !== "", mapUrl);
   if (mapUrl) await pointLobbyAt(consoleBase, cookie, lobby.body?.id, mapUrl);
-  if (failed) finish();
+  if (failed() > 0) finish();
   writeFileSync(
     outEnv,
     [
@@ -307,10 +296,10 @@ if (mode === "publish-map") {
     version,
   );
   check("world bundle url", mapUrl !== "", mapUrl);
-  if (failed) finish();
+  if (failed() > 0) finish();
   await pointLobbyAt(consoleBase, cookie, state.lobbyChannelId, mapUrl);
   // Nothing is rewritten unless the lobby announces the new world too.
-  if (failed) finish();
+  if (failed() > 0) finish();
   const versions = [...new Set([...(state.versions ?? ["v1"]), version])];
   writeFileSync(stateFile, JSON.stringify({ ...state, versions, mapUrl }), {
     mode: 0o600,
@@ -385,19 +374,11 @@ const envValue = (name) =>
 const gwBase = gwArg.replace(/\/+$/, "");
 const apiBase = apiArg.replace(/\/+$/, "");
 const state = JSON.parse(readFileSync(stateFile, "utf8"));
-const dbg = { "x-debug-key": debugKey };
 // Doc owners are 32 lowercase hex (a token's `sub`); fresh ids = fresh sheets.
 const userA = randomBytes(16).toString("hex");
 const userB = randomBytes(16).toString("hex");
 const userX = randomBytes(16).toString("hex");
-const mint = async (userId) =>
-  (
-    await json(`${authBase}/debug/token`, {
-      method: "POST",
-      headers: dbg,
-      body: { channelId: state.authChannelId, userId },
-    })
-  ).body?.jwt;
+const mint = mintToken(json, authBase, debugKey, state.authChannelId);
 const tokenA = await mint(userA);
 const tokenB = await mint(userB);
 const tokenX = await mint(userX);
@@ -500,41 +481,7 @@ const connectGame = async (gameId, token) => {
   return { game, box };
 };
 const refused = (url, protocols) =>
-  new Promise((resolve) => {
-    const u = new URL(url);
-    const mod = u.protocol === "wss:" ? https : http;
-    const req = mod.request(
-      {
-        host: u.hostname,
-        port: u.port || (u.protocol === "wss:" ? 443 : 80),
-        path: u.pathname + u.search,
-        method: "GET",
-        headers: {
-          connection: "Upgrade",
-          upgrade: "websocket",
-          "sec-websocket-version": "13",
-          "sec-websocket-key": "AAAAAAAAAAAAAAAAAAAAAA==",
-          ...(protocols
-            ? { "sec-websocket-protocol": protocols.join(", ") }
-            : {}),
-        },
-      },
-      (res) => {
-        res.resume();
-        resolve(res.statusCode);
-      },
-    );
-    req.on("upgrade", (res, socket) => {
-      socket.destroy();
-      resolve(res.statusCode);
-    });
-    req.on("error", () => resolve(0));
-    req.setTimeout(15000, () => {
-      req.destroy();
-      resolve(0);
-    });
-    req.end();
-  });
+  refusedUpgrade(url, protocols, { timeoutMs: 15000 });
 
 const sheetOf = (token) =>
   json(`${apiBase}/character`, { headers: bearer(token) });
@@ -571,14 +518,14 @@ if (mode === "timeout") {
     soloEntered.status === 200,
     JSON.stringify(soloEntered.body),
   );
-  if (failed) finish();
+  if (failed() > 0) finish();
   const { game, box } = await connectGame(soloEntered.body.gameId, tokenA);
   const runningAt = await box.until(
     (m) => m.type === "stage" && m.payload?.stage === "running",
     40000,
   );
   check("solo run starts", runningAt !== null);
-  if (failed) finish();
+  if (failed() > 0) finish();
   const t0 = Date.now();
   // The running length is whatever the stack was deployed with; the env file
   // (when given) bounds the wait, otherwise the code's maximum applies.
@@ -905,7 +852,7 @@ check(
     entered.body?.members?.length === 2,
   JSON.stringify(entered.body),
 );
-if (failed) finish();
+if (failed() > 0) finish();
 const { gameId, wsUrl } = entered.body;
 const sameUrl = (x, y) => {
   const [u, v] = [new URL(x), new URL(y)];
