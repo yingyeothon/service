@@ -1,5 +1,6 @@
 import { AppError, nullLogger, randomHex, type Logger } from "@yyt/core";
 import { Redis } from "ioredis";
+import { redisPortFromEnv } from "./redisKv.js";
 
 /**
  * The ioredis surface the ACL admin needs (test seam). Deliberately narrow:
@@ -149,9 +150,7 @@ export function redisAclOptionsFromEnv(
   if (!username || !password) return undefined;
   const host = env.REDIS_HOST;
   if (!host) throw new Error("missing env REDIS_HOST");
-  const port = Number(env.REDIS_PORT ?? "6379");
-  if (!Number.isInteger(port) || port <= 0)
-    throw new Error("REDIS_PORT must be a positive integer");
+  const port = redisPortFromEnv(env);
   return { host, port, username, password };
 }
 

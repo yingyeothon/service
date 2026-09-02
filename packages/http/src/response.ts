@@ -4,6 +4,8 @@ export interface JsonInit {
   status?: number;
   headers?: Record<string, string>;
   cookies?: string[];
+  /** Adds `cache-control: no-store` for per-caller or secret-bearing bodies. */
+  noStore?: boolean;
 }
 
 export function json(body: unknown, init: JsonInit = {}): HttpResult {
@@ -11,6 +13,7 @@ export function json(body: unknown, init: JsonInit = {}): HttpResult {
     statusCode: init.status ?? 200,
     headers: {
       "content-type": "application/json; charset=utf-8",
+      ...(init.noStore ? { "cache-control": "no-store" } : {}),
       ...init.headers,
     },
     body: JSON.stringify(body),

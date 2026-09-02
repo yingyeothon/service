@@ -6,23 +6,14 @@ import {
   type ConsoleDb,
   type StateDb,
 } from "@yyt/console-db";
-import { systemClock, type Logger } from "@yyt/core";
+import { createJsonLogger, requireEnv, systemClock } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createStateApp } from "./app.js";
 import { createChannelStore } from "./channels.js";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
 
-const logger: Logger = {
-  debug: (m, meta) =>
-    console.debug(JSON.stringify({ level: "debug", m, ...meta })),
-  info: (m, meta) =>
-    console.info(JSON.stringify({ level: "info", m, ...meta })),
-  warn: (m, meta) =>
-    console.warn(JSON.stringify({ level: "warn", m, ...meta })),
-  error: (m, meta) =>
-    console.error(JSON.stringify({ level: "error", m, ...meta })),
-};
+const logger = createJsonLogger(console);
 
 interface Deps {
   db: ConsoleDb;
@@ -55,7 +46,7 @@ function getDeps(): Promise<Deps> {
 let app: ((event: HttpEvent) => Promise<HttpResult>) | undefined;
 
 async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
-  if (!process.env.STAGE) throw new Error("missing env STAGE");
+  requireEnv(process.env, "STAGE");
   const { db, state } = await getDeps();
   const clock = systemClock;
   return createStateApp({

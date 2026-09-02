@@ -14,6 +14,8 @@ import {
   subprotocolResponse,
   type AuthorizerResult,
   type Poster,
+  createWsDispatcher,
+  quietPoster,
 } from "@yyt/ws";
 import type {
   APIGatewayProxyResult,
@@ -173,16 +175,8 @@ export function createTopicApp({
     }
   }
 
-  async function send(connId: string, msg: ServerMessage) {
-    try {
-      await poster.send(connId, msg);
-    } catch (e) {
-      logger.warn("post failed", {
-        connId,
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
+  const send: (connId: string, msg: ServerMessage) => Promise<void> =
+    quietPoster(poster, logger);
 
   async function connect(event: APIGatewayProxyWebsocketEventV2) {
     const { userId, topicId } = authorizerContext(event);
@@ -255,22 +249,6 @@ export function createTopicApp({
   return {
     authorize,
     broadcast,
-    ws: async (event) => {
-      const route = event.requestContext.routeKey;
-      try {
-        if (route === "$connect") return await connect(event);
-        if (route === "$disconnect") return await disconnect(event);
-        return await message(event);
-      } catch (e) {
-        const status = e instanceof AppError ? e.status : 500;
-        if (status >= 500)
-          logger.error("ws handler error", {
-            route,
-            message: e instanceof Error ? e.message : String(e),
-          });
-        else logger.info("ws handler rejected", { route, status });
-        return { statusCode: status, body: "" };
-      }
-    },
+    ws: createWsDispatcher({ connect, disconnect, message, logger }),
   };
 }

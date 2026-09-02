@@ -39,6 +39,16 @@ export interface RedisKvOptions {
   logger?: Logger;
 }
 
+/** `REDIS_PORT` (default 6379) as a positive integer, else a cold-start throw. */
+export function redisPortFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const port = Number(env.REDIS_PORT ?? "6379");
+  if (!Number.isInteger(port) || port <= 0)
+    throw new Error("REDIS_PORT must be a positive integer");
+  return port;
+}
+
 /**
  * Reads `REDIS_HOST/PORT/USER/PASSWORD/KEY_PREFIX` (the `local/env/*.env` layout
  * pushed to SSM). Throws on a missing variable so a misconfigured Lambda fails at
@@ -52,9 +62,7 @@ export function redisOptionsFromEnv(
     if (!v) throw new Error(`missing env ${k}`);
     return v;
   };
-  const port = Number(env.REDIS_PORT ?? "6379");
-  if (!Number.isInteger(port) || port <= 0)
-    throw new Error("REDIS_PORT must be a positive integer");
+  const port = redisPortFromEnv(env);
   return {
     host: need("REDIS_HOST"),
     port,

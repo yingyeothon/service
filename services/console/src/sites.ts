@@ -7,7 +7,7 @@ import {
   type Logger,
 } from "@yyt/core";
 import type { SiteDeployRow, SiteRow, SitesDb } from "@yyt/console-db";
-import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
+import { defineRoute, type AnyRoute, type RouteContext, json } from "@yyt/http";
 import { z } from "zod";
 import { requireRole } from "./identity.js";
 import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
@@ -215,14 +215,8 @@ export function createSiteRoutes({
   }
   const siteView = async (s: SiteRow) => (await siteViews([s]))[0]!;
 
-  const noStore = (statusCode: number, body: unknown) => ({
-    statusCode,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
-    body: JSON.stringify(body),
-  });
+  const noStore = (statusCode: number, body: unknown) =>
+    json(body, { status: statusCode, noStore: true });
 
   return [
     {

@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import {
-  AppError,
-  nowSec,
+  isActive,
+  requireActive,
   sha256Hex,
   type Clock,
   systemClock,
@@ -12,7 +12,7 @@ import {
   type TopicChannel,
   type TopicChannelConfig,
 } from "@yyt/console-db";
-import type { Kv } from "@yyt/redis";
+import { cachedJson, type Kv } from "@yyt/redis";
 
 /** Topic channel without its `apiKey`; safe to cache in Redis. */
 export interface TopicChannelPublic {
@@ -50,13 +50,6 @@ export interface ChannelStoreOptions {
   clock?: Clock;
 }
 
-export function isActive(
-  ch: { expiresAt: number; disabledAt: number | null },
-  clock: Clock,
-): boolean {
-  return ch.disabledAt === null && ch.expiresAt > nowSec(clock);
-}
-
 export function createChannelStore({
   db,
   kv,
@@ -69,17 +62,15 @@ export function createChannelStore({
     disabledAt: t.disabledAt,
   });
   return {
-    getTopic: async (channelId) => {
-      const cached = await kv.get(cacheKey(channelId));
-      if (cached) return JSON.parse(cached) as TopicChannelPublic;
-      const t = await db.findTopicChannel(channelId);
-      if (!t) return undefined;
-      const pub = toPublic(t);
-      await kv.set(cacheKey(channelId), JSON.stringify(pub), {
-        ex: CHANNEL_CACHE_SEC,
-      });
-      return pub;
-    },
+    getTopic: (channelId) =>
+      cachedJson(kv, {
+        key: cacheKey(channelId),
+        ttlSec: CHANNEL_CACHE_SEC,
+        load: async () => {
+          const t = await db.findTopicChannel(channelId);
+          return t && toPublic(t);
+        },
+      }),
     findByApiKey: async (apiKey) => {
       const given = Buffer.from(sha256Hex(apiKey), "hex");
       const rows = await db.listChannels({ kind: "topic" });
@@ -113,9 +104,5 @@ export async function requireActiveTopicChannel(
   channelId: string,
   clock: Clock = systemClock,
 ): Promise<TopicChannelPublic> {
-  const ch = await store.getTopic(channelId);
-  if (!ch) throw new AppError("not_found", "channel not found");
-  if (!isActive(ch, clock))
-    throw new AppError("gone", "channel expired or disabled");
-  return ch;
+  return requireActive(() => store.getTopic(channelId), clock);
 }

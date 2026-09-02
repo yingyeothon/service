@@ -3,6 +3,7 @@ export { createMemoryKv, type MemoryKvOptions } from "./memoryKv.js";
 export {
   createRedisKv,
   redisOptionsFromEnv,
+  redisPortFromEnv,
   type RedisKvOptions,
   type RedisCommands,
 } from "./redisKv.js";
@@ -28,3 +29,4 @@ export {
 } from "./aclAdmin.js";
 export { createMemoryAclAdmin, type MemoryAclAdmin } from "./memoryAclAdmin.js";
 export { kvContractTests } from "./contract.js";
+export { cachedJson, type CachedJsonOptions } from "./cache.js";
