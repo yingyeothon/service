@@ -1,16 +1,29 @@
-import { ulid, type Logger } from "@yyt/core";
+import {
+  AppError,
+  nowSec,
+  ulid,
+  type ChannelKind,
+  type Clock,
+  type Logger,
+} from "@yyt/core";
 import type {
+  ChannelRow,
   ConsoleDb,
   TeamDb,
   TeamHistoryAction,
   TeamHistoryDetail,
 } from "@yyt/console-db";
+import type { RouteContext } from "@yyt/http";
+import type { ConsoleIdentity } from "./identity.js";
+import type { TeamAccessHelpers } from "./team-access.js";
 
 /*
  * Shared plumbing for the three project resources (channels, catalog apps,
  * asset bundles): the per-project caps, the team-unique name rule, the
- * breadcrumb names every resource view carries, and the best-effort team
- * history write (`docs/decisions.md` *Teams and projects*).
+ * breadcrumb names every resource view carries, the best-effort team
+ * history write (`docs/decisions.md` *Teams and projects*), the one-kind
+ * channel resolver the credential routes use, and the upload → parent 404
+ * masking.
  */
 
 /** Per project. Bytes and rows are bounded elsewhere; these bound sprawl. */
@@ -122,3 +135,67 @@ export function createCrumbResolver({
 }
 
 export type CrumbResolver = ReturnType<typeof createCrumbResolver>;
+
+/**
+ * The two pieces every per-channel credential route family (Redis account,
+ * document key) needs: a resolver that admits one channel kind only — a
+ * channel of another kind is 404 rather than 400, so the route cannot be
+ * used to probe which ids exist — and a `resource.credential` history line.
+ * Only a team member may mint (`write`); an admin without a membership may
+ * look, like every other secret-shaped surface (`docs/decisions.md`
+ * "Console permission model").
+ */
+export function createChannelCredentialHelpers({
+  access,
+  history,
+  clock,
+  kind,
+}: {
+  access: Pick<TeamAccessHelpers, "projectResource">;
+  history: ResourceHistory;
+  clock: Clock;
+  kind: ChannelKind;
+}) {
+  return {
+    channel: async (
+      ctx: Pick<RouteContext, "requireIdentity" | "params">,
+      write: boolean,
+    ): Promise<{ id: ConsoleIdentity; row: ChannelRow }> => {
+      const { id, row } = await access.projectResource(
+        ctx,
+        { kind: "channel", id: ctx.params.id ?? "" },
+        write ? { secret: true } : {},
+      );
+      if (row.kind !== kind)
+        throw new AppError("not_found", "channel not found");
+      return { id, row };
+    },
+    credentialHistory: (row: ChannelRow, actorId: string, what: string) =>
+      history(
+        row.teamId,
+        actorId,
+        "resource.credential",
+        row.id,
+        {
+          resource: { kind: `channel:${kind}`, id: row.id, name: row.name },
+          fields: [what],
+        },
+        nowSec(clock),
+      ),
+  };
+}
+
+/**
+ * Resolves an upload's parent resource; a parent the caller may not see is
+ * reported as the upload not existing (404, never 403), so upload ids cannot
+ * be used to probe which apps or bundles exist.
+ */
+export async function asUploadOwner<T>(load: () => Promise<T>): Promise<T> {
+  try {
+    return await load();
+  } catch (e) {
+    if (e instanceof AppError && e.code === "not_found")
+      throw new AppError("not_found", "upload not found");
+    throw e;
+  }
+}

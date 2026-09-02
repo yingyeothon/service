@@ -11,8 +11,8 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { AppError } from "@yyt/core";
+import { isMissingObject, listedObjects, presignPutUrl } from "./s3-util.js";
 
 /** Presigned zip PUTs live one hour, like every other upload grant. */
 export const SITE_UPLOAD_URL_TTL_SEC = 3600;
@@ -79,20 +79,13 @@ export function createS3SiteStore({
     new AppError("unavailable", "site storage error", { cause: e });
   return {
     presignZipPut: ({ key, contentLength }) =>
-      getSignedUrl(
-        s3,
-        new PutObjectCommand({
-          Bucket: stagingBucket,
-          Key: key,
-          ContentType: "application/zip",
-          ContentLength: contentLength,
-        }),
-        {
-          expiresIn: SITE_UPLOAD_URL_TTL_SEC,
-          // Type and length are part of the signature; commit re-checks anyway.
-          signableHeaders: new Set(["content-type", "content-length"]),
-        },
-      ),
+      presignPutUrl(s3, {
+        bucket: stagingBucket,
+        key,
+        contentType: "application/zip",
+        contentLength,
+        ttlSec: SITE_UPLOAD_URL_TTL_SEC,
+      }),
     headZip: async (key) => {
       try {
         const r = await s3.send(
@@ -103,14 +96,7 @@ export function createS3SiteStore({
           contentType: r.ContentType,
         };
       } catch (e) {
-        const name = (e as { name?: string }).name;
-        if (
-          name === "NotFound" ||
-          name === "NoSuchKey" ||
-          name === "Forbidden" ||
-          name === "403"
-        )
-          return undefined;
+        if (isMissingObject(e)) return undefined;
         throw storageError(e);
       }
     },
@@ -149,14 +135,7 @@ export function createS3SiteStore({
             ContinuationToken: token,
           }),
         );
-        for (const o of r.Contents ?? [])
-          if (o.Key)
-            out.push({
-              key: o.Key,
-              lastModifiedSec: Math.floor(
-                (o.LastModified?.getTime() ?? 0) / 1000,
-              ),
-            });
+        out.push(...listedObjects(r.Contents));
         token = r.NextContinuationToken;
         if (!token) break;
       }

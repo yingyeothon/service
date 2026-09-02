@@ -3,11 +3,11 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
-  PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { AppError } from "@yyt/core";
+import { isMissingObject, listedObjects, presignPutUrl } from "./s3-util.js";
 
 export const POSTER_MAX_BYTES = 5 * 1024 * 1024;
 export const POSTER_TYPES: Record<string, string> = {
@@ -82,21 +82,13 @@ export function createS3PosterStore({
 }): PosterStore {
   return {
     presignPut: ({ key, contentType, contentLength }) =>
-      getSignedUrl(
-        client,
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: key,
-          ContentType: contentType,
-          ContentLength: contentLength,
-        }),
-        {
-          expiresIn: POSTER_URL_TTL_SEC,
-          // Without this the presigner only signs `host`; the browser could then
-          // upload any type/size. `commit` re-checks the object anyway.
-          signableHeaders: new Set(["content-type", "content-length"]),
-        },
-      ),
+      presignPutUrl(client, {
+        bucket,
+        key,
+        contentType,
+        contentLength,
+        ttlSec: POSTER_URL_TTL_SEC,
+      }),
     presignGet: (key) =>
       getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
         expiresIn: POSTER_URL_TTL_SEC,
@@ -111,15 +103,7 @@ export function createS3PosterStore({
           contentLength: Number(r.ContentLength ?? 0),
         };
       } catch (e) {
-        const name = (e as { name?: string }).name;
-        // 403 is what S3 answers for a missing key when ListBucket is absent.
-        if (
-          name === "NotFound" ||
-          name === "NoSuchKey" ||
-          name === "Forbidden" ||
-          name === "403"
-        )
-          return undefined;
+        if (isMissingObject(e)) return undefined;
         throw new AppError("unavailable", "poster storage error", { cause: e });
       }
     },
@@ -143,14 +127,7 @@ export function createS3PosterStore({
             ContinuationToken: token,
           }),
         );
-        for (const o of r.Contents ?? [])
-          if (o.Key)
-            objects.push({
-              key: o.Key,
-              lastModifiedSec: Math.floor(
-                (o.LastModified?.getTime() ?? 0) / 1000,
-              ),
-            });
+        objects.push(...listedObjects(r.Contents));
         token = r.NextContinuationToken;
         if (!token) break;
         if (objects.length >= POSTER_LIST_MAX_KEYS) {

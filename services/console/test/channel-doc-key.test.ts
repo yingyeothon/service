@@ -144,6 +144,13 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
     expect(parse(await key(h, "DELETE", id, a.cookie))).toEqual({
       revoked: false,
     });
+    // Team history names the credential's channel kind.
+    const hist = await h.teamDb.listHistory(a.teamId, { limit: 50 });
+    expect(
+      hist.rows
+        .filter((r) => r.action === "resource.credential")
+        .map((r) => r.detail?.resource?.kind),
+    ).toEqual(["channel:auth", "channel:auth"]);
   });
 
   it("is 404 for a channel of another kind and for someone else's", async () => {

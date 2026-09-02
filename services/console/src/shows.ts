@@ -431,6 +431,41 @@ export function createShowRoutes({
     return { reason: given };
   }
 
+  /** Per-member open-show cap, the write slot, then a fresh sortable id. */
+  async function newShowId(id: ConsoleIdentity): Promise<string> {
+    if ((await shows.countOpenShows(id.subject)) >= OPEN_SHOWS_PER_MEMBER)
+      throw new AppError(
+        "conflict",
+        `too many open shows (max ${OPEN_SHOWS_PER_MEMBER})`,
+      );
+    await writeSlot(id);
+    return `sh_${ulid().toLowerCase()}`;
+  }
+
+  /** `close`/`reopen`: one CAS on `closed_at`, a moderation reason when the actor is not the owner. */
+  const setClosedRoute = (o: {
+    path: string;
+    closed: boolean;
+    conflict: string;
+    action: "show.close" | "show.reopen";
+  }) =>
+    defineRoute({
+      method: "POST",
+      path: o.path,
+      auth: true,
+      body: moderateBody,
+      handler: async (ctx) => {
+        const { id, show, now } = await manageableShow(ctx);
+        const mod = moderation(id, show.createdBy, ctx.body.reason);
+        await writeSlot(id);
+        const by = o.closed ? id.subject : null;
+        if (!(await shows.setClosed(show.id, o.closed, by, now)))
+          throw new AppError("conflict", o.conflict);
+        await audit(id.subject, o.action, show.id, mod);
+        return undefined;
+      },
+    });
+
   /* ---- target resolution -------------------------------------------- */
 
   interface TargetView {
@@ -845,13 +880,7 @@ export function createShowRoutes({
       handler: async (ctx) => {
         const id = requireRole(ctx, "member");
         const now = nowSec(clock);
-        if ((await shows.countOpenShows(id.subject)) >= OPEN_SHOWS_PER_MEMBER)
-          throw new AppError(
-            "conflict",
-            `too many open shows (max ${OPEN_SHOWS_PER_MEMBER})`,
-          );
-        await writeSlot(id);
-        const showId = `sh_${ulid().toLowerCase()}`;
+        const showId = await newShowId(id);
         await shows.insertShow({
           id: showId,
           title: ctx.body.title,
@@ -899,35 +928,17 @@ export function createShowRoutes({
         return undefined;
       },
     }),
-    defineRoute({
-      method: "POST",
+    setClosedRoute({
       path: "/shows/{show}/close",
-      auth: true,
-      body: moderateBody,
-      handler: async (ctx) => {
-        const { id, show, now } = await manageableShow(ctx);
-        const mod = moderation(id, show.createdBy, ctx.body.reason);
-        await writeSlot(id);
-        if (!(await shows.setClosed(show.id, true, id.subject, now)))
-          throw new AppError("conflict", "show is already closed");
-        await audit(id.subject, "show.close", show.id, mod);
-        return undefined;
-      },
+      closed: true,
+      conflict: "show is already closed",
+      action: "show.close",
     }),
-    defineRoute({
-      method: "POST",
+    setClosedRoute({
       path: "/shows/{show}/reopen",
-      auth: true,
-      body: moderateBody,
-      handler: async (ctx) => {
-        const { id, show, now } = await manageableShow(ctx);
-        const mod = moderation(id, show.createdBy, ctx.body.reason);
-        await writeSlot(id);
-        if (!(await shows.setClosed(show.id, false, null, now)))
-          throw new AppError("conflict", "show is already open");
-        await audit(id.subject, "show.reopen", show.id, mod);
-        return undefined;
-      },
+      closed: false,
+      conflict: "show is already open",
+      action: "show.reopen",
     }),
     defineRoute({
       method: "DELETE",
@@ -1004,13 +1015,7 @@ export function createShowRoutes({
           throw new AppError("conflict", "event is not public yet");
         if (await shows.findShowByEvent(row.id))
           throw new AppError("conflict", "event already has a show");
-        if ((await shows.countOpenShows(id.subject)) >= OPEN_SHOWS_PER_MEMBER)
-          throw new AppError(
-            "conflict",
-            `too many open shows (max ${OPEN_SHOWS_PER_MEMBER})`,
-          );
-        await writeSlot(id);
-        const showId = `sh_${ulid().toLowerCase()}`;
+        const showId = await newShowId(id);
         await shows.insertShow({
           id: showId,
           title: row.title,
