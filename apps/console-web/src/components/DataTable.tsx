@@ -1,4 +1,10 @@
-import { Anchor, Skeleton, Table, UnstyledButton } from "@mantine/core";
+import {
+  Anchor,
+  Skeleton,
+  Table,
+  UnstyledButton,
+  VisuallyHidden,
+} from "@mantine/core";
 import {
   IconArrowDown,
   IconArrowUp,
@@ -173,7 +179,10 @@ export function DataTable<T>({
               {columns.map(header)}
               {actions && (
                 <Table.Th style={{ width: 48 }}>
-                  <span className="mantine-visually-hidden">Actions</span>
+                  {/* Mantine 8 ships no `mantine-visually-hidden` class: the
+                      word used to render, in every table, and sized the
+                      column with it. */}
+                  <VisuallyHidden>Actions</VisuallyHidden>
                 </Table.Th>
               )}
             </Table.Tr>
