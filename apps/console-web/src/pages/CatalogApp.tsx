@@ -11,6 +11,8 @@ import {
   Text,
   TextInput,
   Tooltip,
+  rem,
+  type TextProps,
 } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -263,51 +265,81 @@ function CleanupSection({
   );
 }
 
-/** Lines the cell shows before it clamps; the tooltip always has the whole. */
-const CHANGELOG_LINES = 4;
+/**
+ * Version, Platform, File, Size and Created each stay on one line: the row is
+ * one line tall, and the scroll container — not a second line — absorbs a
+ * narrow viewport.
+ */
+const NOWRAP = { whiteSpace: "nowrap" } as const;
+
+/**
+ * The changelog column's width. The cell is one line: a table row must stay
+ * one line tall, so the text is ellipsed here and read in full on the
+ * tooltip, which carries the rest of the upload tags with it.
+ */
+const CHANGELOG_WIDTH = rem(280);
+
+/** One line, ellipsed at the column's width — never a second row of text. */
+const ONE_LINE = {
+  display: "block",
+  width: CHANGELOG_WIDTH,
+  maxWidth: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
 
 /**
  * The changelog cell: the one upload tag long enough to be worth a column of
  * its own, with the artifact's other upload tags — and the changelog in full,
- * since the cell clamps — on a tooltip over it. An expander below the table
- * was the first shape of this and it was wrong: the row and its metadata
- * never shared a screen.
+ * since the cell ellipses it — on a tooltip over it. An expander below the
+ * table was the first shape of this and it was wrong: the row and its
+ * metadata never shared a screen.
  */
 function ChangelogCell({ artifact }: { artifact: CatalogArtifact }) {
   const changelog = artifact.tags.changelog?.trim() ?? "";
   // `version` has a column; everything else the upload sent is here. The
-  // changelog leads because a clamped cell cannot be measured from here —
-  // guessing whether it clipped is the one thing this must not do.
+  // changelog leads because an ellipsed cell cannot be measured from here —
+  // guessing whether it fit is the one thing this must not do.
   const tags = [
     ...(changelog ? [{ key: "changelog", value: changelog }] : []),
     ...artifactTagRows(artifact).filter(
       (t) => t.key !== "changelog" && t.key !== "version",
     ),
   ];
-  // A span, not the default paragraph: the tooltip target below wraps it.
-  const text = (
+  // A span, not the default paragraph: it is the tooltip's target below.
+  const text = (props: Partial<TextProps> & { tabIndex?: number }) => (
     <Text
       component="span"
       size="sm"
       c={changelog ? undefined : "dimmed"}
-      lineClamp={CHANGELOG_LINES}
-      style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+      {...props}
     >
       {changelog || "—"}
     </Text>
   );
-  if (tags.length === 0) return <Table.Td>{text}</Table.Td>;
+  if (tags.length === 0)
+    return <Table.Td>{text({ style: ONE_LINE })}</Table.Td>;
   return (
     <Table.Td>
       <Tooltip
         multiline
-        w={280}
+        w={CHANGELOG_WIDTH}
         position="top-start"
         events={{ hover: true, focus: true, touch: true }}
         label={
           <Stack gap={2}>
             {tags.map((t) => (
-              <Text key={t.key} size="xs" style={{ wordBreak: "break-word" }}>
+              <Text
+                key={t.key}
+                size="xs"
+                // The cell flattens newlines; the tooltip is where a
+                // multi-line changelog keeps its shape. Its own line is
+                // hidden from assistive tech: the cell already reads the
+                // whole text out, clipped or not.
+                aria-hidden={t.key === "changelog" || undefined}
+                style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+              >
                 <b>{t.key}</b> {t.value}
               </Text>
             ))}
@@ -315,21 +347,20 @@ function ChangelogCell({ artifact }: { artifact: CatalogArtifact }) {
         }
       >
         {/*
-         * Focusable so the tooltip is reachable without a pointer, and a
-         * block so the whole cell is the target — a row whose only tag is a
-         * build type would otherwise hide it all behind one em dash.
+         * Focusable so the tooltip is reachable without a pointer, and the
+         * full width of the column so the whole cell is the target — a row
+         * whose only tag is a build type would otherwise hide it all behind
+         * one em dash.
          */}
-        <span
-          tabIndex={0}
-          style={{
-            display: "block",
+        {text({
+          tabIndex: 0,
+          style: {
+            ...ONE_LINE,
             cursor: "help",
             textDecoration: "underline dotted",
             textUnderlineOffset: 3,
-          }}
-        >
-          {text}
-        </span>
+          },
+        })}
       </Tooltip>
     </Table.Td>
   );
@@ -519,36 +550,43 @@ export function CatalogAppPage() {
             { key: "file", label: "File" },
             { key: "size", label: "Size", align: "right" },
             { key: "created", label: "Created" },
-            { key: "changelog", label: "Changelog", width: 280 },
+            { key: "changelog", label: "Changelog", width: CHANGELOG_WIDTH },
             { key: "install", label: "" },
           ]}
           rows={artifacts.data ? rows : undefined}
           loading={artifacts.loading}
           error={artifacts.error}
           rowKey={(art) => art.id}
-          minWidth={920}
+          minWidth={1260}
           empty={{ title: "No artifacts yet." }}
           render={(art) => (
             <>
-              <Table.Td>
+              <Table.Td style={NOWRAP}>
                 {art.first && (
                   <Text size="sm" fw={500}>
                     {art.version}
                   </Text>
                 )}
               </Table.Td>
-              <Table.Td>
+              <Table.Td style={NOWRAP}>
                 <Badge tone="accent">{art.platform}</Badge>
               </Table.Td>
-              <Table.Td>
-                <Anchor href={art.url} size="sm">
+              <Table.Td style={NOWRAP}>
+                {/* A legacy row without an object key shows its whole CDN
+                    URL, which would stretch the scroll width for everyone. */}
+                <Anchor
+                  href={art.url}
+                  size="sm"
+                  truncate
+                  maw={art.objectKey ? undefined : 320}
+                >
                   {art.objectKey?.split("/").pop() ?? art.url}
                 </Anchor>
               </Table.Td>
-              <Table.Td style={{ textAlign: "right" }}>
+              <Table.Td style={{ ...NOWRAP, textAlign: "right" }}>
                 {fmtSize(art.size)}
               </Table.Td>
-              <Table.Td>{fmtTime(art.createdAt)}</Table.Td>
+              <Table.Td style={NOWRAP}>{fmtTime(art.createdAt)}</Table.Td>
               <ChangelogCell artifact={art} />
               <Table.Td>
                 {art.ios &&
@@ -562,7 +600,7 @@ export function CatalogAppPage() {
                       Install on this device
                     </Button>
                   ) : (
-                    <Text size="xs" c="dimmed">
+                    <Text size="xs" c="dimmed" style={NOWRAP}>
                       iOS OTA: open this page on the device
                     </Text>
                   ))}

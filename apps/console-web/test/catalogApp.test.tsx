@@ -198,12 +198,22 @@ describe("CatalogAppPage", () => {
     const cell = await screen.findByText("first release");
     expect(screen.queryByText(/^build_type/)).toBeNull();
     const row = cell.closest("tr") as HTMLElement;
-    expect(within(row).getAllByRole("cell")[5]).toContainElement(cell);
+    const cells = within(row).getAllByRole("cell");
+    expect(cells[5]).toContainElement(cell);
+    // One line each: Version, Platform, File, Size and Created declare
+    // `nowrap`, and the changelog is ellipsed at the column's width.
+    for (const c of cells.slice(0, 5))
+      expect(c).toHaveStyle({ whiteSpace: "nowrap" });
+    expect(cell).toHaveStyle({
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+    });
     await userEvent.hover(cell);
     const tip = await screen.findByRole("tooltip");
     expect(tip).toHaveTextContent("build_type release");
     expect(tip).toHaveTextContent("commit abc1234");
-    // The cell clamps at four lines, so the tooltip carries the changelog too.
+    // The cell shows one ellipsed line, so the tooltip carries the whole.
     expect(tip).toHaveTextContent("changelog first release");
     // Version has a column of its own and is the group's heading.
     expect(tip).not.toHaveTextContent("1.0.0");
@@ -211,8 +221,8 @@ describe("CatalogAppPage", () => {
 
   it("opens the same tooltip from the keyboard", async () => {
     open();
-    const target = (await screen.findByText("first release"))
-      .parentElement as HTMLElement;
+    // The cell's one line is itself the tooltip target.
+    const target = await screen.findByText("first release");
     expect(target).toHaveAttribute("tabindex", "0");
     target.focus();
     const tip = await screen.findByRole("tooltip");
@@ -238,7 +248,7 @@ describe("CatalogAppPage", () => {
     );
     await userEvent.hover(await screen.findByText(/^line 0/));
     const tip = await screen.findByRole("tooltip");
-    // The clamped tail is reachable, and 64 hex characters have to wrap.
+    // The ellipsed tail is reachable, and 64 hex characters have to wrap.
     expect(tip).toHaveTextContent("line 8");
     expect(within(tip).getByText(sha, { exact: false })).toHaveStyle({
       wordBreak: "break-word",
