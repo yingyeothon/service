@@ -2,6 +2,7 @@ import {
   Anchor,
   Button,
   Code,
+  Collapse,
   Divider,
   Group,
   NumberInput,
@@ -11,10 +12,10 @@ import {
   Text,
   TextInput,
   Tooltip,
+  UnstyledButton,
   rem,
-  type TextProps,
 } from "@mantine/core";
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api";
 import { Crumbs } from "../components/Crumbs";
@@ -275,9 +276,12 @@ const NOWRAP = { whiteSpace: "nowrap" } as const;
 /**
  * The changelog column's width. The cell is one line: a table row must stay
  * one line tall, so the text is ellipsed here and read in full on the
- * tooltip, which carries the rest of the upload tags with it.
+ * tooltip (or the fold) that carries the rest of the upload tags with it.
+ * 240 and not more: the page is capped at 1080 and every other column is at
+ * its content's width, so this is the only column with give — spend it and
+ * the row menu ends up outside the horizontal scroll.
  */
-const CHANGELOG_WIDTH = rem(280);
+const CHANGELOG_WIDTH = rem(240);
 
 /** One line, ellipsed at the column's width — never a second row of text. */
 const ONE_LINE = {
@@ -291,12 +295,26 @@ const ONE_LINE = {
 
 /**
  * The changelog cell: the one upload tag long enough to be worth a column of
- * its own, with the artifact's other upload tags — and the changelog in full,
- * since the cell ellipses it — on a tooltip over it. An expander below the
- * table was the first shape of this and it was wrong: the row and its
- * metadata never shared a screen.
+ * its own, ellipsed to keep the row one line tall. Everything else the
+ * upload sent — the changelog in full included — is on a tooltip for a
+ * pointer and in a fold under the cell for a touch, because a phone has no
+ * hover. An expander below the *table* was the first shape of this and it
+ * was wrong: the row and its metadata never shared a screen.
  */
-function ChangelogCell({ artifact }: { artifact: CatalogArtifact }) {
+function ChangelogCell({
+  artifact,
+  note,
+}: {
+  artifact: CatalogArtifact;
+  /** A row-specific line that is not an upload tag (the iOS OTA hint). */
+  note?: string;
+}) {
+  const foldId = useId();
+  const [open, setOpen] = useState(false);
+  // A toggle leaves the pointer sitting on the button, and Mantine keeps its
+  // own hover state while `opened` is forced: without this the tooltip pops
+  // straight back up over the fold the click just closed.
+  const [armed, setArmed] = useState(false);
   const changelog = artifact.tags.changelog?.trim() ?? "";
   // `version` has a column; everything else the upload sent is here. The
   // changelog leads because an ellipsed cell cannot be measured from here —
@@ -307,61 +325,94 @@ function ChangelogCell({ artifact }: { artifact: CatalogArtifact }) {
       (t) => t.key !== "changelog" && t.key !== "version",
     ),
   ];
-  // A span, not the default paragraph: it is the tooltip's target below.
-  const text = (props: Partial<TextProps> & { tabIndex?: number }) => (
-    <Text
-      component="span"
-      size="sm"
-      c={changelog ? undefined : "dimmed"}
-      {...props}
-    >
-      {changelog || "—"}
-    </Text>
-  );
+  // First: on a phone the fold is the only place this hint exists.
+  if (note) tags.unshift({ key: "ios ota", value: note });
+  const label = changelog || "—";
   if (tags.length === 0)
-    return <Table.Td>{text({ style: ONE_LINE })}</Table.Td>;
+    return (
+      <Table.Td>
+        <Text component="span" size="sm" c="dimmed" style={ONE_LINE}>
+          {label}
+        </Text>
+      </Table.Td>
+    );
+  const lines = (size: "xs" | "sm") =>
+    tags.map((t) => (
+      <Text
+        key={t.key}
+        size={size}
+        // The cell flattens newlines; here is where a multi-line changelog
+        // keeps its shape. Its own line is hidden from assistive tech: the
+        // cell already reads the whole text out, ellipsed or not.
+        aria-hidden={t.key === "changelog" || undefined}
+        style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+      >
+        <b>{t.key}</b> {t.value}
+      </Text>
+    ));
   return (
     <Table.Td>
       <Tooltip
         multiline
         w={CHANGELOG_WIDTH}
         position="top-start"
-        events={{ hover: true, focus: true, touch: true }}
-        label={
-          <Stack gap={2}>
-            {tags.map((t) => (
-              <Text
-                key={t.key}
-                size="xs"
-                // The cell flattens newlines; the tooltip is where a
-                // multi-line changelog keeps its shape. Its own line is
-                // hidden from assistive tech: the cell already reads the
-                // whole text out, clipped or not.
-                aria-hidden={t.key === "changelog" || undefined}
-                style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-              >
-                <b>{t.key}</b> {t.value}
-              </Text>
-            ))}
-          </Stack>
-        }
+        // Hover and focus only: a tap opens the fold below instead, and the
+        // two would otherwise cover each other on a phone.
+        // `touch: false` — a tap opens the fold instead; a phone has no
+        // hover. Forced shut while the fold is out, and while the pointer
+        // has not left the button since the toggle.
+        events={{ hover: !open, focus: !open, touch: false }}
+        opened={open || armed ? false : undefined}
+        label={<Stack gap={2}>{lines("xs")}</Stack>}
       >
         {/*
-         * Focusable so the tooltip is reachable without a pointer, and the
-         * full width of the column so the whole cell is the target — a row
-         * whose only tag is a build type would otherwise hide it all behind
-         * one em dash.
+         * A real button, so the fold is one tap on a phone, Enter or Space
+         * from a keyboard, and an announced `aria-expanded` either way. It
+         * is as wide as the column so nearly the whole cell is the target —
+         * a row whose only tag is a build type would otherwise hide it all
+         * behind one em dash.
          */}
-        {text({
-          tabIndex: 0,
-          style: {
+        <UnstyledButton
+          onClick={() => {
+            setOpen((o) => !o);
+            setArmed(true);
+          }}
+          onMouseLeave={() => setArmed(false)}
+          onBlur={() => setArmed(false)}
+          aria-expanded={open}
+          aria-controls={foldId}
+          // The changelog is the button's own accessible name (a visible
+          // label has to lead it); an em dash is not a name, so a row
+          // without one says what the control is instead.
+          aria-label={changelog ? undefined : "Upload metadata"}
+          c={changelog ? undefined : "dimmed"}
+          style={{
             ...ONE_LINE,
-            cursor: "help",
+            textAlign: "left",
+            font: "inherit",
+            cursor: "pointer",
+            paddingBlock: 2,
             textDecoration: "underline dotted",
             textUnderlineOffset: 3,
-          },
-        })}
+          }}
+        >
+          {label}
+        </UnstyledButton>
       </Tooltip>
+      <Collapse in={open}>
+        <Stack
+          gap={2}
+          mt="xs"
+          id={foldId}
+          role="group"
+          aria-label="Upload metadata"
+          // Load-bearing: it clamps the cell's min-content, so folding the
+          // metadata out grows the row and never the table.
+          style={{ maxWidth: CHANGELOG_WIDTH }}
+        >
+          {lines("sm")}
+        </Stack>
+      </Collapse>
     </Table.Td>
   );
 }
@@ -551,13 +602,15 @@ export function CatalogAppPage() {
             { key: "size", label: "Size", align: "right" },
             { key: "created", label: "Created" },
             { key: "changelog", label: "Changelog", width: CHANGELOG_WIDTH },
-            { key: "install", label: "" },
+            // An empty column on every other machine: the hint that used to
+            // live here is metadata now.
+            ...(iosDevice ? [{ key: "install", label: "" }] : []),
           ]}
           rows={artifacts.data ? rows : undefined}
           loading={artifacts.loading}
           error={artifacts.error}
           rowKey={(art) => art.id}
-          minWidth={1260}
+          minWidth={1040}
           empty={{ title: "No artifacts yet." }}
           render={(art) => (
             <>
@@ -587,10 +640,17 @@ export function CatalogAppPage() {
                 {fmtSize(art.size)}
               </Table.Td>
               <Table.Td style={NOWRAP}>{fmtTime(art.createdAt)}</Table.Td>
-              <ChangelogCell artifact={art} />
-              <Table.Td>
-                {art.ios &&
-                  (iosDevice ? (
+              <ChangelogCell
+                artifact={art}
+                note={
+                  art.ios && !iosDevice
+                    ? "open this page on the device to install over the air"
+                    : undefined
+                }
+              />
+              {iosDevice && (
+                <Table.Td>
+                  {art.ios && (
                     <Button
                       component="a"
                       href={art.ios.installUrl}
@@ -599,12 +659,9 @@ export function CatalogAppPage() {
                     >
                       Install on this device
                     </Button>
-                  ) : (
-                    <Text size="xs" c="dimmed" style={NOWRAP}>
-                      iOS OTA: open this page on the device
-                    </Text>
-                  ))}
-              </Table.Td>
+                  )}
+                </Table.Td>
+              )}
             </>
           )}
           actions={

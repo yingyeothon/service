@@ -195,8 +195,8 @@ describe("CatalogAppPage", () => {
   it("shows the changelog in its own cell and every other tag on the tooltip", async () => {
     open();
     // The changelog is a column of its own; no other tag is on screen.
-    const cell = await screen.findByText("first release");
-    expect(screen.queryByText(/^build_type/)).toBeNull();
+    const cell = await screen.findByRole("button", { name: "first release" });
+    expect(screen.getByText("build_type")).not.toBeVisible();
     const row = cell.closest("tr") as HTMLElement;
     const cells = within(row).getAllByRole("cell");
     expect(cells[5]).toContainElement(cell);
@@ -219,11 +219,76 @@ describe("CatalogAppPage", () => {
     expect(tip).not.toHaveTextContent("1.0.0");
   });
 
+  it("folds the whole metadata out under the cell on a tap, and back in", async () => {
+    open();
+    const toggle = await screen.findByRole("button", { name: "first release" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // The fold is inside the cell, under the one line it belongs to.
+    const cell = toggle.closest("td") as HTMLElement;
+    const fold = await within(cell).findByRole("group", {
+      name: "Upload metadata",
+    });
+    expect(fold).toHaveTextContent("build_type release");
+    expect(fold).toHaveTextContent("changelog first release");
+    // One at a time: the pointer's tooltip stays out of the fold's way.
+    await userEvent.hover(toggle);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(within(cell).queryByRole("group")).toBeNull());
+  });
+
+  it("keeps the iOS OTA hint out of the table and in the metadata", async () => {
+    vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);
+    vi.mocked(mockApi.catalogArtifacts).mockResolvedValue([
+      {
+        ...ARTIFACTS[0]!,
+        platform: "ios",
+        objectKey: "apps/ca_1/1.0.0/a.ipa",
+        ios: { manifestUrl: "https://cdn.example/m.plist", installUrl: "itms" },
+      },
+    ]);
+    mount(
+      <Routes>
+        <Route path="/catalog/apps/:id" element={<CatalogAppPage />} />
+      </Routes>,
+      { client: mockApi, path: "/catalog/apps/ca_1" },
+    );
+    const toggle = await screen.findByRole("button", { name: "first release" });
+    // The hint lives in the changelog cell's metadata now; off an iOS
+    // device the install column is not rendered at all.
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("columnheader").map((h) => h.textContent),
+      ).toEqual([
+        "Version",
+        "Platform",
+        "File",
+        "Size",
+        "Created",
+        "Changelog",
+        "Actions",
+      ]),
+    );
+    await userEvent.hover(toggle);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "open this page on the device",
+    );
+    // And a phone, which has no hover, taps it out of the fold.
+    await userEvent.click(toggle);
+    expect(
+      await within(toggle.closest("td") as HTMLElement).findByRole("group", {
+        name: "Upload metadata",
+      }),
+    ).toHaveTextContent("open this page on the device");
+  });
+
   it("opens the same tooltip from the keyboard", async () => {
     open();
     // The cell's one line is itself the tooltip target.
-    const target = await screen.findByText("first release");
-    expect(target).toHaveAttribute("tabindex", "0");
+    const target = await screen.findByRole("button", { name: "first release" });
     target.focus();
     const tip = await screen.findByRole("tooltip");
     expect(target).toHaveAttribute("aria-describedby", tip.id);
@@ -246,13 +311,33 @@ describe("CatalogAppPage", () => {
       </Routes>,
       { client: mockApi, path: "/catalog/apps/ca_1" },
     );
-    await userEvent.hover(await screen.findByText(/^line 0/));
+    await userEvent.hover(
+      await screen.findByRole("button", { name: /^line 0/ }),
+    );
     const tip = await screen.findByRole("tooltip");
     // The ellipsed tail is reachable, and 64 hex characters have to wrap.
     expect(tip).toHaveTextContent("line 8");
     expect(within(tip).getByText(sha, { exact: false })).toHaveStyle({
       wordBreak: "break-word",
     });
+  });
+
+  it("names the control when the row has metadata but no changelog", async () => {
+    vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);
+    vi.mocked(mockApi.catalogArtifacts).mockResolvedValue([
+      { ...ARTIFACTS[0]!, tags: { version: "1.0.0", build_type: "release" } },
+    ]);
+    mount(
+      <Routes>
+        <Route path="/catalog/apps/:id" element={<CatalogAppPage />} />
+      </Routes>,
+      { client: mockApi, path: "/catalog/apps/ca_1" },
+    );
+    // "Metadata of —" is not a name; the em dash is only the visible mark.
+    const toggle = await screen.findByRole("button", {
+      name: "Upload metadata",
+    });
+    expect(toggle).toHaveTextContent("—");
   });
 
   it("renders a dash and no tooltip for an artifact carrying only a version", async () => {
@@ -271,6 +356,7 @@ describe("CatalogAppPage", () => {
     expect(cell).toHaveTextContent("—");
     await userEvent.hover(cell);
     expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(within(cell).queryByRole("button")).toBeNull();
   });
 
   it("keeps two re-uploads of one version, platform and file name apart", async () => {
