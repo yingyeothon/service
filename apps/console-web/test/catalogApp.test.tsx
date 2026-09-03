@@ -103,7 +103,14 @@ describe("CatalogAppPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("ca_1")).toBeInTheDocument();
     expect(await screen.findByText("1.0.0")).toBeInTheDocument();
-    for (const c of ["Version", "Platform", "File", "Size", "Created"])
+    for (const c of [
+      "Version",
+      "Platform",
+      "File",
+      "Size",
+      "Created",
+      "Changelog",
+    ])
       expect(screen.getByRole("columnheader", { name: c })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "a.apk" })).toHaveAttribute(
       "href",
@@ -185,60 +192,75 @@ describe("CatalogAppPage", () => {
     );
   });
 
-  it("opens the artifact's upload metadata from its row, and closes it again", async () => {
+  it("shows the changelog in its own cell and every other tag on the tooltip", async () => {
     open();
-    const toggle = await screen.findByRole("button", {
-      name: "Show metadata for 1.0.0 android a.apk",
-    });
-    // The table itself stays short: no tag is on screen until it is opened.
-    expect(screen.queryByText("changelog")).toBeNull();
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(toggle);
-    // Scoped to the panel: "release" is also a build-type option upstairs.
-    const panel = await screen.findByRole("region", {
-      name: "Metadata of 1.0.0 android a.apk",
-    });
-    expect(toggle).toHaveAttribute("aria-controls", panel.id);
-    for (const c of ["Tag", "Value"])
-      expect(
-        within(panel).getByRole("columnheader", { name: c }),
-      ).toBeInTheDocument();
-    // Ordered as the server lists the tags, not as the object happened to come.
-    expect(
-      within(panel)
-        .getAllByRole("row")
-        .slice(1)
-        .map((r) => r.textContent),
-    ).toEqual([
-      "version1.0.0",
-      "build_typerelease",
-      "commitabc1234",
-      "changelogfirst release",
-    ]);
-    expect(
-      within(panel).getByText("apps/ca_1/1.0.0/a.apk"),
-    ).toBeInTheDocument();
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    // The visible label follows the state, and so does the accessible name.
-    expect(toggle).toHaveAccessibleName(
-      "Hide metadata for 1.0.0 android a.apk",
-    );
-    await userEvent.click(toggle);
-    await waitFor(() =>
-      expect(screen.queryByRole("region", { name: /^Metadata of/ })).toBeNull(),
-    );
+    // The changelog is a column of its own; no other tag is on screen.
+    const cell = await screen.findByText("first release");
+    expect(screen.queryByText(/^build_type/)).toBeNull();
+    const row = cell.closest("tr") as HTMLElement;
+    expect(within(row).getAllByRole("cell")[5]).toContainElement(cell);
+    await userEvent.hover(cell);
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("build_type release");
+    expect(tip).toHaveTextContent("commit abc1234");
+    // The cell clamps at four lines, so the tooltip carries the changelog too.
+    expect(tip).toHaveTextContent("changelog first release");
+    // Version has a column of its own and is the group's heading.
+    expect(tip).not.toHaveTextContent("1.0.0");
   });
 
-  it("shows the metadata to a read-only viewer too", async () => {
-    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+  it("opens the same tooltip from the keyboard", async () => {
     open();
-    await screen.findByRole("heading", { name: "my-game" });
-    await userEvent.click(
-      await screen.findByRole("button", {
-        name: "Show metadata for 1.0.0 android a.apk",
-      }),
+    const target = (await screen.findByText("first release"))
+      .parentElement as HTMLElement;
+    expect(target).toHaveAttribute("tabindex", "0");
+    target.focus();
+    const tip = await screen.findByRole("tooltip");
+    expect(target).toHaveAttribute("aria-describedby", tip.id);
+  });
+
+  it("keeps a long unbroken tag value inside the tooltip", async () => {
+    const long = Array.from({ length: 9 }, (_, i) => `line ${i}`).join("\n");
+    const sha = "a".repeat(64);
+    vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);
+    vi.mocked(mockApi.catalogArtifacts).mockResolvedValue([
+      {
+        ...ARTIFACTS[0]!,
+        platform: "bin",
+        tags: { version: "1.0.0", changelog: long, sha256: sha },
+      },
+    ]);
+    mount(
+      <Routes>
+        <Route path="/catalog/apps/:id" element={<CatalogAppPage />} />
+      </Routes>,
+      { client: mockApi, path: "/catalog/apps/ca_1" },
     );
-    expect(await screen.findByText("build_type")).toBeInTheDocument();
+    await userEvent.hover(await screen.findByText(/^line 0/));
+    const tip = await screen.findByRole("tooltip");
+    // The clamped tail is reachable, and 64 hex characters have to wrap.
+    expect(tip).toHaveTextContent("line 8");
+    expect(within(tip).getByText(sha, { exact: false })).toHaveStyle({
+      wordBreak: "break-word",
+    });
+  });
+
+  it("renders a dash and no tooltip for an artifact carrying only a version", async () => {
+    vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);
+    vi.mocked(mockApi.catalogArtifacts).mockResolvedValue([
+      { ...ARTIFACTS[0]!, tags: { version: "1.0.0" } },
+    ]);
+    mount(
+      <Routes>
+        <Route path="/catalog/apps/:id" element={<CatalogAppPage />} />
+      </Routes>,
+      { client: mockApi, path: "/catalog/apps/ca_1" },
+    );
+    const row = (await screen.findByText("a.apk")).closest("tr") as HTMLElement;
+    const cell = within(row).getAllByRole("cell")[5]!;
+    expect(cell).toHaveTextContent("—");
+    await userEvent.hover(cell);
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
   it("keeps two re-uploads of one version, platform and file name apart", async () => {
@@ -254,18 +276,12 @@ describe("CatalogAppPage", () => {
       { client: mockApi, path: "/catalog/apps/ca_1" },
     );
     // The id is the only thing that tells the two rows apart.
-    for (const id of ["art_1", "art_2"]) {
-      expect(
-        await screen.findByRole("button", {
-          name: `Show metadata for 1.0.0 android a.apk ${id}`,
-        }),
-      ).toBeInTheDocument();
+    for (const id of ["art_1", "art_2"])
       expect(
         await screen.findByRole("button", {
           name: `Actions for 1.0.0 android a.apk ${id}`,
         }),
       ).toBeInTheDocument();
-    }
   });
 
   it("keeps Edit disabled until the settings are known, so a save cannot wipe them", async () => {
