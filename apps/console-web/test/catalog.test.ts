@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  artifactLabel,
+  artifactLabels,
+  artifactTagRows,
   artifactVersion,
   fmtSize,
   groupArtifactsByVersion,
@@ -54,5 +57,65 @@ describe("isIosUserAgent", () => {
     expect(isIosUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X)")).toBe(
       false,
     );
+  });
+});
+
+describe("artifactTagRows", () => {
+  it("orders the known tags and appends unknown ones alphabetically", () => {
+    const a = mk("a", "1.0", 0);
+    a.tags = {
+      sha256: "ff",
+      commit: "abc1234",
+      build_type: "release",
+      version: "1.0",
+      zeta: "z",
+      alpha: "a",
+    };
+    expect(artifactTagRows(a).map((t) => t.key)).toEqual([
+      "version",
+      "build_type",
+      "commit",
+      "sha256",
+      "alpha",
+      "zeta",
+    ]);
+  });
+
+  it("is empty when the upload sent no tags", () => {
+    expect(artifactTagRows(mk("a", undefined, 0))).toEqual([]);
+  });
+});
+
+describe("artifactLabel", () => {
+  it("tells per-ABI rows of one version apart", () => {
+    const a = mk("a", "1.0", 0);
+    a.tags = { version: "1.0", abi: "arm64-v8a" };
+    expect(artifactLabel(a, "1.0")).toBe("1.0 android arm64-v8a");
+    const b = mk("b", "1.0", 0);
+    b.objectKey = "apps/ca_1/1.0/app.apk";
+    expect(artifactLabel(b, "1.0")).toBe("1.0 android app.apk");
+    const c = mk("c", "1.0", 0);
+    c.objectKey = null;
+    expect(artifactLabel(c, "1.0")).toBe("1.0 android");
+  });
+});
+
+describe("artifactLabels", () => {
+  it("appends the id only where a label repeats", () => {
+    const one = { ...mk("a", "1.0", 0), version: "1.0" };
+    const two = {
+      ...mk("b", "1.0", 0),
+      objectKey: "p/x/a.apk",
+      version: "1.0",
+    };
+    const three = {
+      ...mk("c", "1.0", 0),
+      objectKey: "p/y/a.apk",
+      version: "1.0",
+    };
+    const labels = artifactLabels([one, two, three]);
+    expect(labels.get("a")).toBe("1.0 android a");
+    expect(labels.get("b")).toBe("1.0 android a.apk b");
+    expect(labels.get("c")).toBe("1.0 android a.apk c");
   });
 });

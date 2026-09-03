@@ -53,7 +53,12 @@ const ARTIFACTS: CatalogArtifact[] = [
     objectKey: "apps/ca_1/1.0.0/a.apk",
     size: 1024,
     hash: null,
-    tags: { version: "1.0.0" },
+    tags: {
+      version: "1.0.0",
+      build_type: "release",
+      commit: "abc1234",
+      changelog: "first release",
+    },
     createdAt: 0,
   },
 ];
@@ -98,6 +103,8 @@ describe("CatalogAppPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("ca_1")).toBeInTheDocument();
     expect(await screen.findByText("1.0.0")).toBeInTheDocument();
+    for (const c of ["Version", "Platform", "File", "Size", "Created"])
+      expect(screen.getByRole("columnheader", { name: c })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "a.apk" })).toHaveAttribute(
       "href",
       "https://cdn.example/a.apk",
@@ -159,7 +166,9 @@ describe("CatalogAppPage", () => {
     vi.mocked(mockApi.deleteCatalogArtifact).mockResolvedValue(undefined);
     open();
     await userEvent.click(
-      await screen.findByRole("button", { name: "Actions for 1.0.0 android" }),
+      await screen.findByRole("button", {
+        name: "Actions for 1.0.0 android a.apk",
+      }),
     );
     await userEvent.click(
       await screen.findByRole("menuitem", { name: "Delete artifact" }),
@@ -174,6 +183,89 @@ describe("CatalogAppPage", () => {
         "art_1",
       ),
     );
+  });
+
+  it("opens the artifact's upload metadata from its row, and closes it again", async () => {
+    open();
+    const toggle = await screen.findByRole("button", {
+      name: "Show metadata for 1.0.0 android a.apk",
+    });
+    // The table itself stays short: no tag is on screen until it is opened.
+    expect(screen.queryByText("changelog")).toBeNull();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
+    // Scoped to the panel: "release" is also a build-type option upstairs.
+    const panel = await screen.findByRole("region", {
+      name: "Metadata of 1.0.0 android a.apk",
+    });
+    expect(toggle).toHaveAttribute("aria-controls", panel.id);
+    for (const c of ["Tag", "Value"])
+      expect(
+        within(panel).getByRole("columnheader", { name: c }),
+      ).toBeInTheDocument();
+    // Ordered as the server lists the tags, not as the object happened to come.
+    expect(
+      within(panel)
+        .getAllByRole("row")
+        .slice(1)
+        .map((r) => r.textContent),
+    ).toEqual([
+      "version1.0.0",
+      "build_typerelease",
+      "commitabc1234",
+      "changelogfirst release",
+    ]);
+    expect(
+      within(panel).getByText("apps/ca_1/1.0.0/a.apk"),
+    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // The visible label follows the state, and so does the accessible name.
+    expect(toggle).toHaveAccessibleName(
+      "Hide metadata for 1.0.0 android a.apk",
+    );
+    await userEvent.click(toggle);
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: /^Metadata of/ })).toBeNull(),
+    );
+  });
+
+  it("shows the metadata to a read-only viewer too", async () => {
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+    open();
+    await screen.findByRole("heading", { name: "my-game" });
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Show metadata for 1.0.0 android a.apk",
+      }),
+    );
+    expect(await screen.findByText("build_type")).toBeInTheDocument();
+  });
+
+  it("keeps two re-uploads of one version, platform and file name apart", async () => {
+    vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);
+    vi.mocked(mockApi.catalogArtifacts).mockResolvedValue([
+      ARTIFACTS[0]!,
+      { ...ARTIFACTS[0]!, id: "art_2", objectKey: "apps/ca_1/1.0.0/a.apk" },
+    ]);
+    mount(
+      <Routes>
+        <Route path="/catalog/apps/:id" element={<CatalogAppPage />} />
+      </Routes>,
+      { client: mockApi, path: "/catalog/apps/ca_1" },
+    );
+    // The id is the only thing that tells the two rows apart.
+    for (const id of ["art_1", "art_2"]) {
+      expect(
+        await screen.findByRole("button", {
+          name: `Show metadata for 1.0.0 android a.apk ${id}`,
+        }),
+      ).toBeInTheDocument();
+      expect(
+        await screen.findByRole("button", {
+          name: `Actions for 1.0.0 android a.apk ${id}`,
+        }),
+      ).toBeInTheDocument();
+    }
   });
 
   it("keeps Edit disabled until the settings are known, so a save cannot wipe them", async () => {
