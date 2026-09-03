@@ -23,6 +23,8 @@ import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { Badge, DropZone, Notice } from "../components/ui";
 import {
+  artifactLabels,
+  artifactTagRows,
   fmtSize,
   groupArtifactsByVersion,
   isIosUserAgent,
@@ -35,6 +37,7 @@ import { projectUrl, useTeamStanding } from "../lib/team";
 import {
   CATALOG_PLATFORMS,
   type CatalogApp,
+  type CatalogArtifact,
   type CatalogCleanupResult,
   type CatalogPlatform,
   type CatalogSettings,
@@ -258,6 +261,73 @@ function CleanupSection({
   );
 }
 
+/** The one metadata panel a row's toggle opens (`aria-controls`). */
+const METADATA_PANEL_ID = "artifact-metadata";
+
+/**
+ * The upload metadata of one artifact, opened from its row. The table stays
+ * short on purpose (version, platform, file, size, time); everything the
+ * upload sent along — build, commit, changelog, checksums — lives here.
+ */
+function ArtifactMetadata({
+  artifact,
+  label,
+}: {
+  artifact: CatalogArtifact;
+  label: string;
+}) {
+  const rows = artifactTagRows(artifact);
+  return (
+    <div
+      id={METADATA_PANEL_ID}
+      role="region"
+      aria-labelledby={`${METADATA_PANEL_ID}-title`}
+      style={{ marginTop: 16 }}
+    >
+      <Text id={`${METADATA_PANEL_ID}-title`} size="sm" fw={500} mb="xs">
+        Metadata of {label}
+      </Text>
+      <DataTable
+        columns={[
+          { key: "key", label: "Tag", width: 200 },
+          { key: "value", label: "Value" },
+        ]}
+        rows={rows}
+        rowKey={(t) => t.key}
+        minWidth={480}
+        empty={{ title: "No upload metadata." }}
+        render={(t) => (
+          <>
+            <Table.Td>
+              <Code>{t.key}</Code>
+            </Table.Td>
+            <Table.Td
+              style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+            >
+              {t.value}
+            </Table.Td>
+          </>
+        )}
+      />
+      <Text size="xs" c="dimmed" mt="xs">
+        id <Code>{artifact.id}</Code>
+        {artifact.objectKey && (
+          <>
+            {" · key "}
+            <Code>{artifact.objectKey}</Code>
+          </>
+        )}
+        {artifact.hash && (
+          <>
+            {" · etag "}
+            <Code>{artifact.hash}</Code>
+          </>
+        )}
+      </Text>
+    </div>
+  );
+}
+
 interface EditForm {
   name: string;
   path: string;
@@ -292,6 +362,8 @@ export function CatalogAppPage() {
     { enabled: standing.canWrite },
   );
   const act = useAction();
+  /** The artifact whose metadata panel is open, by id. */
+  const [openMeta, setOpenMeta] = useState<string | null>(null);
   const iosDevice = isIosUserAgent(navigator.userAgent);
   const a = app.data;
   const s = settings.data ?? null;
@@ -397,6 +469,11 @@ export function CatalogAppPage() {
       first: i === 0,
     })),
   );
+  const labels = artifactLabels(rows);
+  const labelOf = (art: { id: string }) => labels.get(art.id) ?? art.id;
+  // The row's panel follows the rows: an artifact deleted (or cleaned up)
+  // while its metadata is open simply takes the panel with it.
+  const opened = rows.find((art) => art.id === openMeta) ?? null;
   // The drawer seeds its settings fields from `s`; opening it before the
   // settings arrived would diff blanks against them and wipe them on save.
   const settingsPending = canWrite && settings.data === undefined;
@@ -440,13 +517,14 @@ export function CatalogAppPage() {
             { key: "file", label: "File" },
             { key: "size", label: "Size", align: "right" },
             { key: "created", label: "Created" },
+            { key: "metadata", label: "" },
             { key: "install", label: "" },
           ]}
           rows={artifacts.data ? rows : undefined}
           loading={artifacts.loading}
           error={artifacts.error}
           rowKey={(art) => art.id}
-          minWidth={640}
+          minWidth={720}
           empty={{ title: "No artifacts yet." }}
           render={(art) => (
             <>
@@ -470,6 +548,23 @@ export function CatalogAppPage() {
               </Table.Td>
               <Table.Td>{fmtTime(art.createdAt)}</Table.Td>
               <Table.Td>
+                <Button
+                  size="compact-sm"
+                  variant="subtle"
+                  color="ink"
+                  aria-label={`${openMeta === art.id ? "Hide" : "Show"} metadata for ${labelOf(art)}`}
+                  aria-expanded={openMeta === art.id}
+                  aria-controls={
+                    openMeta === art.id ? METADATA_PANEL_ID : undefined
+                  }
+                  onClick={() =>
+                    setOpenMeta(openMeta === art.id ? null : art.id)
+                  }
+                >
+                  {openMeta === art.id ? "Hide metadata" : "Show metadata"}
+                </Button>
+              </Table.Td>
+              <Table.Td>
                 {art.ios &&
                   (iosDevice ? (
                     <Button
@@ -492,7 +587,7 @@ export function CatalogAppPage() {
             canWrite
               ? (art) => (
                   <RowMenu
-                    name={`${art.version} ${art.platform}`}
+                    name={labelOf(art)}
                     items={[
                       {
                         label: "Delete artifact",
@@ -500,7 +595,7 @@ export function CatalogAppPage() {
                         disabled: act.busy,
                         onClick: () => removeArtifact(art.id),
                         confirm: {
-                          title: `Delete ${art.version} ${art.platform}?`,
+                          title: `Delete ${labelOf(art)}?`,
                           message: "The file is removed from the CDN.",
                           confirmLabel: "Delete artifact",
                           danger: true,
@@ -512,6 +607,13 @@ export function CatalogAppPage() {
               : undefined
           }
         />
+        {opened && (
+          <ArtifactMetadata
+            key={opened.id}
+            artifact={opened}
+            label={labelOf(opened)}
+          />
+        )}
       </Section>
       {canWrite && <CleanupSection app={a} onDone={() => artifacts.reload()} />}
       <ResourceDrawer
