@@ -29,7 +29,7 @@ GET|PATCH|DELETE /projects/{prj}      member / member / owner|admin (409 while r
 GET|POST /projects/{prj}/versions ; POST …/versions/bump {part} ; GET|PATCH|DELETE …/versions/{ver}
 GET|POST …/versions/{ver}/links ; DELETE …/links/{id}
 GET|POST /projects/{prj}/issues[?status=&versionId=] ; GET|PATCH …/issues/{n} ; POST …/issues/{n}/close|reopen ; comments as above
-POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles | /projects/{prj}/sites
+POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles | /projects/{prj}/sites | /projects/{prj}/kv
 GET|PUT  /admin/settings/installer-app   admin
 ```
 
@@ -58,6 +58,8 @@ Without `sort` a list keeps its historical order, which is what the CLI relies o
 /projects/{prj}/catalog/apps, /projects/{prj}/assets/bundles
                               name description createdBy updatedAt
 /projects/{prj}/sites         name url createdBy updatedAt
+/projects/{prj}/kv            name readScope writeScope entries createdBy updatedAt   q: name
+/kv/{id}/entries              (cursor-paged, keyset on key: order asc|desc only; prefix, owner)
 /sites/{site}/deploys         id status files size createdAt         (the newest N, ordered as asked)
 /catalog/apps/{app}/artifacts version platform size createdAt
 /members                      login role createdAt approvedAt
@@ -65,7 +67,7 @@ Without `sort` a list keeps its historical order, which is what the CLI relies o
 ```
 
 Single-resource routes stay id-based and unchanged in path: `/channels/{id}`, `/catalog/apps/{appId}`,
-`/assets/bundles/{bundleId}`, `/sites/{siteId}` (plus their sub-routes: deploys, deploys/{id}/commit, settings, extend, rotate-secret, redis-user, doc-key, artifacts, artifacts/cleanup; gateway lookups are top-level `GET /gw/health`, `GET /gw/channels/{id}`).
+`/assets/bundles/{bundleId}`, `/sites/{siteId}`, `/kv/{id}` (plus their sub-routes: entries, deploys, deploys/{id}/commit, settings, extend, rotate-secret, redis-user, doc-key, artifacts, artifacts/cleanup; gateway lookups are top-level `GET /gw/health`, `GET /gw/channels/{id}`).
 `GET /channels` lists every channel across the caller's teams (`?scope=all` for admin).
 
 Resource views carry `teamId, teamName, projectId, projectName, createdBy` (login) for breadcrumbs;
