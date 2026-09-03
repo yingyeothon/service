@@ -6,9 +6,11 @@ import {
   Group,
   NumberInput,
   Select,
+  Stack,
   Table,
   Text,
   TextInput,
+  Tooltip,
 } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -261,70 +263,75 @@ function CleanupSection({
   );
 }
 
-/** The one metadata panel a row's toggle opens (`aria-controls`). */
-const METADATA_PANEL_ID = "artifact-metadata";
+/** Lines the cell shows before it clamps; the tooltip always has the whole. */
+const CHANGELOG_LINES = 4;
 
 /**
- * The upload metadata of one artifact, opened from its row. The table stays
- * short on purpose (version, platform, file, size, time); everything the
- * upload sent along — build, commit, changelog, checksums — lives here.
+ * The changelog cell: the one upload tag long enough to be worth a column of
+ * its own, with the artifact's other upload tags — and the changelog in full,
+ * since the cell clamps — on a tooltip over it. An expander below the table
+ * was the first shape of this and it was wrong: the row and its metadata
+ * never shared a screen.
  */
-function ArtifactMetadata({
-  artifact,
-  label,
-}: {
-  artifact: CatalogArtifact;
-  label: string;
-}) {
-  const rows = artifactTagRows(artifact);
-  return (
-    <div
-      id={METADATA_PANEL_ID}
-      role="region"
-      aria-labelledby={`${METADATA_PANEL_ID}-title`}
-      style={{ marginTop: 16 }}
+function ChangelogCell({ artifact }: { artifact: CatalogArtifact }) {
+  const changelog = artifact.tags.changelog?.trim() ?? "";
+  // `version` has a column; everything else the upload sent is here. The
+  // changelog leads because a clamped cell cannot be measured from here —
+  // guessing whether it clipped is the one thing this must not do.
+  const tags = [
+    ...(changelog ? [{ key: "changelog", value: changelog }] : []),
+    ...artifactTagRows(artifact).filter(
+      (t) => t.key !== "changelog" && t.key !== "version",
+    ),
+  ];
+  // A span, not the default paragraph: the tooltip target below wraps it.
+  const text = (
+    <Text
+      component="span"
+      size="sm"
+      c={changelog ? undefined : "dimmed"}
+      lineClamp={CHANGELOG_LINES}
+      style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
     >
-      <Text id={`${METADATA_PANEL_ID}-title`} size="sm" fw={500} mb="xs">
-        Metadata of {label}
-      </Text>
-      <DataTable
-        columns={[
-          { key: "key", label: "Tag", width: 200 },
-          { key: "value", label: "Value" },
-        ]}
-        rows={rows}
-        rowKey={(t) => t.key}
-        minWidth={480}
-        empty={{ title: "No upload metadata." }}
-        render={(t) => (
-          <>
-            <Table.Td>
-              <Code>{t.key}</Code>
-            </Table.Td>
-            <Table.Td
-              style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-            >
-              {t.value}
-            </Table.Td>
-          </>
-        )}
-      />
-      <Text size="xs" c="dimmed" mt="xs">
-        id <Code>{artifact.id}</Code>
-        {artifact.objectKey && (
-          <>
-            {" · key "}
-            <Code>{artifact.objectKey}</Code>
-          </>
-        )}
-        {artifact.hash && (
-          <>
-            {" · etag "}
-            <Code>{artifact.hash}</Code>
-          </>
-        )}
-      </Text>
-    </div>
+      {changelog || "—"}
+    </Text>
+  );
+  if (tags.length === 0) return <Table.Td>{text}</Table.Td>;
+  return (
+    <Table.Td>
+      <Tooltip
+        multiline
+        w={280}
+        position="top-start"
+        events={{ hover: true, focus: true, touch: true }}
+        label={
+          <Stack gap={2}>
+            {tags.map((t) => (
+              <Text key={t.key} size="xs" style={{ wordBreak: "break-word" }}>
+                <b>{t.key}</b> {t.value}
+              </Text>
+            ))}
+          </Stack>
+        }
+      >
+        {/*
+         * Focusable so the tooltip is reachable without a pointer, and a
+         * block so the whole cell is the target — a row whose only tag is a
+         * build type would otherwise hide it all behind one em dash.
+         */}
+        <span
+          tabIndex={0}
+          style={{
+            display: "block",
+            cursor: "help",
+            textDecoration: "underline dotted",
+            textUnderlineOffset: 3,
+          }}
+        >
+          {text}
+        </span>
+      </Tooltip>
+    </Table.Td>
   );
 }
 
@@ -362,8 +369,6 @@ export function CatalogAppPage() {
     { enabled: standing.canWrite },
   );
   const act = useAction();
-  /** The artifact whose metadata panel is open, by id. */
-  const [openMeta, setOpenMeta] = useState<string | null>(null);
   const iosDevice = isIosUserAgent(navigator.userAgent);
   const a = app.data;
   const s = settings.data ?? null;
@@ -471,9 +476,6 @@ export function CatalogAppPage() {
   );
   const labels = artifactLabels(rows);
   const labelOf = (art: { id: string }) => labels.get(art.id) ?? art.id;
-  // The row's panel follows the rows: an artifact deleted (or cleaned up)
-  // while its metadata is open simply takes the panel with it.
-  const opened = rows.find((art) => art.id === openMeta) ?? null;
   // The drawer seeds its settings fields from `s`; opening it before the
   // settings arrived would diff blanks against them and wipe them on save.
   const settingsPending = canWrite && settings.data === undefined;
@@ -517,14 +519,14 @@ export function CatalogAppPage() {
             { key: "file", label: "File" },
             { key: "size", label: "Size", align: "right" },
             { key: "created", label: "Created" },
-            { key: "metadata", label: "" },
+            { key: "changelog", label: "Changelog", width: 280 },
             { key: "install", label: "" },
           ]}
           rows={artifacts.data ? rows : undefined}
           loading={artifacts.loading}
           error={artifacts.error}
           rowKey={(art) => art.id}
-          minWidth={720}
+          minWidth={920}
           empty={{ title: "No artifacts yet." }}
           render={(art) => (
             <>
@@ -547,23 +549,7 @@ export function CatalogAppPage() {
                 {fmtSize(art.size)}
               </Table.Td>
               <Table.Td>{fmtTime(art.createdAt)}</Table.Td>
-              <Table.Td>
-                <Button
-                  size="compact-sm"
-                  variant="subtle"
-                  color="ink"
-                  aria-label={`${openMeta === art.id ? "Hide" : "Show"} metadata for ${labelOf(art)}`}
-                  aria-expanded={openMeta === art.id}
-                  aria-controls={
-                    openMeta === art.id ? METADATA_PANEL_ID : undefined
-                  }
-                  onClick={() =>
-                    setOpenMeta(openMeta === art.id ? null : art.id)
-                  }
-                >
-                  {openMeta === art.id ? "Hide metadata" : "Show metadata"}
-                </Button>
-              </Table.Td>
+              <ChangelogCell artifact={art} />
               <Table.Td>
                 {art.ios &&
                   (iosDevice ? (
@@ -607,13 +593,6 @@ export function CatalogAppPage() {
               : undefined
           }
         />
-        {opened && (
-          <ArtifactMetadata
-            key={opened.id}
-            artifact={opened}
-            label={labelOf(opened)}
-          />
-        )}
       </Section>
       {canWrite && <CleanupSection app={a} onDone={() => artifacts.reload()} />}
       <ResourceDrawer

@@ -15,6 +15,7 @@ import {
   Skeleton,
   Table,
   Tabs,
+  Tooltip,
   createTheme,
   rem,
   type CSSVariablesResolver,
@@ -168,6 +169,12 @@ export const theme = createTheme({
     SegmentedControl: SegmentedControl.extend({
       defaultProps: { radius: "sm", size: "sm" },
       styles: { root: { backgroundColor: SURFACE_SOFT } },
+    }),
+    // Hover detail in a table (the catalog artifact's metadata) — Mantine's
+    // default gray is not a token, so it takes DESIGN.md's `surface-dark`.
+    Tooltip: Tooltip.extend({
+      defaultProps: { radius: "sm", withArrow: true },
+      styles: { tooltip: { backgroundColor: "#181d26" } },
     }),
     Skeleton: Skeleton.extend({ defaultProps: { radius: "sm" } }),
     AppShell: AppShell.extend({
