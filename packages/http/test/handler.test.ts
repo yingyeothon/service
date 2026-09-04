@@ -234,6 +234,107 @@ describe("createHttpHandler", () => {
     expect(errors).toEqual(["unhandled error"]);
   });
 
+  it("logs the matched route pattern, never the path", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const h = createHttpHandler({
+      routes,
+      cors: { origins: ["*"] },
+      logger: {
+        debug() {},
+        info: (_m, f) => lines.push(f as Record<string, unknown>),
+        warn() {},
+        error() {},
+      },
+    });
+    await h(
+      ev("GET", "/c/0123456789abcdef/start", { query: { provider: "github" } }),
+    );
+    await h(ev("GET", "/files/secret/key.json"));
+    await h(ev("POST", "/ping"));
+    await h(ev("GET", "/no/such/route"));
+    await h(
+      ev("OPTIONS", "/c/0123456789abcdef/start", {
+        headers: { origin: "https://console.yyt.life" },
+      }),
+    );
+    expect(lines.map((l) => [l.route, l.status])).toEqual([
+      ["/c/{ch}/start", 200],
+      ["/files/*", 200],
+      ["/ping", 405],
+      ["unmatched", 404],
+      ["/c/{ch}/start", 204],
+    ]);
+    // The captured segments are caller data and must not appear anywhere.
+    expect(JSON.stringify(lines)).not.toContain("0123456789abcdef");
+    expect(JSON.stringify(lines)).not.toContain("secret");
+    expect(lines.every((l) => !("path" in l))).toBe(true);
+    // `head` is only on the line that has no pattern to name.
+    expect(lines.map((l) => l.head)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      "?",
+      undefined,
+    ]);
+  });
+
+  it("names the family of a path that matched nothing, and only from the table", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const h = createHttpHandler({
+      routes,
+      logger: {
+        debug() {},
+        info: (_m, f) => lines.push(f as Record<string, unknown>),
+        warn() {},
+        error() {},
+      },
+    });
+    // A client calling a renamed endpoint under a family we do serve …
+    await h(ev("GET", "/files"));
+    await h(ev("GET", "/c/abc"));
+    // … and a scanner, whose own strings never reach the log.
+    await h(ev("GET", "/wp-login.php"));
+    await h(ev("GET", "/yds.auth_1.deadbeef/x"));
+    await h(ev("GET", "/"));
+    expect(lines.map((l) => [l.route, l.head])).toEqual([
+      ["unmatched", "files"],
+      ["unmatched", "c"],
+      ["unmatched", "?"],
+      ["unmatched", "?"],
+      ["unmatched", "?"],
+    ]);
+    expect(JSON.stringify(lines)).not.toContain("deadbeef");
+    expect(JSON.stringify(lines)).not.toContain("wp-login");
+  });
+
+  it("names the caller once the service has resolved one", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const h = createHttpHandler({
+      routes,
+      identity: async ({ bearer }) =>
+        bearer === "tok" ? { kind: "token", subject: "m_1" } : undefined,
+      logger: {
+        debug() {},
+        info: (_m, f) => lines.push(f as Record<string, unknown>),
+        warn() {},
+        error() {},
+      },
+    });
+    const auth = { headers: { authorization: "Bearer tok" } };
+    await h(ev("GET", "/ping", auth));
+    // A refusal after the identity resolved still names it: "who saw this 410"
+    // is the question a report starts from.
+    await h(ev("GET", "/gone", auth));
+    await h(ev("GET", "/me"));
+    await h(ev("GET", "/ping"));
+    expect(lines.map((l) => [l.status, l.subject])).toEqual([
+      [200, "m_1"],
+      [410, "m_1"],
+      [401, undefined],
+      [200, undefined],
+    ]);
+  });
+
   it("passes raw results through and returns 204 for undefined", async () => {
     const r = await handler(ev("GET", "/raw"));
     expect(r.statusCode).toBe(302);

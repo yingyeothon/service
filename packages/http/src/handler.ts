@@ -14,6 +14,11 @@ export type HttpResult = APIGatewayProxyStructuredResultV2;
 export interface Identity {
   /** `session` (cookie) or `token` (Bearer API token) or any scheme the service defines. */
   kind: string;
+  /**
+   * Who the caller is, as an **id** -- a member id, a channel id. It goes into
+   * the request log, so it must never be a token, a login or anything else a
+   * log may not hold (`rules/security.md`).
+   */
   subject: string;
   role?: string;
   [extra: string]: unknown;
@@ -115,6 +120,15 @@ function corsHeaders(
   };
 }
 
+/** What the request log names when no route pattern matched the path at all. */
+const UNMATCHED_ROUTE = "unmatched";
+
+/** The path's first segment when the route table declares it, else `"?"`. */
+function headOf(rawPath: string, known: Set<string>): string {
+  const seg = rawPath.split("/")[1] ?? "";
+  return known.has(seg) ? seg : "?";
+}
+
 function normalizeHeaders(
   h: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
@@ -140,21 +154,48 @@ export function createHttpHandler({
       path: compilePath(route.path),
     }),
   );
+  /**
+   * The literal first segments of the route table (`s`, `teams`, `kv`, …).
+   * Only these are ever logged for a path that matched nothing, so the field
+   * can hold a string this service wrote and nothing a caller sent.
+   */
+  const knownHeads = new Set(
+    routes
+      .map((r) => r.path.split("/")[1] ?? "")
+      .filter((seg) => seg !== "" && seg !== "*" && !seg.startsWith("{")),
+  );
 
   return async (event) => {
     const startedAt = Date.now();
-    const result = await dispatch(event);
+    const { result, route, subject } = await dispatch(event);
     logger.info("request", {
       requestId: event.requestContext.requestId,
       method: event.requestContext.http.method,
-      path: event.rawPath,
+      // The *pattern*, never `rawPath`: a captured segment is caller data --
+      // a document owner id (`/s/{ownerId}`) or a kv key -- and CloudWatch is
+      // not where that belongs (`rules/security.md`). `params` reaches the
+      // route handler, which decides what is safe to log about them.
+      route,
+      // Which family a request that matched nothing was aimed at. Without it
+      // a 404 storm is one undifferentiated line: a client calling a renamed
+      // endpoint and a scanner sweeping the host look exactly alike, and the
+      // path is not there any more to tell them apart. `?` means "not one of
+      // ours", which is the answer for a scanner.
+      ...(route === UNMATCHED_ROUTE
+        ? { head: headOf(event.rawPath, knownHeads) }
+        : {}),
+      // Whose request it was, when the service resolved one. The pattern alone
+      // cannot narrow a report to one team, and the path used to carry that.
+      ...(subject === undefined ? {} : { subject }),
       status: result.statusCode,
       ms: Date.now() - startedAt,
     });
     return result;
   };
 
-  async function dispatch(event: HttpEvent): Promise<HttpResult> {
+  async function dispatch(
+    event: HttpEvent,
+  ): Promise<{ result: HttpResult; route: string; subject?: string }> {
     const headers = normalizeHeaders(event.headers ?? {});
     const origin = headers.origin;
     const extra = cors ? corsHeaders(cors, origin) : {};
@@ -162,22 +203,28 @@ export function createHttpHandler({
     const rawPath = event.rawPath;
     const requestId = event.requestContext.requestId;
 
-    if (method === "OPTIONS" && cors) {
-      return { statusCode: 204, headers: extra, body: "" };
-    }
-
     let params: Record<string, string> | null = null;
     let matched: AnyRoute | undefined;
-    let pathExists = false;
+    /** The first route whose *path* matched, whatever its method: what a 405
+     * and a CORS preflight are about, and the only pattern they can name. */
+    let pathPattern: string | undefined;
     for (const { route, path } of compiled) {
       const p = matchPath(path, rawPath);
       if (!p) continue;
-      pathExists = true;
+      pathPattern ??= route.path;
       if (route.method === "ANY" || route.method === method) {
         matched = route;
         params = p;
         break;
       }
+    }
+    const route = matched?.path ?? pathPattern ?? UNMATCHED_ROUTE;
+    /** Filled once an identity resolves, so a refusal after it still names it. */
+    let subject: string | undefined;
+    const done = (result: HttpResult) => ({ result, route, subject });
+
+    if (method === "OPTIONS" && cors) {
+      return done({ statusCode: 204, headers: extra, body: "" });
     }
 
     const fail = (err: AppError): HttpResult => {
@@ -192,11 +239,12 @@ export function createHttpHandler({
 
     try {
       if (!matched || !params) {
+        const known = pathPattern !== undefined;
         throw new AppError(
-          pathExists ? "bad_request" : "not_found",
-          pathExists ? `method ${method} not allowed` : "route not found",
+          known ? "bad_request" : "not_found",
+          known ? `method ${method} not allowed` : "route not found",
           {
-            status: pathExists ? 405 : 404,
+            status: known ? 405 : 404,
           },
         );
       }
@@ -205,6 +253,7 @@ export function createHttpHandler({
       const resolved = identity
         ? await identity({ bearer, cookies, event })
         : undefined;
+      subject = resolved?.subject;
       if (matched.auth && !resolved)
         throw new AppError("unauthorized", "authentication required");
 
@@ -241,11 +290,11 @@ export function createHttpHandler({
       };
       const result = await matched.handler(ctx);
       if (isHttpResult(result)) {
-        return { ...result, headers: { ...extra, ...result.headers } };
+        return done({ ...result, headers: { ...extra, ...result.headers } });
       }
       if (result === undefined)
-        return { statusCode: 204, headers: extra, body: "" };
-      return json(result, { headers: extra });
+        return done({ statusCode: 204, headers: extra, body: "" });
+      return done(json(result, { headers: extra }));
     } catch (e) {
       if (e instanceof AppError) {
         if (e.status >= 500)
@@ -263,14 +312,14 @@ export function createHttpHandler({
             code: e.code,
             status: e.status,
           });
-        return fail(e);
+        return done(fail(e));
       }
       logger.error("unhandled error", {
         requestId,
         message: e instanceof Error ? e.message : String(e),
         stack: e instanceof Error ? e.stack : undefined,
       });
-      return fail(new AppError("internal", "internal error"));
+      return done(fail(new AppError("internal", "internal error")));
     }
   }
 }
