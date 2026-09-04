@@ -6,6 +6,7 @@ import {
   createShowsDb,
   createTeamDb,
   createPrismaClient,
+  createKvStoreDb,
   createSitesDb,
   createStateDb,
   mysqlOptionsFromEnv,
@@ -13,6 +14,7 @@ import {
   type CatalogDb,
   type ConsoleDb,
   type EventsDb,
+  type KvStoreDb,
   type ShowsDb,
   type SitesDb,
   type TeamDb,
@@ -37,6 +39,7 @@ import {
   runAssetSweep,
   runCatalogSweep,
   runExpire,
+  runKvStoreSweep,
   runRedisAclReconcile,
   runRedisUsageReport,
 } from "./expire.js";
@@ -70,6 +73,8 @@ interface Deps {
   assets: AssetsDb;
   sites: SitesDb;
   team: TeamDb;
+  /** The key-value store; the state stack serves its API from the same tables. */
+  kvstore: KvStoreDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
   kv: Kv;
@@ -111,6 +116,7 @@ function getDeps(): Promise<Deps> {
       assets: createAssetsDb(raw),
       sites: createSitesDb(raw),
       team: createTeamDb(raw, { newHistoryId: historyId }),
+      kvstore: createKvStoreDb(raw),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
@@ -162,6 +168,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     assets,
     sites,
     team,
+    kvstore,
     state,
     kv,
     redisAcl,
@@ -212,6 +219,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     assets,
     sites,
     team,
+    kvstore,
     state,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
@@ -313,6 +321,7 @@ export const expire = async (): Promise<void> => {
     assets,
     sites,
     team,
+    kvstore,
     state,
     redisAcl,
     kv,
@@ -326,9 +335,20 @@ export const expire = async (): Promise<void> => {
   // still fires: chaining them bare meant a channel-expiry failure silently
   // skipped the asset cleanup on that day and every day after.
   const failures: unknown[] = [];
+  /** Channels this run finished with; the kv sweep takes their players' entries. */
+  let deletedAuthChannels: string[] = [];
   for (const step of [
     async () => {
-      const { deleted } = await runExpire({ db, state, team, logger });
+      const { deleted, purged } = await runExpire({ db, state, team, logger });
+      // Both lifecycle points, because they are different channels: `deleted`
+      // is the expiry path, `purged` is the hard delete 30 days after a
+      // *manual* delete — whose inline purge is best-effort and bounded, and
+      // whose ids nothing names once the row is gone. A purged id of another
+      // kind costs one indexed statement that finds nothing.
+      deletedAuthChannels = [
+        ...deleted.filter((d) => d.kind === "auth").map((d) => d.id),
+        ...purged,
+      ];
       // Hard-deleted channels take their participant credential with them.
       // Only `q` channels ever had one, and each revoke costs a round trip
       // (≈4s against an unreachable Redis), so the kind test is what keeps
@@ -353,6 +373,7 @@ export const expire = async (): Promise<void> => {
       await runUsageDigest({
         stage,
         redis,
+        kvstore,
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
         distributionId: process.env.ARTIFACT_CDN_DISTRIBUTION_ID || undefined,
@@ -361,6 +382,16 @@ export const expire = async (): Promise<void> => {
         logger,
       });
     },
+    // Its own step, after the channel expiry that names the channels whose
+    // players' entries go: a soft-deleted collection and an expired entry are
+    // storage nobody can address, and nothing else ever reclaims them.
+    () =>
+      runKvStoreSweep({
+        kvstore,
+        channelIds: deletedAuthChannels,
+        kv,
+        logger,
+      }),
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),
     // Expired zip grants and deploys whose worker died; nothing else looks

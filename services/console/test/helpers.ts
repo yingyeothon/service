@@ -6,6 +6,7 @@ import {
   createMemoryConsoleDb,
   createMemoryEventsDb,
   createMemoryShowsDb,
+  createMemoryKvStoreDb,
   createMemorySitesDb,
   createMemoryTeamDb,
   createMemoryStateDb,
@@ -89,6 +90,12 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const artifacts = createMemoryArtifactStore();
   const redisAcl = createMemoryAclAdmin();
   const state = createMemoryStateDb((id) => db.channels.has(id));
+  const kvstore = createMemoryKvStoreDb({
+    teamExists: (id) => teamDb.teams.has(id),
+    projectExists: (id) => teamDb.projects.has(id),
+    memberExists: (id) => db.members.has(id),
+    loginOf,
+  });
   const countIn = (
     pick: (r: { teamId: string | null; projectId: string | null }) => boolean,
   ) => ({
@@ -97,8 +104,9 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     apps: [...catalog.apps.values()].filter(pick).length,
     bundles: [...assets.bundles.values()].filter(pick).length,
     sites: [...sites.sites.values()].filter(pick).length,
-    // No kv collections yet: the harness gains a store when the routes do.
-    kv: 0,
+    // Soft-deleted collections count too: the FK is RESTRICT per row, so a
+    // draining collection still blocks its project's deletion.
+    kv: [...kvstore.collections.values()].filter(pick).length,
   });
   const teamDb = createMemoryTeamDb({
     memberExists: (id) => db.members.has(id),
@@ -122,6 +130,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     assets,
     sites,
     team: teamDb,
+    kvstore,
     posters,
     artifacts,
     cdnBaseUrl: CDN,
@@ -246,6 +255,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     sites,
     siteStore,
     invoked,
+    kvstore,
     teamDb,
     posters,
     artifacts,

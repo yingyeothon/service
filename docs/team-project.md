@@ -58,7 +58,7 @@ Without `sort` a list keeps its historical order, which is what the CLI relies o
 /projects/{prj}/catalog/apps, /projects/{prj}/assets/bundles
                               name description createdBy updatedAt
 /projects/{prj}/sites         name url createdBy updatedAt
-/projects/{prj}/kv            name readScope writeScope entries createdBy updatedAt   q: name
+/projects/{prj}/kv            name readScope writeScope entries createdBy updatedAt   q: name, description
 /kv/{id}/entries              (cursor-paged, keyset on key: order asc|desc only; prefix, owner)
 /sites/{site}/deploys         id status files size createdAt         (the newest N, ordered as asked)
 /catalog/apps/{app}/artifacts version platform size createdAt

@@ -245,6 +245,52 @@ export function kvstoreContract(
     expect(await db.findKey(C1)).toBeUndefined();
   });
 
+  it("walks the live collections in id order, page by page", async () => {
+    const db = await make();
+    await db.insertCollection(coll());
+    await db.insertCollection(coll({ id: C2, name: "second" }));
+    expect(
+      (await db.listLiveCollections({ limit: 10 })).map((c) => c.id),
+    ).toEqual([C1, C2]);
+    // `after` is exclusive, so a page resumes exactly where the previous one
+    // stopped and never re-reads a row.
+    expect(
+      (await db.listLiveCollections({ after: C1, limit: 10 })).map((c) => c.id),
+    ).toEqual([C2]);
+    expect(await db.listLiveCollections({ after: C2, limit: 10 })).toEqual([]);
+    expect(await db.listLiveCollections({ limit: 1 })).toHaveLength(1);
+    // A soft-deleted collection belongs to the other queue, not this walk.
+    await db.softDeleteCollection(C1, 600);
+    expect(
+      (await db.listLiveCollections({ limit: 10 })).map((c) => c.id),
+    ).toEqual([C2]);
+    await expect(db.listLiveCollections({ limit: 0 })).rejects.toMatchObject({
+      code: "bad_request",
+    });
+  });
+
+  it("reports the heaviest collections, expired rows included", async () => {
+    const db = await make();
+    await db.insertCollection(coll());
+    await db.insertCollection(coll({ id: C2, name: "second" }));
+    await db.putEntry(entry({ key: "a", value: '"x"', bytes: 10 }));
+    await db.putEntry(
+      entry({ key: "b", value: '"y"', bytes: 20, expiresAt: 150 }),
+    );
+    await db.putEntry(entry({ collectionId: C2, key: "a", bytes: 5 }));
+    // The expired row still occupies the pages this measures.
+    expect(await db.topCollections(5)).toEqual([
+      { collectionId: C1, entries: 2, bytes: 30 },
+      { collectionId: C2, entries: 1, bytes: 5 },
+    ]);
+    expect((await db.topCollections(1)).map((c) => c.collectionId)).toEqual([
+      C1,
+    ]);
+    // Where the implementation can ask at all, the answer is a real size.
+    const bytes = await db.entriesTableBytes();
+    if (bytes !== undefined) expect(bytes).toBeGreaterThanOrEqual(0);
+  });
+
   it("refuses a batch bound that is not a small positive integer", async () => {
     const db = await make();
     await db.insertCollection(coll());

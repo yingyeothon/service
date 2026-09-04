@@ -19,6 +19,7 @@ import {
   type DiscussionRow,
   type IssueListRow,
   type IssueRow,
+  type KvStoreDb,
   type MemberRow,
   type TeamDb,
   type TeamHistoryRow,
@@ -68,7 +69,7 @@ export const JOIN_COOLDOWN_SEC = 7 * 86_400;
  */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ID_LIKE =
-  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
 export const RESOURCE_NAME_MESSAGE =
   "1-64 chars of letters, digits, '.', '_' or '-', not shaped like an id";
 export const resourceName = z
@@ -230,6 +231,7 @@ export interface TeamRoutesOptions {
   catalog: CatalogDb;
   assets: AssetsDb;
   sites: SitesDb;
+  kvstore: KvStoreDb;
   kv: Kv;
   clock: Clock;
   audit: (
@@ -249,11 +251,19 @@ export function createTeamRoutes({
   catalog,
   assets,
   sites,
+  kvstore,
   kv,
   clock,
   audit,
 }: TeamRoutesOptions): AnyRoute[] {
-  const access = createTeamAccess({ db, team, catalog, assets, sites });
+  const access = createTeamAccess({
+    db,
+    team,
+    catalog,
+    assets,
+    sites,
+    kvstore,
+  });
   const { teamAccess, projectAccess } = access;
   const now = () => nowSec(clock);
   const actor = (id: ConsoleIdentity): Actor => ({

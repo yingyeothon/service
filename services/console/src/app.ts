@@ -21,6 +21,7 @@ import type {
   ChannelRow,
   ConsoleDb,
   EventsDb,
+  KvStoreDb,
   ShowsDb,
   SitesDb,
   TeamDb,
@@ -64,12 +65,14 @@ import {
   revokeChannelRedis,
 } from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
+import { createKvStoreRoutes, deleteChannelKvEntries } from "./kvstore.js";
 import { createEventRoutes } from "./events.js";
 import { canReadShow, createShowRoutes } from "./shows.js";
 import {
   createChannelDocKeyRoutes,
   deleteChannelDocs,
 } from "./channel-doc-key.js";
+import { createWriteSlot } from "./write-slot.js";
 import { createGatewayRoutes } from "./gateway.js";
 import { createTeamRoutes } from "./team.js";
 import { createTeamAccess } from "./team-access.js";
@@ -105,6 +108,8 @@ export interface ConsoleAppOptions {
   sites: SitesDb;
   /** Teams, projects, versions, issues, discussions and platform settings. */
   team: TeamDb;
+  /** The key-value store; the state stack serves its API from the same tables. */
+  kvstore: KvStoreDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
@@ -182,6 +187,7 @@ export function createConsoleApp({
   assets,
   sites,
   team,
+  kvstore,
   posters,
   artifacts,
   cdnBaseUrl,
@@ -260,7 +266,14 @@ export function createConsoleApp({
     return { memberId, role, created };
   }
 
-  const access = createTeamAccess({ db, team, catalog, assets, sites });
+  const access = createTeamAccess({
+    db,
+    team,
+    catalog,
+    assets,
+    sites,
+    kvstore,
+  });
   const { projectAccess, projectResource, memberTeamIds } = access;
   const history = createResourceHistory(team, logger);
   const crumbs = createCrumbResolver({ db, team });
@@ -931,6 +944,9 @@ export function createConsoleApp({
         // because extending revives the channel, and do not survive deletion.
         if (row.kind === "auth" && state)
           await deleteChannelDocs(state, row.id, logger);
+        // And the kv entries those players wrote, for the same reason.
+        if (row.kind === "auth")
+          await deleteChannelKvEntries(kvstore, row.id, logger);
         await audit(id.subject, "channel.delete", row.id);
         await channelHistory(row, id.subject, "resource.delete");
         return undefined;
@@ -1025,12 +1041,25 @@ export function createConsoleApp({
     audit,
   });
 
+  const kvStoreRoutes = createKvStoreRoutes({
+    kvstore,
+    access,
+    crumbs,
+    history,
+    docUrl: urls.doc,
+    clock,
+    logger,
+    writeSlot: createWriteSlot({ kv, clock }),
+    audit,
+  });
+
   const teamRoutes = createTeamRoutes({
     db,
     team,
     catalog,
     assets,
     sites,
+    kvstore,
     kv,
     clock,
     audit,
@@ -1060,6 +1089,7 @@ export function createConsoleApp({
       ...catalogRoutes,
       ...assetRoutes,
       ...siteRoutes,
+      ...kvStoreRoutes,
       ...channelRedisRoutes,
       ...channelDocKeyRoutes,
       ...gatewayRoutes,

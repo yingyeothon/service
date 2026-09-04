@@ -40,6 +40,12 @@ export interface ChannelDocKeyRoutesOptions {
  * What the participant pastes into their game server, in one block — the same
  * discipline as the Redis credential block: the platform computes every part
  * that has to agree on two sides, and the owner copies rather than types.
+ *
+ * The key is **not** only a document credential: it is the `server` principal
+ * of every kv collection of the channel's project, reading and writing any
+ * owner's entries (`docs/decisions.md` *Key-value store* #2). Revoking it
+ * therefore cuts kv as well, which is why `kvPath` is named here rather than
+ * left for someone to discover from a 401.
  */
 export function channelDocBlock(
   row: Pick<ChannelRow, "id">,
@@ -53,6 +59,8 @@ export function channelDocBlock(
     // The path the server writes to; `{ownerId}` is the `sub` of the player's
     // token, and the client reads the same path with that token.
     writePath: `/s/{ownerId}`,
+    // Every kv collection of this channel's project, addressed by its id.
+    kvPath: `/kv/{collectionId}`,
   };
 }
 
