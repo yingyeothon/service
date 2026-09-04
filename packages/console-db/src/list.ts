@@ -65,7 +65,7 @@ export const matchesQ = (v: string | null | undefined, q: string): boolean =>
 const collator = new Intl.Collator("en", { sensitivity: "base" });
 
 /** PAD SPACE ignores trailing U+0020 only — not tabs or newlines. */
-const padSpace = (s: string) => s.replace(/ +$/, "");
+export const padSpace = (s: string) => s.replace(/ +$/, "");
 
 /**
  * `utf8mb4_unicode_ci`: case- and accent-insensitive, PAD SPACE. A MEDIUMTEXT

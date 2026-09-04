@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CATALOG_PLATFORMS } from "../src/catalog.js";
 import { CHANNEL_KINDS, MEMBER_ROLES } from "../src/channels.js";
 import { EVENT_STATUSES } from "../src/events.js";
+import { KV_SCOPES } from "../src/kvstore.js";
 import { SITE_DEPLOY_STATUSES } from "../src/sites.js";
 import { ISSUE_STATUSES, TEAM_ROLES } from "../src/team.js";
 
@@ -32,6 +33,7 @@ describe("enum arrays follow the schema declaration order", () => {
     ["catalog_artifacts_platform", CATALOG_PLATFORMS],
     ["members_role", MEMBER_ROLES],
     ["channels_kind", CHANNEL_KINDS],
+    ["kv_scope", KV_SCOPES],
   ] as const)("%s", (name, values) => {
     expect([...values]).toEqual(enumValues(name));
   });

@@ -29,6 +29,7 @@ export function channel(
     id: "ch_test",
     name: "test",
     ownerId: "m1",
+    projectId: "prj_test",
     expiresAt: NOW_SEC + 86400,
     disabledAt: null,
     ...over,

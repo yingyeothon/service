@@ -97,6 +97,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     apps: [...catalog.apps.values()].filter(pick).length,
     bundles: [...assets.bundles.values()].filter(pick).length,
     sites: [...sites.sites.values()].filter(pick).length,
+    // No kv collections yet: the harness gains a store when the routes do.
+    kv: 0,
   });
   const teamDb = createMemoryTeamDb({
     memberExists: (id) => db.members.has(id),

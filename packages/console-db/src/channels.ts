@@ -250,6 +250,13 @@ export interface AuthChannel {
   id: string;
   name: string;
   ownerId: string;
+  /**
+   * The project this channel belongs to. Null only for rows created before
+   * migration `6_org_project` was mapped; the `kv` API answers 404 for those
+   * rather than guessing, because a project is what binds an API principal to
+   * the collections it may touch (docs/decisions.md *Key-value store*).
+   */
+  projectId: string | null;
   config: AuthChannelConfig;
   secret: AuthChannelSecret;
   expiresAt: number;
@@ -513,6 +520,7 @@ export function toAuthChannel(row: ChannelRow): AuthChannel | undefined {
     id: row.id,
     name: row.name,
     ownerId: row.ownerId,
+    projectId: row.projectId,
     config: JSON.parse(row.configJson) as AuthChannelConfig,
     secret: JSON.parse(row.secretJson) as AuthChannelSecret,
     expiresAt: row.expiresAt,

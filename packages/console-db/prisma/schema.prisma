@@ -326,6 +326,7 @@ model members {
   show_entry_shots     show_entry_shots[]
   show_entry_likes     show_entry_likes[]
   show_comments        show_comments[]
+  kv_collections       kv_collections[]
 }
 
 model schema_migrations {
@@ -401,22 +402,23 @@ enum catalog_pending_uploads_status {
 }
 
 model teams {
-  id            String          @id @db.VarChar(64)
-  name          String          @unique(map: "teams_name") @db.VarChar(255)
-  description   String?         @db.MediumText
-  admin_locked  Boolean         @default(false)
-  created_by    String          @db.VarChar(64)
-  created_at    BigInt
-  updated_at    BigInt
-  members       members         @relation("team_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "teams_creator")
-  team_members  team_members[]
-  team_history  team_history[]
-  discussions   discussions[]
-  projects      projects[]
-  channels      channels[]
-  catalog_apps  catalog_apps[]
-  asset_bundles asset_bundles[]
-  sites         sites[]
+  id             String           @id @db.VarChar(64)
+  name           String           @unique(map: "teams_name") @db.VarChar(255)
+  description    String?          @db.MediumText
+  admin_locked   Boolean          @default(false)
+  created_by     String           @db.VarChar(64)
+  created_at     BigInt
+  updated_at     BigInt
+  members        members          @relation("team_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "teams_creator")
+  team_members   team_members[]
+  team_history   team_history[]
+  discussions    discussions[]
+  projects       projects[]
+  channels       channels[]
+  catalog_apps   catalog_apps[]
+  asset_bundles  asset_bundles[]
+  sites          sites[]
+  kv_collections kv_collections[]
 
   @@index([created_by], map: "teams_creator")
 }
@@ -503,6 +505,7 @@ model projects {
   catalog_apps      catalog_apps[]
   asset_bundles     asset_bundles[]
   sites             sites[]
+  kv_collections    kv_collections[]
 
   @@unique([team_id, name], map: "projects_team_name")
   @@index([created_by], map: "projects_creator")
@@ -819,4 +822,93 @@ enum show_entry_shots_status {
   pending
   live
   replaced
+}
+
+/// A collection of JSON values addressed by key, under a project
+/// (docs/decisions.md *Key-value store (`kv`)*). Served to games by the state
+/// stack under `/kv/*`; console owns the schema and every migration.
+///
+/// `read_scope`, `write_scope` and `encrypted` never change after creation: the
+/// state stack writes while console edits, and a shape change mid-flight would
+/// mix plaintext with ciphertext, or shared rows with owner rows, in one table.
+model kv_collections {
+  id                    String       @id @db.VarChar(64)
+  team_id               String       @db.VarChar(64)
+  project_id            String       @db.VarChar(64)
+  name                  String       @db.VarChar(255)
+  description           String?      @db.MediumText
+  read_scope            kv_scope
+  write_scope           kv_scope
+  encrypted             Boolean      @default(false)
+  max_entries           Int          @default(10000)
+  max_entries_per_owner Int          @default(100)
+  /// Creator, kept for display; authorization is team membership.
+  owner_id              String?      @db.VarChar(64)
+  /// Soft-delete claim. The name is freed at once (set to the id) and the rows
+  /// drain in bounded batches, inline first and by the sweep afterwards.
+  deleted_at            BigInt?
+  created_at            BigInt
+  updated_at            BigInt
+  members               members?     @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_owner")
+  teams                 teams        @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_team_fk")
+  projects              projects     @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_project_fk")
+  kv_entries            kv_entries[]
+  kv_keys               kv_keys?
+
+  @@unique([team_id, name], map: "kv_collections_team_name")
+  @@index([owner_id], map: "kv_collections_owner")
+  @@index([project_id], map: "kv_collections_project")
+}
+
+/// One value per `(collection, owner, key)`. `owner_id` is `""` in a shared
+/// namespace and the entry's owner in a user namespace; both `owner_id` and `k`
+/// are `utf8mb4_bin` in the migration (identities and keys are compared
+/// byte-exactly), which this schema file cannot express.
+model kv_entries {
+  collection_id  String         @db.VarChar(64)
+  owner_id       String         @db.VarChar(64)
+  k              String         @db.VarChar(128)
+  /// JSON text exactly as sent, or `enc1.{iv}.{ct}.{tag}` when the collection
+  /// is encrypted. The platform never parses it.
+  v              String         @db.MediumText
+  /// Plaintext byte length, so an encrypted collection still reports real sizes.
+  bytes          Int
+  /// Monotonic per key. An expiry never resets it, or a stale `If-Match` could
+  /// land on the reborn key.
+  version        BigInt
+  /// The auth channel whose credential wrote this row; NULL for console writes.
+  /// Deliberately no foreign key -- channel rows are purged 30 days after their
+  /// soft-delete, and the entry purge must stay explicit console work.
+  channel_id     String?        @db.VarChar(64)
+  expires_at     BigInt?
+  created_at     BigInt
+  updated_at     BigInt
+  kv_collections kv_collections @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "kv_entries_collection")
+
+  @@id([collection_id, owner_id, k])
+  /// Expiry purge, always per collection: a global `WHERE expires_at <= now`
+  /// cannot use this index (`rules/data.md`, leading-column rule).
+  @@index([collection_id, expires_at], map: "kv_entries_expiry")
+  @@index([channel_id], map: "kv_entries_channel")
+}
+
+/// The wrapped data key of an encrypted collection. State-stack only: console
+/// holds no KEK, never selects this table, and therefore cannot read a value.
+model kv_keys {
+  collection_id  String         @id @db.VarChar(64)
+  /// `v1.{iv}.{ct}.{tag}`, base64url, AES-256-GCM(KEK) with the collection id
+  /// as associated data.
+  dek_wrapped    String         @db.VarChar(255)
+  created_at     BigInt
+  kv_collections kv_collections @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "kv_keys_collection")
+}
+
+// One enum shared by `kv_collections.read_scope` and `.write_scope`. MySQL
+// orders an ENUM by declaration, so values are appended only; removing one is a
+// `-- contract` migration. Keep it multi-line -- `test/enumOrder.test.ts` parses
+// the body line by line, and a comment inside the block would read as a value.
+enum kv_scope {
+  team
+  project
+  user
 }

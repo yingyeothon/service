@@ -54,6 +54,12 @@
 - The `yyt-env-credential` gitleaks rule also matches `const token = someCall(...)`; name such locals `bearer`/`jwt` instead of `token`, and use only the `0123456789abcdef…`/`abcdef0123456789…` fixture strings (a `fedcba…` hex string trips `generic-api-key`). The same rule matches a Go struct literal `Token: "…"` in tests — bind the fixture to a local first (`wrong := strings.Repeat("abcdef0123456789", 4)`; `Token: wrong`).
 - Do not copy files from a legacy working tree that carries live `.env`/config secrets into this repo — port logic only, then rotate the exposed credentials once the legacy stack is retired.
 
+## Raw SQL and value caps (2026-09-04)
+
+- The batched `kv` deletes are the first `$executeRaw` in `packages/console-db`. Their injection safety rests on two things, and both must stay: every value is a tagged-template placeholder (only a validated integer bound goes through `Prisma.raw`), and the mariadb adapter escapes client-side with backslashes, so `createPrismaClient`'s `initSql` stripping `NO_BACKSLASH_ESCAPES` from the session is load-bearing for the raw statements too — not only for `escapeLike`.
+- A cursor is attacker-supplied bytes even when it looks opaque. Decode it into values the table could actually hold (the key grammar, the owner column's width) and refuse anything else, rather than passing the decoded halves into a query because the query happens to be parameterized.
+- Size caps belong on what the caller sent. Bounding the **stored** text instead silently shrinks the real limit for exactly the encrypted collections whose owners cannot see the ciphertext to explain it.
+
 ## Catalog / user-named resources (2026-08-24)
 
 - When user input becomes an S3 key prefix or a well-known resource name, reserve the collision set explicitly: app name `uploads` would sit inside the staging prefix (the sweep would delete its committed objects), `assets`/`asset-uploads` are the asset resource's prefixes and `apps` is the id-based layout every new artifact uses (legacy keys still start with the app _name_, which is why the list stays until the last one is gone). Enforce on create **and** rename. Which app is "the installer" is no longer a name: it is `platform_settings.installer_app_id`, gated on the app's team being `admin_locked` (2026-08-26).
