@@ -1,12 +1,16 @@
 import {
   createMemoryConsoleDb,
+  createMemoryKvStoreDb,
   createMemoryStateDb,
+  type KvStoreDb,
   type StateDb,
 } from "@yyt/console-db";
+import type { Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { signChannelToken } from "@yyt/jwt";
 import { createStateApp } from "../src/app.js";
 import { createChannelStore } from "../src/channels.js";
+import { createKvCrypto, type KvCrypto } from "../src/kvstore-crypto.js";
 
 export const SECRET =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -20,6 +24,31 @@ export const NOW_MS = 1_700_000_000_000;
 export const NOW_SEC = NOW_MS / 1000;
 export const OWNER = "0123456789abcdef0123456789abcdef";
 export const OTHER_OWNER = "fedcba9876543210fedcba9876543210";
+export const PROJECT = "prj_1";
+/** A fixed test KEK: 32 bytes of hex, the shape `openssl rand -hex 32` gives. */
+export const KEK = "1f".repeat(32);
+
+/** Collects every log line so a test can assert what an operator would see. */
+export function recordingLogger(): Logger & {
+  lines: { level: string; message: string; meta?: Record<string, unknown> }[];
+} {
+  const lines: {
+    level: string;
+    message: string;
+    meta?: Record<string, unknown>;
+  }[] = [];
+  const at =
+    (level: string) => (message: string, meta?: Record<string, unknown>) => {
+      lines.push({ level, message, meta });
+    };
+  return {
+    lines,
+    debug: at("debug"),
+    info: at("info"),
+    warn: at("warn"),
+    error: at("error"),
+  };
+}
 
 export function fakeClock(ms = NOW_MS) {
   let t = ms;
@@ -46,7 +75,16 @@ const authChannel = (id: string, apiKey: string | undefined) => ({
 
 export type Harness = Awaited<ReturnType<typeof build>>;
 
-export async function build(over: { state?: StateDb; keyless?: boolean } = {}) {
+export async function build(
+  over: {
+    state?: StateDb;
+    kvstore?: KvStoreDb;
+    keyless?: boolean;
+    /** `false` builds the app as a stage whose `KV_KEK` never validated. */
+    crypto?: KvCrypto | false;
+    logger?: Logger;
+  } = {},
+) {
   const clock = fakeClock();
   const db = createMemoryConsoleDb();
   await db.upsertMember({
@@ -61,12 +99,18 @@ export async function build(over: { state?: StateDb; keyless?: boolean } = {}) {
   );
   await db.insertChannel(authChannel(OTHER_CHANNEL, OTHER_KEY));
   const state = over.state ?? createMemoryStateDb();
+  const kvstore = over.kvstore ?? createMemoryKvStoreDb();
+  const crypto =
+    over.crypto === false ? undefined : (over.crypto ?? createKvCrypto(KEK));
   const app = createStateApp({
     state,
+    kvstore,
     channels: createChannelStore({ db, clock }),
+    crypto,
     clock,
+    logger: over.logger,
   });
-  return { clock, db, state, app };
+  return { clock, db, state, kvstore, crypto, app };
 }
 
 export async function jwt(
@@ -90,6 +134,8 @@ export interface Req {
   bearer?: string;
   origin?: string;
   ifMatch?: string;
+  ifNoneMatch?: string;
+  query?: Record<string, string>;
   body?: unknown;
   /** Raw body, for the malformed-JSON and oversize cases. */
   rawBody?: string;
@@ -101,6 +147,8 @@ export function event({
   bearer,
   origin,
   ifMatch,
+  ifNoneMatch,
+  query,
   body,
   rawBody,
 }: Req): HttpEvent {
@@ -108,11 +156,13 @@ export function event({
     version: "2.0",
     routeKey: "$default",
     rawPath: path,
-    rawQueryString: "",
+    rawQueryString: new URLSearchParams(query ?? {}).toString(),
+    queryStringParameters: query,
     headers: {
       ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
       ...(origin ? { origin } : {}),
       ...(ifMatch !== undefined ? { "If-Match": ifMatch } : {}),
+      ...(ifNoneMatch !== undefined ? { "If-None-Match": ifNoneMatch } : {}),
       ...(body !== undefined || rawBody !== undefined
         ? { "content-type": "application/json" }
         : {}),

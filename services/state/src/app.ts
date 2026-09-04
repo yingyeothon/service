@@ -9,6 +9,7 @@ import {
 import {
   checkDocBody,
   MAX_DOC_BODY_BYTES,
+  type KvStoreDb,
   type StateDb,
   type StateDocRow,
 } from "@yyt/console-db";
@@ -22,7 +23,14 @@ import {
   type Identity,
   type RouteContext,
 } from "@yyt/http";
-import type { Caller, ChannelStore } from "./channels.js";
+import {
+  callerFromIdentity,
+  type Caller,
+  type ChannelStore,
+} from "./channels.js";
+import { NO_STORE, checkOwnerId, etag, parseIfMatch, rawBody } from "./http.js";
+import { createKvStoreRoutes } from "./kvstore.js";
+import type { KvCrypto } from "./kvstore-crypto.js";
 
 /**
  * How many owners may hold a document in one channel. A hackathon channel with
@@ -30,15 +38,6 @@ import type { Caller, ChannelStore } from "./channels.js";
  * loop, and both want the same answer.
  */
 export const MAX_DOCS_PER_CHANNEL = 10_000;
-
-/**
- * An `ownerId` is either a player — the 32 lowercase hex of `deriveUserId`,
- * which is exactly what a token's `sub` holds — or a non-user owner written
- * `{kind}:{id}` for things a game keeps per party or per guild. A player id
- * can never contain `:`, so the two spaces cannot collide and a server cannot
- * write a party document onto a player's row by accident.
- */
-const OWNER_ID = /^(?:[0-9a-f]{32}|[a-z]{1,8}:[A-Za-z0-9_-]{1,48})$/;
 
 /**
  * A coarse outer guard so an absurd body is dropped before it is parsed. The
@@ -51,30 +50,18 @@ const MAX_REQUEST_BYTES = MAX_DOC_BODY_BYTES * 2;
 
 export interface StateAppOptions {
   state: StateDb;
+  /** The kv collections served under `/kv/*` beside the doc routes. */
+  kvstore: KvStoreDb;
   channels: ChannelStore;
+  /** `undefined` when the stage has no usable `KV_KEK`; only `/kv/*` suffers. */
+  crypto?: KvCrypto;
   clock?: Clock;
   logger?: Logger;
   extraRoutes?: AnyRoute[];
 }
 
-/** `"3"`, `W/"3"` and a bare `3` all mean version 3. */
-export function parseIfMatch(raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined;
-  const m = /^(?:W\/)?(?:"(\d{1,15})"|(\d{1,15}))$/.exec(raw.trim());
-  if (!m) return undefined;
-  return Number(m[1] ?? m[2]);
-}
-
-const etag = (version: number) => `"${version}"`;
-
-/** The request body as sent, decoded but not re-encoded. */
-function rawBody(event: HttpEvent): string {
-  const b = event.body ?? "";
-  return event.isBase64Encoded ? Buffer.from(b, "base64").toString("utf8") : b;
-}
-
 /** Every document response is uncacheable: it is per-player state behind a bearer token. */
-const DOC_HEADERS = { "cache-control": "no-store" };
+const DOC_HEADERS = NO_STORE;
 
 function docResult(row: StateDocRow): HttpResult {
   return {
@@ -118,28 +105,20 @@ function conflictResult(current: StateDocRow | undefined): HttpResult {
 
 export function createStateApp({
   state,
+  kvstore,
   channels,
+  crypto,
   clock = systemClock,
   logger = nullLogger,
   extraRoutes = [],
 }: StateAppOptions): (event: HttpEvent) => Promise<HttpResult> {
   /** The resolved caller; `auth: true` has already refused a request without one. */
   function caller(ctx: Pick<RouteContext, "requireIdentity">): Caller {
-    const id = ctx.requireIdentity();
-    return {
-      channelId: id.subject,
-      kind: id.kind as Caller["kind"],
-      ownerId: typeof id.ownerId === "string" ? id.ownerId : undefined,
-      projectId: typeof id.projectId === "string" ? id.projectId : null,
-    };
+    return callerFromIdentity(ctx.requireIdentity());
   }
 
-  function ownerParam(ctx: Pick<RouteContext, "params">): string {
-    const owner = ctx.params.ownerId ?? "";
-    if (!OWNER_ID.test(owner))
-      throw new AppError("bad_request", "invalid ownerId");
-    return owner;
-  }
+  const ownerParam = (ctx: Pick<RouteContext, "params">): string =>
+    checkOwnerId(ctx.params.ownerId ?? "");
 
   /** Writes are the server's alone; a player's token is never a writer. */
   function requireServer(c: Caller): void {
@@ -265,7 +244,11 @@ export function createStateApp({
   ];
 
   return createHttpHandler({
-    routes: [...routes, ...extraRoutes],
+    routes: [
+      ...routes,
+      ...createKvStoreRoutes({ kvstore, crypto, clock, logger }),
+      ...extraRoutes,
+    ],
     maxBodyBytes: MAX_REQUEST_BYTES,
     // A game client is a browser on the participant's own origin, so there is
     // no list of origins to allow — and none is needed: the credential is an
@@ -275,8 +258,17 @@ export function createStateApp({
     // browser can read the version it is then required to send back.
     cors: {
       origins: ["*"],
-      headers: ["content-type", "authorization", "if-match"],
-      exposeHeaders: ["etag"],
+      headers: [
+        "content-type",
+        "authorization",
+        "if-match",
+        // A kv create-only write is `If-None-Match: *`, and a browser cannot
+        // send a header the preflight did not allow.
+        "if-none-match",
+      ],
+      // `x-kv-expires-at` for the same reason as `etag`: a client that cannot
+      // read when its entry dies has to guess.
+      exposeHeaders: ["etag", "x-kv-expires-at"],
     },
     identity: async ({ bearer }): Promise<Identity | undefined> => {
       if (!bearer) return undefined;

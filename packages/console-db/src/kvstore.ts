@@ -426,10 +426,20 @@ export interface KvStoreDb {
    */
   deleteCollectionRow(id: string): Promise<boolean>;
   countCollections(projectId: string): Promise<number>;
-  /** Live rows only -- an expired entry does not count against a cap. */
+  /**
+   * Live rows by default -- an expired entry does not hold a cap slot.
+   *
+   * `includeExpired` counts what the table actually **holds** instead, which
+   * is the number a writer has to look at before it lets a row be created: an
+   * entry written with a one-second TTL is invisible to the live count a
+   * moment later, so a cap counted on live rows alone is one that a client
+   * writing a fresh key each time can walk past for ever while the rows pile
+   * up. `stored < cap` implies `live < cap`, so the ordinary create asks this
+   * question once and stops.
+   */
   countEntries(
     collectionId: string,
-    opts: { now: number; ownerId?: string },
+    opts: { now: number; ownerId?: string; includeExpired?: boolean },
   ): Promise<number>;
   listEntries(q: KvEntryQuery): Promise<KvEntryPage>;
   findEntry(
@@ -860,7 +870,7 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
           where: {
             collection_id: collectionId,
             ...(opts.ownerId === undefined ? {} : { owner_id: opts.ownerId }),
-            ...liveWhere(opts.now),
+            ...(opts.includeExpired === true ? {} : liveWhere(opts.now)),
           },
         }),
       ),
@@ -1278,7 +1288,7 @@ export function createMemoryKvStoreDb(
     countEntries: async (collectionId, opts) =>
       entriesOf(collectionId).filter(
         (e) =>
-          isLiveAt(e, opts.now) &&
+          (opts.includeExpired === true || isLiveAt(e, opts.now)) &&
           (opts.ownerId === undefined || bin(e.ownerId) === bin(opts.ownerId)),
       ).length,
 

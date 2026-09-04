@@ -1,6 +1,7 @@
 import { MAX_DOC_BODY_BYTES } from "@yyt/console-db";
 import { describe, expect, it } from "vitest";
-import { MAX_DOCS_PER_CHANNEL, parseIfMatch } from "../src/app.js";
+import { MAX_DOCS_PER_CHANNEL } from "../src/app.js";
+import { parseIfMatch } from "../src/http.js";
 import {
   API_KEY,
   bodyOf,
