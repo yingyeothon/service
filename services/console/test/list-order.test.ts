@@ -535,6 +535,66 @@ describe("list sort/order/q", () => {
     await rejects(h, `/sites/${siteId}/deploys`, u.cookie);
   });
 
+  it("kv collections: name, scopes, the derived entry count and q", async () => {
+    const h = ticking();
+    const u = await h.team("alice");
+    const scopes = {
+      beta: { readScope: "project", writeScope: "team" },
+      Alpha: { readScope: "team", writeScope: "team" },
+      gamma: { readScope: "user", writeScope: "user" },
+    } as const;
+    for (const name of ["beta", "Alpha", "gamma"] as const) {
+      const r = await post(h, u.cookie, `/projects/${u.prjId}/kv`, {
+        name,
+        description: name === "Alpha" ? "the first one" : undefined,
+        ...scopes[name],
+      });
+      expect(r.statusCode, r.body).toBe(201);
+    }
+    const kv = `/projects/${u.prjId}/kv`;
+    expect(await names(get(h, kv, u.cookie), "collections")).toEqual([
+      "Alpha",
+      "beta",
+      "gamma",
+    ]);
+    expect(
+      await names(
+        get(h, `${kv}?sort=name&order=desc`, u.cookie),
+        "collections",
+      ),
+    ).toEqual(["gamma", "beta", "Alpha"]);
+    expect(
+      await names(get(h, `${kv}?sort=readScope`, u.cookie), "collections"),
+    ).toEqual(["Alpha", "beta", "gamma"]);
+    expect(
+      await names(get(h, `${kv}?sort=updatedAt`, u.cookie), "collections"),
+    ).toEqual(["beta", "Alpha", "gamma"]);
+    // `entries` is derived after the fetch, so it is worth its own pass.
+    await h.kvstore.putEntry({
+      collectionId: parse<Rows>(await get(h, kv, u.cookie)).collections!.find(
+        (c) => c.name === "gamma",
+      )!.id as string,
+      ownerId: "u1",
+      key: "k",
+      value: "1",
+      bytes: 1,
+      expiresAt: null,
+      channelId: null,
+      at: NOW_SEC,
+    });
+    expect(
+      await names(
+        get(h, `${kv}?sort=entries&order=desc`, u.cookie),
+        "collections",
+      ),
+    ).toEqual(["gamma", "Alpha", "beta"]);
+    // `q` searches the name and the description, like every other list.
+    expect(
+      await names(get(h, `${kv}?q=first`, u.cookie), "collections"),
+    ).toEqual(["Alpha"]);
+    await rejects(h, kv, u.cookie);
+  });
+
   it("platform members and API tokens", async () => {
     const h = ticking();
     const admin = await h.login("boss", "admin");

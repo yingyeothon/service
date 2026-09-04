@@ -1,4 +1,5 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
+import type { KvCollectionUsage, KvStoreDb } from "@yyt/console-db";
 import type { Kv } from "@yyt/redis";
 import {
   CloudWatchClient,
@@ -43,6 +44,8 @@ export const USAGE_LAST_LEVEL_WARNINGS_KEY = "usage:warned";
 const LAST_READING_TTL_SEC = 3 * 24 * 3600;
 
 const GIB = 1024 ** 3;
+/** Collections named in the kv line; enough to see who grew, short enough to read. */
+const KV_TOP_COLLECTIONS = 5;
 export const DEFAULT_THRESHOLDS: UsageThresholds = {
   /** Past this share of `maxmemory`, `allkeys-lru` is about to evict someone else's data. */
   redisMemoryRatio: 0.8,
@@ -52,6 +55,12 @@ export const DEFAULT_THRESHOLDS: UsageThresholds = {
   cdnBytesPerDay: 20 * GIB,
   /** The bucket already holds every release ever shipped; only a jump matters. */
   bucketGrowthBytesPerDay: 5 * GIB,
+  /**
+   * `kv_entries` on a host every stage shares, with no quota of its own: past
+   * this the store is no longer "small records beside a game" and someone has
+   * to look at which collection grew (`rules/data.md`).
+   */
+  kvBytes: GIB,
 };
 
 export interface UsageThresholds {
@@ -59,6 +68,7 @@ export interface UsageThresholds {
   channelKeys: number;
   cdnBytesPerDay: number;
   bucketGrowthBytesPerDay: number;
+  kvBytes: number;
 }
 
 export interface BucketSize {
@@ -92,6 +102,8 @@ export interface UsageDigestOptions {
   bucket?: string;
   /** CloudFront distribution id; empty means no CDN metric on this stage. */
   distributionId?: string;
+  /** The key-value store; omitted leaves the kv lines out of the digest. */
+  kvstore?: Pick<KvStoreDb, "entriesTableBytes" | "topCollections">;
   kv: Kv;
   /** Publishes to the alarm topic; absent when the stage has none. */
   notify?: (subject: string, message: string) => Promise<void>;
@@ -118,6 +130,7 @@ export interface UsageDigestResult {
   };
   bucket?: BucketSize & { growthSinceLast: number | undefined };
   cdn?: CdnTraffic;
+  kv?: { tableBytes?: number; top: KvCollectionUsage[] };
   /** Every warning found today, announced or not. */
   warnings: UsageWarning[];
   /** The subset that went into the notification (empty when nothing is new or there is no topic). */
@@ -158,6 +171,7 @@ export async function runUsageDigest({
   metrics,
   bucket,
   distributionId,
+  kvstore,
   kv,
   notify,
   thresholds: overrides,
@@ -259,11 +273,53 @@ export async function runUsageDigest({
     }
   }
 
+  if (kvstore) {
+    // Two reads, not one: the size is an `information_schema` lookup while the
+    // "who grew" line scans `kv_entries` and aggregates it. Bundled, a
+    // statement-limit timeout on the scan would take the cheap number with it
+    // — at exactly the table size the warning exists for.
+    const tableBytes = await attempt("kv", () => kvstore.entriesTableBytes());
+    const top = await attempt("kv-top", () =>
+      kvstore.topCollections(KV_TOP_COLLECTIONS),
+    );
+    result.kv = {
+      ...(tableBytes === undefined ? {} : { tableBytes }),
+      top: top ?? [],
+    };
+    if (errors.includes("kv"))
+      // Unlike a missing CloudWatch datapoint, this is not a quiet day: it is
+      // the size warning going blind, and `errors` alone reaches only the log
+      // line. Announced once, like every level warning.
+      warnings.push({
+        kind: "kv:unread",
+        type: "level",
+        text: "kv_entries' size could not be read; the store's growth is unmonitored until it answers again",
+      });
+    // A level warning: the table does not shrink on its own, so it would
+    // otherwise be announced every day until someone deleted a collection.
+    if (tableBytes !== undefined && tableBytes > t.kvBytes)
+      warnings.push({
+        kind: "kv:bytes",
+        type: "level",
+        text: `kv_entries holds ${formatBytes(tableBytes)}${
+          top === undefined
+            ? " (the largest collections could not be read)"
+            : `; largest collections: ${top
+                .map(
+                  (c) =>
+                    `${c.collectionId} (${c.entries} entries, ${formatBytes(c.bytes)})`,
+                )
+                .join(", ")}`
+        }`,
+      });
+  }
+
   logger.info("usage digest", {
     stage,
     redis: result.redis,
     bucket: result.bucket,
     cdn: result.cdn,
+    kv: result.kv,
     warnings: warnings.length,
     errors,
   });

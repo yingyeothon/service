@@ -50,7 +50,7 @@ const ID = /^[a-z0-9_-]{3,40}$/;
  * id only, and adding them would retroactively forbid existing names.
  */
 const ID_LIKE =
-  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
 const name = z
   .string()
   .trim()

@@ -326,6 +326,92 @@ describe("usage digest", () => {
     expect(r.notified).toBe(false);
   });
 
+  it("keeps the size warning when only the collection scan times out", async () => {
+    const s = setup();
+    const r = await runUsageDigest({
+      stage: "dev",
+      kvstore: {
+        entriesTableBytes: async () => 2 * GIB,
+        topCollections: () => Promise.reject(new Error("statement timeout")),
+      },
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    // The expensive read is the one that fails at size; the cheap one still
+    // carries the number the warning is about.
+    expect(r.errors).toEqual(["kv-top"]);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["kv:bytes"]);
+    expect(r.warnings[0]!.text).toMatch(
+      /largest collections could not be read/,
+    );
+  });
+
+  it("names the largest kv collections once the table crosses its line", async () => {
+    const s = setup();
+    const usage = {
+      tableBytes: 2 * GIB,
+      top: [
+        { collectionId: "kv_a", entries: 90_000, bytes: 900_000_000 },
+        { collectionId: "kv_b", entries: 10, bytes: 100 },
+      ],
+    };
+    const kvstore = {
+      entriesTableBytes: async () => usage.tableBytes,
+      topCollections: async () => usage.top,
+    };
+    const r = await runUsageDigest({
+      stage: "dev",
+      kvstore,
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(r.kv).toEqual(usage);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["kv:bytes"]);
+    expect(r.warnings[0]!.type).toBe("level");
+    // The collection ids are what turn "the table is large" into a next step.
+    expect(r.warnings[0]!.text).toMatch(/kv_a \(90000 entries, 858.3 MiB\)/);
+    expect(s.sent).toHaveLength(1);
+
+    // Under the line, and with a size the implementation could not measure,
+    // there is nothing to announce — an unknown size is never read as zero.
+    const quiet = setup();
+    expect(
+      (
+        await runUsageDigest({
+          stage: "dev",
+          kvstore: {
+            entriesTableBytes: async () => undefined,
+            topCollections: async () => usage.top,
+          },
+          kv: quiet.kv,
+          logger: nullLogger,
+        })
+      ).warnings,
+    ).toEqual([]);
+  });
+
+  it("a failing kv read is announced, because it is the size warning going blind", async () => {
+    const s = setup();
+    const r = await runUsageDigest({
+      stage: "dev",
+      kvstore: {
+        entriesTableBytes: () => Promise.reject(new Error("database is away")),
+        topCollections: () => Promise.reject(new Error("database is away")),
+      },
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(r.errors).toEqual(["kv", "kv-top"]);
+    // Unlike a missing CloudWatch datapoint: this is the size warning going
+    // blind, and `errors` alone reaches only the log line.
+    expect(r.warnings.map((w) => w.kind)).toEqual(["kv:unread"]);
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]!.message).toMatch(/growth is unmonitored/);
+  });
+
   it("formats bytes for humans", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(1536)).toBe("1.5 KiB");

@@ -4,10 +4,11 @@ import type {
   CatalogDb,
   ConsoleDb,
   ExpiredChannel,
+  KvStoreDb,
   TeamDb,
   StateDb,
 } from "@yyt/console-db";
-import type { RedisAclAdmin } from "@yyt/redis";
+import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import type { ArtifactStore } from "./artifact-store.js";
 import { ASSET_UPLOAD_KEY_PREFIX } from "./assets.js";
 import { planDeletions } from "./catalog-cleanup.js";
@@ -103,6 +104,237 @@ export async function runExpire({
     purged: purged.length,
   });
   return { ...r, documents, purged };
+}
+
+/** Rows one sweep statement takes; measured at ~0.13 s on 16 KiB values. */
+export const KV_SWEEP_BATCH = 1_000;
+/**
+ * Statements the whole sweep may spend. The budget is fixed rather than
+ * derived from the Lambda's remaining time on purpose: 20 × 1,000 rows is
+ * about 3 s of statements, the sweep runs daily, and whatever it does not
+ * reach today it reaches tomorrow — while a deadline-driven loop would turn a
+ * slow database into a sweep that hangs on to the 300 s budget the catalog and
+ * asset sweeps share.
+ */
+export const KV_SWEEP_MAX_BATCHES = 20;
+/** Live collections read per page while walking a stage. */
+const KV_SWEEP_PAGE = 100;
+/**
+ * Where yesterday's expiry walk stopped. Kept in Redis under the console
+ * prefix beside the usage digest's readings: without it the walk restarts at
+ * the lowest collection id every day and, because ids are ULIDs, a stage with
+ * more live collections than the budget can reach would sweep its oldest
+ * collections for ever and its newest never (found by review, 2026-09-04).
+ */
+export const KV_SWEEP_CURSOR_KEY = "kv:sweep:after";
+
+export interface KvSweepResult {
+  /** Rows removed, over every phase. */
+  deleted: number;
+  /** Soft-deleted collections whose last row went, so the row itself could go. */
+  purged: number;
+  /** A budget ran out: the rest waits for tomorrow, from `cursor`. */
+  truncated: boolean;
+  /**
+   * The channel phase specifically ran out — the one that matters, because its
+   * ids exist nowhere else once the channel row is gone.
+   */
+  channelsTruncated: boolean;
+  /** Where the expiry walk stopped; `undefined` = it wrapped to the start. */
+  cursor: string | undefined;
+}
+
+/**
+ * Daily kv sweep, sharing the `expire` schedule. Three jobs, in this order,
+ * and the order is the point — the budget is shared, so what runs first is
+ * what is guaranteed to run:
+ *
+ * 1. the entries of the auth channels this run finished with. Their ids exist
+ *    nowhere else — the channel row is gone or going, and nothing in the
+ *    database names its players' rows afterwards (`docs/decisions.md` #9) —
+ *    so work skipped here is work lost, not work deferred. It is also the
+ *    smallest phase: one indexed statement per channel that expired today.
+ * 2. drain the collections a delete soft-deleted and drop the row once its
+ *    last entry is gone. Deferrable — the row stays in the queue — but it is
+ *    storage nobody can address at all, so it comes before live collections.
+ * 3. purge expired entries, per live collection, because that is the only
+ *    reclamation an expiry ever gets (a read merely hides an expired row).
+ *    This is the phase that can exceed the budget on a large stage, so it is
+ *    the one that carries a cursor: it resumes tomorrow where it stopped and
+ *    wraps round, rather than restarting at the oldest collection.
+ */
+export async function runKvStoreSweep({
+  kvstore,
+  channelIds = [],
+  kv,
+  clock = systemClock,
+  logger,
+  batch = KV_SWEEP_BATCH,
+  maxBatches = KV_SWEEP_MAX_BATCHES,
+}: {
+  kvstore: KvStoreDb;
+  /** Auth channels this run soft-deleted or hard-purged; their players' rows go too. */
+  channelIds?: string[];
+  /** Carries the expiry walk's cursor between runs; without it the walk restarts daily. */
+  kv?: Kv;
+  clock?: Clock;
+  logger: Logger;
+  batch?: number;
+  maxBatches?: number;
+}): Promise<KvSweepResult> {
+  const now = nowSec(clock);
+  let spent = 0;
+  let deleted = 0;
+  let purged = 0;
+  /*
+   * Phase 1 gets a budget of its own, and the arithmetic is the point: one
+   * statement per id so that *every* channel is at least probed, plus
+   * `maxBatches` more to drain the ones that had rows. Sharing the deferrable
+   * phases' budget meant a day that purged more channels than the budget
+   * dropped the tail — and `purgeChannels` has no `LIMIT` and returns every
+   * kind, so a team deleting forty channels was enough. A probe that matches
+   * nothing is one index lookup on `kv_entries_channel`.
+   */
+  let channelSpent = 0;
+  const channelBudget = () => channelSpent < channelIds.length + maxBatches;
+  const budget = () => spent < maxBatches;
+
+  /** One bounded statement; `true` while the same target may hold more rows. */
+  const drain = async (
+    take: () => Promise<number>,
+    charge: (n: number) => void,
+  ): Promise<boolean> => {
+    charge(1);
+    const gone = await take();
+    deleted += gone;
+    return gone >= batch;
+  };
+  const chargeChannel = () => channelSpent++;
+  const chargeShared = () => spent++;
+
+  /*
+   * "There was more to do", not "the budget is spent": a phase that finished
+   * on its last statement is finished. The distinction matters because
+   * `channelsTruncated` is the one an operator has to act on — nothing else
+   * will ever name those rows.
+   */
+  let channelsTruncated = false;
+  let truncated = false;
+
+  for (const channelId of channelIds) {
+    if (!channelBudget()) {
+      channelsTruncated = true;
+      break;
+    }
+    let more = true;
+    while (more && channelBudget())
+      more = await drain(
+        () => kvstore.deleteChannelEntries(channelId, batch),
+        chargeChannel,
+      );
+    if (more) channelsTruncated = true;
+  }
+
+  for (const col of await kvstore.listDeletedCollections(KV_SWEEP_PAGE)) {
+    if (!budget()) {
+      truncated = true;
+      break;
+    }
+    let more = true;
+    while (more && budget())
+      more = await drain(
+        () => kvstore.deleteEntriesBatch(col.id, batch),
+        chargeShared,
+      );
+    if (more) truncated = true;
+    // Only once the last row is gone: the child FK cascades, and a cascade
+    // over a collection at its cap does not fit the 5 s statement limit.
+    else if (await kvstore.deleteCollectionRow(col.id)) purged++;
+  }
+
+  // A cursor that no longer names a row is harmless: `after` is exclusive, so
+  // the walk simply resumes at the next id above a deleted collection. Read
+  // best-effort like the write: a Redis blip must cost one restart, not a
+  // failed sweep two phases in.
+  let cursor = await readCursor(kv, logger);
+  for (;;) {
+    // Leaving this phase with budget spent means the stage was not walked to
+    // the end — over-reporting is free (the cursor says where to resume),
+    // under-reporting would hide rows nothing else reclaims.
+    if (!budget()) {
+      truncated = true;
+      break;
+    }
+    const page = await kvstore.listLiveCollections({
+      ...(cursor === undefined ? {} : { after: cursor }),
+      limit: KV_SWEEP_PAGE,
+    });
+    if (page.length === 0) {
+      // Past the last collection: wrap, and stop rather than walk the stage a
+      // second time in one run.
+      cursor = undefined;
+      break;
+    }
+    for (const col of page) {
+      if (!budget()) {
+        truncated = true;
+        break;
+      }
+      let more = true;
+      while (more && budget())
+        more = await drain(
+          () => kvstore.deleteExpiredEntries(col.id, now, batch),
+          chargeShared,
+        );
+      // Only a collection that ran *out of rows* moves the cursor. Advancing
+      // on entry would record a collection the budget cut short as finished,
+      // and its remaining rows would then wait for a whole wrap of the stage —
+      // which on a large one is slower than a game with `?ttl=` produces them.
+      if (more) {
+        truncated = true;
+        break;
+      }
+      cursor = col.id;
+    }
+  }
+  if (kv)
+    // Best-effort: a lost cursor costs one restart at the oldest collection,
+    // never a failed sweep. Long-lived on purpose — it is the walk's position,
+    // and an expired key is the daily restart this exists to prevent.
+    try {
+      if (cursor === undefined) await kv.del(KV_SWEEP_CURSOR_KEY);
+      else await kv.set(KV_SWEEP_CURSOR_KEY, cursor);
+    } catch (e) {
+      logger.warn("kv sweep cursor write failed", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+
+  if (channelsTruncated) truncated = true;
+  logger.info("kv sweep", {
+    deleted,
+    purged,
+    truncated,
+    channelsTruncated,
+    cursor,
+  });
+  return { deleted, purged, truncated, channelsTruncated, cursor };
+}
+
+/** The walk's stored position; any Redis fault reads as "start from the top". */
+async function readCursor(
+  kv: Kv | undefined,
+  logger: Logger,
+): Promise<string | undefined> {
+  if (!kv) return undefined;
+  try {
+    return (await kv.get(KV_SWEEP_CURSOR_KEY)) ?? undefined;
+  } catch (e) {
+    logger.warn("kv sweep cursor read failed", {
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return undefined;
+  }
 }
 
 /**

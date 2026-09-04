@@ -13,6 +13,7 @@ import {
   KV_TTL_MIN_SECONDS,
   MAX_KV_VALUE_BYTES,
   checkKvKey,
+  ensureKvRoom,
   kvValueBytes,
   type KvCollectionRow,
   type KvEntryMeta,
@@ -55,14 +56,6 @@ export const KV_NOT_CONFIGURED = "kv_encryption_not_configured";
 export const KV_VALUE_UNREADABLE = "kv_value_unreadable";
 /** The caller used the shared path on a user namespace, or the other way round. */
 export const KV_WRONG_NAMESPACE = "wrong_namespace";
-
-/**
- * Expired rows purged in one inline pass when a create meets a cap. It is the
- * same budget the console sweep uses; a create is refused right after either
- * way, so this is reclamation at the one moment the collection is known to be
- * under pressure, not part of the verdict.
- */
-export const KV_CAP_PURGE_BATCH = 1_000;
 
 export interface KvStoreRoutesOptions {
   kvstore: KvStoreDb;
@@ -467,59 +460,17 @@ export function createKvStoreRoutes({
   }
 
   /**
-   * Room for one more row. Counted on create only, and never inside a
-   * transaction: the race can overshoot by the number of concurrent creates,
-   * which is the right trade for not locking a shared 60-connection database
-   * on the hot path (the doc store makes the same one).
-   *
-   * `maxEntriesPerOwner` bounds a *player*, so that one JWT cannot fill a
-   * collection and lock its teammates out; a server key and the console are
-   * bounded by `maxEntries` alone (`docs/decisions.md` #7).
+   * Room for one more row. The counting, the inline purge and both 409s live
+   * in `@yyt/console-db` beside the caps themselves, shared with the console
+   * API; what this decides is only *whose* cap applies -- `maxEntriesPerOwner`
+   * bounds a **player** writing its own namespace, so that one JWT cannot fill
+   * a collection and lock its teammates out (`docs/decisions.md` #7).
    */
-  async function requireRoom(
-    col: KvCollectionRow,
-    c: Caller,
-    owner: string,
-  ): Promise<void> {
-    const perOwner = c.kind === "owner" && isUserNamespace(col);
-    const at = now();
-    const count = (includeExpired: boolean, ownerId?: string) =>
-      kvstore.countEntries(col.id, { now: at, ownerId, includeExpired });
-
-    /*
-     * Counted on the rows the table actually **holds**, expired ones included.
-     * The live count is what decides a refusal (`docs/decisions.md` #6: an
-     * expired entry holds no slot), but it cannot be what decides that there is
-     * room: `PUT …/{fresh key}?ttl=1` is invisible to it a second later, so a
-     * client writing a new key each time would walk past both caps for ever
-     * while `kv_entries` grew without bound on a host every stage shares.
-     *
-     * `stored < cap` implies `live < cap`, so the ordinary create stops here.
-     * Only a collection whose stored rows have reached a cap pays for the
-     * reclamation and the second, live count -- which is the moment
-     * `docs/decisions.md` #6 puts the inline purge at, and the moment it now
-     * actually arrives at.
-     */
-    let ownerRows = perOwner ? await count(true, owner) : 0;
-    const overOwner = () => perOwner && ownerRows >= col.maxEntriesPerOwner;
-    // Skipped when the owner is already over: the verdict is theirs either way.
-    let allRows = overOwner() ? 0 : await count(true);
-    if (overOwner() || allRows >= col.maxEntries) {
-      await kvstore.deleteExpiredEntries(col.id, at, KV_CAP_PURGE_BATCH);
-      ownerRows = perOwner ? await count(false, owner) : 0;
-      allRows = overOwner() ? 0 : await count(false);
-    }
-    if (overOwner())
-      throw reasonConflict(
-        `owner already holds ${col.maxEntriesPerOwner} entries`,
-        "owner_full",
-      );
-    if (allRows >= col.maxEntries)
-      throw reasonConflict(
-        `collection already holds ${col.maxEntries} entries`,
-        "collection_full",
-      );
-  }
+  const requireRoom = (col: KvCollectionRow, c: Caller, owner: string) =>
+    ensureKvRoom(kvstore, col, {
+      now: now(),
+      ...(c.kind === "owner" && isUserNamespace(col) ? { ownerId: owner } : {}),
+    });
 
   /**
    * The conditional headers of a write. Either header makes the write depend

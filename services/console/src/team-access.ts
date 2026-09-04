@@ -6,6 +6,8 @@ import type {
   CatalogDb,
   ChannelRow,
   ConsoleDb,
+  KvCollectionRow,
+  KvStoreDb,
   TeamDb,
   TeamRole,
   TeamRow,
@@ -68,14 +70,16 @@ export interface ProjectAccess extends TeamAccess {
   project: ProjectRow;
 }
 
-export type ResourceKind = "channel" | "app" | "bundle" | "site";
+export type ResourceKind = "channel" | "app" | "bundle" | "site" | "kv";
 export type ResourceRowOf<K extends ResourceKind> = K extends "channel"
   ? ChannelRow
   : K extends "app"
     ? CatalogAppRow
     : K extends "bundle"
       ? AssetBundleRow
-      : SiteRow;
+      : K extends "site"
+        ? SiteRow
+        : KvCollectionRow;
 
 export interface ResourceAccess<K extends ResourceKind> extends ProjectAccess {
   row: ResourceRowOf<K>;
@@ -87,6 +91,7 @@ export interface TeamAccessDeps {
   catalog: CatalogDb;
   assets: AssetsDb;
   sites: SitesDb;
+  kvstore: KvStoreDb;
 }
 
 export function createTeamAccess({
@@ -95,6 +100,7 @@ export function createTeamAccess({
   catalog,
   assets,
   sites,
+  kvstore,
 }: TeamAccessDeps) {
   /** Standing of `id` in `teamRow`, or `undefined` when it has none and is not an admin. */
   async function standingOf(
@@ -164,6 +170,14 @@ export function createTeamAccess({
         return (await assets.findBundle(id)) as ResourceRowOf<K> | undefined;
       case "site":
         return (await sites.findSite(id)) as ResourceRowOf<K> | undefined;
+      case "kv": {
+        // A soft-deleted collection is draining and holds no name any more:
+        // nothing addresses it, so it is gone as far as every route is
+        // concerned (`findCollection` hands back deleted rows for the sweep).
+        const row = await kvstore.findCollection(id);
+        return (row?.deletedAt === null ? row : undefined) as
+          ResourceRowOf<K> | undefined;
+      }
       default: {
         const unknown: never = kind;
         throw new AppError(

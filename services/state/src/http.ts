@@ -1,4 +1,4 @@
-import { AppError } from "@yyt/core";
+import { KV_OWNER_ID, checkKvOwnerId } from "@yyt/console-db";
 import type { HttpEvent } from "@yyt/http";
 
 /*
@@ -15,18 +15,16 @@ import type { HttpEvent } from "@yyt/http";
  * can never contain `:`, so the two spaces cannot collide and a server cannot
  * write a party document onto a player's row by accident.
  *
- * The kv store reuses it for the owner namespace of an entry, so the grammar
- * of an owner is one rule across the stack (`docs/decisions.md` *Key-value
+ * The rule itself moved to `@yyt/console-db` when the console gained a form
+ * that names owners too: an owner one writer accepts and the other refuses is
+ * a row nobody can address. The doc store's `/s/{ownerId}` keeps these two
+ * names because that is what its routes read (`docs/decisions.md` *Key-value
  * store* #3).
  */
-export const OWNER_ID = /^(?:[0-9a-f]{32}|[a-z]{1,8}:[A-Za-z0-9_-]{1,48})$/;
+export const OWNER_ID = KV_OWNER_ID;
 
 /** The path's owner segment, refused as a bad request unless it is one. */
-export function checkOwnerId(owner: string): string {
-  if (!OWNER_ID.test(owner))
-    throw new AppError("bad_request", "invalid ownerId");
-  return owner;
-}
+export const checkOwnerId = checkKvOwnerId;
 
 /** `"3"`, `W/"3"` and a bare `3` all mean version 3. */
 export function parseIfMatch(raw: string | undefined): number | undefined {

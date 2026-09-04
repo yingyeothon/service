@@ -5,6 +5,7 @@ import {
   createMemoryConsoleDb,
   createMemoryEventsDb,
   createMemoryShowsDb,
+  createMemoryKvStoreDb,
   createMemorySitesDb,
   createMemoryTeamDb,
 } from "@yyt/console-db";
@@ -35,6 +36,7 @@ describe("debug login hook", () => {
       assets: createMemoryAssetsDb(),
       sites: createMemorySitesDb(),
       team: createMemoryTeamDb(),
+      kvstore: createMemoryKvStoreDb(),
       kv,
       github: createGithubLogin({ clientId: "a", clientSecret: "b" }),
       adminLogins: [],

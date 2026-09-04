@@ -241,6 +241,15 @@ export interface KvKeyRow {
   createdAt: number;
 }
 
+/** One collection's share of the table, for the daily usage digest. */
+export interface KvCollectionUsage {
+  collectionId: string;
+  /** Rows the table holds, expired ones included: they occupy the pages. */
+  entries: number;
+  /** Sum of the stored `bytes` column -- plaintext sizes, not stored text. */
+  bytes: number;
+}
+
 /** Byte length, not code units: the cap is about storage and values are text. */
 export const kvValueBytes = (value: string): number =>
   Buffer.byteLength(value, "utf8");
@@ -261,15 +270,39 @@ export function checkKvEntrySize(value: string, bytes: number): void {
 }
 
 /**
- * The `owner_id` column is `VARCHAR(64)` and the shared namespace is `""`. The
- * grammar of a real owner id belongs to the routes that mint it; what the
- * repository owes both implementations is that a value too long for the column
- * is a `bad_request` here rather than a driver error on one side and a happy
- * insert into a fake map on the other.
+ * The `owner_id` column is `VARCHAR(64)` and the shared namespace is `""`.
+ * What the repository owes both implementations is that a value too long for
+ * the column is a `bad_request` here rather than a driver error on one side
+ * and a happy insert into a fake map on the other. A *real* owner has a
+ * grammar too -- {@link checkKvOwnerId} -- but the shared namespace passes
+ * this check and no grammar, so the two are separate.
  */
 export function checkKvOwner(ownerId: string): void {
   if (ownerId.length > 64 || ownerId.includes(CURSOR_SEP))
     throw new AppError("bad_request", "invalid owner");
+}
+
+/**
+ * A real owner id: either a player -- the 32 lowercase hex of `deriveUserId`,
+ * which is exactly what a token's `sub` holds -- or a non-user owner written
+ * `{kind}:{id}` for what a game keeps per party or per guild. A player id can
+ * never contain `:`, so the two spaces cannot collide.
+ *
+ * It lives here rather than in the API that mints it because **two** writers
+ * now name owners: the KV API takes one from a path, and the console takes one
+ * from a form. An owner the console accepts and the API refuses is a row no
+ * player and no server key can ever read, write or delete -- it just occupies
+ * a `maxEntries` slot for ever (found by review, 2026-09-04). The doc store's
+ * `/s/{ownerId}` is the same grammar and re-exports this one, so the platform
+ * has one rule (`docs/decisions.md` *Key-value store* #3).
+ */
+export const KV_OWNER_ID = /^(?:[0-9a-f]{32}|[a-z]{1,8}:[A-Za-z0-9_-]{1,48})$/;
+
+/** Throws `bad_request` unless `owner` matches {@link KV_OWNER_ID}. */
+export function checkKvOwnerId(owner: string): string {
+  if (!KV_OWNER_ID.test(owner))
+    throw new AppError("bad_request", "invalid ownerId");
+  return owner;
 }
 
 /** Throws `bad_request` unless `key` matches {@link KV_KEY_RE}. */
@@ -340,6 +373,72 @@ export function checkKvScopes(
     throw new AppError(
       "bad_request",
       "an encrypted collection cannot have a team scope",
+    );
+}
+
+/**
+ * Expired rows purged in one inline pass when a create meets a cap. A create
+ * is refused right after either way, so this is reclamation at the one moment
+ * a collection is known to be under pressure, not part of the verdict.
+ */
+export const KV_CAP_PURGE_BATCH = 1_000;
+
+/** A 409 that names *why* a write was refused, for the cases with a fix. */
+const capConflict = (message: string, reason: string): AppError =>
+  new AppError("conflict", message, { details: { reason } });
+
+/**
+ * Room for one more row, or the 409 that says which cap is full. Both writers
+ * share it, because a cap counted one way in the console API and another way
+ * in the KV API is not a cap (`docs/decisions.md` #6, #7).
+ *
+ * Counted on create only, and never inside a transaction: the race can
+ * overshoot by the number of concurrent creates, which is the right trade for
+ * not locking a shared 60-connection database on the hot path (the doc store
+ * makes the same one).
+ *
+ * `ownerId` is given only when the per-owner cap applies -- a *player* writing
+ * its own namespace, so that one JWT cannot fill a collection and lock its
+ * teammates out. A server key and the console are bounded by `maxEntries`
+ * alone (`docs/decisions.md` #7).
+ *
+ * The first count includes expired rows, and that is the whole point: the live
+ * count is what decides a refusal (an expired entry holds no slot), but it
+ * cannot be what decides that there is *room* -- `PUT {fresh key}?ttl=1` is
+ * invisible to it a second later, so a client writing a new key each time
+ * would walk past both caps for ever while the table grew without bound.
+ * `stored < cap` implies `live < cap`, so the ordinary create stops after one
+ * question; only a collection whose stored rows have reached a cap pays for
+ * the purge and the second, live count.
+ */
+export async function ensureKvRoom(
+  db: Pick<KvStoreDb, "countEntries" | "deleteExpiredEntries">,
+  col: Pick<KvCollectionRow, "id" | "maxEntries" | "maxEntriesPerOwner">,
+  opts: { now: number; ownerId?: string },
+): Promise<void> {
+  const { now, ownerId } = opts;
+  const count = (includeExpired: boolean, owner?: string) =>
+    db.countEntries(col.id, { now, ownerId: owner, includeExpired });
+
+  let ownerRows = ownerId === undefined ? 0 : await count(true, ownerId);
+  const overOwner = () =>
+    ownerId !== undefined && ownerRows >= col.maxEntriesPerOwner;
+  // Skipped when the owner is already over: the verdict is theirs either way.
+  let allRows = overOwner() ? 0 : await count(true);
+  if (overOwner() || allRows >= col.maxEntries) {
+    await db.deleteExpiredEntries(col.id, now, KV_CAP_PURGE_BATCH);
+    ownerRows = ownerId === undefined ? 0 : await count(false, ownerId);
+    allRows = overOwner() ? 0 : await count(false);
+  }
+  if (overOwner())
+    throw capConflict(
+      `owner already holds ${col.maxEntriesPerOwner} entries`,
+      "owner_full",
+    );
+  if (allRows >= col.maxEntries)
+    throw capConflict(
+      `collection already holds ${col.maxEntries} entries`,
+      "collection_full",
     );
 }
 
@@ -419,6 +518,20 @@ export interface KvStoreDb {
   /** The sweep's queue: rows whose claim is taken, oldest first. */
   listDeletedCollections(limit: number): Promise<KvCollectionMeta[]>;
   /**
+   * Live collections in id order, `after` exclusive: the sweep's bounded walk
+   * over a whole stage.
+   *
+   * `listCollections` cannot serve it. That one takes no bound and derives an
+   * entry count for every row it returns, so asking it for a stage would
+   * `groupBy` the entire `kv_entries` table to find out which collections have
+   * expired rows -- the very question the sweep is about to ask one collection
+   * at a time.
+   */
+  listLiveCollections(opts: {
+    after?: string;
+    limit: number;
+  }): Promise<KvCollectionMeta[]>;
+  /**
    * Drops a soft-deleted row, but only once its entries are gone: the child
    * foreign key cascades, and a cascade over a collection at its cap does not
    * fit MariaDB's 5 s statement limit. `false` therefore means "still
@@ -475,6 +588,24 @@ export interface KvStoreDb {
    * channel that derived it, but a team's announcement does.
    */
   deleteChannelEntries(channelId: string, limit: number): Promise<number>;
+  /**
+   * Physical `kv_entries` bytes (data + index) as the server reports them, and
+   * `undefined` where the implementation cannot ask -- the memory fake, and a
+   * grant that cannot see the row in `information_schema`. Absent is therefore
+   * "unknown", never zero.
+   *
+   * O(1), and kept apart from {@link topCollections} for exactly that reason:
+   * that one scans the table, so bundling them would lose the cheap number
+   * that carries the size warning whenever the expensive one timed out --
+   * which is at the size the warning exists for (found by review, 2026-09-04).
+   */
+  entriesTableBytes(): Promise<number | undefined>;
+  /**
+   * The heaviest `limit` collections, for the daily digest's "who grew" line.
+   * A full scan and an aggregate: there is no index on a row count. It runs
+   * once a day from the `expire` function and nowhere else.
+   */
+  topCollections(limit: number): Promise<KvCollectionUsage[]>;
   /** State stack only; console holds no KEK and never calls these two. */
   findKey(collectionId: string): Promise<KvKeyRow | undefined>;
   insertKey(
@@ -845,6 +976,19 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
         return rows.map(toCollectionMeta);
       }),
 
+    listLiveCollections: ({ after, limit }) =>
+      run(async () => {
+        const rows = await prisma.kv_collections.findMany({
+          where: { deleted_at: null, ...(after ? { id: { gt: after } } : {}) },
+          // The primary key, so the walk is a range scan and every page
+          // resumes exactly where the previous one stopped.
+          orderBy: { id: "asc" },
+          take: checkBatchLimit(limit),
+          select: COLLECTION_META_SELECT,
+        });
+        return rows.map(toCollectionMeta);
+      }),
+
     deleteCollectionRow: (id) =>
       run(async () => {
         const r = await prisma.kv_collections.deleteMany({
@@ -1022,6 +1166,39 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
       run(async () => {
         const n = Prisma.raw(String(checkBatchLimit(limit)));
         return prisma.$executeRaw`DELETE FROM \`kv_entries\` WHERE \`channel_id\` = ${channelId} AND \`owner_id\` <> ${KV_SHARED_OWNER} LIMIT ${n}`;
+      }),
+
+    entriesTableBytes: () =>
+      run(async () => {
+        // The estimate InnoDB keeps, not a `COUNT`: exact physical bytes would
+        // mean `ANALYZE TABLE` on a host every stage shares. A grant that
+        // cannot see the row answers no rows, which is "unknown", not zero.
+        const sized = await prisma.$queryRaw<
+          { bytes: bigint | number | null }[]
+        >`
+          SELECT \`data_length\` + \`index_length\` AS bytes
+          FROM \`information_schema\`.\`tables\`
+          WHERE \`table_schema\` = DATABASE() AND \`table_name\` = 'kv_entries'`;
+        const bytes = sized[0]?.bytes;
+        return bytes === null || bytes === undefined ? undefined : num(bytes);
+      }),
+
+    topCollections: (limit) =>
+      run(async () => {
+        const grouped = await prisma.kv_entries.groupBy({
+          by: ["collection_id"],
+          // Expired rows included: they still occupy the pages this measures,
+          // and the sweep that removes them is the reader of this number.
+          _count: { _all: true },
+          _sum: { bytes: true },
+          orderBy: { _count: { collection_id: "desc" } },
+          take: checkBatchLimit(limit),
+        });
+        return grouped.map((g) => ({
+          collectionId: g.collection_id,
+          entries: g._count._all,
+          bytes: g._sum.bytes ?? 0,
+        }));
       }),
 
     findKey: (collectionId) =>
@@ -1270,6 +1447,19 @@ export function createMemoryKvStoreDb(
         .map(({ description: _description, ...meta }) => meta);
     },
 
+    listLiveCollections: async ({ after, limit }) => {
+      const n = checkBatchLimit(limit);
+      return [...collections.values()]
+        .filter(
+          (c) =>
+            c.deletedAt === null &&
+            (after === undefined || cmpBin(c.id, after) > 0),
+        )
+        .sort(byCollectionId)
+        .slice(0, n)
+        .map(({ description: _description, ...meta }) => meta);
+    },
+
     deleteCollectionRow: async (id) => {
       const c = collections.get(id);
       if (!c || c.deletedAt === null) return false;
@@ -1422,6 +1612,32 @@ export function createMemoryKvStoreDb(
         gone++;
       }
       return gone;
+    },
+
+    // A Map has no page count, and reporting one it made up would be the single
+    // number the digest is not allowed to invent.
+    entriesTableBytes: async () => undefined,
+
+    topCollections: async (limit) => {
+      const n = checkBatchLimit(limit);
+      const per = new Map<string, KvCollectionUsage>();
+      for (const e of entries.values()) {
+        const u = per.get(e.collectionId) ?? {
+          collectionId: e.collectionId,
+          entries: 0,
+          bytes: 0,
+        };
+        u.entries++;
+        u.bytes += e.bytes;
+        per.set(e.collectionId, u);
+      }
+      return [...per.values()]
+        .sort(
+          (a, b) =>
+            cmpNum(b.entries, a.entries) ||
+            cmpBin(a.collectionId, b.collectionId),
+        )
+        .slice(0, n);
     },
 
     findKey: async (collectionId) => {
