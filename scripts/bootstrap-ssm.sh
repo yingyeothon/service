@@ -21,8 +21,13 @@
 #   published as /yyt-service/dev/auth/debug-mysql-{user,password} (docs/decisions.md "디버그 시드").
 # Legacy /yyt-service/<stage>/upstash-* parameters are deleted.
 # Logs (names only, never values) go to local/deploy/bootstrap-ssm.<stage>.log.
+# state only (todo/33): kv-kek is the stage KEK that wraps every kv collection's data key.
+#   Taken from KV_KEK or local/env/state.<stage>.env, generated when neither SSM nor the env
+#   file has one, and otherwise kept — replacing it needs KV_KEK_ROTATE=1 and makes every
+#   stored kv value unreadable, so it is excluded from the blanket rotation below.
 # Rotation: update local/env via yyt-stateful → run this → redeploy EVERY stack of the stage
 #   (values are baked into Lambda env at deploy time) → only then revoke the old credentials.
+#   kv-kek is NOT part of that pass: see above.
 set -euo pipefail
 umask 077 # everything this script writes (logs, debug key, temp files) is owner-only
 STAGE="${1:?stage (dev|prod)}"; shift || true
@@ -183,6 +188,82 @@ else
       *ParameterNotFound*) : ;;
       *) echo "failed to delete /yyt-service/${STAGE}/doc-base-url: $err" >&2; exit 1 ;;
     esac
+fi
+
+# The stage KEK that wraps every kv collection's data key (docs/decisions.md
+# *Key-value store* #8). Kept across re-runs like debug-key and gateway-token, with
+# one guard neither of those needs: a *new* KEK makes every stored value unreadable
+# for good, so a read that fails for any reason other than "not there yet" stops the
+# script instead of minting a replacement over a parameter that is merely unreachable.
+KEK_NAME="state/kv-kek"
+case " ${SERVICES[*]} " in *" state "*) KEK_TOUCH=1 ;; *) KEK_TOUCH=0 ;; esac
+if [ "$KEK_TOUCH" = 0 ]; then
+  # The two skips are different situations and get different words: one is
+  # "you did not ask for state", the other is "this machine has no state env
+  # file" — which for a stage that *does* run kv is a get-env.sh step the
+  # operator still owes, not a no-op they chose.
+  log "skip /yyt-service/${STAGE}/${KEK_NAME} (state not in this run)"
+elif [ ! -f "local/env/state.${STAGE}.env" ]; then
+  log "skip /yyt-service/${STAGE}/${KEK_NAME} (no local/env/state.${STAGE}.env on this machine)"
+else
+  # One call, both streams, kept apart. Folded together with a plain `2>&1`,
+  # any line the CLI writes to stderr on a *successful* call (a botocore
+  # deprecation warning, an SSO refresh notice) would become part of
+  # `CURRENT_KEK`, and the script would then report "already holds a different
+  # KEK" and recommend KV_KEK_ROTATE=1 — the one destructive answer — for a
+  # stage whose KEK is fine. Asking twice instead (once for the value, once for
+  # the error) is worse still: a read that fails and then succeeds leaves no
+  # error to classify and exits with an empty reason.
+  KEK_ERR="$(mktemp)"
+  if kek_read="$(aws ssm get-parameter --name "/yyt-service/${STAGE}/${KEK_NAME}" --with-decryption --query Parameter.Value --output text 2>"$KEK_ERR")"; then
+    CURRENT_KEK="$kek_read"
+  else
+    case "$(cat "$KEK_ERR")" in
+      *ParameterNotFound*) CURRENT_KEK="" ;;
+      *) echo "failed to read /yyt-service/${STAGE}/${KEK_NAME}: $(cat "$KEK_ERR")" >&2; rm -f "$KEK_ERR"; exit 1 ;;
+    esac
+  fi
+  rm -f "$KEK_ERR"
+  # `|| true` because this is the one optional key `envval` is asked for: under
+  # `pipefail` its leading `grep` returns 1 when the line is absent, which takes
+  # the whole script down with `set -e` before any of the logic below runs.
+  WANT_KEK="${KV_KEK:-$(envval "local/env/state.${STAGE}.env" KV_KEK || true)}"
+  # The state stack validates the same shape at cold start and 503s the kv routes
+  # below it; catching it here is the difference between a typo and a dead stage.
+  is_kek() { printf '%s' "$1" | grep -qE '^[0-9a-fA-F]{64}$'; }
+  if [ -n "$WANT_KEK" ] && ! is_kek "$WANT_KEK"; then
+    echo "KV_KEK must be 32 bytes of hex (64 hex characters)" >&2; exit 1
+  fi
+  if [ -z "$WANT_KEK" ] || [ "$WANT_KEK" = "$CURRENT_KEK" ]; then
+    KEK="$CURRENT_KEK"
+  elif [ -z "$CURRENT_KEK" ]; then
+    KEK="$WANT_KEK"
+  elif [ "${KV_KEK_ROTATE:-0}" = "1" ]; then
+    KEK="$WANT_KEK"
+    log "WARN rotating ${KEK_NAME}: every value wrapped with the old KEK becomes unreadable"
+  else
+    echo "/yyt-service/${STAGE}/${KEK_NAME} already holds a different KEK; set KV_KEK_ROTATE=1 to replace it (every stored kv value becomes unreadable)" >&2
+    exit 1
+  fi
+  if [ -z "$KEK" ]; then
+    KEK="$(openssl rand -hex 32)"
+    log "generated a new ${KEK_NAME} — pull it with FORCE=1 scripts/get-env.sh ${STAGE} state (it refuses to overwrite an existing env file) and copy it into the ops repo"
+  fi
+  # A value that was already in SSM has never been through the check above, so
+  # a KEK put there by hand can leave every /kv/* route answering 503 while this
+  # script cheerfully reports the stage unchanged. Not fatal — refusing would
+  # only block the operator from fixing anything else — but never silent.
+  is_kek "$KEK" || log "WARN /yyt-service/${STAGE}/${KEK_NAME} is not 32 bytes of hex; /kv/* will answer 503 until it is replaced (KV_KEK=… KV_KEK_ROTATE=1)"
+  if [ "$KEK" = "$CURRENT_KEK" ]; then
+    log "keep /yyt-service/${STAGE}/${KEK_NAME} (unchanged)"
+  else
+    # Which stage a supplied KEK was meant for is the operator's to know: the
+    # env file is stage-scoped, an exported KV_KEK is not, and seeding a second
+    # stage from the same shell would otherwise put one stage's KEK on another
+    # with nothing in the log to say so.
+    [ -z "${KV_KEK:-}" ] || log "using the KEK from the shell environment, not local/env/state.${STAGE}.env"
+    put "$KEK_NAME" "$KEK"
+  fi
 fi
 
 # CloudFront (console SPA) needs the us-east-1 certificate covering *.yyt.life;

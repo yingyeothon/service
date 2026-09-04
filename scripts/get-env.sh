@@ -4,7 +4,8 @@
 # Refuses to overwrite an existing file unless FORCE=1.
 # For `console` it also restores the stage-wide keys that live in that file
 # (github-client-*, admin-github-logins, and the optional ACL issuer pair), so a
-# FORCE=1 re-pull cannot leave bootstrap-ssm.sh with an empty OAuth app.
+# FORCE=1 re-pull cannot leave bootstrap-ssm.sh with an empty OAuth app; for
+# `state`, the optional KV_KEK, for the same reason.
 set -euo pipefail
 umask 077
 STAGE="${1:?stage (dev|prod)}"; shift || true
@@ -40,6 +41,19 @@ for svc in "${SERVICES[@]}"; do
       case "$v" in *$'\n'*) echo "$prefix${pair##*:} contains a newline" >&2; rm -f "$tmp"; exit 1;; esac
       echo "${pair%%:*}=${v}"
     done
+    # state only and optional (todo/33): the stage KEK. Absent means the stage
+    # has no kv storage configured yet — its `/kv/*` routes answer 503 and
+    # everything else works — so a missing parameter is a valid state, not an
+    # error. Restored because bootstrap-ssm.sh reads this file: without it a
+    # FORCE=1 re-pull would leave the operator holding an env file that looks
+    # complete while the KEK lives only in SSM.
+    if [ "$svc" = state ]; then
+      v="$(get kv-kek)"
+      if [ -n "$v" ]; then
+        case "$v" in *$'\n'*) echo "${prefix}kv-kek contains a newline" >&2; rm -f "$tmp"; exit 1;; esac
+        echo "KV_KEK=${v}"
+      fi
+    fi
     # console only and optional (todo/16 B): absent means the stage has no
     # participant-credential issuer, which is a valid state, not an error.
     if [ "$svc" = console ]; then
