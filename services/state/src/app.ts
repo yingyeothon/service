@@ -130,6 +130,7 @@ export function createStateApp({
       channelId: id.subject,
       kind: id.kind as Caller["kind"],
       ownerId: typeof id.ownerId === "string" ? id.ownerId : undefined,
+      projectId: typeof id.projectId === "string" ? id.projectId : null,
     };
   }
 
@@ -287,7 +288,15 @@ export function createStateApp({
       logger.debug("caller", { channelId: c.channelId, kind: c.kind });
       // `subject` is the channel, not the person: every route is scoped by it,
       // and a player's identity is the separate `ownerId` below.
-      return { kind: c.kind, subject: c.channelId, ownerId: c.ownerId };
+      return {
+        kind: c.kind,
+        subject: c.channelId,
+        ownerId: c.ownerId,
+        // Carried through `Identity` because `caller()` rebuilds the `Caller`
+        // from it; a second `SELECT` for the project would double the cost of
+        // every kv request.
+        projectId: c.projectId,
+      };
     },
     logger,
   });

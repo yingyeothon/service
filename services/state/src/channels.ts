@@ -20,6 +20,14 @@ export interface Caller {
   kind: "server" | "owner";
   /** Present for `owner` only: the `sub` of the verified token. */
   ownerId?: string;
+  /**
+   * The project the credential's auth channel belongs to. `null` for a channel
+   * created before projects existed. The doc routes do not use it -- a document
+   * namespace is the channel -- but a kv collection belongs to a *project*, so
+   * `/kv/*` refuses anything whose `projectId` does not equal the collection's
+   * (a `null` here can therefore never match).
+   */
+  projectId: string | null;
 }
 
 export interface ChannelStore {
@@ -72,7 +80,9 @@ export function createChannelStore({
           Buffer.from(sha256Hex(bearer), "hex"),
           Buffer.from(sha256Hex(stored), "hex"),
         );
-        return ok ? { channelId: ch.id, kind: "server" } : undefined;
+        return ok
+          ? { channelId: ch.id, kind: "server", projectId: ch.projectId }
+          : undefined;
       }
       // Otherwise a player's channel JWT. `iss` picks the key; the signature
       // check right after is what makes the claim true.
@@ -87,7 +97,12 @@ export function createChannelStore({
           audience: ch.config.audience,
           clock,
         });
-        return { channelId: ch.id, kind: "owner", ownerId: claims.userId };
+        return {
+          channelId: ch.id,
+          kind: "owner",
+          ownerId: claims.userId,
+          projectId: ch.projectId,
+        };
       } catch {
         return undefined;
       }
