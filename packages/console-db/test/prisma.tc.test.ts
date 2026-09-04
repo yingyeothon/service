@@ -7,6 +7,7 @@ import {
   createTeamDb,
   createShowsDb,
   createSitesDb,
+  createKvStoreDb,
   createStateDb,
   contractPreflight,
   toLobbyChannel,
@@ -24,6 +25,7 @@ import {
   memberLookupContract,
 } from "./consoleDbExt.test.js";
 import { teamContract } from "./team.test.js";
+import { kvstoreContract } from "./kvstore.test.js";
 import { stateContract } from "./state.test.js";
 import {
   dockerAvailable,
@@ -153,6 +155,19 @@ describe.skipIf(!dockerAvailable())(
           });
         return createStateDb(db.client);
       });
+    });
+
+    describe("kvstore contract", () => {
+      kvstoreContract(
+        async () => {
+          await resetTestDb(db.client);
+          // `kv_collections` has both parent foreign keys, so the team and the
+          // project have to exist before any collection can.
+          await seedTeamProject(db.client);
+          return createKvStoreDb(db.client);
+        },
+        { login },
+      );
     });
 
     describe("team contract", () => {
@@ -390,6 +405,7 @@ describe.skipIf(!dockerAvailable())(
           apps: 1,
           bundles: 1,
           sites: 1,
+          kv: 0,
         });
         await createSitesDb(db.client).deleteSite("st_1");
         // A parent that does not exist is a foreign-key failure, not a silent null.
