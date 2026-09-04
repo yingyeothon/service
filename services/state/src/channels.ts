@@ -7,6 +7,7 @@ import {
   type Clock,
 } from "@yyt/core";
 import type { AuthChannel, ConsoleDb } from "@yyt/console-db";
+import type { Identity } from "@yyt/http";
 import { unverifiedChannelId, verifyChannelToken } from "@yyt/jwt";
 
 /** Who is calling and which channel's documents they may touch. */
@@ -28,6 +29,20 @@ export interface Caller {
    * (a `null` here can therefore never match).
    */
   projectId: string | null;
+}
+
+/**
+ * The `Identity` the handler resolved, back as the `Caller` a route reasons
+ * about. Both route tables rebuild it the same way, and neither pays a second
+ * `SELECT` for the project: `identity()` already put it there.
+ */
+export function callerFromIdentity(id: Identity): Caller {
+  return {
+    channelId: id.subject,
+    kind: id.kind as Caller["kind"],
+    ownerId: typeof id.ownerId === "string" ? id.ownerId : undefined,
+    projectId: typeof id.projectId === "string" ? id.projectId : null,
+  };
 }
 
 export interface ChannelStore {

@@ -78,6 +78,22 @@ provider:
     MYSQL_DATABASE: ${ssm:${self:custom.ssm}/mysql-database}
     MYSQL_USER: ${ssm:${self:custom.ssm}/mysql-user}
     MYSQL_PASSWORD: ${ssm:${self:custom.ssm}/mysql-password}
+    # The stage KEK for encrypted kv collections.
+    #
+    # The `""` default is what makes the isolation in `handler.ts` real: an
+    # absent parameter answers 503 on every /kv/* route and leaves /s/* — which
+    # holds nothing encrypted — working. Without it Serverless fails *variable
+    # resolution*, so a stage whose parameter has not been created yet cannot
+    # deploy this stack at all, a doc-store hotfix included. The empty value is
+    # never silent: the cold start logs `kv crypto unavailable` and every kv
+    # call answers `kv_encryption_not_configured`, which the smoke catches on
+    # its first request.
+    #
+    # Generated once (`openssl rand -hex 32`) and kept across bootstraps unless
+    # a rotation is asked for explicitly; the long-term copy lives in the
+    # private ops repo beside the state account, because losing it loses every
+    # encrypted value for good.
+    KV_KEK: ${ssm:${self:custom.ssm}/kv-kek, ""}
 
 functions:
   api:

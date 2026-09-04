@@ -497,6 +497,19 @@ export function kvstoreContract(
       [],
     );
     expect(await db.countEntries(C1, { now: 500 })).toBe(0);
+    // ...but the rows are still there, and a writer deciding whether to let
+    // another one be created has to see them: a client writing `ttl=1` under a
+    // fresh key each time would otherwise never meet a cap.
+    expect(await db.countEntries(C1, { now: 500, includeExpired: true })).toBe(
+      2,
+    );
+    expect(
+      await db.countEntries(C1, {
+        now: 500,
+        ownerId: "",
+        includeExpired: true,
+      }),
+    ).toBe(2);
     expect(await db.deleteEntry(C1, "", "k1", { now: 500 })).toBe("missing");
     // Absent for `If-None-Match`, yet the version continues: a stale `If-Match`
     // must not land on the reborn key.
