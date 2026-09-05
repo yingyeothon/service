@@ -498,11 +498,17 @@ export interface ConsoleDb {
     graceSec: number,
   ): Promise<{ disabled: string[]; deleted: ExpiredChannel[] }>;
   /**
-   * Hard-deletes rows soft-deleted more than `retainSec` ago and returns their
-   * ids. Until then a deleted channel keeps its `(team_id, name)` — the unique
-   * index has no `deleted_at` filter (docs/decisions.md).
+   * Hard-deletes rows soft-deleted more than `retainSec` ago and returns
+   * them. Until then a deleted channel keeps its `(team_id, name)` — the
+   * unique index has no `deleted_at` filter (docs/decisions.md). The project
+   * id rides along because this is the last moment it exists anywhere, and
+   * the kv purge needs it to reach the console-written rows of the owners
+   * the channel named (owner decision 2026-09-06).
    */
-  purgeChannels(now: number, retainSec: number): Promise<string[]>;
+  purgeChannels(
+    now: number,
+    retainSec: number,
+  ): Promise<{ id: string; projectId: string | null }[]>;
 
   insertAudit(a: AuditInput): Promise<void>;
   /**
@@ -919,15 +925,17 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
       ),
     purgeChannels: (now, retainSec) =>
       run(async () => {
-        const ids = (
+        const rows = (
           await prisma.channels.findMany({
             where: { deleted_at: { not: null, lt: now - retainSec } },
-            select: { id: true },
+            select: { id: true, project_id: true },
           })
-        ).map((r) => r.id);
-        if (ids.length > 0)
-          await prisma.channels.deleteMany({ where: { id: { in: ids } } });
-        return ids;
+        ).map((r) => ({ id: r.id, projectId: r.project_id }));
+        if (rows.length > 0)
+          await prisma.channels.deleteMany({
+            where: { id: { in: rows.map((r) => r.id) } },
+          });
+        return rows;
       }),
     insertAudit: (a) =>
       run(async () => {

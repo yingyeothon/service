@@ -154,7 +154,9 @@ describe("memory console db: members/tokens/channels/audit", () => {
       db.insertChannel({ ...channel("c9"), name: "N" }),
     ).rejects.toMatchObject({ code: "conflict" });
     expect(await db.purgeChannels(131, 30)).toEqual([]);
-    expect(await db.purgeChannels(132, 30)).toEqual(["c1"]);
+    expect(await db.purgeChannels(132, 30)).toEqual([
+      { id: "c1", projectId: "prj_1" },
+    ]);
     expect(db.channels.has("c1")).toBe(false);
     await db.insertAudit({
       id: "a1",

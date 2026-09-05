@@ -822,7 +822,9 @@ describe.skipIf(!dockerAvailable())(
           repo.insertChannel(channel("c3", { name: "C1" })),
         ).rejects.toMatchObject({ code: "conflict" });
         expect(await repo.purgeChannels(90, 30)).toEqual([]);
-        expect(await repo.purgeChannels(91, 30)).toEqual(["c1"]);
+        expect(await repo.purgeChannels(91, 30)).toEqual([
+          { id: "c1", projectId: "prj_1" },
+        ]);
         expect(
           await db.client.channels.findUnique({ where: { id: "c1" } }),
         ).toBeNull();

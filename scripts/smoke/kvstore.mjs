@@ -1173,11 +1173,12 @@ try {
   );
   const owned = await con(`/kv/${profile.id}`, { headers: as(owner) });
   check(
-    // The one row left in `profile` is the one the console wrote into alice's
-    // namespace: it carries no `channel_id`, so the purge does not reach it.
-    // That is owner decision 5 in `todo/33-kvstore.md`, made visible.
-    "a console row in an owner namespace outlives the channel",
-    owned.status === 200 && owned.body?.entries === 1,
+    // The row the console wrote into alice's namespace carries no
+    // `channel_id`, but alice is an owner the dead channel's own rows name,
+    // so the purge takes it too (owner decision 2026-09-06, decisions.md #9 —
+    // this used to pin the opposite, as owner decision 5's first evidence).
+    "a console row of an owner the channel named dies with it",
+    owned.status === 200 && owned.body?.entries === 0,
     `${owned.status} ${owned.body?.entries}`,
   );
   check(

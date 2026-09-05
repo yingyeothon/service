@@ -20,6 +20,7 @@ import {
 
 const TEAM = "team_1";
 const PRJ = "prj_1";
+const PRJ2 = "prj_2";
 const C1 = "kv_1";
 const C2 = "kv_2";
 /** Two owners that differ only by case: the `utf8mb4_bin` columns keep them apart. */
@@ -787,13 +788,81 @@ export function kvstoreContract(
     expect(await db.deleteOwnerEntries(C1, OWNER, 100)).toBe(1);
     expect(await db.countEntries(C1, { now: 200, ownerId: OWNER })).toBe(0);
     // A channel's hard delete takes its players' rows, never the shared ones.
-    expect(await db.deleteChannelEntries("ch_1", 100)).toBe(1);
+    expect(await db.deleteChannelEntries("ch_1", PRJ, 100)).toBe(1);
     expect(
       (await db.listEntries({ collectionId: C1, now: 200 })).rows.map(
         (r) => r.key,
       ),
     ).toEqual(["shared"]);
-    expect(await db.deleteChannelEntries("ch_other", 100)).toBe(0);
+    expect(await db.deleteChannelEntries("ch_other", PRJ, 100)).toBe(0);
+  });
+
+  it("a channel purge takes the console rows of the owners the channel named", async () => {
+    const db = await make();
+    await db.insertCollection(coll({ readScope: "user", writeScope: "user" }));
+    await db.insertCollection(coll({ id: C2, name: "second" }));
+    await db.insertCollection(
+      coll({ id: "kv_3", name: "faraway", projectId: PRJ2 }),
+    );
+    // The channel's own rows name two owners across two collections...
+    await db.putEntry(entry({ ownerId: OWNER, key: "a", channelId: "ch_1" }));
+    await db.putEntry(
+      entry({ collectionId: C2, ownerId: "z9", key: "b", channelId: "ch_1" }),
+    );
+    // ...whose console rows (`channelId: null`) in this project go with it,
+    await db.putEntry(entry({ ownerId: OWNER, key: "note" }));
+    await db.putEntry(entry({ collectionId: C2, ownerId: "z9", key: "note" }));
+    // while the same owner in another project, an owner no channel row names,
+    // and the shared namespace all survive.
+    await db.putEntry(
+      entry({ collectionId: "kv_3", ownerId: OWNER, key: "far" }),
+    );
+    await db.putEntry(entry({ ownerId: "w7", key: "solo" }));
+    await db.putEntry(entry({ key: "shared", channelId: "ch_1" }));
+
+    expect(await db.deleteChannelEntries("ch_1", PRJ, 100)).toBe(4);
+    expect(
+      (await db.listEntries({ collectionId: C1, now: 300 })).rows.map((r) => [
+        r.ownerId,
+        r.key,
+      ]),
+    ).toEqual([
+      ["", "shared"],
+      ["w7", "solo"],
+    ]);
+    expect(await db.countEntries(C2, { now: 300 })).toBe(0);
+    expect(await db.countEntries("kv_3", { now: 300 })).toBe(1);
+  });
+
+  it("a channel purge without a project takes only the channel's own rows", async () => {
+    const db = await make();
+    await db.insertCollection(coll({ readScope: "user", writeScope: "user" }));
+    await db.putEntry(entry({ ownerId: OWNER, key: "a", channelId: "ch_1" }));
+    await db.putEntry(entry({ ownerId: OWNER, key: "note" }));
+    // Without the project, a `{kind}:{id}` owner could match across projects,
+    // so the console rows stay for the sweep that knows better.
+    expect(await db.deleteChannelEntries("ch_1", null, 100)).toBe(1);
+    expect(
+      (await db.listEntries({ collectionId: C1, now: 300 })).rows.map(
+        (r) => r.key,
+      ),
+    ).toEqual(["note"]);
+  });
+
+  it("a channel purge below its budget resumes where it stopped", async () => {
+    const db = await make();
+    await db.insertCollection(coll({ readScope: "user", writeScope: "user" }));
+    for (const key of ["a", "b", "c"])
+      await db.putEntry(entry({ ownerId: OWNER, key, channelId: "ch_1" }));
+    await db.putEntry(entry({ ownerId: OWNER, key: "note" }));
+    // Four rows to go: a truncated call answers exactly its limit, and the
+    // caller's loop finishes the rest.
+    expect(await db.deleteChannelEntries("ch_1", PRJ, 2)).toBe(2);
+    let extra = 0;
+    for (let more = 2; more >= 2; extra += more)
+      more = await db.deleteChannelEntries("ch_1", PRJ, 2);
+    expect(extra).toBe(2);
+    expect(await db.countEntries(C1, { now: 300 })).toBe(0);
   });
 
   /* --- encryption keys --- */
@@ -868,7 +937,7 @@ describe("memory kvstore db", () => {
       logins.clear();
       return createMemoryKvStoreDb({
         teamExists: (id) => id === TEAM,
-        projectExists: (id) => id === PRJ,
+        projectExists: (id) => id === PRJ || id === PRJ2,
         memberExists: (id) => members.has(id),
         loginOf: (id) => logins.get(id) ?? `login-${id}`,
       });

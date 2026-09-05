@@ -336,7 +336,7 @@ export const expire = async (): Promise<void> => {
   // skipped the asset cleanup on that day and every day after.
   const failures: unknown[] = [];
   /** Channels this run finished with; the kv sweep takes their players' entries. */
-  let deletedAuthChannels: string[] = [];
+  let deletedAuthChannels: { id: string; projectId: string | null }[] = [];
   for (const step of [
     async () => {
       const { deleted, purged } = await runExpire({ db, state, team, logger });
@@ -345,8 +345,12 @@ export const expire = async (): Promise<void> => {
       // *manual* delete — whose inline purge is best-effort and bounded, and
       // whose ids nothing names once the row is gone. A purged id of another
       // kind costs one indexed statement that finds nothing.
+      // The purged rows carry their project id out with them — it is the last
+      // moment it exists, and the console-row half of the kv purge needs it.
       deletedAuthChannels = [
-        ...deleted.filter((d) => d.kind === "auth").map((d) => d.id),
+        ...deleted
+          .filter((d) => d.kind === "auth")
+          .map((d) => ({ id: d.id, projectId: d.projectId })),
         ...purged,
       ];
       // Hard-deleted channels take their participant credential with them.
@@ -388,7 +392,7 @@ export const expire = async (): Promise<void> => {
     () =>
       runKvStoreSweep({
         kvstore,
-        channelIds: deletedAuthChannels,
+        channels: deletedAuthChannels,
         kv,
         logger,
       }),

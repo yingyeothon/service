@@ -153,4 +153,16 @@ export async function seedTeamProject(client: PrismaClient): Promise<void> {
       updated_at: 1,
     },
   });
+  // A second project, so a contract can prove a per-project scope: the kv
+  // channel purge must not cross into it on a same-named owner.
+  await client.projects.create({
+    data: {
+      id: "prj_2",
+      team_id: "team_1",
+      name: "other",
+      created_by: "m1",
+      created_at: 1,
+      updated_at: 1,
+    },
+  });
 }

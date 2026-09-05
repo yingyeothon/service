@@ -231,23 +231,36 @@ describe("kv collection resolution", () => {
     ).toBe(200);
   });
 
-  it("serves the shape to any credential of the project, team scope included", async () => {
+  it("serves the shape when one scope is team, but 403s a team/team collection", async () => {
     const h = await withCollections();
+    // One API-usable scope is enough: the caller needs the shape to pick the
+    // right path before it writes.
     const r = await call(h, {
       method: "GET",
-      path: `/kv/${COLS.teamonly.id}`,
+      path: `/kv/${COLS.dropbox.id}`,
       bearer: await jwt(OWNER),
     });
     expect(r.statusCode).toBe(200);
     expect(bodyOf(r)).toEqual({
-      id: COLS.teamonly.id,
-      name: COLS.teamonly.id.slice(3),
+      id: COLS.dropbox.id,
+      name: COLS.dropbox.id.slice(3),
       readScope: "team",
-      writeScope: "team",
+      writeScope: "project",
       encrypted: false,
       maxEntries: 100,
       maxEntriesPerOwner: 10,
     });
+    // Both scopes team: no API principal could ever touch its entries, so the
+    // API has nothing to say about it (decisions.md #3, owner 2026-09-06).
+    expect(
+      (
+        await call(h, {
+          method: "GET",
+          path: `/kv/${COLS.teamonly.id}`,
+          bearer: await jwt(OWNER),
+        })
+      ).statusCode,
+    ).toBe(403);
   });
 });
 

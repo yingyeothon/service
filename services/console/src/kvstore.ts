@@ -771,25 +771,33 @@ export function createKvStoreRoutes({
  * Bounded like every other batched delete, and it never throws: the channel
  * delete has already been decided. What this pass does not reach — a channel
  * whose players wrote more than the budget, or a database that was away — is
- * reached by the daily sweep when the row is *hard* deleted 30 days later,
- * which is the last moment its id still exists anywhere (`handler.ts` feeds
- * the sweep both `runExpire` lists for exactly that reason).
+ * reached for the channel's **own** rows by the daily sweep when the row is
+ * *hard* deleted 30 days later, the last moment its id still exists anywhere
+ * (`handler.ts` feeds the sweep both `runExpire` lists for exactly that
+ * reason). The console-row half of the purge (owner decision 2026-09-06)
+ * shares that backstop — `purgeChannels` carries the project id out with the
+ * dying row — but a run that exhausts its budget here still logs a warning:
+ * thirty days is a long time to hold rows a player believes gone.
  */
 export async function deleteChannelKvEntries(
   kvstore: Pick<KvStoreDb, "deleteChannelEntries">,
   channelId: string,
+  projectId: string | null,
   logger: Logger,
 ): Promise<number> {
   let deleted = 0;
   try {
-    for (let i = 0; i < KV_DRAIN_MAX_BATCHES; i++) {
-      const gone = await kvstore.deleteChannelEntries(
+    let gone = KV_DRAIN_BATCH;
+    for (let i = 0; i < KV_DRAIN_MAX_BATCHES && gone >= KV_DRAIN_BATCH; i++) {
+      gone = await kvstore.deleteChannelEntries(
         channelId,
+        projectId,
         KV_DRAIN_BATCH,
       );
       deleted += gone;
-      if (gone < KV_DRAIN_BATCH) break;
     }
+    if (gone >= KV_DRAIN_BATCH)
+      logger.warn("kv entry purge truncated", { channelId, deleted });
   } catch (e) {
     logger.error("kv entry purge failed", {
       channelId,

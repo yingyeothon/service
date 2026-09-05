@@ -867,16 +867,17 @@ describe("kv lifecycle", () => {
     });
     const r = await runKvStoreSweep({
       kvstore: h.kvstore,
-      channelIds: ["auth_dead"],
+      channels: [{ id: "auth_dead", projectId: c.projectId }],
       clock: h.clock,
       logger: nullLogger,
     });
     expect(r.truncated).toBe(false);
     const left = [...h.kvstore.entries.values()].map((e) => e.key).sort();
-    // The expired row and the player's row went; the shared row survived a
-    // channel it was never really a player's.
-    expect(left).toEqual(["live", "shared"]);
-    expect(r.deleted).toBe(2);
+    // Everything of the owner the dead channel named went — the console-written
+    // rows included (owner decision 2026-09-06) — while the shared row survived
+    // a channel it was never really a player's.
+    expect(left).toEqual(["shared"]);
+    expect(r.deleted).toBe(3);
   });
 
   it("resumes the expiry walk where it stopped rather than restarting at the oldest", async () => {
@@ -978,7 +979,7 @@ describe("kv lifecycle", () => {
     // exist nowhere else once the row is purged, while the expired row waits.
     const r = await runKvStoreSweep({
       kvstore: h.kvstore,
-      channelIds: ["auth_dead"],
+      channels: [{ id: "auth_dead", projectId: c.projectId }],
       kv: h.kv,
       clock: h.clock,
       logger: nullLogger,
@@ -1032,6 +1033,20 @@ describe("kv lifecycle", () => {
       channelId: ch.id,
       at: NOW_SEC,
     });
+    // A console row of the same owner: the route must hand the channel's
+    // project to the purge, or this one survives (mutation-blind otherwise —
+    // `row.projectId ?? null` → `null` kept every test green, review
+    // 2026-09-06).
+    await h.kvstore.putEntry({
+      collectionId: c.id,
+      ownerId: U1,
+      key: "note",
+      value: "1",
+      bytes: 1,
+      expiresAt: null,
+      channelId: null,
+      at: NOW_SEC,
+    });
     slot(h);
     expect(
       (
@@ -1055,6 +1070,7 @@ describe("kv lifecycle", () => {
           Promise.reject(new Error("database is away")),
       },
       "auth_x",
+      null,
       {
         ...nullLogger,
         error: (message, fields) => lines.push({ message, fields }),

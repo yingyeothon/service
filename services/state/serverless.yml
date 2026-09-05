@@ -131,16 +131,35 @@ resources:
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
+    # The stack's one alarm slot widened from Lambda `Errors` to a log metric
+    # (owner decision 2026-09-06, decisions.md #8): every kv 503 — lost KEK,
+    # missing grant, corrupt row — is an `AppError`, so the invocation
+    # *succeeds* and `Errors` stays flat through a stage-wide kv outage.
+    # Term-matched, not `$.m`, because the widening must not lose what
+    # `Errors` uniquely saw: "request failed" (an AppError >= 500, the kv
+    # 503s and a lost database included) and "unhandled error" are the only
+    # 5xx exits our handler logs, while "Task timed out" and "Runtime." are
+    # the runtime's own non-JSON lines for a hung invocation and an
+    # init/module crash — the two failures the old `Errors` alarm covered.
+    ApiFailureMetric:
+      Condition: IsProd
+      Type: AWS::Logs::MetricFilter
+      DependsOn: ApiLogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${self:custom.stage}-api
+        FilterPattern: '?"request failed" ?"unhandled error" ?"Task timed out" ?"Runtime."'
+        MetricTransformations:
+          - MetricNamespace: yyt/state
+            MetricName: ${self:custom.stage}-api-failures
+            MetricValue: "1"
+            DefaultValue: 0
     ApiErrorsAlarm:
       Condition: IsProd
       Type: AWS::CloudWatch::Alarm
       Properties:
-        AlarmName: ${self:service}-${self:custom.stage}-lambda-errors
-        Namespace: AWS/Lambda
-        MetricName: Errors
-        Dimensions:
-          - Name: FunctionName
-            Value: ${self:service}-${self:custom.stage}-api
+        AlarmName: ${self:service}-${self:custom.stage}-api-failures
+        Namespace: yyt/state
+        MetricName: ${self:custom.stage}-api-failures
         Statistic: Sum
         Period: 300
         EvaluationPeriods: 1

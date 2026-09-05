@@ -763,7 +763,9 @@ describe("expire sweep", () => {
       clock: h.clock,
       logger: nullLogger,
     });
-    expect(purged.purged.sort()).toEqual(gone.deleted.map((d) => d.id).sort());
+    expect(purged.purged.map((p) => p.id).sort()).toEqual(
+      gone.deleted.map((d) => d.id).sort(),
+    );
     expect(h.db.channels.has(t.id)).toBe(false);
   });
 
@@ -804,7 +806,7 @@ describe("expire sweep", () => {
       clock: h.clock,
       logger: nullLogger,
     });
-    expect(swept.purged).toEqual([first.id]);
+    expect(swept.purged.map((p) => p.id)).toEqual([first.id]);
     const a2 = await h.login("alice", "member");
     expect(
       (
