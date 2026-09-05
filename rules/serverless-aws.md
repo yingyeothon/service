@@ -28,7 +28,7 @@
 - Debug hooks: gate on `STAGE=dev && DEBUG_HOOKS=1` at route registration, and if their config is bad _disable them and log_ instead of throwing from the module initializer — otherwise the real endpoints 500 too.
 - Stage-scoped IAM: express per-stage action lists as `custom.<x>.{dev,prod}` maps and reference `${self:custom.x.${self:custom.stage}}`.
 - Per-service secrets: `custom.ssm: /yyt-service/${stage}/<service>` and `${ssm:${self:custom.ssm}/mysql-host}` etc. Required keys have no default (deploy fails loudly); dev-only keys use `${ssm:..., ""}` so prod resolves to empty and the code disables the feature.
-- Lambda reaches the stateful host over plain TCP from public Lambda IPs (no VPC). Source-IP restriction / TLS is tracked in `todo/07-infra.md`.
+- Lambda reaches the stateful host over plain TCP from public Lambda IPs (no VPC). Source-IP restriction / TLS is an ops-repo task (`local/owner-checklist.md`).
 
 ## S3 / presigned URLs
 
@@ -36,7 +36,7 @@
 - Inside `serverless.yml` use `${aws:accountId}`/`${aws:region}` rather than `!Sub "${AWS::AccountId}"` (the Framework's variable resolver rejects the latter), and `!Join`/`!GetAtt` instead of `!Sub "${Resource.Arn}"`.
 - `getSignedUrl` (SDK v3) signs only `host` by default: pass `signableHeaders: new Set(["content-type", "content-length"])` so a presigned PUT actually pins type and size. Still re-check the object (`HeadObject`) in a commit step before binding it to a row — the client controls what it uploads.
 - Buckets holding durable data get `DeletionPolicy`/`UpdateReplacePolicy: Retain`; keep account ids out of bucket names (they end up in every presigned URL).
-- The two pre-existing binary catalog buckets are **not** CloudFormation resources (adopting them risks replacement); their lifecycle is managed by `scripts/s3-intelligent-tiering.sh` (single rule: everything → `INTELLIGENT_TIERING` at day 0, **no expiration**, optional Archive/Deep Archive tiers deliberately unconfigured so every tier stays millisecond-access — a public download must never wait on a restore; user condition, 2026-08-26). `PutBucketLifecycleConfiguration` replaces the whole configuration, so the script refuses when foreign rules exist and saves the live config to `local/deploy/` before every apply. Never add an age-based expiration to these buckets: they are unversioned and hold published download URLs (deletion policy: `todo/07-infra.md`, AWS cost section).
+- The two pre-existing binary catalog buckets are **not** CloudFormation resources (adopting them risks replacement); their lifecycle is managed by `scripts/s3-intelligent-tiering.sh` (single rule: everything → `INTELLIGENT_TIERING` at day 0, **no expiration**, optional Archive/Deep Archive tiers deliberately unconfigured so every tier stays millisecond-access — a public download must never wait on a restore; user condition, 2026-08-26). `PutBucketLifecycleConfiguration` replaces the whole configuration, so the script refuses when foreign rules exist and saves the live config to `local/deploy/` before every apply. Never add an age-based expiration to these buckets: they are unversioned and hold published download URLs (deletion policy stays a separate approved task — backlog in `todo/34-backlog.md`, full guard list in `local/todo-archive/07-infra.md`).
 - A Lambda role that signs URLs for an SSE-KMS bucket needs `kms:GenerateDataKey`/`kms:Decrypt` (scoped with `kms:ViaService: s3.<region>.amazonaws.com`); the browser acts as the signer, so it inherits exactly these permissions.
 
 ## Catalog uploads / sweeps (2026-08-24)

@@ -25,7 +25,7 @@
 ## Non-Negotiables
 
 - Decisions in `docs/decisions.md` are settled; change the doc first, then the code.
-- Runtime state lives in self-hosted Redis (TCP, per-service ACL user) with a `{service}:{stage}:` prefix; durable data lives in the self-hosted MySQL database owned by console (others read-only); schema is Prisma-managed and migrates at deploy time (`scripts/migrate.sh`) — `rules/data.md`. (Migration from the old Upstash/sqlite-on-S3 design: `todo/09-storage-migration.md`.)
+- Runtime state lives in self-hosted Redis (TCP, per-service ACL user) with a `{service}:{stage}:` prefix; durable data lives in the self-hosted MySQL database owned by console (others read-only); schema is Prisma-managed and migrates at deploy time (`scripts/migrate.sh`) — `rules/data.md`. (The old Upstash/sqlite-on-S3 design was removed 2026-08-22.)
 - Identity comes only from verified JWT claims / sessions; never log tokens, OAuth codes, or secrets — `rules/security.md`.
 - Every task: tests → manual verification on `dev` → three adversarial review subagents → update rules/todo → commit to `main` and push — `rules/workflow.md`, `CONTRIBUTING.md`. Git hooks (`scripts/git-hooks/`, enabled by `pnpm install` via `prepare`) run gitleaks plus an identifier grep fed by gitignored `local/identifiers.txt` (`scripts/local-identifiers.sh`) on commit and push; never bypass them with `--no-verify`.
 
