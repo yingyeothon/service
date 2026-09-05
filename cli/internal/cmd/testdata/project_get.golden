@@ -9,5 +9,6 @@ channels:    3
 apps:        1
 bundles:     2
 sites:       1
+kv:          2
 versions:    4
 issues:      5

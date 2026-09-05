@@ -39,6 +39,7 @@ const PROJECT: ProjectDetail = {
     apps: 0,
     bundles: 0,
     sites: 0,
+    kv: 0,
     versions: 0,
     issues: 0,
   },

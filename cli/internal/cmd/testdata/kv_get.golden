@@ -1,0 +1,18 @@
+id:                 kv_01j5abcdefghjkmnpqrstvwxyz
+name:               profiles
+project:            dooroo/game
+description:        public profiles
+readScope:          project
+writeScope:         user
+encrypted:          false
+maxEntries:         10000
+maxEntriesPerOwner: 100
+entries:            2
+createdBy:          octo
+created:            2025-08-24T01:46:40Z
+updated:            2025-08-24T01:48:20Z
+apiConfigured:      true
+apiBase:            https://doc-dev.yyt.life
+apiMeta:            /kv/kv_01j5abcdefghjkmnpqrstvwxyz
+apiEntries:         /kv/kv_01j5abcdefghjkmnpqrstvwxyz/entries
+apiOwner:           /kv/kv_01j5abcdefghjkmnpqrstvwxyz/u/{ownerId}/entries

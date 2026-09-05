@@ -1,6 +1,6 @@
 # yingyeothon/service
 
-Contest-support backend for the Yingyeothon hackathon: per-channel OAuth login (`auth`), operations console (`console`), WebSocket topic broadcast (`topic`), FIFO matchmaker (`match`), and versioned per-player documents (`state`), deployed with Serverless Framework 4 on AWS `ap-northeast-2`. Game loops live in the sibling [`tslib`](https://github.com/yingyeothon/tslib) packages; this repo only has to stay compatible with their JWT/WebSocket contracts.
+Contest-support backend for the Yingyeothon hackathon: per-channel OAuth login (`auth`), operations console (`console`), WebSocket topic broadcast (`topic`), FIFO matchmaker (`match`), and versioned per-player documents plus per-project key-value collections (`state`), deployed with Serverless Framework 4 on AWS `ap-northeast-2`. Game loops live in the sibling [`tslib`](https://github.com/yingyeothon/tslib) packages; this repo only has to stay compatible with their JWT/WebSocket contracts.
 
 > **Public repository.** Secrets and infrastructure identifiers never enter git. Read [`docs/secrets.md`](docs/secrets.md) before committing — the git hooks and CI enforce it.
 
@@ -27,5 +27,6 @@ cd cli && go test ./... && go build ./...        # CLI
 - [`docs/decisions.md`](docs/decisions.md) — settled product/technical decisions (change the doc before the code)
 - [`docs/secrets.md`](docs/secrets.md) — secrets, identifiers, hooks, rotation
 - [`docs/auth-game-contract.md`](docs/auth-game-contract.md) — JWT contract shared with game stacks
+- [`docs/kvstore.md`](docs/kvstore.md) — key-value collections: principals, surfaces, encryption, deploy order
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — workflow and mandatory checks
 - [`rules/index.md`](rules/index.md) — detailed engineering rules

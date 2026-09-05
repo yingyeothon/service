@@ -18,8 +18,11 @@ import (
 
 // App holds the per-invocation state so tests can inject stdout and a fake API.
 type App struct {
-	Out      io.Writer
-	Err      io.Writer
+	Out io.Writer
+	Err io.Writer
+	// In is stdin for the commands that read a payload from it (`kv entry
+	// put`); nil → os.Stdin. Tests hand in a buffer.
+	In       io.Reader
 	jsonOut  bool
 	apiFlag  string
 	tokFlag  string
@@ -104,7 +107,7 @@ func NewRoot(a *App) *cobra.Command {
 		newLogin(a), newLogout(a), newWhoami(a),
 		newProfile(a),
 		newTeam(a), newProject(a),
-		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newShows(a), newCatalog(a), newAssets(a), newSites(a), newAudit(a), newSmoke(a),
+		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newShows(a), newCatalog(a), newAssets(a), newSites(a), newKvStore(a), newAudit(a), newSmoke(a),
 		newSelf(a, a.Updater),
 	)
 	return root

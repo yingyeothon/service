@@ -561,6 +561,7 @@ function AuthDocKeyCard({
           )}
           <CopyField label="Base URL" value={q.data.docUrl} />
           <CopyField label="Path" value={q.data.writePath} />
+          <CopyField label="KV path" value={q.data.kvPath} />
           <Text size="sm" c="dimmed" my="xs">
             {q.data.configured === false
               ? "This stage has no document service deployed, so a key cannot be issued here yet."
@@ -581,7 +582,9 @@ function AuthDocKeyCard({
             create). A stale version is answered <Code>409</Code> with the
             version that won, so two results landing on one inventory cannot
             silently overwrite each other. Players read only their own document,
-            with the channel JWT they already hold.
+            with the channel JWT they already hold. The same key is the server
+            credential for every kv collection of this project (the KV path,
+            with the collection id); revoking it cuts kv access too.
           </Text>
           {owner && (
             <CredentialActions

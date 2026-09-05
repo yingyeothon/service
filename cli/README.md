@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/yingyeothon/service/main/cli/instal
 
 ## Login
 
-1. Sign in to the console with GitHub, go to *account > API tokens*, create a token (`yyt_…`; shown once).
+1. Sign in to the console with GitHub, go to _account > API tokens_, create a token (`yyt_…`; shown once).
 2. `yyt login` (token on stdin: `yyt login < token.txt` or an interactive prompt) or `yyt login --token yyt_…` verifies it against `/me` and stores it in `~/.config/yyt/config.json` (mode 0600). `--api https://console-dev.yyt.life` targets another stage.
 3. `yyt whoami`, `yyt logout` (the token stays valid until `yyt tokens revoke <id>`).
 
@@ -48,7 +48,7 @@ Every channel, catalog app and asset bundle belongs to a **project**, and a proj
 4. the profile defaults set with `yyt team use <team>` / `yyt project use <project>` (`team use` clears the project default; both survive a `--token`/`YYT_TOKEN` override and a re-login)
 5. **read commands only**: auto-select when you sit in exactly one team / it has exactly one project.
 
-Each field is layered independently, with one guard: a project named at a *lower* layer than the team is dropped (a profile pin under `--team other` would otherwise satisfy the "explicit context" rule and land the write in the pinned team), and `--team`/`--project` given together must agree. `yyt whoami` prints the effective team/project and where each came from. **Write commands never auto-select** — `channels create`, `catalog app create`, `catalog deploy`, `artifact upload`, `asset create|upload|push`, `project create`, and every update/delete addressed by name fail with a hint when the context is not explicit, so a non-interactive script cannot start failing with "ambiguous" the day its author joins a second team. Reads by name (`catalog app get <name>`, `artifact list <name>`) *do* auto-select, which means a member of two teams needs the context for them as well. `--auth-channel` also takes the auth channel's name (same project). The resolved context is printed on stderr before `catalog deploy` creates anything.
+Each field is layered independently, with one guard: a project named at a _lower_ layer than the team is dropped (a profile pin under `--team other` would otherwise satisfy the "explicit context" rule and land the write in the pinned team), and `--team`/`--project` given together must agree. `yyt whoami` prints the effective team/project and where each came from. **Write commands never auto-select** — `channels create`, `catalog app create`, `catalog deploy`, `artifact upload`, `asset create|upload|push`, `project create`, and every update/delete addressed by name fail with a hint when the context is not explicit, so a non-interactive script cannot start failing with "ambiguous" the day its author joins a second team. Reads by name (`catalog app get <name>`, `artifact list <name>`) _do_ auto-select, which means a member of two teams needs the context for them as well. `--auth-channel` also takes the auth channel's name (same project). The resolved context is printed on stderr before `catalog deploy` creates anything.
 
 **Catalog apps need only the team.** An app name is unique within the team, so `catalog app get|settings <name>`, `catalog artifact list|upload <name>` and `catalog deploy` look the name up across the team's projects (`GET /teams/{team}/catalog/apps`) — one `YYT_TEAM=dooroo` in a shared deploy script serves every repository, with no per-repository `.yyt.json`. A project context, when set, narrows the lookup to that project. Only a **new** app needs a project: `catalog deploy` puts it in the project context if there is one, otherwise in the project named after the `--project-path` directory (our repository convention; created when missing) — pass `--project` for the exceptions.
 
@@ -174,6 +174,22 @@ yyt asset upload <bundle> <version> <file> [--path inside/the/bundle.json]
 yyt asset push <bundle> <version> <dir>                # a whole directory as one version
 yyt asset rm-version <bundle> <version>
 ```
+
+### Key-value collections
+
+```sh
+yyt kv list                                            # the project context's collections (name, scopes, encrypted, entries)
+yyt kv create <name> --read <scope> --write <scope> [--encrypted] [--description d] [--max-entries N] [--max-entries-per-owner N]
+                                                       # scope: team | project | user; scopes and encryption are fixed for good
+yyt kv get|update|delete <kv>                          # id (kv_…) or name; update: [--name n] [--description d] [--max-entries N] [--max-entries-per-owner N]
+yyt kv entries <kv> [--prefix p] [--owner id] [--limit n] [--cursor c | --all]
+yyt kv entry get <kv> <key> [--owner id]               # the value byte for byte (pipe it); --json = the whole entry
+yyt kv entry put <kv> <key> [--owner id] (--value '{…}' | --file v.json | stdin) [--ttl s] [--if-version v]
+yyt kv entry delete <kv> <key> [--owner id]            # allowed on an encrypted collection too
+yyt kv entry clear <kv> [--owner <id>]                 # every entry of one player, or of the shared namespace
+```
+
+`get` prints the collection's KV API paths (`apiBase`, `apiMeta`, `apiEntries`, `apiOwner`): a game server calls them with the project's document API key (`yyt channels doc-key …` on an auth channel), a player with the channel JWT it holds. `--owner` names a player's namespace and only makes sense when the write scope is `user`; a shared collection refuses it. An encrypted collection's values can be written and read only through the KV API, so `entries`/`entry get` show keys, sizes and times for it (`entry get` then prints the entry's shape instead of a value and is not JSON — use `--json` in scripts) and `entry put` is refused. Values are JSON text stored as sent, at most 16 KiB; `--ttl 0` clears an expiry and an omitted `--ttl` keeps whatever the row has.
 
 `push` searches `.yyt.json` from the current directory, not from `<dir>` (the directory is a payload, not a project). It keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`, 2 MB per file and 20 MB per bundle.
 
