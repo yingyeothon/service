@@ -32,7 +32,7 @@ const ContextFile = ".yyt.json"
 
 // idLike mirrors console's ID_LIKE: a string in `{prefix}_…` shape is an id,
 // never a name (names in that shape are rejected server-side).
-var idLike = regexp.MustCompile(`^(?i)(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|auth|topic|match|lobby|q|m|tok|dbg|up)_`)
+var idLike = regexp.MustCompile(`^(?i)(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|auth|topic|match|lobby|q|m|tok|dbg|up)_`)
 
 // IsID reports whether s is addressed as an id rather than a name.
 func IsID(s string) bool { return idLike.MatchString(s) }
@@ -190,6 +190,7 @@ type projectRow struct {
 		Apps     int `json:"apps"`
 		Bundles  int `json:"bundles"`
 		Sites    int `json:"sites"`
+		Kv       int `json:"kv"`
 		Versions int `json:"versions"`
 		Issues   int `json:"issues"`
 	} `json:"counts,omitempty"`

@@ -11,7 +11,7 @@ func TestProjectListGetCreateUpdateDelete(t *testing.T) {
 	for k, v := range sampleProject {
 		detail[k] = v
 	}
-	detail["counts"] = map[string]any{"channels": 3, "apps": 1, "bundles": 2, "sites": 1, "versions": 4, "issues": 5}
+	detail["counts"] = map[string]any{"channels": 3, "apps": 1, "bundles": 2, "sites": 1, "kv": 2, "versions": 4, "issues": 5}
 	deleted := false
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /projects/prj_1":         func(recorded) (int, any) { return 200, detail },

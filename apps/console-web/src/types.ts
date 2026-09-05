@@ -156,6 +156,7 @@ export interface ProjectDetail extends Project {
     apps: number;
     bundles: number;
     sites: number;
+    kv: number;
     versions: number;
     issues: number;
   };
@@ -337,6 +338,8 @@ export interface ChannelDocKey {
   channelId: string;
   docUrl: string;
   writePath: string;
+  /** Where the same key reads and writes a project's kv collections. */
+  kvPath: string;
   issued: boolean;
   /** Absent when the console has no handle on the document table — unknown, not zero. */
   documents?: number;
@@ -802,4 +805,87 @@ export interface ListParams {
   sort?: string;
   order?: SortOrder;
   q?: string;
+}
+
+// ---- key-value store (`kv`) ----------------------------------------------
+
+export type KvScope = "team" | "project" | "user";
+export const KV_SCOPES: readonly KvScope[] = ["team", "project", "user"];
+
+/** One row of `GET /projects/{prj}/kv`; `entries` is the live count. */
+export interface KvCollection extends ResourceCrumbs {
+  id: string;
+  name: string;
+  readScope: KvScope;
+  writeScope: KvScope;
+  encrypted: boolean;
+  maxEntries: number;
+  maxEntriesPerOwner: number;
+  entries: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Where a game reads and writes this collection through the KV API. */
+export interface KvApi {
+  /** `false` on a stage without the state stack: the paths are still shown. */
+  configured: boolean;
+  baseUrl: string;
+  metaPath: string;
+  entriesPath: string;
+  /** Only when `writeScope` is `user`: one namespace per owner. */
+  ownerPath?: string;
+}
+
+export interface KvCollectionDetail extends KvCollection {
+  description: string | null;
+  api: KvApi;
+}
+
+/** What create and update answer: the row and the api block, no live count. */
+export type KvCollectionWrite = Omit<KvCollectionDetail, "entries">;
+
+export interface KvEntry {
+  /** Only in a user namespace (`writeScope: user`). */
+  owner?: string;
+  key: string;
+  version: number;
+  /** Plaintext bytes, also for an encrypted collection. */
+  bytes: number;
+  expiresAt: number | null;
+  /** The auth channel whose credential wrote it; `null` for a console write. */
+  channelId: string | null;
+  updatedAt: number;
+  /** The stored JSON text verbatim; absent when encrypted or for a seatless admin. */
+  valueText?: string;
+}
+
+export interface KvEntryPage {
+  entries: KvEntry[];
+  nextCursor?: string;
+}
+
+export interface KvEntryQuery {
+  prefix?: string;
+  owner?: string;
+  cursor?: string;
+  limit?: number;
+  order?: SortOrder;
+}
+
+export interface KvEntryPutInput {
+  owner?: string;
+  valueText: string;
+  /** Seconds; `0` clears, omitted keeps. */
+  ttl?: number;
+  /** The version the caller read; a mismatch is a 409. */
+  ifVersion?: number;
+}
+
+export interface KvEntryPutResult {
+  owner?: string;
+  key: string;
+  version: number;
+  bytes: number;
+  created: boolean;
 }

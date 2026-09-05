@@ -1,6 +1,7 @@
 import {
   IconCalendarEvent,
   IconClipboardList,
+  IconDatabase,
   IconDeviceMobileDown,
   IconHome,
   IconKey,
@@ -69,6 +70,13 @@ export const NAV_ITEMS: NavItem[] = [
     path: "/sites",
     label: "Sites",
     icon: IconWorldWww,
+    minRole: "member",
+    hidden: true,
+  },
+  {
+    path: "/kv",
+    label: "Key-value",
+    icon: IconDatabase,
     minRole: "member",
     hidden: true,
   },

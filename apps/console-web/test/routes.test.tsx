@@ -12,7 +12,13 @@ describe("routes", () => {
 
   it("keeps the hidden items as guards without listing them", () => {
     const hidden = NAV_ITEMS.filter((i) => i.hidden).map((i) => i.path);
-    expect(hidden).toEqual(["/channels", "/catalog", "/assets", "/sites"]);
+    expect(hidden).toEqual([
+      "/channels",
+      "/catalog",
+      "/assets",
+      "/sites",
+      "/kv",
+    ]);
     for (const h of hidden) expect(navMinRole(h)).toBe("member");
     expect(navMinRole("/teams")).toBe("member");
     // The project sub-tree is guarded as one: a channel is created inside a
@@ -39,6 +45,7 @@ describe("routes", () => {
       "/catalog/apps/:id",
       "/assets/:id",
       "/sites/:id",
+      "/kv/:id",
     ])
       expect(paths).toContain(p);
     // Creation lives under a project now; the old top-level path is gone.
@@ -56,7 +63,7 @@ describe("routes", () => {
     }
     expect(byPath.get("/audit")).toBe("/audit");
     expect(navMinRole("/audit")).toBe("admin");
-    // Visible, not hidden: the hidden list is pinned above and must stay four.
+    // Visible, not hidden: the hidden list is pinned above and must stay five.
     expect(NAV_ITEMS.find((i) => i.path === "/audit")?.hidden).toBeUndefined();
     expect(NAV_ITEMS.find((i) => i.path === "/shows")?.minRole).toBeNull();
   });

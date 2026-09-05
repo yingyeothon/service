@@ -163,6 +163,23 @@ describe("team and project routes", () => {
     await api.site("st_1");
     await api.siteDeploy("st_1", "sd_1");
     await api.setInstallerApp(null);
+    await api.projectKv("prj_1", { sort: "entries", order: "desc" });
+    await api.createKv("prj_1", {
+      name: "profiles",
+      readScope: "project",
+      writeScope: "user",
+    });
+    await api.kv("kv_1");
+    await api.kvEntries("kv_1", { prefix: "p/", owner: "a b", cursor: "c=" });
+    await api.kvEntry("kv_1", "k:1", "o1");
+    await api.putKvEntry("kv_1", "k/1", {
+      owner: "o1",
+      valueText: '{"hp":1}',
+      ttl: 60,
+      ifVersion: 2,
+    });
+    await api.deleteKvEntry("kv_1", "k:1");
+    await api.deleteKvOwner("kv_1", "o1");
     expect(calls).toEqual([
       ["GET", "/teams?scope=all", undefined],
       ["POST", "/teams/join", '{"name":"studio"}'],
@@ -195,6 +212,22 @@ describe("team and project routes", () => {
       ["GET", "/sites/st_1", undefined],
       ["GET", "/sites/st_1/deploys/sd_1", undefined],
       ["PUT", "/admin/settings/installer-app", '{"appId":null}'],
+      ["GET", "/projects/prj_1/kv?sort=entries&order=desc", undefined],
+      [
+        "POST",
+        "/projects/prj_1/kv",
+        '{"name":"profiles","readScope":"project","writeScope":"user"}',
+      ],
+      ["GET", "/kv/kv_1", undefined],
+      ["GET", "/kv/kv_1/entries?prefix=p%2F&owner=a+b&cursor=c%3D", undefined],
+      ["GET", "/kv/kv_1/entries/k%3A1?owner=o1", undefined],
+      [
+        "PUT",
+        "/kv/kv_1/entries/k%2F1",
+        '{"owner":"o1","valueText":"{\\"hp\\":1}","ttl":60,"ifVersion":2}',
+      ],
+      ["DELETE", "/kv/kv_1/entries/k%3A1", undefined],
+      ["DELETE", "/kv/kv_1/entries?owner=o1", undefined],
     ]);
   });
 

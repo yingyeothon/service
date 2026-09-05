@@ -1,7 +1,9 @@
 import {
   Anchor,
   Button,
+  Checkbox,
   Code,
+  NativeSelect,
   Table,
   Tabs,
   Text,
@@ -33,18 +35,42 @@ import { notify } from "../lib/notify";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { issueUrl, projectUrl, useTeamStanding, versionUrl } from "../lib/team";
-import type {
-  ListParams,
-  ChannelStatus,
-  IssueStatus,
-  ProjectDetail,
-  Version,
+import {
+  KV_SCOPES,
+  type ListParams,
+  type ChannelStatus,
+  type IssueStatus,
+  type KvScope,
+  type ProjectDetail,
+  type Version,
 } from "../types";
 import { ISSUE_TONE, VersionSelect } from "./Issue";
+import {
+  CapFields,
+  capOk,
+  type CapValue,
+  KV_IMMUTABLE_NOTE,
+  KV_MAX_ENTRIES_DEFAULT,
+  KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
+  KV_MAX_ENTRIES_HARD,
+  KV_MAX_ENTRIES_PER_OWNER_HARD,
+  KV_PUBLIC_PROFILE_WARNING,
+  KV_SCOPE_LABEL,
+  kvShapeProblem,
+  kvUrl,
+} from "./KvCollection";
 import { SITE_SHARED_ORIGIN_WARNING } from "./Site";
 import { DiscussionFields } from "./Team";
 
-const TABS = ["channels", "catalog", "assets", "sites", "versions", "issues"];
+const TABS = [
+  "channels",
+  "catalog",
+  "assets",
+  "sites",
+  "kv",
+  "versions",
+  "issues",
+];
 
 export function ProjectPage() {
   const { team: teamId = "", prj = "", tab = "channels" } = useParams();
@@ -124,7 +150,7 @@ export function ProjectPage() {
         const r = await confirm({
           title: `Delete ${project.name}?`,
           message:
-            "Refused while a channel, app, bundle or site still belongs to it.",
+            "Refused while a channel, app, bundle, site or kv collection still belongs to it.",
           confirmLabel: "Delete project",
           danger: true,
         });
@@ -146,8 +172,9 @@ export function ProjectPage() {
             Created by {project.createdBy ?? "—"} · {fmtTime(project.createdAt)}{" "}
             · {project.counts.channels} channel(s), {project.counts.apps}{" "}
             app(s), {project.counts.bundles} bundle(s), {project.counts.sites}{" "}
-            site(s), {project.counts.versions} version(s),{" "}
-            {project.counts.issues} issue(s) · id <Code>{project.id}</Code>
+            site(s), {project.counts.kv} kv collection(s),{" "}
+            {project.counts.versions} version(s), {project.counts.issues}{" "}
+            issue(s) · id <Code>{project.id}</Code>
           </>
         }
         actions={actions}
@@ -166,6 +193,7 @@ export function ProjectPage() {
           <Tabs.Tab value="catalog">Catalog</Tabs.Tab>
           <Tabs.Tab value="assets">Assets</Tabs.Tab>
           <Tabs.Tab value="sites">Sites</Tabs.Tab>
+          <Tabs.Tab value="kv">Key-value</Tabs.Tab>
           <Tabs.Tab value="versions">Versions</Tabs.Tab>
           <Tabs.Tab value="issues">Issues</Tabs.Tab>
         </Tabs.List>
@@ -184,6 +212,9 @@ export function ProjectPage() {
         </Tabs.Panel>
         <Tabs.Panel value="sites" pt="lg">
           <SitesTab project={project} canWrite={canWrite} />
+        </Tabs.Panel>
+        <Tabs.Panel value="kv" pt="lg">
+          <KvTab project={project} canWrite={canWrite} onCounts={p.reload} />
         </Tabs.Panel>
         <Tabs.Panel value="versions" pt="lg">
           <VersionsTab project={project} canWrite={canWrite} />
@@ -206,7 +237,7 @@ export function ProjectPage() {
             ? {
                 label: "Delete project",
                 description:
-                  "Deleting a project is refused while a channel, app, bundle or site still belongs to it — including channels deleted less than a day ago, until the sweep purges them.",
+                  "Deleting a project is refused while a channel, app, bundle, site or kv collection still belongs to it — including channels deleted less than a day ago, until the sweep purges them.",
                 onConfirm: remove,
                 disabled: act.busy,
               }
@@ -657,6 +688,200 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
       )}
       emptyText="No sites yet."
     />
+  );
+}
+
+/* ---- key-value collections ---------------------------------------------- */
+
+interface KvCreateForm {
+  name: string;
+  description: string;
+  readScope: KvScope;
+  writeScope: KvScope;
+  encrypted: boolean;
+  maxEntries: CapValue;
+  maxEntriesPerOwner: CapValue;
+}
+
+/**
+ * Not a `ResourceListTab`: the create form has two scope selects, a checkbox
+ * and two caps, and the three immutable fields are decided here for good.
+ */
+function KvTab({
+  project,
+  canWrite,
+  onCounts,
+}: {
+  project: ProjectDetail;
+  canWrite: boolean;
+  onCounts: () => Promise<void>;
+}) {
+  const lq = useListQuery({ scope: project.id });
+  const list = useApiQuery(
+    ["project", project.id, "kv", lq.params],
+    () => api.projectKv(project.id, lq.params),
+    { keepPrevious: true },
+  );
+  const act = useAction();
+  const drawer = useDrawerForm<KvCreateForm>(() => ({
+    name: "",
+    description: "",
+    readScope: "project",
+    writeScope: "project",
+    encrypted: false,
+    maxEntries: KV_MAX_ENTRIES_DEFAULT,
+    maxEntriesPerOwner: KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
+  }));
+  const f = drawer.form;
+  const shape = kvShapeProblem(f.readScope, f.writeScope, f.encrypted);
+  const capsOk =
+    capOk(f.maxEntries, KV_MAX_ENTRIES_HARD) &&
+    capOk(f.maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const { maxEntries, maxEntriesPerOwner } = f;
+    if (
+      !capOk(maxEntries, KV_MAX_ENTRIES_HARD) ||
+      !capOk(maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD)
+    )
+      return;
+    const description = f.description.trim();
+    // The defaults are the server's too; sending them would only pin them.
+    const r = await act.run(() =>
+      api.createKv(project.id, {
+        name: f.name.trim(),
+        ...(description ? { description } : {}),
+        readScope: f.readScope,
+        writeScope: f.writeScope,
+        ...(f.encrypted ? { encrypted: true } : {}),
+        ...(maxEntries === KV_MAX_ENTRIES_DEFAULT ? {} : { maxEntries }),
+        ...(maxEntriesPerOwner === KV_MAX_ENTRIES_PER_OWNER_DEFAULT
+          ? {}
+          : { maxEntriesPerOwner }),
+      }),
+    );
+    if (!r) return;
+    drawer.close();
+    notify.created("collection");
+    await Promise.all([list.reload(), onCounts()]);
+  };
+  const scopeSelect = (
+    label: string,
+    value: KvScope,
+    onChange: (v: KvScope) => void,
+  ) => (
+    <NativeSelect
+      label={label}
+      value={value}
+      data={KV_SCOPES.map((s) => ({ value: s, label: KV_SCOPE_LABEL[s] }))}
+      onChange={(e) => onChange(e.currentTarget.value as KvScope)}
+      required
+    />
+  );
+  return (
+    <Section
+      title="Key-value"
+      description="Small JSON values a game reads and writes through the KV API: announcements, per-player progress, public profiles. A collection's scopes say who may read and write; a user write scope gives every player a namespace of its own."
+      actions={
+        canWrite && (
+          <Button variant="default" onClick={drawer.open}>
+            New collection
+          </Button>
+        )
+      }
+    >
+      {act.error && !drawer.opened && <Notice kind="error">{act.error}</Notice>}
+      <FilterBar>
+        <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Name" />
+      </FilterBar>
+      <DataTable
+        columns={[
+          { key: "name", label: "Name", sortKey: "name" },
+          { key: "read", label: "Read", sortKey: "readScope" },
+          { key: "write", label: "Write", sortKey: "writeScope" },
+          { key: "enc", label: "Encrypted" },
+          {
+            key: "entries",
+            label: "Entries",
+            align: "right",
+            sortKey: "entries",
+            defaultOrder: "desc",
+          },
+          {
+            key: "updated",
+            label: "Updated",
+            sortKey: "updatedAt",
+            defaultOrder: "desc",
+          },
+        ]}
+        rows={list.data}
+        loading={list.loading}
+        fetching={list.fetching}
+        error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
+        rowKey={(c) => c.id}
+        empty={
+          lq.filtering
+            ? noMatch(lq.params.q ?? "")
+            : { title: "No kv collections yet." }
+        }
+        render={(c) => (
+          <>
+            <NameCell to={kvUrl(c.id)}>{c.name}</NameCell>
+            <Table.Td>{c.readScope}</Table.Td>
+            <Table.Td>{c.writeScope}</Table.Td>
+            <Table.Td>{c.encrypted ? "yes" : "—"}</Table.Td>
+            <NumCell>{c.entries}</NumCell>
+            <Table.Td>{fmtTime(c.updatedAt)}</Table.Td>
+          </>
+        )}
+      />
+      <ResourceDrawer
+        opened={drawer.opened}
+        onClose={drawer.close}
+        title="New collection"
+        submitLabel="Create collection"
+        onSubmit={submit}
+        busy={act.busy}
+        disabled={!f.name.trim() || !!shape || !capsOk}
+        error={drawer.opened ? act.error : null}
+        size="lg"
+      >
+        <NameDescriptionFields
+          name={f.name}
+          description={f.description}
+          onName={(name) => drawer.patch({ name })}
+          onDescription={(description) => drawer.patch({ description })}
+        />
+        {scopeSelect("Read scope", f.readScope, (readScope) =>
+          drawer.patch({ readScope }),
+        )}
+        {scopeSelect("Write scope", f.writeScope, (writeScope) =>
+          drawer.patch({ writeScope }),
+        )}
+        <Checkbox
+          label="Encrypted"
+          description="Values are encrypted at rest with a key only the state stack holds; the console then shows keys and sizes but never a value."
+          checked={f.encrypted}
+          onChange={(e) => drawer.patch({ encrypted: e.currentTarget.checked })}
+        />
+        {shape ? (
+          <Notice kind="warn">{shape}</Notice>
+        ) : f.readScope === "project" && f.writeScope === "user" ? (
+          <Notice kind="warn">{KV_PUBLIC_PROFILE_WARNING}</Notice>
+        ) : null}
+        <Text size="xs" c="dimmed">
+          {KV_IMMUTABLE_NOTE}
+        </Text>
+        <CapFields
+          maxEntries={f.maxEntries}
+          maxEntriesPerOwner={f.maxEntriesPerOwner}
+          userNamespace={f.writeScope === "user"}
+          onChange={(p) => drawer.patch(p)}
+        />
+      </ResourceDrawer>
+    </Section>
   );
 }
 

@@ -47,6 +47,15 @@ import type {
   Issue,
   IssueDetail,
   IssueStatus,
+  KvCollection,
+  KvCollectionDetail,
+  KvCollectionWrite,
+  KvEntry,
+  KvEntryPage,
+  KvEntryPutInput,
+  KvEntryPutResult,
+  KvEntryQuery,
+  KvScope,
   Me,
   Member,
   PosterUpload,
@@ -704,6 +713,55 @@ export function createApiClient({
       await putToGrant(grant, zip, "site zip");
       return post<SiteDeploy>(
         `/sites/${enc(id)}/deploys/${enc(grant.deployId)}/commit`,
+      );
+    },
+    // ---- key-value collections (addressed by id) ----------------------------
+    projectKv: (prj: string, p: ListParams = {}) =>
+      get<{ collections: KvCollection[] }>(
+        `${projectPath(prj)}/kv${qs(p)}`,
+      ).then((r) => r.collections),
+    createKv: (
+      prj: string,
+      body: {
+        name: string;
+        description?: string;
+        readScope: KvScope;
+        writeScope: KvScope;
+        encrypted?: boolean;
+        maxEntries?: number;
+        maxEntriesPerOwner?: number;
+      },
+    ) => post<KvCollectionWrite>(`${projectPath(prj)}/kv`, body),
+    kv: (id: string) => get<KvCollectionDetail>(`/kv/${enc(id)}`),
+    /** Scopes and encryption are fixed at creation; the route refuses them. */
+    updateKv: (
+      id: string,
+      body: {
+        name?: string;
+        description?: string | null;
+        maxEntries?: number;
+        maxEntriesPerOwner?: number;
+      },
+    ) => patch<KvCollectionWrite>(`/kv/${enc(id)}`, body),
+    deleteKv: (id: string) => del(`/kv/${enc(id)}`),
+    /** Cursor-paged; re-send the filters with `cursor`. Encrypted: no `valueText`. */
+    kvEntries: (id: string, q: KvEntryQuery = {}) =>
+      get<KvEntryPage>(`/kv/${enc(id)}/entries${qs(q)}`),
+    kvEntry: (id: string, key: string, owner?: string) =>
+      get<KvEntry>(`/kv/${enc(id)}/entries/${enc(key)}${qs({ owner })}`),
+    putKvEntry: (id: string, key: string, body: KvEntryPutInput) =>
+      put<KvEntryPutResult>(`/kv/${enc(id)}/entries/${enc(key)}`, body),
+    deleteKvEntry: (id: string, key: string, owner?: string) =>
+      del(`/kv/${enc(id)}/entries/${enc(key)}${qs({ owner })}`),
+    /**
+     * Every entry of one owner; `truncated` means call again. An empty owner
+     * is refused here: without `?owner=` the route clears a shared
+     * collection's whole namespace, which no "clear owner" caller means.
+     */
+    deleteKvOwner: (id: string, owner: string) => {
+      if (owner === "") throw new Error("deleteKvOwner needs an owner");
+      return del<{ deleted: number; truncated: boolean }>(
+        `/kv/${enc(id)}/entries${qs({ owner })}`,
       );
     },
     /**

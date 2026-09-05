@@ -6,6 +6,7 @@ import type { ApiClient } from "../src/api";
 import type {
   AssetBundle,
   CatalogApp,
+  KvCollection,
   ProjectDetail,
   Site,
   TeamDetail,
@@ -31,6 +32,8 @@ const mockApi = {
   createAssetBundle: vi.fn(),
   projectSites: vi.fn(),
   createSite: vi.fn(),
+  projectKv: vi.fn(),
+  createKv: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -57,6 +60,7 @@ const PROJECT: ProjectDetail = {
     apps: 1,
     bundles: 1,
     sites: 1,
+    kv: 0,
     versions: 0,
     issues: 0,
   },
@@ -97,6 +101,21 @@ const SITE: Site = {
   currentDeployId: "dep_1",
   busy: false,
   createdBy: "bob",
+  createdAt: 0,
+  updatedAt: 60,
+};
+
+const KV: KvCollection = {
+  ...crumbs,
+  createdBy: "alice",
+  id: "kv_1",
+  name: "profiles",
+  readScope: "project",
+  writeScope: "user",
+  encrypted: false,
+  maxEntries: 10000,
+  maxEntriesPerOwner: 100,
+  entries: 7,
   createdAt: 0,
   updatedAt: 60,
 };
@@ -142,6 +161,7 @@ beforeEach(() => {
   vi.mocked(mockApi.projectCatalogApps).mockResolvedValue([APP]);
   vi.mocked(mockApi.projectAssetBundles).mockResolvedValue([BUNDLE]);
   vi.mocked(mockApi.projectSites).mockResolvedValue([SITE]);
+  vi.mocked(mockApi.projectKv).mockResolvedValue([KV]);
 });
 
 describe("catalog tab", () => {
@@ -309,6 +329,108 @@ describe("sites tab", () => {
   });
 });
 
+describe("kv tab", () => {
+  it("lists collections with their scopes and links to the collection", async () => {
+    vi.mocked(mockApi.projectKv).mockResolvedValue([
+      KV,
+      { ...KV, id: "kv_2", name: "secrets", encrypted: true, entries: 0 },
+    ]);
+    mount("kv");
+    const link = await screen.findByRole("link", { name: "profiles" });
+    expect(link).toHaveAttribute("href", "/kv/kv_1");
+    expect(headers()).toEqual([
+      "Name",
+      "Read",
+      "Write",
+      "Encrypted",
+      "Entries",
+      "Updated",
+    ]);
+    expect(
+      within(link.closest("tr")!)
+        .getAllByRole("cell")
+        .map((c) => c.textContent)
+        .slice(1, 5),
+    ).toEqual(["project", "user", "—", "7"]);
+    expect(
+      within(screen.getByRole("link", { name: "secrets" }).closest("tr")!)
+        .getAllByRole("cell")
+        .map((c) => c.textContent)[3],
+    ).toBe("yes");
+    expect(mockApi.projectKv).toHaveBeenCalledWith("prj_1", {});
+  });
+
+  it("creates with the chosen scopes, omits the defaults and refuses a bad shape", async () => {
+    const { entries: _count, ...kvWritten } = KV;
+    vi.mocked(mockApi.createKv).mockResolvedValue({
+      ...kvWritten,
+      id: "kv_3",
+      description: null,
+      api: {
+        configured: true,
+        baseUrl: "https://doc.example",
+        metaPath: "/kv/kv_3",
+        entriesPath: "/kv/kv_3/entries",
+      },
+    });
+    mount("kv");
+    const drawer = await openDrawer("collection");
+    const button = within(drawer).getByRole("button", {
+      name: "Create collection",
+    });
+    expect(button).toBeDisabled();
+    await userEvent.type(input("Name", drawer), " progress ");
+    expect(button).toBeEnabled();
+    const read = within(drawer).getByLabelText(/^Read scope/);
+    const write = within(drawer).getByLabelText(/^Write scope/);
+    // user read without user write: refused before the request.
+    await userEvent.selectOptions(read, "user");
+    expect(
+      within(drawer).getByText(/A user read scope needs a user write scope/),
+    ).toBeInTheDocument();
+    expect(button).toBeDisabled();
+    await userEvent.selectOptions(read, "project");
+    await userEvent.selectOptions(write, "user");
+    expect(
+      within(drawer).getByText(
+        "project-read + user-write lets every player list every owner's entries.",
+      ),
+    ).toBeInTheDocument();
+    // encrypted with a team scope: refused too.
+    await userEvent.selectOptions(read, "team");
+    await userEvent.click(within(drawer).getByLabelText(/^Encrypted/));
+    expect(
+      within(drawer).getByText(/An encrypted collection needs project or user/),
+    ).toBeInTheDocument();
+    expect(button).toBeDisabled();
+    await userEvent.selectOptions(read, "project");
+    expect(button).toBeEnabled();
+    const perOwner = input("Max entries per owner", drawer);
+    await userEvent.clear(perOwner);
+    await userEvent.type(perOwner, "5");
+    await userEvent.click(button);
+    expect(mockApi.createKv).toHaveBeenCalledWith("prj_1", {
+      name: "progress",
+      readScope: "project",
+      writeScope: "user",
+      encrypted: true,
+      maxEntriesPerOwner: 5,
+    });
+    await waitFor(() => expect(mockApi.projectKv).toHaveBeenCalledTimes(2));
+    // The header counts come from the project row.
+    await waitFor(() => expect(mockApi.project).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("says when there is nothing yet", async () => {
+    vi.mocked(mockApi.projectKv).mockResolvedValue([]);
+    mount("kv");
+    expect(
+      await screen.findByText("No kv collections yet."),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("read-only standing", () => {
   it("hides every create form from a seatless admin", async () => {
     vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
@@ -316,6 +438,7 @@ describe("read-only standing", () => {
       ["catalog", "New app"],
       ["assets", "New bundle"],
       ["sites", "New site"],
+      ["kv", "New collection"],
     ] as const) {
       const r = mount(tab);
       await screen.findByRole("table");

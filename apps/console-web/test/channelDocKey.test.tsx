@@ -55,6 +55,7 @@ const BLOCK: ChannelDocKey = {
   channelId: "auth_9",
   docUrl: "https://doc-dev.yyt.life",
   writePath: "/s/{ownerId}",
+  kvPath: "/kv/{collectionId}",
   issued: false,
   documents: 0,
 };
@@ -102,6 +103,8 @@ describe("auth channel document key", () => {
 
     const issue = await screen.findByRole("button", { name: "Issue" });
     expect(screen.getByText(/Not issued yet/)).toBeInTheDocument();
+    // The key is also the server credential of every kv collection.
+    expect(screen.getByText("/kv/{collectionId}")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
 
     await userEvent.click(issue);
