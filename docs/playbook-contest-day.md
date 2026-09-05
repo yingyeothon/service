@@ -4,7 +4,7 @@ Verified end to end on `dev` with `sample-dungeon` from [`yingyeothon/examples`]
 
 ## 0. Before the day (organizer)
 
-- `prod` stacks deployed (`todo/10-prod-launch.md`), console reachable, members approved.
+- `prod` stacks deployed (launch checklist: `local/owner-checklist.md`), console reachable, members approved.
 - tslib built and available (`~/git/yyt.life/tslib`, `pnpm build`) or published to npm.
 - Each team has: a console login, the `yyt` CLI, an AWS account/profile for their own stack, Serverless Framework v4 CLI (`npm i -g serverless`, logged in), a Redis they own (any Redis 6+; ACL user optional).
 - Each team registers a GitHub OAuth app (any placeholder callback URL for now) and keeps its client id/secret; the real callback is set in step 1.
