@@ -583,11 +583,22 @@ export interface KvStoreDb {
     limit: number,
   ): Promise<number>;
   /**
-   * Entries a player wrote through one auth channel, for the channel's hard
-   * delete. Shared-namespace rows survive: a userId means nothing outside the
-   * channel that derived it, but a team's announcement does.
+   * Entries a dead auth channel leaves unaddressable, for the channel's hard
+   * delete. Takes the channel's own rows and — scoped to `projectId` — the
+   * console-written rows (`channel_id IS NULL`) of every owner the channel's
+   * rows name (owner decision 2026-09-06, `docs/decisions.md` #9): a userId
+   * means nothing outside the channel that derived it. Shared-namespace rows
+   * survive either way, and so does an owner only the console ever wrote,
+   * because nothing maps it to a channel. `projectId: null` (a legacy channel,
+   * or a hard purge whose row is already gone) skips the console rows: without
+   * the project, a `{kind}:{id}` owner could match across projects. A return
+   * below `limit` means done; `limit` means call again.
    */
-  deleteChannelEntries(channelId: string, limit: number): Promise<number>;
+  deleteChannelEntries(
+    channelId: string,
+    projectId: string | null,
+    limit: number,
+  ): Promise<number>;
   /**
    * Physical `kv_entries` bytes (data + index) as the server reports them, and
    * `undefined` where the implementation cannot ask -- the memory fake, and a
@@ -1162,10 +1173,36 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
         return prisma.$executeRaw`DELETE FROM \`kv_entries\` WHERE \`collection_id\` = ${collectionId} AND \`expires_at\` IS NOT NULL AND \`expires_at\` <= ${now} LIMIT ${n}`;
       }),
 
-    deleteChannelEntries: (channelId, limit) =>
+    deleteChannelEntries: (channelId, projectId, limit) =>
       run(async () => {
-        const n = Prisma.raw(String(checkBatchLimit(limit)));
-        return prisma.$executeRaw`DELETE FROM \`kv_entries\` WHERE \`channel_id\` = ${channelId} AND \`owner_id\` <> ${KV_SHARED_OWNER} LIMIT ${n}`;
+        const n = checkBatchLimit(limit);
+        let gone = 0;
+        if (projectId !== null) {
+          // Console rows first, while the channel rows that name their owner
+          // still exist — once those are gone nothing maps the owner to the
+          // channel. The derived table sidesteps MySQL's refusal to read the
+          // delete target in a subquery (error 1093) and materialises the
+          // distinct owners once.
+          gone = await prisma.$executeRaw`
+            DELETE FROM \`kv_entries\`
+            WHERE \`channel_id\` IS NULL
+              AND \`owner_id\` IN (SELECT \`owner_id\` FROM (
+                SELECT DISTINCT \`owner_id\` FROM \`kv_entries\`
+                WHERE \`channel_id\` = ${channelId}
+                  AND \`owner_id\` <> ${KV_SHARED_OWNER}) o)
+              AND \`collection_id\` IN (
+                SELECT \`id\` FROM \`kv_collections\`
+                WHERE \`project_id\` = ${projectId})
+            LIMIT ${Prisma.raw(String(n))}`;
+          // A full budget may leave console rows whose owner the channel
+          // still names; the channel rows must wait for the next call.
+          if (gone >= n) return gone;
+        }
+        gone += await prisma.$executeRaw`
+          DELETE FROM \`kv_entries\`
+          WHERE \`channel_id\` = ${channelId} AND \`owner_id\` <> ${KV_SHARED_OWNER}
+          LIMIT ${Prisma.raw(String(n - gone))}`;
+        return gone;
       }),
 
     entriesTableBytes: () =>
@@ -1601,11 +1638,26 @@ export function createMemoryKvStoreDb(
       return gone;
     },
 
-    deleteChannelEntries: async (channelId, limit) => {
+    deleteChannelEntries: async (channelId, projectId, limit) => {
       const n = checkBatchLimit(limit);
+      const owners = new Set<string>();
+      for (const e of entries.values())
+        if (e.channelId === channelId && e.ownerId !== KV_SHARED_OWNER)
+          owners.add(e.ownerId);
       let gone = 0;
+      // Console rows first, while the channel rows still name their owner —
+      // the same phase order the SQL keeps.
+      if (projectId !== null)
+        for (const e of [...entries.values()]) {
+          if (gone >= n) return gone;
+          if (e.channelId !== null || !owners.has(e.ownerId)) continue;
+          if (collections.get(e.collectionId)?.projectId !== projectId)
+            continue;
+          drop(e);
+          gone++;
+        }
       for (const e of [...entries.values()]) {
-        if (gone >= n) break;
+        if (gone >= n) return gone;
         if (e.channelId !== channelId || e.ownerId === KV_SHARED_OWNER)
           continue;
         drop(e);

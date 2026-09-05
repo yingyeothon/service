@@ -874,7 +874,12 @@ export function createKvStoreRoutes({
         const col = await collectionOf(ctx, c);
         // Shape, not content: a caller of the project may always learn how a
         // collection behaves, which is what tells it whether to use the shared
-        // path or the owner one before it gets a 400 for guessing.
+        // path or the owner one before it gets a 400 for guessing. Except when
+        // both scopes are `team`: no API principal could ever touch its
+        // entries, so the API has nothing to say about it (decisions.md #3,
+        // owner decision 2026-09-06).
+        if (col.readScope === "team" && col.writeScope === "team")
+          throw refuse(col, "read", col.readScope);
         return json(
           {
             id: col.id,

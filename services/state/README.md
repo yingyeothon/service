@@ -45,15 +45,15 @@ There is no list route: enumerating a channel's owners is a server capability, a
 
 A **collection** (`kv_…`) is a project resource created in the console or with `yyt kv`; this stack only serves its entries. Both principals are bound to their auth channel's **project**: a collection of another project is the same `404` as one that does not exist.
 
-| Route                               | Result                                                                    |
-| ----------------------------------- | ------------------------------------------------------------------------- |
-| `GET /kv/{col}`                     | the collection's shape: scopes, `encrypted`, both caps                    |
-| `GET /kv/{col}/entries`             | the shared namespace, or every owner of a user namespace                  |
-| `GET /kv/{col}/u/{ownerId}/entries` | one owner's namespace; a player may write `me`                            |
-| `GET …/entries/{key}`               | `200` + the stored value, `ETag: "{version}"`, `X-KV-Expires-At`          |
-| `PUT …/entries/{key}?ttl=`          | `201` created / `204` updated; `If-Match` and `If-None-Match: *` optional |
-| `PATCH …/entries/{key}?ttl=`        | `{"incr": n}` → `{value, version}`; conditional headers are a `400`       |
-| `DELETE …/entries/{key}`            | `204`; `If-Match` optional                                                |
+| Route                               | Result                                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| `GET /kv/{col}`                     | the collection's shape: scopes, `encrypted`, both caps; `403` when both scopes are `team` |
+| `GET /kv/{col}/entries`             | the shared namespace, or every owner of a user namespace                                  |
+| `GET /kv/{col}/u/{ownerId}/entries` | one owner's namespace; a player may write `me`                                            |
+| `GET …/entries/{key}`               | `200` + the stored value, `ETag: "{version}"`, `X-KV-Expires-At`                          |
+| `PUT …/entries/{key}?ttl=`          | `201` created / `204` updated; `If-Match` and `If-None-Match: *` optional                 |
+| `PATCH …/entries/{key}?ttl=`        | `{"incr": n}` → `{value, version}`; conditional headers are a `400`                       |
+| `DELETE …/entries/{key}`            | `204`; `If-Match` optional                                                                |
 
 - **Scopes decide everything.** `readScope`/`writeScope` are `team` (console and CLI only — the API answers 403), `project` (any credential of the project) or `user` (the server key on anyone's behalf, a player on its own). `writeScope: user` is what puts entries in `/u/{ownerId}/…`; using the wrong path is a `400` naming the one that works.
 - **A conditional write needs the right to read** (`403` otherwise), and so does `PATCH {incr}`: each of them reveals what is stored. A write-only inbox takes a plain `PUT` and `DELETE` and nothing else, and those tell it nothing either — a caller without the read right gets `204` for both a create and an update, `204` for a delete of a key that was never there, and no `ETag`, because “did this key exist” and “how many times has it been written” are facts about stored data. No `409` body ever carries a value — only `details.current`, the live version, and only to a reader.
@@ -64,7 +64,7 @@ A **collection** (`kv_…`) is a project resource created in the console or with
 
 ### When kv answers 503
 
-All three 503s are `AppError`s, so the **Lambda invocation succeeds** and the stack's `Errors` alarm never fires. The log group is the only signal:
+All three 503s are `AppError`s, so the **Lambda invocation succeeds** and a Lambda `Errors` metric never moves. The stack's one alarm is therefore a **log metric** (`api-failures`, prod only, 2026-09-06): it counts the `request failed` and `unhandled error` lines, so a stage-wide kv outage pages like a crash loop does. The log group tells them apart:
 
 | Line                                                    | Means                                                                                                                           |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |

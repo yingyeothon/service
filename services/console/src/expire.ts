@@ -44,7 +44,7 @@ export async function runExpire({
   deleted: ExpiredChannel[];
   documents: number;
   /** Rows hard-deleted `purgeSec` after their soft-delete; their names are free again. */
-  purged: string[];
+  purged: { id: string; projectId: string | null }[];
 }> {
   const now = nowSec(clock);
   const r = await db.expireChannels(now, graceSec);
@@ -165,7 +165,7 @@ export interface KvSweepResult {
  */
 export async function runKvStoreSweep({
   kvstore,
-  channelIds = [],
+  channels = [],
   kv,
   clock = systemClock,
   logger,
@@ -173,8 +173,12 @@ export async function runKvStoreSweep({
   maxBatches = KV_SWEEP_MAX_BATCHES,
 }: {
   kvstore: KvStoreDb;
-  /** Auth channels this run soft-deleted or hard-purged; their players' rows go too. */
-  channelIds?: string[];
+  /**
+   * Auth channels this run soft-deleted or hard-purged; their players' rows
+   * go too, console-written owner rows included when the project is known
+   * (`projectId: null` — a legacy channel that never had one — skips those).
+   */
+  channels?: { id: string; projectId: string | null }[];
   /** Carries the expiry walk's cursor between runs; without it the walk restarts daily. */
   kv?: Kv;
   clock?: Clock;
@@ -188,7 +192,8 @@ export async function runKvStoreSweep({
   let purged = 0;
   /*
    * Phase 1 gets a budget of its own, and the arithmetic is the point: one
-   * statement per id so that *every* channel is at least probed, plus
+   * charge per id so that *every* channel is at least probed (a probe is up
+   * to two statements since the console-row phase joined it), plus
    * `maxBatches` more to drain the ones that had rows. Sharing the deferrable
    * phases' budget meant a day that purged more channels than the budget
    * dropped the tail — and `purgeChannels` has no `LIMIT` and returns every
@@ -196,7 +201,7 @@ export async function runKvStoreSweep({
    * nothing is one index lookup on `kv_entries_channel`.
    */
   let channelSpent = 0;
-  const channelBudget = () => channelSpent < channelIds.length + maxBatches;
+  const channelBudget = () => channelSpent < channels.length + maxBatches;
   const budget = () => spent < maxBatches;
 
   /** One bounded statement; `true` while the same target may hold more rows. */
@@ -221,7 +226,7 @@ export async function runKvStoreSweep({
   let channelsTruncated = false;
   let truncated = false;
 
-  for (const channelId of channelIds) {
+  for (const { id: channelId, projectId } of channels) {
     if (!channelBudget()) {
       channelsTruncated = true;
       break;
@@ -229,7 +234,7 @@ export async function runKvStoreSweep({
     let more = true;
     while (more && channelBudget())
       more = await drain(
-        () => kvstore.deleteChannelEntries(channelId, batch),
+        () => kvstore.deleteChannelEntries(channelId, projectId, batch),
         chargeChannel,
       );
     if (more) channelsTruncated = true;

@@ -11,7 +11,7 @@ Design of record: `docs/decisions.md` _Key-value store (`kv`)_ (ten decisions, 2
 | `owner`   | the auth channel JWT (`sub` = userId)                      | KV API                     | project-scope read/write; its own user namespace only (`me` alias)                          |
 
 - API principals are bound to the auth channel's `projectId`; a mismatch or a channel without one answers 404, not 403, so a collection id proves nothing about another project.
-- Scope matrix: `team` → the API refuses (403); `project` → team, server and owner on every entry; `user` → the owner on its own entries, server and team on all. `writeScope: user` puts every entry in an owner namespace `(collection, ownerId, key)`; otherwise the collection has one shared namespace. `readScope: user` requires `writeScope: user`; `encrypted` requires both scopes in `project | user`.
+- Scope matrix: `team` → the API refuses (403); `project` → team, server and owner on every entry; `user` → the owner on its own entries, server and team on all. A collection with **both** scopes `team` refuses even the meta `GET /kv/{col}` (owner decision 2026-09-06): no API principal could ever touch its entries, so the API has nothing to say about it. `writeScope: user` puts every entry in an owner namespace `(collection, ownerId, key)`; otherwise the collection has one shared namespace. `readScope: user` requires `writeScope: user`; `encrypted` requires both scopes in `project | user`.
 - `readScope`, `writeScope` and `encrypted` are immutable after creation (the console PATCH names the field and says "delete and recreate"); `name`, `description`, `maxEntries`, `maxEntriesPerOwner` are editable.
 - Conditional writes (`If-Match`, `If-None-Match: *`) and `PATCH {incr}` need the read right as well; a compare-and-set 409 carries `{current: version | null}` only (the other 409s — `encrypted`, `owner_full`, `collection_full` — carry `details.reason`).
 
@@ -29,7 +29,7 @@ A stage KEK (`/yyt-service/{stage}/state/kv-kek`, 32 bytes hex) reaches only the
 
 ## Lifecycle
 
-Deleting a collection soft-deletes it (frees the name at once by parking the row on its own id), drains the rows inline in batches of 1,000 up to ten times, and leaves the rest to the daily sweep (`runKvStoreSweep`: soft-deleted collections, expired rows per live collection, and the rows of auth channels the sweep hard-deleted). Deleting an auth channel purges the rows its players wrote (`channel_id`), best-effort inline and finished by the sweep; rows the console wrote have no channel and survive (owner decision 5 in `todo/33` covers the owner-namespace case).
+Deleting a collection soft-deletes it (frees the name at once by parking the row on its own id), drains the rows inline in batches of 1,000 up to ten times, and leaves the rest to the daily sweep (`runKvStoreSweep`: soft-deleted collections, expired rows per live collection, and the rows of auth channels the sweep hard-deleted). Deleting an auth channel purges the rows its players wrote (`channel_id`) **and**, scoped to the channel's project, the console-written rows (`channel_id IS NULL`) of every owner the channel's own rows name (owner decision 2026-09-06) — best-effort inline and finished by the sweep. Shared-namespace rows survive, and so does an owner only the console ever wrote: nothing maps it to a channel. The 30-day hard purge carries the dying row's project id out with it (`purgeChannels`), so the console-row half has the same backstop as the channel's own rows; only a legacy channel without a project (`projectId: null`) skips it, because a `{kind}:{id}` owner could match across projects.
 
 ## Deploy order (per stage)
 
@@ -40,4 +40,4 @@ Deleting a collection soft-deletes it (frees the name at once by parking the row
 4. `scripts/deploy.sh state <stage>` — the KEK is baked into the Lambda env here, so 1 must precede it.
 5. `scripts/deploy-web.sh <stage>`; then the smoke (`rules/manual-verification.md`) on dev, and a `yyt kv` round trip on prod.
 
-Rollback and the alarm gap are in `rules/deployment.md` _SSM environment values_.
+Rollback notes are in `rules/deployment.md` _SSM environment values_. The alarm gap closed 2026-09-06: prod state's one alarm is a log metric (`api-failures`) that counts `request failed` and `unhandled error` lines, so a stage-wide kv 503 outage pages even though the invocations succeed (`rules/serverless-aws.md`).

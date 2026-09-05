@@ -890,6 +890,9 @@ model kv_entries {
   /// cannot use this index (`rules/data.md`, leading-column rule).
   @@index([collection_id, expires_at], map: "kv_entries_expiry")
   @@index([channel_id], map: "kv_entries_channel")
+  /// Cross-owner prefix search on a user namespace (public-profile shape): the
+  /// primary key cannot serve it because `owner_id` sits between the columns.
+  @@index([collection_id, k], map: "kv_entries_prefix")
 }
 
 /// The wrapped data key of an encrypted collection. State-stack only: console

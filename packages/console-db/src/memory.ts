@@ -300,11 +300,11 @@ export function createMemoryConsoleDb(
       return { disabled, deleted };
     },
     purgeChannels: async (now, retainSec) => {
-      const ids = [...channels.values()]
+      const rows = [...channels.values()]
         .filter((c) => c.deletedAt !== null && c.deletedAt < now - retainSec)
-        .map((c) => c.id);
-      for (const id of ids) channels.delete(id);
-      return ids;
+        .map((c) => ({ id: c.id, projectId: c.projectId ?? null }));
+      for (const r of rows) channels.delete(r.id);
+      return rows;
     },
     insertAudit: async (a) => {
       if (audits.some((x) => x.id === a.id))

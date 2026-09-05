@@ -946,7 +946,12 @@ export function createConsoleApp({
           await deleteChannelDocs(state, row.id, logger);
         // And the kv entries those players wrote, for the same reason.
         if (row.kind === "auth")
-          await deleteChannelKvEntries(kvstore, row.id, logger);
+          await deleteChannelKvEntries(
+            kvstore,
+            row.id,
+            row.projectId ?? null,
+            logger,
+          );
         await audit(id.subject, "channel.delete", row.id);
         await channelHistory(row, id.subject, "resource.delete");
         return undefined;
