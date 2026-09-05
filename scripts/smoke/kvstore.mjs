@@ -255,7 +255,7 @@ try {
   });
   check(
     "the doc-key card names the kv path",
-    shown.body?.kvPath === "/kv/{collectionId}",
+    shown.body?.kvPath === "/kv/{collection}",
     shown.body?.kvPath ?? "(missing)",
   );
 
@@ -426,6 +426,19 @@ try {
       meta.body?.writeScope === "team" &&
       meta.body?.encrypted === false,
     JSON.stringify(meta.body),
+  );
+  const byName = await api(`/kv/${encodeURIComponent(notice.name)}`, {
+    headers: server,
+  });
+  check(
+    "the api resolves the collection by name within the project",
+    byName.status === 200 && byName.body?.writeScope === "team",
+    String(byName.status),
+  );
+  check(
+    "the api block names the name path",
+    notice.api?.namePath === `/kv/${encodeURIComponent(notice.name)}`,
+    String(notice.api?.namePath),
   );
   // Everything below is negative space — a state stack that has no `/kv/*`
   // routes at all answers 401/404 for all four and would pass them green. The

@@ -266,6 +266,10 @@ export function createKvStoreRoutes({
     configured: doc !== "",
     baseUrl: doc,
     metaPath: `/kv/${col.id}`,
+    // The same collection by name: `{col}` on the KV API takes either, and a
+    // game reads better with a name than with a ULID. `resourceName` admits
+    // only `[A-Za-z0-9._-]`, so the name is one plain path segment as is.
+    namePath: `/kv/${col.name}`,
     entriesPath: `/kv/${col.id}/entries`,
     ...(isUserNamespace(col)
       ? { ownerPath: `/kv/${col.id}/u/{ownerId}/entries` }

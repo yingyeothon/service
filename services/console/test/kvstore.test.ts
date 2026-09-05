@@ -91,6 +91,7 @@ describe("kv collections", () => {
       configured: true,
       baseUrl: URLS.doc,
       metaPath: `/kv/${c.id}`,
+      namePath: "/kv/announcements",
       entriesPath: `/kv/${c.id}/entries`,
     });
 
@@ -1058,7 +1059,7 @@ describe("kv lifecycle", () => {
     expect(h.kvstore.entries.size).toBe(0);
     // The doc key is the KV API's server credential too, so the block says so.
     expect(channelDocBlock({ id: ch.id }, URLS.doc).kvPath).toBe(
-      "/kv/{collectionId}",
+      "/kv/{collection}",
     );
   });
 

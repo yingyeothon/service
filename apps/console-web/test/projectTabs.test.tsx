@@ -370,6 +370,7 @@ describe("kv tab", () => {
         configured: true,
         baseUrl: "https://doc.example",
         metaPath: "/kv/kv_3",
+        namePath: "/kv/n3",
         entriesPath: "/kv/kv_3/entries",
       },
     });

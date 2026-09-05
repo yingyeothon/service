@@ -59,8 +59,9 @@ export function channelDocBlock(
     // The path the server writes to; `{ownerId}` is the `sub` of the player's
     // token, and the client reads the same path with that token.
     writePath: `/s/{ownerId}`,
-    // Every kv collection of this channel's project, addressed by its id.
-    kvPath: `/kv/{collectionId}`,
+    // Every kv collection of this channel's project, addressed by its id or
+    // its (URL-encoded) name.
+    kvPath: `/kv/{collection}`,
   };
 }
 

@@ -249,6 +249,7 @@ export {
   checkKvEntrySize,
   checkKvKey,
   checkKvName,
+  isKvIdShapedName,
   checkKvOwner,
   checkKvOwnerId,
   checkKvScopes,

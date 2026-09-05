@@ -319,6 +319,15 @@ const foldName = (name: string): string =>
   name.trimEnd().normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
 
 /**
+ * Whether the unique index would call `name` equal to some collection id --
+ * the shape `checkKvName` refuses, and therefore a string the KV API can
+ * settle as "not a name" without a `SELECT` (`services/state`, `collectionOf`).
+ */
+export function isKvIdShapedName(name: string): boolean {
+  return KV_COLLECTION_ID_RE.test(foldName(name));
+}
+
+/**
  * The collection name. Refused here rather than only at the route because
  * `softDeleteCollection` parks the freed row on its own id: a name the unique
  * index would call equal to some collection's id can block that collection's
@@ -327,7 +336,7 @@ const foldName = (name: string): string =>
 export function checkKvName(name: string): void {
   if (name.length === 0 || name.length > 255)
     throw new AppError("bad_request", "invalid name");
-  if (KV_COLLECTION_ID_RE.test(foldName(name)))
+  if (isKvIdShapedName(name))
     throw new AppError(
       "bad_request",
       "name must not look like a collection id",
@@ -504,6 +513,15 @@ export interface KvStoreDb {
   /** Case-insensitively, like the `(team_id, name)` unique index. */
   findCollectionByName(
     teamId: string,
+    name: string,
+  ): Promise<KvCollectionRow | undefined>;
+  /**
+   * The KV API's name path: `(team_id, name)` is the unique index and a project
+   * belongs to one team, so a project sees at most one row per name. Same
+   * folding as {@link findCollectionByName}; soft-deleted rows come back too.
+   */
+  findCollectionByProjectName(
+    projectId: string,
     name: string,
   ): Promise<KvCollectionRow | undefined>;
   /** Live collections only, with the derived entry count. */
@@ -879,6 +897,14 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
       run(async () => {
         const r = await prisma.kv_collections.findFirst({
           where: { team_id: teamId, name },
+        });
+        return r ? toCollection(r) : undefined;
+      }),
+
+    findCollectionByProjectName: (projectId, name) =>
+      run(async () => {
+        const r = await prisma.kv_collections.findFirst({
+          where: { project_id: projectId, name },
         });
         return r ? toCollection(r) : undefined;
       }),
@@ -1400,6 +1426,13 @@ export function createMemoryKvStoreDb(
     findCollectionByName: async (teamId, name) => {
       const c = [...collections.values()].find(
         (x) => x.teamId === teamId && ci(x.name) === ci(name),
+      );
+      return c && { ...c };
+    },
+
+    findCollectionByProjectName: async (projectId, name) => {
+      const c = [...collections.values()].find(
+        (x) => x.projectId === projectId && ci(x.name) === ci(name),
       );
       return c && { ...c };
     },

@@ -472,6 +472,7 @@ export function KvCollectionPage() {
   const apiLines: (readonly [string, string])[] = [
     ["base", col.api.baseUrl],
     ["meta", col.api.metaPath],
+    ["name", col.api.namePath],
     ["entries", col.api.entriesPath],
     ...(col.api.ownerPath ? [["owner", col.api.ownerPath] as const] : []),
   ];

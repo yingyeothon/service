@@ -832,6 +832,8 @@ export interface KvApi {
   configured: boolean;
   baseUrl: string;
   metaPath: string;
+  /** The same collection addressed by its (URL-encoded) name. */
+  namePath: string;
   entriesPath: string;
   /** Only when `writeScope` is `user`: one namespace per owner. */
   ownerPath?: string;

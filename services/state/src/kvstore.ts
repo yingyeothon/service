@@ -8,6 +8,7 @@ import {
 } from "@yyt/core";
 import {
   KV_COLLECTION_ID_RE,
+  isKvIdShapedName,
   KV_SHARED_OWNER,
   KV_TTL_MAX_SECONDS,
   KV_TTL_MIN_SECONDS,
@@ -210,33 +211,46 @@ export function createKvStoreRoutes({
     (ctx.query ?? {}) as Record<string, string | undefined>;
 
   /**
-   * Resolves `{col}` to a live collection of the caller's project.
+   * Resolves `{col}` -- a `kv_` id or a collection **name** -- to a live
+   * collection of the caller's project.
    *
    * The shape check comes first and without a `SELECT`: `kv_collections.id` is
    * `utf8mb4_ci`, so MariaDB would match `KV_01H…` against a row written
    * `kv_01h…` while the value AAD binds the id byte for byte -- every value of
    * a collection reached through the wrong spelling would then be a 503 that
-   * looks like corruption.
+   * looks like corruption. A segment that is not an id is a name, looked up
+   * within the caller's project; `checkKvName` refuses any name the index
+   * would fold onto an id, so an id-shaped segment that is not an exact id can
+   * be settled here as well, and the two forms never meet in one lookup.
    */
   async function collectionOf(
     ctx: Pick<RouteContext, "params">,
     c: Caller,
   ): Promise<KvCollectionRow> {
-    const id = ctx.params.col ?? "";
-    // One 404 for four different faults, so an id is never an oracle -- and
+    const seg = ctx.params.col ?? "";
+    const isId = KV_COLLECTION_ID_RE.test(seg);
+    // One 404 for five different faults, so a segment is never an oracle -- and
     // one log line that says which, because the collection id is charset-bound
     // by the line above and the alternative is opening the database to tell a
-    // client typo from the legacy `project_id IS NULL` channel.
+    // client typo from the legacy `project_id IS NULL` channel. A name is not
+    // logged: the request line records the route pattern, never the path.
     const gone = (reason: string): AppError => {
       logger.debug("kv collection unavailable", {
-        collectionId: reason === "shape" ? undefined : id,
+        collectionId: isId ? seg : undefined,
         reason,
       });
       return collectionGone();
     };
-    if (!KV_COLLECTION_ID_RE.test(id)) throw gone("shape");
-    const row = await kvstore.findCollection(id);
-    if (!row) throw gone("missing");
+    let row: KvCollectionRow | undefined;
+    if (isId) {
+      row = await kvstore.findCollection(seg);
+      if (!row) throw gone("missing");
+    } else {
+      if (seg.length > 255 || isKvIdShapedName(seg)) throw gone("shape");
+      if (c.projectId === null) throw gone("project");
+      row = await kvstore.findCollectionByProjectName(c.projectId, seg);
+      if (!row) throw gone("name");
+    }
     if (row.deletedAt !== null) throw gone("deleted");
     // A `null` project (a channel from before projects existed) can never
     // equal a collection's NOT NULL one, so such a credential simply has no

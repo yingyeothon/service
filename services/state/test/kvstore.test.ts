@@ -156,7 +156,7 @@ const reasonOf = (r: HttpResult): unknown =>
   (errorOf(r).details as { reason?: unknown } | undefined)?.reason;
 
 describe("kv collection resolution", () => {
-  it("refuses a malformed id without touching the database", async () => {
+  it("refuses an id-shaped segment that is no exact id without touching the database", async () => {
     const h = await withCollections();
     let selects = 0;
     const counted = {
@@ -165,15 +165,19 @@ describe("kv collection resolution", () => {
         selects++;
         return h.kvstore.findCollection(id);
       },
+      findCollectionByProjectName: async (projectId: string, name: string) => {
+        selects++;
+        return h.kvstore.findCollectionByProjectName(projectId, name);
+      },
     };
     const h2 = await build({ kvstore: counted });
     for (const bad of [
-      "kv_TOOLOUD0000000000000000000",
-      "kv_short",
-      "prj_0123456789abcdefghijklmnop",
-      `${COLS.shared.id}x`,
-      // Same row in a `_ci` index, a different string to the value AAD.
+      // Same row in a `_ci` index, a different string to the value AAD -- and
+      // a name `checkKvName` would have refused, so no name lookup either.
       COLS.shared.id.toUpperCase(),
+      "kv_TOOLOUD0000000000000000000",
+      // Longer than any name the console accepts.
+      "n".repeat(256),
     ]) {
       const r = await call(h2, {
         method: "GET",
@@ -183,6 +187,99 @@ describe("kv collection resolution", () => {
       expect(r.statusCode, bad).toBe(404);
     }
     expect(selects).toBe(0);
+    // Anything else that is not an id is a name: one lookup, the same 404.
+    for (const name of [
+      "kv_short",
+      "prj_0123456789abcdefghijklmnop",
+      `${COLS.shared.id}x`,
+    ]) {
+      const r = await call(h2, {
+        method: "GET",
+        path: `/kv/${name}`,
+        bearer: API_KEY,
+      });
+      expect(r.statusCode, name).toBe(404);
+      expect(errorOf(r).message).toBe("collection not found");
+    }
+    expect(selects).toBe(3);
+  });
+
+  it("refuses a name from a projectless channel before any lookup", async () => {
+    const h = await withCollections();
+    let selects = 0;
+    const counted = {
+      ...h.kvstore,
+      findCollectionByProjectName: async (projectId: string, name: string) => {
+        selects++;
+        return h.kvstore.findCollectionByProjectName(projectId, name);
+      },
+    };
+    const h2 = await build({ kvstore: counted, projectless: true });
+    const r = await call(h2, {
+      method: "GET",
+      path: `/kv/${COLS.shared.id.slice(3)}`,
+      bearer: API_KEY,
+    });
+    expect(r.statusCode).toBe(404);
+    expect(errorOf(r).message).toBe("collection not found");
+    expect(selects).toBe(0);
+  });
+
+  it("resolves a name within the caller's project, folded like the index", async () => {
+    const h = await withCollections();
+    const name = COLS.shared.id.slice(3);
+    for (const seg of [name, name.toUpperCase()]) {
+      const r = await call(h, {
+        method: "GET",
+        path: `/kv/${seg}`,
+        bearer: API_KEY,
+      });
+      expect(r.statusCode, seg).toBe(200);
+      expect(bodyOf(r)).toMatchObject({ writeScope: "project" });
+    }
+    // A write through the name lands on the same row the id reads.
+    const put = await call(h, {
+      method: "PUT",
+      path: entryPath(name, "k"),
+      bearer: API_KEY,
+      body: { by: "name" },
+    });
+    expect(put.statusCode).toBe(201);
+    const get = await call(h, {
+      method: "GET",
+      path: entryPath(COLS.shared.id, "k"),
+      bearer: API_KEY,
+    });
+    expect(get.statusCode).toBe(200);
+    expect(get.body).toBe('{"by":"name"}');
+  });
+
+  it("hides a name of another project behind the same 404", async () => {
+    const h = await build();
+    await seedCollection(h, {
+      ...COLS.shared,
+      id: colId("elsewhere"),
+      projectId: "prj_2",
+    });
+    const r = await call(h, {
+      method: "GET",
+      path: `/kv/${colId("elsewhere").slice(3)}`,
+      bearer: API_KEY,
+    });
+    expect(r.statusCode).toBe(404);
+    expect(errorOf(r).message).toBe("collection not found");
+  });
+
+  it("hides a soft-deleted collection behind its old name too", async () => {
+    const h = await withCollections();
+    const name = COLS.shared.id.slice(3);
+    await h.kvstore.softDeleteCollection(COLS.shared.id, NOW_SEC);
+    const r = await call(h, {
+      method: "GET",
+      path: `/kv/${name}`,
+      bearer: API_KEY,
+    });
+    expect(r.statusCode).toBe(404);
   });
 
   it("hides a collection of another project behind the same 404", async () => {
