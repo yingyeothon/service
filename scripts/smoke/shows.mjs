@@ -159,7 +159,8 @@ try {
         })),
       },
     });
-    check(`presign ${n} screenshot(s)`, r.status === 200, r.text.slice(0, 160));
+    // Never echo the presign body: it carries the bucket host and presigned URLs.
+    check(`presign ${n} screenshot(s)`, r.status === 200, String(r.status));
     check(
       "the presign body is never cached",
       r.headers.get("cache-control") === "no-store",

@@ -86,7 +86,8 @@ async function deploy(zip, label) {
     headers: as(owner),
     body: { size: zip.length },
   });
-  check(`${label}: presign`, grant.status === 201, grant.text.slice(0, 160));
+  // Never echo the presign body: it carries the bucket host and a presigned URL.
+  check(`${label}: presign`, grant.status === 201, String(grant.status));
   if (grant.status !== 201) return null;
   const put = await fetch(grant.body.url, {
     method: "PUT",
