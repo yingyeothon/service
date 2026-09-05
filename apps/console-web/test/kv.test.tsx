@@ -69,6 +69,7 @@ const COL: KvCollectionDetail = {
     configured: true,
     baseUrl: "https://doc-dev.example",
     metaPath: "/kv/kv_1",
+    namePath: "/kv/notices",
     entriesPath: "/kv/kv_1/entries",
     ownerPath: "/kv/kv_1/u/{ownerId}/entries",
   },
@@ -156,6 +157,7 @@ describe("KvCollectionPage", () => {
       [
         "base=https://doc-dev.example",
         "meta=/kv/kv_1",
+        "name=/kv/notices",
         "entries=/kv/kv_1/entries",
         "owner=/kv/kv_1/u/{ownerId}/entries",
       ].join("\n"),

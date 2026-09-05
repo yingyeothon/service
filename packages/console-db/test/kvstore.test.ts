@@ -103,6 +103,24 @@ export function kvstoreContract(
     expect(await db.findCollectionByName(TEAM, "other")).toBeUndefined();
   });
 
+  it("finds a name within a project the way the index folds it", async () => {
+    const db = await make();
+    await db.insertCollection(coll());
+    await db.insertCollection(coll({ id: C2, projectId: PRJ2, name: "Other" }));
+    expect(
+      await db.findCollectionByProjectName(PRJ, "ANNOUNCEMENTS "),
+    ).toMatchObject({ id: C1 });
+    expect(await db.findCollectionByProjectName(PRJ, "other")).toBeUndefined();
+    expect(await db.findCollectionByProjectName(PRJ2, "other")).toMatchObject({
+      id: C2,
+    });
+    // A soft delete frees the name at once, so the old name finds nothing.
+    await db.softDeleteCollection(C1, 200);
+    expect(
+      await db.findCollectionByProjectName(PRJ, "announcements"),
+    ).toBeUndefined();
+  });
+
   it("refuses a name shaped like a collection id", async () => {
     const db = await make();
     const idShaped = `kv_${"0123456789abcdefghijklmnop"}`;

@@ -46,6 +46,7 @@ type kvAPI struct {
 	Configured  bool   `json:"configured"`
 	BaseURL     string `json:"baseUrl"`
 	MetaPath    string `json:"metaPath"`
+	NamePath    string `json:"namePath,omitempty"`
 	EntriesPath string `json:"entriesPath"`
 	OwnerPath   string `json:"ownerPath,omitempty"`
 }
@@ -156,8 +157,12 @@ func (a *App) printKvCollection(k kvCollection) error {
 			[2]string{"apiConfigured", fmt.Sprint(k.API.Configured)},
 			[2]string{"apiBase", k.API.BaseURL},
 			[2]string{"apiMeta", k.API.MetaPath},
-			[2]string{"apiEntries", k.API.EntriesPath},
 		)
+		// Absent from a console older than the name path (2026-09-06).
+		if k.API.NamePath != "" {
+			pairs = append(pairs, [2]string{"apiName", k.API.NamePath})
+		}
+		pairs = append(pairs, [2]string{"apiEntries", k.API.EntriesPath})
 		if k.API.OwnerPath != "" {
 			pairs = append(pairs, [2]string{"apiOwner", k.API.OwnerPath})
 		}

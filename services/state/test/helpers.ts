@@ -80,6 +80,8 @@ export async function build(
     state?: StateDb;
     kvstore?: KvStoreDb;
     keyless?: boolean;
+    /** Every auth channel reads back with `projectId: null`, like a row from before `6_org_project`. */
+    projectless?: boolean;
     /** `false` builds the app as a stage whose `KV_KEK` never validated. */
     crypto?: KvCrypto | false;
     logger?: Logger;
@@ -105,7 +107,18 @@ export async function build(
   const app = createStateApp({
     state,
     kvstore,
-    channels: createChannelStore({ db, clock }),
+    channels: createChannelStore({
+      db: over.projectless
+        ? {
+            ...db,
+            findAuthChannel: async (id) => {
+              const ch = await db.findAuthChannel(id);
+              return ch && { ...ch, projectId: null };
+            },
+          }
+        : db,
+      clock,
+    }),
     crypto,
     clock,
     logger: over.logger,

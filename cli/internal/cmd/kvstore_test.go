@@ -24,7 +24,7 @@ func sampleKvDetail() map[string]any {
 	d["description"] = "public profiles"
 	d["api"] = map[string]any{
 		"configured": true, "baseUrl": "https://doc-dev.yyt.life",
-		"metaPath": "/kv/kv_01j5abcdefghjkmnpqrstvwxyz", "entriesPath": "/kv/kv_01j5abcdefghjkmnpqrstvwxyz/entries",
+		"metaPath": "/kv/kv_01j5abcdefghjkmnpqrstvwxyz", "namePath": "/kv/notices", "entriesPath": "/kv/kv_01j5abcdefghjkmnpqrstvwxyz/entries",
 		"ownerPath": "/kv/kv_01j5abcdefghjkmnpqrstvwxyz/u/{ownerId}/entries",
 	}
 	return d
