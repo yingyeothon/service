@@ -299,11 +299,11 @@ export async function runKvStoreSweep({
   }
   if (kv)
     // Best-effort: a lost cursor costs one restart at the oldest collection,
-    // never a failed sweep. Long-lived on purpose — it is the walk's position,
-    // and an expired key is the daily restart this exists to prevent.
+    // never a failed sweep. The 40-day TTL keeps the every-key-has-a-TTL rule
+    // while outliving any gap in the daily refresh worth planning for.
     try {
       if (cursor === undefined) await kv.del(KV_SWEEP_CURSOR_KEY);
-      else await kv.set(KV_SWEEP_CURSOR_KEY, cursor);
+      else await kv.set(KV_SWEEP_CURSOR_KEY, cursor, { ex: 40 * 24 * 3600 });
     } catch (e) {
       logger.warn("kv sweep cursor write failed", {
         message: e instanceof Error ? e.message : String(e),

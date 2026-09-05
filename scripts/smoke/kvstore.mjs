@@ -82,7 +82,19 @@ async function otherProject() {
     headers: as(owner),
   });
   const hit = (list.body?.projects ?? []).find((p) => p.name === "kv-other");
-  if (hit) return hit.id;
+  if (hit) {
+    // Same reap as the main project: a killed run leaves a live doc key here.
+    const chs = await con(`/projects/${hit.id}/channels`, {
+      headers: as(owner),
+    });
+    for (const c of chs.body?.channels ?? [])
+      if (c.name.startsWith("kv smoke "))
+        await con(`/channels/${c.id}`, {
+          method: "DELETE",
+          headers: as(owner),
+        });
+    return hit.id;
+  }
   const made = await con(`/teams/${team.teamId}/projects`, {
     method: "POST",
     headers: as(owner),
@@ -219,6 +231,14 @@ try {
   for (const c of leftovers.body?.collections ?? [])
     if (c.name.startsWith("smoke-kv-"))
       await con(`/kv/${c.id}`, { method: "DELETE", headers: as(owner) });
+  // A killed run (no `finally`) also leaves live auth channels whose doc keys
+  // stay valid; reap by the name prefix `serverKey` stamps on them.
+  const oldCh = await con(`/projects/${team.prjId}/channels`, {
+    headers: as(owner),
+  });
+  for (const c of oldCh.body?.channels ?? [])
+    if (c.name.startsWith("kv smoke "))
+      await con(`/channels/${c.id}`, { method: "DELETE", headers: as(owner) });
 
   // ---- credentials ----------------------------------------------------
   // Inside the `try`: `serverKey` issues a doc key, so from its first call

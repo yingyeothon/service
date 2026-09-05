@@ -31,15 +31,40 @@ const get = (path, u) => call(path, { headers: as(u) });
 
 let teamB, teamA, prjB;
 const showIds = [];
+const chIds = [];
 try {
   // ---- teams: Zorro owns `beta-…`, amy owns `Alpha-…` and seats Zorro ----
-  const b = await call("/teams", {
-    method: "POST",
-    headers: as(zorro),
-    body: { name: `beta-${stamp}` },
-  });
-  check("create team beta", b.status === 201, String(b.status));
-  teamB = b.body?.id;
+  // Zorro's team is recycled by rename, not created: a soft-deleted channel
+  // keeps its `(team, name)` row until the 30-day purge and every row counts
+  // against the project's RESTRICT, so a team this smoke once put channels in
+  // can never be deleted — creating a fresh one per run leaks one team per run
+  // into Zorro's 5-team cap (which is how run six of this smoke went red).
+  const owned = (await get("/teams", zorro)).body?.teams ?? [];
+  const residue = owned.find(
+    (t) => t.role === "owner" && /^beta-/.test(t.name),
+  );
+  if (residue) {
+    const r = await call(`/teams/${residue.id}`, {
+      method: "PATCH",
+      headers: as(zorro),
+      body: { name: `beta-${stamp}` },
+    });
+    check("recycle team beta", r.status === 200, String(r.status));
+    teamB = residue.id;
+  } else {
+    const b = await call("/teams", {
+      method: "POST",
+      headers: as(zorro),
+      body: { name: `beta-${stamp}` },
+    });
+    check("create team beta", b.status === 201, String(b.status));
+    teamB = b.body?.id;
+  }
+  // A killed run skips the `finally`, so reap amy's leftover teams first: they
+  // never hold resources, so the delete works — unlike Zorro's (see above).
+  for (const t of (await get("/teams", amy)).body?.teams ?? [])
+    if (t.role === "owner" && /^Alpha-/.test(t.name))
+      await call(`/teams/${t.id}`, { method: "DELETE", headers: as(amy) });
   const a = await call("/teams", {
     method: "POST",
     headers: as(amy),
@@ -95,19 +120,26 @@ try {
     String(badOrder.status),
   );
 
-  // ---- projects in beta ----
+  // ---- projects in beta (found-or-create: the team is recycled) ----
+  const prjHave =
+    (await get(`/teams/${teamB}/projects`, zorro)).body?.projects ?? [];
   for (const body of [
     { name: "beta" },
     { name: "Alpha", description: "Zed" },
     { name: "gamma", description: "apple" },
   ]) {
-    const r = await call(`/teams/${teamB}/projects`, {
-      method: "POST",
-      headers: as(zorro),
-      body,
-    });
-    check(`create project ${body.name}`, r.status === 201, String(r.status));
-    if (body.name === "beta") prjB = r.body?.id;
+    const hit = prjHave.find((p) => p.name === body.name);
+    let id = hit?.id;
+    if (!hit) {
+      const r = await call(`/teams/${teamB}/projects`, {
+        method: "POST",
+        headers: as(zorro),
+        body,
+      });
+      check(`create project ${body.name}`, r.status === 201, String(r.status));
+      id = r.body?.id;
+    }
+    if (body.name === "beta") prjB = id;
   }
   const projects = (q) =>
     get(`/teams/${teamB}/projects?${q}`, zorro).then((r) =>
@@ -135,20 +167,28 @@ try {
     JSON.stringify(await projects("q=ZED")) === JSON.stringify(["Alpha"]),
   );
 
-  // ---- discussions + issues ----
+  // ---- discussions + issues (found-or-create: the fixtures are recycled) ----
+  const discHave =
+    (await get(`/teams/${teamB}/discussions`, zorro)).body?.discussions ?? [];
+  const issueHave =
+    (await get(`/projects/${prjB}/issues`, zorro)).body?.issues ?? [];
   for (const title of ["beta", "Alpha", "gamma"]) {
-    const d = await call(`/teams/${teamB}/discussions`, {
-      method: "POST",
-      headers: as(zorro),
-      body: { title, bodyMd: "body" },
-    });
-    check(`create discussion ${title}`, d.status === 201, String(d.status));
-    const i = await call(`/projects/${prjB}/issues`, {
-      method: "POST",
-      headers: as(zorro),
-      body: { title },
-    });
-    check(`create issue ${title}`, i.status === 201, String(i.status));
+    if (!discHave.some((d) => d.title === title)) {
+      const d = await call(`/teams/${teamB}/discussions`, {
+        method: "POST",
+        headers: as(zorro),
+        body: { title, bodyMd: "body" },
+      });
+      check(`create discussion ${title}`, d.status === 201, String(d.status));
+    }
+    if (!issueHave.some((i) => i.title === title)) {
+      const i = await call(`/projects/${prjB}/issues`, {
+        method: "POST",
+        headers: as(zorro),
+        body: { title },
+      });
+      check(`create issue ${title}`, i.status === 201, String(i.status));
+    }
   }
   const disc = await get(`/teams/${teamB}/discussions?sort=title`, zorro);
   check(
@@ -174,13 +214,27 @@ try {
   );
 
   // ---- channels ----
-  for (const name of ["beta", "Alpha"]) {
+  // Stamped names: a deleted channel keeps its `(team, name)` until the purge,
+  // so a fixed name would 409 on the next run of a recycled team.
+  // Every live channel in the recycled project is a killed run's residue
+  // (clean runs soft-delete theirs); reap them or they pile toward the
+  // 50-per-project cap.
+  const stale = await get(`/projects/${prjB}/channels`, zorro);
+  for (const c of stale.body?.channels ?? [])
+    await call(`/channels/${c.id}`, { method: "DELETE", headers: as(zorro) });
+  const chNames = [`beta-${stamp}`, `Alpha-${stamp}`];
+  for (const name of chNames) {
     const c = await call(`/projects/${prjB}/channels`, {
       method: "POST",
       headers: as(zorro),
       body: { kind: "auth", name, config: { audience: "x" } },
     });
-    check(`create channel ${name}`, c.status === 201, String(c.status));
+    check(
+      `create channel ${name.split("-")[0]}`,
+      c.status === 201,
+      String(c.status),
+    );
+    if (c.body?.id) chIds.push(c.body.id);
   }
   const ch = await get(
     `/projects/${prjB}/channels?sort=name&order=desc`,
@@ -188,7 +242,8 @@ try {
   );
   check(
     "channels sort=name desc",
-    JSON.stringify(names(ch, "channels")) === JSON.stringify(["beta", "Alpha"]),
+    JSON.stringify(names(ch, "channels").filter((n) => n.endsWith(stamp))) ===
+      JSON.stringify(chNames),
   );
   const chStatus = await get(
     `/channels?sort=status&q=${encodeURIComponent("alpha")}`,
@@ -250,27 +305,12 @@ try {
   // ---- cleanup (best effort) ----
   for (const id of showIds.filter(Boolean))
     await call(`/shows/${id}/close`, { method: "POST", headers: as(zorro) });
-  for (const path of [...(prjB ? [`/projects/${prjB}`] : [])]) void path;
-  // Channels and projects block a team delete; the smoke teams are cheap to leave, but try.
-  if (prjB) {
-    const chs = await get(`/projects/${prjB}/channels`, zorro);
-    for (const c of chs.body?.channels ?? [])
-      await call(`/channels/${c.id}`, { method: "DELETE", headers: as(zorro) });
-  }
-  if (teamB) {
-    const ps = await get(`/teams/${teamB}/projects`, zorro);
-    for (const p of ps.body?.projects ?? [])
-      await call(`/projects/${p.id}`, { method: "DELETE", headers: as(zorro) });
-    const del = await call(`/teams/${teamB}`, {
-      method: "DELETE",
-      headers: as(zorro),
-    });
-    check(
-      "delete team beta",
-      del.status === 204 || del.status === 409,
-      String(del.status),
-    );
-  }
+  // Zorro's team, its projects and their fixtures stay for the next run (see
+  // the recycle note above: the soft-deleted channel rows make them
+  // undeletable anyway); only this run's stamped channels are soft-deleted so
+  // the active list stays two rows.
+  for (const id of chIds)
+    await call(`/channels/${id}`, { method: "DELETE", headers: as(zorro) });
   if (teamA) {
     const del = await call(`/teams/${teamA}`, {
       method: "DELETE",
