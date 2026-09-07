@@ -1,6 +1,6 @@
 # Golden review evidence (2026-08-28)
 
-Review of this repo + `~/git/yyt.life/tslib` against the golden platform doc (`yyt-platform.md`, kept outside this public repo) §7 invariants and §8 constraints, run after the gateway 0.2.0 / tslib 2.0.0 release. Verdict rules: `holds` (cite code + test), `holds-untested` (add a test or record why not), `violated` (fix; edit `docs/decisions.md` first if a decision changes). Follow-ups that stayed open moved to `todo/19` at the time; the review itself closed 2026-08-28.
+Review of this repo + `~/git/yyt.life/tslib` against the golden platform doc (`yyt-platform.md`, kept outside this public repo; retired 2026-09-08 after a four-repo audit found it satisfied — its durable content is `docs/decisions.md`, `docs/realtime-gateway-design.md` and `gateway/README.md`) §7 invariants and §8 constraints, run after the gateway 0.2.0 / tslib 2.0.0 release. Verdict rules: `holds` (cite code + test), `holds-untested` (add a test or record why not), `violated` (fix; edit `docs/decisions.md` first if a decision changes). Follow-ups that stayed open moved to `todo/19` at the time; the review itself closed 2026-08-28.
 
 > 2026-09-03: `examples/sample-*` moved to the `yingyeothon/examples` repo (`~/git/yyt.life/examples`); `examples/*` paths below are as they were. Line numbers are as of 2026-08-28.
 
