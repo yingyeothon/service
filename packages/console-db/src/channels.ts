@@ -123,7 +123,12 @@ export interface MatchChannelConfig {
   partySize: number;
   waitTimeoutSec: number;
   onTimeout: "partial" | "fail";
-  callbackUrl: string;
+  /**
+   * Absent = the callback-less mode (`docs/decisions.md` *Serverless clients*
+   * #8): a formed party is announced to its own sockets and posted nowhere, so
+   * a team with no server of its own can still matchmake.
+   */
+  callbackUrl?: string;
 }
 
 /** Chat scopes a `lobby` channel may permit for `say`. */

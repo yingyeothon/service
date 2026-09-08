@@ -71,19 +71,28 @@ check(
 const matchId = ch.body.id;
 const cleanup = [matchId];
 
-// 3. websocket helpers (Node 22+ global WebSocket)
+// 3. the sub the platform derives for a smoke user, read back from a minted
+// token's payload — the roster is checked against it, not against a guess.
+const subOf = async (user) => {
+  const token = await mint(user);
+  return JSON.parse(
+    Buffer.from(token.split(".")[1], "base64url").toString("utf8"),
+  ).sub;
+};
+
+// 4. websocket helpers (Node 22+ global WebSocket)
 const ws = wsConnector({ nextMs: 15000 });
 const connect = (channel, token) => ws(`${wss}/?channel=${channel}`, token);
 const rejected = wsRejected(connect);
 
-// 4. rejections
+// 5. rejections
 check("bad token rejected", await rejected(matchId, "x.y.z"));
 check(
   "unknown channel rejected",
   await rejected("match_nope", await mint("u0")),
 );
 
-// 5. happy path: two players → matched
+// 6. happy path: two players → matched
 const a = await connect(matchId, await mint("smoke-a"));
 a.send({ type: "ping" });
 const pong = await a.next();
@@ -100,6 +109,12 @@ check(
   `${JSON.stringify(ma)} / ${JSON.stringify(mb)}`,
 );
 check("result echoed", ma?.result?.echo === true && ma.result.size === 2);
+check(
+  "members in both frames",
+  ma?.members?.length === 2 &&
+    JSON.stringify(ma.members) === JSON.stringify(mb?.members),
+  JSON.stringify(ma?.members),
+);
 const recorded = await json(`${debugHttp}/debug/callback/${ma?.matchId}`, {
   headers: dbg,
 });
@@ -111,7 +126,7 @@ check(
 a.close();
 b.close();
 
-// 6. replace: same user twice → first socket gets `replaced`
+// 7. replace: same user twice → first socket gets `replaced`
 const c1 = await connect(matchId, await mint("smoke-c"));
 const c2 = await connect(matchId, await mint("smoke-c"));
 const rep = await c1.next(5000);
@@ -120,7 +135,7 @@ c1.close();
 c2.close();
 await new Promise((r) => setTimeout(r, 500));
 
-// 7. callback failure → failed
+// 8. callback failure → failed
 const bad = await mk({
   partySize: 2,
   waitTimeoutSec: 60,
@@ -137,7 +152,46 @@ check(
   JSON.stringify(fd1),
 );
 
-// 8. timeout (slow: waits for the 1-minute tick)
+// 9. no callback: matched with members only, nothing posted anywhere
+const solo = await mk({ partySize: 2, waitTimeoutSec: 60, onTimeout: "fail" });
+check(
+  "create callback-less match channel",
+  solo.status === 201 && solo.body?.config?.callbackUrl === undefined,
+  `${solo.status} ${JSON.stringify(solo.body?.config)}`,
+);
+cleanup.push(solo.body.id);
+const f1 = await connect(solo.body.id, await mint("smoke-f1"));
+const f2 = await connect(solo.body.id, await mint("smoke-f2"));
+const [mf1, mf2] = await Promise.all([f1.next(), f2.next()]);
+check(
+  "callback-less match",
+  mf1?.type === "matched" &&
+    mf2?.type === "matched" &&
+    mf1.matchId === mf2.matchId &&
+    mf1.result === null,
+  `${JSON.stringify(mf1)} / ${JSON.stringify(mf2)}`,
+);
+check(
+  "roster is the answer, same order on both sockets",
+  JSON.stringify(mf1?.members) === JSON.stringify(mf2?.members) &&
+    mf1?.members?.length === 2 &&
+    mf1.members[0].userId === (await subOf("smoke-f1")) &&
+    mf1.members[1].userId === (await subOf("smoke-f2")),
+  JSON.stringify(mf1?.members),
+);
+// The claim is "posted nowhere", so ask the sink: an unrecorded matchId is 404.
+const nothing = await json(`${debugHttp}/debug/callback/${mf1?.matchId}`, {
+  headers: dbg,
+});
+check(
+  "nothing was posted anywhere",
+  nothing.status === 404,
+  `${nothing.status} ${JSON.stringify(nothing.body)}`,
+);
+f1.close();
+f2.close();
+
+// 10. timeout (slow: waits for the 1-minute tick)
 if (slow) {
   const t = await mk({
     partySize: 2,

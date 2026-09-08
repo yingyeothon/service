@@ -26,7 +26,7 @@ Channel `config` by kind (validated with zod; unknown keys rejected):
 
 - `auth`: `{audience, tokenTtlSec=86400, redirectAllowlist[], providers:{github?:{clientId, clientSecret}, google?:{…}}}`. Allowlist entries must be absolute `https` URLs (`http` only for localhost), stored normalized. Stored as `config_json` (public part) + `secret_json` (`secret`, provider client secrets) in the shape `services/auth` reads. `PATCH` keeps a provider's stored `clientSecret` when omitted; `providers.github: null` removes it. Response adds `issuer`, `startUrl`, `callbackUrls`.
 - `topic`: `{authChannelId}` → response adds `apiBase`, `wsUrl`.
-- `match`: `{authChannelId, partySize 2–16, waitTimeoutSec=60, onTimeout="fail", callbackUrl}` → response adds `wsUrl`. PATCH replaces the whole config.
+- `match`: `{authChannelId, partySize 2–16, waitTimeoutSec=60, onTimeout="fail", callbackUrl?}` → response adds `wsUrl`. PATCH replaces the whole config. `callbackUrl` is optional: absent (or `""`, which is stored as absent) is the members-only mode, and since the PATCH is a full replace, omitting the key is how a callback is cleared.
 
 Every mutation writes `audit_log` (best effort: a failed audit insert is logged, not surfaced).
 

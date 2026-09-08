@@ -62,8 +62,40 @@ below, but the trust model is the limit, not the API.
   `lobby` party is the replacement — `docs/decisions.md` already calls a
   chat-only lobby "a better topic". Adding client-created topics was
   considered and **rejected** (2026-09-08): it would duplicate the party.
-- **The match service** posts to `callbackUrl` and forwards the 2xx body;
-  no callback receiver, no match. Fixed by the callback-less mode.
+- ~~**The match service** posts to `callbackUrl` and forwards the 2xx body;
+  no callback receiver, no match.~~ **Fixed 2026-09-08** by the callback-less
+  mode (`docs/decisions.md` #8, `todo/38`): a match channel created without a
+  `callbackUrl` posts nowhere and hands every member the roster instead —
+  `{"type":"matched", matchId, partial, result: null, members:[{userId}]}`.
+  The recipe the platform documents: the member with the **lowest `userId`**
+  runs `party.create` on the game's lobby channel and invites the others by
+  `userId`. One rule, no vote: every client derives the same host from the same
+  roster, and a `userId` is 32 lowercase hex, so every language's string
+  comparison agrees. (`members` also arrives in the same ticket order on every
+  socket, so `members[0]` — the oldest waiter — is an equally deterministic
+  rule; pick one and keep it.)
+
+  Four conditions the platform does **not** check, and each fails quietly:
+
+  - **The lobby channel's `partySizeMax` must be at least the match channel's
+    `partySize`.** `partySizeMax` defaults to 4 and `partySize` goes to 16, so a
+    party of 6 formed by match gets `party_full` on the host's fourth invite
+    while the match side logs a clean success.
+  - **Both channels must point at the same auth channel.** `members[].userId`
+    is the `sub` the _match_ channel's auth channel derived; the lobby resolves
+    the id its _own_ auth channel knows. Two auth channels and every invite is
+    `unknown_user`.
+  - **Everyone must already hold a lobby socket** when the match lands: an
+    invite to an offline user is `unknown_user` too. And a player still in a
+    party from the previous match gets `in_party` on `party.create` — leave the
+    old party before queueing again.
+  - **A member whose socket dies takes the party with it.** The stack posts
+    `matched` and forgets; there is no `failed` frame afterwards and the ticket
+    is already gone. A client that gets `unknown_user` on an invite, or that
+    receives no invite within a few seconds of `matched`, has to re-queue. In
+    the callback mode the game server at least held the roster and could
+    compensate; here nobody does.
+
 - **Doc writes** (`PUT /s/{ownerId}`) are apiKey-only; a client persists
   through kv, not doc.
 - **Nobody vouches for a value.** Every kv scope a player can reach is one

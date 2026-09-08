@@ -9,11 +9,19 @@ import {
 import { LockTimeoutError, type Kv } from "@yyt/redis";
 import { quietPoster, type Poster } from "@yyt/ws";
 import type { ChannelStore, MatchChannelPublic } from "./channels.js";
-import type { Dispatcher } from "./dispatch.js";
+import type { DispatchOutcome, Dispatcher } from "./dispatch.js";
 import type { Pool, Ticket } from "./pool.js";
 
 export type ServerMessage =
-  | { type: "matched"; matchId: string; partial: boolean; result: unknown }
+  | {
+      type: "matched";
+      matchId: string;
+      partial: boolean;
+      /** The callback's 2xx JSON, or `null` in the callback-less mode. */
+      result: unknown;
+      /** Everyone in the party, in ticket order. Sent in both modes. */
+      members: Array<{ userId: string }>;
+    }
   /** `timeout`: waited too long; `callback`: game server failed; `closed`: channel gone or ticket unknown. */
   | { type: "failed"; reason: "timeout" | "callback" | "closed" }
   | { type: "replaced" }
@@ -84,9 +92,14 @@ export function createMatcher({
   );
 
   /**
-   * Records the party, removes it from the pool, calls back, and notifies
-   * every socket. The `result:` record is written first so an interrupted
-   * invocation leaves a trace of who was taken out of the queue.
+   * Records the party, removes it from the pool, calls back **when the channel
+   * has a callback**, and notifies every socket. The `result:` record is
+   * written first so an interrupted invocation leaves a trace of who was taken
+   * out of the queue.
+   *
+   * Without a `callbackUrl` nothing is posted anywhere and nothing can fail:
+   * the party is the answer, and each member gets the roster it needs to form
+   * a room on its own (`docs/decisions.md` *Serverless clients* #8).
    */
   async function dispatch(
     ch: MatchChannelPublic,
@@ -94,6 +107,10 @@ export function createMatcher({
     partial: boolean,
   ): Promise<void> {
     const matchId = ulid(clock.now()).toLowerCase();
+    const callbackUrl = ch.config.callbackUrl;
+    // One roster for the callback body and the frame: they name the same party
+    // in the same (ticket) order, and a second `map` would let them drift.
+    const roster = members.map((t) => ({ userId: t.userId }));
     const record = (extra: Record<string, unknown>) =>
       kv.set(
         `result:${matchId}`,
@@ -108,25 +125,33 @@ export function createMatcher({
       );
     await record({ state: "pending" });
     await Promise.all(members.map((t) => pool.remove(t.connId)));
-    const full = await channels.getMatchWithSecret(ch.id);
-    const apiKey = full?.secret.apiKey;
-    const outcome = apiKey
-      ? await dispatcher.dispatch({
-          callbackUrl: ch.config.callbackUrl,
-          apiKey,
-          body: {
-            matchId,
-            channelId: ch.id,
-            members: members.map((t) => ({ userId: t.userId })),
-            partial,
-          },
-        })
-      : ({ ok: false, reason: "callback" } as const);
+    let outcome: DispatchOutcome;
+    if (callbackUrl === undefined || callbackUrl === "") {
+      // No MySQL round trip either: `getMatchWithSecret` exists only to fetch
+      // the key this mode never signs anything with.
+      outcome = { ok: true, result: null };
+    } else {
+      const full = await channels.getMatchWithSecret(ch.id);
+      const apiKey = full?.secret.apiKey;
+      outcome = apiKey
+        ? await dispatcher.dispatch({
+            callbackUrl,
+            apiKey,
+            body: {
+              matchId,
+              channelId: ch.id,
+              members: roster,
+              partial,
+            },
+          })
+        : { ok: false, reason: "callback" };
+    }
     logger.info("match dispatched", {
       channelId: ch.id,
       matchId,
       size: members.length,
       partial,
+      mode: callbackUrl ? "callback" : "members",
       ok: outcome.ok,
     });
     // The callback result itself is not persisted: it may carry game tokens.
@@ -136,7 +161,13 @@ export function createMatcher({
         : { state: "failed", reason: outcome.reason },
     );
     const msg: ServerMessage = outcome.ok
-      ? { type: "matched", matchId, partial, result: outcome.result }
+      ? {
+          type: "matched",
+          matchId,
+          partial,
+          result: outcome.result,
+          members: roster,
+        }
       : { type: "failed", reason: "callback" };
     await Promise.all(members.map((t) => send(t.connId, msg)));
   }

@@ -263,7 +263,8 @@ export interface MatchConfig {
   partySize: number;
   waitTimeoutSec: number;
   onTimeout: "partial" | "fail";
-  callbackUrl: string;
+  /** Absent = the callback-less mode: members arrange the room themselves. */
+  callbackUrl?: string;
 }
 export type SayScope = "zone" | "party" | "user";
 export interface LobbyCapabilities {

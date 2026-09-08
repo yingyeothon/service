@@ -468,6 +468,54 @@ describe("channels", () => {
     ).toBe(400);
   });
 
+  it("a match channel may have no callback, and an empty one means none", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const auth = await authFor(h, a);
+    const mk = async (config: Record<string, unknown>) =>
+      h.app(
+        ev("POST", `/projects/${a.prjId}/channels`, {
+          headers: a.cookie,
+          body: { kind: "match", name: `m${Math.random()}`, config },
+        }),
+      );
+    const base = { authChannelId: auth, partySize: 2 };
+    const none = await mk(base);
+    expect(none.statusCode, none.body).toBe(201);
+    expect(parse(none).config).not.toHaveProperty("callbackUrl");
+    // Three spellings of "none", because three surfaces send three things:
+    // a cleared form field (`""`), a blank one, and this API's `null` idiom.
+    for (const none of ["", "   ", null]) {
+      const blank = await mk({ ...base, callbackUrl: none });
+      expect(blank.statusCode, JSON.stringify(none)).toBe(201);
+      expect(parse(blank).config).not.toHaveProperty("callbackUrl");
+    }
+    // A value that is neither a URL nor "none" is still a 400.
+    for (const bad of [
+      "nope",
+      123,
+      "ftp://x/",
+      `https://x/${"y".repeat(2100)}`,
+    ])
+      expect((await mk({ ...base, callbackUrl: bad })).statusCode).toBe(400);
+    // The full-replace PATCH is what turns a callback channel into one without.
+    const withCb = parse(
+      await mk({ ...base, callbackUrl: "https://game.example/match" }),
+    );
+    const cleared = parse(
+      await h.app(
+        ev("PATCH", `/channels/${withCb.id}`, {
+          headers: a.cookie,
+          body: { config: base },
+        }),
+      ),
+    );
+    expect(cleared.config).not.toHaveProperty("callbackUrl");
+    expect(
+      (await h.db.findMatchChannel(withCb.id))?.config.callbackUrl,
+    ).toBeUndefined();
+  });
+
   it("patch keeps provider secrets unless replaced/removed, replaces topic/match config", async () => {
     const h = harness();
     const a = await h.team("alice");

@@ -71,17 +71,22 @@ export function build(
     dispatcher?: Dispatcher;
     gone?: string[];
     fetch?: typeof fetch;
+    /** `null` seeds a channel with no callback (the members-only mode). */
+    callbackUrl?: string | null;
   } = {},
 ) {
   const clock = fakeClock();
   const db = createMemoryConsoleDb();
   const kv = createMemoryKv({ prefix: "match:test:", clock });
+  const callbackUrl =
+    over.callbackUrl === undefined ? CALLBACK : over.callbackUrl;
   const matchConfig = {
     authChannelId: "auth_a",
     partySize: over.partySize ?? 2,
     waitTimeoutSec: over.waitTimeoutSec ?? 60,
     onTimeout: over.onTimeout ?? "fail",
-    callbackUrl: CALLBACK,
+    // Absent, not `""`: console stores no key at all in this mode.
+    ...(callbackUrl === null ? {} : { callbackUrl }),
   };
   const seed = async () => {
     await db.upsertMember({

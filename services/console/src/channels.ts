@@ -137,6 +137,16 @@ const authConfigPatch = z
   })
   .strict();
 
+/** The scheme `services/match/src/dispatch.ts` will actually fetch. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 const authChannelId = z
   .string()
   .regex(ID, "authChannelId must match [a-z0-9_-]{3,40}");
@@ -147,7 +157,36 @@ const matchConfig = z
     partySize: z.number().int().min(2).max(16),
     waitTimeoutSec: z.number().int().min(5).max(600).default(60),
     onTimeout: z.enum(["partial", "fail"]).default("fail"),
-    callbackUrl: z.string().url().max(2048),
+    /**
+     * Optional (`docs/decisions.md` *Serverless clients* #8). Absent = the
+     * callback-less mode: the party is announced to its own sockets and posted
+     * nowhere.
+     *
+     * Three spellings of "no callback" are accepted, because three surfaces
+     * send three different things and disagreeing on which one works would be
+     * the bug: an absent key (the SPA and the CLI), a blank string (a cleared
+     * form field), and `null` (this API's own idiom for removing an optional
+     * value, `providers.github: null` above). `JSON.stringify` drops the
+     * resulting `undefined`, so a stored config either has a URL or has no key
+     * — never `""` and never `null`.
+     */
+    callbackUrl: z.preprocess(
+      (v) =>
+        v === null || (typeof v === "string" && v.trim() === "")
+          ? undefined
+          : v,
+      z
+        .string()
+        .url()
+        .max(2048)
+        // `z.url()` admits any scheme, and the dispatcher then refuses
+        // everything but http(s) at match time -- so a `ftp:` or `javascript:`
+        // value used to be storable and could only ever fail as
+        // `failed:callback`. The rule was always http(s) only
+        // (`rules/security.md`); this is where it belongs.
+        .refine(isHttpUrl, "callbackUrl must be an http or https URL")
+        .optional(),
+    ),
   })
   .strict();
 

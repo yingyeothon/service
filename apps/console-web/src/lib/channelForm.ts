@@ -122,7 +122,7 @@ export function formFromChannel(ch: Channel): ChannelFormState {
     partySize: String(c.partySize),
     waitTimeoutSec: String(c.waitTimeoutSec),
     onTimeout: c.onTimeout,
-    callbackUrl: c.callbackUrl,
+    callbackUrl: c.callbackUrl ?? "",
   };
 }
 
@@ -227,11 +227,15 @@ export function buildConfig(
       ...aoi,
     } satisfies LobbyConfig;
   }
+  // A blank field drops the key rather than sending `""`: the match PATCH is a
+  // full replace, so an absent key is what clears a callback and turns the
+  // channel into the members-only mode (same shape as the lobby `aoi` spread).
+  const callbackUrl = f.callbackUrl.trim();
   return {
     authChannelId: f.authChannelId,
     partySize: int(f.partySize, "party size"),
     waitTimeoutSec: int(f.waitTimeoutSec, "wait timeout"),
     onTimeout: f.onTimeout,
-    callbackUrl: f.callbackUrl.trim(),
+    ...(callbackUrl === "" ? {} : { callbackUrl }),
   } satisfies MatchConfig;
 }

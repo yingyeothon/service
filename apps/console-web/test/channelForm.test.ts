@@ -107,6 +107,27 @@ describe("buildConfig topic/match", () => {
       buildConfig("topic", { ...emptyForm, authChannelId: "auth_1" }, "create"),
     ).toEqual({ authChannelId: "auth_1" });
   });
+
+  it("a blank callback URL drops the key (members-only mode)", () => {
+    const ch: Channel = {
+      ...authChannel,
+      id: "match_2",
+      kind: "match",
+      config: {
+        authChannelId: "auth_1",
+        partySize: 2,
+        waitTimeoutSec: 60,
+        onTimeout: "fail",
+      },
+    };
+    const form = formFromChannel(ch);
+    expect(form.callbackUrl).toBe("");
+    expect(buildConfig("match", form, "patch", ch)).toEqual(ch.config);
+    // Clearing a channel that had one produces the same shape.
+    expect(
+      buildConfig("match", { ...form, callbackUrl: "   " }, "patch", ch),
+    ).not.toHaveProperty("callbackUrl");
+  });
 });
 
 describe("buildConfig lobby/q", () => {

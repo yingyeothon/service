@@ -86,8 +86,10 @@ yyt channels get|extend|rotate-secret|delete <channel>               # id or nam
 yyt channels create --kind auth  --name n --audience aud [--token-ttl 86400] [--redirect https://…]… \
                     [--github-client-id id --github-client-secret s] [--google-client-id id --google-client-secret s]
 yyt channels create --kind topic --name n --auth-channel <auth-id|name>
-yyt channels create --kind match --name n --auth-channel <auth-id|name> --party-size 4 --callback-url https://… \
+yyt channels create --kind match --name n --auth-channel <auth-id|name> --party-size 4 \
+                    [--callback-url https://…]   # omit it and a match is announced to its own sockets only \
                     [--wait-timeout 60] [--on-timeout partial|fail]
+yyt channels update <match> --callback-url ''      # drop the callback (members-only mode)
 yyt channels create --kind lobby --name n --auth-channel <auth-id> \
                     [--cap-say zone --cap-say party --cap-say user] [--cap-party=false] \
                     [--cap-pos=false --cap-say user]   # no positions means no zones, so drop zone chat \

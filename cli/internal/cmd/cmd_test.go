@@ -433,6 +433,27 @@ func TestChannelsCreateFlags(t *testing.T) {
 		t.Fatalf("json out %s", out)
 	}
 
+	// A match channel without a callback is the members-only mode: the key is
+	// left out rather than sent empty (the server refuses `""` as a URL).
+	if _, _, err = run(t, f, "channels", "create", "--kind", "match", "--name", "m2",
+		"--auth-channel", "auth_0123", "--party-size", "2"); err != nil {
+		t.Fatal(err)
+	}
+	cfg = created["config"].(map[string]any)
+	if _, ok := cfg["callbackUrl"]; ok {
+		t.Fatalf("config %v", cfg)
+	}
+	// An explicitly empty flag on create means the same thing: the key is left
+	// out, never sent as `""` or `null`.
+	if _, _, err = run(t, f, "channels", "create", "--kind", "match", "--name", "m3",
+		"--auth-channel", "auth_0123", "--party-size", "2", "--callback-url", ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg = created["config"].(map[string]any)
+	if _, ok := cfg["callbackUrl"]; ok {
+		t.Fatalf("config %v", cfg)
+	}
+
 	// Missing required convenience flags fail before any request.
 	n := len(f.reqs)
 	for _, args := range [][]string{
@@ -507,6 +528,15 @@ func TestChannelsUpdateExtendRotateDelete(t *testing.T) {
 	}
 	mc := patched["config"].(map[string]any)
 	if mc["waitTimeoutSec"] != float64(30) || mc["partySize"] != float64(2) || mc["callbackUrl"] != "https://cb/" || patched["name"] != nil {
+		t.Fatalf("%v", patched)
+	}
+	// An empty --callback-url drops the key from the overlaid config, which is
+	// how a channel is turned into the members-only mode.
+	if _, _, err := run(t, f2, "channels", "update", "match_1", "--callback-url", ""); err != nil {
+		t.Fatal(err)
+	}
+	mc = patched["config"].(map[string]any)
+	if _, ok := mc["callbackUrl"]; ok || mc["partySize"] != float64(2) {
 		t.Fatalf("%v", patched)
 	}
 	if _, _, err := run(t, f, "channels", "update", "auth_0123", "--github-client-secret", "s"); err == nil || !strings.Contains(err.Error(), "--github-client-id") {
