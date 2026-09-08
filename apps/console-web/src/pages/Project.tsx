@@ -54,6 +54,7 @@ import {
   KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
   KV_MAX_ENTRIES_HARD,
   KV_MAX_ENTRIES_PER_OWNER_HARD,
+  KV_MAIL_WARNING,
   KV_PUBLIC_PROFILE_WARNING,
   KV_SCOPE_LABEL,
   kvShapeProblem,
@@ -870,6 +871,8 @@ function KvTab({
           <Notice kind="warn">{shape}</Notice>
         ) : f.readScope === "project" && f.writeScope === "user" ? (
           <Notice kind="warn">{KV_PUBLIC_PROFILE_WARNING}</Notice>
+        ) : f.readScope === "user" && f.writeScope !== "user" ? (
+          <Notice kind="warn">{KV_MAIL_WARNING}</Notice>
         ) : null}
         <Text size="xs" c="dimmed">
           {KV_IMMUTABLE_NOTE}
@@ -877,7 +880,10 @@ function KvTab({
         <CapFields
           maxEntries={f.maxEntries}
           maxEntriesPerOwner={f.maxEntriesPerOwner}
-          userNamespace={f.writeScope === "user"}
+          // Either scope being `user` makes the namespace (`isKvPerOwner`), and
+          // on the mail shape this cap is the load-bearing one — it bounds the
+          // inbox and the sender both.
+          userNamespace={f.writeScope === "user" || f.readScope === "user"}
           onChange={(p) => drawer.patch(p)}
         />
       </ResourceDrawer>

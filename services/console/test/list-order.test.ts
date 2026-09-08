@@ -580,6 +580,7 @@ describe("list sort/order/q", () => {
       bytes: 1,
       expiresAt: null,
       channelId: null,
+      from: "team",
       at: NOW_SEC,
     });
     expect(

@@ -276,20 +276,15 @@ try {
   const bob = bearer(bobJwt);
 
   // ---- creation rules ------------------------------------------------
-  check(
-    "readScope user without writeScope user is 400",
-    (
-      await con(`/projects/${team.prjId}/kv`, {
-        method: "POST",
-        headers: as(owner),
-        body: {
-          name: `smoke-kv-bad-${stamp}`,
-          readScope: "user",
-          writeScope: "project",
-        },
-      })
-    ).status === 400,
-  );
+  // The withdrawn rule (2026-09-08): this pair is the inbox, not a
+  // contradiction. Created through `collection` so the run cleans it up.
+  const mail = await collection("mail", {
+    description: "player-to-player mail",
+    readScope: "user",
+    writeScope: "project",
+    // Small enough that both caps are reachable inside one run.
+    maxEntriesPerOwner: 2,
+  });
   check(
     "an encrypted team scope is 400",
     (
@@ -800,6 +795,165 @@ try {
         body: { incr: 1 },
       })
     ).status === 400,
+  );
+  const under = await api(coins, {
+    method: "PATCH",
+    headers: alice,
+    body: { incr: -100, min: 0 },
+  });
+  check(
+    "incr below min is 409 out_of_range and says what is stored",
+    under.status === 409 &&
+      why(under) === "out_of_range" &&
+      under.body?.error?.details?.value === 3,
+    `${under.status} ${JSON.stringify(under.body?.error?.details)}`,
+  );
+  check(
+    "incr inside min/max still lands",
+    (
+      await api(coins, {
+        method: "PATCH",
+        headers: alice,
+        body: { incr: -3, min: 0, max: 10 },
+      })
+    ).body?.value === 0,
+  );
+
+  // ---- mail: one player writing into another's namespace ---------------
+  const mailPath = (owner, key) => `/kv/${mail.id}/u/${owner}/entries/${key}`;
+  const gift = `${aliceId}:gift`;
+  const sent = await api(mailPath(bobId, gift), {
+    method: "PUT",
+    headers: alice,
+    body: { coins: 10 },
+  });
+  check(
+    "a player may create in another owner's namespace",
+    // 204 and no ETag: the sender may not read this collection.
+    sent.status === 204 && !sent.headers.get("etag"),
+    `${sent.status} ${sent.headers.get("etag") ?? "(no etag)"}`,
+  );
+  const arrived = await api(mailPath("me", gift), { headers: bob });
+  check(
+    "the recipient reads it with the sender stamped by the platform",
+    arrived.status === 200 &&
+      arrived.headers.get("x-kv-from") === aliceId &&
+      Number(arrived.headers.get("x-kv-at")) > 0,
+    `${arrived.status} ${arrived.headers.get("x-kv-from") ?? "(none)"}`,
+  );
+  const again = await api(mailPath(bobId, gift), {
+    method: "PUT",
+    headers: alice,
+    body: { coins: 99 },
+  });
+  check(
+    "a second delivery to the same key is 409 exists",
+    again.status === 409 && why(again) === "exists",
+    `${again.status} ${why(again)}`,
+  );
+  check(
+    "a key outside the sender's own prefix is 400",
+    (
+      await api(mailPath(bobId, "gift"), {
+        method: "PUT",
+        headers: alice,
+        body: { coins: 1 },
+      })
+    ).status === 400,
+  );
+  check(
+    "a cross-owner delete is 403",
+    (await api(mailPath(bobId, gift), { method: "DELETE", headers: alice }))
+      .status === 403,
+  );
+  // A write into the sender's *own* namespace is an ordinary write, not mail:
+  // create-only and the key rule do not apply, and the sender may read it back,
+  // so it answers 201. It still counts towards the sender's total below.
+  const own = await api(mailPath(aliceId, "note"), {
+    method: "PUT",
+    headers: alice,
+    body: { n: 1 },
+  });
+  check(
+    "a write into one's own namespace is an ordinary write",
+    own.status === 201,
+    String(own.status),
+  );
+  // The sender cap counts what alice has **sent**, not what she holds: her own
+  // row above is free, and the gift to bob was her first of two.
+  check(
+    "a second delivery, to a different owner, is still within the send budget",
+    (
+      await api(mailPath("c".repeat(32), `${aliceId}:x`), {
+        method: "PUT",
+        headers: alice,
+        body: { n: 1 },
+      })
+    ).status === 204,
+  );
+  const spread = await api(mailPath("d".repeat(32), `${aliceId}:y`), {
+    method: "PUT",
+    headers: alice,
+    body: { n: 1 },
+  });
+  check(
+    "a fresh owner id cannot be used to walk past the caps",
+    spread.status === 409 && why(spread) === "sender_full",
+    `${spread.status} ${why(spread)}`,
+  );
+
+  // ---- the `server` scope ----------------------------------------------
+  const tuning = await collection("tuning", {
+    description: "written by the server key, read by every player",
+    readScope: "project",
+    writeScope: "server",
+  });
+  const knob = `/kv/${tuning.id}/entries/drop-rate`;
+  const knobPut = await api(knob, {
+    method: "PUT",
+    headers: server,
+    body: { rate: 0.1 },
+  });
+  check(
+    "the doc key writes a server-scoped collection",
+    knobPut.status === 201,
+    `${knobPut.status} ${knobPut.text.slice(0, 120)}`,
+  );
+  const readBack = await api(knob, { headers: alice });
+  check(
+    "every player reads it",
+    readBack.body?.rate === 0.1,
+    `${readBack.status} ${readBack.text.slice(0, 120)}`,
+  );
+  check(
+    "a player JWT may not write it",
+    (await api(knob, { method: "PUT", headers: alice, body: { rate: 1 } }))
+      .status === 403,
+  );
+  // The other direction: only the doc key reads it, a player never does.
+  const telemetry = await collection("telemetry", {
+    description: "written by every player, read only by the server key",
+    readScope: "server",
+    writeScope: "user",
+  });
+  const point = (owner) => `/kv/${telemetry.id}/u/${owner}/entries/fps`;
+  check(
+    "a player writes its own telemetry row",
+    (
+      await api(point("me"), {
+        method: "PUT",
+        headers: alice,
+        body: { fps: 60 },
+      })
+    ).status === 204,
+  );
+  check(
+    "and cannot read it back",
+    (await api(point("me"), { headers: alice })).status === 403,
+  );
+  check(
+    "the doc key reads it",
+    (await api(point(aliceId), { headers: server })).body?.fps === 60,
   );
 
   // ---- ttl -------------------------------------------------------------

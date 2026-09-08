@@ -8,13 +8,16 @@ import {
 } from "@yyt/core";
 import {
   KV_COLLECTION_ID_RE,
+  KV_OWNER_ID,
   isKvIdShapedName,
   KV_SHARED_OWNER,
   KV_TTL_MAX_SECONDS,
   KV_TTL_MIN_SECONDS,
   MAX_KV_VALUE_BYTES,
   checkKvKey,
+  checkKvMailKey,
   ensureKvRoom,
+  isKvPerOwner,
   kvValueBytes,
   type KvCollectionRow,
   type KvEntryMeta,
@@ -57,6 +60,10 @@ export const KV_NOT_CONFIGURED = "kv_encryption_not_configured";
 export const KV_VALUE_UNREADABLE = "kv_value_unreadable";
 /** The caller used the shared path on a user namespace, or the other way round. */
 export const KV_WRONG_NAMESPACE = "wrong_namespace";
+/** A create-only write into another owner's namespace found the key taken. */
+export const KV_EXISTS = "exists";
+/** `PATCH {incr}` would leave the counter outside the `min`/`max` it was given. */
+export const KV_OUT_OF_RANGE = "out_of_range";
 
 export interface KvStoreRoutesOptions {
   kvstore: KvStoreDb;
@@ -81,6 +88,9 @@ type Target = { owner: string } | "all";
  */
 function allows(scope: KvScope, c: Caller, target: Target): boolean {
   if (scope === "team") return false;
+  // The doc apiKey, and only it: a player's JWT is refused here the way it is
+  // refused a `team` scope (`docs/decisions.md` *Serverless clients* #5).
+  if (scope === "server") return c.kind === "server";
   if (scope === "project") return true;
   if (c.kind === "server") return true;
   return target !== "all" && target.owner === c.ownerId;
@@ -259,9 +269,12 @@ export function createKvStoreRoutes({
     return row;
   }
 
-  /** `writeScope: user` is what puts every entry in an owner namespace. */
-  const isUserNamespace = (col: KvCollectionRow): boolean =>
-    col.writeScope === "user";
+  /**
+   * Either scope being `user` puts every entry in an owner namespace
+   * (`isKvPerOwner`, shared with the console API so the two can never disagree
+   * about where a row lives).
+   */
+  const isUserNamespace = isKvPerOwner;
 
   /**
    * The refusal is logged with the scope that produced it: the request line
@@ -276,6 +289,19 @@ export function createKvStoreRoutes({
   ): AppError {
     logger.debug("kv refused", { collectionId: col.id, need, scope });
     return new AppError("forbidden", `not allowed to ${need} this collection`);
+  }
+
+  /**
+   * A refusal the scope did **not** produce: the write scope allows it and the
+   * mail rule does not. `refuse` would log the scope as the cause, which is
+   * the one thing the debug line exists to get right.
+   */
+  function refuseCrossOwner(col: KvCollectionRow): AppError {
+    logger.debug("kv refused", { collectionId: col.id, need: "cross-owner" });
+    return new AppError(
+      "forbidden",
+      "only the owner may overwrite or delete in its own namespace",
+    );
   }
 
   function requireRead(col: KvCollectionRow, c: Caller, target: Target): void {
@@ -480,11 +506,66 @@ export function createKvStoreRoutes({
    * bounds a **player** writing its own namespace, so that one JWT cannot fill
    * a collection and lock its teammates out (`docs/decisions.md` #7).
    */
-  const requireRoom = (col: KvCollectionRow, c: Caller, owner: string) =>
+  const requireRoom = (
+    col: KvCollectionRow,
+    c: Caller,
+    owner: string,
+    fromId?: string,
+  ) =>
     ensureKvRoom(kvstore, col, {
       now: now(),
       ...(c.kind === "owner" && isUserNamespace(col) ? { ownerId: owner } : {}),
+      // A cross-owner write is charged to its sender as well, or the
+      // recipient's cap bounds nothing (`docs/decisions.md` #6).
+      ...(fromId === undefined ? {} : { fromId }),
     });
+
+  /**
+   * The writer's own id when a write lands in **somebody else's** namespace --
+   * mail (`docs/decisions.md` *Serverless clients* #6). `undefined` for every
+   * other write, including a server key writing on anyone's behalf: the rules
+   * below exist to bound one player against another, and a server key is the
+   * project's own.
+   */
+  function mailFrom(
+    col: KvCollectionRow,
+    c: Caller,
+    owner: string,
+  ): string | undefined {
+    if (c.kind !== "owner" || c.ownerId === undefined) return undefined;
+    if (!isUserNamespace(col) || owner === c.ownerId) return undefined;
+    // Every mail guarantee rests on the owner grammar: `{from}:` keys are
+    // disjoint per sender only because no id can prefix another, and the
+    // stamp is unambiguous only because no id can spell `server` or `team`.
+    // A `sub` is whatever the auth channel signed, and a game may sign its
+    // own tokens (`docs/auth-game-contract.md`), so a caller whose id is not
+    // an owner id gets no cross-owner write at all rather than one whose
+    // rules do not hold.
+    if (!KV_OWNER_ID.test(c.ownerId))
+      throw new AppError(
+        "forbidden",
+        "writing into another owner's namespace needs a token whose sub is an owner id",
+      );
+    return c.ownerId;
+  }
+
+  /**
+   * Who the platform records as the writer. A player is its own `sub`; a doc
+   * apiKey is the literal `server`, which no owner grammar can produce. Never
+   * anything the request said (`docs/decisions.md` #6).
+   *
+   * `null` when the caller's own id is not an owner id: the column is
+   * `VARCHAR(64)` and the two literals must stay unambiguous, so an
+   * unrecognisable `sub` leaves no stamp rather than a wrong one -- and
+   * rather than a 503 from a value the column cannot hold, which is what an
+   * unchecked `sub` longer than 64 characters would have cost every write.
+   */
+  const stampOf = (c: Caller): string | null => {
+    if (c.kind !== "owner") return "server";
+    return c.ownerId !== undefined && KV_OWNER_ID.test(c.ownerId)
+      ? c.ownerId
+      : null;
+  };
 
   /**
    * The conditional headers of a write. Either header makes the write depend
@@ -544,6 +625,10 @@ export function createKvStoreRoutes({
       bytes: row.bytes,
       expiresAt: row.expiresAt,
       updatedAt: row.updatedAt,
+      // Only where owners are a namespace, and only when the row carries one:
+      // a shared collection is as anonymous as it was before the column
+      // existed, which is what keeps this a widening (`docs/decisions.md` #6).
+      ...(isUserNamespace(col) && row.from !== null ? { from: row.from } : {}),
       ...(withValue ? { valueText: plaintextOf(col, dek, row) } : {}),
     };
   }
@@ -619,6 +704,13 @@ export function createKvStoreRoutes({
         etag: etag(row.version),
         ...NO_STORE,
         ...expiryHeader(row.expiresAt),
+        // The mail stamp, on the collections that have one. `x-kv-at` is the
+        // row's `updatedAt` -- the write time, in seconds like every other
+        // timestamp here -- and exists because a single GET otherwise reports
+        // no time at all.
+        ...(isUserNamespace(col) && row.from !== null
+          ? { "x-kv-from": row.from, "x-kv-at": String(row.updatedAt) }
+          : {}),
       },
       // The stored text verbatim: the platform never parses a value, and
       // re-encoding one would be interpreting it.
@@ -638,7 +730,27 @@ export function createKvStoreRoutes({
     const key = keyOf(ctx);
     const target: Target = { owner };
     requireWrite(col, c, target);
-    const ifVersion = conditionOf(ctx, col, c, target);
+    // Mail: a player writing into another player's namespace. Create-only, so
+    // there is no version to compare and a conditional header is a 400 rather
+    // than the 403 an unreadable collection would otherwise give -- the caller
+    // is not being told anything it does not already know, and the message
+    // names the actual rule (`docs/decisions.md` #6).
+    const from = mailFrom(col, c, owner);
+    let ifVersion: number | "absent" | undefined;
+    if (from === undefined) {
+      ifVersion = conditionOf(ctx, col, c, target);
+    } else {
+      if (
+        ctx.headers["if-match"] !== undefined ||
+        ctx.headers["if-none-match"] !== undefined
+      )
+        throw new AppError(
+          "bad_request",
+          "a write into another owner's namespace is always create-only; If-Match and If-None-Match do not apply",
+        );
+      checkKvMailKey(key, from);
+      ifVersion = "absent";
+    }
     const expiresAt = ttlOf(ctx);
     // The bytes as sent, measured before anything else looks at the body:
     // `JSON.stringify(JSON.parse(x))` is lossy -- an integer past 2^53 comes
@@ -664,7 +776,7 @@ export function createKvStoreRoutes({
     const mayCreate =
       typeof ifVersion !== "number" &&
       !(await kvstore.findEntry(col.id, owner, key, { now: now() }));
-    if (mayCreate) await requireRoom(col, c, owner);
+    if (mayCreate) await requireRoom(col, c, owner, from);
     const value = sealValue(
       col,
       owner,
@@ -682,11 +794,23 @@ export function createKvStoreRoutes({
       // Which credential wrote the row, so a channel's hard deletion can take
       // its players' entries with it.
       channelId: c.channelId,
+      from: stampOf(c),
       ifVersion,
       at: now(),
     });
     const mayRead = allows(col.readScope, c, target);
-    if (!r.ok) return conflictResult(r.current, mayRead);
+    if (!r.ok) {
+      // A mail writer may not read the namespace, so the ordinary conflict --
+      // which is about a *version* -- would say nothing. What it needs to know
+      // is that the key is taken, and the key is one only it could have
+      // written (the `{from}:` rule above), so this reveals nothing else.
+      if (from !== undefined)
+        throw reasonConflict(
+          "this key already exists in that owner's namespace",
+          KV_EXISTS,
+        );
+      return conflictResult(r.current, mayRead);
+    }
     return {
       // 201 when the row is new, 204 when it moved: the body is what the
       // caller just sent, so echoing it back would only cost bandwidth.
@@ -724,6 +848,11 @@ export function createKvStoreRoutes({
     const key = keyOf(ctx);
     const target: Target = { owner };
     requireWrite(col, c, target);
+    // A cross-owner `PATCH` is refused as a write, not merely as a read: it is
+    // an overwrite, and mail is create-only. (The read right below would
+    // refuse it too on today's inbox shapes; this states the rule rather than
+    // relying on that coincidence.)
+    if (mailFrom(col, c, owner) !== undefined) throw refuseCrossOwner(col);
     requireRead(col, c, target);
     // The version this operates on is the one it reads for itself, one round
     // at a time. Honouring a caller's `If-Match` on top of that would need a
@@ -740,12 +869,27 @@ export function createKvStoreRoutes({
       );
     const expiresAt = ttlOf(ctx);
     const body = ctx.body;
-    const incr =
+    const patch =
       typeof body === "object" && body !== null
-        ? (body as { incr?: unknown }).incr
-        : undefined;
+        ? (body as { incr?: unknown; min?: unknown; max?: unknown })
+        : {};
+    const incr = patch.incr;
     if (typeof incr !== "number" || !Number.isSafeInteger(incr))
       throw new AppError("bad_request", "incr must be a safe integer");
+    // A per-request guard, not a stored invariant: nothing remembers `min` or
+    // `max` between calls, and a value already outside the range cannot be
+    // repaired through this route (`docs/decisions.md` #7).
+    const bound = (name: "min" | "max"): number | undefined => {
+      const v = patch[name];
+      if (v === undefined) return undefined;
+      if (typeof v !== "number" || !Number.isSafeInteger(v))
+        throw new AppError("bad_request", `${name} must be a safe integer`);
+      return v;
+    };
+    const min = bound("min");
+    const max = bound("max");
+    if (min !== undefined && max !== undefined && min > max)
+      throw new AppError("bad_request", "min must not be greater than max");
     const dek = dekFor(col);
 
     let current: KvEntryMeta | undefined;
@@ -775,6 +919,17 @@ export function createKvStoreRoutes({
           "the result is outside the safe integer range",
           "overflow",
         );
+      if (
+        (min !== undefined && next < min) ||
+        (max !== undefined && next > max)
+      )
+        // `value`, not `current`: `details.current` is a version everywhere
+        // else on this API and overloading it would make `{current: 7}`
+        // unreadable. The caller may read the collection -- `PATCH` requires
+        // it -- so the stored number is not a disclosure.
+        throw new AppError("conflict", "the result is outside min/max", {
+          details: { reason: KV_OUT_OF_RANGE, value: base },
+        });
       // At most once per request, however many rounds it takes.
       if (!row && round === 0) await requireRoom(col, c, owner);
       const text = JSON.stringify(next);
@@ -792,6 +947,7 @@ export function createKvStoreRoutes({
         bytes: kvValueBytes(text),
         expiresAt,
         channelId: c.channelId,
+        from: stampOf(c),
         ifVersion: row ? row.version : "absent",
         at,
       });
@@ -825,6 +981,11 @@ export function createKvStoreRoutes({
     const key = keyOf(ctx);
     const target: Target = { owner };
     requireWrite(col, c, target);
+    // Mail is create-only in both directions: a player may put a row into
+    // another owner's namespace and never take one out again, its own included
+    // (`docs/decisions.md` #6). Refused before the conditional header is even
+    // read, since no header could make it legal.
+    if (mailFrom(col, c, owner) !== undefined) throw refuseCrossOwner(col);
     const ifVersion = conditionOf(ctx, col, c, target);
     if (ifVersion === "absent")
       throw new AppError(
@@ -889,10 +1050,16 @@ export function createKvStoreRoutes({
         // Shape, not content: a caller of the project may always learn how a
         // collection behaves, which is what tells it whether to use the shared
         // path or the owner one before it gets a 400 for guessing. Except when
-        // both scopes are `team`: no API principal could ever touch its
-        // entries, so the API has nothing to say about it (decisions.md #3,
-        // owner decision 2026-09-06).
-        if (col.readScope === "team" && col.writeScope === "team")
+        // **this caller** could never touch an entry either way -- both scopes
+        // `team` for anyone, and now both scopes `team`/`server` for a player
+        // JWT: the API has nothing to say about a collection it would refuse
+        // on every route (decisions.md #3, owner decision 2026-09-06; widened
+        // with the `server` scope, since the rule was written when `team` was
+        // the only scope an API principal could not reach).
+        if (
+          !allows(col.readScope, c, "all") &&
+          !allows(col.writeScope, c, "all")
+        )
           throw refuse(col, "read", col.readScope);
         return json(
           {

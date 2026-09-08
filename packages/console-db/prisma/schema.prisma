@@ -880,6 +880,10 @@ model kv_entries {
   /// Deliberately no foreign key -- channel rows are purged 30 days after their
   /// soft-delete, and the entry purge must stay explicit console work.
   channel_id     String?        @db.VarChar(64)
+  /// Who wrote the current value: an owner's `sub`, or `server`/`team`. NULL on
+  /// a row written before the column existed. `utf8mb4_bin` in the migration,
+  /// which this schema file cannot express.
+  from_id        String?        @db.VarChar(64)
   expires_at     BigInt?
   created_at     BigInt
   updated_at     BigInt
@@ -893,6 +897,9 @@ model kv_entries {
   /// Cross-owner prefix search on a user namespace (public-profile shape): the
   /// primary key cannot serve it because `owner_id` sits between the columns.
   @@index([collection_id, k], map: "kv_entries_prefix")
+  /// Charges a cross-owner write to its sender as well as its recipient
+  /// (`docs/decisions.md` *Serverless clients* #6) without scanning.
+  @@index([collection_id, from_id], map: "kv_entries_from")
 }
 
 /// The wrapped data key of an encrypted collection. State-stack only: console
@@ -912,6 +919,7 @@ model kv_keys {
 // the body line by line, and a comment inside the block would read as a value.
 enum kv_scope {
   team
+  server
   project
   user
 }

@@ -38,7 +38,13 @@ import { Prisma } from "./generated/prisma/client.js";
  * Redis client in console (`handler.ts`, `write-slot.ts`).
  */
 
-export const KV_SCOPES = ["team", "project", "user"] as const;
+/**
+ * Widening reach, and that order is the console list's sort order too (MySQL
+ * orders an ENUM by declaration). `server` was inserted rather than appended
+ * for that reason -- see `m0016_kv_server_scope` for what the middle insert
+ * costs in the database.
+ */
+export const KV_SCOPES = ["team", "server", "project", "user"] as const;
 export type KvScope = (typeof KV_SCOPES)[number];
 
 export const KV_COLLECTION_SORT_KEYS = [
@@ -171,6 +177,14 @@ export interface KvEntryMeta {
   expiresAt: number | null;
   /** The auth channel whose credential wrote the row; null for console writes. */
   channelId: string | null;
+  /**
+   * Who wrote the current value: an owner's `sub`, or `server` (an apiKey
+   * write) or `team` (a console write). `null` only on a row written before
+   * the column existed -- every accepted write since re-stamps it, so it names
+   * the writer of *this* value, not of the first one
+   * (`docs/decisions.md` *Serverless clients* #6).
+   */
+  from: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -213,6 +227,14 @@ export interface KvEntryPut {
   /** `"keep"` leaves an existing expiry alone; `null` clears it. */
   expiresAt: number | null | "keep";
   channelId: string | null;
+  /**
+   * The stamp, **required** so both writers have to decide: the KV API passes
+   * the caller's owner id or `"server"`, the console passes `"team"`. It is
+   * written on every accepted write, create and update alike. `null` is the
+   * KV API's answer for a caller whose `sub` is not an owner id -- no stamp
+   * beats a wrong one.
+   */
+  from: string | null;
   /**
    * `"absent"` is create-only (`If-None-Match: *`), a number is `If-Match`, and
    * omitting it is an unconditional write -- which is still a bounded
@@ -363,21 +385,36 @@ export function checkKvCaps(
 }
 
 /**
- * The two combinations that leave nobody able to use the collection.
- * `readScope: user` without `writeScope: user` names an owner namespace that
- * does not exist; `encrypted` with a `team` scope means either nobody can read
- * a value or nobody can write one, since console never holds the key.
+ * Whether every entry lives in its owner's namespace (`(collection, ownerId,
+ * key)`) rather than in one shared one. **Either** scope being `user` is
+ * enough (`docs/decisions.md` *Serverless clients* #5, 2026-09-08): the old
+ * rule keyed on the write scope alone and refused `readScope: user` with any
+ * other write scope, which is exactly the inbox shape. Every caller that has
+ * to know the shape -- the KV API, the console API, the SPA -- asks this one
+ * function, because a namespace they disagree about is a row nobody can
+ * address.
+ */
+export function isKvPerOwner(
+  col: Pick<KvCollectionRow, "readScope" | "writeScope">,
+): boolean {
+  return col.writeScope === "user" || col.readScope === "user";
+}
+
+/**
+ * The one combination that leaves nobody able to use the collection:
+ * `encrypted` with a `team` scope means either nobody can read a value or
+ * nobody can write one, since console never holds the key.
+ *
+ * There used to be a second rule here -- `readScope: user` requires
+ * `writeScope: user` -- withdrawn with the namespace rule above. Nothing
+ * stored can be affected: it refused that combination on both create paths
+ * from the start, so no such row exists.
  */
 export function checkKvScopes(
   readScope: KvScope,
   writeScope: KvScope,
   encrypted: boolean,
 ): void {
-  if (readScope === "user" && writeScope !== "user")
-    throw new AppError(
-      "bad_request",
-      "readScope user requires writeScope user",
-    );
   if (encrypted && (readScope === "team" || writeScope === "team"))
     throw new AppError(
       "bad_request",
@@ -423,31 +460,78 @@ const capConflict = (message: string, reason: string): AppError =>
 export async function ensureKvRoom(
   db: Pick<KvStoreDb, "countEntries" | "deleteExpiredEntries">,
   col: Pick<KvCollectionRow, "id" | "maxEntries" | "maxEntriesPerOwner">,
-  opts: { now: number; ownerId?: string },
+  opts: {
+    now: number;
+    ownerId?: string;
+    /**
+     * Set for a **cross-owner** write only (`docs/decisions.md` #6): the same
+     * `maxEntriesPerOwner` then also bounds what this writer has **sent** --
+     * rows it wrote into namespaces other than its own. Without it the
+     * recipient's cap is no bound at all: one row into each of ten thousand
+     * invented owner ids fills the collection while no single owner is
+     * anywhere near full. Counting its own namespace too would make reading
+     * your mail spend your right to send any (a recipient overwriting a row
+     * re-stamps it to itself), so the count excludes the writer's own slot.
+     */
+    fromId?: string;
+  },
 ): Promise<void> {
-  const { now, ownerId } = opts;
-  const count = (includeExpired: boolean, owner?: string) =>
-    db.countEntries(col.id, { now, ownerId: owner, includeExpired });
+  const { now, ownerId, fromId } = opts;
+  const count = (
+    includeExpired: boolean,
+    of: { ownerId?: string; fromId?: string; notOwnerId?: string } = {},
+  ) => db.countEntries(col.id, { now, ...of, includeExpired });
 
-  let ownerRows = ownerId === undefined ? 0 : await count(true, ownerId);
+  let ownerRows = ownerId === undefined ? 0 : await count(true, { ownerId });
   const overOwner = () =>
     ownerId !== undefined && ownerRows >= col.maxEntriesPerOwner;
-  // Skipped when the owner is already over: the verdict is theirs either way.
-  let allRows = overOwner() ? 0 : await count(true);
-  if (overOwner() || allRows >= col.maxEntries) {
+  let senderRows =
+    fromId === undefined || overOwner()
+      ? 0
+      : await count(true, { fromId, notOwnerId: fromId });
+  const overSender = () =>
+    fromId !== undefined && senderRows >= col.maxEntriesPerOwner;
+  // Skipped when a narrower cap is already over: the verdict is the same.
+  let allRows = overOwner() || overSender() ? 0 : await count(true);
+  if (overOwner() || overSender() || allRows >= col.maxEntries) {
     await db.deleteExpiredEntries(col.id, now, KV_CAP_PURGE_BATCH);
-    ownerRows = ownerId === undefined ? 0 : await count(false, ownerId);
-    allRows = overOwner() ? 0 : await count(false);
+    ownerRows = ownerId === undefined ? 0 : await count(false, { ownerId });
+    senderRows =
+      fromId === undefined || overOwner()
+        ? 0
+        : await count(false, { fromId, notOwnerId: fromId });
+    allRows = overOwner() || overSender() ? 0 : await count(false);
   }
   if (overOwner())
     throw capConflict(
       `owner already holds ${col.maxEntriesPerOwner} entries`,
       "owner_full",
     );
+  if (overSender())
+    throw capConflict(
+      `you have already written ${col.maxEntriesPerOwner} entries into other owners' namespaces here`,
+      "sender_full",
+    );
   if (allRows >= col.maxEntries)
     throw capConflict(
       `collection already holds ${col.maxEntries} entries`,
       "collection_full",
+    );
+}
+
+/**
+ * A cross-owner key must begin with the writer's own id
+ * (`docs/decisions.md` *Serverless clients* #6). It gives every sender a
+ * disjoint slice of each inbox, which is what makes create-only safe: nobody
+ * can squat the key a real sender needs, and the `409 exists` that create-only
+ * implies can then only ever reveal a row the caller wrote itself.
+ */
+export function checkKvMailKey(key: string, fromId: string): void {
+  checkKvKey(key);
+  if (!key.startsWith(`${fromId}:`))
+    throw new AppError(
+      "bad_request",
+      "a key written into another owner's namespace must start with your own id and a colon",
     );
 }
 
@@ -570,7 +654,15 @@ export interface KvStoreDb {
    */
   countEntries(
     collectionId: string,
-    opts: { now: number; ownerId?: string; includeExpired?: boolean },
+    opts: {
+      now: number;
+      ownerId?: string;
+      /** Rows this writer holds anywhere in the collection (`kv_entries_from`). */
+      fromId?: string;
+      /** With `fromId`: rows it wrote **elsewhere**, i.e. what it has sent. */
+      notOwnerId?: string;
+      includeExpired?: boolean;
+    },
   ): Promise<number>;
   listEntries(q: KvEntryQuery): Promise<KvEntryPage>;
   findEntry(
@@ -669,6 +761,7 @@ type EntryModel = {
   bytes: number;
   version: bigint | number;
   channel_id: string | null;
+  from_id: string | null;
   expires_at: bigint | number | null;
   created_at: bigint | number;
   updated_at: bigint | number;
@@ -721,6 +814,7 @@ const toEntry = (r: EntryModel): KvEntryRow => ({
   bytes: r.bytes,
   version: num(r.version),
   channelId: r.channel_id,
+  from: r.from_id,
   expiresAt: nul(r.expires_at),
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
@@ -776,6 +870,7 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
     bytes: true as const,
     version: true as const,
     channel_id: true as const,
+    from_id: true as const,
     expires_at: true as const,
     created_at: true as const,
     updated_at: true as const,
@@ -826,6 +921,7 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
             bytes: i.bytes,
             version: 1,
             channel_id: i.channelId,
+            from_id: i.from,
             expires_at: expiry === "keep" ? null : expiry,
             created_at: i.at,
             updated_at: i.at,
@@ -851,6 +947,9 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
         bytes: i.bytes,
         version: expected + 1,
         channel_id: i.channelId,
+        // Re-stamped like `channel_id`: `from` names the writer of *this*
+        // value, so a recipient overwriting a mail row takes the stamp with it.
+        from_id: i.from,
         updated_at: i.at,
         ...(expiry === "keep" ? {} : { expires_at: expiry }),
       },
@@ -1051,6 +1150,10 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
           where: {
             collection_id: collectionId,
             ...(opts.ownerId === undefined ? {} : { owner_id: opts.ownerId }),
+            ...(opts.fromId === undefined ? {} : { from_id: opts.fromId }),
+            ...(opts.notOwnerId === undefined
+              ? {}
+              : { owner_id: { not: opts.notOwnerId } }),
             ...(opts.includeExpired === true ? {} : liveWhere(opts.now)),
           },
         }),
@@ -1204,24 +1307,38 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
         const n = checkBatchLimit(limit);
         let gone = 0;
         if (projectId !== null) {
-          // Console rows first, while the channel rows that name their owner
-          // still exist — once those are gone nothing maps the owner to the
-          // channel. The derived table sidesteps MySQL's refusal to read the
-          // delete target in a subquery (error 1093) and materialises the
-          // distinct owners once.
+          // Rows written by *anyone else* into this channel's owners first,
+          // while the channel rows that name those owners still exist — once
+          // those are gone nothing maps the owner to the channel. That covers
+          // the console's rows (`channel_id IS NULL`) and, since mail exists,
+          // rows another channel's players sent into these namespaces: the
+          // purge takes the whole owner namespace (`docs/decisions.md` #9),
+          // and a mail row carries its *sender's* channel, so nothing else
+          // would ever reach it.
+          //
+          // The owner set is derived from rows this channel's players **own**,
+          // never from mail they sent: `from_id <> owner_id` is a row in
+          // somebody else's namespace, and treating its owner as one of ours
+          // would delete a live player's data on another channel. (A row from
+          // before the stamp existed has `from_id IS NULL` and is by
+          // definition not mail.)
+          //
+          // The derived table sidesteps MySQL's refusal to read the delete
+          // target in a subquery (error 1093) and materialises the owners once.
           gone = await prisma.$executeRaw`
             DELETE FROM \`kv_entries\`
-            WHERE \`channel_id\` IS NULL
+            WHERE (\`channel_id\` IS NULL OR \`channel_id\` <> ${channelId})
               AND \`owner_id\` IN (SELECT \`owner_id\` FROM (
                 SELECT DISTINCT \`owner_id\` FROM \`kv_entries\`
                 WHERE \`channel_id\` = ${channelId}
-                  AND \`owner_id\` <> ${KV_SHARED_OWNER}) o)
+                  AND \`owner_id\` <> ${KV_SHARED_OWNER}
+                  AND (\`from_id\` IS NULL OR \`from_id\` = \`owner_id\`)) o)
               AND \`collection_id\` IN (
                 SELECT \`id\` FROM \`kv_collections\`
                 WHERE \`project_id\` = ${projectId})
             LIMIT ${Prisma.raw(String(n))}`;
-          // A full budget may leave console rows whose owner the channel
-          // still names; the channel rows must wait for the next call.
+          // A full budget may leave rows whose owner the channel still names;
+          // the channel rows must wait for the next call.
           if (gone >= n) return gone;
         }
         gone += await prisma.$executeRaw`
@@ -1549,7 +1666,9 @@ export function createMemoryKvStoreDb(
       entriesOf(collectionId).filter(
         (e) =>
           (opts.includeExpired === true || isLiveAt(e, opts.now)) &&
-          (opts.ownerId === undefined || bin(e.ownerId) === bin(opts.ownerId)),
+          (opts.ownerId === undefined ||
+            bin(e.ownerId) === bin(opts.ownerId)) &&
+          (opts.fromId === undefined || bin(e.from ?? "") === bin(opts.fromId)),
       ).length,
 
     listEntries: async (q) => {
@@ -1612,6 +1731,7 @@ export function createMemoryKvStoreDb(
         bytes: i.bytes,
         version,
         channelId: i.channelId,
+        from: i.from,
         // Only a live row has an expiry worth keeping (see the Prisma twin).
         expiresAt:
           i.expiresAt === "keep"
@@ -1675,15 +1795,21 @@ export function createMemoryKvStoreDb(
       const n = checkBatchLimit(limit);
       const owners = new Set<string>();
       for (const e of entries.values())
-        if (e.channelId === channelId && e.ownerId !== KV_SHARED_OWNER)
+        // Rows this channel's players **own**, never the mail they sent: the
+        // SQL twin says why.
+        if (
+          e.channelId === channelId &&
+          e.ownerId !== KV_SHARED_OWNER &&
+          (e.from === null || e.from === e.ownerId)
+        )
           owners.add(e.ownerId);
       let gone = 0;
-      // Console rows first, while the channel rows still name their owner —
-      // the same phase order the SQL keeps.
+      // Everyone else's rows in those namespaces first, while the channel rows
+      // still name their owner — the same phase order the SQL keeps.
       if (projectId !== null)
         for (const e of [...entries.values()]) {
           if (gone >= n) return gone;
-          if (e.channelId !== null || !owners.has(e.ownerId)) continue;
+          if (e.channelId === channelId || !owners.has(e.ownerId)) continue;
           if (collections.get(e.collectionId)?.projectId !== projectId)
             continue;
           drop(e);

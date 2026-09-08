@@ -71,7 +71,7 @@ func TestKvListGetAndCreate(t *testing.T) {
 
 	// A scope the console would refuse is refused here, before any request.
 	n := len(f.reqs)
-	if _, _, err := run(t, f, "kv", "create", "x", "--read", "public", "--write", "user"); err == nil || !strings.Contains(err.Error(), "team, project, user") {
+	if _, _, err := run(t, f, "kv", "create", "x", "--read", "public", "--write", "user"); err == nil || !strings.Contains(err.Error(), "team, server, project, user") {
 		t.Fatalf("bad scope accepted: %v", err)
 	}
 	if len(f.reqs) != n {

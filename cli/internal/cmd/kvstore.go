@@ -58,6 +58,9 @@ type kvEntry struct {
 	Bytes     int     `json:"bytes"`
 	ExpiresAt *int64  `json:"expiresAt"`
 	ChannelID *string `json:"channelId"`
+	// Who wrote the current value: an owner id, `server` or `team`. Per-owner
+	// collections only, and absent on a row written before the stamp existed.
+	From      *string `json:"from,omitempty"`
 	UpdatedAt int64   `json:"updatedAt"`
 	// Absent for an encrypted collection and for a seatless admin.
 	ValueText *string `json:"valueText,omitempty"`
@@ -76,7 +79,7 @@ type kvPutResult struct {
 	Created bool    `json:"created"`
 }
 
-var kvScopes = []string{"team", "project", "user"}
+var kvScopes = []string{"team", "server", "project", "user"}
 
 func newKvStore(a *App) *cobra.Command {
 	c := &cobra.Command{
@@ -214,10 +217,13 @@ func newKvCreate(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a collection in the project context (explicit); scopes and encryption are fixed for good",
-		Long: "Create a collection. --read and --write are one of team, project, user.\n" +
-			"A user read scope needs a user write scope; an encrypted collection needs\n" +
-			"project or user scopes. project-read + user-write lets every player list\n" +
-			"every owner's entries. None of the three can be changed afterwards.",
+		Long: "Create a collection. --read and --write are one of team, server, project, user.\n" +
+			"server is the doc apiKey and the console, never a player. Either scope being\n" +
+			"user gives every entry its owner's namespace; an encrypted collection needs\n" +
+			"non-team scopes. project-read + user-write lets every player list every\n" +
+			"owner's entries, and user-read + project-write is the mail shape (any player\n" +
+			"may create, never overwrite, in another owner's namespace). None of the three\n" +
+			"can be changed afterwards.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, s := range []string{readScope, writeScope} {
@@ -254,8 +260,8 @@ func newKvCreate(a *App) *cobra.Command {
 		},
 	}
 	f := c.Flags()
-	f.StringVar(&readScope, "read", "", "read scope: team | project | user")
-	f.StringVar(&writeScope, "write", "", "write scope: team | project | user")
+	f.StringVar(&readScope, "read", "", "read scope: team | server | project | user")
+	f.StringVar(&writeScope, "write", "", "write scope: team | server | project | user")
 	f.BoolVar(&encrypted, "encrypted", false, "encrypt values at rest with a key only the state stack holds (values then bypass the console)")
 	f.StringVar(&description, "description", "", "human-readable description")
 	f.IntVar(&maxEntries, "max-entries", 0, "entries the collection may hold (default 10000, at most 100000)")
@@ -325,6 +331,13 @@ func (a *App) printKvEntries(rows []kvEntry, next string) error {
 		}
 		return a.printer().JSONValue(v)
 	}
+	anyFrom := false
+	for _, e := range rows {
+		if e.From != nil {
+			anyFrom = true
+			break
+		}
+	}
 	out := make([][]string, 0, len(rows))
 	for _, e := range rows {
 		value := "-"
@@ -333,9 +346,21 @@ func (a *App) printKvEntries(rows []kvEntry, next string) error {
 			// `entry get` and --json carry the whole text.
 			value = truncateRunes(*e.ValueText, kvValueColumnRunes)
 		}
-		out = append(out, []string{output.Str(e.Owner), e.Key, fmt.Sprint(e.Version), fmt.Sprint(e.Bytes), output.TimePtr(e.ExpiresAt), output.Time(e.UpdatedAt), value})
+		row := []string{output.Str(e.Owner), e.Key}
+		// The stamp only exists on the mail shape and on rows written since it
+		// did, so the column follows the data rather than the scopes -- a
+		// column of dashes is worse than no column.
+		if anyFrom {
+			row = append(row, output.Str(e.From))
+		}
+		out = append(out, append(row, fmt.Sprint(e.Version), fmt.Sprint(e.Bytes), output.TimePtr(e.ExpiresAt), output.Time(e.UpdatedAt), value))
 	}
-	if err := a.printer().Table([]string{"OWNER", "KEY", "VERSION", "BYTES", "EXPIRES", "UPDATED", "VALUE"}, out); err != nil {
+	head := []string{"OWNER", "KEY"}
+	if anyFrom {
+		head = append(head, "FROM")
+	}
+	head = append(head, "VERSION", "BYTES", "EXPIRES", "UPDATED", "VALUE")
+	if err := a.printer().Table(head, out); err != nil {
 		return err
 	}
 	if next != "" {
