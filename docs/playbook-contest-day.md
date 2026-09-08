@@ -20,6 +20,8 @@ yyt channels create --kind auth  --name teamA --audience teamA-dungeon \
 yyt channels create --kind match --name teamA-match --auth-channel teamA \
     --party-size 2 --wait-timeout 60 --on-timeout partial \
     --callback-url https://example.invalid/match-callback # replaced in step 4; prints apiKey ONCE
+# a team with no server of its own omits --callback-url: each member is told the roster
+# instead, and the apiKey this prints is then never used (nothing is ever signed)
 # optional, server-less rooms:
 yyt channels create --kind topic --name teamA-topic --auth-channel teamA   # prints apiKey ONCE
 ```
@@ -73,15 +75,17 @@ Automated equivalent (organizer only): the `dungeon` smoke in `yingyeothon/examp
 
 ## Failure table
 
-| Symptom                                          | Cause → fix                                                                                                                 |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| match: `{"type":"failed","reason":"callback"}`   | callbackUrl unreachable / non-2xx / stale 60 s cache; `matchCallback` log says `signature rejected` → wrong `MATCH_API_KEY` |
-| dungeon handshake fails (401)                    | `JWT_SECRET_KEY`/`JWT_ISSUER`/`JWT_AUDIENCE` differ from the auth channel                                                   |
-| dungeon handshake fails (400)                    | not in the party, wrong `x-game-id`, or the actor's start event expired (TTL = game lifetime)                               |
-| `NOPERM` in the actor log                        | `REDIS_KEY_PREFIX` outside the Redis ACL user's pattern                                                                     |
-| dungeon connects but no `stage`/`snapshot`       | actor crashed or timed out — `serverless logs -f actor`; the gameId expires with the start event (~3 min), re-match         |
-| first match `failed/callback` right after deploy | callback cold start exceeded the matchmaker's 5 s timeout — warm it (§3) and re-queue                                       |
-| clients never get `result`                       | tslib < the `endDropDelayMillis` change — the drop raced the last frame                                                     |
+| Symptom                                             | Cause → fix                                                                                                                                                                                                           |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| match: `{"type":"failed","reason":"callback"}`      | callbackUrl unreachable / non-2xx / stale 60 s cache; `matchCallback` log says `signature rejected` → wrong `MATCH_API_KEY`                                                                                           |
+| dungeon handshake fails (401)                       | `JWT_SECRET_KEY`/`JWT_ISSUER`/`JWT_AUDIENCE` differ from the auth channel                                                                                                                                             |
+| dungeon handshake fails (400)                       | not in the party, wrong `x-game-id`, or the actor's start event expired (TTL = game lifetime)                                                                                                                         |
+| `NOPERM` in the actor log                           | `REDIS_KEY_PREFIX` outside the Redis ACL user's pattern                                                                                                                                                               |
+| dungeon connects but no `stage`/`snapshot`          | actor crashed or timed out — `serverless logs -f actor`; the gameId expires with the start event (~3 min), re-match                                                                                                   |
+| first match `failed/callback` right after deploy    | callback cold start exceeded the matchmaker's 5 s timeout — warm it (§3) and re-queue                                                                                                                                 |
+| clients never get `result`                          | tslib < the `endDropDelayMillis` change — the drop raced the last frame                                                                                                                                               |
+| match: `result` is always `null`                    | the channel has no `callbackUrl` (members-only mode) — that is the mode working; set one with `yyt channels update <match> --callback-url …` if the game expects a server answer, then wait out the 60 s config cache |
+| members-only: `matched` arrives and nothing happens | the room is the clients' job in this mode: check the lobby's `partySizeMax` ≥ match `partySize`, that both channels share one auth channel, and that the elected host's socket survived (`docs/serverless-client.md`) |
 
 Logs: `serverless logs -f <authorizer|ws|actor|matchCallback> --stage dev`. Tear down: `serverless remove --stage dev`.
 

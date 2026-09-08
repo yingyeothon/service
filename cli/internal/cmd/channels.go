@@ -160,7 +160,7 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.IntVar(&f.partySize, "party-size", 0, "match: players per match (2..16)")
 	fl.IntVar(&f.waitTimeout, "wait-timeout", 0, "match: seconds to wait before onTimeout (default 60)")
 	fl.StringVar(&f.onTimeout, "on-timeout", "", "match: partial|fail (default fail)")
-	fl.StringVar(&f.callbackURL, "callback-url", "", "match: URL called with the matched party")
+	fl.StringVar(&f.callbackURL, "callback-url", "", "match: URL called with the matched party (empty: no callback — members arrange the room themselves)")
 	fl.BoolVar(&f.capPos, "cap-pos", true, "lobby: enable the positional relay (--cap-pos=false disables zones entirely)")
 	fl.StringArrayVar(&f.capSay, "cap-say", nil, "lobby: permitted chat scope zone|party|user, or none to disable chat (repeatable; default zone)")
 	fl.BoolVar(&f.capParty, "cap-party", true, "lobby: enable the party primitive")
@@ -269,10 +269,19 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 			m["onTimeout"] = f.onTimeout
 		}
 		if set("callback-url") {
-			m["callbackUrl"] = f.callbackURL
+			switch {
+			case f.callbackURL != "":
+				m["callbackUrl"] = f.callbackURL
+			case patch:
+				// Untyped nil, so `update`'s merge loop deletes the key from the
+				// fetched config instead of PATCHing `""` (which the server
+				// refuses as a URL). This is how a channel is turned into the
+				// members-only mode; on create an empty flag just means "none".
+				m["callbackUrl"] = nil
+			}
 		}
 		if !patch {
-			for k, fl := range map[string]string{"authChannelId": "--auth-channel", "partySize": "--party-size", "callbackUrl": "--callback-url"} {
+			for k, fl := range map[string]string{"authChannelId": "--auth-channel", "partySize": "--party-size"} {
 				if m[k] == nil {
 					return nil, fmt.Errorf("%s is required for match channels", fl)
 				}

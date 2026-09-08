@@ -24,7 +24,7 @@ export interface DispatcherOptions {
   fetch?: typeof fetch;
   /** Per attempt. Default 5000ms (two attempts fit in the worker's timeout). */
   timeoutMs?: number;
-  /** Max response bytes accepted as `result`. Default 8KB (fits the 16KB message cap with the envelope). */
+  /** Max response bytes accepted as `result`. Default 8KB: the frame also carries `members` (≤16 subs of 32 hex ≈ 0.8KB) and the envelope, inside API Gateway's 16KB message cap. */
   maxResultBytes?: number;
   logger?: Logger;
 }

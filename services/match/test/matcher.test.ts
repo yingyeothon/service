@@ -24,6 +24,8 @@ describe("matcher", () => {
       type: "matched",
       partial: false,
       result: { gameId: `g-${call.body.matchId as string}` },
+      // Additive in the callback mode too, and in ticket order.
+      members: [{ userId: "u1" }, { userId: "u2" }],
     });
     expect(h.closed).toEqual([]); // clients close after a terminal message
     expect((await h.pool.snapshot("match_a")).map((t) => t.connId)).toEqual([
@@ -32,6 +34,48 @@ describe("matcher", () => {
     expect(await h.kv.get(`result:${call.body.matchId as string}`)).toContain(
       '"state":"matched"',
     );
+  });
+
+  it("without a callbackUrl nothing is posted and the roster is the answer", async () => {
+    const h = build({ partySize: 3, callbackUrl: null });
+    await h.seed();
+    // Connect order, not userId order: `members` follows the queue.
+    await join(h, "c1", "u3");
+    await join(h, "c2", "u1");
+    await join(h, "c3", "u2");
+    expect(h.calls).toEqual([]);
+    expect(h.sent.map((s) => s.id).sort()).toEqual(["c1", "c2", "c3"]);
+    for (const s of h.sent)
+      expect(s.msg).toMatchObject({
+        type: "matched",
+        partial: false,
+        result: null,
+        members: [{ userId: "u3" }, { userId: "u1" }, { userId: "u2" }],
+      });
+    const matchId = (h.sent[0]!.msg as { matchId: string }).matchId;
+    expect(await h.kv.get(`result:${matchId}`)).toContain('"state":"matched"');
+    expect(await h.pool.snapshot("match_a")).toEqual([]);
+  });
+
+  it("a callback-less partial timeout matches whoever is present", async () => {
+    const h = build({
+      partySize: 4,
+      waitTimeoutSec: 30,
+      onTimeout: "partial",
+      callbackUrl: null,
+    });
+    await h.seed();
+    await join(h, "c1", "u1");
+    h.clock.tick(31_000);
+    expect(await h.matcher.tick()).toMatchObject({ matched: 1, failed: 0 });
+    expect(h.calls).toEqual([]);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]!.msg).toMatchObject({
+      type: "matched",
+      partial: true,
+      result: null,
+      members: [{ userId: "u1" }],
+    });
   });
 
   it("reconnecting user replaces their ticket and the old socket is told", async () => {
@@ -107,6 +151,10 @@ describe("matcher", () => {
       members: [{ userId: "u1" }, { userId: "u2" }],
     });
     expect(h.sent.map((s) => s.msg.partial)).toEqual([true, true]);
+    expect(h.sent[0]!.msg.members).toEqual([
+      { userId: "u1" },
+      { userId: "u2" },
+    ]);
   });
 
   it("callback failure tells members", async () => {

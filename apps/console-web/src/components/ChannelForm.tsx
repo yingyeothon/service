@@ -293,14 +293,20 @@ export function ChannelForm({
             ]}
           />
           <TextInput
-            label="Callback URL"
-            description="The match service POSTs each formed party here, signed with the channel API key."
+            label="Callback URL (optional)"
+            description="The match service POSTs each formed party here, signed with the channel API key. Leave it empty and no request is made: every member is told who else is in the party and they arrange the room themselves."
             type="url"
             value={form.callbackUrl}
             onChange={(e) => set("callbackUrl", e.target.value)}
-            required
             placeholder="https://dungeon.example.com/match"
           />
+          {form.callbackUrl.trim() === "" && (
+            <Text size="sm" c="dimmed">
+              No callback: this channel is in members-only mode. A formed party
+              is announced to its own sockets and your game server is never
+              called.
+            </Text>
+          )}
         </>
       )}
     </>

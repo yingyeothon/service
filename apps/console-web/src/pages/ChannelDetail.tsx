@@ -649,10 +649,12 @@ function MatchDetails({ c }: { c: Channel }) {
     <>
       <CopyField label="WebSocket URL" value={c.wsUrl ?? ""} />
       <CopyField label="Auth channel" value={cfg.authChannelId} />
-      <CopyField label="Callback URL" value={cfg.callbackUrl} />
+      {cfg.callbackUrl ? (
+        <CopyField label="Callback URL" value={cfg.callbackUrl} />
+      ) : null}
       <Text size="sm" c="dimmed">
         Party size {cfg.partySize} · wait {cfg.waitTimeoutSec}s · on timeout:{" "}
-        {cfg.onTimeout}
+        {cfg.onTimeout} · mode: {cfg.callbackUrl ? "callback" : "members only"}
       </Text>
     </>
   );
