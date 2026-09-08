@@ -15,6 +15,7 @@ import {
   checkKvOwnerId,
   checkKvScopes,
   ensureKvRoom,
+  isKvPerOwner,
   kvValueBytes,
   type KvCollectionListRow,
   type KvCollectionRow,
@@ -196,9 +197,8 @@ export function createKvStoreRoutes({
     );
   }
 
-  /** `writeScope: user` is what puts every entry in an owner namespace. */
-  const isUserNamespace = (col: KvCollectionRow): boolean =>
-    col.writeScope === "user";
+  /** Either scope being `user` puts every entry in an owner namespace. */
+  const isUserNamespace = isKvPerOwner;
 
   /**
    * The owner slot a request addresses. Both spellings exist, so using the
@@ -329,6 +329,11 @@ export function createKvStoreRoutes({
     expiresAt: row.expiresAt,
     channelId: row.channelId,
     updatedAt: row.updatedAt,
+    // The writer, on the collections where owners are a namespace: `team` for
+    // a console write, `server` for an apiKey one, an owner id for a player's
+    // (`docs/decisions.md` *Serverless clients* #6). Absent on a row written
+    // before the column existed.
+    ...(isUserNamespace(col) && row.from !== null ? { from: row.from } : {}),
     ...(withValue && row.value !== undefined ? { valueText: row.value } : {}),
   });
 
@@ -678,6 +683,10 @@ export function createKvStoreRoutes({
           // and it survives its channel today (owner decision 5 in
           // `todo/33-kvstore.md`, raised by the S4 security review).
           channelId: null,
+          // `team`, not a member id: the row is the team's, and a login has no
+          // place in a value clients read (`docs/decisions.md` #6). It cannot
+          // collide with an owner id, whose grammar has no bare word.
+          from: "team",
           ...(ctx.body.ifVersion === undefined
             ? {}
             : { ifVersion: ctx.body.ifVersion }),

@@ -8,9 +8,12 @@ import {
   build,
   call,
   CHANNEL,
+  NOW_MS,
+  NOW_SEC,
   OTHER_KEY,
   OTHER_OWNER,
   OWNER,
+  recordingLogger,
   SECRET,
   jwt,
   version,
@@ -363,5 +366,52 @@ describe("channel isolation", () => {
     await put(h, { from: "b" }, "0", { bearer: OTHER_KEY });
     expect(bodyOf(await get(h, API_KEY))).toEqual({ from: "a" });
     expect(bodyOf(await get(h, OTHER_KEY))).toEqual({ from: "b" });
+  });
+});
+
+describe("GET /time", () => {
+  it("answers without a credential, in both units, and never caches", async () => {
+    const h = await build();
+    const r = await call(h, { method: "GET", path: "/time" });
+    expect(r.statusCode).toBe(200);
+    const body = bodyOf(r) as { now: string; epochMs: number };
+    expect(body).toEqual({
+      now: new Date(NOW_MS).toISOString(),
+      epochMs: NOW_MS,
+    });
+    // Milliseconds here, seconds everywhere else -- the one place the two
+    // units meet, so pin the relation the clients are told to rely on.
+    expect(Math.floor(body.epochMs / 1000)).toBe(NOW_SEC);
+    expect(r.headers?.["cache-control"]).toBe("no-store");
+  });
+
+  it("resolves no channel even when a client sends its token anyway", async () => {
+    const logger = recordingLogger();
+    const h = await build({ logger });
+    // A resolved credential always logs one `caller` line, so its absence is
+    // the proof that the resolver skipped: a client library that attaches its
+    // bearer to every request must not spend a MySQL round trip on the clock.
+    expect(
+      (await call(h, { method: "GET", path: "/time", bearer: API_KEY }))
+        .statusCode,
+    ).toBe(200);
+    expect(logger.lines.filter((l) => l.message === "caller")).toEqual([]);
+    // `compilePath` matches a trailing slash, so the skip has to as well --
+    // a client library that joins a base URL produces exactly this path.
+    expect(
+      (await call(h, { method: "GET", path: "/time/", bearer: API_KEY }))
+        .statusCode,
+    ).toBe(200);
+    expect(logger.lines.filter((l) => l.message === "caller")).toEqual([]);
+    await call(h, { method: "GET", path: `/s/${OWNER}`, bearer: API_KEY });
+    expect(logger.lines.filter((l) => l.message === "caller")).toHaveLength(1);
+  });
+
+  it("answers on a stage whose kv is unusable", async () => {
+    // No KEK: every `/kv/*` route is a 503, and the clock is not one of them.
+    const h = await build({ crypto: false });
+    expect((await call(h, { method: "GET", path: "/time" })).statusCode).toBe(
+      200,
+    );
   });
 });

@@ -45,14 +45,25 @@ const coll = (over: Partial<KvCollectionInput> = {}): KvCollectionInput => ({
 
 const entry = (over: Partial<KvEntryPut> = {}): KvEntryPut => {
   const value = over.value ?? '{"hp":10}';
+  const ownerId = over.ownerId ?? "";
   return {
     collectionId: C1,
-    ownerId: "",
+    ownerId,
     key: "k1",
     value,
     bytes: kvValueBytes(value),
     expiresAt: null,
     channelId: null,
+    // The stamp a real write would carry: a console row is `team`, and a row
+    // written through a channel is its owner's own (a shared namespace has no
+    // owner, so it is the server key's). Mail — a stamp naming somebody other
+    // than the row's owner — is passed explicitly by the tests that mean it.
+    from:
+      over.channelId === undefined
+        ? "team"
+        : ownerId === ""
+          ? "server"
+          : ownerId,
     at: 200,
     ...over,
   };
@@ -160,9 +171,33 @@ export function kvstoreContract(
 
   it("refuses the scope combinations nobody could use", async () => {
     const db = await make();
+    // `readScope: user` with any other write scope is the **inbox** shape now
+    // (`docs/decisions.md` *Serverless clients* #5, the withdrawn rule), not a
+    // contradiction; `server` is a scope on either side.
     await expect(
       db.insertCollection(coll({ readScope: "user", writeScope: "project" })),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).resolves.toBeUndefined();
+    await expect(
+      db.insertCollection(
+        coll({
+          id: "kv_server1",
+          name: "srv",
+          readScope: "server",
+          writeScope: "user",
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      db.insertCollection(
+        coll({
+          id: "kv_server2",
+          name: "srv2",
+          readScope: "user",
+          writeScope: "server",
+          encrypted: true,
+        }),
+      ),
+    ).resolves.toBeUndefined();
     await expect(
       db.insertCollection(
         coll({ readScope: "project", writeScope: "team", encrypted: true }),
@@ -850,6 +885,48 @@ export function kvstoreContract(
     ]);
     expect(await db.countEntries(C2, { now: 300 })).toBe(0);
     expect(await db.countEntries("kv_3", { now: 300 })).toBe(1);
+  });
+
+  it("a channel purge follows the owner, not the sender of the mail it holds", async () => {
+    const db = await make();
+    // The inbox shape: a player of ch_1 sends to a player of ch_2 and back.
+    await db.insertCollection(
+      coll({ readScope: "user", writeScope: "project" }),
+    );
+    const mine = OWNER;
+    const theirs = "z9";
+    // ch_1's player owns a row of its own, and one ch_2's player sent it.
+    await db.putEntry(entry({ ownerId: mine, key: "save", channelId: "ch_1" }));
+    await db.putEntry(
+      entry({
+        ownerId: mine,
+        key: `${theirs}:gift`,
+        channelId: "ch_2",
+        from: theirs,
+      }),
+    );
+    // And ch_1's player sent one the other way, into a live channel's player.
+    await db.putEntry(
+      entry({
+        ownerId: theirs,
+        key: `${mine}:gift`,
+        channelId: "ch_1",
+        from: mine,
+      }),
+    );
+    // A console row of the *recipient*, which must not be dragged along.
+    await db.putEntry(entry({ ownerId: theirs, key: "note" }));
+
+    expect(await db.deleteChannelEntries("ch_1", PRJ, 100)).toBe(3);
+    // Everything in the dead channel's owner's namespace went, whoever wrote
+    // it — including the mail another channel delivered, which nothing else
+    // would ever have reached. The live player keeps its own rows.
+    expect(
+      (await db.listEntries({ collectionId: C1, now: 300 })).rows.map((r) => [
+        r.ownerId,
+        r.key,
+      ]),
+    ).toEqual([[theirs, "note"]]);
   });
 
   it("a channel purge without a project takes only the channel's own rows", async () => {

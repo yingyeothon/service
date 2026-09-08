@@ -384,12 +384,13 @@ describe("kv tab", () => {
     expect(button).toBeEnabled();
     const read = within(drawer).getByLabelText(/^Read scope/);
     const write = within(drawer).getByLabelText(/^Write scope/);
-    // user read without user write: refused before the request.
+    // user read without user write is the inbox shape now, not a refusal
+    // (`docs/decisions.md` *Serverless clients* #5).
     await userEvent.selectOptions(read, "user");
-    expect(
-      within(drawer).getByText(/A user read scope needs a user write scope/),
-    ).toBeInTheDocument();
-    expect(button).toBeDisabled();
+    expect(button).toBeEnabled();
+    // `server` is offered on both sides.
+    await userEvent.selectOptions(write, "server");
+    expect(button).toBeEnabled();
     await userEvent.selectOptions(read, "project");
     await userEvent.selectOptions(write, "user");
     expect(

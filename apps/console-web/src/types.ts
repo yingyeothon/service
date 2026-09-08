@@ -810,8 +810,14 @@ export interface ListParams {
 
 // ---- key-value store (`kv`) ----------------------------------------------
 
-export type KvScope = "team" | "project" | "user";
-export const KV_SCOPES: readonly KvScope[] = ["team", "project", "user"];
+export type KvScope = "team" | "server" | "project" | "user";
+/** Declaration order is the server's sort order (`KV_SCOPES` in console-db). */
+export const KV_SCOPES: readonly KvScope[] = [
+  "team",
+  "server",
+  "project",
+  "user",
+];
 
 /** One row of `GET /projects/{prj}/kv`; `entries` is the live count. */
 export interface KvCollection extends ResourceCrumbs {
@@ -849,7 +855,7 @@ export interface KvCollectionDetail extends KvCollection {
 export type KvCollectionWrite = Omit<KvCollectionDetail, "entries">;
 
 export interface KvEntry {
-  /** Only in a user namespace (`writeScope: user`). */
+  /** Only in a per-owner namespace (either scope is `user`). */
   owner?: string;
   key: string;
   version: number;
@@ -858,6 +864,11 @@ export interface KvEntry {
   expiresAt: number | null;
   /** The auth channel whose credential wrote it; `null` for a console write. */
   channelId: string | null;
+  /**
+   * Who wrote the current value — an owner id, `server` or `team`. Per-owner
+   * collections only, and absent on a row written before the stamp existed.
+   */
+  from?: string;
   updatedAt: number;
   /** The stored JSON text verbatim; absent when encrypted or for a seatless admin. */
   valueText?: string;

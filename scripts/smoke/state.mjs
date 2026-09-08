@@ -285,4 +285,22 @@ try {
   await cleanup();
 }
 
+// The platform clock: no credential, and deliberately no channel lookup even
+// when one is offered (`docs/decisions.md` *Serverless clients* #7).
+for (const [label, headers] of [
+  ["without a token", {}],
+  ["with a token it did not need", { authorization: "Bearer yds.nope.nope" }],
+]) {
+  const t = await call(`${docBase}/time`, { headers });
+  check(
+    `GET /time answers ${label}`,
+    t.status === 200 &&
+      typeof t.body?.epochMs === "number" &&
+      Math.abs(Date.now() - t.body.epochMs) < 60_000 &&
+      t.body.now === new Date(t.body.epochMs).toISOString() &&
+      t.cache === "no-store",
+    `${t.status} ${JSON.stringify(t.body)} ${t.cache ?? "(no cache-control)"}`,
+  );
+}
+
 finish("\nall checks passed", (n) => `\n${n} check(s) failed`);

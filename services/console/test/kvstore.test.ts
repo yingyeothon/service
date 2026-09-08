@@ -163,10 +163,15 @@ describe("kv collections", () => {
       );
       return r;
     };
-    // `readScope: user` names an owner namespace that does not exist.
+    // `readScope: user` + another write scope is the inbox shape, not an
+    // impossible one (`docs/decisions.md` *Serverless clients* #5); `server` is
+    // a scope on either side.
     expect(
       (await bad({ readScope: "user", writeScope: "project" })).statusCode,
-    ).toBe(400);
+    ).toBe(201);
+    expect(
+      (await bad({ readScope: "server", writeScope: "user" })).statusCode,
+    ).toBe(201);
     // Encrypted with a team scope: nobody could read, or nobody could write.
     expect(
       (await bad({ readScope: "team", writeScope: "project", encrypted: true }))
@@ -650,6 +655,7 @@ describe("kv entries", () => {
       bytes: 12,
       expiresAt: null,
       channelId: null,
+      from: "team",
       at: NOW_SEC,
     });
     const one = parse(
@@ -770,6 +776,7 @@ describe("kv lifecycle", () => {
         bytes: 1,
         expiresAt: null,
         channelId: null,
+        from: "team",
         at: NOW_SEC,
       });
     // What a collection with more rows than the whole request budget looks
@@ -807,6 +814,7 @@ describe("kv lifecycle", () => {
         bytes: 1,
         expiresAt: null,
         channelId: null,
+        from: "team",
         at: NOW_SEC,
       });
     await h.kvstore.softDeleteCollection(c.id, NOW_SEC);
@@ -850,12 +858,13 @@ describe("kv lifecycle", () => {
         bytes: 1,
         expiresAt: null,
         channelId: null,
+        from: "team",
         at: NOW_SEC,
         ...o,
       });
     await seed("gone", { expiresAt: NOW_SEC - 1 });
     await seed("live", {});
-    await seed("byChannel", { channelId: "auth_dead" });
+    await seed("byChannel", { channelId: "auth_dead", from: U1 });
     await h.kvstore.putEntry({
       collectionId: c.id,
       ownerId: "",
@@ -864,6 +873,7 @@ describe("kv lifecycle", () => {
       bytes: 1,
       expiresAt: null,
       channelId: "auth_dead",
+      from: "server",
       at: NOW_SEC,
     });
     const r = await runKvStoreSweep({
@@ -898,6 +908,7 @@ describe("kv lifecycle", () => {
         bytes: 1,
         expiresAt: NOW_SEC - 1,
         channelId: null,
+        from: "team",
         at: NOW_SEC,
       });
     }
@@ -962,6 +973,9 @@ describe("kv lifecycle", () => {
       bytes: 1,
       expiresAt: null,
       channelId: "auth_dead",
+      // A player's own row: stamped with its own id, which is what tells the
+      // purge that U1 is a player of this channel rather than a mail recipient.
+      from: U1,
       at: NOW_SEC,
     });
     await h.kvstore.putEntry({
@@ -972,6 +986,7 @@ describe("kv lifecycle", () => {
       bytes: 1,
       expiresAt: NOW_SEC - 1,
       channelId: null,
+      from: "team",
       at: NOW_SEC,
     });
     // One statement: it must go to the channel, whose id exists nowhere else
@@ -1032,6 +1047,9 @@ describe("kv lifecycle", () => {
       bytes: 1,
       expiresAt: null,
       channelId: ch.id,
+      // The player's own save: the stamp is what marks U1 as a player of this
+      // channel rather than someone another player sent mail to.
+      from: U1,
       at: NOW_SEC,
     });
     // A console row of the same owner: the route must hand the channel's
@@ -1046,6 +1064,7 @@ describe("kv lifecycle", () => {
       bytes: 1,
       expiresAt: null,
       channelId: null,
+      from: "team",
       at: NOW_SEC,
     });
     slot(h);
@@ -1145,6 +1164,7 @@ describe("kv usage", () => {
         bytes: 100,
         expiresAt: null,
         channelId: null,
+        from: "team",
         at: NOW_SEC,
       });
     expect(await kvstore.topCollections(5)).toEqual([

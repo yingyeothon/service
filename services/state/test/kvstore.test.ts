@@ -65,6 +65,16 @@ const COLS = {
   profile: { id: colId("profile"), readScope: "project", writeScope: "user" },
   /** Private progress: a player sees only itself, the server sees everyone. */
   progress: { id: colId("progress"), readScope: "user", writeScope: "user" },
+  /** Mail: every player writes into any owner's namespace, only the owner reads. */
+  mail: { id: colId("mail"), readScope: "user", writeScope: "project" },
+  /** Telemetry: the doc apiKey alone reads it; each player writes its own. */
+  telemetry: {
+    id: colId("telemetry"),
+    readScope: "server",
+    writeScope: "user",
+  },
+  /** Tuning a cron writes and every player reads. */
+  tuning: { id: colId("tuning"), readScope: "project", writeScope: "server" },
   /** Encrypted profiles: same scopes, values sealed with the collection's DEK. */
   sealed: {
     id: colId("sealed"),
@@ -76,7 +86,8 @@ const COLS = {
 
 type ColName = keyof typeof COLS;
 
-const isUserNs = (c: Spec): boolean => c.writeScope === "user";
+const isUserNs = (c: Spec): boolean =>
+  c.writeScope === "user" || c.readScope === "user";
 
 async function seedCollection(h: Harness, spec: Spec): Promise<void> {
   await h.kvstore.insertCollection({
@@ -141,6 +152,7 @@ async function seedEntry(
     bytes: Buffer.byteLength(value, "utf8"),
     expiresAt: over.expiresAt ?? null,
     channelId: null,
+    from: "team",
     at: NOW_SEC,
   });
   expect(r.ok).toBe(true);
@@ -374,6 +386,13 @@ describe("kv permission matrix", () => {
     inbox: { server: [false, true], owner: [false, true] },
     profile: { server: [true, true], owner: [true, true] },
     progress: { server: [true, true], owner: [true, true] },
+    // Mail: a player reads and writes its own slot like any per-owner
+    // collection; the cross-owner half is its own describe below.
+    mail: { server: [true, true], owner: [true, true] },
+    // `server` is the doc apiKey and nothing else: the JWT is refused on the
+    // side that carries it, exactly as it is refused a `team` scope.
+    telemetry: { server: [true, true], owner: [false, true] },
+    tuning: { server: [true, true], owner: [true, false] },
     sealed: { server: [true, true], owner: [true, true] },
   };
 
@@ -1123,6 +1142,7 @@ describe("kv incr", () => {
           version: 12,
           expiresAt: null,
           channelId: null,
+          from: "server",
           createdAt: NOW_SEC,
           updatedAt: NOW_SEC,
         },
@@ -1565,7 +1585,7 @@ describe("kv encryption", () => {
 });
 
 describe("kv cors", () => {
-  it("allows the conditional headers and exposes the two a client must read", async () => {
+  it("allows the conditional headers and exposes the four a client must read", async () => {
     const h = await withCollections();
     const r = await call(h, {
       method: "OPTIONS",
@@ -1577,7 +1597,299 @@ describe("kv cors", () => {
       "if-none-match",
     );
     expect(r.headers?.["access-control-expose-headers"]).toBe(
-      "etag,x-kv-expires-at",
+      "etag,x-kv-expires-at,x-kv-from,x-kv-at",
     );
+  });
+});
+
+describe("kv mail (a player writing into another owner's namespace)", () => {
+  const MAIL = COLS.mail.id;
+  /** The key grammar a cross-owner write has to use: the writer's own id. */
+  const mailKey = (from: string, rest: string) => `${from}:${rest}`;
+
+  const send = async (
+    h: Harness,
+    from: string,
+    to: string,
+    key: string,
+    over: { ifMatch?: string; ifNoneMatch?: string; col?: string } = {},
+  ) => {
+    const { col = MAIL, ...cond } = over;
+    return call(h, {
+      method: "PUT",
+      path: entryPath(col, key, to),
+      bearer: await jwt(from),
+      body: { gift: 1 },
+      ...cond,
+    });
+  };
+
+  it("delivers create-only, stamps the sender, and answers 204 without an ETag", async () => {
+    const h = await withCollections();
+    const key = mailKey(OWNER, "gift");
+    const first = await send(h, OWNER, OTHER_OWNER, key);
+    // 204 and no ETag: the writer may not read this collection, and both would
+    // say something about what is stored.
+    expect(first.statusCode).toBe(204);
+    expect(first.headers?.etag).toBeUndefined();
+
+    // The recipient reads it back with the stamp the platform put on it.
+    const read = await call(h, {
+      method: "GET",
+      path: entryPath(MAIL, key, OTHER_OWNER),
+      bearer: await jwt(OTHER_OWNER),
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.headers?.["x-kv-from"]).toBe(OWNER);
+    expect(read.headers?.["x-kv-at"]).toBe(String(NOW_SEC));
+
+    // No overwrite, ever: the second delivery is a 409 that names the reason.
+    const again = await send(h, OWNER, OTHER_OWNER, key);
+    expect(again.statusCode).toBe(409);
+    expect(errorOf(again).details).toMatchObject({ reason: "exists" });
+  });
+
+  it("refuses a key outside the sender's own prefix", async () => {
+    const h = await withCollections();
+    for (const key of ["gift", `${OTHER_OWNER}:gift`, "gift:1"]) {
+      const r = await send(h, OWNER, OTHER_OWNER, key);
+      expect(r.statusCode, key).toBe(400);
+    }
+  });
+
+  it("takes no conditional header and no cross-owner delete or patch", async () => {
+    const h = await withCollections();
+    const key = mailKey(OWNER, "x");
+    for (const cond of [{ ifNoneMatch: "*" }, { ifMatch: "1" }] as const)
+      expect((await send(h, OWNER, OTHER_OWNER, key, cond)).statusCode).toBe(
+        400,
+      );
+    expect((await send(h, OWNER, OTHER_OWNER, key)).statusCode).toBe(204);
+    for (const method of ["DELETE", "PATCH"] as const)
+      expect(
+        (
+          await call(h, {
+            method,
+            path: entryPath(MAIL, key, OTHER_OWNER),
+            bearer: await jwt(OWNER),
+            ...(method === "PATCH" ? { body: { incr: 1 } } : {}),
+          })
+        ).statusCode,
+        method,
+      ).toBe(403);
+  });
+
+  it("charges the recipient's inbox cap and the sender's own total", async () => {
+    const h = await withCollections();
+    const small = {
+      id: colId("smallmail"),
+      readScope: "user" as const,
+      writeScope: "project" as const,
+      maxEntriesPerOwner: 2,
+    };
+    await seedCollection(h, small);
+    const post = (from: string, to: string, key: string) =>
+      send(h, from, to, key, { col: small.id });
+    // Two into one inbox fills it: the third is the recipient's cap.
+    for (const n of [1, 2])
+      expect(
+        (await post(OWNER, OTHER_OWNER, mailKey(OWNER, `a${n}`))).statusCode,
+      ).toBe(204);
+    const full = await post(OWNER, OTHER_OWNER, mailKey(OWNER, "a3"));
+    expect(full.statusCode).toBe(409);
+    expect(errorOf(full).details).toMatchObject({ reason: "owner_full" });
+
+    // And the sender is already at its own total, so a *fresh* owner id --
+    // which no cap of the recipient's could ever bound -- is refused too.
+    const spread = await post(OWNER, "f".repeat(32), mailKey(OWNER, "b1"));
+    expect(spread.statusCode).toBe(409);
+    expect(errorOf(spread).details).toMatchObject({ reason: "sender_full" });
+    // A different sender still gets in: the cap is per writer, not global.
+    expect(
+      (await post(OTHER_OWNER, OWNER, mailKey(OTHER_OWNER, "c1"))).statusCode,
+    ).toBe(204);
+  });
+
+  it("re-stamps `from` on every write, so a recipient's overwrite is its own", async () => {
+    const h = await withCollections();
+    const key = mailKey(OWNER, "note");
+    expect((await send(h, OWNER, OTHER_OWNER, key)).statusCode).toBe(204);
+    const own = await call(h, {
+      method: "PUT",
+      path: entryPath(MAIL, key, OTHER_OWNER),
+      bearer: await jwt(OTHER_OWNER),
+      body: { read: true },
+    });
+    expect(own.statusCode).toBe(204);
+    const read = await call(h, {
+      method: "GET",
+      path: entryPath(MAIL, key, OTHER_OWNER),
+      bearer: await jwt(OTHER_OWNER),
+    });
+    expect(read.headers?.["x-kv-from"]).toBe(OTHER_OWNER);
+  });
+
+  it("says nothing about a row written before the stamp existed", async () => {
+    const h = await withCollections();
+    // What every production row looks like the day `m0016` lands.
+    await h.kvstore.putEntry({
+      collectionId: MAIL,
+      ownerId: OWNER,
+      key: "old",
+      value: '{"v":1}',
+      bytes: 7,
+      expiresAt: null,
+      channelId: null,
+      from: null,
+      at: NOW_SEC,
+    });
+    const read = await call(h, {
+      method: "GET",
+      path: entryPath(MAIL, "old", OWNER),
+      bearer: await jwt(OWNER),
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.headers?.["x-kv-from"]).toBeUndefined();
+    expect(read.headers?.["x-kv-at"]).toBeUndefined();
+    const list = await call(h, {
+      method: "GET",
+      path: `/kv/${MAIL}/u/${OWNER}/entries`,
+      bearer: API_KEY,
+    });
+    expect(
+      (bodyOf(list) as { entries: unknown[] }).entries[0],
+    ).not.toHaveProperty("from");
+  });
+
+  it("exempts the server key from every mail rule, and stamps it", async () => {
+    const h = await withCollections();
+    // The doc apiKey fills an inbox on the game's behalf: no `{from}:` prefix,
+    // and it may overwrite and delete what it wrote (`docs/decisions.md` #6
+    // bounds *players* against each other, not the project's own credential).
+    const path = entryPath(MAIL, "reward", OTHER_OWNER);
+    const put = await call(h, {
+      method: "PUT",
+      path,
+      bearer: API_KEY,
+      body: { n: 1 },
+    });
+    expect(put.statusCode).toBe(201);
+    const read = await call(h, {
+      method: "GET",
+      path,
+      bearer: await jwt(OTHER_OWNER),
+    });
+    expect(read.headers?.["x-kv-from"]).toBe("server");
+    expect(
+      (await call(h, { method: "PUT", path, bearer: API_KEY, body: { n: 2 } }))
+        .statusCode,
+    ).toBe(204);
+    expect(
+      (await call(h, { method: "DELETE", path, bearer: API_KEY })).statusCode,
+    ).toBe(204);
+  });
+
+  it("refuses a cross-owner write from a token whose sub is not an owner id", async () => {
+    const h = await withCollections();
+    // A game may sign its own tokens, so `sub` is whatever it chose
+    // (`docs/auth-game-contract.md`). Mail's guarantees -- disjoint `{from}:`
+    // key spaces, a stamp that cannot spell `server` -- are built on the owner
+    // grammar, so a caller outside it gets no cross-owner write at all.
+    const odd = await jwt("PlayerOne");
+    expect(
+      (
+        await call(h, {
+          method: "PUT",
+          path: entryPath(MAIL, "PlayerOne:hi", OTHER_OWNER),
+          bearer: odd,
+          body: { n: 1 },
+        })
+      ).statusCode,
+    ).toBe(403);
+    // A shared namespace validates no owner at all, so such a token still
+    // writes there -- and leaves no stamp rather than an unusable one (the
+    // column is 64 characters and the two literals must stay unambiguous).
+    expect(
+      (
+        await call(h, {
+          method: "PUT",
+          path: entryPath(COLS.shared.id, "k"),
+          bearer: odd,
+          body: { n: 1 },
+        })
+      ).statusCode,
+    ).toBe(201);
+    expect(
+      (
+        await h.kvstore.findEntry(COLS.shared.id, KV_SHARED_OWNER, "k", {
+          now: NOW_SEC,
+        })
+      )?.from,
+    ).toBeNull();
+  });
+
+  it("leaves a shared collection exactly as anonymous as it was", async () => {
+    const h = await withCollections();
+    await call(h, {
+      method: "PUT",
+      path: entryPath(COLS.shared.id, "k"),
+      bearer: await jwt(OWNER),
+      body: { v: 1 },
+    });
+    const read = await call(h, {
+      method: "GET",
+      path: entryPath(COLS.shared.id, "k"),
+      bearer: API_KEY,
+    });
+    expect(read.headers?.["x-kv-from"]).toBeUndefined();
+    const list = await call(h, {
+      method: "GET",
+      path: `/kv/${COLS.shared.id}/entries`,
+      bearer: API_KEY,
+    });
+    expect(
+      (bodyOf(list) as { entries: unknown[] }).entries[0],
+    ).not.toHaveProperty("from");
+  });
+});
+
+describe("kv incr min/max", () => {
+  const patch = async (h: Harness, body: Record<string, unknown>) =>
+    call(h, {
+      method: "PATCH",
+      path: entryPath(COLS.shared.id, "coins"),
+      bearer: API_KEY,
+      body,
+    });
+
+  it("refuses a result outside the range and says what is stored", async () => {
+    const h = await withCollections();
+    expect((await patch(h, { incr: 10 })).statusCode).toBe(200);
+    const under = await patch(h, { incr: -20, min: 0 });
+    expect(under.statusCode).toBe(409);
+    expect(errorOf(under).details).toEqual({
+      reason: "out_of_range",
+      // The stored value, not a version: `details.current` means a version
+      // everywhere else on this API.
+      value: 10,
+    });
+    const over = await patch(h, { incr: 5, max: 12 });
+    expect(over.statusCode).toBe(409);
+    expect(errorOf(over).details).toMatchObject({ value: 10 });
+    // The value is untouched by a refusal, and a write inside the range lands.
+    expect(
+      (bodyOf(await patch(h, { incr: -10, min: 0 })) as { value: number })
+        .value,
+    ).toBe(0);
+  });
+
+  it("validates the bounds themselves", async () => {
+    const h = await withCollections();
+    for (const body of [
+      { incr: 1, min: 1.5 },
+      { incr: 1, max: "3" },
+      { incr: 1, min: 5, max: 4 },
+    ])
+      expect((await patch(h, body)).statusCode, JSON.stringify(body)).toBe(400);
   });
 });

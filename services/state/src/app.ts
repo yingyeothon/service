@@ -63,6 +63,9 @@ export interface StateAppOptions {
 /** Every document response is uncacheable: it is per-player state behind a bearer token. */
 const DOC_HEADERS = NO_STORE;
 
+/** The one path with no identity; the resolver skips it, so keep them in step. */
+const TIME_PATH = "/time";
+
 function docResult(row: StateDocRow): HttpResult {
   return {
     statusCode: 200,
@@ -147,6 +150,21 @@ export function createStateApp({
   }
 
   const routes: AnyRoute[] = [
+    defineRoute({
+      method: "GET",
+      path: TIME_PATH,
+      // No `auth`: the platform clock is the one thing here that belongs to
+      // nobody. It reads no channel, touches no database and needs no KEK, so
+      // it answers on a stage whose kv is 503 -- and clients should call it
+      // *without* a token (see the identity resolver below).
+      handler: () => {
+        const at = clock.now();
+        return json(
+          { now: new Date(at).toISOString(), epochMs: at },
+          { headers: NO_STORE },
+        );
+      },
+    }),
     defineRoute({
       method: "GET",
       path: "/s/{ownerId}",
@@ -268,10 +286,21 @@ export function createStateApp({
       ],
       // `x-kv-expires-at` for the same reason as `etag`: a client that cannot
       // read when its entry dies has to guess.
-      exposeHeaders: ["etag", "x-kv-expires-at"],
+      // `x-kv-from`/`x-kv-at` are the mail stamp (`docs/decisions.md` #6);
+      // unexposed, a browser client could not read who sent it what.
+      exposeHeaders: ["etag", "x-kv-expires-at", "x-kv-from", "x-kv-at"],
     },
-    identity: async ({ bearer }): Promise<Identity | undefined> => {
+    identity: async ({ bearer, event }): Promise<Identity | undefined> => {
       if (!bearer) return undefined;
+      // The clock is the one route with nothing to authorize, and the resolver
+      // runs before a route's `auth` is consulted -- so without this line a
+      // client that attaches its bearer to every request would pay a MySQL
+      // SELECT per `GET /time`, on a host whose connection budget is the
+      // reason this stack exists at all (`rules/data.md`).
+      // `compilePath` matches a trailing slash too (`^/time/?$`), so the skip
+      // has to normalise the same way or `GET /time/` -- what a client library
+      // that joins a base URL produces -- pays the SELECT this exists to save.
+      if (event.rawPath.replace(/\/+$/, "") === TIME_PATH) return undefined;
       const c = await channels.resolve(bearer);
       if (!c) return undefined;
       // The channel is the tenant and it lives only in the bearer — never in

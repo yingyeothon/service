@@ -54,6 +54,7 @@ export const KV_MAX_ENTRIES_PER_OWNER_DEFAULT = 100;
 
 export const KV_SCOPE_LABEL: Record<KvScope, string> = {
   team: "team — console and CLI only",
+  server: "server — the doc apiKey and the console, never a player",
   project: "project — every player and the server key",
   user: "user — each player its own namespace",
 };
@@ -64,21 +65,23 @@ export function kvShapeProblem(
   write: KvScope,
   encrypted: boolean,
 ): string | null {
-  if (read === "user" && write !== "user")
-    return "A user read scope needs a user write scope: only a per-owner namespace can be read per owner.";
   if (encrypted && (read === "team" || write === "team"))
     return "An encrypted collection needs project or user scopes: the key that opens it lives in the state stack, which a team scope never reaches.";
   return null;
 }
 
-/** The one shape whose consequence is easy to miss. */
+/** The two shapes whose consequence is easy to miss. */
 export const KV_PUBLIC_PROFILE_WARNING =
   "project-read + user-write lets every player list every owner's entries.";
+export const KV_MAIL_WARNING =
+  "user-read + a project or server write scope is a mailbox: any player may create (never overwrite) entries in any other player's namespace. Max entries per owner then bounds both the inbox and what one sender may send.";
 export const KV_IMMUTABLE_NOTE =
   "Scopes and encryption cannot be changed later; delete and recreate the collection to change them.";
 
-export const isUserNamespace = (c: Pick<KvCollection, "writeScope">) =>
-  c.writeScope === "user";
+/** Mirrors `isKvPerOwner` in `@yyt/console-db`: either scope being `user`. */
+export const isUserNamespace = (
+  c: Pick<KvCollection, "writeScope" | "readScope">,
+) => c.writeScope === "user" || c.readScope === "user";
 
 export function ScopeBadges({
   col,
@@ -284,6 +287,10 @@ export function KvCollectionPage() {
       : { owner: ownerD }),
   };
   const entries = useEntries(id, filters, !!col);
+  // The stamp exists on the mail shape and on rows written since it did, so the
+  // column appears when the data has one rather than by scope arithmetic
+  // (`docs/decisions.md` *Serverless clients* #6).
+  const anyFrom = (entries.rows ?? []).some((r) => r.from !== undefined);
 
   const entryForm = useDrawerForm<EntryForm>(() => ({
     mode: "create",
@@ -574,6 +581,7 @@ export function KvCollectionPage() {
           columns={[
             { key: "key", label: "Key" },
             ...(userNs ? [{ key: "owner", label: "Owner" }] : []),
+            ...(anyFrom ? [{ key: "from", label: "From" }] : []),
             ...(showValues ? [{ key: "value", label: "Value" }] : []),
             { key: "bytes", label: "Bytes", align: "right" as const },
             { key: "version", label: "Version", align: "right" as const },
@@ -585,7 +593,12 @@ export function KvCollectionPage() {
           fetching={entries.fetching}
           error={entries.error}
           rowKey={(r) => `${r.owner ?? ""}\0${r.key}`}
-          minWidth={userNs || showValues ? 720 : 560}
+          minWidth={
+            560 +
+            (userNs ? 160 : 0) +
+            (anyFrom ? 160 : 0) +
+            (showValues ? 160 : 0)
+          }
           empty={{
             title: prefix || owner ? "No entries match." : "No entries yet.",
             hint:
@@ -605,6 +618,15 @@ export function KvCollectionPage() {
               {userNs && (
                 <Table.Td>
                   <Clipped text={r.owner ?? ""} width={140} what="Full owner" />
+                </Table.Td>
+              )}
+              {anyFrom && (
+                <Table.Td>
+                  <Clipped
+                    text={r.from ?? "—"}
+                    width={140}
+                    what="Full sender"
+                  />
                 </Table.Td>
               )}
               {showValues && (
