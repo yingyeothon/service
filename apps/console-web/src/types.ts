@@ -157,6 +157,7 @@ export interface ProjectDetail extends Project {
     bundles: number;
     sites: number;
     kv: number;
+    lb: number;
     versions: number;
     issues: number;
   };

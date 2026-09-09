@@ -62,6 +62,16 @@ export const likeContains = (q: string): { contains: string } => ({
 export const matchesQ = (v: string | null | undefined, q: string): boolean =>
   v !== null && v !== undefined && v.toLowerCase().includes(q.toLowerCase());
 
+/**
+ * How `utf8mb4_unicode_ci` sees a name: case-folded, accent-folded and PAD
+ * SPACE. A resource whose delete parks the freed row on its own id has to
+ * compare the way the unique index does, or `KV_01H…` and `kv_01h…` are one
+ * name to MariaDB and two to us. Shared by every such resource (`kvstore.ts`,
+ * `leaderboard.ts`) so the id-shape rule cannot drift between them.
+ */
+export const foldName = (name: string): string =>
+  name.trimEnd().normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+
 const collator = new Intl.Collator("en", { sensitivity: "base" });
 
 /** PAD SPACE ignores trailing U+0020 only — not tabs or newlines. */

@@ -8,6 +8,7 @@ import {
   createShowsDb,
   createSitesDb,
   createKvStoreDb,
+  createLeaderboardDb,
   createStateDb,
   contractPreflight,
   toLobbyChannel,
@@ -26,6 +27,7 @@ import {
 } from "./consoleDbExt.test.js";
 import { teamContract } from "./team.test.js";
 import { kvstoreContract } from "./kvstore.test.js";
+import { leaderboardContract } from "./leaderboard.test.js";
 import { stateContract } from "./state.test.js";
 import {
   dockerAvailable,
@@ -165,6 +167,19 @@ describe.skipIf(!dockerAvailable())(
           // project have to exist before any collection can.
           await seedTeamProject(db.client);
           return createKvStoreDb(db.client);
+        },
+        { login },
+      );
+    });
+
+    describe("leaderboard contract", () => {
+      leaderboardContract(
+        async () => {
+          await resetTestDb(db.client);
+          // `leaderboards` has both parent foreign keys, so the team and the
+          // project have to exist before any board can.
+          await seedTeamProject(db.client);
+          return createLeaderboardDb(db.client);
         },
         { login },
       );

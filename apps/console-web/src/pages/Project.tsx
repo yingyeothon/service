@@ -173,9 +173,9 @@ export function ProjectPage() {
             Created by {project.createdBy ?? "—"} · {fmtTime(project.createdAt)}{" "}
             · {project.counts.channels} channel(s), {project.counts.apps}{" "}
             app(s), {project.counts.bundles} bundle(s), {project.counts.sites}{" "}
-            site(s), {project.counts.kv} kv collection(s),{" "}
-            {project.counts.versions} version(s), {project.counts.issues}{" "}
-            issue(s) · id <Code>{project.id}</Code>
+            site(s), {project.counts.kv} kv collection(s), {project.counts.lb}{" "}
+            leaderboard(s), {project.counts.versions} version(s),{" "}
+            {project.counts.issues} issue(s) · id <Code>{project.id}</Code>
           </>
         }
         actions={actions}
