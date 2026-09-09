@@ -22,6 +22,7 @@ import type {
   ConsoleDb,
   EventsDb,
   KvStoreDb,
+  LeaderboardDb,
   ShowsDb,
   SitesDb,
   TeamDb,
@@ -66,6 +67,10 @@ import {
 } from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
 import { createKvStoreRoutes, deleteChannelKvEntries } from "./kvstore.js";
+import {
+  createLeaderboardRoutes,
+  deleteChannelLbScores,
+} from "./leaderboard.js";
 import { createEventRoutes } from "./events.js";
 import { canReadShow, createShowRoutes } from "./shows.js";
 import {
@@ -110,6 +115,7 @@ export interface ConsoleAppOptions {
   team: TeamDb;
   /** The key-value store; the state stack serves its API from the same tables. */
   kvstore: KvStoreDb;
+  leaderboards: LeaderboardDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
@@ -188,6 +194,7 @@ export function createConsoleApp({
   sites,
   team,
   kvstore,
+  leaderboards,
   posters,
   artifacts,
   cdnBaseUrl,
@@ -273,6 +280,7 @@ export function createConsoleApp({
     assets,
     sites,
     kvstore,
+    leaderboards,
   });
   const { projectAccess, projectResource, memberTeamIds } = access;
   const history = createResourceHistory(team, logger);
@@ -952,6 +960,10 @@ export function createConsoleApp({
             row.projectId ?? null,
             logger,
           );
+        // And the scores, which die with their channel for the same reason
+        // (`docs/decisions.md` *Serverless clients* #4).
+        if (row.kind === "auth")
+          await deleteChannelLbScores(leaderboards, row.id, logger);
         await audit(id.subject, "channel.delete", row.id);
         await channelHistory(row, id.subject, "resource.delete");
         return undefined;
@@ -1058,6 +1070,18 @@ export function createConsoleApp({
     audit,
   });
 
+  const leaderboardRoutes = createLeaderboardRoutes({
+    leaderboards,
+    access,
+    crumbs,
+    history,
+    docUrl: urls.doc,
+    clock,
+    logger,
+    writeSlot: createWriteSlot({ kv, clock }),
+    audit,
+  });
+
   const teamRoutes = createTeamRoutes({
     db,
     team,
@@ -1065,6 +1089,7 @@ export function createConsoleApp({
     assets,
     sites,
     kvstore,
+    leaderboards,
     kv,
     clock,
     audit,
@@ -1095,6 +1120,7 @@ export function createConsoleApp({
       ...assetRoutes,
       ...siteRoutes,
       ...kvStoreRoutes,
+      ...leaderboardRoutes,
       ...channelRedisRoutes,
       ...channelDocKeyRoutes,
       ...gatewayRoutes,

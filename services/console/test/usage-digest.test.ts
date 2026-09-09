@@ -412,6 +412,49 @@ describe("usage digest", () => {
     expect(s.sent[0]!.message).toMatch(/growth is unmonitored/);
   });
 
+  it("names the largest boards once leaderboard_scores crosses its line", async () => {
+    const s = setup();
+    const usage = {
+      tableBytes: GIB,
+      top: [
+        { boardId: "lb_a", scores: 9_000 },
+        { boardId: "lb_b", scores: 10 },
+      ],
+    };
+    const r = await runUsageDigest({
+      stage: "dev",
+      leaderboards: {
+        scoresTableBytes: async () => usage.tableBytes,
+        topBoards: async () => usage.top,
+      },
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(r.lb).toEqual(usage);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["lb:bytes"]);
+    expect(r.warnings[0]!.text).toMatch(/lb_a \(9000 scores\)/);
+    // Its own threshold: a quarter of kv's, so a size under kv's line still
+    // warns here.
+    expect(usage.tableBytes).toBeLessThan(2 * GIB);
+  });
+
+  it("announces a failing leaderboard read, like the kv one", async () => {
+    const s = setup();
+    const r = await runUsageDigest({
+      stage: "dev",
+      leaderboards: {
+        scoresTableBytes: () => Promise.reject(new Error("database is away")),
+        topBoards: () => Promise.reject(new Error("database is away")),
+      },
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(r.errors).toEqual(["lb", "lb-top"]);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["lb:unread"]);
+  });
+
   it("formats bytes for humans", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(1536)).toBe("1.5 KiB");

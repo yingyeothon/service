@@ -1,10 +1,12 @@
 import { nowSec, systemClock, ulid, type Clock, type Logger } from "@yyt/core";
+import { lbRetainCutoff } from "@yyt/console-db";
 import type {
   AssetsDb,
   CatalogDb,
   ConsoleDb,
   ExpiredChannel,
   KvStoreDb,
+  LeaderboardDb,
   TeamDb,
   StateDb,
 } from "@yyt/console-db";
@@ -336,6 +338,212 @@ async function readCursor(
     return (await kv.get(KV_SWEEP_CURSOR_KEY)) ?? undefined;
   } catch (e) {
     logger.warn("kv sweep cursor read failed", {
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return undefined;
+  }
+}
+
+/** Rows one leaderboard sweep statement takes; the kv sweep's bound. */
+export const LB_SWEEP_BATCH = 1_000;
+/**
+ * Statements the leaderboard sweep may spend. **Its own budget, not the kv
+ * sweep's** (`rules/data.md` already records 20 x 1,000 as the ceiling one
+ * sweep may hold): the two reclaim different tables, and a stage whose kv
+ * expiry ran long would otherwise silently stop dropping retired buckets.
+ */
+export const LB_SWEEP_MAX_BATCHES = 20;
+/** Live boards read per page while walking a stage. */
+const LB_SWEEP_PAGE = 100;
+/**
+ * Where yesterday's retention walk stopped -- its own key, for the same reason
+ * it has its own budget. Ids are ULIDs, so without a cursor a stage with more
+ * boards than the budget can reach would sweep its oldest boards for ever and
+ * its newest never.
+ */
+export const LB_SWEEP_CURSOR_KEY = "lb:sweep:after";
+
+export interface LbSweepResult {
+  /** Rows removed, over every phase. */
+  deleted: number;
+  /** Soft-deleted boards whose last row went, so the row itself could go. */
+  purged: number;
+  /** A budget ran out: the rest waits for tomorrow, from `cursor`. */
+  truncated: boolean;
+  /** The channel phase specifically ran out -- the one nothing else names. */
+  channelsTruncated: boolean;
+  /** Where the retention walk stopped; `undefined` = it wrapped to the start. */
+  cursor: string | undefined;
+}
+
+/**
+ * Daily leaderboard sweep, sharing the `expire` schedule. Three phases, in the
+ * kv sweep's order and for the kv sweep's reasons:
+ *
+ * 1. the scores of the auth channels this run finished with. Their ids exist
+ *    nowhere else once the channel row is gone, so work skipped here is work
+ *    lost. One indexed statement per channel (`leaderboard_scores_channel`).
+ * 2. drain the boards a delete soft-deleted and drop the row once its last
+ *    score is gone.
+ * 3. retention: every bucket of a live board older than `retainPeriods`. This
+ *    is the phase that can exceed the budget on a large stage, so it is the
+ *    one that carries the cursor.
+ */
+export async function runLeaderboardSweep({
+  leaderboards,
+  channels = [],
+  kv,
+  clock = systemClock,
+  logger,
+  batch = LB_SWEEP_BATCH,
+  maxBatches = LB_SWEEP_MAX_BATCHES,
+}: {
+  leaderboards: LeaderboardDb;
+  /** Auth channels this run soft-deleted or hard-purged; their players' scores go too. */
+  channels?: { id: string }[];
+  /** Carries the retention walk's cursor between runs. */
+  kv?: Kv;
+  clock?: Clock;
+  logger: Logger;
+  batch?: number;
+  maxBatches?: number;
+}): Promise<LbSweepResult> {
+  const now = nowSec(clock);
+  let spent = 0;
+  let deleted = 0;
+  let purged = 0;
+  // One charge per id so every channel is at least probed, plus `maxBatches`
+  // more to drain the ones that had rows -- the kv sweep's arithmetic.
+  let channelSpent = 0;
+  const channelBudget = () => channelSpent < channels.length + maxBatches;
+  const budget = () => spent < maxBatches;
+
+  const drain = async (
+    take: () => Promise<number>,
+    charge: () => void,
+  ): Promise<boolean> => {
+    charge();
+    const gone = await take();
+    deleted += gone;
+    return gone >= batch;
+  };
+  const chargeChannel = () => channelSpent++;
+  const chargeShared = () => spent++;
+
+  let channelsTruncated = false;
+  let truncated = false;
+
+  for (const { id: channelId } of channels) {
+    if (!channelBudget()) {
+      channelsTruncated = true;
+      break;
+    }
+    let more = true;
+    while (more && channelBudget())
+      more = await drain(
+        () => leaderboards.deleteChannelScores(channelId, batch),
+        chargeChannel,
+      );
+    if (more) channelsTruncated = true;
+  }
+
+  for (const board of await leaderboards.listDeletedBoards(LB_SWEEP_PAGE)) {
+    if (!budget()) {
+      truncated = true;
+      break;
+    }
+    let more = true;
+    while (more && budget())
+      more = await drain(
+        () => leaderboards.deleteScoresBatch(board.id, batch),
+        chargeShared,
+      );
+    if (more) truncated = true;
+    // Only once the last row is gone: the child FK cascades, and a cascade
+    // over a board at its cap does not fit the 5 s statement limit.
+    else if (await leaderboards.deleteBoardRow(board.id)) purged++;
+  }
+
+  let cursor = await readLbCursor(kv, logger);
+  for (;;) {
+    if (!budget()) {
+      truncated = true;
+      break;
+    }
+    const page = await leaderboards.listLiveBoards({
+      ...(cursor === undefined ? {} : { after: cursor }),
+      limit: LB_SWEEP_PAGE,
+    });
+    if (page.length === 0) {
+      cursor = undefined;
+      break;
+    }
+    let stopped = false;
+    for (const board of page) {
+      if (!budget()) {
+        truncated = true;
+        stopped = true;
+        break;
+      }
+      let boardDone = true;
+      for (const period of board.periods) {
+        const before = lbRetainCutoff(period, board.retainPeriods, now);
+        // `alltime` has no cutoff and is never dropped.
+        if (before === undefined) continue;
+        let more = true;
+        while (more && budget())
+          more = await drain(
+            () =>
+              leaderboards.deleteOldBuckets(board.id, period, before, batch),
+            chargeShared,
+          );
+        if (more) boardDone = false;
+      }
+      // Only a board whose every period ran out of retired rows moves the
+      // cursor: advancing on entry would record a board the budget cut short
+      // as finished, and its rows would wait for a whole wrap of the stage.
+      if (!boardDone) {
+        truncated = true;
+        stopped = true;
+        break;
+      }
+      cursor = board.id;
+    }
+    if (stopped) break;
+  }
+  if (kv)
+    // Best-effort: a lost cursor costs one restart at the oldest board, never
+    // a failed sweep. The 40-day TTL keeps the every-key-has-a-TTL rule.
+    try {
+      if (cursor === undefined) await kv.del(LB_SWEEP_CURSOR_KEY);
+      else await kv.set(LB_SWEEP_CURSOR_KEY, cursor, { ex: 40 * 24 * 3600 });
+    } catch (e) {
+      logger.warn("leaderboard sweep cursor write failed", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+
+  if (channelsTruncated) truncated = true;
+  logger.info("leaderboard sweep", {
+    deleted,
+    purged,
+    truncated,
+    channelsTruncated,
+    cursor,
+  });
+  return { deleted, purged, truncated, channelsTruncated, cursor };
+}
+
+/** The retention walk's stored position; any Redis fault reads as "start from the top". */
+async function readLbCursor(
+  kv: Kv | undefined,
+  logger: Logger,
+): Promise<string | undefined> {
+  if (!kv) return undefined;
+  try {
+    return (await kv.get(LB_SWEEP_CURSOR_KEY)) ?? undefined;
+  } catch (e) {
+    logger.warn("leaderboard sweep cursor read failed", {
       message: e instanceof Error ? e.message : String(e),
     });
     return undefined;

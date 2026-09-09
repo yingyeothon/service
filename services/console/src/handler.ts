@@ -7,6 +7,7 @@ import {
   createTeamDb,
   createPrismaClient,
   createKvStoreDb,
+  createLeaderboardDb,
   createSitesDb,
   createStateDb,
   mysqlOptionsFromEnv,
@@ -15,6 +16,7 @@ import {
   type ConsoleDb,
   type EventsDb,
   type KvStoreDb,
+  type LeaderboardDb,
   type ShowsDb,
   type SitesDb,
   type TeamDb,
@@ -40,6 +42,7 @@ import {
   runCatalogSweep,
   runExpire,
   runKvStoreSweep,
+  runLeaderboardSweep,
   runRedisAclReconcile,
   runRedisUsageReport,
 } from "./expire.js";
@@ -75,6 +78,7 @@ interface Deps {
   team: TeamDb;
   /** The key-value store; the state stack serves its API from the same tables. */
   kvstore: KvStoreDb;
+  leaderboards: LeaderboardDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
   kv: Kv;
@@ -117,6 +121,7 @@ function getDeps(): Promise<Deps> {
       sites: createSitesDb(raw),
       team: createTeamDb(raw, { newHistoryId: historyId }),
       kvstore: createKvStoreDb(raw),
+      leaderboards: createLeaderboardDb(raw),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
@@ -169,6 +174,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     sites,
     team,
     kvstore,
+    leaderboards,
     state,
     kv,
     redisAcl,
@@ -220,6 +226,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     sites,
     team,
     kvstore,
+    leaderboards,
     state,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
@@ -322,6 +329,7 @@ export const expire = async (): Promise<void> => {
     sites,
     team,
     kvstore,
+    leaderboards,
     state,
     redisAcl,
     kv,
@@ -378,6 +386,7 @@ export const expire = async (): Promise<void> => {
         stage,
         redis,
         kvstore,
+        leaderboards,
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
         distributionId: process.env.ARTIFACT_CDN_DISTRIBUTION_ID || undefined,
@@ -392,6 +401,16 @@ export const expire = async (): Promise<void> => {
     () =>
       runKvStoreSweep({
         kvstore,
+        channels: deletedAuthChannels,
+        kv,
+        logger,
+      }),
+    // Its own step and its own budget: the two sweeps reclaim different
+    // tables, so a stage whose kv expiry ran long must still drop retired
+    // leaderboard buckets.
+    () =>
+      runLeaderboardSweep({
+        leaderboards,
         channels: deletedAuthChannels,
         kv,
         logger,

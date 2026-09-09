@@ -433,17 +433,41 @@ export const lbTopLimit = (limit: number | undefined): number => {
  * client that asked for row 5,000 and silently got row 1,000 would page a
  * ranking it never requested.
  */
-export const lbTopOffset = (offset: number | undefined): number => {
+export const lbTopOffset = (
+  offset: number | undefined,
+  max: number = LB_TOP_OFFSET_MAX,
+): number => {
   const n = Math.trunc(Number(offset ?? 0));
   if (!Number.isFinite(n) || n < 0)
     throw new AppError("bad_request", "offset must be a non-negative integer");
-  if (n > LB_TOP_OFFSET_MAX)
-    throw new AppError(
-      "bad_request",
-      `offset must be at most ${LB_TOP_OFFSET_MAX}`,
-    );
+  if (n > max)
+    throw new AppError("bad_request", `offset must be at most ${max}`);
   return n;
 };
+
+/**
+ * The rank of every row of a page, given the true rank of its first row
+ * (`1 + countBetter`). Equal scores share a rank and the next distinct score
+ * takes the position it actually occupies, which is what `1 + count(better)`
+ * means row by row -- so the page needs one `count`, not one per row.
+ *
+ * Shared by the LB API and the console table: a ranking numbered two ways is
+ * two rankings.
+ */
+export function lbRankPage<T extends { score: number }>(
+  rows: readonly T[],
+  firstRank: number,
+): (T & { rank: number })[] {
+  let rank = firstRank;
+  let prev: number | undefined;
+  return rows.map((row, i) => {
+    if (prev === undefined || row.score !== prev) {
+      rank = firstRank + i;
+      prev = row.score;
+    }
+    return { ...row, rank };
+  });
+}
 
 /** A 409 that names *why* a submission was refused, for the cases with a fix. */
 const capConflict = (message: string, reason: string): AppError =>
@@ -563,7 +587,18 @@ export interface LeaderboardDb {
     boardId: string,
     period: LbPeriod,
     periodKey: string,
-    opts: { order: LbOrder; limit?: number; offset?: number },
+    opts: {
+      order: LbOrder;
+      limit?: number;
+      offset?: number;
+      /**
+       * How deep `offset` may go. {@link LB_TOP_OFFSET_MAX} unless the caller
+       * says otherwise -- the console's own table pages to the board cap,
+       * because an operator looking for one player's row on a full board would
+       * otherwise stop at row 1,000.
+       */
+      maxOffset?: number;
+    },
   ): Promise<LbScoreRow[]>;
   /**
    * How many rows beat `score` on a board of this order -- a rank is
@@ -1029,7 +1064,7 @@ export function createLeaderboardDb(prisma: PrismaClient): LeaderboardDb {
           where: bucketWhere(boardId, period, periodKey),
           orderBy: [{ score: opts.order }, { owner_id: opts.order }],
           take: lbTopLimit(opts.limit),
-          skip: lbTopOffset(opts.offset),
+          skip: lbTopOffset(opts.offset, opts.maxOffset),
         });
         return rows.map(toScore);
       }),
@@ -1406,7 +1441,7 @@ export function createMemoryLeaderboardDb(
 
     listTop: async (boardId, period, periodKey, opts) => {
       const sign = opts.order === "desc" ? -1 : 1;
-      const offset = lbTopOffset(opts.offset);
+      const offset = lbTopOffset(opts.offset, opts.maxOffset);
       return inBucket(boardId, period, periodKey)
         .sort(
           (a, b) =>

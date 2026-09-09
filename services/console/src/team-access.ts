@@ -8,6 +8,8 @@ import type {
   ConsoleDb,
   KvCollectionRow,
   KvStoreDb,
+  LeaderboardDb,
+  LeaderboardRow,
   TeamDb,
   TeamRole,
   TeamRow,
@@ -70,7 +72,7 @@ export interface ProjectAccess extends TeamAccess {
   project: ProjectRow;
 }
 
-export type ResourceKind = "channel" | "app" | "bundle" | "site" | "kv";
+export type ResourceKind = "channel" | "app" | "bundle" | "site" | "kv" | "lb";
 export type ResourceRowOf<K extends ResourceKind> = K extends "channel"
   ? ChannelRow
   : K extends "app"
@@ -79,7 +81,9 @@ export type ResourceRowOf<K extends ResourceKind> = K extends "channel"
       ? AssetBundleRow
       : K extends "site"
         ? SiteRow
-        : KvCollectionRow;
+        : K extends "kv"
+          ? KvCollectionRow
+          : LeaderboardRow;
 
 export interface ResourceAccess<K extends ResourceKind> extends ProjectAccess {
   row: ResourceRowOf<K>;
@@ -92,6 +96,7 @@ export interface TeamAccessDeps {
   assets: AssetsDb;
   sites: SitesDb;
   kvstore: KvStoreDb;
+  leaderboards: LeaderboardDb;
 }
 
 export function createTeamAccess({
@@ -101,6 +106,7 @@ export function createTeamAccess({
   assets,
   sites,
   kvstore,
+  leaderboards,
 }: TeamAccessDeps) {
   /** Standing of `id` in `teamRow`, or `undefined` when it has none and is not an admin. */
   async function standingOf(
@@ -175,6 +181,13 @@ export function createTeamAccess({
         // nothing addresses it, so it is gone as far as every route is
         // concerned (`findCollection` hands back deleted rows for the sweep).
         const row = await kvstore.findCollection(id);
+        return (row?.deletedAt === null ? row : undefined) as
+          ResourceRowOf<K> | undefined;
+      }
+      case "lb": {
+        // Same rule as a soft-deleted collection: a draining board holds no
+        // name any more, so nothing addresses it.
+        const row = await leaderboards.findBoard(id);
         return (row?.deletedAt === null ? row : undefined) as
           ResourceRowOf<K> | undefined;
       }
