@@ -104,6 +104,12 @@ async function serverKey(projectId, label) {
 
 const aliceId = "a".repeat(32);
 const bobId = "b".repeat(32);
+/**
+ * A `meta` whose integer is past 2^53: the field is JSON **text**, stored byte
+ * for byte, so it has to come back unchanged. A platform that parsed and
+ * re-encoded it would answer `9007199254740992`.
+ */
+const ALICE_META = '{"name":"alice","build":9007199254740993}';
 
 /** One board of the main project; recorded so the `finally` can drop it. */
 async function board(label, body) {
@@ -259,7 +265,7 @@ try {
   const first = await api(`/lb/${open?.id}/scores/me`, {
     method: "PUT",
     headers: alice,
-    body: { score: 100, meta: '{"name":"alice"}' },
+    body: { score: 100, meta: '{"name":"alice","build":1}' },
   });
   check(
     "PUT a first score (state INSERT on leaderboard_scores)",
@@ -270,10 +276,16 @@ try {
   );
 
   // ---- UPDATE: a second submission that beats it ----------------------
+  // `meta` rides along with the score, because an accepted submission replaces
+  // it: omitting it here would store NULL, which is the documented behaviour
+  // (`meta = IF(accepted, VALUES(meta), meta)`) and not what a client that
+  // wants a display name to survive should do. The integer past 2^53 is the
+  // point of the field being **text**: a platform that re-encoded it would
+  // hand back 9007199254740992.
   const better = await api(`/lb/${open?.id}/scores/me`, {
     method: "PUT",
     headers: alice,
-    body: { score: 250 },
+    body: { score: 250, meta: ALICE_META },
   });
   check(
     "PUT a better score (state UPDATE on leaderboard_scores)",
@@ -379,8 +391,10 @@ try {
     `${page.status} ${page.text.slice(0, 200)}`,
   );
   check(
+    // Byte for byte, the rejected submission included: `score: 10` carried no
+    // `meta` and must not have cleared the accepted one.
     "meta comes back byte for byte",
-    (page.body?.scores ?? []).some((s) => s.meta === '{"name":"alice"}'),
+    (page.body?.scores ?? []).some((s) => s.meta === ALICE_META),
     JSON.stringify((page.body?.scores ?? []).map((s) => s.meta)),
   );
 
