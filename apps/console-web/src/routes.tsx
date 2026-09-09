@@ -12,6 +12,7 @@ import { HomePage } from "./pages/Home";
 import { InstallerPage } from "./pages/Installer";
 import { IssuePage } from "./pages/Issue";
 import { KvCollectionPage } from "./pages/KvCollection";
+import { LeaderboardPage } from "./pages/Leaderboard";
 import { VersionPage } from "./pages/Version";
 import { MembersPage } from "./pages/Members";
 import { ProjectPage } from "./pages/Project";
@@ -112,6 +113,16 @@ export const ROUTES: AppRoute[] = [
     element: <Navigate to="/teams" replace />,
   },
   { path: "/kv/:id", guard: "/kv", element: <KvCollectionPage /> },
+  {
+    path: "/leaderboards",
+    guard: "/leaderboards",
+    element: <Navigate to="/teams" replace />,
+  },
+  {
+    path: "/leaderboards/:id",
+    guard: "/leaderboards",
+    element: <LeaderboardPage />,
+  },
   { path: "/installer", guard: "/installer", element: <InstallerPage /> },
   { path: "/tokens", guard: "/tokens", element: <TokensPage /> },
   { path: "/app-login", guard: "/app-login", element: <AppLoginPage /> },

@@ -193,6 +193,24 @@ yyt kv entry clear <kv> [--owner <id>]                 # every entry of one play
 
 `get` prints the collection's KV API paths (`apiBase`, `apiMeta`, `apiName`, `apiEntries`, `apiOwner`; `{col}` in every KV API route takes the id or the name): a game server calls them with the project's document API key (`yyt channels doc-key …` on an auth channel), a player with the channel JWT it holds. `--owner` names a player's namespace and only makes sense on a per-owner collection — **either** scope being `user` makes one; a shared collection refuses it. `server` is the doc apiKey and the console: a player's JWT is refused a `server` scope, which is what an announcement a cron writes or telemetry only the server reads needs. `user`-read + `project`-write is the mail shape: any player may create (never overwrite) a row in another owner's namespace, under a key starting with its own id, and the `FROM` column appears in `yyt kv entries` once a row carries that stamp. An encrypted collection's values can be written and read only through the KV API, so `entries`/`entry get` show keys, sizes and times for it (`entry get` then prints the entry's shape instead of a value and is not JSON — use `--json` in scripts) and `entry put` is refused. Values are JSON text stored as sent, at most 16 KiB; `--ttl 0` clears an expiry and an omitted `--ttl` keeps whatever the row has.
 
+### Leaderboards
+
+```sh
+yyt lb list                                            # the project context's boards (name, submit, rule, order, periods, max)
+yyt lb create <name> --submit server|owner [--rule best|latest|sum] [--order desc|asc]
+                     [--periods alltime,daily,weekly] [--description d] [--max-entries N] [--retain-periods N]
+                                                       # submit, rule, order and periods are fixed for good
+yyt lb get|update|delete <lb>                          # id (lb_…) or name; update: [--name n] [--description d] [--max-entries N] [--retain-periods N]
+yyt lb top <lb> [--period alltime|daily|weekly|<key>] [--limit n] [--offset n]
+yyt lb score get <lb> <ownerId> [--period p]           # one owner's score and rank in that bucket
+yyt lb score delete <lb> <ownerId>                     # every period of the board at once
+yyt lb clear <lb> <period>                             # empty one bucket (a period name, or a key like 2026-09-10)
+```
+
+**There is no `lb score put`.** The console never writes a score (`docs/decisions.md` _Serverless clients_ #2): every row arrives through the LB API on the state stack, which is what makes each one name the credential that wrote it. A game server submits with the project's document API key (`yyt channels doc-key …` on an auth channel), a player with the channel JWT it holds and the path `…/scores/me`; `get` prints those paths (`apiBase`, `apiMeta`, `apiName`, `apiTop`, `apiScore`).
+
+`--period` names a period (`alltime`, `daily`, `weekly`) for the live bucket or a key (`2026-09-10`, `2026-W37`) for a past one; omitted, it is the board's first period at its live key. Keys are computed by the platform in `Asia/Seoul`, never by the client, and `lb top` prints which bucket answered on **stderr** so a piped table stays a table. `rank` is `1 + count(better)`, so equal scores share one. Scores are safe integers; an optional `meta` is JSON text stored byte for byte (at most 1 KiB) and belongs to the accepted score — `best` keeps the better one, `latest` the newest, `sum` adds and saturates.
+
 `push` searches `.yyt.json` from the current directory, not from `<dir>` (the directory is a payload, not a project). It keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`, 2 MB per file and 20 MB per bundle.
 
 Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing/ambiguous context), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending platform member or team seat, or the action needs an owner/admin), `5` not found (including a team/project/resource name that does not resolve), `6` context missing or ambiguous (no request was made).

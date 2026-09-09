@@ -29,7 +29,7 @@ GET|PATCH|DELETE /projects/{prj}      member / member / owner|admin (409 while r
 GET|POST /projects/{prj}/versions ; POST …/versions/bump {part} ; GET|PATCH|DELETE …/versions/{ver}
 GET|POST …/versions/{ver}/links ; DELETE …/links/{id}
 GET|POST /projects/{prj}/issues[?status=&versionId=] ; GET|PATCH …/issues/{n} ; POST …/issues/{n}/close|reopen ; comments as above
-POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles | /projects/{prj}/sites | /projects/{prj}/kv
+POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles | /projects/{prj}/sites | /projects/{prj}/kv | /projects/{prj}/leaderboards
 GET|PUT  /admin/settings/installer-app   admin
 ```
 
@@ -60,6 +60,8 @@ Without `sort` a list keeps its historical order, which is what the CLI relies o
 /projects/{prj}/sites         name url createdBy updatedAt
 /projects/{prj}/kv            name readScope writeScope entries createdBy updatedAt   q: name, description
 /kv/{id}/entries              (cursor-paged, keyset on key: order asc|desc only; prefix, owner)
+/projects/{prj}/leaderboards  name submit rule createdBy updatedAt              q: name, description
+/leaderboards/{id}/scores     (no sort: one bucket in the board's own order; period, limit, offset)
 /sites/{site}/deploys         id status files size createdAt         (the newest N, ordered as asked)
 /catalog/apps/{app}/artifacts version platform size createdAt
 /members                      login role createdAt approvedAt
@@ -67,7 +69,8 @@ Without `sort` a list keeps its historical order, which is what the CLI relies o
 ```
 
 Single-resource routes stay id-based and unchanged in path: `/channels/{id}`, `/catalog/apps/{appId}`,
-`/assets/bundles/{bundleId}`, `/sites/{siteId}`, `/kv/{id}` (plus their sub-routes: entries, deploys, deploys/{id}/commit, settings, extend, rotate-secret, redis-user, doc-key, artifacts, artifacts/cleanup; gateway lookups are top-level `GET /gw/health`, `GET /gw/channels/{id}`).
+`/assets/bundles/{bundleId}`, `/sites/{siteId}`, `/kv/{id}`, `/leaderboards/{id}` (plus their sub-routes: entries, scores, scores/{ownerId}, periods/{period}, deploys, deploys/{id}/commit, settings, extend, rotate-secret, redis-user, doc-key, artifacts, artifacts/cleanup; gateway lookups are top-level `GET /gw/health`, `GET /gw/channels/{id}`).
+A leaderboard has **no route that writes a score** (`docs/leaderboard.md`): the console reads and deletes, and every score arrives through the state stack's `/lb/*`.
 `GET /channels` lists every channel across the caller's teams (`?scope=all` for admin).
 
 Resource views carry `teamId, teamName, projectId, projectName, createdBy` (login) for breadcrumbs;

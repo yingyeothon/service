@@ -7,6 +7,7 @@ import type {
   AssetBundle,
   CatalogApp,
   KvCollection,
+  Leaderboard,
   ProjectDetail,
   Site,
   TeamDetail,
@@ -34,6 +35,8 @@ const mockApi = {
   createSite: vi.fn(),
   projectKv: vi.fn(),
   createKv: vi.fn(),
+  projectLeaderboards: vi.fn(),
+  createLeaderboard: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -117,6 +120,21 @@ const KV: KvCollection = {
   maxEntries: 10000,
   maxEntriesPerOwner: 100,
   entries: 7,
+  createdAt: 0,
+  updatedAt: 60,
+};
+
+const LB: Leaderboard = {
+  ...crumbs,
+  createdBy: "alice",
+  id: "lb_1",
+  name: "highscores",
+  submit: "owner",
+  rule: "best",
+  order: "desc",
+  periods: ["alltime", "daily"],
+  maxEntries: 2000,
+  retainPeriods: 4,
   createdAt: 0,
   updatedAt: 60,
 };
@@ -434,6 +452,104 @@ describe("kv tab", () => {
   });
 });
 
+describe("leaderboards tab", () => {
+  it("lists boards with their rules and links to the board", async () => {
+    vi.mocked(mockApi.projectLeaderboards).mockResolvedValue([
+      LB,
+      { ...LB, id: "lb_2", name: "times", order: "asc", rule: "latest" },
+    ]);
+    mount("leaderboards");
+    const link = await screen.findByRole("link", { name: "highscores" });
+    expect(link).toHaveAttribute("href", "/leaderboards/lb_1");
+    expect(headers()).toEqual([
+      "Name",
+      "Submit",
+      "Rule",
+      "Order",
+      "Periods",
+      "Max per period",
+      "Updated",
+    ]);
+    expect(
+      within(link.closest("tr")!)
+        .getAllByRole("cell")
+        .map((c) => c.textContent)
+        .slice(1, 6),
+    ).toEqual(["owner", "best", "desc", "alltime, daily", "2000"]);
+    expect(mockApi.projectLeaderboards).toHaveBeenCalledWith("prj_1", {});
+  });
+
+  it("creates with the chosen rules and periods, and omits the defaults", async () => {
+    vi.mocked(mockApi.createLeaderboard).mockResolvedValue({
+      ...LB,
+      id: "lb_3",
+      description: null,
+      api: {
+        configured: true,
+        baseUrl: "https://doc.example",
+        metaPath: "/lb/lb_3",
+        namePath: "/lb/n3",
+        topPath: "/lb/lb_3/top",
+        scorePath: "/lb/lb_3/scores/{ownerId}",
+      },
+    });
+    mount("leaderboards");
+    const drawer = await openDrawer("leaderboard");
+    const button = within(drawer).getByRole("button", {
+      name: "Create leaderboard",
+    });
+    expect(button).toBeDisabled();
+    await userEvent.type(input("Name", drawer), " ladder ");
+    expect(button).toBeEnabled();
+    // `submit: owner` is the default, and it says what the trust costs.
+    expect(
+      within(drawer).getByText(/the scores are trusted/),
+    ).toBeInTheDocument();
+    await userEvent.selectOptions(
+      within(drawer).getByLabelText(/^Submit/),
+      "server",
+    );
+    expect(within(drawer).queryByText(/the scores are trusted/)).toBeNull();
+    await userEvent.selectOptions(
+      within(drawer).getByLabelText(/^Order/),
+      "asc",
+    );
+    // Periods are checkboxes; a board needs at least one.
+    await userEvent.click(within(drawer).getByLabelText("alltime"));
+    expect(
+      within(drawer).getByText("A board needs at least one period."),
+    ).toBeInTheDocument();
+    expect(button).toBeDisabled();
+    // Chosen out of order, sent in the canonical one.
+    await userEvent.click(within(drawer).getByLabelText("weekly"));
+    await userEvent.click(within(drawer).getByLabelText("daily"));
+    expect(button).toBeEnabled();
+    const retain = input("Past periods kept", drawer);
+    await userEvent.clear(retain);
+    await userEvent.type(retain, "0");
+    await userEvent.click(button);
+    expect(mockApi.createLeaderboard).toHaveBeenCalledWith("prj_1", {
+      name: "ladder",
+      submit: "server",
+      rule: "best",
+      order: "asc",
+      periods: ["daily", "weekly"],
+      retainPeriods: 0,
+    });
+    await waitFor(() =>
+      expect(mockApi.projectLeaderboards).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() => expect(mockApi.project).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("says when there is nothing yet", async () => {
+    vi.mocked(mockApi.projectLeaderboards).mockResolvedValue([]);
+    mount("leaderboards");
+    expect(await screen.findByText("No leaderboards yet.")).toBeInTheDocument();
+  });
+});
+
 describe("read-only standing", () => {
   it("hides every create form from a seatless admin", async () => {
     vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
@@ -442,6 +558,7 @@ describe("read-only standing", () => {
       ["assets", "New bundle"],
       ["sites", "New site"],
       ["kv", "New collection"],
+      ["leaderboards", "New leaderboard"],
     ] as const) {
       const r = mount(tab);
       await screen.findByRole("table");

@@ -1,0 +1,21 @@
+id:            lb_01j5abcdefghjkmnpqrstvwxyz
+name:          highscores
+project:       dooroo/game
+description:   the ladder
+submit:        owner
+rule:          best
+order:         desc
+periods:       alltime,daily
+maxEntries:    2000
+retainPeriods: 4
+period:        alltime
+scores:        2
+createdBy:     octo
+created:       2025-08-24T01:46:40Z
+updated:       2025-08-24T01:48:20Z
+apiConfigured: true
+apiBase:       https://doc-dev.yyt.life
+apiMeta:       /lb/lb_01j5abcdefghjkmnpqrstvwxyz
+apiName:       /lb/highscores
+apiTop:        /lb/lb_01j5abcdefghjkmnpqrstvwxyz/top
+apiScore:      /lb/lb_01j5abcdefghjkmnpqrstvwxyz/scores/{ownerId}
