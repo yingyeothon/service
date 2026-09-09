@@ -734,6 +734,7 @@ describe("projects", () => {
       bundles: 1,
       sites: 0,
       kv: 0,
+      lb: 0,
       versions: 0,
       issues: 0,
     });

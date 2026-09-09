@@ -327,6 +327,7 @@ model members {
   show_entry_likes     show_entry_likes[]
   show_comments        show_comments[]
   kv_collections       kv_collections[]
+  leaderboards         leaderboards[]
 }
 
 model schema_migrations {
@@ -419,6 +420,7 @@ model teams {
   asset_bundles  asset_bundles[]
   sites          sites[]
   kv_collections kv_collections[]
+  leaderboards   leaderboards[]
 
   @@index([created_by], map: "teams_creator")
 }
@@ -506,6 +508,7 @@ model projects {
   asset_bundles     asset_bundles[]
   sites             sites[]
   kv_collections    kv_collections[]
+  leaderboards      leaderboards[]
 
   @@unique([team_id, name], map: "projects_team_name")
   @@index([created_by], map: "projects_creator")
@@ -922,4 +925,108 @@ enum kv_scope {
   server
   project
   user
+}
+
+/// A board of scores under a project (docs/decisions.md *Serverless clients*
+/// #1-#4). Served to games by the state stack under `/lb/*`; console owns the
+/// schema and every migration.
+///
+/// `submit`, `rule`, `score_order` and `periods` never change after creation: a
+/// board that changed how a new score meets the stored one, or which buckets
+/// exist, would be ranking rows written under two different rules.
+model leaderboards {
+  id                 String               @id @db.VarChar(64)
+  team_id            String               @db.VarChar(64)
+  project_id         String               @db.VarChar(64)
+  name               String               @db.VarChar(255)
+  description        String?              @db.MediumText
+  /// Who may write a score: the doc apiKey and console (`server`), or a player
+  /// for its own row as well (`owner`). The apiKey may submit either way.
+  submit             lb_submit
+  /// How a new score meets the stored one.
+  rule               lb_rule
+  /// `desc` ranks the highest first, `asc` the lowest (times). `score_order`
+  /// rather than `order`, which is reserved in SQL.
+  score_order        lb_order
+  /// The configured buckets, a comma list in the canonical order
+  /// `alltime,daily,weekly`. Read whole on every submission, never queried by
+  /// member.
+  periods            String               @db.VarChar(64)
+  max_entries        Int                  @default(2000)
+  retain_periods     Int                  @default(4)
+  /// Creator, kept for display; authorization is team membership.
+  owner_id           String?              @db.VarChar(64)
+  /// Soft-delete claim. The name is freed at once (set to the id) and the
+  /// scores drain in bounded batches, inline first and by the sweep afterwards.
+  deleted_at         BigInt?
+  created_at         BigInt
+  updated_at         BigInt
+  members            members?             @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "leaderboards_owner")
+  teams              teams                @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "leaderboards_team_fk")
+  projects           projects             @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "leaderboards_project_fk")
+  leaderboard_scores leaderboard_scores[]
+
+  @@unique([team_id, name], map: "leaderboards_team_name")
+  @@index([owner_id], map: "leaderboards_owner")
+  @@index([project_id], map: "leaderboards_project")
+}
+
+/// One score per `(board, period, period_key, owner)`. The alltime bucket is
+/// `period = 'alltime'` with an empty `period_key`, so the one primary key
+/// addresses every shape. `period_key` and `owner_id` are `utf8mb4_bin` in the
+/// migration (a key is compared with `<` for retention and an identity
+/// byte-exactly), which this schema file cannot express.
+model leaderboard_scores {
+  board_id     String       @db.VarChar(64)
+  /// In the primary key **before** `period_key`: retention deletes a whole
+  /// bucket, and the key alone does not separate the three kinds under a
+  /// binary collation.
+  period       lb_period
+  period_key   String       @db.VarChar(16)
+  owner_id     String       @db.VarChar(64)
+  score        BigInt
+  /// A JSON text field the platform never parses, stored byte for byte as
+  /// sent, at most 1 KiB (a display name, a build id).
+  meta         String?      @db.Text
+  /// The auth channel whose credential wrote this row; NULL for no credential
+  /// the platform can name. Deliberately no foreign key -- channel rows are
+  /// purged 30 days after their soft-delete, and the score purge must stay
+  /// explicit console work.
+  channel_id   String?      @db.VarChar(64)
+  created_at   BigInt
+  updated_at   BigInt
+  leaderboards leaderboards @relation(fields: [board_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "leaderboard_scores_board")
+
+  @@id([board_id, period, period_key, owner_id])
+  /// `GET /top`, the `count(better)` behind every rank and the bucket total.
+  /// InnoDB appends `owner_id`, so a tie orders by owner id in the scan's own
+  /// direction.
+  @@index([board_id, period, period_key, score], map: "leaderboard_scores_rank")
+  @@index([channel_id], map: "leaderboard_scores_channel")
+}
+
+// The four leaderboard enums. MySQL orders an ENUM by declaration, so values
+// are appended only; removing one is a `-- contract` migration. Keep them
+// multi-line -- `test/enumOrder.test.ts` parses the body line by line, and a
+// comment inside a block would read as a value.
+enum lb_submit {
+  server
+  owner
+}
+
+enum lb_rule {
+  best
+  latest
+  sum
+}
+
+enum lb_order {
+  desc
+  asc
+}
+
+enum lb_period {
+  alltime
+  daily
+  weekly
 }

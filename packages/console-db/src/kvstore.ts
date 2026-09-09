@@ -6,6 +6,7 @@ import {
   dir,
   enumRank,
   escapeLike,
+  foldName,
   likeContains,
   matchesQ,
   normalizeQ,
@@ -331,14 +332,6 @@ export function checkKvOwnerId(owner: string): string {
 export function checkKvKey(key: string): void {
   if (!KV_KEY_RE.test(key)) throw new AppError("bad_request", "invalid key");
 }
-
-/**
- * How `utf8mb4_unicode_ci` sees a name: case-folded, accent-folded and PAD
- * SPACE. The id-shape check below has to compare the way the unique index
- * does, or `KV_01H…` and `kv_01h…` are one name to MariaDB and two to us.
- */
-const foldName = (name: string): string =>
-  name.trimEnd().normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
 
 /**
  * Whether the unique index would call `name` equal to some collection id --

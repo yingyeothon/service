@@ -53,6 +53,7 @@ const PROJECT: ProjectDetail = {
     bundles: 1,
     sites: 0,
     kv: 0,
+    lb: 0,
     versions: 1,
     issues: 1,
   },

@@ -7,6 +7,7 @@ import {
   createMemoryEventsDb,
   createMemoryShowsDb,
   createMemoryKvStoreDb,
+  createMemoryLeaderboardDb,
   createMemorySitesDb,
   createMemoryTeamDb,
   createMemoryStateDb,
@@ -96,6 +97,12 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     memberExists: (id) => db.members.has(id),
     loginOf,
   });
+  const leaderboards = createMemoryLeaderboardDb({
+    teamExists: (id) => teamDb.teams.has(id),
+    projectExists: (id) => teamDb.projects.has(id),
+    memberExists: (id) => db.members.has(id),
+    loginOf,
+  });
   const countIn = (
     pick: (r: { teamId: string | null; projectId: string | null }) => boolean,
   ) => ({
@@ -107,6 +114,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     // Soft-deleted collections count too: the FK is RESTRICT per row, so a
     // draining collection still blocks its project's deletion.
     kv: [...kvstore.collections.values()].filter(pick).length,
+    // Same for a draining leaderboard.
+    lb: [...leaderboards.boards.values()].filter(pick).length,
   });
   const teamDb = createMemoryTeamDb({
     memberExists: (id) => db.members.has(id),
