@@ -1,5 +1,10 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
-import type { KvCollectionUsage, KvStoreDb } from "@yyt/console-db";
+import type {
+  KvCollectionUsage,
+  KvStoreDb,
+  LbBoardUsage,
+  LeaderboardDb,
+} from "@yyt/console-db";
 import type { Kv } from "@yyt/redis";
 import {
   CloudWatchClient,
@@ -46,6 +51,8 @@ const LAST_READING_TTL_SEC = 3 * 24 * 3600;
 const GIB = 1024 ** 3;
 /** Collections named in the kv line; enough to see who grew, short enough to read. */
 const KV_TOP_COLLECTIONS = 5;
+/** Boards named in the leaderboard line, for the same reason. */
+const LB_TOP_BOARDS = 5;
 export const DEFAULT_THRESHOLDS: UsageThresholds = {
   /** Past this share of `maxmemory`, `allkeys-lru` is about to evict someone else's data. */
   redisMemoryRatio: 0.8,
@@ -61,6 +68,13 @@ export const DEFAULT_THRESHOLDS: UsageThresholds = {
    * to look at which collection grew (`rules/data.md`).
    */
   kvBytes: GIB,
+  /**
+   * `leaderboard_scores` beside `kv_entries` on the same shared host. A score
+   * row is small, so the threshold is lower than kv's: a board at its cap is
+   * about 25,000 rows, and passing this means a stage holds far more boards
+   * than a contest has games (`rules/data.md`).
+   */
+  lbBytes: GIB / 4,
 };
 
 export interface UsageThresholds {
@@ -69,6 +83,7 @@ export interface UsageThresholds {
   cdnBytesPerDay: number;
   bucketGrowthBytesPerDay: number;
   kvBytes: number;
+  lbBytes: number;
 }
 
 export interface BucketSize {
@@ -104,6 +119,8 @@ export interface UsageDigestOptions {
   distributionId?: string;
   /** The key-value store; omitted leaves the kv lines out of the digest. */
   kvstore?: Pick<KvStoreDb, "entriesTableBytes" | "topCollections">;
+  /** The leaderboards; omitted leaves the leaderboard lines out. */
+  leaderboards?: Pick<LeaderboardDb, "scoresTableBytes" | "topBoards">;
   kv: Kv;
   /** Publishes to the alarm topic; absent when the stage has none. */
   notify?: (subject: string, message: string) => Promise<void>;
@@ -131,6 +148,7 @@ export interface UsageDigestResult {
   bucket?: BucketSize & { growthSinceLast: number | undefined };
   cdn?: CdnTraffic;
   kv?: { tableBytes?: number; top: KvCollectionUsage[] };
+  lb?: { tableBytes?: number; top: LbBoardUsage[] };
   /** Every warning found today, announced or not. */
   warnings: UsageWarning[];
   /** The subset that went into the notification (empty when nothing is new or there is no topic). */
@@ -172,6 +190,7 @@ export async function runUsageDigest({
   bucket,
   distributionId,
   kvstore,
+  leaderboards,
   kv,
   notify,
   thresholds: overrides,
@@ -314,12 +333,49 @@ export async function runUsageDigest({
       });
   }
 
+  if (leaderboards) {
+    // Two reads for the reason the kv pair states: the size is an
+    // `information_schema` lookup, the "who grew" line scans and aggregates.
+    const tableBytes = await attempt("lb", () =>
+      leaderboards.scoresTableBytes(),
+    );
+    const top = await attempt("lb-top", () =>
+      leaderboards.topBoards(LB_TOP_BOARDS),
+    );
+    result.lb = {
+      ...(tableBytes === undefined ? {} : { tableBytes }),
+      top: top ?? [],
+    };
+    if (errors.includes("lb"))
+      warnings.push({
+        kind: "lb:unread",
+        type: "level",
+        text: "leaderboard_scores' size could not be read; the table's growth is unmonitored until it answers again",
+      });
+    // A level warning: retention drops retired buckets, but a stage over this
+    // line is one whose live boards are the size, so it would otherwise be
+    // announced every day until someone deleted a board.
+    if (tableBytes !== undefined && tableBytes > t.lbBytes)
+      warnings.push({
+        kind: "lb:bytes",
+        type: "level",
+        text: `leaderboard_scores holds ${formatBytes(tableBytes)}${
+          top === undefined
+            ? " (the largest boards could not be read)"
+            : `; largest boards: ${top
+                .map((b) => `${b.boardId} (${b.scores} scores)`)
+                .join(", ")}`
+        }`,
+      });
+  }
+
   logger.info("usage digest", {
     stage,
     redis: result.redis,
     bucket: result.bucket,
     cdn: result.cdn,
     kv: result.kv,
+    lb: result.lb,
     warnings: warnings.length,
     errors,
   });

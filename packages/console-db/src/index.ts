@@ -335,6 +335,7 @@ export {
   lbMetaBytes,
   lbPeriodEndsAt,
   lbPeriodKey,
+  lbRankPage,
   lbRetainCutoff,
   lbTopLimit,
   lbTopOffset,

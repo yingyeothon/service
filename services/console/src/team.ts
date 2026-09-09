@@ -20,6 +20,7 @@ import {
   type IssueListRow,
   type IssueRow,
   type KvStoreDb,
+  type LeaderboardDb,
   type MemberRow,
   type TeamDb,
   type TeamHistoryRow,
@@ -232,6 +233,7 @@ export interface TeamRoutesOptions {
   assets: AssetsDb;
   sites: SitesDb;
   kvstore: KvStoreDb;
+  leaderboards: LeaderboardDb;
   kv: Kv;
   clock: Clock;
   audit: (
@@ -252,6 +254,7 @@ export function createTeamRoutes({
   assets,
   sites,
   kvstore,
+  leaderboards,
   kv,
   clock,
   audit,
@@ -263,6 +266,7 @@ export function createTeamRoutes({
     assets,
     sites,
     kvstore,
+    leaderboards,
   });
   const { teamAccess, projectAccess } = access;
   const now = () => nowSec(clock);
