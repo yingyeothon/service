@@ -63,8 +63,14 @@ describe("channels", () => {
     const stored = await h.db.findAuthChannel(auth.id);
     expect(stored?.secret).toEqual({
       secret: auth.secret,
+      userSalt: expect.stringMatching(/^[0-9a-f]{64}$/),
       providers: { github: { clientSecret: "gh-secret-zz" } },
     });
+    // The salt is a third secret and leaves the platform through nothing:
+    // unlike `secret`, it is not even shown once (`docs/decisions.md` *Player
+    // ids are salted per auth channel*).
+    expect(c.body).not.toContain(stored?.secret.userSalt);
+    expect(auth.secret).not.toBe(stored?.secret.userSalt);
 
     const t = parse(
       await h.app(
@@ -556,6 +562,8 @@ describe("channels", () => {
     let stored = await h.db.findAuthChannel(auth.id);
     expect(stored?.secret).toEqual({
       secret: auth.secret,
+      // Carried through a provider edit for the same reason as the doc apiKey.
+      userSalt: expect.stringMatching(/^[0-9a-f]{64}$/),
       providers: {
         github: { clientSecret: "gh-secret-zz" },
         google: { clientSecret: "go-secret" },
@@ -713,6 +721,7 @@ describe("channels", () => {
         }),
       ),
     );
+    const saltBefore = (await h.db.findAuthChannel(auth.id))?.secret.userSalt;
     const rot2 = parse(
       await h.app(
         ev("POST", `/channels/${auth.id}/rotate-secret`, { headers: a.cookie }),
@@ -721,8 +730,12 @@ describe("channels", () => {
     expect(rot2.secret).not.toBe(auth.secret);
     expect((await h.db.findAuthChannel(auth.id))?.secret).toEqual({
       secret: rot2.secret,
+      // Rotating the signing key must not move the salt: it would re-derive
+      // every player's id and orphan their kv rows, documents and scores.
+      userSalt: saltBefore,
       providers: { github: { clientSecret: "gh-secret-zz" } },
     });
+    expect(saltBefore).toMatch(/^[0-9a-f]{64}$/);
 
     expect(
       (await h.app(ev("DELETE", `/channels/${auth.id}`, { headers: a.cookie })))

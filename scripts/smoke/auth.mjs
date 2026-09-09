@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Smoke test for the auth stack on dev: seed a channel via the debug hook, mint a token, verify it.
+import { createHash } from "node:crypto";
 // Usage: scripts/smoke/auth.mjs <baseUrl> <debugKey>
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
@@ -36,6 +37,41 @@ const minted = await json(
   }),
 );
 console.log("mint", minted.status, minted.body?.userId);
+
+// The salted derivation, which no provider round trip can reach from a script:
+// the same provider account on this channel must not land on the id an
+// unsalted channel would produce (`docs/decisions.md` *Player ids are salted
+// per auth channel*). A dropped salt is otherwise silent until players find
+// their save files gone.
+const derived = await json(
+  await fetch(`${base}/debug/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-debug-key": debugKey },
+    body: JSON.stringify({
+      channelId: ch,
+      provider: "github",
+      providerUserId: "424242",
+    }),
+  }),
+);
+const unsalted = createHash("sha256")
+  .update(`${ch}:github:424242`)
+  .digest("hex")
+  .slice(0, 32);
+console.log(
+  "derive",
+  derived.status,
+  derived.body?.salted,
+  derived.body?.userId !== unsalted,
+);
+if (
+  derived.status !== 200 ||
+  derived.body?.salted !== true ||
+  derived.body?.userId === unsalted
+) {
+  console.error("derived id is not salted");
+  process.exit(1);
+}
 
 const verified = await json(
   await fetch(`${base}/c/${ch}/verify`, {

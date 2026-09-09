@@ -456,6 +456,12 @@ export function buildChannel(
     };
     const secret: AuthChannelSecret = {
       secret: randomHex(32),
+      // Every auth channel created from here on has one; `patchChannel` keeps
+      // it by spreading the stored secret first, the same line that keeps the
+      // doc apiKey alive through a config PATCH. 32 bytes like its two
+      // neighbours: it is the only value in this blob that can never be
+      // rotated, so it should not also be the shortest.
+      userSalt: randomHex(32),
       providers: {
         ...(c.providers.github
           ? { github: { clientSecret: c.providers.github.clientSecret } }
@@ -566,6 +572,10 @@ export function rotateSecret(row: ChannelRow): {
   if (row.kind === "auth") {
     const sec = JSON.parse(row.secretJson) as AuthChannelSecret;
     const secret = randomHex(32);
+    // `...sec` first, and it is load-bearing rather than tidy: it carries the
+    // doc apiKey and the `userSalt` through. Rebuilding this object from its
+    // known fields would rotate every player's id along with the signing key,
+    // which is the one thing this secret must never do.
     return { secret: { ...sec, secret }, shown: { secret } };
   }
   if (isGatewayKind(row.kind))
@@ -608,6 +618,15 @@ export function channelView(
   };
   if (row.kind === "auth") {
     const c = config as unknown as AuthChannelConfig;
+    // Whether this channel's player ids are salted, and nothing about the salt
+    // itself (`docs/decisions.md` *Player ids are salted per auth channel*).
+    // A team cannot act on the answer without it: the only remedy for an
+    // unsalted channel is a new channel, and "is mine one?" is otherwise
+    // unanswerable from outside the database. It also gives a dropped salt a
+    // symptom other than orphaned data.
+    const saltedIds =
+      typeof (JSON.parse(row.secretJson) as AuthChannelSecret).userSalt ===
+      "string";
     const configured = (["github", "google"] as const).filter(
       (p) => c.providers?.[p]?.clientId,
     );
@@ -615,6 +634,7 @@ export function channelView(
     return {
       ...base,
       issuer: `yyt-auth/${row.id}`,
+      saltedIds,
       // The document namespace hangs off the auth channel, because `ownerId`
       // only means anything inside it (`docs/decisions.md` *state service*).
       ...(doc === "" ? {} : { docUrl: doc }),

@@ -1,4 +1,5 @@
 import { AppError, sha256Hex, systemClock, type Clock } from "@yyt/core";
+import { hmacSign } from "./hmac.js";
 import { SignJWT, decodeJwt, jwtVerify, errors as joseErrors } from "jose";
 
 /** `iss` as the game side pins it (`docs/auth-game-contract.md`). */
@@ -6,13 +7,51 @@ export function channelIssuer(channelId: string): string {
   return `yyt-auth/${channelId}`;
 }
 
-/** `sha256(channelId + ":" + provider + ":" + providerUserId)` first 32 hex chars. No PII. */
+/**
+ * A player's `sub`: 32 lowercase hex, derived from the auth channel's own
+ * `userSalt` (`docs/decisions.md` *Player ids are salted per auth channel*).
+ *
+ * With a salt it is `hmac-sha256(userSalt, "channelId:provider:providerUserId")`
+ * truncated to 32 hex. HMAC rather than `sha256(salt + ":" + …)`: a
+ * secret-prefix hash is the length-extension shape, and while nothing here is
+ * exploitable today (the digest is truncated and the attacker-chosen part is
+ * last), both of those are accidents of the current callers rather than rules
+ * anyone wrote down. The keyed construction needs neither to be true.
+ *
+ * Without a salt it is the original `sha256(channelId + ":" + provider + ":" +
+ * providerUserId)`, and that branch is **load-bearing**: a channel created
+ * before the salt shipped has none, and a player's id is the primary key of
+ * their kv rows, their state document and their scores. Re-deriving it would
+ * orphan all three, so those channels keep the reversible id for ever and the
+ * honest statement lives in `docs/auth-game-contract.md`.
+ *
+ * Why any of this: every other input is public. The channel id is the `iss` of
+ * the player's own token, the provider is one of two literals, and a GitHub
+ * `providerUserId` is a public sequential integer — so an unsalted id confirms
+ * whose it is to anyone holding it, and a *list* of them can be walked back to
+ * accounts offline.
+ *
+ * The salt is deliberately not the channel's signing secret: rotating one must
+ * not move every player's id.
+ */
 export function deriveUserId(
+  userSalt: string,
   channelId: string,
   provider: string,
   providerUserId: string,
 ): string {
-  return sha256Hex(`${channelId}:${provider}:${providerUserId}`).slice(0, 32);
+  // The three parts are joined by `:` and told apart only because none may
+  // contain one. That holds today (`{kind}_{hex}`, two provider literals, a
+  // digit string) and is checked rather than assumed, because a collision here
+  // is two people sharing one save file.
+  for (const part of [channelId, provider, providerUserId])
+    if (part.includes(":"))
+      throw new AppError("internal", "identity parts must not contain ':'");
+  const base = `${channelId}:${provider}:${providerUserId}`;
+  return (userSalt === "" ? sha256Hex(base) : hmacSign(base, userSalt)).slice(
+    0,
+    32,
+  );
 }
 
 export interface SignChannelTokenOptions {

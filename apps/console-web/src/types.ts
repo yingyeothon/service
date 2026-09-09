@@ -361,6 +361,8 @@ export interface Channel extends ResourceCrumbs {
   status: ChannelStatus;
   // auth
   issuer?: string;
+  /** Whether player ids are salted; `false` on a channel older than the salt. */
+  saltedIds?: boolean;
   startUrl?: string;
   callbackUrls?: Record<string, string>;
   /** Absent when the state stack is not deployed on this stage. */

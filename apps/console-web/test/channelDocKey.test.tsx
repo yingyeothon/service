@@ -91,6 +91,38 @@ describe("auth channel document key", () => {
     });
   });
 
+  it("warns about traceable player ids only on an unsalted channel", async () => {
+    vi.mocked(mockApi.channelDocKey).mockResolvedValue(BLOCK);
+    const warning = /Player ids on this channel are not salted/;
+
+    // A channel from before the salt: an owner can act on this (make a new
+    // channel), so it has to be visible where they already look.
+    vi.mocked(mockApi.channel).mockResolvedValue({
+      ...CHANNEL,
+      saltedIds: false,
+    });
+    const unsalted = mount();
+    expect(await screen.findByText(warning)).toBeInTheDocument();
+    unsalted.unmount();
+
+    // The normal case says nothing: a banner on every channel is a banner
+    // nobody reads.
+    vi.mocked(mockApi.channel).mockResolvedValue({
+      ...CHANNEL,
+      saltedIds: true,
+    });
+    const salted = mount();
+    expect(await screen.findByText("Issuer")).toBeInTheDocument();
+    expect(screen.queryByText(warning)).toBeNull();
+    salted.unmount();
+
+    // An older console sends no field at all; absent is not `false`.
+    vi.mocked(mockApi.channel).mockResolvedValue(CHANNEL);
+    mount();
+    expect(await screen.findByText("Issuer")).toBeInTheDocument();
+    expect(screen.queryByText(warning)).toBeNull();
+  });
+
   it("offers Issue while none exists and shows the key exactly once", async () => {
     vi.mocked(mockApi.channelDocKey).mockResolvedValue(BLOCK);
     const apiKey = `yds.auth_9.${"a".repeat(64)}`;

@@ -17,19 +17,23 @@ import (
 
 // channel mirrors console's channelView; kind-specific fields are optional.
 type channel struct {
-	ID           string            `json:"id"`
-	Kind         string            `json:"kind"`
-	Name         string            `json:"name"`
-	TeamID       *string           `json:"teamId"`
-	TeamName     *string           `json:"teamName"`
-	ProjectID    *string           `json:"projectId"`
-	ProjectName  *string           `json:"projectName"`
-	Config       json.RawMessage   `json:"config"`
-	CreatedAt    int64             `json:"createdAt"`
-	ExpiresAt    int64             `json:"expiresAt"`
-	DisabledAt   *int64            `json:"disabledAt"`
-	Status       string            `json:"status"`
-	Issuer       string            `json:"issuer,omitempty"`
+	ID          string          `json:"id"`
+	Kind        string          `json:"kind"`
+	Name        string          `json:"name"`
+	TeamID      *string         `json:"teamId"`
+	TeamName    *string         `json:"teamName"`
+	ProjectID   *string         `json:"projectId"`
+	ProjectName *string         `json:"projectName"`
+	Config      json.RawMessage `json:"config"`
+	CreatedAt   int64           `json:"createdAt"`
+	ExpiresAt   int64           `json:"expiresAt"`
+	DisabledAt  *int64          `json:"disabledAt"`
+	Status      string          `json:"status"`
+	Issuer      string          `json:"issuer,omitempty"`
+	// Auth only, and a pointer so "absent" (an older console) stays distinct
+	// from "false" (a channel whose player ids can be traced back to the
+	// provider account they came from).
+	SaltedIDs    *bool             `json:"saltedIds,omitempty"`
 	StartURL     string            `json:"startUrl,omitempty"`
 	CallbackURLs map[string]string `json:"callbackUrls,omitempty"`
 	APIBase      string            `json:"apiBase,omitempty"`
@@ -933,6 +937,14 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 	}
 	if ch.StartURL != "" {
 		pairs = append(pairs, [2]string{"startUrl", ch.StartURL})
+	}
+	// Printed only when it is bad news: a salted channel is the norm, and a row
+	// that says so on every read trains people to skip the line.
+	if ch.SaltedIDs != nil && !*ch.SaltedIDs {
+		pairs = append(pairs, [2]string{
+			"playerIds",
+			"not salted (traceable to the provider account; make a new channel for unlinkable ids)",
+		})
 	}
 	provs := make([]string, 0, len(ch.CallbackURLs))
 	for p := range ch.CallbackURLs {

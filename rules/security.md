@@ -32,6 +32,37 @@
 - Client-supplied strings that go into outbound headers (bearer tokens) must be restricted to printable ASCII at validation time, or undici throws a TypeError that echoes the value into logs.
 - Compare shared keys (debug key, API tokens) with `timingSafeEqual` over fixed-length hashes.
 
+## Player identity (`deriveUserId`, 2026-09-09)
+
+- **A hash of public inputs is not a pseudonym.** `userId` was
+  `sha256(channelId + ":" + provider + ":" + providerUserId)` with no salt, and every input is
+  knowable: the channel id is the `iss` of the player's own token and sits in the game's client
+  config, the provider is one of two literals, and a GitHub `providerUserId` is a public
+  sequential integer (~10^8). So the id confirmed whose it was to anyone holding it, and a
+  _list_ of ids could be walked back to accounts offline. It survived four months because
+  "sha256, no PII" reads like anonymity; ask instead **how large the preimage space actually
+  is**, and whether the caller already knows every other input.
+- The fix is a per-channel `userSalt` in `secret_json` (`docs/decisions.md` _Player ids are
+  salted per auth channel_) — a third secret, never the signing key, so rotating one does not
+  move every player's id. It leaves the platform through no route, view or log line, and unlike
+  the channel secret it is not even shown once.
+- **An identity that is a primary key cannot be re-derived.** A `userId` keys that channel's kv
+  rows, state document and leaderboard scores, so channels created before the salt keep the
+  unsalted derivation for ever, and `deriveUserId("", …)` hashes the _old_ string rather than
+  `":" + …`. The regression test pins the literal hex, not a re-derivation: a test that recomputes
+  the value it asserts cannot notice the day the formula changes underneath stored data.
+- **The surface that finds a flaw is rarely the first one to have it.** A leaderboard's
+  `GET /top` prompted the audit, but `GET /kv/{col}/entries` on a `readScope: project` +
+  `writeScope: user` collection has listed every owner id to every player of the project since
+  the kv store shipped — the exposure was present-tense, not prospective, and the first draft of
+  this fix said "the first surface" and was wrong. When a new feature makes you re-audit an
+  identifier, enumerate **every** route that already returns it before writing down how far the
+  problem reaches.
+- **A value with no rotation route is a different class of secret.** `userSalt` cannot be
+  rotated by design — rotating it orphans the players' data — so a leak of it is permanent and
+  the playbook's "rotation is the only real fix" (`docs/secrets.md`) does not apply. Say that
+  where the secret is defined, not only where it is used.
+
 ## Public repository
 
 - This repo is **public** on GitHub and stays public (Actions/Release allowances). Treat every commit as world-readable.
