@@ -48,9 +48,16 @@ const ID = /^[a-z0-9_-]{3,40}$/;
  * `st_foo` and the CLI would then read that name as a site id. The event and
  * show prefixes are absent from all three on purpose: those are addressed by
  * id only, and adding them would retroactively forbid existing names.
+ *
+ * `lb` (2026-09-10) is the one addition that **was** retroactive: it forbids a
+ * name already stored as `lb_…` on any resource, which is why it went in as
+ * its own commit after both stages were checked for such names
+ * (`local/owner-checklist.md`). A stored name is not re-validated, so an
+ * existing one would keep working everywhere except `yyt`, which would read it
+ * as a board id.
  */
 const ID_LIKE =
-  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
 const name = z
   .string()
   .trim()

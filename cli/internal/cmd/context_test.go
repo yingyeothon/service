@@ -10,12 +10,12 @@ import (
 )
 
 func TestIsID(t *testing.T) {
-	for _, id := range []string{"team_1", "prj_x", "auth_0123", "ca_9", "ab_1", "AUTH_UP", "m_1", "art_2"} {
+	for _, id := range []string{"team_1", "prj_x", "auth_0123", "ca_9", "ab_1", "AUTH_UP", "m_1", "art_2", "kv_1", "lb_1"} {
 		if !IsID(id) {
 			t.Errorf("%q should be an id", id)
 		}
 	}
-	for _, name := range []string{"dooroo", "my-game", "team", "team-1", "authy", "q", "1.0.0"} {
+	for _, name := range []string{"dooroo", "my-game", "team", "team-1", "authy", "q", "1.0.0", "lb", "lbx"} {
 		if IsID(name) {
 			t.Errorf("%q should be a name", name)
 		}
