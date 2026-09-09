@@ -963,7 +963,18 @@ describe("channels: caps and history hygiene (todo/17 P7 review)", () => {
     // `cli/internal/cmd/context.go`): `st_`/`sd_` were missing here, so a
     // channel could be named `st_foo` and the CLI would resolve that name as
     // a site id.
-    for (const bad of ["st_foo", "sd_foo", "ca_foo", "team_foo", "auth_foo"]) {
+    // `lb_` joined the three on 2026-09-10, after both stages were checked
+    // for names already stored in that shape (it is the one retroactive
+    // addition; `local/owner-checklist.md`).
+    for (const bad of [
+      "st_foo",
+      "sd_foo",
+      "ca_foo",
+      "kv_foo",
+      "lb_foo",
+      "team_foo",
+      "auth_foo",
+    ]) {
       h.clock.tick(1);
       const r = await h.app(
         ev("POST", `/projects/${owner.prjId}/channels`, {
