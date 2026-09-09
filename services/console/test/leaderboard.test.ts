@@ -357,8 +357,24 @@ describe("leaderboards", () => {
       ),
     );
     expect(yesterday.total).toBe(0);
+    // A **period name** addresses the live bucket of that period, which is
+    // what the SPA's selector and `yyt lb top --period daily` send; accepting
+    // only `alltime` here made both a 400 on dev (2026-09-10).
+    const byName = parse(
+      await h.app(
+        ev("GET", `/leaderboards/${b.id}/scores`, {
+          headers: alice.cookie,
+          query: { period: "daily" },
+        }),
+      ),
+    );
+    expect(byName).toMatchObject({
+      period: "daily",
+      periodKey: today,
+      total: 1,
+    });
     // A period this board does not keep, and a segment outside the grammar.
-    for (const period of ["2026-W37", "nope", "2026-9-10"]) {
+    for (const period of ["2026-W37", "weekly", "nope", "2026-9-10"]) {
       const r = await h.app(
         ev("GET", `/leaderboards/${b.id}/scores`, {
           headers: alice.cookie,
@@ -367,6 +383,59 @@ describe("leaderboards", () => {
       );
       expect(r.statusCode, `${period}: ${r.body}`).toBe(400);
     }
+  });
+
+  it("answers one owner's score with its rank in the addressed bucket", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const b = await mkBoard(h, alice, { periods: ["alltime", "daily"] });
+    await seedScore(h, b.id, U1, 10);
+    await seedScore(h, b.id, U2, 30);
+    const mine = parse(
+      await h.app(
+        ev("GET", `/leaderboards/${b.id}/scores/${U1}`, {
+          headers: alice.cookie,
+        }),
+      ),
+    );
+    expect(mine).toMatchObject({
+      period: "alltime",
+      periodKey: "",
+      owner: U1,
+      score: 10,
+      rank: 2,
+      total: 2,
+      channelId: "ch1",
+    });
+    // A named bucket, and an owner with no row there.
+    const daily = parse(
+      await h.app(
+        ev("GET", `/leaderboards/${b.id}/scores/${U1}`, {
+          headers: alice.cookie,
+          query: { period: lbPeriodKey("daily", NOW_SEC) },
+        }),
+      ),
+    );
+    expect(daily).toMatchObject({ period: "daily", rank: 2 });
+    expect(
+      (
+        await h.app(
+          ev("GET", `/leaderboards/${b.id}/scores/${U3}`, {
+            headers: alice.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    // An owner outside the API's grammar is a 400.
+    expect(
+      (
+        await h.app(
+          ev("GET", `/leaderboards/${b.id}/scores/nobody`, {
+            headers: alice.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(400);
   });
 
   it("deletes one owner from every bucket, and a whole bucket", async () => {
@@ -400,6 +469,8 @@ describe("leaderboards", () => {
     );
     expect(bad.statusCode, bad.body).toBe(400);
     slot(h);
+    // A period name clears that period's **live** bucket; `alltime`'s key is
+    // the empty string, so it can only ever be named this way.
     const bucket = await h.app(
       ev("DELETE", `/leaderboards/${b.id}/periods/alltime`, {
         headers: alice.cookie,
@@ -476,6 +547,7 @@ describe("leaderboards", () => {
       ["PATCH", `/leaderboards/${b.id}`],
       ["DELETE", `/leaderboards/${b.id}`],
       ["GET", `/leaderboards/${b.id}/scores`],
+      ["GET", `/leaderboards/${b.id}/scores/${U1}`],
       ["DELETE", `/leaderboards/${b.id}/scores/${U1}`],
     ] as const) {
       slot(h);

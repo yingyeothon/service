@@ -18,6 +18,7 @@ import {
   normalizeLbPeriods,
   parseLbBucketPath,
   type LeaderboardDb,
+  type LbPeriod,
   type LeaderboardMeta,
   type LeaderboardRow,
 } from "@yyt/console-db";
@@ -226,12 +227,16 @@ export function createLeaderboardRoutes({
   }
 
   /**
-   * Which bucket a request addresses. Absent means the board's first
-   * configured period at its **current** key, computed from the platform's
-   * clock -- the SPA never derives a bucket from the browser's, which is the
-   * same rule that keeps a game from naming its own (`docs/decisions.md` #3).
+   * Which bucket a request addresses: a period name for the live bucket, a key
+   * for a past one, and absent for the board's first period, live. A live key
+   * is always computed here from the platform's clock -- the SPA never derives
+   * a bucket from the browser's, which is the same rule that keeps a game from
+   * naming its own (`docs/decisions.md` #3).
    */
-  function bucketOf(board: LeaderboardMeta, raw: string | undefined) {
+  function bucketOf(
+    board: LeaderboardMeta,
+    raw: string | undefined,
+  ): { period: LbPeriod; key: string } {
     if (raw === undefined || raw === "") {
       const period = board.periods[0]!;
       return { period, key: lbPeriodKey(period, now()) };
@@ -242,7 +247,10 @@ export function createLeaderboardRoutes({
         "bad_request",
         `this board keeps no ${bucket.period} bucket`,
       );
-    return bucket;
+    return {
+      period: bucket.period,
+      key: bucket.key ?? lbPeriodKey(bucket.period, now()),
+    };
   }
 
   const noStore = (statusCode: number, body: unknown) =>
@@ -467,6 +475,43 @@ export function createLeaderboardRoutes({
             channelId: r.channelId,
             updatedAt: r.updatedAt,
           })),
+        });
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/leaderboards/{id}/scores/{ownerId}",
+      auth: true,
+      query: scoresQuery,
+      handler: async (ctx) => {
+        const a = await boardWith(ctx, false);
+        const board = a.row;
+        const { period, key } = bucketOf(board, ctx.query.period);
+        const owner = checkKvOwnerId(ctx.params.ownerId ?? "");
+        const row = await leaderboards.findScore(board.id, period, key, owner);
+        // One owner rather than a page: an operator hunting a single player on
+        // a full board would otherwise page to row 8,000 to find them, and the
+        // LB API answers the same question for a game.
+        if (!row) throw new AppError("not_found", "score not found");
+        const [rank, total] = await Promise.all([
+          leaderboards
+            .countBetter(board.id, period, key, {
+              order: board.order,
+              score: row.score,
+            })
+            .then((n) => n + 1),
+          leaderboards.countScores(board.id, period, key),
+        ]);
+        return noStore(200, {
+          period,
+          periodKey: key,
+          rank,
+          total,
+          owner,
+          score: row.score,
+          meta: row.meta,
+          channelId: row.channelId,
+          updatedAt: row.updatedAt,
         });
       },
     }),
