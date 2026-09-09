@@ -398,21 +398,31 @@ export function lbRetainCutoff(
 }
 
 /**
- * Which bucket a console path segment names. The state stack addresses the
- * *current* bucket by period name; the console addresses a past one by its
- * key, and `alltime` -- whose key is the empty string -- can only ever be
- * spelled by its period name, since a path segment cannot be empty.
+ * Which bucket a console path segment or `?period=` names: a **period name**
+ * for the live bucket (`key: null`, resolved against the platform's clock by
+ * the caller) or a **key** for a past one.
+ *
+ * Both spellings are needed, and leaving one out is a bug the tests could not
+ * see: `alltime`'s key is the empty string, so it can only ever be named by
+ * its period, while a past `daily` or `weekly` bucket can only be addressed by
+ * key. Accepting `alltime` alone made `?period=weekly` -- which the SPA's
+ * bucket selector and `yyt lb top --period weekly` both send -- a 400 on the
+ * console while the same word worked on the LB API (found on dev, 2026-09-10,
+ * by the CLI round trip; every unit test passed because each side mocked the
+ * other).
  */
 export function parseLbBucketPath(seg: string): {
   period: LbPeriod;
-  key: string;
+  /** `null` = the live bucket of that period. */
+  key: string | null;
 } {
-  if (seg === "alltime") return { period: "alltime", key: "" };
+  const named = LB_PERIODS.find((p) => p === seg);
+  if (named !== undefined) return { period: named, key: null };
   if (/^\d{4}-\d{2}-\d{2}$/.test(seg)) return { period: "daily", key: seg };
   if (/^\d{4}-W\d{2}$/.test(seg)) return { period: "weekly", key: seg };
   throw new AppError(
     "bad_request",
-    "period must be alltime, YYYY-MM-DD or YYYY-Www",
+    `period must be one of ${LB_PERIODS.join(", ")}, or a bucket key (YYYY-MM-DD, YYYY-Www)`,
   );
 }
 

@@ -706,11 +706,13 @@ describe("leaderboard grammar and bounds", () => {
     );
   });
 
-  it("reads a console bucket path", () => {
-    expect(parseLbBucketPath("alltime")).toEqual({
-      period: "alltime",
-      key: "",
-    });
+  it("reads a console bucket path: a period name is live, a key is a past bucket", () => {
+    // **Every** period name, not only `alltime`: `?period=weekly` is what the
+    // SPA's selector and `yyt lb top --period weekly` send, and accepting
+    // `alltime` alone made those a 400 on the console while the same word
+    // worked on the LB API (found on dev, 2026-09-10).
+    for (const p of ["alltime", "daily", "weekly"] as const)
+      expect(parseLbBucketPath(p), p).toEqual({ period: p, key: null });
     expect(parseLbBucketPath("2026-09-10")).toEqual({
       period: "daily",
       key: "2026-09-10",
@@ -719,9 +721,9 @@ describe("leaderboard grammar and bounds", () => {
       period: "weekly",
       key: "2026-W37",
     });
-    for (const bad of ["", "daily", "2026-9-10", "2026-w37", "2026-W3"])
+    for (const bad of ["", "monthly", "2026-9-10", "2026-w37", "2026-W3"])
       expect(() => parseLbBucketPath(bad), bad).toThrow(
-        /period must be alltime/,
+        /period must be one of/,
       );
   });
 
