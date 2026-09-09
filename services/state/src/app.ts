@@ -10,6 +10,7 @@ import {
   checkDocBody,
   MAX_DOC_BODY_BYTES,
   type KvStoreDb,
+  type LeaderboardDb,
   type StateDb,
   type StateDocRow,
 } from "@yyt/console-db";
@@ -30,6 +31,7 @@ import {
 } from "./channels.js";
 import { NO_STORE, checkOwnerId, etag, parseIfMatch, rawBody } from "./http.js";
 import { createKvStoreRoutes } from "./kvstore.js";
+import { createLeaderboardRoutes } from "./leaderboard.js";
 import type { KvCrypto } from "./kvstore-crypto.js";
 
 /**
@@ -52,6 +54,8 @@ export interface StateAppOptions {
   state: StateDb;
   /** The kv collections served under `/kv/*` beside the doc routes. */
   kvstore: KvStoreDb;
+  /** The leaderboards served under `/lb/*`, beside both. */
+  leaderboards: LeaderboardDb;
   channels: ChannelStore;
   /** `undefined` when the stage has no usable `KV_KEK`; only `/kv/*` suffers. */
   crypto?: KvCrypto;
@@ -109,6 +113,7 @@ function conflictResult(current: StateDocRow | undefined): HttpResult {
 export function createStateApp({
   state,
   kvstore,
+  leaderboards,
   channels,
   crypto,
   clock = systemClock,
@@ -265,6 +270,7 @@ export function createStateApp({
     routes: [
       ...routes,
       ...createKvStoreRoutes({ kvstore, crypto, clock, logger }),
+      ...createLeaderboardRoutes({ leaderboards, clock, logger }),
       ...extraRoutes,
     ],
     maxBodyBytes: MAX_REQUEST_BYTES,

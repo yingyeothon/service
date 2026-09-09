@@ -6,6 +6,7 @@ import {
   lbMetaBytes,
   lbPeriodEndsAt,
   lbPeriodKey,
+  lbRankPage,
   lbRetainCutoff,
   lbTopLimit,
   lbTopOffset,
@@ -722,6 +723,15 @@ describe("leaderboard grammar and bounds", () => {
       expect(() => parseLbBucketPath(bad), bad).toThrow(
         /period must be alltime/,
       );
+  });
+
+  it("numbers a page from one count, ties included", () => {
+    const rows = [{ score: 30 }, { score: 20 }, { score: 20 }, { score: 10 }];
+    expect(lbRankPage(rows, 1, 0).map((r) => r.rank)).toEqual([1, 2, 2, 4]);
+    // A page that starts **inside** a tie: its first rank is below its own
+    // offset, and the row after the tie must still take its true position.
+    expect(lbRankPage(rows.slice(2), 2, 2).map((r) => r.rank)).toEqual([2, 4]);
+    expect(lbRankPage([], 1, 0)).toEqual([]);
   });
 
   it("bounds a top page and names NaN", () => {
