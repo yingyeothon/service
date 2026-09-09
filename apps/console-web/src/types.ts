@@ -906,3 +906,96 @@ export interface KvEntryPutResult {
   bytes: number;
   created: boolean;
 }
+
+// ---- leaderboards (`lb`) --------------------------------------------------
+
+/** Who may write a score. The doc apiKey may submit on either kind of board. */
+export type LbSubmit = "server" | "owner";
+/** How a new score meets the stored one. */
+export type LbRule = "best" | "latest" | "sum";
+/** Which end of the range ranks first; `asc` is for times. */
+export type LbOrder = "desc" | "asc";
+export type LbPeriod = "alltime" | "daily" | "weekly";
+
+/** Declaration order is the server's sort order (`LB_*` in console-db). */
+export const LB_SUBMITS: readonly LbSubmit[] = ["server", "owner"];
+export const LB_RULES: readonly LbRule[] = ["best", "latest", "sum"];
+export const LB_ORDERS: readonly LbOrder[] = ["desc", "asc"];
+export const LB_PERIODS: readonly LbPeriod[] = ["alltime", "daily", "weekly"];
+
+/** One row of `GET /projects/{prj}/leaderboards`. */
+export interface Leaderboard extends ResourceCrumbs {
+  id: string;
+  name: string;
+  submit: LbSubmit;
+  rule: LbRule;
+  order: LbOrder;
+  /** Always non-empty, always in `LB_PERIODS` order. */
+  periods: LbPeriod[];
+  maxEntries: number;
+  retainPeriods: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Where a game reads and writes this board through the LB API. */
+export interface LbApi {
+  /** `false` on a stage without the state stack: the paths are still shown. */
+  configured: boolean;
+  baseUrl: string;
+  metaPath: string;
+  /** The same board addressed by its (URL-encoded) name. */
+  namePath: string;
+  topPath: string;
+  /** `{ownerId}` is a placeholder, or the literal `me` for a player token. */
+  scorePath: string;
+}
+
+export interface LeaderboardDetail extends Leaderboard {
+  description: string | null;
+  api: LbApi;
+  /** The live bucket the detail counted, computed by the platform's clock. */
+  period: LbPeriod;
+  periodKey: string;
+  /** Rows in that bucket. */
+  scores: number;
+}
+
+/** What create and update answer: the row and the api block, no bucket count. */
+export type LeaderboardWrite = Omit<
+  LeaderboardDetail,
+  "scores" | "period" | "periodKey"
+>;
+
+export interface LbScore {
+  /** `1 + count(better)`, so equal scores share a rank. */
+  rank: number;
+  owner: string;
+  score: number;
+  /** The stored JSON text verbatim; the platform never parses it. */
+  meta: string | null;
+  /** The auth channel whose credential wrote it. */
+  channelId: string | null;
+  updatedAt: number;
+}
+
+export interface LbScorePage {
+  period: LbPeriod;
+  periodKey: string;
+  total: number;
+  scores: LbScore[];
+}
+
+/** `GET /leaderboards/{id}/scores/{ownerId}`: one owner in one bucket. */
+export interface LbOwnerScore extends LbScore {
+  period: LbPeriod;
+  periodKey: string;
+  total: number;
+}
+
+export interface LbScoreQuery {
+  /** A bucket by name (`alltime`) or by key (`2026-09-10`, `2026-W37`). */
+  period?: string;
+  limit?: number;
+  offset?: number;
+}

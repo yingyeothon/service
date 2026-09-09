@@ -37,10 +37,18 @@ import { useAction, useApiQuery } from "../lib/query";
 import { issueUrl, projectUrl, useTeamStanding, versionUrl } from "../lib/team";
 import {
   KV_SCOPES,
+  LB_ORDERS,
+  LB_PERIODS,
+  LB_RULES,
+  LB_SUBMITS,
   type ListParams,
   type ChannelStatus,
   type IssueStatus,
   type KvScope,
+  type LbOrder,
+  type LbPeriod,
+  type LbRule,
+  type LbSubmit,
   type ProjectDetail,
   type Version,
 } from "../types";
@@ -60,6 +68,18 @@ import {
   kvShapeProblem,
   kvUrl,
 } from "./KvCollection";
+import {
+  LbCapFields,
+  LB_IMMUTABLE_NOTE,
+  LB_MAX_ENTRIES_DEFAULT,
+  LB_MAX_ENTRIES_HARD,
+  LB_ORDER_LABEL,
+  LB_RETAIN_DEFAULT,
+  LB_RULE_LABEL,
+  LB_SUBMIT_LABEL,
+  lbUrl,
+  retainOk,
+} from "./Leaderboard";
 import { SITE_SHARED_ORIGIN_WARNING } from "./Site";
 import { DiscussionFields } from "./Team";
 
@@ -69,6 +89,7 @@ const TABS = [
   "assets",
   "sites",
   "kv",
+  "leaderboards",
   "versions",
   "issues",
 ];
@@ -195,6 +216,7 @@ export function ProjectPage() {
           <Tabs.Tab value="assets">Assets</Tabs.Tab>
           <Tabs.Tab value="sites">Sites</Tabs.Tab>
           <Tabs.Tab value="kv">Key-value</Tabs.Tab>
+          <Tabs.Tab value="leaderboards">Leaderboards</Tabs.Tab>
           <Tabs.Tab value="versions">Versions</Tabs.Tab>
           <Tabs.Tab value="issues">Issues</Tabs.Tab>
         </Tabs.List>
@@ -216,6 +238,13 @@ export function ProjectPage() {
         </Tabs.Panel>
         <Tabs.Panel value="kv" pt="lg">
           <KvTab project={project} canWrite={canWrite} onCounts={p.reload} />
+        </Tabs.Panel>
+        <Tabs.Panel value="leaderboards" pt="lg">
+          <LeaderboardsTab
+            project={project}
+            canWrite={canWrite}
+            onCounts={p.reload}
+          />
         </Tabs.Panel>
         <Tabs.Panel value="versions" pt="lg">
           <VersionsTab project={project} canWrite={canWrite} />
@@ -884,6 +913,223 @@ function KvTab({
           // on the mail shape this cap is the load-bearing one — it bounds the
           // inbox and the sender both.
           userNamespace={f.writeScope === "user" || f.readScope === "user"}
+          onChange={(p) => drawer.patch(p)}
+        />
+      </ResourceDrawer>
+    </Section>
+  );
+}
+
+/* ---- leaderboards -------------------------------------------------------- */
+
+interface LbCreateForm {
+  name: string;
+  description: string;
+  submit: LbSubmit;
+  rule: LbRule;
+  order: LbOrder;
+  periods: LbPeriod[];
+  maxEntries: CapValue;
+  retainPeriods: CapValue;
+}
+
+function LeaderboardsTab({
+  project,
+  canWrite,
+  onCounts,
+}: {
+  project: ProjectDetail;
+  canWrite: boolean;
+  onCounts: () => Promise<void>;
+}) {
+  const lq = useListQuery({ scope: project.id });
+  const list = useApiQuery(
+    ["project", project.id, "leaderboards", lq.params],
+    () => api.projectLeaderboards(project.id, lq.params),
+    { keepPrevious: true },
+  );
+  const act = useAction();
+  const drawer = useDrawerForm<LbCreateForm>(() => ({
+    name: "",
+    description: "",
+    submit: "owner",
+    rule: "best",
+    order: "desc",
+    periods: ["alltime"],
+    maxEntries: LB_MAX_ENTRIES_DEFAULT,
+    retainPeriods: LB_RETAIN_DEFAULT,
+  }));
+  const f = drawer.form;
+  const capsOk =
+    capOk(f.maxEntries, LB_MAX_ENTRIES_HARD) && retainOk(f.retainPeriods);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const { maxEntries, retainPeriods } = f;
+    if (!capOk(maxEntries, LB_MAX_ENTRIES_HARD) || !retainOk(retainPeriods))
+      return;
+    const description = f.description.trim();
+    // The defaults are the server's too; sending them would only pin them.
+    const r = await act.run(() =>
+      api.createLeaderboard(project.id, {
+        name: f.name.trim(),
+        ...(description ? { description } : {}),
+        submit: f.submit,
+        rule: f.rule,
+        order: f.order,
+        periods: f.periods,
+        ...(maxEntries === LB_MAX_ENTRIES_DEFAULT ? {} : { maxEntries }),
+        ...(retainPeriods === LB_RETAIN_DEFAULT ? {} : { retainPeriods }),
+      }),
+    );
+    if (!r) return;
+    drawer.close();
+    notify.created("leaderboard");
+    await Promise.all([list.reload(), onCounts()]);
+  };
+  const enumSelect = <T extends string>(
+    label: string,
+    value: T,
+    values: readonly T[],
+    labels: Record<T, string>,
+    onChange: (v: T) => void,
+  ) => (
+    <NativeSelect
+      label={label}
+      value={value}
+      data={values.map((v) => ({ value: v, label: labels[v] }))}
+      onChange={(e) => onChange(e.currentTarget.value as T)}
+      required
+    />
+  );
+  const togglePeriod = (p: LbPeriod, on: boolean) =>
+    drawer.patch({
+      // Kept in the canonical order the server stores, so the first one — the
+      // bucket every read defaults to — is predictable.
+      periods: LB_PERIODS.filter((x) => (x === p ? on : f.periods.includes(x))),
+    });
+  return (
+    <Section
+      title="Leaderboards"
+      description="Ranked scores a game submits through the LB API: alltime, daily and weekly buckets in Asia/Seoul, one row per player per bucket. The console reads and deletes; it never writes a score."
+      actions={
+        canWrite && (
+          <Button variant="default" onClick={drawer.open}>
+            New leaderboard
+          </Button>
+        )
+      }
+    >
+      {act.error && !drawer.opened && <Notice kind="error">{act.error}</Notice>}
+      <FilterBar>
+        <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Name" />
+      </FilterBar>
+      <DataTable
+        columns={[
+          { key: "name", label: "Name", sortKey: "name" },
+          { key: "submit", label: "Submit", sortKey: "submit" },
+          { key: "rule", label: "Rule", sortKey: "rule" },
+          { key: "order", label: "Order" },
+          { key: "periods", label: "Periods" },
+          {
+            key: "cap",
+            label: "Max per period",
+            align: "right" as const,
+          },
+          {
+            key: "updated",
+            label: "Updated",
+            sortKey: "updatedAt",
+            defaultOrder: "desc",
+          },
+        ]}
+        rows={list.data}
+        loading={list.loading}
+        fetching={list.fetching}
+        error={list.error}
+        sort={lq.sort}
+        onSort={lq.setSort}
+        rowKey={(b) => b.id}
+        empty={
+          lq.filtering
+            ? noMatch(lq.params.q ?? "")
+            : { title: "No leaderboards yet." }
+        }
+        render={(b) => (
+          <>
+            <NameCell to={lbUrl(b.id)}>{b.name}</NameCell>
+            <Table.Td>{b.submit}</Table.Td>
+            <Table.Td>{b.rule}</Table.Td>
+            <Table.Td>{b.order}</Table.Td>
+            <Table.Td>{b.periods.join(", ")}</Table.Td>
+            <NumCell>{b.maxEntries}</NumCell>
+            <Table.Td>{fmtTime(b.updatedAt)}</Table.Td>
+          </>
+        )}
+      />
+      <ResourceDrawer
+        opened={drawer.opened}
+        onClose={drawer.close}
+        title="New leaderboard"
+        submitLabel="Create leaderboard"
+        onSubmit={submit}
+        busy={act.busy}
+        disabled={!f.name.trim() || f.periods.length === 0 || !capsOk}
+        error={drawer.opened ? act.error : null}
+        size="lg"
+      >
+        <NameDescriptionFields
+          name={f.name}
+          description={f.description}
+          onName={(name) => drawer.patch({ name })}
+          onDescription={(description) => drawer.patch({ description })}
+        />
+        {enumSelect(
+          "Submit",
+          f.submit,
+          LB_SUBMITS,
+          LB_SUBMIT_LABEL,
+          (submitBy) => drawer.patch({ submit: submitBy }),
+        )}
+        {enumSelect("Rule", f.rule, LB_RULES, LB_RULE_LABEL, (rule) =>
+          drawer.patch({ rule }),
+        )}
+        {enumSelect("Order", f.order, LB_ORDERS, LB_ORDER_LABEL, (order) =>
+          drawer.patch({ order }),
+        )}
+        <div>
+          <Text size="sm" fw={500}>
+            Periods
+          </Text>
+          <Text size="xs" c="dimmed" mb={4}>
+            One submission updates every configured bucket at once. Keys are
+            computed in Asia/Seoul, never by the client.
+          </Text>
+          {LB_PERIODS.map((p) => (
+            <Checkbox
+              key={p}
+              label={p}
+              mt={4}
+              checked={f.periods.includes(p)}
+              onChange={(e) => togglePeriod(p, e.currentTarget.checked)}
+            />
+          ))}
+          {f.periods.length === 0 && (
+            <Notice kind="warn">A board needs at least one period.</Notice>
+          )}
+        </div>
+        {f.submit === "owner" && (
+          <Notice kind="warn">
+            With an owner submit scope a player writes its own score, so the
+            scores are trusted: a serverless game accepts that, a game with a
+            Lambda uses server.
+          </Notice>
+        )}
+        <Text size="xs" c="dimmed">
+          {LB_IMMUTABLE_NOTE}
+        </Text>
+        <LbCapFields
+          maxEntries={f.maxEntries}
+          retainPeriods={f.retainPeriods}
           onChange={(p) => drawer.patch(p)}
         />
       </ResourceDrawer>

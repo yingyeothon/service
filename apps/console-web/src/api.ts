@@ -56,6 +56,16 @@ import type {
   KvEntryPutResult,
   KvEntryQuery,
   KvScope,
+  LbOrder,
+  LbPeriod,
+  LbRule,
+  LbOwnerScore,
+  LbScorePage,
+  LbScoreQuery,
+  LbSubmit,
+  Leaderboard,
+  LeaderboardDetail,
+  LeaderboardWrite,
   Me,
   Member,
   PosterUpload,
@@ -764,6 +774,60 @@ export function createApiClient({
         `/kv/${enc(id)}/entries${qs({ owner })}`,
       );
     },
+    // ---- leaderboards (addressed by id) -----------------------------------
+    projectLeaderboards: (prj: string, p: ListParams = {}) =>
+      get<{ leaderboards: Leaderboard[] }>(
+        `${projectPath(prj)}/leaderboards${qs(p)}`,
+      ).then((r) => r.leaderboards),
+    createLeaderboard: (
+      prj: string,
+      body: {
+        name: string;
+        description?: string;
+        submit: LbSubmit;
+        rule: LbRule;
+        order: LbOrder;
+        periods: LbPeriod[];
+        maxEntries?: number;
+        retainPeriods?: number;
+      },
+    ) => post<LeaderboardWrite>(`${projectPath(prj)}/leaderboards`, body),
+    leaderboard: (id: string) =>
+      get<LeaderboardDetail>(`/leaderboards/${enc(id)}`),
+    /** `submit`, `rule`, `order` and `periods` are fixed at creation. */
+    updateLeaderboard: (
+      id: string,
+      body: {
+        name?: string;
+        description?: string | null;
+        maxEntries?: number;
+        retainPeriods?: number;
+      },
+    ) => patch<LeaderboardWrite>(`/leaderboards/${enc(id)}`, body),
+    deleteLeaderboard: (id: string) => del(`/leaderboards/${enc(id)}`),
+    /** One bucket's page, already ranked; the console never writes a score. */
+    lbScores: (id: string, q: LbScoreQuery = {}) =>
+      get<LbScorePage>(`/leaderboards/${enc(id)}/scores${qs(q)}`),
+    /** One owner in one bucket, with its rank: no paging to find one player. */
+    lbScore: (id: string, owner: string, q: LbScoreQuery = {}) =>
+      get<LbOwnerScore>(
+        `/leaderboards/${enc(id)}/scores/${enc(owner)}${qs(q)}`,
+      ),
+    /** Every bucket of the board at once, so a removal is a removal. */
+    deleteLbScore: (id: string, owner: string) => {
+      if (owner === "") throw new Error("deleteLbScore needs an owner");
+      return del<{ deleted: number }>(
+        `/leaderboards/${enc(id)}/scores/${enc(owner)}`,
+      );
+    },
+    /**
+     * One bucket, by period name (`alltime`) or key (`2026-09-10`);
+     * `truncated` means call again.
+     */
+    deleteLbPeriod: (id: string, period: string) =>
+      del<{ deleted: number; truncated: boolean }>(
+        `/leaderboards/${enc(id)}/periods/${enc(period)}`,
+      ),
     /**
      * Poster `<img>` source. The API's `posterUrl` is absolute to the API host;
      * building it from our own base keeps the request same-origin (cookie
