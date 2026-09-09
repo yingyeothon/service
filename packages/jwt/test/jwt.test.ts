@@ -124,10 +124,53 @@ describe("channel token", () => {
 
   it("issuer and userId derivation are stable", () => {
     expect(channelIssuer("abc")).toBe("yyt-auth/abc");
-    const id = deriveUserId("ch", "github", "123");
+    const id = deriveUserId("", "ch", "github", "123");
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect(deriveUserId("ch", "github", "123")).toBe(id);
-    expect(deriveUserId("ch", "google", "123")).not.toBe(id);
+    expect(deriveUserId("", "ch", "github", "123")).toBe(id);
+    expect(deriveUserId("", "ch", "google", "123")).not.toBe(id);
+  });
+
+  it("an unsalted channel keeps the id it had before salts existed", () => {
+    // Literals, not re-derivations: this is the value every kv row, state
+    // document and score of a pre-2026-09-09 channel is keyed on, so an
+    // accidental change to the empty-salt branch orphans stored data instead
+    // of merely failing a test.
+    expect(deriveUserId("", "ch", "github", "123")).toBe(
+      "f0308151904ae3717201c329a8188f68",
+    );
+    expect(deriveUserId("", "ch", "google", "123")).toBe(
+      "d2b727e6676f90a84c50f4f2960e033c",
+    );
+  });
+
+  it("the salted form is a keyed HMAC, pinned by literal", () => {
+    // Pinned rather than recomputed: this is what a salted channel's rows will
+    // be keyed on, and the formula must not drift under stored data.
+    expect(deriveUserId("s1", "ch", "github", "123")).toBe(
+      "9dc6e5875881ba7256a4d5d2298550bb",
+    );
+  });
+
+  it("a salt moves the id, and different salts disagree", () => {
+    const plain = deriveUserId("", "ch", "github", "123");
+    const a = deriveUserId("s1", "ch", "github", "123");
+    const b = deriveUserId("s2", "ch", "github", "123");
+    expect(a).not.toBe(plain);
+    expect(b).not.toBe(plain);
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    // The salt is the HMAC key, so it cannot be confused with the message at
+    // all; the three message parts are joined by `:` and told apart only
+    // because none may contain one — which `deriveUserId` now refuses rather
+    // than assumes, since a collision here is two people sharing one save.
+    expect(() => deriveUserId("s", "ch:x", "github", "1")).toThrow();
+    expect(() => deriveUserId("s", "ch", "git:hub", "1")).toThrow();
+    expect(() => deriveUserId("s", "ch", "github", "1:2")).toThrow();
+    // A salt may hold anything, including a colon: it is a key, not a part.
+    expect(deriveUserId("a:b", "c", "github", "1")).toMatch(/^[0-9a-f]{32}$/);
+    expect(deriveUserId("s", "ch", "github", "12")).not.toBe(
+      deriveUserId("s", "ch", "github", "1"),
+    );
   });
 });
 

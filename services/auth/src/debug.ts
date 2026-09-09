@@ -9,7 +9,7 @@ import {
 } from "@yyt/core";
 import type { ConsoleDb, TeamDb } from "@yyt/console-db";
 import { defineRoute, type AnyRoute } from "@yyt/http";
-import { signChannelToken } from "@yyt/jwt";
+import { deriveUserId, signChannelToken } from "@yyt/jwt";
 import { z } from "zod";
 import type { ChannelStore } from "./channels.js";
 
@@ -74,9 +74,38 @@ const seedBody = z
   })
   .strict();
 
+/**
+ * Either a literal `userId` — what every smoke has always minted — or a
+ * `{provider, providerUserId}` pair the route **derives** through the
+ * channel's own salt.
+ *
+ * The derived form exists because nothing else could test the derivation: the
+ * two routes that call `deriveUserId` both require a real provider round trip
+ * (GitHub's check is app-scoped, so a plain PAT answers 404), which leaves the
+ * one behaviour that can orphan a whole channel's stored data covered by unit
+ * tests alone. It grants nothing new — this route already mints an arbitrary
+ * `sub` — and it exists only where `/debug/*` does, which is never prod.
+ */
 const mintBody = z
-  .object({ channelId: z.string(), userId: z.string().min(1).max(64) })
-  .strict();
+  .object({
+    channelId: z.string(),
+    userId: z.string().min(1).max(64).optional(),
+    provider: z.enum(["github", "google"]).optional(),
+    providerUserId: z.string().min(1).max(64).optional(),
+  })
+  .strict()
+  .refine(
+    (b) =>
+      // Exactly one complete form, and no stray half of the other: a body
+      // carrying both would silently ignore whichever the handler read second.
+      (b.userId !== undefined &&
+        b.provider === undefined &&
+        b.providerUserId === undefined) ||
+      (b.userId === undefined &&
+        b.provider !== undefined &&
+        b.providerUserId !== undefined),
+    "give either userId or provider + providerUserId, not both",
+  );
 
 /**
  * Dev-only hooks (`STAGE=dev` + `DEBUG_HOOKS=1`): seed an auth channel with a
@@ -200,6 +229,9 @@ export function createDebugRoutes({
           },
           secret: {
             secret,
+            // Same shape as a console-created channel, so a dev flow through
+            // `/start` derives ids the way prod does.
+            userSalt: randomHex(32),
             providers: {
               ...(b.providers.github
                 ? {
@@ -235,15 +267,30 @@ export function createDebugRoutes({
         const b = body;
         const ch = await channels.get(b.channelId);
         if (!ch) throw new AppError("not_found", "channel not found");
+        const userId =
+          b.userId ??
+          deriveUserId(
+            ch.secret.userSalt ?? "",
+            ch.id,
+            b.provider!,
+            b.providerUserId!,
+          );
         const { token, exp } = await signChannelToken({
           secret: ch.secret.secret,
           channelId: ch.id,
           audience: ch.config.audience,
-          userId: b.userId,
+          userId,
           ttlSec: ch.config.tokenTtlSec,
           clock,
         });
-        return { jwt: token, userId: b.userId, exp };
+        // `salted` is the property a rollout has to prove: the same provider
+        // account on two channels must not land on the same id.
+        return {
+          jwt: token,
+          userId,
+          exp,
+          salted: typeof ch.secret.userSalt === "string",
+        };
       },
     }),
   ];

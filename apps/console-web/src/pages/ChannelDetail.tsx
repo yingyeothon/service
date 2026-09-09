@@ -287,6 +287,13 @@ function AuthDetails({ c }: { c: Channel }) {
       {Object.entries(c.callbackUrls ?? {}).map(([p, url]) => (
         <CopyField key={p} label={`${p} callback`} value={url} />
       ))}
+      {c.saltedIds === false && (
+        <Text size="sm" c="dimmed">
+          Player ids on this channel are not salted, so a listed id can be
+          traced back to the provider account it came from. Channels created
+          from now on are salted; to get unlinkable ids, create a new one.
+        </Text>
+      )}
       <Text size="sm" c="dimmed">
         Token TTL {cfg.tokenTtlSec}s · Providers:{" "}
         {providers.length

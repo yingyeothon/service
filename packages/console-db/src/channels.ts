@@ -115,6 +115,20 @@ export interface AuthChannelSecret {
    * because the state routes carry no channel segment.
    */
   apiKey?: string;
+  /**
+   * Random per-channel salt for `deriveUserId` (`randomHex(32)`, minted at
+   * creation; `docs/decisions.md` *Player ids are salted per auth channel*).
+   * Absent on a channel created before this shipped to the stage, whose ids
+   * stay unsalted for ever — re-deriving them would orphan that channel's kv
+   * rows, state documents and scores, all of which are keyed on the id.
+   * `channelView` reports the presence of one as `saltedIds`, so "is this
+   * channel salted?" has an answer that does not require reading the secret.
+   *
+   * A **third** secret, not a reuse of `secret` or `apiKey`: rotating the
+   * signing key or the doc key must not move every player's id. It leaves the
+   * platform through no route, view or log line.
+   */
+  userSalt?: string;
 }
 
 /** `config_json` of a match channel (console validates and writes it). */

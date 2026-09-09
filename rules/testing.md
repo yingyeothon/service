@@ -25,6 +25,19 @@
 - The synchronous-throw trap above has a second face: a validator called **outside** `run(...)` in a non-`async` arrow throws out of the repository call while the fake's `async` method rejects, so the same `expect(...).rejects` passes on the fake and fails on testcontainers (2026-09-04, the `LIMIT` bound check). Put every guard inside the `async` wrapper.
 - Test a cron/sweep step through the function the handler calls, not by re-implementing the wiring in the test: with the wiring re-implemented, deleting the line in `handler.ts` kept the suite green. Extract the step (`runRedisAclReconcile` pattern) and call it directly.
 
+## A cross-package signature change hides behind a stale `dist` (2026-09-09)
+
+- Workspace packages resolve to their **built** `dist`, and vitest does not typecheck. Adding a
+  parameter to `@yyt/jwt`'s `deriveUserId` and calling it with the new argument from
+  `services/auth` therefore ran the _old_ function with the argument silently dropped: the auth
+  suite hashed `":ch_test:github"` and failed with a wrong hex string that looked like a bug in
+  the new code. `pnpm -r build` first, then the suite — and `pnpm typecheck` is the gate that
+  would have named it (`.d.ts` arity), so a red test after a cross-package change is a reason to
+  check the build, not to start editing the implementation.
+- The failure is only legible because the assertion pinned a **literal** hash. Had the test
+  recomputed the expected value through the same import, both sides would have used the stale
+  function and the suite would have passed while production changed.
+
 ## Examples are self-gated (2026-08-30)
 
 - The samples are standalone pnpm projects in `yingyeothon/examples` (since 2026-09-03; before that `examples/*` here, outside the root workspace): this repo's gates never see them, so a change to a shared contract is verified by running the sample's own `lint`/`typecheck`/`test` (and `web:build` for sample-morpg) in that repo before calling it green.

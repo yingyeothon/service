@@ -86,14 +86,27 @@ export function createChannelDocKeyRoutes({
   const { channel: authChannel, credentialHistory: keyHistory } =
     createChannelCredentialHelpers({ access, history, clock, kind: "auth" });
 
-  /** `secret_json` as an object, tolerating a row whose JSON went bad. */
+  /**
+   * `secret_json` as an object, refusing a row whose JSON went bad.
+   *
+   * It used to answer `{}` there, which reads as tolerance and is not: the
+   * result is spread straight back into the row on issue and revoke, so an
+   * unparseable blob was silently replaced by one holding only the apiKey —
+   * dropping the signing secret (loud: every token stops verifying) and the
+   * `userSalt` (silent: every player is re-derived to a new id on their next
+   * sign-in and separated from their kv rows, document and scores). A 503 on a
+   * row that is already broken is the smaller failure.
+   */
   function secretOf(row: ChannelRow): Partial<AuthChannelSecret> {
+    let parsed: unknown;
     try {
-      const parsed: unknown = JSON.parse(row.secretJson);
-      return typeof parsed === "object" && parsed !== null ? parsed : {};
+      parsed = JSON.parse(row.secretJson);
     } catch {
-      return {};
+      parsed = undefined;
     }
+    if (typeof parsed !== "object" || parsed === null)
+      throw new AppError("unavailable", "channel secret cannot be read");
+    return parsed;
   }
 
   return [

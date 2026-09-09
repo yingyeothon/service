@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sha256Hex } from "@yyt/core";
 import { createMemoryConsoleDb, createMemoryTeamDb } from "@yyt/console-db";
 import { createChannelStore } from "../src/channels.js";
 import {
@@ -120,6 +121,36 @@ describe("debug routes + channel store", () => {
       }),
     );
     expect(parse(v)).toMatchObject({ userId: "u1", channelId: "dbg_1" });
+
+    // The derived form: a seeded channel carries a salt, so the same provider
+    // account must not land on the id an unsalted channel would have produced.
+    const derived = parse<{ userId: string; salted: boolean }>(
+      await h.app(
+        ev("POST", "/debug/token", {
+          body: {
+            channelId: "dbg_1",
+            provider: "github",
+            providerUserId: "4242",
+          },
+          headers: key,
+        }),
+      ),
+    );
+    expect(derived.salted).toBe(true);
+    expect(derived.userId).toMatch(/^[0-9a-f]{32}$/);
+    expect(derived.userId).not.toBe(
+      sha256Hex("dbg_1:github:4242").slice(0, 32),
+    );
+    // Exactly one of the two forms, never both and never neither.
+    for (const body of [
+      { channelId: "dbg_1" },
+      { channelId: "dbg_1", userId: "u1", provider: "github" },
+      { channelId: "dbg_1", provider: "github" },
+    ])
+      expect(
+        (await h.app(ev("POST", "/debug/token", { body, headers: key })))
+          .statusCode,
+      ).toBe(400);
     expect(
       (
         await h.app(

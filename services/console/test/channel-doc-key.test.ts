@@ -92,6 +92,71 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
     expect(stored.secret).toBe(parse(rotated).secret);
   });
 
+  it("never adds a salt to a channel that has none", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
+    // A channel from before the salt existed: exactly the shape those rows
+    // hold. Every writer of `secret_json` must leave it that way — a
+    // well-meaning `userSalt: sec.userSalt ?? randomHex(32)` in any of them
+    // re-derives every player's id on their next sign-in and separates them
+    // from their kv rows, document and scores, with no error anywhere.
+    const legacy = JSON.stringify({
+      secret: "f".repeat(64),
+      providers: { github: { clientSecret: "gh-secret-zz" } },
+    });
+    h.db.channels.set(id, { ...h.db.channels.get(id)!, secretJson: legacy });
+    const salted = () =>
+      "userSalt" in JSON.parse(h.db.channels.get(id)!.secretJson);
+
+    expect(
+      (
+        await h.app(
+          ev("PATCH", `/channels/${id}`, {
+            headers: a.cookie,
+            body: { config: { ...authConfig, tokenTtlSec: 7200 } },
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(salted()).toBe(false);
+
+    expect(parse(await key(h, "POST", id, a.cookie)).apiKey).toMatch(/^yds\./);
+    expect(salted()).toBe(false);
+    expect((await key(h, "DELETE", id, a.cookie)).statusCode).toBe(200);
+    expect(salted()).toBe(false);
+
+    expect(
+      (
+        await h.app(
+          ev("POST", `/channels/${id}/rotate-secret`, { headers: a.cookie }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(salted()).toBe(false);
+
+    // And the console says so, so "is my channel salted?" has an answer that
+    // does not require reading the secret.
+    const view = parse(
+      await h.app(ev("GET", `/channels/${id}`, { headers: a.cookie })),
+    );
+    expect(view.saltedIds).toBe(false);
+  });
+
+  it("refuses to write over a secret it cannot parse", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const id = await authChannel(h, a);
+    h.db.channels.set(id, {
+      ...h.db.channels.get(id)!,
+      secretJson: "not json",
+    });
+    // 503, not a silent rebuild: the old code answered `{}` here and wrote it
+    // straight back, dropping the signing secret and the salt with it.
+    expect((await key(h, "POST", id, a.cookie)).statusCode).toBe(503);
+    expect(h.db.channels.get(id)!.secretJson).toBe("not json");
+  });
+
   it("survives a config patch of the channel", async () => {
     const h = harness();
     const a = await h.team("alice");
@@ -110,9 +175,13 @@ describe("POST|GET|DELETE /channels/{id}/doc-key", () => {
     const stored = JSON.parse(h.db.channels.get(id)!.secretJson) as {
       secret: string;
       apiKey?: string;
+      userSalt?: string;
     };
     expect(stored.apiKey).toBe(apiKey);
     expect(stored.secret).toHaveLength(64);
+    // The salt rides the same line: losing it would silently re-derive every
+    // player's id on the next sign-in and orphan their stored data.
+    expect(stored.userSalt).toMatch(/^[0-9a-f]{64}$/);
     expect(parse(await key(h, "GET", id, a.cookie))).toMatchObject({
       issued: true,
     });

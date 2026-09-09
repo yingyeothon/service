@@ -375,6 +375,48 @@ describe("POST /c/{ch}/token", () => {
     });
   });
 
+  it("derives the sub through the channel's userSalt, and without one keeps the old id", async () => {
+    // Two channels, same provider account: the only difference is the salt.
+    // `docs/decisions.md` *Player ids are salted per auth channel*.
+    const unsalted = await harness({}, [channel()]);
+    githubUser(unsalted, 7);
+    const plain = parse<{ userId: string }>(
+      await unsalted.app(
+        ev("POST", `/c/${CH}/token`, {
+          body: { provider: "github", accessToken: "gho_y" },
+        }),
+      ),
+    ).userId;
+    // The literal an unsalted channel's stored rows are keyed on — recomputing
+    // it here would only prove this test agrees with itself.
+    expect(plain).toBe("bf7d2866d607bb12d3a226cd425b31f6");
+
+    const salted = await harness({}, [
+      channel({
+        secret: {
+          secret: SECRET,
+          userSalt: "a".repeat(32),
+          providers: { github: { clientSecret: "gh_secret" } },
+        },
+      }),
+    ]);
+    githubUser(salted, 7);
+    const withSalt = parse<{ userId: string }>(
+      await salted.app(
+        ev("POST", `/c/${CH}/token`, {
+          body: { provider: "github", accessToken: "gho_y" },
+        }),
+      ),
+    ).userId;
+    expect(withSalt).toMatch(/^[0-9a-f]{32}$/);
+    // The whole point: knowing the channel id and the GitHub account is no
+    // longer enough to compute — or confirm — a player's id.
+    expect(withSalt).not.toBe(plain);
+    expect(withSalt).not.toBe("bf7d2866d607bb12d3a226cd425b31f6");
+    // And it is the keyed derivation, not some other salted shape.
+    expect(withSalt).toBe("2d24f5226ea449685286fc9bdcf5e9a7");
+  });
+
   it("rejects bad credentials and wrong shapes", async () => {
     const h = await harness();
     // GitHub answers 404 when the token belongs to a different OAuth app.

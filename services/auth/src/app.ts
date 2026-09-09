@@ -120,7 +120,15 @@ export function createAuthApp({
     provider: ProviderName,
     providerUserId: string,
   ): Promise<IssuedToken> {
-    const userId = deriveUserId(ch.id, provider, providerUserId);
+    // `?? ""` is a channel with no stored salt — one created before this
+    // shipped to the stage — whose ids must not move (`docs/decisions.md`
+    // *Player ids are salted per auth channel*).
+    const userId = deriveUserId(
+      ch.secret.userSalt ?? "",
+      ch.id,
+      provider,
+      providerUserId,
+    );
     const { token, exp } = await signChannelToken({
       secret: ch.secret.secret,
       channelId: ch.id,
