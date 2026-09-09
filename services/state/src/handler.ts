@@ -1,11 +1,13 @@
 import {
   createConsoleDb,
   createKvStoreDb,
+  createLeaderboardDb,
   createPrismaClient,
   createStateDb,
   mysqlOptionsFromEnv,
   type ConsoleDb,
   type KvStoreDb,
+  type LeaderboardDb,
   type StateDb,
 } from "@yyt/console-db";
 import { createJsonLogger, requireEnv, systemClock } from "@yyt/core";
@@ -22,6 +24,7 @@ interface Deps {
   db: ConsoleDb;
   state: StateDb;
   kvstore: KvStoreDb;
+  leaderboards: LeaderboardDb;
 }
 
 let deps: Promise<Deps> | undefined;
@@ -42,6 +45,7 @@ function getDeps(): Promise<Deps> {
       db: createConsoleDb(raw),
       state: createStateDb(raw),
       kvstore: createKvStoreDb(raw),
+      leaderboards: createLeaderboardDb(raw),
     };
   })();
   // A failed cold start must retry on the next invocation, not cache the rejection.
@@ -79,11 +83,12 @@ function buildCrypto(): KvCrypto | undefined {
 
 async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
   requireEnv(process.env, "STAGE");
-  const { db, state, kvstore } = await getDeps();
+  const { db, state, kvstore, leaderboards } = await getDeps();
   const clock = systemClock;
   return createStateApp({
     state,
     kvstore,
+    leaderboards,
     channels: createChannelStore({ db, clock }),
     crypto: buildCrypto(),
     clock,

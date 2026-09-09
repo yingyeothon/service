@@ -446,10 +446,16 @@ export const lbTopOffset = (
 };
 
 /**
- * The rank of every row of a page, given the true rank of its first row
- * (`1 + countBetter`). Equal scores share a rank and the next distinct score
- * takes the position it actually occupies, which is what `1 + count(better)`
- * means row by row -- so the page needs one `count`, not one per row.
+ * The rank of every row of a page: `1 + count(better)` for each, from one
+ * `count`. Equal scores share a rank, and the next distinct score takes the
+ * position it actually occupies.
+ *
+ * Both `firstRank` (the true rank of row 0) and `offset` (its position in the
+ * bucket) are needed, and conflating them is a real bug: a page that **starts
+ * inside a tie** has a first rank below its own offset, so numbering the rest
+ * from `firstRank + i` would under-count every row after the tie ends. With
+ * scores `30, 20, 20, 10` and `offset=2`, the page is `20, 10` -- first rank 2,
+ * and the second row is rank **4**, not 3 (found by the route test, 2026-09-10).
  *
  * Shared by the LB API and the console table: a ranking numbered two ways is
  * two rankings.
@@ -457,12 +463,16 @@ export const lbTopOffset = (
 export function lbRankPage<T extends { score: number }>(
   rows: readonly T[],
   firstRank: number,
+  offset: number,
 ): (T & { rank: number })[] {
   let rank = firstRank;
   let prev: number | undefined;
   return rows.map((row, i) => {
-    if (prev === undefined || row.score !== prev) {
-      rank = firstRank + i;
+    if (prev === undefined) prev = row.score;
+    else if (row.score !== prev) {
+      // Every row before this one in the bucket is strictly better, so its
+      // rank is simply its position.
+      rank = offset + i + 1;
       prev = row.score;
     }
     return { ...row, rank };

@@ -457,7 +457,7 @@ export function createLeaderboardRoutes({
           period,
           periodKey: key,
           total,
-          scores: lbRankPage(rows, firstRank).map((r) => ({
+          scores: lbRankPage(rows, firstRank, offset).map((r) => ({
             rank: r.rank,
             owner: r.ownerId,
             score: r.score,
