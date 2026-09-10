@@ -1076,9 +1076,13 @@ export function createEventRoutes({
         const c = await events.findComment(ctx.params.cid!);
         if (!c || c.eventId !== row.id)
           throw new AppError("not_found", "comment not found");
-        // Author or admin (docs/decisions.md), same as delete.
-        if (id.role !== "admin" && c.createdBy !== id.subject)
-          throw new AppError("forbidden", "not your comment");
+        // The author alone (`docs/decisions.md`, revised 2026-09-10), unlike
+        // delete just below: an admin who edits leaves the author's name on
+        // text they did not write, and nothing distinguishes it from the
+        // author's own edit. Issues and discussions have said this since they
+        // were written; this route was the outlier.
+        if (c.createdBy !== id.subject)
+          throw new AppError("forbidden", "only the author may edit");
         await writeSlot(id);
         await events.updateComment(c.id, ctx.body.bodyMd, now);
         await audit(id.subject, "event.comment.update", c.id);
