@@ -8,6 +8,7 @@ import {
   createMemoryShowsDb,
   createMemoryKvStoreDb,
   createMemoryLeaderboardDb,
+  createMemorySocialDb,
   createMemorySitesDb,
   createMemoryTeamDb,
   createMemoryStateDb,
@@ -103,6 +104,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     memberExists: (id) => db.members.has(id),
     loginOf,
   });
+  const social = createMemorySocialDb();
   const countIn = (
     pick: (r: { teamId: string | null; projectId: string | null }) => boolean,
   ) => ({
@@ -141,6 +143,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     team: teamDb,
     kvstore,
     leaderboards,
+    social,
     posters,
     artifacts,
     cdnBaseUrl: CDN,
@@ -267,6 +270,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     invoked,
     kvstore,
     leaderboards,
+    social,
     teamDb,
     posters,
     artifacts,

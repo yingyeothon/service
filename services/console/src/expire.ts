@@ -7,6 +7,7 @@ import type {
   ExpiredChannel,
   KvStoreDb,
   LeaderboardDb,
+  SocialDb,
   TeamDb,
   StateDb,
 } from "@yyt/console-db";
@@ -753,6 +754,120 @@ export async function runAssetSweep({
  * this bounded: one `ACL USERS` call plus one lookup per *participant* account,
  * instead of a round trip per deleted channel of any kind.
  */
+/** Rows one social sweep statement takes; the kv sweep's number. */
+export const SOCIAL_SWEEP_BATCH = 1_000;
+/**
+ * Statements each social phase may spend -- the kv and leaderboard number,
+ * not half of it. The channel phase is the one that matters: what it skips is
+ * **lost**, because nothing names a dead channel's rows once its id is gone,
+ * and a channel near the profile cap holds far more rows than a kv collection
+ * does. Even so the budget cannot promise to drain one: 20 x 1,000 a day
+ * against a worst case in the millions is a bound, not a guarantee, and
+ * `docs/social.md` says so rather than implying otherwise. Note each drain
+ * call is charged once but may issue **two** statements (relations, then
+ * profiles), so the real cost of a long channel list is up to twice this.
+ */
+export const SOCIAL_SWEEP_MAX_BATCHES = 20;
+
+export interface SocialSweepResult {
+  /** Rows deleted across both phases. */
+  deleted: number;
+  /** Some phase ran out of budget; the rest waits for tomorrow. */
+  truncated: boolean;
+  /** A dying channel's rows were left behind -- work lost, not deferred. */
+  channelsTruncated: boolean;
+}
+
+/**
+ * Daily social sweep, sharing the `expire` schedule. Two jobs, in this order:
+ *
+ * 1. the profiles and relations of the auth channels this run finished with.
+ *    Their ids exist nowhere else afterwards -- the channel row is gone or
+ *    going, and nothing in the database names its players' rows once it is --
+ *    so work skipped here is work **lost**, not deferred. It gets its own
+ *    budget for that reason.
+ * 2. requests that expired, pending or dropped. Deferrable: the rows keep
+ *    their slot in a player's outgoing cap for another day, which is a delay,
+ *    not a loss. No cursor, because it is not a walk: one `DELETE` per state
+ *    over `(state, updated_at)`, oldest first by index order.
+ *
+ * A friendship and a block are never swept: they expire when a player unmakes
+ * them, deletes their profile, or the channel dies.
+ */
+export async function runSocialSweep({
+  social,
+  channels = [],
+  clock = systemClock,
+  logger,
+  batch = SOCIAL_SWEEP_BATCH,
+  maxBatches = SOCIAL_SWEEP_MAX_BATCHES,
+}: {
+  social: SocialDb;
+  /** Auth channels this run soft-deleted or hard-purged; their players' rows go too. */
+  channels?: { id: string }[];
+  clock?: Clock;
+  logger: Logger;
+  batch?: number;
+  maxBatches?: number;
+}): Promise<SocialSweepResult> {
+  const now = nowSec(clock);
+  let deleted = 0;
+  // One charge per id so every channel is at least probed, plus `maxBatches`
+  // more to drain the ones that had rows -- the kv sweep's arithmetic.
+  let channelSpent = 0;
+  const channelBudget = () => channelSpent < channels.length + maxBatches;
+  let spent = 0;
+  const budget = () => spent < maxBatches;
+
+  const drain = async (
+    take: () => Promise<number>,
+    charge: () => void,
+  ): Promise<boolean> => {
+    charge();
+    const gone = await take();
+    deleted += gone;
+    return gone >= batch;
+  };
+
+  let channelsTruncated = false;
+  let truncated = false;
+
+  for (const { id: channelId } of channels) {
+    if (!channelBudget()) {
+      channelsTruncated = true;
+      break;
+    }
+    let more = true;
+    while (more && channelBudget())
+      more = await drain(
+        () => social.deleteChannelSocial(channelId, batch),
+        () => channelSpent++,
+      );
+    if (more) channelsTruncated = true;
+  }
+
+  let more = true;
+  while (more && budget())
+    more = await drain(
+      () => social.sweepStaleRelations(now, batch),
+      () => spent++,
+    );
+  if (more) truncated = true;
+
+  if (channelsTruncated) truncated = true;
+  const line = { deleted, truncated, channelsTruncated };
+  // The same levels the leaderboard sweep settled on, for the same reason:
+  // `channelsTruncated` is work that is lost, plain `truncated` is work
+  // deferred to tomorrow.
+  // Three distinct messages, like the leaderboard sweep: a term-matched log
+  // filter and a grep both need the level in the string, not only in the
+  // field.
+  if (channelsTruncated) logger.error("social sweep incomplete", line);
+  else if (truncated) logger.warn("social sweep truncated", line);
+  else logger.info("social sweep", line);
+  return { deleted, truncated, channelsTruncated };
+}
+
 export async function runRedisAclReconcile({
   admin,
   db,
