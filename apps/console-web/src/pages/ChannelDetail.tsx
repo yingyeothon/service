@@ -426,8 +426,8 @@ function QRedisUserCard({
             />
           )}
           {/*
-            One block, the same nine lines `yyt channels redis-user show`
-            prints (`todo/34`, owner decision 2026-09-10). Field by field, a
+            One block, the shape `yyt channels redis-user show` prints
+            (`todo/34`, owner decision 2026-09-10). Field by field, a
             participant retypes a prefix and the account — scoped to exactly
             these — answers NOPERM, or worse, differs from the gateway's by one
             character and silently relays nothing. The password is not in here:

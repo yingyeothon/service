@@ -202,7 +202,7 @@ func newEvents(a *App) *cobra.Command {
 			return p().Table([]string{"ID", "STATUS", "TITLE", "STARTS", "PLACE", "OWNER", "POSTER"}, rows)
 		},
 	}
-	eventList = addListFlags(eventListCmd, eventSortKeys, "title or place")
+	eventList = addListFlags(eventListCmd, eventSortKeys, "title")
 	c.AddCommand(eventListCmd)
 	c.AddCommand(&cobra.Command{
 		Use:   "get <event-id>",

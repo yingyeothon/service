@@ -280,6 +280,10 @@ export function assetsContract(
     // never asked for. The catalog's pending uploads have said `false` here
     // since they were written; this is the same table in another resource.
     expect(await db.updateUpload("u1", {})).toBe(false);
+    // And a patch whose only field is `undefined` is the same empty patch:
+    // the Prisma side builds its `data` with `!== undefined`, so a fake that
+    // counted keys would answer `true` where the database answers `false`.
+    expect(await db.updateUpload("u1", { status: undefined })).toBe(false);
     expect(await db.findUpload("u1")).toMatchObject({
       status: "completed",
       fileId: "af_1",

@@ -273,6 +273,65 @@ const leave = await b.until("leave");
 check("leave announced on disconnect", leave?.userId === "alice");
 b.close();
 
+// 5b. presence: the friends-list read (`docs/social.md`, `todo/39`). It answers
+// for **derived** ids only — 32 lowercase hex — so these two are minted through
+// the derive path rather than with a chosen `userId` like the players above.
+const derived = async (providerUserId) =>
+  (
+    await json(`${authBase}/debug/token`, {
+      method: "POST",
+      headers: dbg,
+      body: { channelId: authId, provider: "github", providerUserId },
+    })
+  ).body;
+const p1 = await derived(`presence-1-${stamp}`);
+const p2 = await derived(`presence-2-${stamp}`);
+check(
+  "derived ids are 32 hex",
+  /^[0-9a-f]{32}$/.test(p1?.userId ?? "") &&
+    /^[0-9a-f]{32}$/.test(p2?.userId ?? ""),
+  `${p1?.userId} ${p2?.userId}`,
+);
+const online = await connect(lobbyUrl, p1.jwt);
+await online.next(); // hello
+const presenceUrl = `${httpBase}/presence?channel=${lobby.body?.id}&users=${p1?.userId},${p2?.userId}`;
+const pres = await json(presenceUrl, {
+  headers: { authorization: `Bearer ${p1.jwt}` },
+});
+check(
+  "presence: the connected player is online, the other is not",
+  pres.status === 200 &&
+    pres.body?.users?.[p1?.userId] === true &&
+    pres.body?.users?.[p2?.userId] === false,
+  `${pres.status} ${pres.text.slice(0, 160)}`,
+);
+check(
+  "presence without a bearer → 401",
+  (await json(presenceUrl)).status === 401,
+);
+check(
+  "presence on a q channel → 404 (its sessions live elsewhere)",
+  (
+    await json(
+      `${httpBase}/presence?channel=${q.body?.id}&users=${p1?.userId}`,
+      { headers: { authorization: `Bearer ${p1.jwt}` } },
+    )
+  ).status === 404,
+);
+check(
+  "presence refuses an id that is not a derived one → 400",
+  (
+    await json(`${httpBase}/presence?channel=${lobby.body?.id}&users=alice`, {
+      headers: { authorization: `Bearer ${p1.jwt}` },
+    })
+  ).status === 400,
+);
+// Nothing is asserted after the disconnect on purpose: the session key carries
+// a 15-minute TTL, so a departed player reads as online until it expires.
+// Presence is a hint for a friends list, never an input to a decision.
+online.close();
+await sleep(100);
+
 // 6. q: membership and the enter push are only observable through Redis on the
 // box, so the smoke asserts the gateway-visible half: refusal and replacement.
 check(
@@ -292,10 +351,10 @@ check(
   JSON.stringify(metrics1.body?.gauges),
 );
 check(
-  "accepted 4 sockets, replaced 1",
+  "accepted 5 sockets, replaced 1",
   metrics1.body.counters.connectionsAccepted -
     metrics0.body.counters.connectionsAccepted ===
-    4 &&
+    5 &&
     metrics1.body.counters.sessionsReplaced -
       metrics0.body.counters.sessionsReplaced ===
       1,

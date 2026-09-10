@@ -92,7 +92,9 @@ Close codes the gateway sends:
 | `1009` | inbound frame over 16 KB                                    | fix the client                                                                   |
 | `1011` | `q`: the enter push failed                                  | retry the connect                                                                |
 
-Both strategies: text frames only, 16 KB inbound cap, 32 KB outbound cap
+Both strategies: **inbound is text frames only** (a binary frame from a client
+closes the socket with `1003`); outbound is text too, except for the one
+opt-in a `q` game can make (see _Binary frames_). 16 KB inbound cap, 32 KB outbound cap
 (a larger gateway frame is dropped, counted, logged with the channel, and
 replaced by `error frame_too_large` so the client knows a gap exists),
 WebSocket ping every 30 s,
@@ -368,10 +370,16 @@ Rules worth knowing before using it:
 - **Opt-in per message.** A game that never sets `binary` never sends one,
   and a client that never subscribed to such a game never sees one. There is
   no channel-level switch and no negotiation.
-- **`message` must be a base64 JSON string.** Anything else — an object, a
-  number, base64 that does not decode, an empty result — is **dropped with a
-  warning**, not written as text: a client promised bytes must not be handed
-  the base64 of them.
+- **`message` must be a base64 JSON string.** Standard alphabet with padding
+  is the documented form, but base64url and unpadded input decode too, and
+  deliberately: with one dialect only, a game using the wrong encoder loses
+  the frames whose bytes happen to encode a `-` or `_`, or whose length is not
+  a multiple of three, and keeps the rest — a wrong encoder would look like
+  data-dependent packet loss rather than a bug. Anything that is still not
+  base64 — an object, a number, an empty result — is **dropped with a warning
+  and counted in `badCommands`**, never written as text: a client promised
+  bytes must not be handed the base64 of them. (A `send` with no `message` at
+  all is ignored before this point, as it is for a text send.)
 - **Inbound is unchanged.** A binary frame _from_ a client still closes the
   socket with `1003` (`text frames only`). The gateway pushes what a client
   sends into the actor's queue as JSON, and there is nowhere in that envelope

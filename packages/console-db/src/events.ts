@@ -888,7 +888,10 @@ export function createMemoryEventsDb(
         .map((p) => ({ ...p }))
         .sort((a, b) => b.uploadedAt - a.uploadedAt || byId(b, a)),
     updatePoster: async (id, patch) => {
-      if (Object.keys(patch).length === 0) return false;
+      // `every` on the values, not `Object.keys().length`: the Prisma side
+      // builds its `data` with `patch.x !== undefined`, so `{ x: undefined }`
+      // is an empty patch there too and the two must answer alike.
+      if (Object.values(patch).every((v) => v === undefined)) return false;
       const p = posters.get(id);
       if (!p) return false;
       posters.set(id, {
