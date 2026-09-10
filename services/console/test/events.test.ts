@@ -725,7 +725,7 @@ describe("early close by a platform admin", () => {
 });
 
 describe("comments", () => {
-  it("members comment on non-draft events; authors edit, authors or admins delete", async () => {
+  it("members comment on non-draft events; only authors edit, authors or admins delete", async () => {
     const { h, admin, owner, other, pending, event } = await setup();
     const id = event.id;
     const add = (u: User, bodyMd = "hello") =>
@@ -760,7 +760,10 @@ describe("comments", () => {
         }),
       );
     expect(await status(h, edit(owner, c.id))).toBe(403);
-    expect(parse(await edit(admin, c.id))).toMatchObject({ bodyMd: "edited" });
+    // Not even an admin (`docs/decisions.md`, revised 2026-09-10): an edit
+    // leaves the author's name on the text, so it is the author's alone.
+    // Deleting below is still the admin's moderation tool.
+    expect(await status(h, edit(admin, c.id))).toBe(403);
     expect(parse(await edit(other, c.id))).toMatchObject({ bodyMd: "edited" });
     expect(await status(h, edit(other, "ec_nope"))).toBe(404);
     const del = (u: User, cid: string) =>
@@ -777,7 +780,7 @@ describe("comments", () => {
       h.db.audits
         .map((a) => a.action)
         .filter((a) => a.startsWith("event.comment")),
-    ).toHaveLength(6);
+    ).toHaveLength(5);
   });
 });
 
