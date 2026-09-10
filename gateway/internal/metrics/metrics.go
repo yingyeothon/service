@@ -36,6 +36,9 @@ type Counters struct {
 	// see whether a game's entry API reaches the gateway at all.
 	PartyReads    atomic.Int64 `json:"partyReads"`
 	PartyRejected atomic.Int64 `json:"partyRejected"`
+	// `GET /presence`, the friends-list companion of the party roster.
+	PresenceReads    atomic.Int64 `json:"presenceReads"`
+	PresenceRejected atomic.Int64 `json:"presenceRejected"`
 	// Rejected handshakes by HTTP status, so a 401 flood and a 502 storm
 	// look different.
 	Rejected401   atomic.Int64
@@ -187,6 +190,8 @@ func (r *Registry) snapshot(channels bool) snapshot {
 			"redisErrors":         c.RedisErrors.Load(),
 			"partyReads":          c.PartyReads.Load(),
 			"partyRejected":       c.PartyRejected.Load(),
+			"presenceReads":       c.PresenceReads.Load(),
+			"presenceRejected":    c.PresenceRejected.Load(),
 			"rejected401":         c.Rejected401.Load(),
 			"rejected403":         c.Rejected403.Load(),
 			"rejected404":         c.Rejected404.Load(),
