@@ -394,15 +394,19 @@ if (gatewayToken) {
   console.log("skip GET /gw/channels checks (set GATEWAY_TOKEN to run them)");
 }
 
+// Stamped, not the fixed `renamed`: a deleted channel holds its name in the
+// team for 30 days, so the second run of the day used to 409 on a name the
+// first run had already taken and thrown away.
+const renamed = `renamed-${stamp}`;
 const patched = await call(`/channels/${chId}`, {
   method: "PATCH",
   headers: as(member),
-  body: { name: "renamed", config: { tokenTtlSec: 600 } },
+  body: { name: renamed, config: { tokenTtlSec: 600 } },
 });
 check(
   "patch",
   patched.status === 200 &&
-    patched.body?.name === "renamed" &&
+    patched.body?.name === renamed &&
     patched.body?.config?.tokenTtlSec === 600,
   patched.text.slice(0, 120),
 );
