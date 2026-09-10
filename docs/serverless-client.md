@@ -111,8 +111,40 @@ below, but the trust model is the limit, not the API.
   project with `submit: server | owner`, `alltime`/`daily`/`weekly` buckets in
   `Asia/Seoul` and `rank = 1 + count(better)`. A serverless game runs
   `submit: owner` and accepts that its scores are trusted.
-- **Friends** need a relation two players both approve; kv has no
-  two-owner entry. Hence `/social/*`.
+- ~~**Friends** need a relation two players both approve; kv has no
+  two-owner entry.~~ **Fixed 2026-09-10** (`docs/decisions.md` #9,
+  `todo/39`, `docs/social.md`): `/social/*` on the state stack, scoped to the
+  auth channel. The recipe a client follows:
+
+  1. `PUT /social/me/profile {displayName, avatar?}` once per player. A
+     profile is what admits a player to the graph — both ends of a relation
+     need one, so a client that skips this gets `409 profile_required` on its
+     first request and `404` on every request **sent to** it.
+  2. `POST /social/requests {to}` with a friend's `userId` (from the lobby
+     roster, the match `members` frame, or the game's own invite code).
+     `201` for a new request, `200` when nothing moved, and `state: "friends"`
+     when the other player had already asked — mutual requests settle without
+     an accept.
+  3. The recipient polls `GET /social/requests` and answers `accept` or
+     `decline`. **A decline is silent**: the sender goes on seeing a pending
+     request until it expires 30 days later, so do not build UI that promises
+     an answer.
+  4. `GET /social/friends` returns the graph with display names joined in;
+     hand its `userId`s to the gateway's
+     `GET /presence?channel={lobbyId}&users=…` (≤ 50 per call) for the
+     online dots, then invite the online ones with `party.invite`. Poll it on
+     the order of tens of seconds, never per frame: a session key changes
+     slowly, and behind the gateway's proxy every client of a stage may share
+     one rate bucket.
+
+  Three preconditions the routes cannot check for you: the lobby channel and
+  the social graph must sit behind the **same auth channel** (an id derived
+  under another channel's salt addresses nothing), presence is stale by up to
+  15 minutes after an ungraceful gateway stop, and a `displayName` is **not
+  unique** — render the `userId` beside it wherever a mistake matters. And
+  presence is **not** block-aware: the gateway has no view of the social
+  graph, so blocking somebody does not hide you from their friends list.
+
 - No trusted clock (`GET /time`), no trusted RNG, no push notifications.
 
 ## What is risky
