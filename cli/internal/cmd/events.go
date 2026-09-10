@@ -171,16 +171,21 @@ func newEvents(a *App) *cobra.Command {
 	}
 	eventPath := func(id string) string { return "/events/" + api.PathID(id) }
 
-	c.AddCommand(&cobra.Command{
+	var eventList *listOpts
+	eventListCmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List events (anonymous: waiting/opened/closed; members: everything but others' drafts)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			q, err := eventList.query(nil)
+			if err != nil {
+				return err
+			}
 			var res struct {
 				Events []event `json:"events"`
 			}
-			if err := do(cmd, http.MethodGet, "/events", nil, &res); err != nil {
+			if err := do(cmd, http.MethodGet, "/events"+q, nil, &res); err != nil {
 				return err
 			}
 			if a.jsonOut {
@@ -196,7 +201,9 @@ func newEvents(a *App) *cobra.Command {
 			}
 			return p().Table([]string{"ID", "STATUS", "TITLE", "STARTS", "PLACE", "OWNER", "POSTER"}, rows)
 		},
-	})
+	}
+	eventList = addListFlags(eventListCmd, eventSortKeys, "title or place")
+	c.AddCommand(eventListCmd)
 	c.AddCommand(&cobra.Command{
 		Use:   "get <event-id>",
 		Short: "Show one event (options, tally once the vote closed, comments)",

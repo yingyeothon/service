@@ -413,6 +413,7 @@ func newChannels(a *App) *cobra.Command {
 	}
 
 	var kind, scope string
+	var chList *listOpts
 	list := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -442,9 +443,9 @@ func newChannels(a *App) *cobra.Command {
 				}
 				path = "/projects/" + api.PathID(r.ProjectID) + "/channels"
 			}
-			q := ""
-			if len(qv) > 0 {
-				q = "?" + qv.Encode()
+			q, err := chList.query(qv)
+			if err != nil {
+				return err
 			}
 			var res struct {
 				Channels []channel `json:"channels"`
@@ -464,6 +465,7 @@ func newChannels(a *App) *cobra.Command {
 	}
 	list.Flags().StringVar(&kind, "kind", "", "filter: auth|topic|match|lobby|q")
 	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin; ignores the project context)")
+	chList = addListFlags(list, channelSortKeys, "name")
 	c.AddCommand(list)
 
 	var cf configFlags

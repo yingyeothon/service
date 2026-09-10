@@ -144,7 +144,8 @@ func newProject(a *App) *cobra.Command {
 		return cc, r, err
 	}
 
-	c.AddCommand(&cobra.Command{
+	var projectList *listOpts
+	projectListCmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the projects of the team in context",
@@ -158,10 +159,14 @@ func newProject(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			q, err := projectList.query(nil)
+			if err != nil {
+				return err
+			}
 			var res struct {
 				Projects []projectRow `json:"projects"`
 			}
-			if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/teams/"+api.PathID(r.TeamID)+"/projects", nil, &res); err != nil {
+			if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/teams/"+api.PathID(r.TeamID)+"/projects"+q, nil, &res); err != nil {
 				return err
 			}
 			if a.jsonOut {
@@ -173,7 +178,9 @@ func newProject(a *App) *cobra.Command {
 			}
 			return a.printer().Table([]string{"ID", "NAME", "TEAM", "DESCRIPTION", "UPDATED"}, rows)
 		},
-	})
+	}
+	projectList = addListFlags(projectListCmd, projectSortKeys, "name or description")
+	c.AddCommand(projectListCmd)
 	{
 		var description string
 		create := &cobra.Command{

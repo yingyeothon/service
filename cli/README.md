@@ -74,7 +74,7 @@ yyt project issue comment add <n> --body … | update <n> <cid> --body … | rm 
 
 ## Commands
 
-List commands print the server's default order. The console's `sort`/`order`/`q` list parameters (2026-09-02, `docs/team-project.md` _List parameters_) are not exposed here yet: name resolution needs the whole, unfiltered list, and a parameter-less call still returns exactly that.
+`team|project|channels|events list` take `--sort`/`--order` and `--q`, the console's list parameters (2026-09-02, `docs/team-project.md` _List parameters_); `show list` takes `--q` only, because it is cursor-paged and the cursor pins the order. A value outside the route's vocabulary is refused before the request, and the vocabulary is in each command's `--help`. Without any of them a list prints the server's default order, which is what **name resolution** relies on: `yyt` resolves a name to an id from the whole, unfiltered list, so these flags are for what you read, never for what the CLI looks up.
 
 Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret`; `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
 

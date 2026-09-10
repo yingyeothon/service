@@ -212,6 +212,9 @@ func newTeam(a *App) *cobra.Command {
 	}
 
 	var scope string
+	// Declared before the command so the RunE closure can read the flags that
+	// `addListFlags` registers on it below.
+	var teamList *listOpts
 	list := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -222,9 +225,16 @@ func newTeam(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			q := ""
+			extra := url.Values{}
 			if scope != "" {
-				q = "?scope=" + url.QueryEscape(scope)
+				extra.Set("scope", scope)
+				// `role` is the caller's own seat; an admin listing every team
+				// has none, and the route refuses that pair.
+				teamList.restrict(allTeamSortKeys)
+			}
+			q, err := teamList.query(extra)
+			if err != nil {
+				return err
 			}
 			var res struct {
 				Teams []teamRow `json:"teams"`
@@ -243,6 +253,7 @@ func newTeam(a *App) *cobra.Command {
 		},
 	}
 	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin)")
+	teamList = addListFlags(list, teamSortKeys, "name")
 	c.AddCommand(list)
 
 	{
