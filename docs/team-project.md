@@ -81,9 +81,13 @@ Resource views carry `teamId, teamName, projectId, projectName, createdBy` (logi
 `version: {id, name, linkId, created} | null` — the project version the artifact's `version` tag
 (`+build` stripped) names, created and linked by the commit itself (`docs/decisions.md` _Versions_).
 
-Compatibility routes for the installed installer, kept for one release and removed once every installed installer has moved (`rules/deployment.md`):
-`GET /catalog/apps` (flattened over the caller's teams), `GET /catalog/apps/{id|name}/artifacts*`
-(name resolves only when unique in the caller's teams). `GET /catalog/installer/downloads` is permanent
+The installer compatibility surface is **removed** (2026-09-10, `todo/17` P10): `/catalog/apps/{app}`
+and every artifact route under it take an **id and only an id**. The old installer addressed artifacts by
+name and `appWith` resolved one across the caller's teams when exactly one matched; nothing else needed it,
+since the SPA has only ever sent ids and the CLI resolves a name itself through `GET /teams/{team}/catalog/apps`.
+`GET /catalog/apps` (flattened over the caller's teams) is **kept and permanent** — it was listed as
+compatibility, but it is `GET /channels`'s shape and is what `yyt catalog list` answers with when given no
+team or project. `GET /catalog/installer/downloads` is permanent
 and serves `platform_settings.installer_app_id`; with no installer app configured it answers `200 {downloads: []}`,
 and `503` (`details.reason: installer_untrusted`) when the configured app's team is not `admin_locked`.
 
