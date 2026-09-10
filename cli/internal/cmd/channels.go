@@ -95,6 +95,10 @@ type docKey struct {
 	Issued *bool `json:"issued,omitempty"`
 	// Absent when the console has no handle on the document table.
 	Documents *int `json:"documents,omitempty"`
+	// Social profiles of this channel; absent means unknown, not zero. There
+	// is deliberately no relation count -- an unbounded `COUNT(*)` has no
+	// place on a read that backs the console's channel page.
+	Profiles *int `json:"profiles,omitempty"`
 	// Present on read and only when false: this stage has no state stack.
 	Configured *bool `json:"configured,omitempty"`
 	// Absent on issue/show; `revoke` reports whether anything was removed.
@@ -908,6 +912,9 @@ func (a *App) showDocKey(k docKey) error {
 	}
 	if k.Documents != nil {
 		pairs = append(pairs, [2]string{"documents", fmt.Sprintf("%d", *k.Documents)})
+	}
+	if k.Profiles != nil {
+		pairs = append(pairs, [2]string{"profiles", fmt.Sprintf("%d", *k.Profiles)})
 	}
 	if k.Configured != nil && !*k.Configured {
 		pairs = append(pairs, [2]string{"configured", "false (no document service on this stage)"})

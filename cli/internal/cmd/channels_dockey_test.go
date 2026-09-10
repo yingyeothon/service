@@ -12,7 +12,7 @@ func TestChannelsDocKey(t *testing.T) {
 		"docUrl":    "https://doc-dev.yyt.life",
 		"writePath": "/s/{ownerId}",
 	}
-	show := map[string]any{"issued": false, "documents": 0}
+	show := map[string]any{"issued": false, "documents": 0, "profiles": 2}
 	issued := map[string]any{"issued": true, "apiKey": apiKey}
 	for k, v := range block {
 		show[k] = v
@@ -28,7 +28,7 @@ func TestChannelsDocKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"auth_9", "https://doc-dev.yyt.life", "/s/{ownerId}", "issued", "false", "documents"} {
+	for _, want := range []string{"auth_9", "https://doc-dev.yyt.life", "/s/{ownerId}", "issued", "false", "documents", "profiles"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in %s", want, out)
 		}

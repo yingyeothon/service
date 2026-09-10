@@ -8,6 +8,7 @@ import {
   createPrismaClient,
   createKvStoreDb,
   createLeaderboardDb,
+  createSocialDb,
   createSitesDb,
   createStateDb,
   mysqlOptionsFromEnv,
@@ -17,6 +18,7 @@ import {
   type EventsDb,
   type KvStoreDb,
   type LeaderboardDb,
+  type SocialDb,
   type ShowsDb,
   type SitesDb,
   type TeamDb,
@@ -44,6 +46,7 @@ import {
   runKvStoreSweep,
   runLeaderboardSweep,
   runRedisAclReconcile,
+  runSocialSweep,
   runRedisUsageReport,
 } from "./expire.js";
 import { runEventSweep } from "./events.js";
@@ -79,6 +82,7 @@ interface Deps {
   /** The key-value store; the state stack serves its API from the same tables. */
   kvstore: KvStoreDb;
   leaderboards: LeaderboardDb;
+  social: SocialDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
   kv: Kv;
@@ -122,6 +126,7 @@ function getDeps(): Promise<Deps> {
       team: createTeamDb(raw, { newHistoryId: historyId }),
       kvstore: createKvStoreDb(raw),
       leaderboards: createLeaderboardDb(raw),
+      social: createSocialDb(raw),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
@@ -175,6 +180,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     team,
     kvstore,
     leaderboards,
+    social,
     state,
     kv,
     redisAcl,
@@ -227,6 +233,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     team,
     kvstore,
     leaderboards,
+    social,
     state,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
@@ -330,6 +337,7 @@ export const expire = async (): Promise<void> => {
     team,
     kvstore,
     leaderboards,
+    social,
     state,
     redisAcl,
     kv,
@@ -413,6 +421,14 @@ export const expire = async (): Promise<void> => {
         leaderboards,
         channels: deletedAuthChannels,
         kv,
+        logger,
+      }),
+    // Same again for the social tables: a dying channel's profiles and
+    // relations, then the requests that expired.
+    () =>
+      runSocialSweep({
+        social,
+        channels: deletedAuthChannels,
         logger,
       }),
     () => runCatalogSweep({ catalog, artifacts, db, logger }),

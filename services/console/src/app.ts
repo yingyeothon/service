@@ -23,6 +23,7 @@ import type {
   EventsDb,
   KvStoreDb,
   LeaderboardDb,
+  SocialDb,
   ShowsDb,
   SitesDb,
   TeamDb,
@@ -77,6 +78,7 @@ import {
   createChannelDocKeyRoutes,
   deleteChannelDocs,
 } from "./channel-doc-key.js";
+import { deleteChannelSocial } from "./social.js";
 import { createWriteSlot } from "./write-slot.js";
 import { createGatewayRoutes } from "./gateway.js";
 import { createTeamRoutes } from "./team.js";
@@ -116,6 +118,8 @@ export interface ConsoleAppOptions {
   /** The key-value store; the state stack serves its API from the same tables. */
   kvstore: KvStoreDb;
   leaderboards: LeaderboardDb;
+  /** Profiles and relations; the state stack serves `/social/*` from the same tables. */
+  social: SocialDb;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
@@ -195,6 +199,7 @@ export function createConsoleApp({
   team,
   kvstore,
   leaderboards,
+  social,
   posters,
   artifacts,
   cdnBaseUrl,
@@ -964,6 +969,10 @@ export function createConsoleApp({
         // (`docs/decisions.md` *Serverless clients* #4).
         if (row.kind === "auth")
           await deleteChannelLbScores(leaderboards, row.id, logger);
+        // And the profiles and relations, same lifecycle point, same reason
+        // (`docs/decisions.md` *Serverless clients* #9).
+        if (row.kind === "auth")
+          await deleteChannelSocial(social, row.id, logger);
         await audit(id.subject, "channel.delete", row.id);
         await channelHistory(row, id.subject, "resource.delete");
         return undefined;
@@ -1025,6 +1034,7 @@ export function createConsoleApp({
     access,
     db,
     state,
+    social,
     docUrl: urls.doc,
     clock,
     audit,

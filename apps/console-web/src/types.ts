@@ -345,6 +345,12 @@ export interface ChannelDocKey {
   issued: boolean;
   /** Absent when the console has no handle on the document table — unknown, not zero. */
   documents?: number;
+  /**
+   * Social profiles of this channel; absent means unknown, not zero. There is
+   * deliberately no relation count — an unbounded `COUNT(*)` has no place on a
+   * read that backs a page.
+   */
+  profiles?: number;
   /** Present on read and only when `false`: this stage has no state stack. */
   configured?: boolean;
   /** Present on issue only, once. */

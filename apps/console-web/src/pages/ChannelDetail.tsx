@@ -532,13 +532,14 @@ function AuthDocKeyCard({
     const r = await act.run(() => api.issueChannelDocKey(channel.id));
     if (r) {
       setApiKey(r.apiKey ?? null);
-      // `documents` is not on the issue response; keeping the previous count
-      // beats making it vanish from the card until the next refetch.
+      // Neither count is on the issue response; keeping the previous ones
+      // beats making them vanish from the card until the next refetch.
       q.set({
         ...r,
         apiKey: undefined,
         issued: true,
         documents: r.documents ?? q.data?.documents,
+        profiles: r.profiles ?? q.data?.profiles,
       });
     }
   };
@@ -580,6 +581,14 @@ function AuthDocKeyCard({
                 {" "}
                 {q.data.documents} document
                 {q.data.documents === 1 ? "" : "s"} stored.
+              </>
+            )}
+            {q.data.profiles !== undefined && q.data.profiles > 0 && (
+              <>
+                {" "}
+                {q.data.profiles} social profile
+                {q.data.profiles === 1 ? "" : "s"}; deleting this channel takes
+                the friend graph with it.
               </>
             )}
           </Text>

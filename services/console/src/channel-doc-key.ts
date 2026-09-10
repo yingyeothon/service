@@ -9,6 +9,7 @@ import type {
   AuthChannelSecret,
   ChannelRow,
   ConsoleDb,
+  SocialDb,
   StateDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute } from "@yyt/http";
@@ -24,6 +25,8 @@ export interface ChannelDocKeyRoutesOptions {
   db: ConsoleDb;
   /** Only for the document count shown next to the key; `undefined` omits it. */
   state?: StateDb;
+  /** Same, for the profile count; the relation count is deliberately absent (see the route). */
+  social?: SocialDb;
   /** Where the participant's server sends its writes, e.g. `https://doc-dev.yyt.life`. */
   docUrl: string;
   clock: Clock;
@@ -78,6 +81,7 @@ export function createChannelDocKeyRoutes({
   access,
   db,
   state,
+  social,
   docUrl,
   clock,
   audit,
@@ -127,6 +131,15 @@ export function createChannelDocKeyRoutes({
           // missing state account means the number is unknown, not zero, so
           // the field is omitted rather than guessed.
           ...(state ? { documents: await state.countDocs(row.id) } : {}),
+          // Profiles, but **not** relations. Both would be a `COUNT(*)` on a
+          // read that backs a page, and only this one has a ceiling: a channel
+          // holds at most `SOCIAL_PROFILES_PER_CHANNEL` profiles, while its
+          // relations are that number times each player's own caps. An
+          // unbounded count on a shared host with a 5 s `max_statement_time`
+          // is what `m0018` exists to remember. A non-zero profile count is
+          // the signal the card needs anyway: it says the channel's players
+          // have a social graph, and deleting the channel takes it.
+          ...(social ? { profiles: await social.countProfiles(row.id) } : {}),
         };
       },
     }),
