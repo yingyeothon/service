@@ -207,6 +207,8 @@ yyt lb score delete <lb> <ownerId>                     # every period of the boa
 yyt lb clear <lb> <period>                             # empty one bucket (a period name, or a key like 2026-09-10)
 ```
 
+`yyt project get` counts leaderboards beside the other resources, because a project delete is refused while one exists — the CLI dropped that field until 2026-09-10, so a refused delete had no visible cause there.
+
 **There is no `lb score put`.** The console never writes a score (`docs/decisions.md` _Serverless clients_ #2): every row arrives through the LB API on the state stack, which is what makes each one name the credential that wrote it. A game server submits with the project's document API key (`yyt channels doc-key …` on an auth channel), a player with the channel JWT it holds and the path `…/scores/me`; `get` prints those paths (`apiBase`, `apiMeta`, `apiName`, `apiTop`, `apiScore`).
 
 `--period` names a period (`alltime`, `daily`, `weekly`) for the live bucket or a key (`2026-09-10`, `2026-W37`) for a past one; omitted, it is the board's first period at its live key. Keys are computed by the platform in `Asia/Seoul`, never by the client, and `lb top` prints which bucket answered on **stderr** so a piped table stays a table. `rank` is `1 + count(better)`, so equal scores share one. Scores are safe integers; an optional `meta` is JSON text stored byte for byte (at most 1 KiB) and belongs to the accepted score — `best` keeps the better one, `latest` the newest, `sum` adds and saturates.

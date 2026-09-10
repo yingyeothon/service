@@ -191,6 +191,7 @@ type projectRow struct {
 		Bundles  int `json:"bundles"`
 		Sites    int `json:"sites"`
 		Kv       int `json:"kv"`
+		Lb       int `json:"lb"`
 		Versions int `json:"versions"`
 		Issues   int `json:"issues"`
 	} `json:"counts,omitempty"`
