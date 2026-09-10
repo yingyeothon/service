@@ -720,6 +720,39 @@ export function socialContract(make: () => SocialDb | Promise<SocialDb>) {
       AppError,
     );
   });
+  it("reports the busiest channels for the usage digest", async () => {
+    const db = await make();
+    await withProfiles(db, [A, B]);
+    await db.request(CH, A, B, NOW);
+    // A second channel with one profile and no relation.
+    await db.putProfile({
+      channelId: CH2,
+      ownerId: A,
+      displayName: "elsewhere",
+      avatar: null,
+      at: NOW,
+    });
+    // A pending request is **one** row, not a mirrored pair — the second
+    // direction appears on accept. Worth pinning here: the digest counts rows,
+    // so it reads a channel of requesters differently from a channel of
+    // friends.
+    expect(await db.topSocialChannels(10)).toEqual([
+      { channelId: CH, profiles: 2, relations: 1 },
+      { channelId: CH2, profiles: 1, relations: 0 },
+    ]);
+    await db.accept(CH, B, A, NOW + 1);
+    expect((await db.topSocialChannels(10))[0]).toEqual({
+      channelId: CH,
+      profiles: 2,
+      relations: 2,
+    });
+    // Ranked by the two counts together, ties broken on the channel id, so
+    // both implementations answer one order rather than whichever MariaDB
+    // felt like (`rules/testing.md`).
+    expect((await db.topSocialChannels(1)).map((u) => u.channelId)).toEqual([
+      CH,
+    ]);
+  });
 }
 
 describe("memory social db", () => {

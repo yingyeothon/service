@@ -1577,7 +1577,11 @@ export function createMemorySocialDb(): SocialDb & {
       const n = checkSocialBatch(limit);
       const per = new Map<string, SocialChannelUsage>();
       const slot = (channelId: string) => {
-        const u = per.get(channelId) ?? { channelId, profiles: 0, relations: 0 };
+        const u = per.get(channelId) ?? {
+          channelId,
+          profiles: 0,
+          relations: 0,
+        };
         per.set(channelId, u);
         return u;
       };
