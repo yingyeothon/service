@@ -616,6 +616,8 @@ export function createEventsDb(prisma: PrismaClient): EventsDb {
         const data: Record<string, number | null> = {};
         if (patch.replacedAt !== undefined) data.replaced_at = patch.replacedAt;
         if (patch.deletedAt !== undefined) data.deleted_at = patch.deletedAt;
+        // Same rule as the catalog's pending uploads: no fields, no statement.
+        if (Object.keys(data).length === 0) return false;
         const r = await prisma.event_posters.updateMany({
           where: { id },
           data,
@@ -886,6 +888,7 @@ export function createMemoryEventsDb(
         .map((p) => ({ ...p }))
         .sort((a, b) => b.uploadedAt - a.uploadedAt || byId(b, a)),
     updatePoster: async (id, patch) => {
+      if (Object.keys(patch).length === 0) return false;
       const p = posters.get(id);
       if (!p) return false;
       posters.set(id, {

@@ -442,16 +442,19 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
       }),
     updateUpload: (id, patch) =>
       run(async () => {
+        const data: Record<string, string | null> = {};
+        if (patch.status !== undefined) data.status = patch.status;
+        if (patch.objectKey !== undefined) data.object_key = patch.objectKey;
+        if (patch.etag !== undefined) data.etag = patch.etag;
+        if (patch.fileId !== undefined) data.file_id = patch.fileId;
+        // An empty patch is a no-op, and `updateMany` with no `data` is a
+        // statement that touches every column with itself. The catalog's own
+        // pending-upload writer has answered `false` here since it was
+        // written; the two are the same table in two resources.
+        if (Object.keys(data).length === 0) return false;
         const r = await prisma.asset_pending_uploads.updateMany({
           where: { id },
-          data: {
-            ...(patch.status !== undefined ? { status: patch.status } : {}),
-            ...(patch.objectKey !== undefined
-              ? { object_key: patch.objectKey }
-              : {}),
-            ...(patch.etag !== undefined ? { etag: patch.etag } : {}),
-            ...(patch.fileId !== undefined ? { file_id: patch.fileId } : {}),
-          },
+          data,
         });
         return r.count > 0;
       }),
@@ -668,6 +671,7 @@ export function createMemoryAssetsDb(
         .filter((u): u is AssetUploadRow => u !== undefined)
         .map((u) => ({ ...u })),
     updateUpload: async (id, patch) => {
+      if (Object.keys(patch).length === 0) return false;
       const u = uploads.get(id);
       if (!u) return false;
       uploads.set(id, {
