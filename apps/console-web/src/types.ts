@@ -1008,3 +1008,22 @@ export interface LbScoreQuery {
   limit?: number;
   offset?: number;
 }
+
+// ---- game kit config ------------------------------------------------------
+
+/**
+ * `GET /projects/{prj}/kit-config` (`docs/game-kit-design.md`). Every section
+ * is optional: one whose stack the stage does not have, or whose channel the
+ * project does not hold, is **absent** rather than empty, so a kit module with
+ * no config fails on first use instead of connecting to nowhere.
+ *
+ * All public values — ids, names and hosts. There is no secret in it.
+ */
+export interface KitConfig {
+  auth?: { url: string; channelId: string; provider?: string };
+  state?: { url: string };
+  gateway?: { url: string; lobbyChannelId: string };
+  match?: { url: string; channelId: string };
+  collections: Record<string, string>;
+  boards: Record<string, string>;
+}

@@ -28,7 +28,7 @@ import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
-import { Badge, CopyField, Notice } from "../components/ui";
+import { Badge, CopyField, CopyText, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
@@ -204,6 +204,7 @@ export function ProjectPage() {
       {!canWrite && !t.loading && <ReadOnlyBanner />}
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
       {project.description && <Markdown text={project.description} />}
+      <KitConfigSection project={project} />
       <Tabs
         value={TABS.includes(tab) ? tab : "channels"}
         onChange={(v) => void nav(projectUrl(teamId, prj, v ?? undefined))}
@@ -916,6 +917,49 @@ function KvTab({
           onChange={(p) => drawer.patch(p)}
         />
       </ResourceDrawer>
+    </Section>
+  );
+}
+
+/* ---- game kit config ------------------------------------------------------ */
+
+/**
+ * The one block a game pastes into its own config (`docs/game-kit-design.md`).
+ * Collapsed by default: it is a copy-once thing, not something a member reads
+ * on every visit, and the project page's job is the resource tabs.
+ */
+function KitConfigSection({ project }: { project: ProjectDetail }) {
+  const [open, setOpen] = useState(false);
+  const q = useApiQuery(
+    ["project", project.id, "kit-config"],
+    () => api.kitConfig(project.id),
+    { enabled: open },
+  );
+  return (
+    <Section
+      title="Game kit config"
+      description="What a game pastes into its own config so the client kit knows this project's channels, collections and boards. Every value here is public."
+      actions={
+        <Button variant="default" onClick={() => setOpen((v) => !v)}>
+          {open ? "Hide" : "Show config"}
+        </Button>
+      }
+    >
+      {open &&
+        (q.error ? (
+          // The one error worth reading rather than retrying: several channels
+          // of a kind, and the server refuses to guess which the game means.
+          <Notice kind="error">{q.error}</Notice>
+        ) : q.data ? (
+          <CopyText
+            label="kit-config.json"
+            value={JSON.stringify(q.data, null, 2)}
+          />
+        ) : (
+          <Text size="sm" c="dimmed">
+            Loading…
+          </Text>
+        ))}
     </Section>
   );
 }

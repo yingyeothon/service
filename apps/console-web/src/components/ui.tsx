@@ -126,6 +126,40 @@ export function CopyField({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * A read-only block of text with one copy button — `CopyBlock`'s sibling for
+ * content that is not `name=value`, like the game kit's JSON. Kept separate
+ * rather than given a `format` prop: the two differ in what they promise a
+ * reader, and a block that sometimes joins pairs and sometimes does not is
+ * harder to reason about than two components.
+ */
+export function CopyText({ label, value }: { label: string; value: string }) {
+  const id = useId();
+  return (
+    <Stack gap={4} my={4}>
+      <Text size="sm" c="dimmed" id={id}>
+        {label}
+      </Text>
+      <Code
+        block
+        aria-labelledby={id}
+        style={{
+          userSelect: "all",
+          whiteSpace: "pre-wrap",
+          overflowWrap: "anywhere",
+          maxHeight: 320,
+          overflowY: "auto",
+        }}
+      >
+        {value}
+      </Code>
+      <Group>
+        <CopyButton value={value} idle="Copy all" aria={`Copy ${label}`} />
+      </Group>
+    </Stack>
+  );
+}
+
 /** Multi-line read-only block with one copy button; lines are `name=value`. */
 export function CopyBlock({
   label,
