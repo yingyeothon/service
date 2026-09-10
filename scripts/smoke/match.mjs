@@ -8,6 +8,7 @@ import { ensureTeam } from "./_team.mjs";
 import {
   consoleLogin,
   createChecker,
+  exitOnCrash,
   jsonClient,
   mintToken,
   wsConnector,
@@ -22,6 +23,8 @@ if (!wss || !debugHttp || !debugKey || !authBase || !consoleBase) {
   );
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const slow = flag === "--slow";
 const { check, finish } = createChecker();
 const json = jsonClient();

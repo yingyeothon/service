@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Smoke test for the auth stack on dev: seed a channel via the debug hook, mint a token, verify it.
 import { createHash } from "node:crypto";
+import { exitOnCrash } from "./_lib.mjs";
 // Usage: scripts/smoke/auth.mjs <baseUrl> <debugKey>
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: auth.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
+// A crash before the summary line would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const json = async (res) => ({
   status: res.status,
   body: await res.json().catch(() => null),

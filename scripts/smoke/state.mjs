@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { ensureTeam } from "./_team.mjs";
-import { createChecker, jsonClient } from "./_lib.mjs";
+import { createChecker, exitOnCrash, jsonClient } from "./_lib.mjs";
 // Smoke test for the state stack on dev: create an auth channel (console debug
 // login) → issue its doc key → write, read and delete documents with enforced
 // compare-and-set → check that a player's token reads only its own row and
@@ -14,6 +14,8 @@ if (!docBase || !debugKey || !authBase || !consoleBase) {
   );
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 const call = jsonClient();
 const dbg = { "x-debug-key": debugKey };

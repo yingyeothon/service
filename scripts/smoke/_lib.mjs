@@ -238,9 +238,13 @@ export const wsRejected = (connect) => async (url, token) => {
 /**
  * The HTTP status a WebSocket upgrade is answered with. fetch (undici)
  * forbids the `connection`/`upgrade` headers, so the handshake is sent by
- * hand. `0` on a socket error or, with `timeoutMs`, on a stalled request.
+ * hand. `0` on a socket error or on a stalled request. **The timeout has a
+ * default** because a gateway that accepts the TCP connection and then answers
+ * nothing — the failure this probe exists to catch — leaves `http.request`
+ * waiting forever, and a smoke that hangs is worse than one that fails: CI
+ * kills it with no summary line. Pass `timeoutMs: 0` to wait indefinitely.
  */
-export const refusedUpgrade = (url, protocols, { timeoutMs } = {}) =>
+export const refusedUpgrade = (url, protocols, { timeoutMs = 10_000 } = {}) =>
   new Promise((resolve) => {
     const u = new URL(url);
     const mod = u.protocol === "wss:" ? https : http;

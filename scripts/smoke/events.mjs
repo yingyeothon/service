@@ -9,6 +9,7 @@ import {
   asUser,
   createChecker,
   debugLogin,
+  exitOnCrash,
   jsonClient,
   sleep,
 } from "./_lib.mjs";
@@ -18,6 +19,8 @@ if (!base || !debugKey) {
   console.error("usage: events.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 // Every recorded write takes a 500 ms slot per member; space them out so
 // the smoke measures the contract, not the rate limit.

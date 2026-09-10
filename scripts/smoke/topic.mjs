@@ -9,6 +9,7 @@ import { ensureTeam } from "./_team.mjs";
 import {
   consoleLogin,
   createChecker,
+  exitOnCrash,
   jsonClient,
   mintToken,
   sleep,
@@ -23,6 +24,8 @@ if (!topicBase || !debugKey || !authBase || !consoleBase) {
   );
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 const json = jsonClient();
 const dbg = { "x-debug-key": debugKey };

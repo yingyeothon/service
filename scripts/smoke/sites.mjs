@@ -11,6 +11,7 @@ import {
   asUser,
   createChecker,
   debugLogin,
+  exitOnCrash,
   jsonClient,
   sleep,
 } from "./_lib.mjs";
@@ -20,6 +21,8 @@ if (!base || !debugKey) {
   console.error("usage: sites.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 const call = jsonClient({ base, redirect: "manual" });
 const login = debugLogin(call, base, debugKey, check);

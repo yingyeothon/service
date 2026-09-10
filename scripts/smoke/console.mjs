@@ -6,7 +6,7 @@
 // GATEWAY_TOKEN enables the GET /gw/channels checks; it comes through the environment
 // rather than argv because argv is visible in `ps` (docs/secrets.md).
 import { ensureTeam } from "./_team.mjs";
-import { createChecker, debugLogin, jsonClient } from "./_lib.mjs";
+import { createChecker, debugLogin, exitOnCrash, jsonClient } from "./_lib.mjs";
 
 const [base, debugKey, authBase] = process.argv.slice(2);
 const gatewayToken = process.env.GATEWAY_TOKEN ?? "";
@@ -16,6 +16,8 @@ if (!base || !debugKey) {
   );
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 const call = jsonClient({ base, redirect: "manual" });
 const login = debugLogin(call, base, debugKey, check);
