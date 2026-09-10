@@ -11,6 +11,7 @@ import {
   LB_SUBMITS,
 } from "../src/leaderboard.js";
 import { SITE_DEPLOY_STATUSES } from "../src/sites.js";
+import { SOCIAL_RELATION_STATES } from "../src/social.js";
 import { ISSUE_STATUSES, TEAM_ROLES } from "../src/team.js";
 
 /*
@@ -44,6 +45,7 @@ describe("enum arrays follow the schema declaration order", () => {
     ["lb_rule", LB_RULES],
     ["lb_order", LB_ORDERS],
     ["lb_period", LB_PERIODS],
+    ["social_relation_state", SOCIAL_RELATION_STATES],
   ] as const)("%s", (name, values) => {
     expect([...values]).toEqual(enumValues(name));
   });
