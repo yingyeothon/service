@@ -425,4 +425,5 @@ export {
   type SocialRequestOutcome,
   type SocialTransition,
   type SocialWrite,
+  type SocialChannelUsage,
 } from "./social.js";

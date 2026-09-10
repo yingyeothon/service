@@ -1,5 +1,6 @@
 import { AppError } from "@yyt/core";
 import { checkKvOwnerId } from "./kvstore.js";
+import { cmpBin } from "./list.js";
 import { nul, num, run, type PrismaClient } from "./prisma.js";
 import { Prisma } from "./generated/prisma/client.js";
 
@@ -626,6 +627,32 @@ export interface SocialDb {
   deleteChannelSocial(channelId: string, limit: number): Promise<number>;
   /** Expired requests and spent cooldowns, globally, in one bounded batch. */
   sweepStaleRelations(now: number, limit: number): Promise<number>;
+  /**
+   * Physical bytes of **both** tables (data + index) as the server reports
+   * them, and `undefined` where the implementation cannot ask -- the memory
+   * fake, and a grant that cannot see the rows in `information_schema`. Absent
+   * is therefore "unknown", never zero.
+   *
+   * One number for the pair, because they only ever grow together: a profile
+   * without relations is a player who signed in, and a relation requires both
+   * ends to have a profile.
+   */
+  socialTableBytes(): Promise<number | undefined>;
+  /**
+   * The heaviest `limit` **channels**, for the daily digest's "who grew" line.
+   *
+   * Per channel rather than per player, because that is the axis with no cap:
+   * one player is bounded by 200 friends, 100 pending requests and 500 blocks,
+   * but nothing bounds how many auth channels a stage holds.
+   */
+  topSocialChannels(limit: number): Promise<SocialChannelUsage[]>;
+}
+
+/** One channel's share of the two tables, for the daily usage digest. */
+export interface SocialChannelUsage {
+  channelId: string;
+  profiles: number;
+  relations: number;
 }
 
 /**
@@ -1136,7 +1163,67 @@ export function createSocialDb(prisma: PrismaClient): SocialDb {
           LIMIT ${Prisma.raw(String(n - gone))}`;
         return gone;
       }),
+
+    socialTableBytes: () =>
+      run(async () => {
+        // The estimate InnoDB keeps, not a `COUNT`: exact physical bytes would
+        // mean `ANALYZE TABLE` on a host every stage shares. A grant that
+        // cannot see the rows answers none, which is "unknown", not zero.
+        const sized = await prisma.$queryRaw<
+          { bytes: bigint | number | null }[]
+        >`
+          SELECT SUM(\`data_length\` + \`index_length\`) AS bytes
+          FROM \`information_schema\`.\`tables\`
+          WHERE \`table_schema\` = DATABASE()
+            AND \`table_name\` IN ('social_profiles', 'social_relations')`;
+        const bytes = sized[0]?.bytes;
+        return bytes === null || bytes === undefined ? undefined : num(bytes);
+      }),
+
+    topSocialChannels: (limit) =>
+      run(async () => {
+        const n = checkSocialBatch(limit);
+        // Two aggregates rather than a join: the tables have no relation in
+        // the schema (a profile and a relation share only `channel_id`), and a
+        // join would multiply rows before counting them. It runs once a day
+        // from the `expire` function and nowhere else.
+        const [profiles, relations] = await Promise.all([
+          prisma.social_profiles.groupBy({
+            by: ["channel_id"],
+            _count: { _all: true },
+          }),
+          prisma.social_relations.groupBy({
+            by: ["channel_id"],
+            _count: { _all: true },
+          }),
+        ]);
+        const per = new Map<string, SocialChannelUsage>();
+        const slot = (channelId: string) => {
+          const u = per.get(channelId) ?? {
+            channelId,
+            profiles: 0,
+            relations: 0,
+          };
+          per.set(channelId, u);
+          return u;
+        };
+        for (const g of profiles) slot(g.channel_id).profiles = g._count._all;
+        for (const g of relations) slot(g.channel_id).relations = g._count._all;
+        return sortSocialUsage([...per.values()]).slice(0, n);
+      }),
   };
+}
+
+/**
+ * Heaviest first, ties broken on the channel id so both implementations answer
+ * one order rather than whichever MariaDB felt like (the flake `topBoards`
+ * had, `rules/testing.md`).
+ */
+function sortSocialUsage(rows: SocialChannelUsage[]): SocialChannelUsage[] {
+  const total = (u: SocialChannelUsage) => u.profiles + u.relations;
+  return rows.sort(
+    (a, b) => total(b) - total(a) || cmpBin(a.channelId, b.channelId),
+  );
 }
 
 /**
@@ -1480,6 +1567,23 @@ export function createMemorySocialDb(): SocialDb & {
           gone++;
         }
       return gone;
+    },
+
+    // A Map has no page count, and reporting one it made up would be the single
+    // number the digest is not allowed to invent.
+    socialTableBytes: async () => undefined,
+
+    topSocialChannels: async (limit) => {
+      const n = checkSocialBatch(limit);
+      const per = new Map<string, SocialChannelUsage>();
+      const slot = (channelId: string) => {
+        const u = per.get(channelId) ?? { channelId, profiles: 0, relations: 0 };
+        per.set(channelId, u);
+        return u;
+      };
+      for (const p of profiles.values()) slot(p.channelId).profiles++;
+      for (const r of relations.values()) slot(r.channelId).relations++;
+      return sortSocialUsage([...per.values()]).slice(0, n);
     },
   };
 }

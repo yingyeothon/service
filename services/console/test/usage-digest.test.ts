@@ -455,6 +455,52 @@ describe("usage digest", () => {
     expect(r.warnings.map((w) => w.kind)).toEqual(["lb:unread"]);
   });
 
+  it("names the busiest channels once the social tables cross their line", async () => {
+    const s = setup();
+    const usage = {
+      tableBytes: GIB / 4,
+      top: [
+        { channelId: "auth_a", profiles: 900, relations: 4000 },
+        { channelId: "auth_b", profiles: 2, relations: 1 },
+      ],
+    };
+    const r = await runUsageDigest({
+      stage: "dev",
+      social: {
+        socialTableBytes: async () => usage.tableBytes,
+        topSocialChannels: async () => usage.top,
+      },
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(r.social).toEqual(usage);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["social:bytes"]);
+    // The channel, not the player: a player is capped at 200 friends, 100
+    // requests and 500 blocks, so it is the channel count that can run away.
+    expect(r.warnings[0]!.text).toMatch(
+      /auth_a \(900 profiles, 4000 relations\)/,
+    );
+    // Its own threshold, an eighth of kv's: a size well under kv's line warns.
+    expect(usage.tableBytes).toBeLessThan(GIB);
+  });
+
+  it("announces a failing social read, like the kv and leaderboard ones", async () => {
+    const s = setup();
+    const r = await runUsageDigest({
+      stage: "dev",
+      social: {
+        socialTableBytes: () => Promise.reject(new Error("database is away")),
+        topSocialChannels: () => Promise.reject(new Error("database is away")),
+      },
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(r.errors).toEqual(["social", "social-top"]);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["social:unread"]);
+  });
+
   it("formats bytes for humans", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(1536)).toBe("1.5 KiB");

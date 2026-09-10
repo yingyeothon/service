@@ -395,6 +395,7 @@ export const expire = async (): Promise<void> => {
         redis,
         kvstore,
         leaderboards,
+        social,
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
         distributionId: process.env.ARTIFACT_CDN_DISTRIBUTION_ID || undefined,

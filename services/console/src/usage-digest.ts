@@ -4,6 +4,8 @@ import type {
   KvStoreDb,
   LbBoardUsage,
   LeaderboardDb,
+  SocialChannelUsage,
+  SocialDb,
 } from "@yyt/console-db";
 import type { Kv } from "@yyt/redis";
 import {
@@ -53,6 +55,8 @@ const GIB = 1024 ** 3;
 const KV_TOP_COLLECTIONS = 5;
 /** Boards named in the leaderboard line, for the same reason. */
 const LB_TOP_BOARDS = 5;
+/** Channels named in the social line; the axis with no cap is the channel. */
+const SOCIAL_TOP_CHANNELS = 5;
 export const DEFAULT_THRESHOLDS: UsageThresholds = {
   /** Past this share of `maxmemory`, `allkeys-lru` is about to evict someone else's data. */
   redisMemoryRatio: 0.8,
@@ -81,6 +85,16 @@ export const DEFAULT_THRESHOLDS: UsageThresholds = {
    * `OPTIMIZE TABLE`, so retention alone will not clear the warning.
    */
   lbBytes: GIB / 4,
+  /**
+   * `social_profiles` + `social_relations` together, an eighth of kv's. Both
+   * rows are tiny and **a player is capped** — 200 friends, 100 pending
+   * requests, 500 blocks — so a single channel cannot cross this. What can is
+   * the axis with no cap: the number of auth channels a stage holds. Passing
+   * it means either far more channels than a contest has, or a
+   * `social_relations_stale` sweep that has quietly stopped and is letting
+   * expired requests pile up (`rules/data.md`).
+   */
+  socialBytes: GIB / 8,
 };
 
 export interface UsageThresholds {
@@ -90,6 +104,7 @@ export interface UsageThresholds {
   bucketGrowthBytesPerDay: number;
   kvBytes: number;
   lbBytes: number;
+  socialBytes: number;
 }
 
 export interface BucketSize {
@@ -127,6 +142,8 @@ export interface UsageDigestOptions {
   kvstore?: Pick<KvStoreDb, "entriesTableBytes" | "topCollections">;
   /** The leaderboards; omitted leaves the leaderboard lines out. */
   leaderboards?: Pick<LeaderboardDb, "scoresTableBytes" | "topBoards">;
+  /** Social profiles and relations; omitted leaves the social lines out. */
+  social?: Pick<SocialDb, "socialTableBytes" | "topSocialChannels">;
   kv: Kv;
   /** Publishes to the alarm topic; absent when the stage has none. */
   notify?: (subject: string, message: string) => Promise<void>;
@@ -155,6 +172,7 @@ export interface UsageDigestResult {
   cdn?: CdnTraffic;
   kv?: { tableBytes?: number; top: KvCollectionUsage[] };
   lb?: { tableBytes?: number; top: LbBoardUsage[] };
+  social?: { tableBytes?: number; top: SocialChannelUsage[] };
   /** Every warning found today, announced or not. */
   warnings: UsageWarning[];
   /** The subset that went into the notification (empty when nothing is new or there is no topic). */
@@ -197,6 +215,7 @@ export async function runUsageDigest({
   distributionId,
   kvstore,
   leaderboards,
+  social,
   kv,
   notify,
   thresholds: overrides,
@@ -378,6 +397,42 @@ export async function runUsageDigest({
       });
   }
 
+  if (social) {
+    // Two reads for the reason the kv and leaderboard pairs state: the size is
+    // an `information_schema` lookup, the "who grew" line scans and aggregates.
+    const tableBytes = await attempt("social", () => social.socialTableBytes());
+    const top = await attempt("social-top", () =>
+      social.topSocialChannels(SOCIAL_TOP_CHANNELS),
+    );
+    result.social = {
+      ...(tableBytes === undefined ? {} : { tableBytes }),
+      top: top ?? [],
+    };
+    if (errors.includes("social"))
+      warnings.push({
+        kind: "social:unread",
+        type: "level",
+        text: "social_profiles/social_relations' size could not be read; their growth is unmonitored until it answers again",
+      });
+    // A level warning: per-player caps mean this does not drift back down on
+    // its own, so it would otherwise be announced every day.
+    if (tableBytes !== undefined && tableBytes > t.socialBytes)
+      warnings.push({
+        kind: "social:bytes",
+        type: "level",
+        text: `social_profiles and social_relations hold ${formatBytes(tableBytes)}${
+          top === undefined
+            ? " (the busiest channels could not be read)"
+            : `; busiest channels: ${top
+                .map(
+                  (c) =>
+                    `${c.channelId} (${c.profiles} profiles, ${c.relations} relations)`,
+                )
+                .join(", ")}`
+        }`,
+      });
+  }
+
   logger.info("usage digest", {
     stage,
     redis: result.redis,
@@ -385,6 +440,7 @@ export async function runUsageDigest({
     cdn: result.cdn,
     kv: result.kv,
     lb: result.lb,
+    social: result.social,
     warnings: warnings.length,
     errors,
   });

@@ -319,14 +319,18 @@ export async function runKvStoreSweep({
     }
 
   if (channelsTruncated) truncated = true;
-  logger.info("kv sweep", {
-    deleted,
-    purged,
-    truncated,
-    channelsTruncated,
-    cursor,
-  });
-  return { deleted, purged, truncated, channelsTruncated, cursor };
+  const line = { deleted, purged, truncated, channelsTruncated, cursor };
+  // The levels, for the reason `runLeaderboardSweep` states and this sweep
+  // predates: `channelsTruncated` is **work that is lost** -- a dead channel's
+  // id reaches a sweep on its soft-delete day and again on its hard purge, and
+  // after that nothing in the database names its players' rows. Both were
+  // `info` until 2026-09-10, which is to say an operator had no way to learn
+  // either: nothing reads the return value, the invocation succeeds, and
+  // console has no log-metric filter.
+  if (channelsTruncated) logger.error("kv sweep incomplete", line);
+  else if (truncated) logger.warn("kv sweep truncated", line);
+  else logger.info("kv sweep", line);
+  return line;
 }
 
 /** The walk's stored position; any Redis fault reads as "start from the top". */
