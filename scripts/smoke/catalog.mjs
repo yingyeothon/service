@@ -82,9 +82,12 @@ check(
       .status === 403,
 );
 check(
-  "name resolves for one release (installer compat)",
-  (await call(`/catalog/apps/${appName}`, { headers: as(owner) })).body?.id ===
-    appId,
+  // `todo/17` P10, 2026-09-10: the app routes take an id and only an id. The
+  // name used to resolve across the caller's teams for the installed
+  // installer; a name is now just an id that does not exist.
+  "a name no longer resolves — an id and only an id",
+  (await call(`/catalog/apps/${appName}`, { headers: as(owner) })).status ===
+    404,
 );
 check(
   "duplicate name in the team is 409",
@@ -97,6 +100,8 @@ check(
   ).status === 409,
 );
 check(
+  // Kept, unlike the name resolution it used to be grouped with: this is
+  // `GET /channels`'s shape and `yyt catalog list`'s no-context answer.
   "flattened list includes it for a teammate",
   (await call("/catalog/apps", { headers: as(mate) })).body?.apps?.some(
     (a) => a.id === appId,
