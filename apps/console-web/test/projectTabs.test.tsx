@@ -37,6 +37,7 @@ const mockApi = {
   createKv: vi.fn(),
   projectLeaderboards: vi.fn(),
   createLeaderboard: vi.fn(),
+  kitConfig: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -565,5 +566,54 @@ describe("read-only standing", () => {
       expect(screen.queryByRole("button", { name: label })).toBeNull();
       r.unmount();
     }
+  });
+});
+
+describe("game kit config", () => {
+  it("asks for the block only when opened, and shows it as pasteable JSON", async () => {
+    vi.mocked(mockApi.kitConfig).mockResolvedValue({
+      auth: {
+        url: "https://auth.example",
+        channelId: "auth_1",
+        provider: "github",
+      },
+      state: { url: "https://doc.example" },
+      collections: { save: "save" },
+      boards: {},
+    });
+    mount("channels");
+    expect(
+      await screen.findByRole("button", { name: "Show config" }),
+    ).toBeInTheDocument();
+    // Not fetched until asked: it is a copy-once thing, not something a member
+    // reads on every visit.
+    expect(mockApi.kitConfig).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Show config" }));
+    const block = await screen.findByLabelText("kit-config.json");
+    expect(mockApi.kitConfig).toHaveBeenCalledWith("prj_1");
+    // Pasteable: what is on screen parses back to what the server sent.
+    expect(JSON.parse(block.textContent ?? "")).toEqual({
+      auth: {
+        url: "https://auth.example",
+        channelId: "auth_1",
+        provider: "github",
+      },
+      state: { url: "https://doc.example" },
+      collections: { save: "save" },
+      boards: {},
+    });
+  });
+
+  it("shows the ambiguity error rather than an empty block", async () => {
+    vi.mocked(mockApi.kitConfig).mockRejectedValue(
+      new Error("this project has 2 auth channels; name one with ?auth="),
+    );
+    mount("channels");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show config" }),
+    );
+    expect(
+      await screen.findByText(/name one with \?auth=/),
+    ).toBeInTheDocument();
   });
 });

@@ -55,6 +55,7 @@ import type {
   KvEntryPutInput,
   KvEntryPutResult,
   KvEntryQuery,
+  KitConfig,
   KvScope,
   LbOrder,
   LbPeriod,
@@ -774,6 +775,9 @@ export function createApiClient({
         `/kv/${enc(id)}/entries${qs({ owner })}`,
       );
     },
+    /** The game kit block; `?auth=`/`?lobby=`/`?match=` disambiguate. */
+    kitConfig: (prj: string, p: Record<string, string> = {}) =>
+      get<KitConfig>(`${projectPath(prj)}/kit-config${qs(p)}`),
     // ---- leaderboards (addressed by id) -----------------------------------
     projectLeaderboards: (prj: string, p: ListParams = {}) =>
       get<{ leaderboards: Leaderboard[] }>(
