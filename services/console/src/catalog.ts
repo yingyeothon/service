@@ -37,7 +37,6 @@ import { INSTALLER_APP_SETTING, resourceName } from "./team.js";
 import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
 import {
   APPS_PER_PROJECT,
-  sameName,
   type CrumbResolver,
   type ResourceHistory,
   asUploadOwner,
@@ -267,34 +266,25 @@ export function createCatalogRoutes({
   }
 
   /**
-   * `/catalog/apps/{app}` takes an id. For **one release** it also takes a
-   * name, resolved among the caller's teams and only when exactly one app
-   * matches: the installed installer app still addresses artifacts by name
-   * (`docs/decisions.md` *Installer trust*). Remove the fallback in P10.
+   * The app behind `{app}` plus the caller's standing; 404 hides everything
+   * else. **An id, and only an id** (`todo/17` P10, 2026-09-10).
+   *
+   * It used to fall back to a *name*, resolved across the caller's teams when
+   * exactly one app matched, because the installed installer addressed
+   * artifacts by name. That was the compatibility surface, and it is the one
+   * `rules/security.md` flagged: a cross-team lookup on the read path of every
+   * artifact route, where ambiguity had to be answered 404 rather than guessed.
+   * Nothing else needed it — the SPA has only ever sent ids, and the CLI
+   * resolves a name into an id itself through `GET /teams/{team}/catalog/apps`
+   * before it calls (`cli/internal/cmd/context.go`, `app`).
    */
-  async function resolveAppId(
-    ctx: Pick<RouteContext, "requireIdentity">,
-    ref: string,
-  ): Promise<string> {
-    if (await catalog.findApp(ref)) return ref;
-    const id = requireRole(ctx, "member");
-    const teamIds = await memberTeamIds(id);
-    if (teamIds.length === 0) return ref;
-    const hits = (await catalog.listApps({ teamIds })).filter((a) =>
-      sameName(a.name, ref),
-    );
-    return hits.length === 1 ? hits[0]!.id : ref;
-  }
-
-  /** The app behind `{app}` plus the caller's standing; 404 hides everything else. */
   async function appWith(
     ctx: RouteContext,
     write: boolean,
   ): Promise<ResourceAccess<"app">> {
-    const appId = await resolveAppId(ctx, ctx.params.app!);
     return projectResource(
       ctx,
-      { kind: "app", id: appId },
+      { kind: "app", id: ctx.params.app! },
       write ? { secret: true } : {},
     );
   }
@@ -438,8 +428,13 @@ export function createCatalogRoutes({
       path: "/catalog/apps",
       auth: true,
       handler: async (ctx) => {
-        // Every app of every team the caller is seated in, flattened. Also the
-        // list the installed installer reads for one release.
+        // Every app of every team the caller is seated in, flattened — the
+        // shape `GET /channels` has, and what `yyt catalog list` answers with
+        // when it is given no team or project. **Permanent**, despite having
+        // once been listed as installer compatibility: the compatibility that
+        // mattered was the *name* resolution `appWith` used to do, not this
+        // list, and removing it would only cost the CLI its no-context listing
+        // (narrowed 2026-09-10, `todo/17` P10).
         const id = requireRole(ctx, "member");
         const teamIds = await memberTeamIds(id);
         if (teamIds.length === 0) return { apps: [] };

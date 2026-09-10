@@ -310,73 +310,51 @@ describe("catalog apps", () => {
     expect((await post("one-too-many")).statusCode).toBe(409);
   });
 
-  it("resolves a name for one release (the installed installer), only when unique", async () => {
+  it("takes an id and only an id — the name fallback is gone", async () => {
     const h = harness();
     const u = await h.team("alice");
-    const other = await h.team("bob");
     const app = await makeApp(h, u, "tools");
-    // Bob has a `tools` too — invisible to alice, so hers still resolves.
-    await makeApp(h, other, "tools2");
-    expect(
-      (
-        j(
-          await h.app(ev("GET", "/catalog/apps/tools", { headers: u.cookie })),
-        ) as {
-          id: string;
-        }
-      ).id,
-    ).toBe(app.id);
-    expect(
-      (
-        await h.app(
-          ev("GET", "/catalog/apps/tools/artifacts", { headers: u.cookie }),
-        )
-      ).statusCode,
-    ).toBe(200);
-    expect(
-      (await h.app(ev("GET", "/catalog/apps/tools", { headers: other.cookie })))
-        .statusCode,
-    ).toBe(404);
-    // Two teams of alice's with the same app name: ambiguous → 404, the id works.
-    h.clock.tick(0.5);
-    const team2 = j(
-      await h.app(
-        ev("POST", "/teams", {
-          body: { name: "alice-two" },
-          headers: u.cookie,
-        }),
-      ),
-    ) as { id: string };
-    h.clock.tick(0.5);
-    const prj2 = j(
-      await h.app(
-        ev("POST", `/teams/${team2.id}/projects`, {
-          body: { name: "game" },
-          headers: u.cookie,
-        }),
-      ),
-    ) as { id: string };
-    // Names are unique per team (`catalog_apps_team_name`), so alice's second
-    // team may have its own `tools` — and then the name no longer resolves.
-    const dup = await h.app(
-      ev("POST", `/projects/${prj2.id}/catalog/apps`, {
-        body: { name: "tools", path: "p" },
-        headers: u.cookie,
-      }),
-    );
-    expect(dup.statusCode).toBe(201);
-    expect(
-      (await h.app(ev("GET", "/catalog/apps/tools", { headers: u.cookie })))
-        .statusCode,
-    ).toBe(404);
+    // `todo/17` P10: the installed installer addressed artifacts by name, and
+    // `appWith` resolved one across the caller's teams for it. That was the
+    // compatibility surface `rules/security.md` flagged; it is removed, so a
+    // name is now just an id that does not exist.
+    for (const path of [
+      "/catalog/apps/tools",
+      "/catalog/apps/tools/artifacts",
+      "/catalog/apps/tools/settings",
+    ])
+      expect(
+        (await h.app(ev("GET", path, { headers: u.cookie }))).statusCode,
+        path,
+      ).toBe(404);
+    // The id still works everywhere, and a stranger still gets 404 rather than
+    // 403 — the name's removal changed nothing about who may see what.
     expect(
       (await h.app(ev("GET", `/catalog/apps/${app.id}`, { headers: u.cookie })))
         .statusCode,
     ).toBe(200);
+    const other = await h.team("bob");
     expect(
-      (await h.app(ev("GET", "/catalog/apps/nope", { headers: u.cookie })))
-        .statusCode,
+      (
+        await h.app(
+          ev("GET", `/catalog/apps/${app.id}`, { headers: other.cookie }),
+        )
+      ).statusCode,
     ).toBe(404);
+  });
+
+  it("lists every app of every team the caller sits in, flattened", async () => {
+    const h = harness();
+    const u = await h.team("alice");
+    const other = await h.team("bob");
+    await makeApp(h, u, "tools");
+    await makeApp(h, other, "theirs");
+    // Kept, not removed with the name fallback: this is `GET /channels`'s
+    // shape and what `yyt catalog list` answers with when given no context.
+    const mine = j(
+      await h.app(ev("GET", "/catalog/apps", { headers: u.cookie })),
+    ) as { apps: { name: string }[] };
+    expect(mine.apps.map((a) => a.name)).toEqual(["tools"]);
   });
 
   it("embeds the newest artifact and application ids per app on request", async () => {
