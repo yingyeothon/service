@@ -86,6 +86,11 @@ type Hooks struct {
 type queued struct {
 	b         []byte
 	droppable bool
+	// binary writes the frame as a WebSocket binary frame instead of a text
+	// one. Only the `q` bridge sets it, and only when the game asked for it
+	// (`gateway/README.md` *Binary frames*): everything the gateway itself
+	// says is JSON, and a client that never opts in never sees one.
+	binary bool
 }
 
 // Conn is one client socket.
@@ -146,8 +151,13 @@ func (c *Conn) Send(v any) bool {
 	return c.SendRaw(b)
 }
 
-// SendRaw queues an already-encoded droppable frame.
-func (c *Conn) SendRaw(b []byte) bool { return c.enqueue(b, true) }
+// SendRaw queues an already-encoded droppable text frame.
+func (c *Conn) SendRaw(b []byte) bool { return c.enqueue(b, true, false) }
+
+// SendBinary queues an already-encoded droppable **binary** frame. The bytes
+// are written as they are: the gateway does not look inside, and the cap and
+// the drop rules are the text ones, since both cost the same to hold.
+func (c *Conn) SendBinary(b []byte) bool { return c.enqueue(b, true, true) }
 
 // SendCtl marshals v and queues it as a control frame: it is never dropped
 // to make room. It returns false when the frame will not be delivered —
@@ -161,10 +171,11 @@ func (c *Conn) SendCtl(v any) bool {
 	return c.SendRawCtl(b)
 }
 
-// SendRawCtl queues an already-encoded control frame (see SendCtl).
-func (c *Conn) SendRawCtl(b []byte) bool { return c.enqueue(b, false) }
+// SendRawCtl queues an already-encoded control frame (see SendCtl). Control
+// frames are the gateway's own words and are always text.
+func (c *Conn) SendRawCtl(b []byte) bool { return c.enqueue(b, false, false) }
 
-func (c *Conn) enqueue(b []byte, droppable bool) bool {
+func (c *Conn) enqueue(b []byte, droppable, binary bool) bool {
 	if c.Closed() {
 		return false
 	}
@@ -205,7 +216,7 @@ func (c *Conn) enqueue(b []byte, droppable bool) bool {
 			return false
 		}
 	}
-	c.queue = append(c.queue, queued{b: b, droppable: droppable})
+	c.queue = append(c.queue, queued{b: b, droppable: droppable, binary: binary})
 	if c.head > 0 && c.head*2 >= len(c.queue) {
 		c.queue = append([]queued(nil), c.queue[c.head:]...)
 		c.head = 0
@@ -349,11 +360,15 @@ func (c *Conn) writeLoop() {
 				c.mu.Lock()
 				if c.head < len(c.queue) {
 					b := c.queue[c.head].b
+					kind := websocket.TextMessage
+					if c.queue[c.head].binary {
+						kind = websocket.BinaryMessage
+					}
 					c.queue[c.head] = queued{}
 					c.head++
 					c.mu.Unlock()
 					_ = c.ws.SetWriteDeadline(c.now().Add(c.limits.WriteTimeout))
-					if err := c.ws.WriteMessage(websocket.TextMessage, b); err != nil {
+					if err := c.ws.WriteMessage(kind, b); err != nil {
 						c.Close(websocket.CloseAbnormalClosure, "")
 						c.finish()
 						return
