@@ -10,6 +10,7 @@ import {
   createKvStoreDb,
   createLeaderboardDb,
   createStateDb,
+  createSocialDb,
   contractPreflight,
   toLobbyChannel,
   toQChannel,
@@ -29,6 +30,7 @@ import { teamContract } from "./team.test.js";
 import { kvstoreContract } from "./kvstore.test.js";
 import { leaderboardContract } from "./leaderboard.test.js";
 import { stateContract } from "./state.test.js";
+import { socialContract } from "./social.test.js";
 import {
   dockerAvailable,
   resetTestDb,
@@ -183,6 +185,15 @@ describe.skipIf(!dockerAvailable())(
         },
         { login },
       );
+    });
+
+    describe("social contract", () => {
+      socialContract(async () => {
+        await resetTestDb(db.client);
+        // No parent rows to seed: `social_profiles` and `social_relations`
+        // carry no foreign key, deliberately (`m0019_social`).
+        return createSocialDb(db.client);
+      });
     });
 
     describe("team contract", () => {

@@ -1034,3 +1034,69 @@ enum lb_period {
   daily
   weekly
 }
+
+/// A player's public card inside one auth channel (migration `m0019_social`,
+/// docs/decisions.md *Serverless clients* #9). Channel-scoped like
+/// `state_docs`, not project-scoped like kv and leaderboards: a project running
+/// two auth channels has two disjoint friend graphs over one kv collection.
+///
+/// Deliberately **no foreign key** to `channels`, unlike `state_docs`: that
+/// table is capped at 10,000 rows per channel, while a channel's social rows
+/// are bounded by 10,000 profiles times each player's own caps, and a cascade
+/// would run inside the purge's one `DELETE FROM channels` against a 5 s
+/// `max_statement_time` on a host five stacks share. `kv_entries` and
+/// `leaderboard_scores` avoid it for the same reason; the console deletes
+/// these rows explicitly, in bounded batches.
+///
+/// `owner_id` is `utf8mb4_bin` in the migration, which this schema file cannot
+/// express (`channel_id` keeps the database default so it matches `channels`).
+model social_profiles {
+  channel_id   String  @db.VarChar(64)
+  owner_id     String  @db.VarChar(64)
+  /// 1-32 characters as sent, trimmed. Not unique: two players may share a
+  /// name, so a client renders the owner id beside it where a mistake matters.
+  display_name String  @db.VarChar(32)
+  /// An id or a path into the game's own asset table, never a URL.
+  avatar       String? @db.VarChar(64)
+  created_at   BigInt
+  updated_at   BigInt
+
+  @@id([channel_id, owner_id])
+}
+
+/// One directed edge per `(channel, from, to)`. A friendship is **two** rows
+/// written in one transaction; a block and a request are one.
+model social_relations {
+  channel_id     String                @db.VarChar(64)
+  from_id        String                @db.VarChar(64)
+  to_id          String                @db.VarChar(64)
+  state          social_relation_state
+  /// When a decline's cooldown runs out. Kept on the `blocked` row that
+  /// replaces a `dropped` one, because a block and an unblock are the
+  /// sender's own writes on their own row -- without somewhere for the
+  /// cooldown to survive them, block then unblock is how a sender clears it.
+  cooldown_until BigInt?
+  created_at     BigInt
+  updated_at     BigInt
+
+  /// The caller's own rows ("my friends", "my blocks", "what I sent") are a
+  /// range over this key.
+  @@id([channel_id, from_id, to_id])
+  /// "What was sent to me", and the incoming-request cap that bounds it.
+  @@index([channel_id, to_id, state], map: "social_relations_to")
+  /// The sweep, which is **global** rather than per channel -- so `state` has
+  /// to lead or the index cannot be used at all (`rules/data.md`, the
+  /// leading-column rule `kv_entries_expiry` states).
+  @@index([state, updated_at], map: "social_relations_stale")
+}
+
+// MySQL orders an ENUM by declaration, so values are appended only; removing
+// one is a `-- contract` migration. Keep it multi-line -- `test/enumOrder.test.ts`
+// parses the body line by line, and a comment inside the block would read as a
+// value.
+enum social_relation_state {
+  requested
+  dropped
+  friends
+  blocked
+}
