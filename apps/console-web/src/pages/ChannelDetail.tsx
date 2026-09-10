@@ -425,9 +425,28 @@ function QRedisUserCard({
               onDismiss={() => setPassword(null)}
             />
           )}
-          <CopyField label="Host" value={q.data.host} />
-          <CopyField label="Port" value={String(q.data.port)} />
-          <CopyField label="Username" value={q.data.username} />
+          {/*
+            One block, the same nine lines `yyt channels redis-user show`
+            prints (`todo/34`, owner decision 2026-09-10). Field by field, a
+            participant retypes a prefix and the account — scoped to exactly
+            these — answers NOPERM, or worse, differs from the gateway's by one
+            character and silently relays nothing. The password is not in here:
+            it exists for one render and has its own surface above.
+          */}
+          <CopyBlock
+            label="Redis account (copy as one block)"
+            lines={[
+              ["channel", q.data.channelId],
+              ["host", q.data.host],
+              ["port", String(q.data.port)],
+              ["username", q.data.username],
+              ["eventKeyPrefix", q.data.eventKeyPrefix],
+              ["queueKeyPrefix", q.data.queueKeyPrefix],
+              ["lockKeyPrefix", q.data.lockKeyPrefix],
+              ["awaiterKeyPrefix", q.data.awaiterKeyPrefix],
+              ["channelPrefix", q.data.channelPrefix],
+            ]}
+          />
           {notPersisted && (
             <Notice kind="warn">
               The account was created but could not be written to Redis&apos;

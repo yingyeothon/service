@@ -111,10 +111,19 @@ describe("q channel redis account", () => {
     // The five tslib prefixes are one copyable block (docs/decisions.md,
     // participant credentials): a prefix typed by hand is a silent no-op.
     expect(
-      screen.getByText(
-        /eventKeyPrefix=game:dev:q_0123:event:.*queueKeyPrefix=.*lockKeyPrefix=.*awaiterKeyPrefix=.*channelPrefix=game:out:dev:q_0123:/s,
-      ),
-    ).toBeInTheDocument();
+      screen.getByLabelText("tslib prefixes (copy as one block)").textContent,
+    ).toMatch(
+      /eventKeyPrefix=game:dev:q_0123:event:.*queueKeyPrefix=.*lockKeyPrefix=.*awaiterKeyPrefix=.*channelPrefix=game:out:dev:q_0123:/s,
+    );
+    // And the account card is the CLI's card: connection *and* prefixes in one
+    // block, because that is what a participant pastes into their config
+    // (`todo/34`, owner decision 2026-09-10). The two blocks repeat the
+    // prefixes on purpose — each is self-contained, as in `yyt`.
+    expect(
+      screen.getByLabelText("Redis account (copy as one block)").textContent,
+    ).toMatch(
+      /channel=q_0123\nhost=redis\.example\nport=6379\nusername=game_dev_q_0123\neventKeyPrefix=/,
+    );
     expect(
       screen.getAllByRole("button", { name: /Copy tslib prefixes/ }),
     ).toHaveLength(1);
@@ -178,8 +187,8 @@ describe("q channel redis account", () => {
     ).toBeInTheDocument();
     // The prefixes are still the ones the Lambda must use, so the block stays.
     expect(
-      screen.getByText(/queueKeyPrefix=game:dev:q_0123:queue:/),
-    ).toBeInTheDocument();
+      screen.getByLabelText("Redis account (copy as one block)").textContent,
+    ).toMatch(/queueKeyPrefix=game:dev:q_0123:queue:/);
     expect(screen.queryByRole("button", { name: "Issue" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Re-issue" })).toBeNull();
   });
@@ -223,7 +232,10 @@ describe("q channel redis account", () => {
     expect(await screen.findByText(/^Issued\./)).toBeInTheDocument();
     // Once in the derived-names block, once in the account card: the two must
     // agree, which is the whole point of deriving the username.
-    expect(screen.getAllByText("game_dev_q_0123")).toHaveLength(2);
+    expect(screen.getByText("game_dev_q_0123")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Redis account (copy as one block)").textContent,
+    ).toContain("username=game_dev_q_0123");
     expect(screen.queryByRole("button", { name: "Re-issue" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
   });
