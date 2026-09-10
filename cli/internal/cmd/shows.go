@@ -223,15 +223,19 @@ func newShows(a *App) *cobra.Command {
 		Short:   "List shows you may see",
 		Args:    cobra.NoArgs,
 	}
-	var listState, listCursor string
+	var listState, listCursor, listQ string
 	list.Flags().StringVar(&listState, "state", "", "only 'open' or 'closed' shows")
 	list.Flags().StringVar(&listCursor, "cursor", "", "continue from a previous page")
+	// `--q` only, and no `--sort`: this list is cursor-paged and the cursor
+	// pins the order (`docs/decisions.md` *List sort and filter*), so a sort
+	// flag would either be ignored or silently break the next page.
+	list.Flags().StringVar(&listQ, "q", "", "search by title")
 	list.RunE = func(cmd *cobra.Command, _ []string) error {
 		var res struct {
 			Shows []showSummary `json:"shows"`
 			Next  *string       `json:"next"`
 		}
-		if err := do(cmd, http.MethodGet, "/shows"+qs(map[string]string{"state": listState, "cursor": listCursor}), nil, &res); err != nil {
+		if err := do(cmd, http.MethodGet, "/shows"+qs(map[string]string{"state": listState, "cursor": listCursor, "q": listQ}), nil, &res); err != nil {
 			return err
 		}
 		if a.jsonOut {
