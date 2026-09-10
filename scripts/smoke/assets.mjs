@@ -6,13 +6,21 @@
 // Usage: scripts/smoke/assets.mjs <baseUrl> <debugKey>
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens.
 import { ensureTeam } from "./_team.mjs";
-import { asUser, createChecker, debugLogin, jsonClient } from "./_lib.mjs";
+import {
+  asUser,
+  createChecker,
+  debugLogin,
+  exitOnCrash,
+  jsonClient,
+} from "./_lib.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: assets.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 const call = jsonClient({ base, redirect: "manual" });
 const login = debugLogin(call, base, debugKey, check);

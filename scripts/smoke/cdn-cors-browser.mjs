@@ -16,12 +16,16 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { exitOnCrash } from "./_lib.mjs";
 
 const urls = process.argv.slice(2);
 if (urls.length === 0) {
   console.error("usage: cdn-cors-browser.mjs <url> [<url> ...]");
   process.exit(2);
 }
+// Chrome is spawned below: a crash between spawn and the summary would
+// otherwise exit 0 while leaving a browser behind.
+exitOnCrash();
 const CHROME = process.env.CHROME ?? "google-chrome";
 const ROUNDS = Number(process.env.ROUNDS ?? 3);
 // Any origin other than the CDN's; the page is `about:blank`-like data: URL.

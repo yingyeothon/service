@@ -7,13 +7,21 @@
 //   1) curl -sX POST <base>/auth/device/start → open verificationUri, enter userCode
 //   2) curl -sX POST <base>/auth/device/token -d '{"handle":"..."}' until 201
 import { ensureTeam, seat, settle } from "./_team.mjs";
-import { asUser, createChecker, debugLogin, jsonClient } from "./_lib.mjs";
+import {
+  asUser,
+  createChecker,
+  debugLogin,
+  exitOnCrash,
+  jsonClient,
+} from "./_lib.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: catalog.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 const call = jsonClient({ base, redirect: "manual" });
 const login = debugLogin(call, base, debugKey, check);

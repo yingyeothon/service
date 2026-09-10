@@ -4,13 +4,21 @@
 // (create/bump/link) → issues + comments → discussion → history → admin override
 // → cleanup. Usage: scripts/smoke/team.mjs <baseUrl> <debugKey>
 // Needs the console stack deployed with `--param debugHooks=1`. Prints ids only.
-import { asUser, createChecker, debugLogin, jsonClient } from "./_lib.mjs";
+import {
+  asUser,
+  createChecker,
+  debugLogin,
+  exitOnCrash,
+  jsonClient,
+} from "./_lib.mjs";
 
 const [base, debugKey] = process.argv.slice(2);
 if (!base || !debugKey) {
   console.error("usage: team.mjs <baseUrl> <debugKey>");
   process.exit(2);
 }
+// A crash before `finish()` would otherwise exit 0 and read as a pass.
+exitOnCrash();
 const { check, finish } = createChecker();
 // Every recorded write is limited to one per 500 ms per member; space the
 // sequential writes out (the concurrent burst below still lands together).
