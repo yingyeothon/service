@@ -102,6 +102,37 @@ All three 503s are `AppError`s, so the **Lambda invocation succeeds** and a Lamb
 
 `kekId` is 12 hex of `sha256(kek)`, and it is what separates “this stage has the wrong KEK” — every collection failing at once, and the id differing from the one in the ops repo — from “this one row is corrupt”. `reason` is `malformed`, `auth_failed` or `envelope`; it never reaches the caller, who gets one indistinguishable 503 either way. The debug lines `kv collection unavailable` and `kv refused` say which cause produced a 404 and which scope produced a 403, since the request line carries only the route pattern and the channel. The 404 `reason` is one of `shape` (not an id, and not a name the console could have accepted: id-shaped after folding, or over 255 characters), `missing` (an id with no row), `name` (no such name in the caller's project), `project` (the caller's channel has no project, or the id belongs to another one) or `deleted`; `collectionId` is attached only when the segment was an id — a name is never logged.
 
+## Social routes
+
+**Profiles and relations of one auth channel** (`docs/social.md`, `docs/decisions.md` _Serverless clients_ #9). Scoped to the channel like `/s/*`, not to the project like `/kv/*` and `/lb/*`: a project running two auth channels has two disjoint friend graphs.
+
+| Route                                             | Result                                                                                   |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET\|PUT\|DELETE /social/me/profile`             | the caller's own card: `{displayName, avatar?}`; `PUT` is `201` on create, `200` on edit |
+| `GET /social/profiles?ids=a,b`                    | up to 50 profiles; an id nobody claimed is simply absent                                 |
+| `GET /social/friends`                             | `{friends:[{owner, displayName, avatar, since}]}`, profiles joined in one query          |
+| `GET /social/requests`                            | `{incoming:[…], outgoing:[…]}`                                                           |
+| `GET /social/blocks`                              | what the caller blocked, so a spent cap can be cleared                                   |
+| `POST /social/requests`                           | `{"to": "<playerId>"}` → `201 {state}` on a new one, `200 {state}` when nothing moved    |
+| `POST /social/requests/{ownerId}/accept\|decline` | `204`                                                                                    |
+| `DELETE /social/requests/{ownerId}`               | withdraw the caller's own request, `204`                                                 |
+| `DELETE /social/friends/{ownerId}`                | both rows, `204`                                                                         |
+| `PUT\|DELETE /social/blocks/{ownerId}`            | `204`; `PUT` is idempotent                                                               |
+| `GET /social/u/{ownerId}/friends`                 | `server` only                                                                            |
+| `PUT\|DELETE /social/u/{ownerId}/profile`         | `server` only; the owner may be a guild (`{kind}:{id}`), not only a player               |
+| `DELETE /social/u/{ownerId}/relations[/{other}]`  | `server` only → `{deleted}`                                                              |
+
+- **Relations are the players'.** A doc apiKey reads anything, writes and deletes profiles, and **deletes** relations — it can never create one, because a server that could would be forging mutual consent. A player's `/social/me/*` from a server key is a `403` naming the `/social/u/{ownerId}` route that works, the same split `lb`'s `me` uses.
+- **A profile admits a player to the graph.** Both ends of a request or a friendship must hold one (`409 profile_required`), which is what bounds the relation table and gives the 404 below more than one cause. **A block is the exception** — it may name any player id, since that id usually comes from a lobby roster. `DELETE /social/me/profile` takes the owner's relations with it in both directions, **except somebody else's block of them**: that row is the blocker's, and deleting a profile is not a way to lift it.
+- **A block answers `404`, and so does a target with no profile.** One code for "blocked you", "never played" and "no such id". It is not a proof and is not claimed as one: a caller who already knows a target has a profile can still infer a block. `GET /social/profiles` deliberately does **not** hide a blocker — omitting a row the caller has seen before would be a stronger, passive oracle.
+- **A decline keeps the request row** on the sender's side (`dropped`): out of the recipient's inbox, still charged to the sender's outgoing cap, and rendered to the sender exactly like a pending one. A re-request writes nothing. `DELETE /social/requests/{ownerId}` refuses it — withdrawing it would clear the cooldown the decline bought, and that is the one place the two states answer differently. A block over that row preserves the cooldown and an unblock restores it, so block-then-unblock is not a way round it either.
+- **Requesting somebody who has already requested you makes you friends**, without an accept, and checks both friend caps on the way.
+- Caps: 200 friends, 100 requests in each direction, 500 blocks, 10,000 profiles per channel. Every refusal is a `409` with `details.reason` (`profile_required`, `blocked`, `friends_full`, `peer_friends_full`, `pending_full`, `peer_pending_full`, `blocks_full`).
+- `displayName` is 1–32 characters, trimmed, with control, format and line-separator characters refused, and it is **not unique**. `avatar` is an id or a path (`heroes/knight`), never a URL: a `:` or a leading `/` is a `400`. A `PUT` replaces the whole profile, so an absent `avatar` clears it.
+- A pending or dropped request expires 30 days after its last write. Friendships and blocks never expire; the channel's deletion takes everything.
+- Without the state account's grant on `social_profiles` and `social_relations` (`SELECT, INSERT, UPDATE, DELETE`), **every** `/social/*` route answers `503 database error` while `/s/*`, `/kv/*` and `/lb/*` keep working. That is the designed gate, and the reason `scripts/smoke/social.mjs` spends each privilege once.
+- Logs carry the route pattern and the channel only: no owner id, no display name, no avatar.
+
 ## Document versions
 
 These rules are the doc store's; a kv entry's conditional headers are optional and are described above.
@@ -124,7 +155,7 @@ Two dungeon results landing on one inventory is the failure this shape exists to
 
 ## Operating
 
-- No Redis, no schema of its own. Console owns every migration (`state_docs`, migration `5_state_docs`; `kv_*`, migration `m0014_kvstore`; `leaderboard*`, migration `m0017_leaderboard`) and this stack's MySQL account may only `SELECT` on `channels`, `kv_collections` and `leaderboards`, read/write `state_docs`, `kv_entries` and `leaderboard_scores`, and `SELECT, INSERT` on `kv_keys` — no `UPDATE`/`DELETE` there, because overwriting a wrapped DEK destroys a collection for good (`rules/data.md`).
+- No Redis, no schema of its own. Console owns every migration (`state_docs`, migration `5_state_docs`; `kv_*`, migration `m0014_kvstore`; `leaderboard*`, migration `m0017_leaderboard`; `social_*`, migration `m0019_social`) and this stack's MySQL account may only `SELECT` on `channels`, `kv_collections` and `leaderboards`, read/write `state_docs`, `kv_entries`, `leaderboard_scores`, `social_profiles` and `social_relations`, and `SELECT, INSERT` on `kv_keys` — no `UPDATE`/`DELETE` there, because overwriting a wrapped DEK destroys a collection for good (`rules/data.md`).
 - `KV_KEK` is a stage secret, and `serverless.yml` gives it an **empty default on purpose**: an unresolvable `${ssm:…}` fails at deploy time, which would block every deploy of this stack — a `/s/*` hotfix included — on a stage whose parameter does not exist yet, exactly the coupling `handler.ts` goes to trouble to avoid at runtime. An empty value is not silent: the cold start logs `kv crypto unavailable` and every kv call answers 503. Losing the value loses every encrypted value for good, so the long-term copy lives in the private ops repo beside the state account. `scripts/bootstrap-ssm.sh` mints `kv-kek` once per stage and keeps whatever SSM already holds (replacing it needs `KV_KEK_ROTATE=1`, which makes every stored value unreadable — never by hand); `FORCE=1 scripts/get-env.sh <stage> state` pulls it into the env file for the ops-repo copy.
 - Deploy console before state when a change spans both.
 - A stage without a state account simply has no state stack; console then omits `docUrl` from auth channel views instead of advertising a host that does not resolve.

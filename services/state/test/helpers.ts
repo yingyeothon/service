@@ -2,9 +2,11 @@ import {
   createMemoryConsoleDb,
   createMemoryKvStoreDb,
   createMemoryLeaderboardDb,
+  createMemorySocialDb,
   createMemoryStateDb,
   type KvStoreDb,
   type LeaderboardDb,
+  type SocialDb,
   type StateDb,
 } from "@yyt/console-db";
 import type { Logger } from "@yyt/core";
@@ -82,6 +84,7 @@ export async function build(
     state?: StateDb;
     kvstore?: KvStoreDb;
     leaderboards?: LeaderboardDb;
+    social?: SocialDb;
     keyless?: boolean;
     /** Every auth channel reads back with `projectId: null`, like a row from before `6_org_project`. */
     projectless?: boolean;
@@ -106,12 +109,14 @@ export async function build(
   const state = over.state ?? createMemoryStateDb();
   const kvstore = over.kvstore ?? createMemoryKvStoreDb();
   const leaderboards = over.leaderboards ?? createMemoryLeaderboardDb();
+  const social = over.social ?? createMemorySocialDb();
   const crypto =
     over.crypto === false ? undefined : (over.crypto ?? createKvCrypto(KEK));
   const app = createStateApp({
     state,
     kvstore,
     leaderboards,
+    social,
     channels: createChannelStore({
       db: over.projectless
         ? {
@@ -128,7 +133,7 @@ export async function build(
     clock,
     logger: over.logger,
   });
-  return { clock, db, state, kvstore, leaderboards, crypto, app };
+  return { clock, db, state, kvstore, leaderboards, social, crypto, app };
 }
 
 export async function jwt(
