@@ -69,10 +69,16 @@ export const DEFAULT_THRESHOLDS: UsageThresholds = {
    */
   kvBytes: GIB,
   /**
-   * `leaderboard_scores` beside `kv_entries` on the same shared host. A score
-   * row is small, so the threshold is lower than kv's: a board at its cap is
-   * about 25,000 rows, and passing this means a stage holds far more boards
-   * than a contest has games (`rules/data.md`).
+   * `leaderboard_scores` beside `kv_entries` on the same shared host, at a
+   * quarter of kv's line because a score row is small and a board is capped:
+   * `maxEntries × (1 + 2 × (retainPeriods + 1))` rows, so 36,000 at the
+   * defaults and 270,000 at the hard caps. Two readings cross it — a stage with
+   * a few dozen default boards, or **one** hard-cap board whose players all
+   * send a 1 KiB `meta` (~300 MB on its own). Both deserve the look this asks
+   * for; what the number is *not* is "far more boards than a contest has",
+   * which is what this comment claimed until 2026-09-10 (`rules/data.md`).
+   * Note that `data_length` does not shrink on `DELETE` without an
+   * `OPTIMIZE TABLE`, so retention alone will not clear the warning.
    */
   lbBytes: GIB / 4,
 };
@@ -339,6 +345,9 @@ export async function runUsageDigest({
     const tableBytes = await attempt("lb", () =>
       leaderboards.scoresTableBytes(),
     );
+    // Ranked by **rows**, not bytes: `leaderboard_scores` has no `bytes`
+    // column (unlike `kv_entries`), so the largest board by row count need not
+    // be the one holding the bytes when `meta` is in play.
     const top = await attempt("lb-top", () =>
       leaderboards.topBoards(LB_TOP_BOARDS),
     );
@@ -362,7 +371,7 @@ export async function runUsageDigest({
         text: `leaderboard_scores holds ${formatBytes(tableBytes)}${
           top === undefined
             ? " (the largest boards could not be read)"
-            : `; largest boards: ${top
+            : `; boards with the most rows: ${top
                 .map((b) => `${b.boardId} (${b.scores} scores)`)
                 .join(", ")}`
         }`,

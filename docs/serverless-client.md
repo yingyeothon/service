@@ -4,7 +4,11 @@ Assessment of 2026-09-08: what a web or mobile client developer can build with
 yyt alone — auth, sites/catalog, assets, kv, the gateway — writing no server
 code at all. The settled consequences (leaderboard, kv `server` scope,
 callback-less match, social) are in `docs/decisions.md` _Serverless clients_;
-this page keeps the reasoning and the capability matrix.
+this page keeps the reasoning and the capability matrix. Three of the four have
+shipped since: the callback-less match (2026-09-08), the kv `server` scope and
+mail (2026-09-09) and the leaderboard (2026-09-10, `docs/leaderboard.md`);
+`/social/*` is still open (`todo/39`). Where a bullet below says "there is no
+…", check that list first.
 
 ## Two reference cases
 
@@ -102,7 +106,11 @@ below, but the trust model is the limit, not the API.
   the player can write. Announcements, mail with rewards, and server-set
   currency need a scope a JWT cannot write — the kv `server` scope.
 - **Rankings** in kv are key-ordered lists a player fills in; there is no
-  sorted read and no rank. Hence the leaderboard resource.
+  sorted read and no rank. Hence the leaderboard resource — **shipped
+  2026-09-10**, `docs/leaderboard.md`: `/lb/*` on the state stack, a board per
+  project with `submit: server | owner`, `alltime`/`daily`/`weekly` buckets in
+  `Asia/Seoul` and `rank = 1 + count(better)`. A serverless game runs
+  `submit: owner` and accepts that its scores are trusted.
 - **Friends** need a relation two players both approve; kv has no
   two-owner entry. Hence `/social/*`.
 - No trusted clock (`GET /time`), no trusted RNG, no push notifications.

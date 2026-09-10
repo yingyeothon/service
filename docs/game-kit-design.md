@@ -312,7 +312,10 @@ never surfaced by HTTP status or close code:
 Server dependencies: `content`, `save`, `room`, `turns` work on today's
 platform; `board` needs `todo/36`, `mail`'s stamp and `counter`'s range need
 `todo/37`, `matchmaking`'s room forming needs `todo/38`, `friends` needs
-`todo/39`. The kit therefore lands in three waves, each shipped in all three
+`todo/39`. As of 2026-09-10 the first three of those have shipped
+(`docs/leaderboard.md`, `docs/kvstore.md` _Mail_, `docs/decisions.md` #8), so
+**wave B is unblocked** and only `friends` still waits on `todo/39`; `board` on
+prod additionally waits on the leaderboard's prod rollout. The kit therefore lands in three waves, each shipped in all three
 repositories before the next: **A** session/content/save/room/turns,
 **B** board/mail, **C** friends/matchmaking. Per-repository checklists:
 `todo/40-game-kit.md` here, mirrored as each repository's handover.

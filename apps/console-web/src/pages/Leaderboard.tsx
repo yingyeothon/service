@@ -183,6 +183,11 @@ export function LeaderboardPage() {
   const canWrite = standing.canWrite;
   const rows = page.data?.scores;
   const total = page.data?.total ?? 0;
+  // A seatless platform admin sees the ranking but never `meta`: it is the
+  // team's own payload, the counterpart of a kv value (`team-access.ts`). The
+  // server withholds it, and the column waits for the standing rather than
+  // paint blanks meanwhile.
+  const showMeta = !standing.loading && standing.standing !== "admin";
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -351,7 +356,7 @@ export function LeaderboardPage() {
             { key: "rank", label: "Rank", align: "right" as const },
             { key: "owner", label: "Owner" },
             { key: "score", label: "Score", align: "right" as const },
-            { key: "meta", label: "Meta" },
+            ...(showMeta ? [{ key: "meta", label: "Meta" }] : []),
             { key: "channel", label: "Channel" },
             { key: "updated", label: "Updated" },
           ]}
@@ -360,7 +365,7 @@ export function LeaderboardPage() {
           fetching={page.fetching}
           error={page.error}
           rowKey={(r) => r.owner}
-          minWidth={840}
+          minWidth={showMeta ? 840 : 700}
           empty={{
             title: "No scores in this period.",
             hint: "Scores arrive through the LB API.",
@@ -372,9 +377,9 @@ export function LeaderboardPage() {
                 <Code>{r.owner}</Code>
               </Table.Td>
               <NumCell>{r.score}</NumCell>
-              {/* A text node, never parsed: the stored bytes may be anything a
-                  game sent, control characters included. */}
-              <Table.Td>{r.meta ?? "—"}</Table.Td>
+              {/* A text node, never parsed: the stored bytes are whatever the
+                  game sent (a control character is refused at write time). */}
+              {showMeta && <Table.Td>{r.meta ?? "—"}</Table.Td>}
               <Table.Td>{r.channelId ?? "—"}</Table.Td>
               <Table.Td title={fmtTime(r.updatedAt)}>
                 {fmtRelative(r.updatedAt)}
@@ -501,7 +506,7 @@ export function LbCapFields({
     <>
       <NumberInput
         label="Max entries per period"
-        description={`1–${LB_MAX_ENTRIES_HARD}, counted on create. One board holds at most this times (1 + 2 × past periods).`}
+        description={`1–${LB_MAX_ENTRIES_HARD}, counted on create. One board holds at most this times (1 + 2 × (past periods + 1)) — the current bucket of each period counts too.`}
         value={maxEntries}
         onChange={(v) => onChange({ maxEntries: v })}
         min={1}

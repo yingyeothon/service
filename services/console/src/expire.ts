@@ -347,12 +347,24 @@ async function readCursor(
 /** Rows one leaderboard sweep statement takes; the kv sweep's bound. */
 export const LB_SWEEP_BATCH = 1_000;
 /**
- * Statements the leaderboard sweep may spend. **Its own budget, not the kv
- * sweep's** (`rules/data.md` already records 20 x 1,000 as the ceiling one
- * sweep may hold): the two reclaim different tables, and a stage whose kv
+ * Statements the channel and drain phases may each spend. **Its own budget, not
+ * the kv sweep's** (`rules/data.md` already records 20 x 1,000 as the ceiling
+ * one sweep may hold): the two reclaim different tables, and a stage whose kv
  * expiry ran long would otherwise silently stop dropping retired buckets.
  */
 export const LB_SWEEP_MAX_BATCHES = 20;
+/**
+ * Statements the **retention** phase may spend, and the number that decides how
+ * many big boards a stage can carry. One board retires at most `maxEntries`
+ * rows per day (its daily bucket) plus `maxEntries` every seventh (its weekly),
+ * so at the defaults it is ~2,300 rows/day and at the hard caps ~11,400 — 40
+ * statements of 1,000 rows therefore keeps up with roughly 17 default boards or
+ * 3 at the hard caps, and beyond that `leaderboard_scores` grows until someone
+ * lowers a cap (found by review, 2026-09-10; the backstop is the digest's
+ * `lb:bytes` warning, and this sweep now says `truncated` at `warn`). Raising
+ * it costs about a second of the 300 s the daily cron shares.
+ */
+export const LB_SWEEP_RETAIN_BATCHES = 40;
 /** Live boards read per page while walking a stage. */
 const LB_SWEEP_PAGE = 100;
 /**
@@ -388,6 +400,14 @@ export interface LbSweepResult {
  * 3. retention: every bucket of a live board older than `retainPeriods`. This
  *    is the phase that can exceed the budget on a large stage, so it is the
  *    one that carries the cursor.
+ *
+ * **All three phases have their own budget**, unlike the kv sweep's last two,
+ * which share one. The reason is the bucket multiplier: one deleted board at
+ * the hard caps leaves ~260,000 rows for phase 2, which is ~260 statements, so
+ * a shared 20 would have meant no live board on the stage dropped a retired
+ * bucket for a fortnight -- with `truncated` in an `info` line as the only
+ * sign (found by review, 2026-09-10). Three budgets is ~60 statements over
+ * ~60,000 rows, a few seconds of the 300 s the daily cron shares.
  */
 export async function runLeaderboardSweep({
   leaderboards,
@@ -397,6 +417,7 @@ export async function runLeaderboardSweep({
   logger,
   batch = LB_SWEEP_BATCH,
   maxBatches = LB_SWEEP_MAX_BATCHES,
+  retainBatches = LB_SWEEP_RETAIN_BATCHES,
 }: {
   leaderboards: LeaderboardDb;
   /** Auth channels this run soft-deleted or hard-purged; their players' scores go too. */
@@ -407,16 +428,22 @@ export async function runLeaderboardSweep({
   logger: Logger;
   batch?: number;
   maxBatches?: number;
+  /** The retention phase's own, larger budget ({@link LB_SWEEP_RETAIN_BATCHES}). */
+  retainBatches?: number;
 }): Promise<LbSweepResult> {
   const now = nowSec(clock);
-  let spent = 0;
   let deleted = 0;
   let purged = 0;
   // One charge per id so every channel is at least probed, plus `maxBatches`
   // more to drain the ones that had rows -- the kv sweep's arithmetic.
   let channelSpent = 0;
   const channelBudget = () => channelSpent < channels.length + maxBatches;
-  const budget = () => spent < maxBatches;
+  // Its own, so a board draining after a delete cannot cost the whole stage a
+  // day of retention (see the header).
+  let drainSpent = 0;
+  const drainBudget = () => drainSpent < maxBatches;
+  let spent = 0;
+  const budget = () => spent < retainBatches;
 
   const drain = async (
     take: () => Promise<number>,
@@ -428,7 +455,8 @@ export async function runLeaderboardSweep({
     return gone >= batch;
   };
   const chargeChannel = () => channelSpent++;
-  const chargeShared = () => spent++;
+  const chargeDrain = () => drainSpent++;
+  const chargeRetention = () => spent++;
 
   let channelsTruncated = false;
   let truncated = false;
@@ -448,15 +476,15 @@ export async function runLeaderboardSweep({
   }
 
   for (const board of await leaderboards.listDeletedBoards(LB_SWEEP_PAGE)) {
-    if (!budget()) {
+    if (!drainBudget()) {
       truncated = true;
       break;
     }
     let more = true;
-    while (more && budget())
+    while (more && drainBudget())
       more = await drain(
         () => leaderboards.deleteScoresBatch(board.id, batch),
-        chargeShared,
+        chargeDrain,
       );
     if (more) truncated = true;
     // Only once the last row is gone: the child FK cascades, and a cascade
@@ -495,7 +523,7 @@ export async function runLeaderboardSweep({
           more = await drain(
             () =>
               leaderboards.deleteOldBuckets(board.id, period, before, batch),
-            chargeShared,
+            chargeRetention,
           );
         if (more) boardDone = false;
       }
@@ -524,14 +552,18 @@ export async function runLeaderboardSweep({
     }
 
   if (channelsTruncated) truncated = true;
-  logger.info("leaderboard sweep", {
-    deleted,
-    purged,
-    truncated,
-    channelsTruncated,
-    cursor,
-  });
-  return { deleted, purged, truncated, channelsTruncated, cursor };
+  const line = { deleted, purged, truncated, channelsTruncated, cursor };
+  // The levels are the point. `channelsTruncated` is **work that is lost**: a
+  // dead channel's id reaches this sweep on its soft-delete day and again on
+  // its hard purge, and after that nothing in the database names its players'
+  // rows -- so it is an `error`, not a fact. Plain `truncated` is deferred work
+  // and a `warn`. Both were `info` until 2026-09-10, which is to say an
+  // operator had no way to learn either (found by review; the kv sweep still
+  // reports both at `info` -- `todo/34-backlog.md`).
+  if (channelsTruncated) logger.error("leaderboard sweep incomplete", line);
+  else if (truncated) logger.warn("leaderboard sweep truncated", line);
+  else logger.info("leaderboard sweep", line);
+  return line;
 }
 
 /** The retention walk's stored position; any Redis fault reads as "start from the top". */

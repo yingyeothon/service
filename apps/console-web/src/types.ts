@@ -972,8 +972,11 @@ export interface LbScore {
   rank: number;
   owner: string;
   score: number;
-  /** The stored JSON text verbatim; the platform never parses it. */
-  meta: string | null;
+  /**
+   * The stored JSON text verbatim; the platform never parses it. Absent for a
+   * seatless platform admin — it is the team's own payload, like a kv value.
+   */
+  meta?: string | null;
   /** The auth channel whose credential wrote it. */
   channelId: string | null;
   updatedAt: number;

@@ -129,9 +129,10 @@ async function cleanup() {
   // database.
   try {
     for (const id of made) {
-      // The scores go before the board: the console's delete drains inline,
-      // but a board left holding rows keeps its project undeletable, and this
-      // is the order the docs tell an operator to use.
+      // Not because the delete needs it — `DELETE /leaderboards/{id}` drains
+      // every bucket inline — but because it exercises the console's bucket
+      // route on every board of the run, including the ones the checks above
+      // never cleared. A 404 means the board was already gone.
       const cleared = await con(`/leaderboards/${id}/periods/alltime`, {
         method: "DELETE",
         headers: as(owner),
@@ -161,6 +162,11 @@ async function cleanup() {
       });
       check(
         "no smoke board survives",
+        // Live boards only: a board whose drain did not finish is soft-deleted,
+        // has parked its name on its own id, and is invisible here while still
+        // blocking a project delete. With boards this small the drain always
+        // finishes; on a full one an operator watches `counts.lb` instead.
+        //
         // The status is half the assertion: `(undefined ?? []).every(…)` is
         // `true`, so without it a listing that 401s reports `ok` for a
         // verification that never ran.
@@ -305,6 +311,29 @@ try {
 
   // ---- who may write --------------------------------------------------
   check(
+    // A raw newline in `meta` forges a row in `yyt lb score get`'s table, and
+    // no well-formed JSON text can carry one — so it is a 400, while the
+    // escaped form is six plain bytes and passes.
+    "a control character in meta is refused",
+    (
+      await api(`/lb/${open?.id}/scores/me`, {
+        method: "PUT",
+        headers: alice,
+        body: { score: 1, meta: '{"n":"a\nrank: 1"}' },
+      })
+    ).status === 400,
+  );
+  check(
+    "the escaped form of the same byte passes",
+    (
+      await api(`/lb/${open?.id}/scores/me`, {
+        method: "PUT",
+        headers: alice,
+        body: { score: 1, meta: '{"n":"a\\u001b"}' },
+      })
+    ).status === 200,
+  );
+  check(
     "a player cannot write another player's row",
     (
       await api(`/lb/${open?.id}/scores/${bobId}`, {
@@ -417,6 +446,41 @@ try {
     "a player may not delete",
     (
       await api(`/lb/${open?.id}/scores/${aliceId}`, {
+        method: "DELETE",
+        headers: alice,
+      })
+    ).status === 403,
+  );
+
+  // ---- the LB API's own bucket delete ---------------------------------
+  // The only user of `LB_API_DELETE_BATCH` and of the `truncated` contract, and
+  // nothing else on dev calls it.
+  await api(`/lb/${open?.id}/scores/${bobId}`, {
+    method: "PUT",
+    headers: server,
+    body: { score: 5 },
+  });
+  const bucket = await api(`/lb/${open?.id}/periods/alltime`, {
+    method: "DELETE",
+    headers: server,
+  });
+  check(
+    "DELETE /lb/{board}/periods/{period} empties one bucket",
+    bucket.status === 200 &&
+      bucket.body?.period === "alltime" &&
+      bucket.body?.truncated === false &&
+      bucket.body?.deleted >= 1,
+    `${bucket.status} ${bucket.text.slice(0, 200)}`,
+  );
+  check(
+    "the other bucket of the same board is untouched",
+    (await api(`/lb/${open?.id}/top?period=daily`, { headers: server })).body
+      ?.total >= 1,
+  );
+  check(
+    "a player may not clear a bucket",
+    (
+      await api(`/lb/${open?.id}/periods/daily`, {
         method: "DELETE",
         headers: alice,
       })
