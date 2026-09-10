@@ -256,6 +256,23 @@ export function createLeaderboardRoutes({
   const noStore = (statusCode: number, body: unknown) =>
     json(body, { status: statusCode, noStore: true });
 
+  /**
+   * Whether a read may carry `meta`.
+   *
+   * A platform admin with **no seat in the team** may not: the override exists
+   * so an admin can see that a resource exists and delete a team, and
+   * `team-access.ts` states it never reaches a secret. `meta` is the team's own
+   * payload -- `docs/decisions.md` #2 calls it the counterpart of a kv
+   * `valueText`, and a game's documented use for it is a display name -- so it
+   * is withheld exactly as `mayReadValues` withholds a value
+   * (`rules/security.md`: "the first resource whose ordinary GET body is the
+   * team's own payload has to say so"; this one did not until 2026-09-10, found
+   * by the security review). A seated admin is judged by the seat, like
+   * everywhere else, and the ranking itself -- rank, owner, score, times --
+   * stays visible, which is the meta-only view kv gives too.
+   */
+  const mayReadMeta = (a: ResourceAccess<"lb">) => a.standing !== "admin";
+
   return [
     defineRoute({
       method: "GET",
@@ -438,6 +455,7 @@ export function createLeaderboardRoutes({
       handler: async (ctx) => {
         const a = await boardWith(ctx, false);
         const board = a.row;
+        const withMeta = mayReadMeta(a);
         const { period, key } = bucketOf(board, ctx.query.period);
         const limit = lbTopLimit(ctx.query.limit);
         const offset = ctx.query.offset ?? 0;
@@ -470,8 +488,8 @@ export function createLeaderboardRoutes({
             owner: r.ownerId,
             score: r.score,
             // The stored text verbatim; the platform never parses it, and the
-            // SPA renders it as a text node.
-            meta: r.meta,
+            // SPA renders it as a text node. Absent for a seatless admin.
+            ...(withMeta ? { meta: r.meta } : {}),
             channelId: r.channelId,
             updatedAt: r.updatedAt,
           })),
@@ -509,7 +527,7 @@ export function createLeaderboardRoutes({
           total,
           owner,
           score: row.score,
-          meta: row.meta,
+          ...(mayReadMeta(a) ? { meta: row.meta } : {}),
           channelId: row.channelId,
           updatedAt: row.updatedAt,
         });
@@ -527,8 +545,9 @@ export function createLeaderboardRoutes({
         // written.
         const owner = checkKvOwnerId(ctx.params.ownerId ?? "");
         // Every bucket at once: taking a cheat off today's board and leaving
-        // it on last week's is not a removal. Bounded by
-        // `1 + 2 * retainPeriods` rows.
+        // it on last week's is not a removal. One `ref` lookup on
+        // `leaderboard_scores_owner` over the owner's own
+        // `1 + 2 * (retainPeriods + 1)` rows.
         const deleted = await leaderboards.deleteOwnerScores(row.id, owner);
         if (deleted === 0) throw new AppError("not_found", "score not found");
         await audit(id.subject, "lb.score.delete", row.id, {

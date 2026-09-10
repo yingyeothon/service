@@ -182,33 +182,33 @@ model channels {
 }
 
 model events {
-  id              String            @id @db.VarChar(64)
-  title           String            @db.VarChar(255)
-  status          events_status
-  body_md         String            @db.MediumText
-  created_by      String            @db.VarChar(64)
-  created_at      BigInt
-  updated_at      BigInt
-  poster_key      String?           @db.VarChar(255)
-  published_at    BigInt?
-  place           String            @db.VarChar(255)
-  place_url       String?           @db.VarChar(1024)
-  duration_hours  Int
-  vote_until      BigInt
-  starts_at       BigInt?
-  cancelled_at    BigInt?
-  cancelled_by    String?           @db.VarChar(64)
-  revision        Int               @default(1)
-  vote_closed_at  BigInt?
-  vote_closed_by  String?           @db.VarChar(64)
-  vote_closed_reason String?        @db.VarChar(500)
-  members         members           @relation(fields: [created_by], references: [id], onUpdate: Restrict, map: "events_creator")
-  event_options   event_options[]
-  event_votes     event_votes[]
-  event_revisions event_revisions[]
-  event_posters   event_posters[]
-  event_comments  event_comments[]
-  shows           shows?
+  id                 String            @id @db.VarChar(64)
+  title              String            @db.VarChar(255)
+  status             events_status
+  body_md            String            @db.MediumText
+  created_by         String            @db.VarChar(64)
+  created_at         BigInt
+  updated_at         BigInt
+  poster_key         String?           @db.VarChar(255)
+  published_at       BigInt?
+  place              String            @db.VarChar(255)
+  place_url          String?           @db.VarChar(1024)
+  duration_hours     Int
+  vote_until         BigInt
+  starts_at          BigInt?
+  cancelled_at       BigInt?
+  cancelled_by       String?           @db.VarChar(64)
+  revision           Int               @default(1)
+  vote_closed_at     BigInt?
+  vote_closed_by     String?           @db.VarChar(64)
+  vote_closed_reason String?           @db.VarChar(500)
+  members            members           @relation(fields: [created_by], references: [id], onUpdate: Restrict, map: "events_creator")
+  event_options      event_options[]
+  event_votes        event_votes[]
+  event_revisions    event_revisions[]
+  event_posters      event_posters[]
+  event_comments     event_comments[]
+  shows              shows?
 
   @@index([created_by], map: "events_creator")
   @@index([status, created_at], map: "events_status")
@@ -1002,6 +1002,10 @@ model leaderboard_scores {
   /// InnoDB appends `owner_id`, so a tie orders by owner id in the scan's own
   /// direction.
   @@index([board_id, period, period_key, score], map: "leaderboard_scores_rank")
+  /// One owner across every bucket of a board (`deleteOwnerScores`). The
+  /// primary key cannot serve it: `period`/`period_key` sit between the two
+  /// columns, so without this the delete scans the whole board (`m0018`).
+  @@index([board_id, owner_id], map: "leaderboard_scores_owner")
   @@index([channel_id], map: "leaderboard_scores_channel")
 }
 

@@ -1,0 +1,29 @@
+-- One owner's rows across a whole board, indexed (todo/36, found by the
+-- security review 2026-09-10). Pure expand: one secondary index, nothing
+-- dropped or narrowed, so this is deliberately not a `-- contract` file and
+-- `scripts/deploy.sh console <stage>` applies it with no flag.
+--
+-- `deleteOwnerScores` -- the apiKey's `DELETE /lb/{board}/scores/{ownerId}` and
+-- the console's twin -- is `WHERE board_id = ? AND owner_id = ?`. The primary
+-- key is `(board_id, period, period_key, owner_id)`, so with the two middle
+-- columns unconstrained `owner_id` cannot be a key part and neither can
+-- `leaderboard_scores_rank`; the statement scanned the whole board to delete at
+-- most `1 + 2 * (retainPeriods + 1)` rows. Measured on mariadb:11 with a
+-- 20,000-row board: `type: ALL`, 14,388 rows estimated. With this index the same statement
+-- is `type: ref`, 1 row, and neither `/top` nor the retention delete changes
+-- plan (both still pick the key they already had).
+--
+-- It matters because that route is reachable with a doc apiKey and a 404 for a
+-- miss is cheap, so a loop of well-formed owner ids could hold the state
+-- stack's single connection against a 5 s `max_statement_time` on a host five
+-- stacks share.
+--
+-- Verify around this file (read-only, per stage):
+--   SHOW CREATE TABLE leaderboard_scores
+--   EXPLAIN SELECT * FROM leaderboard_scores WHERE board_id = '<id>' AND owner_id = '<owner>'
+-- Before: `ALL`. After: `ref` on `leaderboard_scores_owner`.
+--
+-- Backing it out is `DROP INDEX leaderboard_scores_owner ON leaderboard_scores`,
+-- which no code depends on for correctness -- only for that plan.
+ALTER TABLE `leaderboard_scores`
+    ADD INDEX `leaderboard_scores_owner`(`board_id`, `owner_id`);

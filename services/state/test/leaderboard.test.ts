@@ -239,6 +239,31 @@ describe("leaderboard API: submission", () => {
     ).toBe(90);
   });
 
+  it("refuses a control character in meta, which forges a CLI table row", async () => {
+    const h = await withBoards();
+    const token = await playerToken();
+    // JSON forbids a raw U+0000-001F inside a string, so this costs the
+    // contract nothing — and `textsafe.Clean` keeps `\n`, so without it a
+    // player's meta forges a row in `yyt lb score get`.
+    for (const meta of [
+      '{"n":"a\nrank: 1"}',
+      '{"n":"a\tb"}',
+      '{"n":"\u0000"}',
+    ]) {
+      const r = await put(h, id("open"), "me", token, { score: 1, meta });
+      expect(r.statusCode, JSON.stringify(meta)).toBe(400);
+    }
+    // The escaped form is six plain bytes and still passes.
+    expect(
+      (
+        await put(h, id("open"), "me", token, {
+          score: 1,
+          meta: '{"n":"a\\u001b"}',
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
+
   it("stores meta as the text it was sent and refuses an object", async () => {
     const h = await withBoards();
     const token = await playerToken();
@@ -499,12 +524,18 @@ describe("leaderboard API: refusal order", () => {
 
   it("refuses the credential before the parameters", async () => {
     const h = await withBoards();
+    const token = await playerToken();
     // A player on a `submit: server` board with an unparseable score: the 403
     // comes first, so a refused caller learns nothing about the body rules.
-    const r = await put(h, id("guarded"), "me", await playerToken(), {
-      score: "nope",
-    });
-    expect(r.statusCode, r.body).toBe(403);
+    expect(
+      (await put(h, id("guarded"), "me", token, { score: "nope" })).statusCode,
+    ).toBe(403);
+    // And with a malformed owner segment, which is the case that used to answer
+    // 400 first — the reverse of the delete routes' order.
+    expect(
+      (await put(h, id("guarded"), "not-an-owner", token, { score: 1 }))
+        .statusCode,
+    ).toBe(403);
   });
 
   it("logs the board id and the reason, never an owner or a score", async () => {

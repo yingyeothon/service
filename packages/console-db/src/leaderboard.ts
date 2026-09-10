@@ -61,8 +61,11 @@ export const LEADERBOARDS_PER_PROJECT = 20;
 /**
  * Rows one period bucket may hold. Lowered from the kv-sized 10,000/100,000 on
  * 2026-09-09, before any board existed: one board's worst case is
- * `maxEntries * (1 + 2 * retainPeriods)` rows on a MariaDB five stacks share,
- * and the same number bounds the `count` behind every rank.
+ * `maxEntries * (1 + 2 * (retainPeriods + 1))` rows on a MariaDB five stacks
+ * share -- 11 buckets at the defaults, 27 at `retainPeriods: 12`, because
+ * retention keeps the **current** bucket plus `retainPeriods` past ones per
+ * period (the `+ 1`, corrected 2026-09-10) -- and `maxEntries` alone bounds the
+ * `count` behind every rank.
  */
 export const LB_MAX_ENTRIES_DEFAULT = 2_000;
 export const LB_MAX_ENTRIES_HARD = 10_000;
@@ -71,6 +74,22 @@ export const LB_RETAIN_DEFAULT = 4;
 export const LB_RETAIN_MAX = 12;
 /** `meta` as sent, in bytes -- a display name and a build id, not a payload. */
 export const LB_META_BYTES = 1024;
+/**
+ * The one thing `meta` may not contain. It is stored byte for byte and never
+ * parsed, but it **is** printed into operator-facing tables -- `yyt lb top`'s
+ * row and `yyt lb score get`'s `key: value` block -- and `textsafe.Clean` keeps
+ * `\n` and `\t` on purpose, so a newline there forges a row with an
+ * attacker-chosen owner and rank (the same forgery `rules/security.md` records
+ * against an event's close reason; found by the security review 2026-09-10).
+ *
+ * Refusing C0/C1 costs the contract nothing: `meta` is documented as JSON
+ * **text**, and JSON forbids raw U+0000-001F inside a string, so no
+ * well-formed value can carry one -- an escaped `\\u001b` is six plain bytes
+ * and still passes. This is what earns `meta` the "no `Clean`" exemption
+ * `rules/workflow.md` grants only to JSON-validated fields.
+ */
+// eslint-disable-next-line no-control-regex -- naming the class is the point
+const LB_META_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 export const LB_TOP_LIMIT_DEFAULT = 20;
 export const LB_TOP_LIMIT_MAX = 100;
 /**
@@ -228,6 +247,11 @@ export function checkLbScore(score: number): void {
  */
 export function checkLbMeta(meta: string | null): void {
   if (meta === null) return;
+  if (LB_META_CONTROL.test(meta))
+    throw new AppError(
+      "bad_request",
+      "meta must not contain control characters",
+    );
   if (lbMetaBytes(meta) > LB_META_BYTES)
     throw new AppError(
       "payload_too_large",
@@ -632,9 +656,16 @@ export interface LeaderboardDb {
     opts: { order: LbOrder; score: number },
   ): Promise<number>;
   /**
-   * One owner's rows in **every** bucket of the board. Bounded by
-   * `1 + 2 * retainPeriods` rows, so it needs no batch: removing a cheater
-   * from today's board and leaving them on last week's is not a removal.
+   * One owner's rows in **every** bucket of the board: removing a cheater from
+   * today's board and leaving them on last week's is not a removal.
+   *
+   * It needs no batch **because of `leaderboard_scores_owner`** (`m0018`), not
+   * because of the row count. `(board_id, owner_id)` is what makes this a
+   * `ref` lookup of the owner's own `1 + 2 * (retainPeriods + 1)` rows; on the
+   * primary key alone, with `period`/`period_key` unconstrained, it was a scan
+   * of the whole board -- measured on mariadb:11 as `type: ALL`, 14,388 rows
+   * estimated to delete at most 25 (found by review, 2026-09-10). Every other
+   * delete here carries a `LIMIT`; this one carries an index instead.
    */
   deleteOwnerScores(boardId: string, ownerId: string): Promise<number>;
   /** One bucket, in bounded batches. */
@@ -1101,6 +1132,7 @@ export function createLeaderboardDb(prisma: PrismaClient): LeaderboardDb {
 
     deleteOwnerScores: (boardId, ownerId) =>
       run(async () => {
+        // A `ref` lookup on `leaderboard_scores_owner`; see the interface.
         const r = await prisma.leaderboard_scores.deleteMany({
           where: { board_id: boardId, owner_id: ownerId },
         });
@@ -1158,7 +1190,10 @@ export function createLeaderboardDb(prisma: PrismaClient): LeaderboardDb {
         const grouped = await prisma.leaderboard_scores.groupBy({
           by: ["board_id"],
           _count: { _all: true },
-          orderBy: { _count: { board_id: "desc" } },
+          // The board id breaks a count tie, because the fake does: without it
+          // MariaDB may answer equal counts in any order and a contract
+          // fixture with two equal boards would be flaky (review, 2026-09-10).
+          orderBy: [{ _count: { board_id: "desc" } }, { board_id: "asc" }],
           take: checkBatchLimit(limit),
         });
         return grouped.map((g) => ({
@@ -1230,10 +1265,16 @@ export function createMemoryLeaderboardDb(
     periodKey: string,
     ownerId: string,
   ) => `${ci(boardId)} ${period} ${bin(periodKey)} ${bin(ownerId)}`;
+  // `foldName`, not `ci`: `utf8mb4_unicode_ci` folds accents and width as well
+  // as case, and `checkLbName` imposes no character set of its own, so a fake
+  // that only lower-cased would accept a pair the unique index rejects
+  // (review, 2026-09-10).
   const nameTaken = (teamId: string, name: string, exceptId?: string) =>
     [...boards.values()].some(
       (b) =>
-        b.teamId === teamId && ci(b.name) === ci(name) && b.id !== exceptId,
+        b.teamId === teamId &&
+        foldName(b.name) === foldName(name) &&
+        b.id !== exceptId,
     );
   const scoresOf = (boardId: string) =>
     [...scores.values()].filter((s) => ci(s.boardId) === ci(boardId));
@@ -1294,14 +1335,14 @@ export function createMemoryLeaderboardDb(
 
     findBoardByName: async (teamId, name) => {
       const b = [...boards.values()].find(
-        (x) => x.teamId === teamId && ci(x.name) === ci(name),
+        (x) => x.teamId === teamId && foldName(x.name) === foldName(name),
       );
       return b && { ...b };
     },
 
     findBoardByProjectName: async (projectId, name) => {
       const b = [...boards.values()].find(
-        (x) => x.projectId === projectId && ci(x.name) === ci(name),
+        (x) => x.projectId === projectId && foldName(x.name) === foldName(name),
       );
       return b && meta(b);
     },
@@ -1526,7 +1567,11 @@ export function createMemoryLeaderboardDb(
       let gone = 0;
       for (const r of [...scores.values()]) {
         if (gone >= n) break;
-        if (r.channelId !== channelId) continue;
+        // `ci`, because `channel_id` keeps the table's default
+        // `utf8mb4_unicode_ci` -- it is the one column of these two tables that
+        // is not `_bin`, and a byte-exact fake would pass a test SQL fails
+        // (review, 2026-09-10; unreachable today, ids are minted lower case).
+        if (r.channelId === null || ci(r.channelId) !== ci(channelId)) continue;
         drop(r);
         gone++;
       }

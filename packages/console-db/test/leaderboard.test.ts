@@ -450,6 +450,24 @@ export function leaderboardContract(
         code: "payload_too_large",
       },
     );
+    // A raw control character is refused: `meta` is printed into the CLI's
+    // tables, where a newline forges a row, and no well-formed JSON text can
+    // carry one anyway.
+    for (const bad of [
+      '{"n":"a\nb"}',
+      '{"n":"a\tb"}',
+      '{"n":"\u0000"}',
+      '{"n":"\u009f"}',
+    ])
+      await expect(
+        db.submitScore(b, submission({ meta: bad })),
+        JSON.stringify(bad),
+      ).rejects.toMatchObject({ code: "bad_request" });
+    // The escaped form is six plain bytes and still passes.
+    const escaped = '{"n":"a\\u001b"}';
+    expect(
+      (await db.submitScore(b, submission({ meta: escaped })))[0]?.meta,
+    ).toBe(escaped);
   });
 
   it("refuses the whole submission when one bucket is full", async () => {
@@ -626,6 +644,13 @@ export function leaderboardContract(
       { boardId: B1, scores: 2 },
       { boardId: B2, scores: 1 },
     ]);
+    // Equal counts break on the board id, so the answer is one order rather
+    // than whichever MariaDB felt like (both implementations, on purpose).
+    await db.submitScore(
+      await liveBoard(db, B2),
+      submission({ ownerId: "cccc" }),
+    );
+    expect((await db.topBoards(10)).map((u) => u.boardId)).toEqual([B1, B2]);
   });
 }
 

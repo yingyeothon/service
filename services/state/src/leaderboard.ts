@@ -178,6 +178,18 @@ export function createLeaderboardRoutes({
   }
 
   /**
+   * The half of {@link requireSubmit} that needs no owner, so it can run before
+   * the path segment is parsed: a player on a `submit: server` board is a 403
+   * whatever it names. Without it the route answered a 400 for a malformed
+   * owner first, which is the reverse of the order the delete routes use and
+   * the one this file documents (review, 2026-09-10).
+   */
+  function requireSubmitKind(board: LeaderboardMeta, c: Caller): void {
+    if (c.kind !== "server" && board.submit !== "owner")
+      throw refuse(board, "submit to");
+  }
+
+  /**
    * Which period a request addresses. A **period name**, never a bucket key:
    * the platform computes the key from its own clock, so a client cannot
    * address a bucket it invented (`docs/decisions.md` #3). Absent means the
@@ -236,6 +248,9 @@ export function createLeaderboardRoutes({
   async function submit(ctx: RouteContext): Promise<HttpResult> {
     const c = callerFromIdentity(ctx.requireIdentity());
     const board = await boardOf(ctx, c);
+    // Credential before parameters: the kind test needs no owner, the own-row
+    // test does.
+    requireSubmitKind(board, c);
     const owner = ownerOf(c, ctx);
     requireSubmit(board, c, owner);
     const body = ctx.body;
@@ -426,9 +441,10 @@ export function createLeaderboardRoutes({
         // the same 403 as any other player's row rather than a 400 that says
         // the syntax was the problem.
         const owner = ownerOf(c, ctx);
-        // Every bucket at once, bounded by `1 + 2 * retainPeriods` rows:
-        // taking a cheat off today's board and leaving it on last week's is
-        // not a removal.
+        // Every bucket at once -- taking a cheat off today's board and
+        // leaving it on last week's is not a removal. One `ref` lookup on
+        // `leaderboard_scores_owner` over the owner's own
+        // `1 + 2 * (retainPeriods + 1)` rows, which is why it needs no batch.
         const deleted = await leaderboards.deleteOwnerScores(board.id, owner);
         if (deleted === 0) throw new AppError("not_found", "score not found");
         return { statusCode: 204, headers: NO_STORE, body: "" };

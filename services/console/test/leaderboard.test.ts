@@ -537,6 +537,53 @@ describe("leaderboards", () => {
     expect(ok.statusCode, ok.body).toBe(204);
   });
 
+  it("withholds meta from a platform admin with no seat", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const boss = await h.login("Boss", "admin");
+    const b = await mkBoard(h, alice);
+    await seedScore(h, b.id, U1, 10, { meta: '{"name":"alice"}' });
+    // The override exists so an admin can see a resource exists and delete a
+    // team; `meta` is the team's own payload, the counterpart of a kv value
+    // (`rules/security.md`), so it is withheld while the ranking is not.
+    const page = parse(
+      await h.app(
+        ev("GET", `/leaderboards/${b.id}/scores`, { headers: boss.cookie }),
+      ),
+    );
+    expect(page.total).toBe(1);
+    expect(page.scores[0]).toMatchObject({ rank: 1, owner: U1, score: 10 });
+    expect(page.scores[0]).not.toHaveProperty("meta");
+    const one = parse(
+      await h.app(
+        ev("GET", `/leaderboards/${b.id}/scores/${U1}`, {
+          headers: boss.cookie,
+        }),
+      ),
+    );
+    expect(one).toMatchObject({ owner: U1, score: 10, rank: 1 });
+    expect(one).not.toHaveProperty("meta");
+    // A seated member sees it.
+    expect(
+      parse(
+        await h.app(
+          ev("GET", `/leaderboards/${b.id}/scores`, { headers: alice.cookie }),
+        ),
+      ).scores[0].meta,
+    ).toBe('{"name":"alice"}');
+    // And an admin without a seat still may not write.
+    slot(h);
+    expect(
+      (
+        await h.app(
+          ev("DELETE", `/leaderboards/${b.id}/scores/${U1}`, {
+            headers: boss.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(403);
+  });
+
   it("hides a board of another team behind a 404", async () => {
     const h = harness();
     const alice = await h.team("alice");
@@ -666,6 +713,41 @@ describe("leaderboard sweep", () => {
       ).toBe(0);
   });
 
+  it("does not let a draining board cost the stage its retention", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    // One board deleted with rows still on it, and one live board with a
+    // retired bucket. Before the budgets were split, the drain spent the whole
+    // allowance and no live board dropped anything that day.
+    const dead = await mkBoard(h, alice, { name: "dead" });
+    for (const owner of [U1, U2, U3]) await seedScore(h, dead.id, owner, 1);
+    await h.leaderboards.softDeleteBoard(dead.id, NOW_SEC);
+    const live = await mkBoard(h, alice, {
+      name: "live",
+      periods: ["daily"],
+      retainPeriods: 0,
+    });
+    await seedScore(h, live.id, U1, 1, { at: NOW_SEC - 86_400 });
+    const r = await runLeaderboardSweep({
+      leaderboards: h.leaderboards,
+      clock: h.clock,
+      logger: nullLogger,
+      batch: 1,
+      // The drain cannot finish in one statement; retention still runs.
+      maxBatches: 1,
+      retainBatches: 4,
+    });
+    expect(r.truncated).toBe(true);
+    expect(
+      await h.leaderboards.countScores(
+        live.id,
+        "daily",
+        lbPeriodKey("daily", NOW_SEC - 86_400),
+      ),
+      "the live board's retired bucket went",
+    ).toBe(0);
+  });
+
   it("takes the scores of the channels the expiry run finished with", async () => {
     const h = harness();
     const alice = await h.team("alice");
@@ -706,7 +788,8 @@ describe("leaderboard sweep", () => {
       batch: 1,
       // Two statements: one that takes the first board's retired row and one
       // that finds nothing left, which is what lets the cursor advance.
-      maxBatches: 2,
+      // `retainBatches`, not `maxBatches`: retention has its own budget.
+      retainBatches: 2,
     });
     expect(first.deleted).toBe(1);
     expect(first.truncated).toBe(true);

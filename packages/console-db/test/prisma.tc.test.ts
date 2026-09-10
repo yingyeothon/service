@@ -421,6 +421,7 @@ describe.skipIf(!dockerAvailable())(
           bundles: 1,
           sites: 1,
           kv: 0,
+          lb: 0,
         });
         await createSitesDb(db.client).deleteSite("st_1");
         // A parent that does not exist is a foreign-key failure, not a silent null.

@@ -172,7 +172,7 @@ export function ProjectPage() {
         const r = await confirm({
           title: `Delete ${project.name}?`,
           message:
-            "Refused while a channel, app, bundle, site or kv collection still belongs to it.",
+            "Refused while a channel, app, bundle, site, kv collection or leaderboard still belongs to it.",
           confirmLabel: "Delete project",
           danger: true,
         });
@@ -267,7 +267,7 @@ export function ProjectPage() {
             ? {
                 label: "Delete project",
                 description:
-                  "Deleting a project is refused while a channel, app, bundle, site or kv collection still belongs to it — including channels deleted less than a day ago, until the sweep purges them.",
+                  "Deleting a project is refused while a channel, app, bundle, site, kv collection or leaderboard still belongs to it — including channels deleted less than a day ago, until the sweep purges them.",
                 onConfirm: remove,
                 disabled: act.busy,
               }

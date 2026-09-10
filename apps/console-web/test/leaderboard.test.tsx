@@ -316,6 +316,25 @@ describe("LeaderboardPage", () => {
     ).toBeNull();
   });
 
+  it("drops the Meta column for a platform admin with no seat", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "u1",
+      login: "boss",
+      role: "admin",
+      via: "session",
+    });
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+    // The server withholds `meta` from that standing; the column follows, so
+    // the table never paints a column of dashes.
+    vi.mocked(mockApi.lbScores).mockResolvedValue({
+      ...PAGE,
+      scores: PAGE.scores.map(({ meta: _meta, ...r }) => r),
+    });
+    open();
+    await screen.findByText(OWNER_A);
+    expect(headers()).toEqual(["Rank", "Owner", "Score", "Channel", "Updated"]);
+  });
+
   it("warns when the stage has no state stack", async () => {
     open({ ...BOARD, api: { ...BOARD.api, configured: false } });
     expect(
