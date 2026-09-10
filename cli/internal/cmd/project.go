@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -217,6 +219,61 @@ func newProject(a *App) *cobra.Command {
 			return a.printProject(p)
 		},
 	})
+	{
+		var authCh, lobbyCh, matchCh string
+		kit := &cobra.Command{
+			Use:   "kit-config [project]",
+			Short: "Print the game kit config block for a project (JSON, all public values)",
+			Long: "Print the block a game pastes into its own config so the client kit knows\n" +
+				"which channels, collections and boards this project owns\n" +
+				"(`docs/game-kit-design.md`). Everything in it is public — ids, names and\n" +
+				"the stage's own hosts — so it is safe in a repository; there is no secret\n" +
+				"here and none will be added.\n\n" +
+				"A section whose stack the stage does not have, or whose channel the project\n" +
+				"does not hold, is **absent** rather than empty: a kit module with no config\n" +
+				"fails on first use instead of connecting to nowhere. With several channels\n" +
+				"of a kind, name one with --auth/--lobby/--match (id or name) — it refuses to\n" +
+				"guess, because a wrong guess is a working config pointing at the wrong\n" +
+				"channel, which looks like an empty lobby rather than an error.",
+			Args: cobra.MaximumNArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				cc, r, err := projectOf(cmd, args, false)
+				if err != nil {
+					return err
+				}
+				q := url.Values{}
+				for _, f := range []struct {
+					key, val string
+				}{{"auth", authCh}, {"lobby", lobbyCh}, {"match", matchCh}} {
+					if f.val != "" {
+						q.Set(f.key, f.val)
+					}
+				}
+				path := "/projects/" + api.PathID(r.ProjectID) + "/kit-config"
+				if len(q) > 0 {
+					path += "?" + q.Encode()
+				}
+				// Decoded into `json.RawMessage` and printed as it arrived: the
+				// block is meant to be pasted, and re-encoding it here would
+				// reorder keys against the design document for no reason.
+				var raw json.RawMessage
+				if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &raw); err != nil {
+					return err
+				}
+				var pretty bytes.Buffer
+				if err := json.Indent(&pretty, raw, "", "  "); err != nil {
+					return err
+				}
+				_, err = fmt.Fprintln(a.Out, pretty.String())
+				return err
+			},
+		}
+		f := kit.Flags()
+		f.StringVar(&authCh, "auth", "", "auth channel id or name (needed only when the project has several)")
+		f.StringVar(&lobbyCh, "lobby", "", "lobby channel id or name (same)")
+		f.StringVar(&matchCh, "match", "", "match channel id or name (same)")
+		c.AddCommand(kit)
+	}
 	{
 		var name, description string
 		update := &cobra.Command{

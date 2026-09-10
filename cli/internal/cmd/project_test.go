@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -273,5 +274,39 @@ func TestProjectIssues(t *testing.T) {
 	}
 	if out, _, err := run(t, f, "project", "issue", "comment", "rm", "1", "cmt_2"); err != nil || out != "deleted cmt_2\n" {
 		t.Fatalf("%v %q", err, out)
+	}
+}
+
+func TestProjectKitConfig(t *testing.T) {
+	withProject(t)
+	block := map[string]any{
+		"auth":        map[string]any{"url": "https://auth.yyt.life", "channelId": "auth_1", "provider": "github"},
+		"state":       map[string]any{"url": "https://doc.yyt.life"},
+		"collections": map[string]any{"save": "save"},
+		"boards":      map[string]any{},
+	}
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /projects/prj_1/kit-config": func(recorded) (int, any) { return 200, block },
+	}, nil, nil, nil))
+	out, _, err := run(t, f, "project", "kit-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "project_kit_config", out)
+	// Printed as it arrived, indented — the block is meant to be pasted.
+	var back map[string]any
+	if err := json.Unmarshal([]byte(out), &back); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	// The flags travel only when given, so a project with one channel of each
+	// kind needs none of them.
+	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config" {
+		t.Fatalf("path %s", got)
+	}
+	if _, _, err := run(t, f, "project", "kit-config", "--auth", "auth-main", "--lobby", "lb_1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config?auth=auth-main&lobby=lb_1" {
+		t.Fatalf("path %s", got)
 	}
 }

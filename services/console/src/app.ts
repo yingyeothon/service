@@ -72,6 +72,7 @@ import {
   createLeaderboardRoutes,
   deleteChannelLbScores,
 } from "./leaderboard.js";
+import { createKitConfigRoutes } from "./kit-config.js";
 import { createEventRoutes } from "./events.js";
 import { canReadShow, createShowRoutes } from "./shows.js";
 import {
@@ -1092,6 +1093,14 @@ export function createConsoleApp({
     audit,
   });
 
+  const kitConfigRoutes = createKitConfigRoutes({
+    db,
+    kvstore,
+    leaderboards,
+    access,
+    urls,
+  });
+
   const teamRoutes = createTeamRoutes({
     db,
     team,
@@ -1131,6 +1140,7 @@ export function createConsoleApp({
       ...siteRoutes,
       ...kvStoreRoutes,
       ...leaderboardRoutes,
+      ...kitConfigRoutes,
       ...channelRedisRoutes,
       ...channelDocKeyRoutes,
       ...gatewayRoutes,
