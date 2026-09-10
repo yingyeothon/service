@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -141,6 +142,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /{$}", s.websocket)
 	mux.HandleFunc("GET /parties/{partyId}", s.party)
+	mux.HandleFunc("GET /presence", s.presence)
 	return mux
 }
 
@@ -502,8 +504,149 @@ func (s *Server) party(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, roster)
 }
 
+// presenceMax is how many ids one `GET /presence` may name. Deliberately half
+// the party roster's practical size and half what a naive client would ask
+// for: each id is one Redis key in the `MGET`, and a friends list is polled,
+// not fetched once. A client with more friends than this pages.
+const presenceMax = 50
+
+// presenceBurst/presenceRate are the route's own token bucket: a friends list
+// is polled, so the handshake's 10/2-per-second would be the binding limit for
+// a whole stage behind a terminating proxy. A client is still expected to poll
+// on the order of tens of seconds, which `docs/serverless-client.md` says.
+const (
+	presenceBurst = 30
+	presenceRate  = 10
+)
+
+// presenceUserID is the player id shape the lobby stores a session under: the
+// 32 lowercase hex of `deriveUserId`, which is what an auth channel's `sub`
+// holds. Enforced here rather than left to `redisx.Client.Key` — that method's
+// own comment calls itself "a guard, not validation", and a segment carrying
+// `:` would address a different key subtree entirely.
+var presenceUserID = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// presence answers `GET /presence?channel={lobbyId}&users=a,b,…` with the
+// online state of the ids named, to the bearer of any member's JWT on that
+// lobby's auth channel.
+//
+// It is the friends-list companion of `/parties`, and it is a **widening**
+// rather than a restatement of it (`docs/decisions.md` *Serverless clients*
+// #10): a party roster is answered only to a member of that party, while this
+// answers for any id the caller cares to name. What bounds it is that a player
+// id is a salted per-channel hash, so the route **confirms** ids the caller
+// already holds and never discovers one — "offline" and "no such player" are
+// the same answer, on purpose.
+//
+// `online` means a lobby session key exists. That key carries a 15-minute TTL
+// refreshed on traffic, so after an ungraceful stop — a crash, or the
+// container recreate a gateway release performs — a departed player reads as
+// online until it expires. Presence is a hint for a friends list, never an
+// input to an authorization decision.
+func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
+	reject := func(status int, msg string) {
+		s.reg.Counters.PresenceRejected.Add(1)
+		writeJSON(w, status, map[string]any{"error": http.StatusText(status), "message": msg})
+	}
+	// Its own bucket, like `/parties`: a game's Lambda egress address must not
+	// spend the handshake budget of the players behind the same NAT, and this
+	// route costs `presenceMax` Redis keys where a party costs its members.
+	if !s.allowBucket("presence:"+clientAddr(r), presenceBurst, presenceRate) {
+		reject(http.StatusTooManyRequests, "too many requests")
+		return
+	}
+	channelID, ok := channelParam(r, reject)
+	if !ok {
+		return
+	}
+	// Bearer before the id list, the order `rules/security.md` states and
+	// `/parties` keeps: an anonymous caller gets 401 rather than a validation
+	// pass over whatever it sent.
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if bearer == "" || bearer == r.Header.Get("Authorization") {
+		reject(http.StatusUnauthorized, "Authorization: Bearer <jwt> is required")
+		return
+	}
+	users, ok := presenceParam(r, reject)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	ch, ok := s.channelFor(ctx, channelID, reject)
+	if !ok {
+		return
+	}
+	// A `q` channel's sessions live under another key subtree, and answering
+	// for one would report every player of it as offline.
+	if ch.Kind != console.KindLobby {
+		reject(http.StatusNotFound, "channel not found")
+		return
+	}
+	if _, ok := s.identityFor(ctx, ch, channelID, bearer, reject); !ok {
+		return
+	}
+	keys := make([]string, len(users))
+	for i, u := range users {
+		keys[i] = s.rdb.SessionKey("lobby", channelID, u)
+	}
+	conns, err := s.rdb.GetRawMany(ctx, keys...)
+	if err != nil {
+		s.reg.Counters.RedisErrors.Add(1)
+		s.throttledLog("presence-redis", slog.LevelWarn, "presence read failed", "channel", channelID, "err", err.Error())
+		reject(http.StatusBadGateway, "cannot read presence")
+		return
+	}
+	out := make([]map[string]any, 0, len(users))
+	for i, u := range users {
+		out = append(out, map[string]any{"userId": u, "online": conns[i] != nil})
+	}
+	s.reg.Counters.PresenceReads.Add(1)
+	writeJSON(w, http.StatusOK, map[string]any{"type": "presence", "users": out})
+}
+
+// presenceParam reads `?users=a,b,…`: required, deduplicated, capped, and a
+// 400 for an id that is not a player id.
+//
+// A 400 rather than the 404 `channelParam` answers for a malformed channel:
+// there the status hides the shape of real ids, here the shape is already
+// public (it is the caller's own `userId`) and the caller needs to know its
+// list was rejected rather than silently read as offline.
+func presenceParam(r *http.Request, reject rejectFn) ([]string, bool) {
+	raw := r.URL.Query().Get("users")
+	if raw == "" {
+		reject(http.StatusBadRequest, "users query parameter is required")
+		return nil, false
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, presenceMax)
+	for _, u := range strings.Split(raw, ",") {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		if !presenceUserID.MatchString(u) {
+			reject(http.StatusBadRequest, "users must be player ids")
+			return nil, false
+		}
+		if seen[u] {
+			continue
+		}
+		if len(out) >= presenceMax {
+			reject(http.StatusBadRequest, "too many users")
+			return nil, false
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	if len(out) == 0 {
+		reject(http.StatusBadRequest, "users query parameter is required")
+		return nil, false
+	}
+	return out, true
+}
+
 // rejectFn answers a request before any upgrade with an HTTP status; the
-// two handlers count refusals differently, so each passes its own.
+// handlers count refusals differently, so each passes its own.
 type rejectFn func(status int, msg string)
 
 // channelParam reads `?channel=`: required, and an ill-formed id is a 404
@@ -591,6 +734,16 @@ func (s *Server) bridgeFor(ch *console.Channel) *q.Bridge {
 
 // allowHandshake is the per-address token bucket.
 func (s *Server) allowHandshake(addr string) bool {
+	return s.allowBucket(addr, handshakeBurst, handshakeRate)
+}
+
+// allowBucket is the token bucket behind every per-address limit. `/presence`
+// passes a larger one than a handshake: a friends list is **polled** where a
+// handshake and a party read happen once, and `clientAddr` deliberately does
+// not trust `X-Forwarded-For`, so behind a terminating proxy every client
+// shares one bucket (`gateway/README.md`). At the handshake's 2/s that would
+// be a stage-wide presence limit of two requests a second.
+func (s *Server) allowBucket(addr string, burst, rate float64) bool {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -604,12 +757,12 @@ func (s *Server) allowHandshake(addr string) bool {
 	}
 	b, ok := s.buckets[addr]
 	if !ok {
-		b = &bucket{tokens: handshakeBurst, last: now}
+		b = &bucket{tokens: burst, last: now}
 		s.buckets[addr] = b
 	}
-	b.tokens += now.Sub(b.last).Seconds() * handshakeRate
-	if b.tokens > handshakeBurst {
-		b.tokens = handshakeBurst
+	b.tokens += now.Sub(b.last).Seconds() * rate
+	if b.tokens > burst {
+		b.tokens = burst
 	}
 	b.last = now
 	if b.tokens < 1 {

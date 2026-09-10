@@ -263,6 +263,58 @@ address and the players behind one NAT do not spend each other's budget.
 `/metrics` counts it as `partyReads` / `partyRejected`.
 [`sample-morpg/src/entry.ts`](https://github.com/yingyeothon/examples/blob/main/sample-morpg/src/entry.ts) (`yingyeothon/examples`) is the reference consumer.
 
+## Presence for a friends list
+
+The state stack holds the friend graph (`/social/*`) and has no Redis; the
+gateway holds the sessions and has no MariaDB. So the client joins the two:
+it asks the state stack who its friends are and the gateway which of them are
+connected.
+
+```
+GET /presence?channel={lobbyChannelId}&users=a,b,c
+Authorization: Bearer <jwt>
+```
+
+The bearer is **any member's** channel JWT for that lobby's auth channel,
+verified and cached exactly as `/parties` does. Up to 50 ids, deduplicated,
+each the 32 lowercase hex a player's `sub` holds; the answer is
+`{ "type":"presence", "users":[{ "userId","online" }] }` in the order asked.
+The ids must come from the **same auth channel** the lobby names -- that is
+what makes an id from `/social/friends` addressable here at all.
+
+Refusals: `400` no `channel`, no `users`, an id that is not a player id, or
+more than 50 (a malformed id is not silently read as offline: the shape is
+the caller's own id shape, and a segment carrying `:` would address another
+key subtree); `401` no or rejected bearer; `404` unknown channel or a
+non-`lobby` one; `410` expired/disabled channel; `429` its own per-address
+bucket, separate from `/parties`; `502` console/auth/Redis unreachable.
+`/metrics` counts it as `presenceReads` / `presenceRejected`. Its bucket is
+**larger than the handshake's** (30 burst, 10/s against 10 and 2): a friends
+list is polled where a handshake happens once, and `clientAddr` does not trust
+`X-Forwarded-For`, so behind a terminating proxy every client shares one
+bucket. Poll on the order of tens of seconds -- a session key changes far more
+slowly than that.
+
+Two properties a client has to know (`docs/decisions.md` _Serverless
+clients_ #10):
+
+- It is a **widening** of what the platform discloses, not a restatement of
+  the party roster. `/parties` answers only to a member of the party it
+  names; this answers for any id the caller cares to name. What bounds it is
+  that a player id is a salted per-channel hash -- the route **confirms** ids
+  the caller already holds and never discovers one, since "offline" and "no
+  such player" are the same answer.
+- **It is not block-aware.** The social graph lives on the state stack, which
+  has no Redis, and this container has no MariaDB -- that split is why presence
+  is here at all. So blocking somebody on `/social/*` does not stop them
+  reading your presence with an id they already hold. Say so in a client's UI
+  rather than implying a block hides you.
+- `online` means a session key exists, and that key carries a 15-minute TTL
+  refreshed on traffic. After an ungraceful stop -- a crash, or the container
+  recreate a release performs -- a departed player reads as online until it
+  expires. Presence is a hint for a friends list, never an input to an
+  authorization decision.
+
 ## `q` protocol
 
 The bridge to a tslib actor (`@yingyeothon/lambda-gamebase`), replacing

@@ -581,3 +581,104 @@ func TestHandshakeAuthBudget(t *testing.T) {
 	close(f.authRelease)
 	wg.Wait()
 }
+
+// TestPresenceRoute covers `GET /presence`: the answer and what it means. The
+// session keys are written straight into Redis rather than by dialling
+// sockets -- that is exactly what the route reads, and it keeps the test
+// honest about the fact that "online" is a key with a TTL, not a live
+// connection (`docs/decisions.md` *Serverless clients* #10).
+//
+// The refusals live in their own test because the per-address handshake bucket
+// is shared by every request of one fixture, and a dozen refusals in a row
+// would run it dry and turn the last of them into a 429.
+func TestPresenceRoute(t *testing.T) {
+	f := newFixture(t)
+	const lobby = "lobby_0123456789abcdef"
+	online := strings.Repeat("a", 32)
+	offline := strings.Repeat("b", 32)
+	f.mr.Set("gateway:test:session:lobby:"+lobby+":"+online, "conn-1")
+
+	st, m := f.presence(t, "?channel="+lobby+"&users="+online+","+offline, jwtUA)
+	if st != 200 || m["type"] != "presence" {
+		t.Fatalf("presence: %d %v", st, m)
+	}
+	users := m["users"].([]any)
+	if len(users) != 2 {
+		t.Fatalf("users: %v", users)
+	}
+	first := users[0].(map[string]any)
+	second := users[1].(map[string]any)
+	if first["userId"] != online || first["online"] != true {
+		t.Fatalf("online: %v", first)
+	}
+	// "offline" and "no such player" are deliberately the same answer: the
+	// route confirms ids the caller already holds, it never discovers one.
+	if second["userId"] != offline || second["online"] != false {
+		t.Fatalf("offline: %v", second)
+	}
+	// Duplicates collapse, and the order is the caller's.
+	_, m = f.presence(t, "?channel="+lobby+"&users="+online+","+online, jwtUA)
+	if len(m["users"].([]any)) != 1 {
+		t.Fatalf("dedupe: %v", m)
+	}
+	if f.server.reg.Counters.PresenceReads.Load() != 2 {
+		t.Fatalf("reads: %d", f.server.reg.Counters.PresenceReads.Load())
+	}
+}
+
+func TestPresenceRefusals(t *testing.T) {
+	f := newFixture(t)
+	const lobby = "lobby_0123456789abcdef"
+	user := strings.Repeat("a", 32)
+	many := make([]string, presenceMax+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("%032x", i)
+	}
+	for _, c := range []struct {
+		name   string
+		query  string
+		bearer string
+		want   int
+	}{
+		{"no channel", "?users=" + user, jwtUA, 400},
+		{"no users", "?channel=" + lobby, jwtUA, 400},
+		// A malformed id is a 400, not a silent "offline": the shape is the
+		// caller's own id shape, and a key segment carrying `:` would address
+		// another subtree entirely.
+		{"short id", "?channel=" + lobby + "&users=ua", jwtUA, 400},
+		{"key injection", "?channel=" + lobby + "&users=lobby:x", jwtUA, 400},
+		{"upper case", "?channel=" + lobby + "&users=" + strings.ToUpper(user), jwtUA, 400},
+		{"over the cap", "?channel=" + lobby + "&users=" + strings.Join(many, ","), jwtUA, 400},
+		{"no bearer", "?channel=" + lobby + "&users=" + user, "", 401},
+		{"bad token", "?channel=" + lobby + "&users=" + user, jwtBad, 401},
+		// A `q` channel keeps its sessions under another subtree; answering
+		// for one would report every player of it offline.
+		{"q channel", "?channel=q_0123456789abcdef&users=" + user, jwtUA, 404},
+	} {
+		if st, _ := f.presence(t, c.query, c.bearer); st != c.want {
+			t.Fatalf("%s: %d", c.name, st)
+		}
+	}
+	if f.server.reg.Counters.PresenceRejected.Load() != 9 {
+		t.Fatalf("rejections: %d", f.server.reg.Counters.PresenceRejected.Load())
+	}
+	if f.server.reg.Counters.PresenceReads.Load() != 0 {
+		t.Fatalf("nothing should have been read")
+	}
+}
+
+func (f *fixture) presence(t *testing.T, query, bearer string) (int, map[string]any) {
+	t.Helper()
+	req, _ := http.NewRequest("GET", f.srv.URL+"/presence"+query, nil)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var m map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&m)
+	return res.StatusCode, m
+}
