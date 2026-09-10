@@ -93,13 +93,30 @@ const raw = wsConnector({ nextMs: 5000 });
 // This smoke reads close codes, so `waitClose` resolves to the code (or null),
 // and its `until` stops at the deadline without draining what is still queued.
 const connect = async (url, token) => {
-  const c = await raw(url, token);
-  const until = async (type, ms = 5000) => {
+  // Retried: the handshake has its own token bucket (10 burst, 2/s per
+  // address), and behind the dev proxy every client of the stage shares one —
+  // this smoke opens six sockets and fires several refusal probes between
+  // them. A refused handshake surfaces as a rejected connect, which before the
+  // crash hooks went in exiting 0 and reading as a pass.
+  let c = null;
+  for (let i = 0; ; i++) {
+    try {
+      c = await raw(url, token);
+      break;
+    } catch (e) {
+      if (i === 4) throw e;
+      await sleep(700);
+    }
+  }
+  // `match` is a type name or a predicate, like `_lib.mjs`'s own `until`: a
+  // frame kind alone is not always enough to name the frame a check means.
+  const until = async (match, ms = 5000) => {
+    const pred = typeof match === "function" ? match : (m) => m.type === match;
     const end = Date.now() + ms;
     while (Date.now() < end) {
       const m = await c.next(end - Date.now());
       if (m === null) return null;
-      if (m.type === type) return m;
+      if (pred(m)) return m;
     }
     return null;
   };
@@ -178,11 +195,16 @@ check("newcomer sees the retained peer", snapB?.peers?.[0]?.userId === "alice");
 const enter = await a.until("enter");
 check("enter announced", enter?.userId === "bob" && enter.zone === "town");
 b.send({ type: "pos", zone: "town", x: 3, y: 2 });
-const batch = await a.until("pos");
-check(
-  "coalesced pos batch",
-  batch?.peers?.some((p) => p.userId === "bob" && p.x === 3),
+// The predicate, not `until("pos")`: the relay coalesces on a 200 ms tick, so
+// bob's *earlier* position can arrive in a batch of its own first and the
+// first `pos` frame is then the wrong one. What is asserted is unchanged — a
+// batch carrying bob at x=3 — but it no longer depends on which tick the
+// network put the two moves in.
+const batch = await a.until(
+  (m) =>
+    m.type === "pos" && m.peers?.some((p) => p.userId === "bob" && p.x === 3),
 );
+check("coalesced pos batch", batch !== null, JSON.stringify(batch));
 // AOI: carol at (9,1) is 8 tiles from alice (1,1) and 6 from bob (3,2) —
 // outside both boxes; (5,1) is inside both. The 9↔5 steps sit exactly at
 // the default maxMoveDelta (4): do not "tidy" the coordinates.
@@ -295,14 +317,27 @@ check(
 const online = await connect(lobbyUrl, p1.jwt);
 await online.next(); // hello
 const presenceUrl = `${httpBase}/presence?channel=${lobby.body?.id}&users=${p1?.userId},${p2?.userId}`;
-const pres = await json(presenceUrl, {
-  headers: { authorization: `Bearer ${p1.jwt}` },
-});
+// Retried: the session key is written during the handshake, and `hello` can
+// reach this process before that write is visible to the read below — a race
+// this smoke hit once in three runs before the retry.
+let pres = { status: 0, body: null, text: "" };
+for (let i = 0; i < 20; i++) {
+  pres = await json(presenceUrl, {
+    headers: { authorization: `Bearer ${p1.jwt}` },
+  });
+  if ((pres.body?.users ?? []).some((u) => u.online)) break;
+  await sleep(100);
+}
+// `users` is a list of `{userId, online}`, in the order asked for — not a map
+// keyed by id, which is what a reader guesses (and what this check first
+// asserted against a passing route).
+const onlineOf = (id) =>
+  (pres.body?.users ?? []).find((u) => u.userId === id)?.online;
 check(
   "presence: the connected player is online, the other is not",
   pres.status === 200 &&
-    pres.body?.users?.[p1?.userId] === true &&
-    pres.body?.users?.[p2?.userId] === false,
+    onlineOf(p1?.userId) === true &&
+    onlineOf(p2?.userId) === false,
   `${pres.status} ${pres.text.slice(0, 160)}`,
 );
 check(
@@ -360,8 +395,12 @@ check(
       1,
 );
 
-// 8. cleanup
-for (const ch of [lobby, q]) {
+// 8. cleanup. The seeded **auth** channel is deleted too, and that is the
+// point of listing it here: for its first 40-odd runs this smoke deleted only
+// the lobby and the q channel and left one auth channel per run behind. At the
+// 50-per-project cap the next run's channel creation is a 409 and the smoke
+// stops working — a leak whose only symptom is a date.
+for (const ch of [lobby, q, { body: { id: authId, kind: "auth" } }]) {
   const del = await json(`${consoleBase}/channels/${ch.body?.id}`, {
     method: "DELETE",
     headers: cookie,
