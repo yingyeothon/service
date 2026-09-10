@@ -671,7 +671,10 @@ export function createMemoryAssetsDb(
         .filter((u): u is AssetUploadRow => u !== undefined)
         .map((u) => ({ ...u })),
     updateUpload: async (id, patch) => {
-      if (Object.keys(patch).length === 0) return false;
+      // `every` on the values, not `Object.keys().length`: the Prisma side
+      // builds its `data` with `patch.x !== undefined`, so `{ x: undefined }`
+      // is an empty patch there too and the two must answer alike.
+      if (Object.values(patch).every((v) => v === undefined)) return false;
       const u = uploads.get(id);
       if (!u) return false;
       uploads.set(id, {

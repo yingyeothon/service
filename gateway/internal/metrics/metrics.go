@@ -22,13 +22,18 @@ type Counters struct {
 	OversizedFrames     atomic.Int64 `json:"oversizedFrames"`
 	// TooSlow counts sockets closed with 4005: the outbound queue was full of
 	// control frames the client had not drained.
-	TooSlow          atomic.Int64 `json:"tooSlow"`
-	RateLimited      atomic.Int64 `json:"rateLimited"`
-	BadMessages      atomic.Int64 `json:"badMessages"`
-	VerifyCalls      atomic.Int64 `json:"verifyCalls"`
-	VerifyCacheHits  atomic.Int64 `json:"verifyCacheHits"`
-	ConfigFetches    atomic.Int64 `json:"configFetches"`
-	QueuePushes      atomic.Int64 `json:"queuePushes"`
+	TooSlow         atomic.Int64 `json:"tooSlow"`
+	RateLimited     atomic.Int64 `json:"rateLimited"`
+	BadMessages     atomic.Int64 `json:"badMessages"`
+	VerifyCalls     atomic.Int64 `json:"verifyCalls"`
+	VerifyCacheHits atomic.Int64 `json:"verifyCacheHits"`
+	ConfigFetches   atomic.Int64 `json:"configFetches"`
+	QueuePushes     atomic.Int64 `json:"queuePushes"`
+	// A `GatewayCommand` the bridge could not use: unparseable, an unknown
+	// `op`, or a `binary` message that is not base64. The log line names the
+	// game; this is what makes a game whose encoder is wrong visible on a
+	// dashboard, where the symptom is otherwise a flat `outboundFrames`.
+	BadCommands      atomic.Int64 `json:"badCommands"`
 	Aborts           atomic.Int64 `json:"aborts"`
 	SessionsReplaced atomic.Int64 `json:"sessionsReplaced"`
 	RedisErrors      atomic.Int64 `json:"redisErrors"`

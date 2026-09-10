@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -57,11 +58,23 @@ func (o *listOpts) apply(v url.Values) error {
 		if o.order != "asc" && o.order != "desc" {
 			return fmt.Errorf("--order must be asc|desc (got %q)", o.order)
 		}
+		// Every list's default order is the repository's own, and `order` is
+		// ignored without `sort` (`docs/decisions.md` *List sort and filter*).
+		// Sending it alone would print the default while looking like it did
+		// something — the one combination that fails silently.
+		if o.sort == "" {
+			return errors.New("--order needs --sort: without a sort key the list keeps its default order")
+		}
 		v.Set("order", o.order)
 	}
 	// An empty `q` is dropped rather than sent: the route treats it as absent
 	// anyway, and a bare `--q ''` should not look like a filter in the URL.
 	if o.q != "" {
+		// `Q_MAX` in `packages/console-db`; over it the route answers 400 and
+		// the message would be about a field the caller never named.
+		if len([]rune(o.q)) > qMax {
+			return fmt.Errorf("--q is at most %d characters (got %d)", qMax, len([]rune(o.q)))
+		}
 		v.Set("q", o.q)
 	}
 	return nil
@@ -88,6 +101,9 @@ func (o *listOpts) query(extra url.Values) (string, error) {
 	}
 	return "?" + v.Encode(), nil
 }
+
+// qMax mirrors `Q_MAX` in `packages/console-db/src/list.ts`.
+const qMax = 100
 
 // The sort vocabularies, mirroring `packages/console-db`'s `*_SORT_KEYS`.
 var (

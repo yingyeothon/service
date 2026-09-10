@@ -228,8 +228,11 @@ func newTeam(a *App) *cobra.Command {
 			extra := url.Values{}
 			if scope != "" {
 				extra.Set("scope", scope)
-				// `role` is the caller's own seat; an admin listing every team
-				// has none, and the route refuses that pair.
+			}
+			// Only `all` drops `role`: it is the caller's own seat, which an
+			// admin listing every team does not have. `--scope mine` is the
+			// default spelled out, and the route sorts it by `role` happily.
+			if scope == "all" {
 				teamList.restrict(allTeamSortKeys)
 			}
 			q, err := teamList.query(extra)
@@ -253,7 +256,7 @@ func newTeam(a *App) *cobra.Command {
 		},
 	}
 	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin)")
-	teamList = addListFlags(list, teamSortKeys, "name")
+	teamList = addListFlags(list, teamSortKeys, "name or description")
 	c.AddCommand(list)
 
 	{

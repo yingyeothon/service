@@ -213,6 +213,19 @@ try {
       })
     ).status === 403,
   );
+  check(
+    // Not even a platform admin (`docs/decisions.md` _Events_, revised
+    // 2026-09-10): an edit leaves the author's name on the text, so it is the
+    // author's alone. Deleting stays the admin's moderation tool, below.
+    "an admin cannot edit someone else's comment either",
+    (
+      await call(`/events/${id}/comments/${c.body?.id}`, {
+        method: "PATCH",
+        headers: as(admin),
+        body: { bodyMd: "x" },
+      })
+    ).status === 403,
+  );
 
   // poster: 1x1 PNG through the presigned PUT, then a replacement
   const png = Buffer.from(

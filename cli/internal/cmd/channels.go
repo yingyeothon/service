@@ -465,7 +465,7 @@ func newChannels(a *App) *cobra.Command {
 	}
 	list.Flags().StringVar(&kind, "kind", "", "filter: auth|topic|match|lobby|q")
 	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin; ignores the project context)")
-	chList = addListFlags(list, channelSortKeys, "name")
+	chList = addListFlags(list, channelSortKeys, "channel or project name")
 	c.AddCommand(list)
 
 	var cf configFlags

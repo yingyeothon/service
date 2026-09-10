@@ -97,7 +97,9 @@ and `503` (`details.reason: installer_untrusted`) when the configured app's team
 - `services/console/src/team-access.ts` is the only place that decides team access:
   `teamAccess(ctx, teamId)` → standing; `projectAccess`; `projectResource(ctx, {kind, id}, {secret?})`
   resolves resource → project → team in two hops. `secret: true` (channel config/secret, rotate,
-  redis-user, doc-key, catalog settings incl. Slack hook) refuses admins with 403; a non-member gets 404.
+  redis-user and doc-key **issue/revoke**, catalog settings incl. Slack hook) refuses admins with 403; a non-member gets 404.
+  Reading the redis-user and doc-key blocks is not `secret: true` and an admin may: neither carries the credential
+  (`configured`/`issued` say only whether one exists), and that read backs every channel's detail page.
 - Every former owner check was replaced: `ownedChannel`, `appAccess`, `bundleWith` are gone; `qChannel`, `appWith`,
   `uploadWith`, `requireAuthChannel` and the state doc-key check survive only as wrappers over `projectResource`. Acceptance test:
   `grep -n "ownerId ===\|ownerId !==" services/console/src` is empty outside views/audit, and a creator

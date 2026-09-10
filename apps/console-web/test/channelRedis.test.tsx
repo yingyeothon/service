@@ -115,10 +115,12 @@ describe("q channel redis account", () => {
     ).toMatch(
       /eventKeyPrefix=game:dev:q_0123:event:.*queueKeyPrefix=.*lockKeyPrefix=.*awaiterKeyPrefix=.*channelPrefix=game:out:dev:q_0123:/s,
     );
-    // And the account card is the CLI's card: connection *and* prefixes in one
-    // block, because that is what a participant pastes into their config
-    // (`todo/34`, owner decision 2026-09-10). The two blocks repeat the
-    // prefixes on purpose — each is self-contained, as in `yyt`.
+    // And the account card has the CLI card's shape: connection *and*
+    // prefixes in one block, because that is what a participant pastes into
+    // their config (`todo/34`, owner decision 2026-09-10). The two blocks
+    // repeat the prefixes on purpose — each is self-contained, as in `yyt`.
+    // One difference is deliberate: `yyt` prints the password inside its
+    // block, the console keeps it on its own one-render surface.
     expect(
       screen.getByLabelText("Redis account (copy as one block)").textContent,
     ).toMatch(

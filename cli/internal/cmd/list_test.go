@@ -62,11 +62,32 @@ func TestListSortOrderSearchFlags(t *testing.T) {
 			t.Fatalf("%v sent a request anyway", c)
 		}
 	}
-	// `role` is the caller's own seat; an admin listing every team has none.
+	// `--order` alone is the one combination that would fail *silently*: every
+	// repository's default branch hard-codes `asc`, so the list would print
+	// the default order while the flag looked as if it had done something.
+	if _, _, err := run(t, f, "team", "ls", "--order", "desc"); err == nil ||
+		!strings.Contains(err.Error(), "needs --sort") {
+		t.Fatalf("--order without --sort: %v", err)
+	}
+	// `q` is bounded where the route bounds it, so the 400 names the flag the
+	// caller typed rather than a query parameter they never saw.
+	if _, _, err := run(t, f, "team", "ls", "--q", strings.Repeat("x", 101)); err == nil ||
+		!strings.Contains(err.Error(), "at most 100") {
+		t.Fatalf("over-long --q: %v", err)
+	}
+	// `role` is the caller's own seat, which an admin listing *every* team
+	// does not have — so `--scope all` drops it and nothing else does.
 	if _, _, err := run(t, f, "team", "ls", "--scope", "all", "--sort", "role"); err == nil {
 		t.Fatal("--sort role with --scope all must be refused")
 	}
-	if _, _, err := run(t, f, "team", "ls", "--sort", "role"); err != nil {
-		t.Fatalf("--sort role without --scope: %v", err)
+	for _, args := range [][]string{
+		{"team", "ls", "--sort", "role"},
+		// `mine` is the default spelled out; the route sorts it by `role`
+		// happily, so refusing it here would reject a valid input.
+		{"team", "ls", "--scope", "mine", "--sort", "role"},
+	} {
+		if _, _, err := run(t, f, args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
 	}
 }

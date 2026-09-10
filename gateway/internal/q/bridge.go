@@ -544,6 +544,7 @@ func (b *Bridge) outboundLoop(ctx context.Context, g *game) {
 func (b *Bridge) deliver(g *game, payload []byte) {
 	var cmd command
 	if err := json.Unmarshal(payload, &cmd); err != nil {
+		b.reg.Counters.BadCommands.Add(1)
 		b.log.Warn("q bad gateway command", "channel", b.channelID, "game", g.id)
 		return
 	}
@@ -567,6 +568,7 @@ func (b *Bridge) deliver(g *game, payload []byte) {
 		if cmd.Binary {
 			raw, err := decodeBinaryMessage(cmd.Message)
 			if err != nil {
+				b.reg.Counters.BadCommands.Add(1)
 				// Dropped and logged, like any other malformed command: the
 				// game published something it called binary that is not, and
 				// writing the base64 as text would hand the client a frame in
@@ -589,8 +591,23 @@ func (b *Bridge) deliver(g *game, payload []byte) {
 			s.Close(1000, "dropped by game")
 		}
 	default:
+		b.reg.Counters.BadCommands.Add(1)
 		b.log.Warn("q unknown gateway op", "channel", b.channelID, "game", g.id, "op", cmd.Op)
 	}
+}
+
+// binaryEncodings are tried in order. Standard padded base64 is the documented
+// form, but **every dialect is accepted**, and that is the point: with only
+// `StdEncoding`, a game using base64url fails on the frames whose bytes happen
+// to encode a `-` or `_` and succeeds on the rest, and an unpadded encoder
+// fails only when the length is not a multiple of three. A wrong encoder would
+// look like a data-dependent packet loss rather than a bug, which is the worst
+// diagnosis shape there is.
+var binaryEncodings = []*base64.Encoding{
+	base64.StdEncoding,
+	base64.RawStdEncoding,
+	base64.URLEncoding,
+	base64.RawURLEncoding,
 }
 
 // decodeBinaryMessage reads `message` as a base64 JSON string. Base64 rather
@@ -602,14 +619,17 @@ func decodeBinaryMessage(msg json.RawMessage) ([]byte, error) {
 	if err := json.Unmarshal(msg, &s); err != nil {
 		return nil, fmt.Errorf("binary message must be a base64 string: %w", err)
 	}
-	raw, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return nil, fmt.Errorf("binary message is not base64: %w", err)
+	for _, enc := range binaryEncodings {
+		raw, err := enc.DecodeString(s)
+		if err != nil {
+			continue
+		}
+		if len(raw) == 0 {
+			return nil, errors.New("binary message decoded to nothing")
+		}
+		return raw, nil
 	}
-	if len(raw) == 0 {
-		return nil, errors.New("binary message decoded to nothing")
-	}
-	return raw, nil
+	return nil, errors.New("binary message is not base64 in any dialect")
 }
 
 // Stop closes every socket and subscription (shutdown or channel gone) and
