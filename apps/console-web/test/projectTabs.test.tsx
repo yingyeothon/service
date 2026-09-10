@@ -6,6 +6,7 @@ import type { ApiClient } from "../src/api";
 import type {
   AssetBundle,
   CatalogApp,
+  Channel,
   KvCollection,
   Leaderboard,
   ProjectDetail,
@@ -38,6 +39,7 @@ const mockApi = {
   projectLeaderboards: vi.fn(),
   createLeaderboard: vi.fn(),
   kitConfig: vi.fn(),
+  projectChannels: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -138,6 +140,24 @@ const LB: Leaderboard = {
   retainPeriods: 4,
   createdAt: 0,
   updatedAt: 60,
+};
+
+const CHANNEL: Channel = {
+  ...crumbs,
+  id: "auth_1",
+  kind: "auth",
+  name: "auth-main",
+  createdBy: "alice",
+  config: {
+    audience: "game",
+    redirectAllowlist: [],
+    providers: {},
+    tokenTtlSec: 86400,
+  },
+  createdAt: 0,
+  expiresAt: 60,
+  disabledAt: null,
+  status: "active",
 };
 
 function mount(tab: string) {
@@ -579,7 +599,6 @@ describe("game kit config", () => {
       },
       state: { url: "https://doc.example" },
       collections: { save: "save" },
-      boards: {},
     });
     mount("channels");
     expect(
@@ -590,7 +609,7 @@ describe("game kit config", () => {
     expect(mockApi.kitConfig).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Show config" }));
     const block = await screen.findByLabelText("kit-config.json");
-    expect(mockApi.kitConfig).toHaveBeenCalledWith("prj_1");
+    expect(mockApi.kitConfig).toHaveBeenCalledWith("prj_1", {});
     // Pasteable: what is on screen parses back to what the server sent.
     expect(JSON.parse(block.textContent ?? "")).toEqual({
       auth: {
@@ -600,14 +619,17 @@ describe("game kit config", () => {
       },
       state: { url: "https://doc.example" },
       collections: { save: "save" },
-      boards: {},
     });
   });
 
-  it("shows the ambiguity error rather than an empty block", async () => {
+  it("offers a channel to name once the server refuses to guess", async () => {
     vi.mocked(mockApi.kitConfig).mockRejectedValue(
       new Error("this project has 2 auth channels; name one with ?auth="),
     );
+    vi.mocked(mockApi.projectChannels).mockResolvedValue([
+      { ...CHANNEL, id: "auth_1", name: "auth-old", status: "expired" },
+      { ...CHANNEL, id: "auth_2", name: "auth-new" },
+    ]);
     mount("channels");
     await userEvent.click(
       await screen.findByRole("button", { name: "Show config" }),
@@ -615,5 +637,21 @@ describe("game kit config", () => {
     expect(
       await screen.findByText(/name one with \?auth=/),
     ).toBeInTheDocument();
+    // Telling a member to "name one with ?auth=" and giving them nowhere to
+    // name it is the whole bug: the picker only appears after the refusal, and
+    // the lapsed channel is labelled so the choice is informed.
+    const select = await screen.findByLabelText("Which auth channel");
+    expect(
+      [...(select as HTMLSelectElement).options].map((o) => o.textContent),
+    ).toEqual(["Choose…", "auth-old (expired)", "auth-new"]);
+    vi.mocked(mockApi.kitConfig).mockResolvedValue({
+      auth: { url: "https://auth.example", channelId: "auth_2" },
+      state: { url: "https://doc.example" },
+    });
+    await userEvent.selectOptions(select, "auth_2");
+    await screen.findByLabelText("kit-config.json");
+    expect(mockApi.kitConfig).toHaveBeenLastCalledWith("prj_1", {
+      auth: "auth_2",
+    });
   });
 });

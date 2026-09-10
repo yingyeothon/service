@@ -1,14 +1,21 @@
 {
   "auth": {
+    "url": "https://auth.yyt.life",
     "channelId": "auth_1",
-    "provider": "github",
-    "url": "https://auth.yyt.life"
-  },
-  "boards": {},
-  "collections": {
-    "save": "save"
+    "provider": "github"
   },
   "state": {
     "url": "https://doc.yyt.life"
+  },
+  "gateway": {
+    "url": "wss://gw.yyt.life",
+    "lobbyChannelId": "lobby_1"
+  },
+  "match": {
+    "url": "wss://match.yyt.life",
+    "channelId": "match_1"
+  },
+  "collections": {
+    "save": "save"
   }
 }

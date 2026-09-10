@@ -180,6 +180,8 @@ describe("team and project routes", () => {
     });
     await api.deleteKvEntry("kv_1", "k:1");
     await api.deleteKvOwner("kv_1", "o1");
+    await api.kitConfig("prj_1");
+    await api.kitConfig("prj_1", { auth: "auth one" });
     expect(calls).toEqual([
       ["GET", "/teams?scope=all", undefined],
       ["POST", "/teams/join", '{"name":"studio"}'],
@@ -228,6 +230,8 @@ describe("team and project routes", () => {
       ],
       ["DELETE", "/kv/kv_1/entries/k%3A1", undefined],
       ["DELETE", "/kv/kv_1/entries?owner=o1", undefined],
+      ["GET", "/projects/prj_1/kit-config", undefined],
+      ["GET", "/projects/prj_1/kit-config?auth=auth+one", undefined],
     ]);
   });
 
