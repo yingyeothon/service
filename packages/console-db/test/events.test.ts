@@ -300,6 +300,8 @@ export function eventsContract(
     expect(await db.updatePoster("p1", { deletedAt: 3 })).toBe(true);
     expect(await db.listPendingPosterDeletes()).toEqual([]);
     expect(await db.updatePoster("zz", { deletedAt: 3 })).toBe(false);
+    // No fields, no statement — the same answer a missing row gets.
+    expect(await db.updatePoster("p1", {})).toBe(false);
     expect(await db.findEvent("e1")).toMatchObject({ posterKey: null });
   });
 

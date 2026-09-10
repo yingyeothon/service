@@ -275,6 +275,11 @@ export function assetsContract(
       }),
     ).toBe(true);
     expect(await db.updateUpload("ghost", { status: "failed" })).toBe(false);
+    // An empty patch is `false`, like a missing row: `updateMany` with no
+    // `data` writes every column with itself, which is a statement the caller
+    // never asked for. The catalog's pending uploads have said `false` here
+    // since they were written; this is the same table in another resource.
+    expect(await db.updateUpload("u1", {})).toBe(false);
     expect(await db.findUpload("u1")).toMatchObject({
       status: "completed",
       fileId: "af_1",
