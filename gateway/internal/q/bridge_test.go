@@ -17,8 +17,11 @@ import (
 )
 
 type rec struct {
-	mu     sync.Mutex
+	mu sync.Mutex
+	// frames records text frames; binary ones are kept apart so a test cannot
+	// pass by seeing a binary frame where it asked for text.
 	frames []string
+	binary [][]byte
 	closed int
 	allow  bool
 }
@@ -27,6 +30,12 @@ func newRec() *rec { return &rec{allow: true} }
 func (r *rec) SendRaw(b []byte) bool {
 	r.mu.Lock()
 	r.frames = append(r.frames, string(b))
+	r.mu.Unlock()
+	return true
+}
+func (r *rec) SendBinary(b []byte) bool {
+	r.mu.Lock()
+	r.binary = append(r.binary, append([]byte(nil), b...))
 	r.mu.Unlock()
 	return true
 }
@@ -41,6 +50,11 @@ func (r *rec) all() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.frames...)
+}
+func (r *rec) allBinary() [][]byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]byte(nil), r.binary...)
 }
 func (r *rec) code() int { r.mu.Lock(); defer r.mu.Unlock(); return r.closed }
 

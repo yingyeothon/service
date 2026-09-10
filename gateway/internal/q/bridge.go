@@ -7,8 +7,10 @@ package q
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ import (
 // Socket is what the bridge needs from a connection.
 type Socket interface {
 	SendRaw(b []byte) bool
+	SendBinary(b []byte) bool
 	SendError(code, message string)
 	Close(code int, reason string)
 	Allow() bool
@@ -82,6 +85,13 @@ type command struct {
 	ConnectionID  string          `json:"connectionId"`
 	ConnectionIDs []string        `json:"connectionIds"`
 	Message       json.RawMessage `json:"message"`
+	// Binary makes `message` a base64 **string** that is decoded and written
+	// as a WebSocket binary frame (`gateway/README.md` *Binary frames*,
+	// `docs/decisions.md`). A snapshot that is already bytes costs +34 % as
+	// base64 inside JSON, plus a decode step in every client; opting in pays
+	// that back. `q` only: the lobby protocol routes by JSON scope, so there
+	// is nothing there to make binary.
+	Binary bool `json:"binary"`
 }
 
 type client struct {
@@ -554,6 +564,22 @@ func (b *Bridge) deliver(g *game, payload []byte) {
 		if len(cmd.Message) == 0 {
 			return
 		}
+		if cmd.Binary {
+			raw, err := decodeBinaryMessage(cmd.Message)
+			if err != nil {
+				// Dropped and logged, like any other malformed command: the
+				// game published something it called binary that is not, and
+				// writing the base64 as text would hand the client a frame in
+				// the wrong shape for the type it was promised.
+				b.log.Warn("q bad binary message", "channel", b.channelID, "game", g.id, "err", err)
+				return
+			}
+			for _, s := range socks {
+				s.SendBinary(raw)
+			}
+			b.stats.Outbound.Add(int64(len(socks)))
+			return
+		}
 		for _, s := range socks {
 			s.SendRaw(cmd.Message)
 		}
@@ -565,6 +591,25 @@ func (b *Bridge) deliver(g *game, payload []byte) {
 	default:
 		b.log.Warn("q unknown gateway op", "channel", b.channelID, "game", g.id, "op", cmd.Op)
 	}
+}
+
+// decodeBinaryMessage reads `message` as a base64 JSON string. Base64 rather
+// than a JSON array of numbers because that is what every language's SDK
+// already produces for bytes inside JSON, and it is what the payload cost is
+// measured against.
+func decodeBinaryMessage(msg json.RawMessage) ([]byte, error) {
+	var s string
+	if err := json.Unmarshal(msg, &s); err != nil {
+		return nil, fmt.Errorf("binary message must be a base64 string: %w", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("binary message is not base64: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("binary message decoded to nothing")
+	}
+	return raw, nil
 }
 
 // Stop closes every socket and subscription (shutdown or channel gone) and

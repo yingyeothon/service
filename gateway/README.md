@@ -336,7 +336,7 @@ only field an actor may trust**; resolve the member from the `enter` it
 received for that connection. A push Redis refuses is answered with `error
 unavailable`; three in a row abort the game (`4001`). Outbound `GatewayCommand`s (`{op:"send", connectionId|connectionIds,
 message}` / `{op:"drop", connectionId}`) are fanned out; `message` is
-forwarded verbatim. On disconnect `{"type":"leave","connectionId"}` is pushed
+forwarded verbatim as a **text** frame. On disconnect `{"type":"leave","connectionId"}` is pushed
 and the subscription is dropped with the last socket of the game. Two cases
 push `enter` with no matching `leave`, by contract: a member's newer socket
 replaces the old one (`4000`; the actor's `processEnter` rebinds the member,
@@ -350,6 +350,35 @@ depth > 20 for more than 5 s without dipping back, aborts the game — every
 socket closes with `4001`, the queue key is deleted, the subscription is
 dropped, `aborts` increments and an error line is logged. A retry must use a
 new `gameId`.
+
+### Binary frames (`q` only)
+
+`{"op":"send", "binary":true, "message":"<base64>"}` writes a WebSocket
+**binary** frame carrying the decoded bytes. Everything else is unchanged:
+same fan-out, same outbound cap, same drop rules — the queue holds bytes
+either way.
+
+Why it exists: a snapshot that is already bytes costs **+34 %** as base64
+inside a JSON text frame, and every client pays a decode step to get back
+what it started with. At a few hundred entities that does not matter; the
+option is for the games where it does.
+
+Rules worth knowing before using it:
+
+- **Opt-in per message.** A game that never sets `binary` never sends one,
+  and a client that never subscribed to such a game never sees one. There is
+  no channel-level switch and no negotiation.
+- **`message` must be a base64 JSON string.** Anything else — an object, a
+  number, base64 that does not decode, an empty result — is **dropped with a
+  warning**, not written as text: a client promised bytes must not be handed
+  the base64 of them.
+- **Inbound is unchanged.** A binary frame _from_ a client still closes the
+  socket with `1003` (`text frames only`). The gateway pushes what a client
+  sends into the actor's queue as JSON, and there is nowhere in that envelope
+  for bytes.
+- **`lobby` has no equivalent**, deliberately: its protocol routes by JSON
+  scope, so there is no whole-frame payload to make binary. `event.payload`
+  is the place for a game's own bytes there, base64 and all.
 
 ## Sessions and keys
 
