@@ -57,10 +57,17 @@ they are (`gateway/README.md`, `services/state/README.md`,
 
 ## The config block
 
-Printed by the console once per project (a small console addition,
-`GET /projects/{prj}/kit-config`, and the SPA's project page) and pasted into
-the game's `config.json` / asset / scriptable object. Everything in it is
-public.
+Printed by the console once per project (`GET /projects/{prj}/kit-config`,
+`yyt project kit-config`) and pasted into the game's `config.json` / asset /
+scriptable object. Everything in it is public — **shipped 2026-09-10**.
+
+Two rules the route follows, both worth keeping if it grows: a section whose
+stack the stage does not have, or whose channel the project does not hold, is
+**absent** rather than empty, because a kit module with no config fails on first
+use instead of connecting to nowhere; and with several channels of a kind it
+answers `400 ambiguous` and asks for `?auth=`/`?lobby=`/`?match=` (id or name)
+rather than picking one — a wrong guess would be a _working_ config pointing at
+the wrong channel, which surfaces as an empty lobby rather than as an error.
 
 ```json
 {

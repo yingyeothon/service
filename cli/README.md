@@ -193,6 +193,14 @@ yyt kv entry clear <kv> [--owner <id>]                 # every entry of one play
 
 `get` prints the collection's KV API paths (`apiBase`, `apiMeta`, `apiName`, `apiEntries`, `apiOwner`; `{col}` in every KV API route takes the id or the name): a game server calls them with the project's document API key (`yyt channels doc-key …` on an auth channel), a player with the channel JWT it holds. `--owner` names a player's namespace and only makes sense on a per-owner collection — **either** scope being `user` makes one; a shared collection refuses it. `server` is the doc apiKey and the console: a player's JWT is refused a `server` scope, which is what an announcement a cron writes or telemetry only the server reads needs. `user`-read + `project`-write is the mail shape: any player may create (never overwrite) a row in another owner's namespace, under a key starting with its own id, and the `FROM` column appears in `yyt kv entries` once a row carries that stamp. An encrypted collection's values can be written and read only through the KV API, so `entries`/`entry get` show keys, sizes and times for it (`entry get` then prints the entry's shape instead of a value and is not JSON — use `--json` in scripts) and `entry put` is refused. Values are JSON text stored as sent, at most 16 KiB; `--ttl 0` clears an expiry and an omitted `--ttl` keeps whatever the row has.
 
+### Game kit config
+
+```sh
+yyt project kit-config [project] [--auth <id|name>] [--lobby <id|name>] [--match <id|name>]
+```
+
+Prints the block a game pastes into its own config so the client kit knows which channels, collections and boards the project owns (`docs/game-kit-design.md`). **Everything in it is public** — ids, names and the stage's own hosts — so it is safe in a repository; there is no secret in it and none will be added. A section whose stack the stage does not have, or whose channel the project does not hold, is **absent** rather than empty, because a kit module with no config fails on first use instead of connecting to nowhere. With several channels of a kind it refuses to guess and asks for `--auth`/`--lobby`/`--match`: a wrong guess would be a *working* config pointing at the wrong channel, which surfaces as an empty lobby rather than as an error.
+
 ### Leaderboards
 
 ```sh

@@ -30,6 +30,7 @@ GET|POST /projects/{prj}/versions ; POST …/versions/bump {part} ; GET|PATCH|DE
 GET|POST …/versions/{ver}/links ; DELETE …/links/{id}
 GET|POST /projects/{prj}/issues[?status=&versionId=] ; GET|PATCH …/issues/{n} ; POST …/issues/{n}/close|reopen ; comments as above
 POST|GET /projects/{prj}/channels | /projects/{prj}/catalog/apps | /projects/{prj}/assets/bundles | /projects/{prj}/sites | /projects/{prj}/kv | /projects/{prj}/leaderboards
+GET      /projects/{prj}/kit-config[?auth=&lobby=&match=]   member   (the game kit block; all public values)
 GET|PUT  /admin/settings/installer-app   admin
 ```
 
