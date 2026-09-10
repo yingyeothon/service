@@ -928,13 +928,30 @@ function KvTab({
  * Collapsed by default: it is a copy-once thing, not something a member reads
  * on every visit, and the project page's job is the resource tabs.
  */
+/** The kinds `kit-config` names, and therefore the ones it can be asked about. */
+const KIT_KINDS = ["auth", "lobby", "match"] as const;
+
 function KitConfigSection({ project }: { project: ProjectDetail }) {
   const [open, setOpen] = useState(false);
+  const [pick, setPick] = useState<Record<string, string>>({});
   const q = useApiQuery(
-    ["project", project.id, "kit-config"],
-    () => api.kitConfig(project.id),
+    ["project", project.id, "kit-config", pick],
+    () => api.kitConfig(project.id, pick),
     { enabled: open },
   );
+  // Only fetched once the server has actually refused to guess -- and kept
+  // after that, so the member can change their mind. Without this the notice
+  // told them to "name one with ?auth=" and the page had nowhere to name it.
+  const ambiguous = open && (q.error !== null || Object.keys(pick).length > 0);
+  const channels = useApiQuery(
+    ["project", project.id, "kit-channels"],
+    () => api.projectChannels(project.id),
+    { enabled: ambiguous },
+  );
+  const choices = KIT_KINDS.map((kind) => ({
+    kind,
+    rows: (channels.data ?? []).filter((c) => c.kind === kind),
+  })).filter((c) => c.rows.length > 1);
   return (
     <Section
       title="Game kit config"
@@ -945,21 +962,49 @@ function KitConfigSection({ project }: { project: ProjectDetail }) {
         </Button>
       }
     >
-      {open &&
-        (q.error ? (
-          // The one error worth reading rather than retrying: several channels
-          // of a kind, and the server refuses to guess which the game means.
-          <Notice kind="error">{q.error}</Notice>
-        ) : q.data ? (
-          <CopyText
-            label="kit-config.json"
-            value={JSON.stringify(q.data, null, 2)}
-          />
-        ) : (
-          <Text size="sm" c="dimmed">
-            Loading…
-          </Text>
-        ))}
+      {open && (
+        <>
+          {choices.map(({ kind, rows }) => (
+            <NativeSelect
+              key={kind}
+              label={`Which ${kind} channel`}
+              description={`This project has ${rows.length}; the block names one.`}
+              value={pick[kind] ?? ""}
+              onChange={(e) =>
+                setPick((p) => {
+                  const { [kind]: _drop, ...rest } = p;
+                  return e.currentTarget.value === ""
+                    ? rest
+                    : { ...rest, [kind]: e.currentTarget.value };
+                })
+              }
+              data={[
+                { value: "", label: "Choose…" },
+                ...rows.map((c) => ({
+                  value: c.id,
+                  label:
+                    c.status === "active" ? c.name : `${c.name} (${c.status})`,
+                })),
+              ]}
+            />
+          ))}
+          {q.error ? (
+            // The one error worth reading rather than retrying: several
+            // channels of a kind, and the server refuses to guess which the
+            // game means.
+            <Notice kind="error">{q.error}</Notice>
+          ) : q.data ? (
+            <CopyText
+              label="kit-config.json"
+              value={JSON.stringify(q.data, null, 2)}
+            />
+          ) : (
+            <Text size="sm" c="dimmed">
+              Loading…
+            </Text>
+          )}
+        </>
+      )}
     </Section>
   );
 }

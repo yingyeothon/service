@@ -4,10 +4,11 @@ Assessment of 2026-09-08: what a web or mobile client developer can build with
 yyt alone — auth, sites/catalog, assets, kv, the gateway — writing no server
 code at all. The settled consequences (leaderboard, kv `server` scope,
 callback-less match, social) are in `docs/decisions.md` _Serverless clients_;
-this page keeps the reasoning and the capability matrix. Three of the four have
-shipped since: the callback-less match (2026-09-08), the kv `server` scope and
-mail (2026-09-09) and the leaderboard (2026-09-10, `docs/leaderboard.md`);
-`/social/*` is still open (`todo/39`). Where a bullet below says "there is no
+this page keeps the reasoning and the capability matrix. **All four have
+shipped since**: the callback-less match (2026-09-08), the kv `server` scope and
+mail (2026-09-09), the leaderboard (2026-09-10, `docs/leaderboard.md`) and
+`/social/*` (2026-09-10, `docs/social.md` — the gateway's `GET /presence`
+lands with its next container restart). Where a bullet below says "there is no
 …", check that list first.
 
 ## Two reference cases
@@ -146,6 +147,38 @@ below, but the trust model is the limit, not the API.
   graph, so blocking somebody does not hide you from their friends list.
 
 - No trusted clock (`GET /time`), no trusted RNG, no push notifications.
+
+## The kit module for each recipe
+
+Every recipe above is a paragraph each game re-implements from scratch: the
+existing client libraries are _wire_ packages that map onto a server surface
+(`gamebase-client`, `kvstore-client`, `auth-client`), so the recipe — the
+`If-Match` loop, the 409 retry, "the lowest `userId` creates the party" — has
+lived in the games. The game kit (`docs/game-kit-design.md`, `todo/40`) is that
+list turned into named modules, identical in TypeScript, C# and Dart, so a game
+can say `save.store(...)` where this page spells out a paragraph. **The
+platform pieces do not change** — the kit is a client-side shape over the same
+routes, and a game that wants the raw route still has it.
+
+| kit module    | the recipe here                                   | platform pieces it wraps                                                         |
+| ------------- | ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `session`     | sign-in, "no trusted clock"                       | auth `GET /c/{ch}/start?provider=&redirect=`, the JWT, state `GET /time`         |
+| `content`     | static game data the team publishes               | kv `readScope: project`, read-only, polled by entry `ETag`                       |
+| `save`        | per-player progress, one-shot claims              | kv `writeScope: user` with `If-Match` / `If-None-Match: *` / `PATCH {incr}`      |
+| `room`        | rooms, invites, party play, host authority        | gateway `lobby` party, `event`/`say` with `scope: "party" \| "user"`             |
+| `turns`       | chess: one move per turn, both validate           | the same party events plus a hash chain the kit keeps                            |
+| `board`       | rankings                                          | state `/lb/*` (`docs/leaderboard.md`)                                            |
+| `mail`        | "nobody vouches for a value", rewards             | kv `server` scope and player mail (`docs/kvstore.md`)                            |
+| `friends`     | the `/social/*` recipe above, online dots         | state `/social/*` plus gateway `GET /presence` (`docs/social.md`)                |
+| `matchmaking` | the callback-less match recipe and its four traps | match channel without a `callbackUrl`, then `room.create` on the lowest `userId` |
+
+Asset bundles on the CDN and the `site` that hosts the page have no module:
+they are what the game is delivered _as_, not something it calls. Nor does the
+**config block** that feeds every module — `GET /projects/{prj}/kit-config` (or
+`yyt project kit-config`) prints the project's channel ids, its collection and
+board names and the stage's own hosts as one public JSON block to paste into
+the game. It carries no secret by construction, which is what lets it live in
+the game's repository.
 
 ## What is risky
 

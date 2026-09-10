@@ -1094,6 +1094,7 @@ export function createConsoleApp({
   });
 
   const kitConfigRoutes = createKitConfigRoutes({
+    clock,
     db,
     kvstore,
     leaderboards,

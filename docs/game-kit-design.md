@@ -85,8 +85,12 @@ the wrong channel, which surfaces as an empty lobby rather than as an error.
 ```
 
 Names under `collections`/`boards` are the game's aliases; the values are the
-console names. `match`, `mail`, `boards` are optional; a module whose config
-is absent throws `not_configured` on first use rather than at construction.
+console names. The route emits identity pairs (`{"save": "save"}`) because the
+console does not know the game's aliases -- the example above is what the block
+looks like after a game has renamed its own side. `match`, `mail`, `boards` are
+optional; a module whose config is absent throws `not_configured` on first use
+rather than at construction, and an **empty** `collections`/`boards` is
+therefore omitted too rather than sent as `{}`.
 
 ## Modules
 
@@ -319,10 +323,13 @@ never surfaced by HTTP status or close code:
 Server dependencies: `content`, `save`, `room`, `turns` work on today's
 platform; `board` needs `todo/36`, `mail`'s stamp and `counter`'s range need
 `todo/37`, `matchmaking`'s room forming needs `todo/38`, `friends` needs
-`todo/39`. As of 2026-09-10 the first three of those have shipped
-(`docs/leaderboard.md`, `docs/kvstore.md` _Mail_, `docs/decisions.md` #8), so
-**wave B is unblocked** and only `friends` still waits on `todo/39`; `board` on
-prod additionally waits on the leaderboard's prod rollout. The kit therefore lands in three waves, each shipped in all three
+`todo/39`. **All four shipped on dev and prod by 2026-09-10**
+(`docs/leaderboard.md`, `docs/kvstore.md` _Mail_, `docs/decisions.md` #8,
+`docs/social.md`), so every wave is unblocked on the server side. One
+exception, and it is not a deploy: `friends`'s online dots call the gateway's
+`GET /presence`, which is in the merged image and answers only after the
+gateway container is recreated — a restart that disconnects every player, so it
+waits for a quiet day rather than for code. The kit therefore lands in three waves, each shipped in all three
 repositories before the next: **A** session/content/save/room/turns,
 **B** board/mail, **C** friends/matchmaking. Per-repository checklists:
 `todo/40-game-kit.md` here, mirrored as each repository's handover.

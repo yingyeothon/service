@@ -1024,6 +1024,7 @@ export interface KitConfig {
   state?: { url: string };
   gateway?: { url: string; lobbyChannelId: string };
   match?: { url: string; channelId: string };
-  collections: Record<string, string>;
-  boards: Record<string, string>;
+  /** Absent, not empty, when the project has none — same rule as the sections above. */
+  collections?: Record<string, string>;
+  boards?: Record<string, string>;
 }

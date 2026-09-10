@@ -279,12 +279,15 @@ func TestProjectIssues(t *testing.T) {
 
 func TestProjectKitConfig(t *testing.T) {
 	withProject(t)
-	block := map[string]any{
-		"auth":        map[string]any{"url": "https://auth.yyt.life", "channelId": "auth_1", "provider": "github"},
-		"state":       map[string]any{"url": "https://doc.yyt.life"},
-		"collections": map[string]any{"save": "save"},
-		"boards":      map[string]any{},
-	}
+	// Raw, not a Go map: a map marshals in key order, which would let the
+	// golden pass while the CLI reordered the block. The order below is the
+	// design document's, and `boards` is absent because the project holds none
+	// — the shape the route actually answers with.
+	block := json.RawMessage(`{"auth":{"url":"https://auth.yyt.life","channelId":"auth_1","provider":"github"},` +
+		`"state":{"url":"https://doc.yyt.life"},` +
+		`"gateway":{"url":"wss://gw.yyt.life","lobbyChannelId":"lobby_1"},` +
+		`"match":{"url":"wss://match.yyt.life","channelId":"match_1"},` +
+		`"collections":{"save":"save"}}`)
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /projects/prj_1/kit-config": func(recorded) (int, any) { return 200, block },
 	}, nil, nil, nil))
@@ -303,10 +306,10 @@ func TestProjectKitConfig(t *testing.T) {
 	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config" {
 		t.Fatalf("path %s", got)
 	}
-	if _, _, err := run(t, f, "project", "kit-config", "--auth", "auth-main", "--lobby", "lb_1"); err != nil {
+	if _, _, err := run(t, f, "project", "kit-config", "--auth", "auth-main", "--lobby", "lobby-main"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config?auth=auth-main&lobby=lb_1" {
+	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config?auth=auth-main&lobby=lobby-main" {
 		t.Fatalf("path %s", got)
 	}
 }
