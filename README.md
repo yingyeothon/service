@@ -24,6 +24,7 @@ cd cli && go test ./... && go build ./...        # CLI
 
 ## Documentation
 
+- [`docs/platform-overview.md`](docs/platform-overview.md) — what the platform is, its invariants, ceilings and non-goals; the baseline for comparing it with other platforms
 - [`docs/decisions.md`](docs/decisions.md) — settled product/technical decisions (change the doc before the code)
 - [`docs/secrets.md`](docs/secrets.md) — secrets, identifiers, hooks, rotation
 - [`docs/auth-game-contract.md`](docs/auth-game-contract.md) — JWT contract shared with game stacks
