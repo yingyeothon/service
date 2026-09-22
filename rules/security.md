@@ -42,6 +42,16 @@
   _list_ of ids could be walked back to accounts offline. It survived four months because
   "sha256, no PII" reads like anonymity; ask instead **how large the preimage space actually
   is**, and whether the caller already knows every other input.
+- **A formula in a prose contract has no test, so it drifts.** `docs/decisions.md` and
+  `docs/auth-game-contract.md` both described the salted derivation as
+  `sha256(userSalt + ":" + channelId + ":" + …)` for two weeks after the code shipped
+  `hmacSha256(userSalt, channelId + ":" + …)` — the review that replaced the salt prefix with
+  an HMAC never came back to the two docs (corrected 2026-09-22). Nothing failed, because no
+  gate reads prose; a game reimplementing `sub` from the contract would have derived a
+  different id for every player. When a document states an algorithm, write the operation the
+  code performs (`hmacSha256(key, message)`), name the file it lives in, and re-read that
+  sentence whenever the operation changes — a salt-prefixed hash and an HMAC are not the same
+  function, and only one of them resists length extension.
 - The fix is a per-channel `userSalt` in `secret_json` (`docs/decisions.md` _Player ids are
   salted per auth channel_) — a third secret, never the signing key, so rotating one does not
   move every player's id. It leaves the platform through no route, view or log line, and unlike
