@@ -3,6 +3,7 @@ import {
   CreateInvalidationCommand,
 } from "@aws-sdk/client-cloudfront";
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
@@ -53,6 +54,8 @@ export interface SiteStore {
    */
   listKeys(prefix: string): Promise<string[]>;
   deleteKeys(keys: string[]): Promise<void>;
+  /** Server-side copy inside the site bucket, headers included (a move deploy). */
+  copyKey(from: string, to: string): Promise<void>;
   /**
    * CloudFront invalidation for `paths` (`/{slug}/*`). Resolves `false` when
    * the stage has no distribution id configured — the caller decides whether
@@ -191,6 +194,18 @@ export function createS3SiteStore({
           });
       }
     },
+    copyKey: async (from, to) => {
+      await s3.send(
+        new CopyObjectCommand({
+          Bucket: siteBucket,
+          Key: to,
+          // `bucket/key`, URL-encoded per segment; COPY keeps Content-Type,
+          // Cache-Control and Content-Encoding, which the deploy set.
+          CopySource: `${siteBucket}/${from.split("/").map(encodeURIComponent).join("/")}`,
+          MetadataDirective: "COPY",
+        }),
+      );
+    },
     invalidate: async (paths) => {
       if (!distributionId) return false;
       await cloudfront.send(
@@ -267,6 +282,12 @@ export function createMemorySiteStore(o: { distributionId?: string } = {}) {
     deleteKeys: async (keys) => {
       maybeFail("deleteKeys");
       for (const k of keys) objects.delete(k);
+    },
+    copyKey: async (from, to) => {
+      maybeFail("copyKey");
+      const o = objects.get(from);
+      if (!o) throw new AppError("not_found", "no such object");
+      objects.set(to, { body: o.body, headers: { ...o.headers } });
     },
     invalidate: async (paths) => {
       maybeFail("invalidate");

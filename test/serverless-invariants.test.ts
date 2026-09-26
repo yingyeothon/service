@@ -81,4 +81,39 @@ describe("serverless.yml invariants", () => {
     }
     expect(yml).toContain('KV_KEK: ${ssm:${self:custom.ssm}/kv-kek, ""}');
   });
+
+  it("console: the per-site host is opt-in and never needs a template literal", () => {
+    const yml = readFileSync(
+      join(root, "services/console/serverless.yml"),
+      "utf8",
+    );
+    // The opt-in parameter keeps its default: without it every console
+    // deploy fails on a stage whose owner has not set the certificate.
+    expect(yml).toContain(
+      'siteHostCertArn: ${ssm:${self:custom.stageSsm}/site-host-cert-arn, ""}',
+    );
+    const doc = parse(yml, { logLevel: "silent" }) as {
+      resources: {
+        Resources: Record<string, { Type: string; Condition?: string }>;
+      };
+    };
+    const res = doc.resources.Resources;
+    // What costs money or answers DNS exists only where the owner opted in.
+    for (const name of [
+      "SiteHostDistribution",
+      "SiteHostDnsA",
+      "SiteHostDnsAAAA",
+    ])
+      expect(res[name]?.Condition, name).toBe("HasSiteHost");
+    // Serverless resolves `${…}` inside FunctionCode: the stage suffix is the
+    // only variable the function may contain.
+    const at = yml.indexOf(
+      "FunctionCode: |",
+      yml.indexOf("\n    SiteHostRequestFunction:\n"),
+    );
+    const code = yml.slice(at, yml.indexOf("\n    SiteHostCachePolicy:", at));
+    expect(code.match(/\$\{[^}]*\}?/g)).toEqual([
+      "${self:custom.siteHostSuffix.${self:custom.stage}",
+    ]);
+  });
 });

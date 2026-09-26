@@ -37,6 +37,7 @@ export const GATEWAY_TOKEN = "gw_" + "0123456789abcdef".repeat(2) + "ff";
 export const STAGE = "dev";
 export const CDN = "https://dev-d.yyt.life";
 export const SITE_CDN = "https://dev-g.yyt.life";
+export const SITE_HOST = "dev-g.yyt.life";
 /** Never the real host: the stateful box's address is a guarded identifier. */
 export const REDIS_ENDPOINT = { host: "redis.example", port: 6379 };
 export const NOW_MS = 1_700_000_000_000;
@@ -84,7 +85,10 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     loginOf,
   });
   const assets = createMemoryAssetsDb((id) => db.members.has(id), { loginOf });
-  const sites = createMemorySitesDb((id) => db.members.has(id), { loginOf });
+  const sites = createMemorySitesDb((id) => db.members.has(id), {
+    loginOf,
+    teamExists: (id) => teamDb.teams.has(id),
+  });
   const posters = createMemoryPosterStore();
   const siteStore = createMemorySiteStore({ distributionId: "EDIST" });
   /** Deploy ids the app asked the worker for; tests run `runSiteDeploy` themselves. */
@@ -152,6 +156,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
       invoked.push(id);
     },
     siteCdnUrl: SITE_CDN,
+    siteHostSuffix: SITE_HOST,
     slackFetch: fetch,
     kv,
     github: createGithubLogin({ clientId: "cid", clientSecret: "csec", fetch }),

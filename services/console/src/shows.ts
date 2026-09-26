@@ -44,6 +44,7 @@ import {
   type PosterStore,
 } from "./poster.js";
 import { sitePublicUrl } from "./site-deploy.js";
+import { siteHostUrl } from "./site-domains.js";
 import type { TeamAccessHelpers } from "./team-access.js";
 import { COMMENT_MAX, MD_BODY_MAX } from "./team.js";
 import { createWriteSlot } from "./write-slot.js";
@@ -243,6 +244,8 @@ export interface ShowRoutesOptions {
   cdnBaseUrl?: string;
   /** The shared static site host; without it site links are omitted. */
   siteCdnUrl?: string;
+  /** Per-site host suffix; when set a site links its own origin instead. */
+  siteHostSuffix?: string;
   /** `https://console-dev.yyt.life`; screenshots are served from this host. */
   baseUrl: string;
   /** Omit when no media bucket is configured: screenshot routes answer 503. */
@@ -272,6 +275,7 @@ export function createShowRoutes({
   access,
   cdnBaseUrl,
   siteCdnUrl,
+  siteHostSuffix,
   baseUrl,
   posters,
   clock,
@@ -538,7 +542,12 @@ export function createShowRoutes({
         const s = siteRows.get(e.targetId);
         available = s !== undefined;
         // A site links live: its whole content is one mutable tree.
-        url = s && siteCdnUrl ? sitePublicUrl(siteCdnUrl, s) : null;
+        // A named site links its own host; an unnamed one may be a
+        // `/{slug}/` build that only works on the path host.
+        const own = s?.named ? siteHostUrl(siteHostSuffix, s.slug) : null;
+        url = !s
+          ? null
+          : (own ?? (siteCdnUrl ? sitePublicUrl(siteCdnUrl, s) : null));
       }
       out.set(e.id, {
         kind: e.targetKind,

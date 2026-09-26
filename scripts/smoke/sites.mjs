@@ -2,7 +2,9 @@
 // Smoke test for the console `site` resource on dev: debug login → team/project →
 // site CRUD → presigned zip upload → commit (202) → poll until live → the static
 // host serves index.html/config.json with the right headers → a second deploy
-// drops a file and refreshes the page → delete removes the tree.
+// drops a file and refreshes the page → a name claim moves the site (and its
+// per-site host serves it, when the stage has one) → clear moves it back →
+// delete removes the tree.
 // Usage: scripts/smoke/sites.mjs <baseUrl> <debugKey>
 // Needs the stack deployed with `--param debugHooks=1`. Never prints tokens.
 import { deflateRawSync, crc32 } from "node:zlib";
@@ -129,12 +131,231 @@ async function deploy(zip, label) {
   return d;
 }
 
-async function cleanup() {
-  if (siteId) {
-    const r = await call(`/sites/${siteId}`, {
+/** Polls the site until no deploy or move holds it (a move waits behind the single worker). */
+async function settled() {
+  let v = null;
+  for (let i = 0; i < 300; i++) {
+    v = (await call(`/sites/${siteId}`, { headers: as(owner) })).body;
+    if (v && !v.busy) return v;
+    await sleep(2000);
+  }
+  return v;
+}
+
+/**
+ * Fetches until `ok(res, text)` holds or `tries` × 3 s pass; returns the last
+ * status. A network error (a wildcard record still negatively cached) is a
+ * retry, not a crash.
+ */
+async function until(url, ok, tries = 40) {
+  let last = 0;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      const text = await r.text();
+      last = r.status;
+      if (ok(r, text)) return { pass: true, status: last };
+    } catch {
+      last = -1;
+    }
+    await sleep(3000);
+  }
+  return { pass: false, status: last };
+}
+
+/**
+ * Deletes what an interrupted run left in the team (rules/testing.md: a
+ * `finally` never survives a kill): every `smoke-site-*` site, after it
+ * stops being busy, so the name pool is free for this run.
+ */
+async function reap() {
+  const list = await call(`/projects/${team.prjId}/sites`, {
+    headers: as(owner),
+  });
+  for (const s of list.body?.sites ?? []) {
+    if (!s.name.startsWith("smoke-site-") || s.id === siteId) continue;
+    for (let i = 0; i < 300 && s.busy; i++) {
+      await sleep(2000);
+      s.busy = (
+        await call(`/sites/${s.id}`, { headers: as(owner) })
+      ).body?.busy;
+    }
+    const r = await call(`/sites/${s.id}`, {
       method: "DELETE",
       headers: as(owner),
     });
+    console.log(`reaped a leftover site: ${r.status}`);
+  }
+}
+
+/**
+ * docs/decisions.md *Site domains*: claim → move → serve → clear. The name is
+ * derived from the team id, so the persistent smoke team reclaims its own
+ * name every run (a served name stays with its team) and never grows its cap.
+ */
+async function names(oldSlug) {
+  const name = `smk-${team.teamId.replace(/[^a-z0-9]/g, "").slice(-8)}`;
+  // A name request is one per team per second, measured from the last reply.
+  const patch = async (body) => {
+    await sleep(1100);
+    return call(`/sites/${siteId}`, {
+      method: "PATCH",
+      headers: as(owner),
+      body,
+    });
+  };
+  const odd = "x/a+b[1]=(c)@~.txt";
+  // Stamped per run: the per-site host caches up to 300 s, and a copy left
+  // by the previous run must not pass for this one.
+  const three = `three-${suffix}`;
+  const oddBody = `odd-${suffix}`;
+  const third = await deploy(
+    makeZip([
+      ["index.html", page(three)],
+      [odd, oddBody],
+    ]),
+    "third deploy",
+  );
+  check("third deploy is live", third?.status === "live");
+  check(
+    "reserved and malformed names are 400",
+    (await patch({ domain: "console" })).status === 400 &&
+      (await patch({ domain: "a--b" })).status === 400,
+  );
+  const claim = await patch({ domain: name });
+  check(
+    "a claim on a site with files queues a move (202)",
+    claim.status === 202 && claim.body?.movingTo === name,
+    claim.text.slice(0, 200),
+  );
+  // Same team, within the second: the slot answers before the busy check.
+  // The same name again: inside the window it is 429, after it a busy 409 —
+  // it can never create a name.
+  const hurried = await call(`/sites/${siteId}`, {
+    method: "PATCH",
+    headers: as(owner),
+    body: { domain: name },
+  });
+  check(
+    "a second name request in the same second is 429",
+    hurried.status === 429 &&
+      hurried.body?.error?.details?.retryAfterMs === 1000,
+    String(hurried.status),
+  );
+  const moved = await settled();
+  check(
+    "the move lands: slug, domain and URLs follow the name",
+    moved?.slug === name &&
+      moved?.domain === name &&
+      moved?.publicUrl?.endsWith(`/${name}/`) &&
+      moved?.deploys?.[0]?.kind === "move" &&
+      moved?.deploys?.[0]?.status === "live",
+    JSON.stringify(moved?.deploys?.[0] ?? moved).slice(0, 240),
+  );
+  const pathUrl = moved?.publicUrl ?? "";
+  const oldUrl = pathUrl.replace(`/${name}/`, `/${oldSlug}/`);
+  check(
+    "the path host serves the moved page",
+    (await until(pathUrl, (r, t) => r.ok && t.includes(`smoke ${three}`))).pass,
+  );
+  check(
+    "a copied key with + [ ] = ( ) @ ~ survives the move",
+    (
+      await until(
+        `${pathUrl}x/a%2Bb%5B1%5D%3D(c)%40~.txt`,
+        (r, t) => r.ok && t === oddBody,
+      )
+    ).pass,
+  );
+  const gone = await until(oldUrl, (r) => r.status === 404 || r.status === 403);
+  check("the old path URL stops serving", gone.pass, String(gone.status));
+  if (moved?.hostUrl) {
+    check(
+      "the per-site host serves the moved page (edge TTL ≤ 300 s)",
+      (
+        await until(
+          moved.hostUrl,
+          (r, t) => r.ok && t.includes(`smoke ${three}`),
+          110,
+        )
+      ).pass,
+    );
+    check(
+      "the per-site host maps + to a literal plus",
+      (await until(`${moved.hostUrl}${odd}`, (r, t) => r.ok && t === oddBody))
+        .pass,
+    );
+    const nope = await fetch(`https://smk-nope--x.${moved.hostSuffix}/`).catch(
+      () => undefined,
+    );
+    check(
+      "a malformed label is refused at the edge (or never resolves)",
+      nope === undefined || nope.status === 404,
+      String(nope?.status),
+    );
+  } else
+    console.log("SKIP per-site host checks: hostUrl is null on this stage");
+  // Another team never gets a name that served.
+  const rival = await ensureTeam(
+    call,
+    base,
+    as(other),
+    "smoke-site-rival",
+    check,
+  );
+  const rs = await call(`/projects/${rival.prjId}/sites`, {
+    method: "POST",
+    headers: as(other),
+    body: { name: `rival-${suffix}` },
+  });
+  if (rs.status === 201) {
+    await sleep(1100);
+    const stolen = await call(`/sites/${rs.body.id}`, {
+      method: "PATCH",
+      headers: as(other),
+      body: { domain: name },
+    });
+    check(
+      "another team gets 409 domain_taken",
+      stolen.status === 409 &&
+        stolen.body?.error?.details?.reason === "domain_taken",
+      String(stolen.status),
+    );
+    await call(`/sites/${rs.body.id}`, {
+      method: "DELETE",
+      headers: as(other),
+    });
+  } else check("rival site create", false, String(rs.status));
+  const clear = await patch({ domain: null });
+  check("clearing moves back to a random slug (202)", clear.status === 202);
+  const back = await settled();
+  check(
+    "cleared: a fresh random slug, no domain",
+    /^[a-z0-9]{9}$/.test(back?.slug ?? "") && back?.domain === null,
+    back?.slug,
+  );
+  return back;
+}
+
+function page(marker) {
+  return `<!doctype html><meta charset="utf-8"><title>smoke ${marker}</title><script>fetch("./config.json",{cache:"no-store"}).then(r=>r.json()).then(c=>{document.body.textContent=c.marker})</script>`;
+}
+
+async function cleanup() {
+  if (siteId) {
+    // A move or deploy still in flight answers 409; wait it out once.
+    await settled().catch(() => undefined);
+    let r = await call(`/sites/${siteId}`, {
+      method: "DELETE",
+      headers: as(owner),
+    });
+    if (r.status === 409) {
+      await sleep(5000);
+      r = await call(`/sites/${siteId}`, {
+        method: "DELETE",
+        headers: as(owner),
+      });
+    }
     if (r.status !== 404 && r.status !== 204)
       console.log(`cleanup: delete site answered ${r.status}`);
   }
@@ -147,6 +368,7 @@ async function cleanup() {
 }
 
 try {
+  await reap();
   const created = await call(`/projects/${team.prjId}/sites`, {
     method: "POST",
     headers: as(owner),
@@ -192,8 +414,6 @@ try {
       ).status === 403,
   );
 
-  const page = (marker) =>
-    `<!doctype html><meta charset="utf-8"><title>smoke ${marker}</title><script>fetch("./config.json",{cache:"no-store"}).then(r=>r.json()).then(c=>{document.body.textContent=c.marker})</script>`;
   const first = await deploy(
     makeZip([
       ["index.html", page("one")],
@@ -305,6 +525,9 @@ try {
       .join(",") === "live,failed,live",
   );
 
+  const back = await names(slug);
+  const liveUrl = back?.publicUrl ?? publicUrl;
+
   check(
     "delete site",
     (await call(`/sites/${siteId}`, { method: "DELETE", headers: as(owner) }))
@@ -319,7 +542,7 @@ try {
   // short while, but must answer 404/403 once the invalidation lands.
   let goneStatus = 0;
   for (let i = 0; i < 30; i++) {
-    const after = await fetch(publicUrl, { cache: "no-store" });
+    const after = await fetch(liveUrl, { cache: "no-store" });
     await after.arrayBuffer();
     goneStatus = after.status;
     if (goneStatus === 404 || goneStatus === 403) break;

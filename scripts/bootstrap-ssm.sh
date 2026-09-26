@@ -153,6 +153,11 @@ log "gateway-token written to local/deploy/gateway-token.${STAGE} (hand it to th
 # buckets, plain Strings) are set by hand once per stage — bucket names are
 # infra identifiers (docs/secrets.md), so serverless.yml reads them from SSM:
 #   aws ssm put-parameter --name /yyt-service/<stage>/site-bucket --type String --value <bucket>
+# site-host-cert-arn (the stage's own us-east-1 certificate for *.g.yyt.life /
+# *.dev-g.yyt.life) is the opt-in switch for the per-site host distribution
+# (docs/decisions.md *Site domains*): never looked up or written here, so a
+# credential rotation cannot turn it on; set it by hand right before the
+# console deploy that should create the distribution (rules/deployment.md).
 # GATEWAY_WS_URL is a public domain, not a secret, and is set by hand once the
 # gateway actually resolves:
 #   aws ssm put-parameter --name /yyt-service/<stage>/gateway-ws-url --type String --value wss://gw…

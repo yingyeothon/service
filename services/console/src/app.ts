@@ -61,6 +61,7 @@ import {
 import type { ArtifactStore } from "./artifact-store.js";
 import { createAssetRoutes } from "./assets.js";
 import { createSiteRoutes, type SiteDeployInvoker } from "./sites.js";
+import { createSiteMemberBudget, createSiteNameSlot } from "./site-domains.js";
 import type { SiteStore } from "./site-store.js";
 import {
   createChannelRedisRoutes,
@@ -133,6 +134,8 @@ export interface ConsoleAppOptions {
   siteInvoke?: SiteDeployInvoker;
   /** The shared static host, e.g. `https://dev-g.yyt.life`. */
   siteCdnUrl?: string;
+  /** Per-site host suffix, e.g. `dev-g.yyt.life`; omit on a stage without it. */
+  siteHostSuffix?: string;
   /** Injectable for tests; Slack webhooks only. */
   slackFetch?: typeof fetch;
   kv: Kv;
@@ -207,6 +210,7 @@ export function createConsoleApp({
   siteStore,
   siteInvoke,
   siteCdnUrl,
+  siteHostSuffix,
   slackFetch,
   kv,
   github,
@@ -991,6 +995,7 @@ export function createConsoleApp({
     access,
     cdnBaseUrl: cdn,
     siteCdnUrl: siteCdn,
+    siteHostSuffix,
     baseUrl: base,
     posters,
     clock,
@@ -1064,6 +1069,9 @@ export function createConsoleApp({
     store: siteStore,
     invoke: siteInvoke,
     cdnBaseUrl: siteCdn,
+    hostSuffix: siteHostSuffix,
+    nameSlot: createSiteNameSlot({ kv }),
+    memberBudget: createSiteMemberBudget({ kv, now: () => clock.now() }),
     clock,
     logger,
     audit,

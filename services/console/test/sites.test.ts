@@ -7,6 +7,7 @@ import {
   errorText,
   healStaleDeploys,
   runSiteDeploy,
+  runSiteNameSweep,
   runSiteSweep,
   SITE_DELETING,
   SITE_DEPLOYS_PER_HOUR,
@@ -18,7 +19,15 @@ import {
   siteStagingKey,
 } from "../src/site-deploy.js";
 import { mintSlug, SITE_SHARED_ORIGIN_WARNING } from "../src/sites.js";
-import { ev, harness, NOW_SEC, parse, SITE_CDN, type Team } from "./helpers.js";
+import {
+  ev,
+  harness,
+  NOW_SEC,
+  parse,
+  SITE_CDN,
+  SITE_HOST,
+  type Team,
+} from "./helpers.js";
 import { makeZip, siteZip } from "./zipfix.js";
 
 type H = ReturnType<typeof harness>;
@@ -754,5 +763,700 @@ describe("sites", () => {
     let n = 0;
     const seq = [255, 252, 0, 35, 36, 251, 1, 2, 3, 4, 5, 6];
     expect(mintSlug(() => seq[n++ % seq.length]!)).toBe("a9a9bcdef");
+  });
+});
+
+/** Moves every recorded release back by `sec` (a session would not survive the clock). */
+function age(h: H, sec: number) {
+  for (const [k, r] of h.sites.names)
+    if (r.releasedAt !== null)
+      h.sites.names.set(k, { ...r, releasedAt: r.releasedAt - sec });
+}
+
+describe("site names (docs/decisions.md *Site domains*)", () => {
+  const patch = (h: H, u: Team, siteId: string, body: unknown) =>
+    h.app(ev("PATCH", `/sites/${siteId}`, { body, headers: u.cookie }));
+  const get = async (h: H, u: Team, siteId: string) =>
+    parse(await h.app(ev("GET", `/sites/${siteId}`, { headers: u.cookie })));
+
+  it("claims a name on an empty site at once; URLs and host follow the slug", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice);
+    expect(s).toMatchObject({
+      domain: null,
+      hostUrl: `https://${s.slug}.${SITE_HOST}/`,
+      hostSuffix: SITE_HOST,
+      movingTo: null,
+    });
+    const r = await patch(h, alice, s.id, { domain: "  My-Game " });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(parse(r)).toMatchObject({
+      slug: "my-game",
+      domain: "my-game",
+      publicUrl: `${SITE_CDN}/my-game/`,
+      basePath: "/my-game/",
+      hostUrl: `https://my-game.${SITE_HOST}/`,
+      busy: false,
+    });
+    expect(h.invoked).toEqual([]);
+    // The same name again is a no-op and takes no slot.
+    expect(
+      (await patch(h, alice, s.id, { domain: "my-game" })).statusCode,
+    ).toBe(200);
+    // An empty random slug never served: nothing to remember.
+    expect(await h.sites.findSiteName(s.slug)).toBeUndefined();
+    // The rename is a move row, so the deploy budgets count it.
+    expect((await get(h, alice, s.id)).deploys[0]).toMatchObject({
+      kind: "move",
+      status: "live",
+      moveTo: "my-game",
+      moveFrom: s.slug,
+    });
+  });
+
+  it("validates before it spends the team's one request per second", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice);
+    for (const bad of [
+      "ab",
+      "a".repeat(33),
+      "-ab",
+      "ab-",
+      "a--b",
+      "xn--abc",
+      "a_b",
+      "a.b",
+      "www",
+      "console-dev",
+      "dev-g",
+      "my-login",
+      "console",
+      "yyt-game",
+      "yingyeothon",
+    ]) {
+      const r = await patch(h, alice, s.id, { domain: bad });
+      expect(r.statusCode, bad).toBe(400);
+    }
+    // No 400 above spent the slot: this one passes in the same second.
+    expect((await patch(h, alice, s.id, { domain: "abc" })).statusCode).toBe(
+      200,
+    );
+    // Any site of the team, same second: 429 with a retry hint; nothing moved.
+    const s2 = await mkSite(h, alice, "web2");
+    const busy = await patch(h, alice, s2.id, { domain: "def" });
+    expect(busy.statusCode).toBe(429);
+    expect(parse(busy).error.details).toEqual({ retryAfterMs: 1000 });
+    expect((await h.sites.findSite(s2.id))?.slug).toBe(s2.slug);
+    expect(await h.kv.ttl("sdrl:" + alice.teamId)).toBe(1);
+    // Another team is not affected.
+    const bob = await h.team("bob");
+    const b = await mkSite(h, bob);
+    expect((await patch(h, bob, b.id, { domain: "ghi" })).statusCode).toBe(200);
+    // A name/description-only patch is never gated.
+    expect(
+      (await patch(h, alice, s2.id, { description: "x" })).statusCode,
+    ).toBe(200);
+    h.clock.tick(1);
+    expect((await patch(h, alice, s2.id, { domain: "def" })).statusCode).toBe(
+      200,
+    );
+  });
+
+  it("moves a deployed site through the worker (202) and keeps the headers", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice);
+    const c = await deploy(h, alice, s.id, siteZip());
+    await work(h, parse(c).id);
+    const old = s.slug as string;
+    const files = ["assets/index-B3xk9Qz1.js", "config.json", "index.html"];
+    expect([...h.siteStore.objects.keys()].sort()).toEqual(
+      files.map((f) => `${old}/${f}`),
+    );
+    // A later second than the upload, so the deploy list order is fixed.
+    h.clock.tick(1);
+    const r = await patch(h, alice, s.id, { domain: "my-game" });
+    expect(r.statusCode, r.body).toBe(202);
+    expect(parse(r)).toMatchObject({
+      slug: old,
+      busy: true,
+      movingTo: "my-game",
+      domain: null,
+    });
+    const moveId = h.invoked.at(-1)!;
+    // Busy for deploys and for another name request.
+    h.clock.tick(1);
+    expect((await patch(h, alice, s.id, { domain: "other" })).statusCode).toBe(
+      409,
+    );
+    const done = await work(h, moveId);
+    expect(done).toMatchObject({
+      status: "live",
+      moveTo: "my-game",
+      files: 3,
+      error: null,
+    });
+    expect([...h.siteStore.objects.keys()].sort()).toEqual(
+      files.map((f) => `my-game/${f}`),
+    );
+    expect(h.siteStore.objects.get("my-game/index.html")?.headers).toEqual({
+      contentType: "text/html; charset=utf-8",
+      cacheControl: "no-cache",
+    });
+    expect(h.siteStore.invalidations.at(-1)).toEqual([`/${old}/*`]);
+    const after = await get(h, alice, s.id);
+    expect(after).toMatchObject({
+      slug: "my-game",
+      domain: "my-game",
+      busy: false,
+      movingTo: null,
+      currentDeployId: parse(c).id,
+    });
+    expect(after.deploys[0]).toMatchObject({ id: moveId, moveTo: "my-game" });
+    // Clearing moves back to a fresh random slug; the name stays recorded.
+    h.clock.tick(1);
+    const back = await patch(h, alice, s.id, { domain: null });
+    expect(back.statusCode).toBe(202);
+    const target = parse(back).movingTo as string;
+    expect(target).toMatch(/^[a-z0-9]{9}$/);
+    expect(target).not.toBe(old);
+    await work(h, h.invoked.at(-1)!);
+    expect(await get(h, alice, s.id)).toMatchObject({
+      slug: target,
+      domain: null,
+    });
+    expect(await h.sites.findSiteName("my-game")).toMatchObject({
+      teamId: alice.teamId,
+      releasedAt: expect.any(Number),
+    });
+  });
+
+  it("a served name never passes to another team; the same team reclaims it", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const bob = await h.team("bob");
+    const a = await mkSite(h, alice);
+    const b = await mkSite(h, bob);
+    // Served: files moved under the name.
+    await work(h, parse(await deploy(h, alice, a.id, siteZip())).id);
+    h.clock.tick(1);
+    expect((await patch(h, alice, a.id, { domain: "shared" })).statusCode).toBe(
+      202,
+    );
+    await work(h, h.invoked.at(-1)!);
+    const taken = await patch(h, bob, b.id, { domain: "shared" });
+    expect(taken.statusCode).toBe(409);
+    expect(parse(taken).error.details).toEqual({ reason: "domain_taken" });
+    // The random slug the move left behind served too.
+    h.clock.tick(1);
+    expect((await patch(h, bob, b.id, { domain: a.slug })).statusCode).toBe(
+      409,
+    );
+    // Deleted: still alice's, forever, and already emptied.
+    expect(
+      (await h.app(ev("DELETE", `/sites/${a.id}`, { headers: alice.cookie })))
+        .statusCode,
+    ).toBe(204);
+    expect(await h.sites.findSiteName("shared")).toMatchObject({
+      teamId: alice.teamId,
+      served: true,
+      purgedAt: expect.any(Number),
+    });
+    age(h, 40 * 86400);
+    h.clock.tick(1);
+    expect((await patch(h, bob, b.id, { domain: "shared" })).statusCode).toBe(
+      409,
+    );
+    const a2 = await mkSite(h, alice, "web2");
+    expect(
+      (await patch(h, alice, a2.id, { domain: "shared" })).statusCode,
+    ).toBe(200);
+    // A name that never served goes free when it is let go.
+    h.clock.tick(1);
+    expect((await patch(h, bob, b.id, { domain: "brief" })).statusCode).toBe(
+      200,
+    );
+    h.clock.tick(1);
+    expect((await patch(h, bob, b.id, { domain: null })).statusCode).toBe(200);
+    expect(await h.sites.findSiteName("brief")).toBeUndefined();
+    // A prefix holding objects nobody recorded (a hand-published game) is
+    // recorded as nobody's on first sight.
+    await h.siteStore.putFile("legacy-game/index.html", Buffer.from("x"), {
+      contentType: "text/html",
+      cacheControl: "no-cache",
+    });
+    h.clock.tick(1);
+    expect(
+      parse(await patch(h, bob, b.id, { domain: "legacy-game" })).error.details,
+    ).toEqual({ reason: "domain_taken" });
+    expect(await h.sites.findSiteName("legacy-game")).toMatchObject({
+      teamId: null,
+      served: true,
+    });
+  });
+
+  it("caps a team at 20 counted names; renames spend the deploy budget", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      h.clock.tick(1);
+      const s = await mkSite(h, alice, `web${i}`);
+      ids.push(s.id);
+      const r = await patch(h, alice, s.id, { domain: `name-${i}` });
+      expect(r.statusCode, r.body).toBe(200);
+    }
+    const extra = await mkSite(h, alice, "extra");
+    h.clock.tick(1);
+    const full = await patch(h, alice, extra.id, { domain: "name-20" });
+    expect(full.statusCode).toBe(409);
+    const details = parse(full).error.details;
+    expect(details.reason).toBe("domain_cap");
+    expect(details.names).toHaveLength(20);
+    // Letting go of a name that never served frees a slot.
+    h.clock.tick(1);
+    expect((await patch(h, alice, ids[3]!, { domain: null })).statusCode).toBe(
+      200,
+    );
+    h.clock.tick(1);
+    expect(
+      (await patch(h, alice, extra.id, { domain: "name-20" })).statusCode,
+    ).toBe(200);
+    // Twenty renames of one site in an hour is the per-site deploy cap.
+    const bob = await h.team("bob");
+    const one = await mkSite(h, bob, "busy-site");
+    let last: number | undefined = 0;
+    for (let i = 0; i < 21; i++) {
+      h.clock.tick(1);
+      last = (await patch(h, bob, one.id, { domain: i % 2 ? null : "flip" }))
+        .statusCode;
+      if (last !== 200) break;
+    }
+    expect(last).toBe(429);
+  });
+
+  it("an admin releases a recorded name; members cannot", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const bob = await h.team("bob");
+    const a = await mkSite(h, alice);
+    await work(h, parse(await deploy(h, alice, a.id, siteZip())).id);
+    h.clock.tick(1);
+    await patch(h, alice, a.id, { domain: "squat" });
+    await work(h, h.invoked.at(-1)!);
+    const boss = await h.login("Boss", "admin");
+    const release = (u: { cookie: Record<string, string> }, body: unknown) =>
+      h.app(
+        ev("POST", "/admin/site-names/squat/release", {
+          body,
+          headers: u.cookie,
+        }),
+      );
+    expect((await release(alice, { reason: "x" })).statusCode).toBe(403);
+    expect((await release(boss, {})).statusCode).toBe(400);
+    // In use by a site: refused.
+    expect((await release(boss, { reason: "abuse" })).statusCode).toBe(409);
+    expect(
+      (await h.app(ev("DELETE", `/sites/${a.id}`, { headers: alice.cookie })))
+        .statusCode,
+    ).toBe(204);
+    expect(
+      parse(
+        await h.app(
+          ev("GET", "/admin/site-names/squat", { headers: boss.cookie }),
+        ),
+      ),
+    ).toMatchObject({ name: "squat", teamId: alice.teamId, served: true });
+    expect((await release(boss, { reason: "abuse" })).statusCode).toBe(204);
+    expect(await h.sites.findSiteName("squat")).toBeUndefined();
+    const b = await mkSite(h, bob);
+    h.clock.tick(1);
+    expect((await patch(h, bob, b.id, { domain: "squat" })).statusCode).toBe(
+      200,
+    );
+    expect(
+      (
+        await h.app(
+          ev("GET", "/admin/site-names/nope", { headers: boss.cookie }),
+        )
+      ).statusCode,
+    ).toBe(404);
+  });
+
+  it("gates like every write: seatless admin 403, outsider 404", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice);
+    const boss = await h.login("Boss", "admin");
+    expect(
+      (
+        await h.app(
+          ev("PATCH", `/sites/${s.id}`, {
+            body: { domain: "abc" },
+            headers: boss.cookie,
+          }),
+        )
+      ).statusCode,
+    ).toBe(403);
+    const eve = await h.team("eve");
+    expect((await patch(h, eve, s.id, { domain: "abc" })).statusCode).toBe(404);
+  });
+
+  it("a stage without the per-site host still renames; host fields are null", async () => {
+    const h = harness({ siteHostSuffix: undefined });
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice);
+    expect(s).toMatchObject({ hostUrl: null, hostSuffix: null });
+    expect(
+      parse(await patch(h, alice, s.id, { domain: "plain" })),
+    ).toMatchObject({ publicUrl: `${SITE_CDN}/plain/`, hostUrl: null });
+  });
+
+  it("a failed invoke or a lost worker releases the target", async () => {
+    const h = harness({
+      siteInvoke: async () => {
+        throw new Error("boom");
+      },
+    });
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice);
+    await h.siteStore.putFile(`${s.slug}/index.html`, Buffer.from("x"), {
+      contentType: "text/html",
+      cacheControl: "no-cache",
+    });
+    expect((await patch(h, alice, s.id, { domain: "lost" })).statusCode).toBe(
+      503,
+    );
+    expect(await h.sites.findSite(s.id)).toMatchObject({
+      slug: s.slug,
+      activeDeployId: null,
+    });
+    // Nothing was copied: the name never served and is free again at once.
+    expect(await h.sites.findSiteName("lost")).toBeUndefined();
+
+    // A move nobody runs: the heal fails it and releases the name.
+    const h2 = harness();
+    const bob = await h2.team("bob");
+    const b = await mkSite(h2, bob);
+    await h2.siteStore.putFile(`${b.slug}/index.html`, Buffer.from("x"), {
+      contentType: "text/html",
+      cacheControl: "no-cache",
+    });
+    expect((await patch(h2, bob, b.id, { domain: "stuck" })).statusCode).toBe(
+      202,
+    );
+    h2.clock.tick(SITE_QUEUED_STALE_SEC + 1);
+    expect(
+      await healStaleDeploys({
+        sites: h2.sites,
+        clock: h2.clock,
+        logger: nullLogger,
+      }),
+    ).toBe(1);
+    expect(await h2.sites.findSiteName("stuck")).toMatchObject({
+      releasedAt: expect.any(Number),
+    });
+    expect(await get(h2, bob, b.id)).toMatchObject({
+      slug: b.slug,
+      busy: false,
+    });
+  });
+
+  it("a move that fails mid-copy deletes only what it wrote", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice);
+    const c = await deploy(h, alice, s.id, siteZip());
+    await work(h, parse(c).id);
+    expect((await patch(h, alice, s.id, { domain: "half" })).statusCode).toBe(
+      202,
+    );
+    h.siteStore.failNext("copyKey");
+    const r = await work(h, h.invoked.at(-1)!);
+    expect(r).toMatchObject({ status: "failed", error: "storage_error" });
+    expect(
+      [...h.siteStore.objects.keys()].filter((k) => k.startsWith("half/")),
+    ).toEqual([]);
+    expect(
+      [...h.siteStore.objects.keys()].filter((k) => k.startsWith(`${s.slug}/`)),
+    ).toHaveLength(3);
+    expect(await h.sites.findSite(s.id)).toMatchObject({
+      slug: s.slug,
+      activeDeployId: null,
+    });
+  });
+});
+
+describe("site moves: crash paths and the purge sweep", () => {
+  const patch = (h: H, u: Team, siteId: string, body: unknown) =>
+    h.app(ev("PATCH", `/sites/${siteId}`, { body, headers: u.cookie }));
+  const keysUnder = (h: H, prefix: string) =>
+    [...h.siteStore.objects.keys()].filter((k) => k.startsWith(`${prefix}/`));
+  /** A deployed site with a move to `name` queued; returns the move id. */
+  async function queuedMove(h: H, u: Team, name: string) {
+    const s = await mkSite(h, u, `web-${name}`);
+    await work(h, parse(await deploy(h, u, s.id, siteZip())).id);
+    h.clock.tick(1);
+    const r = await patch(h, u, s.id, { domain: name });
+    expect(r.statusCode, r.body).toBe(202);
+    return { site: s, moveId: h.invoked.at(-1)! };
+  }
+
+  it("a lost reply after the switch commits still counts as switched", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const { site, moveId } = await queuedMove(h, alice, "lost-reply");
+    const real = h.sites.completeSiteMove.bind(h.sites);
+    h.sites.completeSiteMove = async (...a) => {
+      await real(...a);
+      throw new Error("connection reset");
+    };
+    const done = await work(h, moveId);
+    expect(done).toMatchObject({ status: "live" });
+    expect((await h.sites.findSite(site.id))?.slug).toBe("lost-reply");
+    expect(keysUnder(h, "lost-reply")).toHaveLength(3);
+    expect(keysUnder(h, site.slug)).toEqual([]);
+  });
+
+  it("a move that runs out of time stops copying and removes what it wrote", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const { site, moveId } = await queuedMove(h, alice, "late");
+    let calls = 0;
+    const done = await runSiteDeploy(moveId, {
+      sites: h.sites,
+      store: h.siteStore,
+      clock: h.clock,
+      logger: nullLogger,
+      concurrency: 1,
+      remainingMs: () => (++calls > 1 ? 1000 : 300_000),
+    });
+    expect(done).toMatchObject({ status: "failed", error: "move_deadline" });
+    expect(keysUnder(h, "late")).toEqual([]);
+    expect(keysUnder(h, site.slug)).toHaveLength(3);
+    // The target served copies for a moment: it stays the team's, emptied.
+    expect(await h.sites.findSiteName("late")).toMatchObject({
+      served: true,
+      purgedAt: expect.any(Number),
+    });
+  });
+
+  it("heal and sweep: a worker lost after the switch, and one lost mid-copy", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    // After the switch: the slug moved, the old tree is left.
+    const a = await queuedMove(h, alice, "switched");
+    await h.sites.transitionDeploy(
+      a.moveId,
+      "queued",
+      { status: "extracting" },
+      NOW_SEC,
+    );
+    for (const k of keysUnder(h, a.site.slug))
+      await h.siteStore.copyKey(k, k.replace(`${a.site.slug}/`, "switched/"));
+    await h.sites.completeSiteMove(a.site.id, a.moveId, NOW_SEC);
+    // Mid-copy: one object landed under the target, the slug did not move.
+    const b = await queuedMove(h, alice, "halfway");
+    await h.sites.transitionDeploy(
+      b.moveId,
+      "queued",
+      { status: "extracting" },
+      NOW_SEC,
+    );
+    await h.siteStore.copyKey(
+      `${b.site.slug}/index.html`,
+      "halfway/index.html",
+    );
+    h.clock.tick(SITE_STALE_SEC + 1);
+    expect(
+      await healStaleDeploys({
+        sites: h.sites,
+        clock: h.clock,
+        logger: nullLogger,
+      }),
+    ).toBe(2);
+    expect(await h.sites.findDeploy(a.moveId)).toMatchObject({
+      status: "live",
+      error: "cleanup_failed",
+    });
+    expect(await h.sites.findDeploy(b.moveId)).toMatchObject({
+      status: "failed",
+      error: "worker_lost",
+    });
+    // Both leftovers are served by the lookup-free host until the sweep runs.
+    expect(keysUnder(h, a.site.slug)).toHaveLength(3);
+    expect(keysUnder(h, "halfway")).toHaveLength(1);
+    const swept = await runSiteNameSweep({
+      sites: h.sites,
+      store: h.siteStore,
+      clock: h.clock,
+      logger: nullLogger,
+    });
+    expect(swept).toEqual({ purged: 2, failed: 0, more: false });
+    expect(keysUnder(h, a.site.slug)).toEqual([]);
+    expect(keysUnder(h, "halfway")).toEqual([]);
+    expect(keysUnder(h, "switched")).toHaveLength(3);
+    // The old random slug served: kept for the team, stamped purged.
+    expect(await h.sites.findSiteName(a.site.slug)).toMatchObject({
+      served: true,
+      purgedAt: expect.any(Number),
+    });
+    // The half-copied target never served: dropped, free again.
+    expect(await h.sites.findSiteName("halfway")).toBeUndefined();
+    expect(
+      await runSiteNameSweep({
+        sites: h.sites,
+        store: h.siteStore,
+        clock: h.clock,
+        logger: nullLogger,
+      }),
+    ).toEqual({ purged: 0, failed: 0, more: false });
+  });
+
+  it("a claim over the team's own uncleaned prefix empties it first", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const { site, moveId } = await queuedMove(h, alice, "first");
+    await work(h, moveId);
+    // Pretend the old tree could not be deleted and was not purged.
+    const old = site.slug as string;
+    await h.siteStore.putFile(`${old}/stale.txt`, Buffer.from("x"), {
+      contentType: "text/plain",
+      cacheControl: "no-cache",
+    });
+    const row = (await h.sites.findSiteName(old))!;
+    h.sites.names.set(old, { ...row, purgedAt: null });
+    const other = await mkSite(h, alice, "web2");
+    h.clock.tick(1);
+    const r = await patch(h, alice, other.id, { domain: old });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(keysUnder(h, old)).toEqual([]);
+  });
+});
+
+describe("site names: review regressions", () => {
+  const patch = (h: H, u: Team, siteId: string, body: unknown) =>
+    h.app(ev("PATCH", `/sites/${siteId}`, { body, headers: u.cookie }));
+
+  it("a delete that races a landed move empties the new prefix", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice, "racer");
+    await work(h, parse(await deploy(h, alice, s.id, siteZip())).id);
+    h.clock.tick(1);
+    expect((await patch(h, alice, s.id, { domain: "doomed" })).statusCode).toBe(
+      202,
+    );
+    // The DELETE read the site before the move landed.
+    const real = h.sites.claimSite.bind(h.sites);
+    h.sites.claimSite = async (...a) => {
+      await work(h, h.invoked.at(-1)!);
+      return real(...a);
+    };
+    const del = await h.app(
+      ev("DELETE", `/sites/${s.id}`, { headers: alice.cookie }),
+    );
+    h.sites.claimSite = real;
+    // The move held the claim when the DELETE started, so it was refused, or
+    // it ran after the move and emptied the new prefix — never both halves.
+    if (del.statusCode === 204) {
+      expect(
+        [...h.siteStore.objects.keys()].filter((k) => k.startsWith("doomed/")),
+      ).toEqual([]);
+      expect(await h.sites.findSiteName("doomed")).toMatchObject({
+        served: true,
+      });
+    } else expect(del.statusCode).toBe(409);
+  });
+
+  it("a PATCH whose listing went stale is busy, not an orphaning rename", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice, "stale");
+    // Another request renames the (empty) site between this one's read and
+    // its transaction.
+    const real = h.sites.renameSite.bind(h.sites);
+    let raced = false;
+    h.sites.renameSite = async (o) => {
+      if (!raced) {
+        raced = true;
+        await real({ ...o, target: "first", moveId: "sd_race" });
+      }
+      return real(o);
+    };
+    const r = await patch(h, alice, s.id, { domain: "second" });
+    h.sites.renameSite = real;
+    expect(r.statusCode).toBe(409);
+    expect((await h.sites.findSite(s.id))?.slug).toBe("first");
+  });
+
+  it("clearing while a move is in flight is busy, not a silent no-op", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice, "inflight");
+    await work(h, parse(await deploy(h, alice, s.id, siteZip())).id);
+    h.clock.tick(1);
+    expect((await patch(h, alice, s.id, { domain: "target" })).statusCode).toBe(
+      202,
+    );
+    h.clock.tick(1);
+    const clear = await patch(h, alice, s.id, { domain: null });
+    expect(clear.statusCode).toBe(409);
+  });
+
+  it("naming the current random slug keeps the URL and records the name", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const s = await mkSite(h, alice, "keep");
+    const r = await patch(h, alice, s.id, { domain: s.slug });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(parse(r)).toMatchObject({ slug: s.slug, domain: s.slug });
+    expect(await h.sites.findSiteName(s.slug)).toMatchObject({
+      kind: "name",
+      releasedAt: null,
+    });
+  });
+
+  it("a failed inline purge answers 409 domain_cleaning", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const a = await mkSite(h, alice, "first-site");
+    await work(h, parse(await deploy(h, alice, a.id, siteZip())).id);
+    h.clock.tick(1);
+    await patch(h, alice, a.id, { domain: "mine" });
+    await work(h, h.invoked.at(-1)!);
+    h.clock.tick(1);
+    await patch(h, alice, a.id, { domain: null });
+    await work(h, h.invoked.at(-1)!);
+    // Pretend the move's cleanup of "mine" failed.
+    const row = (await h.sites.findSiteName("mine"))!;
+    h.sites.names.set("mine", { ...row, purgedAt: null });
+    await h.siteStore.putFile("mine/stale.txt", Buffer.from("x"), {
+      contentType: "text/plain",
+      cacheControl: "no-cache",
+    });
+    const b = await mkSite(h, alice, "second-site");
+    h.siteStore.failNext("deleteKeys");
+    h.clock.tick(1);
+    const r = await patch(h, alice, b.id, { domain: "mine" });
+    expect(r.statusCode).toBe(409);
+    expect(parse(r).error.details).toEqual({ reason: "domain_cleaning" });
+  });
+
+  it("per-member budgets outlive a deleted site", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    let last: number | undefined = 0;
+    for (let i = 0; i < 35; i++) {
+      h.clock.tick(1);
+      const s = await mkSite(h, alice, `loop-${i}`);
+      last = (await patch(h, alice, s.id, { domain: `claim-${i}` })).statusCode;
+      await h.app(ev("DELETE", `/sites/${s.id}`, { headers: alice.cookie }));
+      if (last !== 200) break;
+    }
+    // Thirty claims a day per member, even though every site is gone.
+    expect(last).toBe(429);
   });
 });

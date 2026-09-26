@@ -9,24 +9,50 @@ export function parseBearer(
   return m?.[1];
 }
 
+/** RFC 6265 cookie-name (a token). */
+const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+/** Only SP and HTAB around a pair: JS `trim()` also strips U+00A0, U+FEFF… */
+const OWS = /^[ \t]+|[ \t]+$/g;
+
+/**
+ * Cookie pairs, first occurrence wins. Names are tokens after trimming
+ * **ASCII** whitespace only: a sibling subdomain can set ` __Host-x` with a
+ * leading NBSP (the browser does not treat it as prefixed) and a Unicode
+ * trim would read it back as the real `__Host-` cookie. A prefixed name that
+ * appears twice is ambiguous and dropped.
+ */
 export function parseCookies(
   headers: Record<string, string | undefined>,
   cookies?: string[],
 ): Record<string, string> {
   const out: Record<string, string> = {};
+  const seen = new Set<string>();
+  const ambiguous = new Set<string>();
   const list = cookies ?? (headers.cookie ?? headers.Cookie ?? "").split(";");
   for (const c of list) {
     const idx = c.indexOf("=");
     if (idx <= 0) continue;
-    const name = c.slice(0, idx).trim();
-    const value = c.slice(idx + 1).trim();
-    if (!name) continue;
-    try {
-      out[name] = decodeURIComponent(value);
-    } catch {
-      // Malformed cookie values are ignored rather than failing the request.
+    const name = c.slice(0, idx).replace(OWS, "");
+    const value = c.slice(idx + 1).replace(OWS, "");
+    if (!COOKIE_NAME.test(name)) continue;
+    const prefixed = /^__(Host|Secure)-/.test(name);
+    if (seen.has(name)) {
+      if (prefixed) ambiguous.add(name);
+      continue;
     }
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(value);
+    } catch {
+      // A malformed value is ignored rather than failing the request; it
+      // still makes a prefixed name ambiguous, never lets a later one win.
+      if (prefixed) seen.add(name);
+      continue;
+    }
+    seen.add(name);
+    out[name] = decoded;
   }
+  for (const name of ambiguous) delete out[name];
   return out;
 }
 

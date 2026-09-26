@@ -41,6 +41,15 @@ custom:
     prod: https://g.yyt.life
   # Plain SSM String set by hand (todo/07); empty = no invalidation on this stage.
   siteDistributionId: ${ssm:${self:custom.stageSsm}/site-distribution-id, ""}
+  # Per-site hosts `{slug}.{suffix}` (docs/decisions.md *Site domains*): a
+  # distribution this stack owns, in front of the same bucket. Opt-in per
+  # stage: the owner puts the us-east-1 certificate ARN for `*.g.yyt.life` /
+  # `*.dev-g.yyt.life` in SSM by hand (rules/deployment.md); empty = none of
+  # the SiteHost* resources exist and `hostUrl` is null.
+  siteHostCertArn: ${ssm:${self:custom.stageSsm}/site-host-cert-arn, ""}
+  siteHostSuffix:
+    dev: dev-g.yyt.life
+    prod: g.yyt.life
   ssm: /yyt-service/${self:custom.stage}/console
   stageSsm: /yyt-service/${self:custom.stage}
   esbuild:
@@ -150,6 +159,15 @@ provider:
     SITE_CDN_DISTRIBUTION_ID: ${self:custom.siteDistributionId}
     # The worker `api` invokes asynchronously on commit.
     SITE_DEPLOY_FUNCTION: ${self:service}-${self:custom.stage}-siteDeploy
+    # `{slug}.{suffix}` host of every site, only where the distribution exists.
+    SITE_HOST_SUFFIX: !If
+      - HasSiteHost
+      - ${self:custom.siteHostSuffix.${self:custom.stage}}
+      - ""
+    # A reference to the wildcard record: CloudFormation then updates the
+    # functions only after the record exists, so no API answers a `hostUrl`
+    # the DNS cannot resolve yet (and resolvers would cache the miss).
+    SITE_HOST_RECORD: !If [HasSiteHost, !Ref SiteHostDnsA, ""]
   iam:
     role:
       statements:
@@ -189,8 +207,10 @@ provider:
             - s3:GetObject
             - s3:DeleteObject
           Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/shots/*"]]
-        # Site bucket: the worker writes `{slug}/…` and prunes; the api lists
-        # a prefix before minting a slug and wipes it on delete.
+        # Site bucket: the worker writes `{slug}/…`, prunes, and copies a whole
+        # prefix for a move (CopyObject = Get on the source + Put on the
+        # target); the api lists a prefix before minting a slug or claiming a
+        # name and wipes it on delete; the sweeps purge released prefixes.
         - Effect: Allow
           Action:
             - s3:PutObject
@@ -319,6 +339,7 @@ resources:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
     HasSiteDistribution:
       !Not [!Equals ["${self:custom.siteDistributionId}", ""]]
+    HasSiteHost: !Not [!Equals ["${self:custom.siteHostCertArn}", ""]]
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
@@ -560,6 +581,153 @@ resources:
               FunctionAssociations:
                 - EventType: viewer-request
                   FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
+    # Per-site hosts (docs/decisions.md *Site domains*). A site's slug is its
+    # S3 prefix and its host label, so the edge needs no lookup: the function
+    # checks the Host against the name grammar (`site-domains.ts` SITE_NAME,
+    # pinned by test/site-host-edge.test.ts) and prefixes the path; a path
+    # outside the zip grammar (`zip.ts` SEGMENT: no `%`, no dot segments, no
+    # `//`) cannot name a site object and is refused. Origin is
+    # the bucket's REST endpoint, not the website one, so no ErrorDocument and
+    # no directory redirects apply; `/` gets `index.html`. The edge TTL is
+    # capped at 300 s and nothing here is ever invalidated. Anything that fails
+    # a check is a 404 from the function (fail closed, never passed through).
+    # The function and both policies exist on every stage (free while nothing
+    # uses them), so `aws cloudfront test-function` can exercise the real
+    # runtime before any certificate or distribution exists.
+    SiteHostRequestFunction:
+      Type: AWS::CloudFront::Function
+      Properties:
+        Name: ${self:service}-${self:custom.stage}-site-host
+        AutoPublish: true
+        FunctionConfig:
+          Comment: Map a per-site host to its prefix in the site bucket
+          Runtime: cloudfront-js-2.0
+        FunctionCode: |
+          var SUFFIX = '.${self:custom.siteHostSuffix.${self:custom.stage}}';
+          var LABEL = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
+          var PATH = /^\/[A-Za-z0-9._@~+=()\[\]\/-]*$/;
+          var BAD = /\/\/|\/\.\.?(\/|$)/;
+          function notFound() {
+            return {
+              statusCode: 404,
+              statusDescription: 'Not Found',
+              headers: {
+                'cache-control': { value: 'no-store' },
+                'x-content-type-options': { value: 'nosniff' }
+              }
+            };
+          }
+          function handler(event) {
+            var req = event.request;
+            var host = req.headers.host ? req.headers.host.value.toLowerCase() : '';
+            if (host.length <= SUFFIX.length || host.slice(-SUFFIX.length) !== SUFFIX) return notFound();
+            var label = host.slice(0, host.length - SUFFIX.length);
+            if (!LABEL.test(label) || label.indexOf('--') !== -1) return notFound();
+            // Escapes a URL encoder may emit for characters site keys can
+            // hold decode first; every other `%` (`%2F`, `%2E`, `%25`, …) is
+            // refused below with the rest of the grammar.
+            var uri = req.uri.replace(/%(40|3D|2B|5B|5D|28|29|7E)/gi, function (m) {
+              return decodeURIComponent(m);
+            });
+            if (!PATH.test(uri) || BAD.test(uri)) return notFound();
+            if (uri.charAt(uri.length - 1) === '/') uri += 'index.html';
+            req.uri = '/' + label + uri.replace(/\+/g, '%2B');
+            return req;
+          }
+    # MinTTL 0 so `no-cache` HTML revalidates; MaxTTL 300 bounds how long a
+    # deploy, move or delete takes to show without an invalidation. The query
+    # string stays out of the key, like the hand-made path host.
+    SiteHostCachePolicy:
+      Type: AWS::CloudFront::CachePolicy
+      Properties:
+        CachePolicyConfig:
+          Name: ${self:service}-${self:custom.stage}-site-host
+          Comment: Per-site hosts; edge TTL at most 300 s, never invalidated
+          MinTTL: 0
+          DefaultTTL: 60
+          MaxTTL: 300
+          ParametersInCacheKeyAndForwardedToOrigin:
+            EnableAcceptEncodingGzip: true
+            EnableAcceptEncodingBrotli: true
+            HeadersConfig:
+              HeaderBehavior: none
+            CookiesConfig:
+              CookieBehavior: none
+            QueryStringsConfig:
+              QueryStringBehavior: none
+    # The path host's headers (nosniff + HSTS, no frame options: games embed)
+    # plus Origin-Agent-Cluster, since every site now has an origin to isolate.
+    SiteHostHeadersPolicy:
+      Type: AWS::CloudFront::ResponseHeadersPolicy
+      Properties:
+        ResponseHeadersPolicyConfig:
+          Name: ${self:service}-${self:custom.stage}-site-host-headers
+          SecurityHeadersConfig:
+            ContentTypeOptions:
+              Override: true
+            StrictTransportSecurity:
+              Override: true
+              AccessControlMaxAgeSec: 31536000
+              IncludeSubdomains: false
+          CustomHeadersConfig:
+            Items:
+              - Header: Origin-Agent-Cluster
+                Value: "?1"
+                Override: true
+    SiteHostDistribution:
+      Type: AWS::CloudFront::Distribution
+      Condition: HasSiteHost
+      Properties:
+        DistributionConfig:
+          Enabled: true
+          Comment: Per-site hosts of ${self:custom.siteHostSuffix.${self:custom.stage}}
+          Aliases:
+            - "*.${self:custom.siteHostSuffix.${self:custom.stage}}"
+          HttpVersion: http2and3
+          IPV6Enabled: true
+          PriceClass: PriceClass_200
+          ViewerCertificate:
+            AcmCertificateArn: ${self:custom.siteHostCertArn}
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          Origins:
+            # The bucket is public-read (bucket policy), so no OAC; the REST
+            # endpoint answers 403 for a missing key.
+            - Id: site
+              DomainName: ${self:custom.siteBucket}.s3.${aws:region}.amazonaws.com
+              S3OriginConfig:
+                OriginAccessIdentity: ""
+          DefaultCacheBehavior:
+            TargetOriginId: site
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !Ref SiteHostCachePolicy
+            ResponseHeadersPolicyId: !Ref SiteHostHeadersPolicy
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt SiteHostRequestFunction.FunctionARN
+    SiteHostDnsA:
+      Type: AWS::Route53::RecordSet
+      Condition: HasSiteHost
+      Properties:
+        HostedZoneName: yyt.life.
+        Name: "*.${self:custom.siteHostSuffix.${self:custom.stage}}"
+        Type: A
+        AliasTarget:
+          DNSName: !GetAtt SiteHostDistribution.DomainName
+          HostedZoneId: Z2FDTNDATAQYW2
+    SiteHostDnsAAAA:
+      Type: AWS::Route53::RecordSet
+      Condition: HasSiteHost
+      Properties:
+        HostedZoneName: yyt.life.
+        Name: "*.${self:custom.siteHostSuffix.${self:custom.stage}}"
+        Type: AAAA
+        AliasTarget:
+          DNSName: !GetAtt SiteHostDistribution.DomainName
+          HostedZoneId: Z2FDTNDATAQYW2
     WebDnsA:
       Type: AWS::Route53::RecordSet
       Properties:

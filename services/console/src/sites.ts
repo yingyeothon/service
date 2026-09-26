@@ -10,6 +10,7 @@ import {
   DEPLOY_SORT_KEYS,
   SITE_SORT_KEYS,
   type SiteDeployRow,
+  type SiteNameRow,
   type SiteRow,
   type SitesDb,
 } from "@yyt/console-db";
@@ -27,11 +28,19 @@ import {
   SITE_DEPLOYS_PER_HOUR,
   SITE_DEPLOYS_PER_MEMBER_HOUR,
   SITE_MAX_ZIP_BYTES,
+  purgePrefix,
   sitePublicUrl,
   siteStagingKey,
   SLUG,
 } from "./site-deploy.js";
 import { SITE_UPLOAD_URL_TTL_SEC, type SiteStore } from "./site-store.js";
+import {
+  SITE_NAME_COUNT_SEC,
+  SITE_NAMES_PER_TEAM,
+  siteHostUrl,
+  siteNameProblem,
+  type SiteMemberBudget,
+} from "./site-domains.js";
 
 /**
  * Shown on the site page, the create form and in `yyt site` help — the one
@@ -52,6 +61,15 @@ const siteName = resourceName.refine(
   "letters, digits, _, - (max 64)",
 );
 const description = z.string().max(2000);
+/** Lower-cased before the grammar: the stored name is byte-exact. */
+const siteDomain = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .superRefine((v, c) => {
+    const problem = siteNameProblem(v);
+    if (problem) c.addIssue({ code: "custom", message: problem });
+  });
 
 export const siteCreateBody = z
   .object({ name: siteName, description: description.optional() })
@@ -60,6 +78,8 @@ export const sitePatchBody = z
   .object({
     name: siteName.optional(),
     description: description.nullable().optional(),
+    /** A name claims (moving the site to it), `null` moves back to a random slug. */
+    domain: siteDomain.nullable().optional(),
   })
   .strict();
 export const siteDeployBody = z
@@ -98,6 +118,12 @@ export interface SiteRoutesOptions {
   invoke?: SiteDeployInvoker;
   /** `https://dev-g.yyt.life` — the shared static host. */
   cdnBaseUrl: string;
+  /** `dev-g.yyt.life` when the stage has the per-site host (`{slug}.{suffix}`). */
+  hostSuffix?: string;
+  /** The per-team name slot (`createSiteNameSlot`). */
+  nameSlot: (teamId: string) => Promise<void>;
+  /** Per-member counters that outlive a deleted site (`createSiteMemberBudget`). */
+  memberBudget: SiteMemberBudget;
   clock: Clock;
   logger: Logger;
   audit: (
@@ -116,6 +142,9 @@ export function createSiteRoutes({
   store,
   invoke,
   cdnBaseUrl,
+  hostSuffix,
+  nameSlot,
+  memberBudget,
   clock,
   logger,
   audit,
@@ -203,10 +232,22 @@ export function createSiteRoutes({
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
     expiresAt: d.expiresAt,
+    /** `move`: a rename (docs/decisions.md *Site domains* §2), no zip. */
+    kind: d.moveTo !== null ? ("move" as const) : ("upload" as const),
+    moveTo: d.moveTo,
+    moveFrom: d.moveFrom,
   });
 
   async function siteViews(rows: SiteRow[]) {
     const crumb = await crumbs(rows);
+    // A busy site is held by an upload, a move or a delete; only a move has a
+    // target worth showing. Busy sites are few, so one read each is fine.
+    const moving = new Map<string, string>();
+    for (const r of rows)
+      if (r.activeDeployId !== null && r.activeDeployId !== SITE_DELETING) {
+        const d = await sites.findDeploy(r.activeDeployId);
+        if (d?.moveTo) moving.set(r.id, d.moveTo);
+      }
     return rows.map((s) => ({
       id: s.id,
       name: s.name,
@@ -215,6 +256,12 @@ export function createSiteRoutes({
       ...crumb(s),
       publicUrl: sitePublicUrl(cdnBaseUrl, s),
       basePath: `/${s.slug}/`,
+      /** The claimed name, or null while the slug is random. */
+      domain: s.named ? s.slug : null,
+      /** The site's own origin (`{slug}.{suffix}`), null on a stage without it. */
+      hostUrl: siteHostUrl(hostSuffix, s.slug),
+      hostSuffix: hostSuffix ?? null,
+      movingTo: moving.get(s.id) ?? null,
       currentDeployId: s.currentDeployId,
       /** A deploy (or a delete) holds the site; a new deploy is refused. */
       busy: s.activeDeployId !== null,
@@ -227,7 +274,263 @@ export function createSiteRoutes({
   const noStore = (statusCode: number, body: unknown) =>
     json(body, { status: statusCode, noStore: true });
 
+  /**
+   * A random slug nothing uses or remembers: no site, no ledger row (a
+   * prefix some team gave up stays that team's), and no object under it (the
+   * dev bucket still holds hand-published games). A move in flight to the
+   * same nine characters is caught by `renameSite` itself.
+   */
+  async function mintFreeSlug(): Promise<string> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = mintSlug();
+      // A random `…yyt…` or reserved word would read as the platform's host.
+      if (siteNameProblem(candidate)) continue;
+      if (await sites.findSiteBySlug(candidate)) continue;
+      if (await sites.findSiteName(candidate)) continue;
+      if (store && (await store.listKeys(`${candidate}/`)).length > 0) continue;
+      return candidate;
+    }
+    throw new AppError("unavailable", "could not mint a slug");
+  }
+
+  /**
+   * Claims `want` for the site (or a fresh random slug for `null`). A site
+   * with files is moved by the worker (202); an empty one is renamed at once.
+   * Both are a `site_deploys` row, so both spend the deploy budgets. The team
+   * slot comes after validation (zod) and before any write.
+   */
+  async function rename(
+    id: { subject: string },
+    teamId: string,
+    row: SiteRow,
+    want: string | null,
+  ): Promise<{ site: SiteRow; deploy?: SiteDeployRow }> {
+    await nameSlot(teamId);
+    if (row.activeDeployId !== null)
+      throw new AppError("conflict", "a deploy is in flight; retry later");
+    // Counted per member in Redis, not from rows a site delete cascades away.
+    if (want !== null) await memberBudget.claim(id.subject);
+    if (!SLUG.test(row.slug))
+      throw new AppError("internal", "site has a malformed slug");
+    const now = nowSec(clock);
+    // Listed outside the transaction; `expectCurrentDeployId` catches a
+    // deploy that goes live in between.
+    const hasFiles =
+      store !== undefined && (await store.listKeys(`${row.slug}/`)).length > 0;
+    let target: string;
+    if (want === null) target = await mintFreeSlug();
+    else {
+      target = want;
+      // Objects under a prefix nobody recorded are a hand-published game:
+      // remember it as nobody's, so the answer never changes.
+      if (
+        store &&
+        !(await sites.findSiteName(target)) &&
+        !(await sites.findSiteBySlug(target)) &&
+        (await store.listKeys(`${target}/`)).length > 0
+      ) {
+        await sites.recordForeignPrefix(target, now);
+        throw nameTaken();
+      }
+    }
+    if (hasFiles && !invoke)
+      throw new AppError("unavailable", "site extraction is not configured");
+    await requireDeployBudget(row.id, id.subject, now);
+    const input = {
+      siteId: row.id,
+      teamId,
+      target,
+      kind: want === null ? ("slug" as const) : ("name" as const),
+      memberId: id.subject,
+      at: now,
+      cap: SITE_NAMES_PER_TEAM,
+      countSince: now - SITE_NAME_COUNT_SEC,
+      moveId: `sd_${ulid(now * 1000).toLowerCase()}`,
+      hasFiles,
+      expectSlug: row.slug,
+      expectCurrentDeployId: row.currentDeployId,
+    };
+    let r = await sites.renameSite(input);
+    if (r.status === "cleaning" && store) {
+      // The team's own released prefix still has a tree (a failed move, a
+      // cleanup the worker could not finish): empty it now rather than make
+      // the team wait for the daily sweep. A failure answers `cleaning`.
+      try {
+        await purgePrefix(
+          { sites, store, clock, logger },
+          { name: target, releasedAt: r.releasedAt },
+        );
+        r = await sites.renameSite({
+          ...input,
+          moveId: `sd_${ulid(now * 1000 + 1).toLowerCase()}`,
+        });
+      } catch (e) {
+        logger.warn("site name inline purge failed", {
+          name: target,
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    switch (r.status) {
+      case "gone":
+        throw new AppError("not_found", "site not found");
+      case "busy":
+        throw new AppError("conflict", "a deploy is in flight; retry later");
+      case "taken":
+        throw nameTaken();
+      case "cleaning":
+        throw new AppError(
+          "conflict",
+          "this name is still being cleaned up; retry later",
+          { details: { reason: "domain_cleaning" } },
+        );
+      case "cap":
+        throw new AppError(
+          "conflict",
+          `too many site names in this team (max ${SITE_NAMES_PER_TEAM} in use or released in the last 30 days)`,
+          {
+            details: {
+              reason: "domain_cap",
+              names: r.names.map((n) => ({
+                name: n.name,
+                releasedAt: n.releasedAt,
+              })),
+            },
+          },
+        );
+      case "unchanged":
+        return { site: r.site };
+    }
+    await audit(id.subject, "site.domain", row.id, {
+      teamId,
+      from: row.named ? row.slug : null,
+      to: want,
+      slugFrom: row.slug,
+      slugTo: target,
+      deployId: r.deploy.id,
+    });
+    if (r.status === "renamed") return { site: r.site };
+    try {
+      await invoke!(r.deploy.id);
+    } catch (e) {
+      const at = nowSec(clock);
+      const ended = await sites.finishDeploy({
+        deployId: r.deploy.id,
+        from: ["queued"],
+        patch: { status: "failed", error: "invoke_failed" },
+        at,
+        releaseTarget: true,
+      });
+      // Nothing was copied: the target is empty, so stamp it at once (an
+      // unserved name is free again, a served one needs no purge).
+      if (ended.released)
+        await sites.markSiteNamePurged(ended.released, at, at);
+      logger.error("site move invoke failed", {
+        deployId: r.deploy.id,
+        message: e instanceof Error ? e.message : String(e),
+      });
+      throw new AppError("unavailable", "could not start the move", {
+        cause: e,
+      });
+    }
+    return { site: r.site, deploy: r.deploy };
+  }
+
+  const nameTaken = () =>
+    new AppError("conflict", "this name is taken", {
+      details: { reason: "domain_taken" },
+    });
+
+  /** Per site and per member per hour; a move counts like an upload. */
+  async function requireDeployBudget(
+    siteId: string,
+    memberId: string,
+    now: number,
+  ): Promise<void> {
+    const recent = await sites.listDeploys(siteId, SITE_DEPLOYS_PER_HOUR);
+    if (
+      recent.length >= SITE_DEPLOYS_PER_HOUR &&
+      recent[recent.length - 1]!.createdAt > now - 3600
+    )
+      throw new AppError(
+        "rate_limited",
+        `at most ${SITE_DEPLOYS_PER_HOUR} deploys per site per hour`,
+      );
+    // Per member across sites: a create/deploy/delete loop would
+    // otherwise dodge the per-site cap. The rows go with a deleted site, so
+    // the Redis counter is what actually holds; the row count stays as the
+    // check that survives a Redis flush.
+    if (
+      (await sites.countDeploysBy(memberId, now - 3600)) >=
+      SITE_DEPLOYS_PER_MEMBER_HOUR
+    )
+      throw new AppError(
+        "rate_limited",
+        `at most ${SITE_DEPLOYS_PER_MEMBER_HOUR} deploys per member per hour`,
+      );
+    await memberBudget.deploy(memberId);
+  }
+
+  const nameView = (n: SiteNameRow) => ({
+    name: n.name,
+    teamId: n.teamId,
+    kind: n.kind,
+    createdBy: n.createdBy,
+    createdAt: n.createdAt,
+    releasedAt: n.releasedAt,
+    served: n.served,
+    purgedAt: n.purgedAt,
+  });
+  const adminName = async (ctx: RouteContext) => {
+    const name = (ctx.params.name ?? "").toLowerCase();
+    if (!SLUG.test(name)) throw new AppError("not_found", "no such name");
+    const row = await sites.findSiteName(name);
+    if (!row) throw new AppError("not_found", "no such name");
+    return row;
+  };
+
   return [
+    // Platform admin: the ledger row behind a name (docs/decisions.md *Site
+    // domains* §5), and its release — the one way a recorded prefix (a
+    // deleted team's, a squatter's, a hand-published game's) becomes
+    // claimable again. The reason goes to the global audit log.
+    {
+      method: "GET",
+      path: "/admin/site-names/{name}",
+      auth: true,
+      handler: async (ctx) => {
+        requireRole(ctx, "admin");
+        return nameView(await adminName(ctx));
+      },
+    },
+    defineRoute({
+      method: "POST",
+      path: "/admin/site-names/{name}/release",
+      auth: true,
+      body: z.object({ reason: z.string().trim().min(1).max(500) }).strict(),
+      handler: async (ctx) => {
+        const id = requireRole(ctx, "admin");
+        const row = await adminName(ctx);
+        if (await sites.isPrefixBusy(row.name))
+          throw new AppError("conflict", "a site uses this name");
+        // Nothing may be left for the next owner's origin to serve.
+        const s = requireStore();
+        const keys = await s.listKeys(`${row.name}/`);
+        if (keys.length > 0) {
+          await s.deleteKeys(keys);
+          await s.invalidate([`/${row.name}/*`]);
+        }
+        const r = await sites.dropSiteName(row.name);
+        if (r === "in_use")
+          throw new AppError("conflict", "a site uses this name");
+        await audit(id.subject, "site_name.release", null, {
+          ...nameView(row),
+          objects: keys.length,
+          reason: ctx.body.reason,
+        });
+        return undefined;
+      },
+    }),
     {
       method: "GET",
       path: "/sites",
@@ -266,17 +569,7 @@ export function createSiteRoutes({
         await requireFreeName(a.team.id, ctx.body.name);
         const now = nowSec(clock);
         const siteId = `st_${randomHex(8)}`;
-        // The slug is the prefix: a legacy object under it (the dev bucket
-        // still holds hand-published games) would be served as this site.
-        let slug = "";
-        for (let attempt = 0; attempt < 5 && !slug; attempt++) {
-          const candidate = mintSlug();
-          if (await sites.findSiteBySlug(candidate)) continue;
-          if (store && (await store.listKeys(`${candidate}/`)).length > 0)
-            continue;
-          slug = candidate;
-        }
-        if (!slug) throw new AppError("unavailable", "could not mint a slug");
+        const slug = await mintFreeSlug();
         await sites.insertSite({
           id: siteId,
           name: ctx.body.name,
@@ -328,26 +621,39 @@ export function createSiteRoutes({
       handler: async (ctx) => {
         const { id, row, team: o } = await siteWith(ctx, true);
         const patch: { name?: string; description?: string | null } = {};
+        // Every check that can refuse comes before the domain moves; only a
+        // team-name race between the check and the update can still answer
+        // 409 after a rename.
         if (ctx.body.name !== undefined && ctx.body.name !== row.name) {
           await requireFreeName(o.id, ctx.body.name, row.id);
           patch.name = ctx.body.name;
         }
         if (ctx.body.description !== undefined)
           patch.description = ctx.body.description;
-        if (!(await sites.updateSite(row.id, patch, nowSec(clock))))
-          throw new AppError("not_found", "site not found");
-        await audit(id.subject, "site.update", row.id, {
-          fields: Object.keys(patch),
-        });
-        await siteHistory(
-          row,
-          id.subject,
-          "resource.update",
-          Object.keys(patch),
-        );
+        const want = ctx.body.domain;
+        const fields = Object.keys(patch);
+        let moving: SiteDeployRow | undefined;
+        // Only an idle site's own value is a no-op: while a move is in flight
+        // "the current name" is about to change, so the request goes on to
+        // the slot and the busy answer.
+        const noop =
+          row.activeDeployId === null && want === (row.named ? row.slug : null);
+        if (want !== undefined && !noop) {
+          moving = (await rename(id, o.id, row, want)).deploy;
+          fields.push("domain");
+        }
+        if (Object.keys(patch).length > 0 || fields.length === 0) {
+          if (!(await sites.updateSite(row.id, patch, nowSec(clock))))
+            throw new AppError("not_found", "site not found");
+          await audit(id.subject, "site.update", row.id, {
+            fields: Object.keys(patch),
+          });
+        }
+        await siteHistory(row, id.subject, "resource.update", fields);
         const s = await sites.findSite(row.id);
         if (!s) throw new AppError("not_found", "site not found");
-        return siteView(s);
+        // 202 while the worker moves the files; the client polls the site.
+        return moving ? json(await siteView(s), { status: 202 }) : siteView(s);
       },
     }),
     {
@@ -357,22 +663,30 @@ export function createSiteRoutes({
       handler: async (ctx) => {
         const { id, row } = await siteWith(ctx, true);
         const now = nowSec(clock);
+        // Checked before the claim, so a bad row never wedges the site.
+        if (!SLUG.test(row.slug))
+          throw new AppError("internal", "site has a malformed slug");
         // Same claim a deploy takes: the worker checks it before `live`, so
         // a deploy racing this delete ends `site_gone` instead of resurrecting
         // objects under a prefix nobody owns any more.
         if (!(await sites.claimSite(row.id, SITE_DELETING, now)))
           throw new AppError("conflict", "a deploy is in flight; retry later");
-        if (!SLUG.test(row.slug))
+        // Re-read under the claim: a move that landed after the first read
+        // changed the slug, and the prefix to empty is the current one.
+        const held = await sites.findSite(row.id);
+        if (!held) throw new AppError("not_found", "site not found");
+        const slug = held.slug;
+        if (!SLUG.test(slug)) {
+          await sites.releaseSite(row.id, SITE_DELETING, nowSec(clock));
           throw new AppError("internal", "site has a malformed slug");
+        }
+        let served = false;
+        let keys: string[] = [];
         try {
           const s = requireStore();
-          const keys = await s.listKeys(`${row.slug}/`);
-          if (keys.length > 0) {
-            await s.deleteKeys(keys);
-            // Edge copies of a removed site would otherwise live out the
-            // TTL; an empty prefix has nothing cached and buys no path.
-            await s.invalidate([`/${row.slug}/*`]);
-          }
+          keys = await s.listKeys(`${slug}/`);
+          served = keys.length > 0;
+          if (keys.length > 0) await s.deleteKeys(keys);
           // Rows cascade with the site; the staging zips they name would not.
           for (const d of await sites.listDeploys(
             row.id,
@@ -385,10 +699,30 @@ export function createSiteRoutes({
           if (e instanceof AppError) throw e;
           throw new AppError("unavailable", "site storage error", { cause: e });
         }
-        await sites.deleteSite(row.id);
+        // The objects are gone: a CDN failure is a warning, never a reason
+        // to hand the site back (a retry would find the prefix empty).
+        let invalidated = keys.length === 0;
+        if (keys.length > 0)
+          invalidated = await store!
+            .invalidate([`/${slug}/*`])
+            .then(() => true)
+            .catch((e: unknown) => {
+              logger.warn("site delete invalidation failed", {
+                siteId: row.id,
+                message: e instanceof Error ? e.message : String(e),
+              });
+              return false;
+            });
+        // A prefix that served stays the team's (docs/decisions.md *Site
+        // domains* §5); emptied and invalidated, it needs no purge.
+        const at = nowSec(clock);
+        if (!(await sites.deleteSite(row.id, at, served, slug)))
+          throw new AppError("conflict", "the site changed; retry");
+        if (invalidated) await sites.markSiteNamePurged(slug, at, at);
         await audit(id.subject, "site.delete", row.id, {
           name: row.name,
-          slug: row.slug,
+          slug,
+          teamId: row.teamId,
         });
         await siteHistory(row, id.subject, "resource.delete");
         return undefined;
@@ -428,25 +762,7 @@ export function createSiteRoutes({
           );
         const now = nowSec(clock);
         // Grants, not commits: a loop of presigns is the same S3/CDN cost.
-        const recent = await sites.listDeploys(row.id, SITE_DEPLOYS_PER_HOUR);
-        if (
-          recent.length >= SITE_DEPLOYS_PER_HOUR &&
-          recent[recent.length - 1]!.createdAt > now - 3600
-        )
-          throw new AppError(
-            "rate_limited",
-            `at most ${SITE_DEPLOYS_PER_HOUR} deploys per site per hour`,
-          );
-        // Per member across sites: a create/deploy/delete loop would
-        // otherwise dodge the per-site cap.
-        if (
-          (await sites.countDeploysBy(id.subject, now - 3600)) >=
-          SITE_DEPLOYS_PER_MEMBER_HOUR
-        )
-          throw new AppError(
-            "rate_limited",
-            `at most ${SITE_DEPLOYS_PER_MEMBER_HOUR} deploys per member per hour`,
-          );
+        await requireDeployBudget(row.id, id.subject, now);
         // Time-ordered: the deploy list sorts by (created_at, id).
         const deployId = `sd_${ulid(now * 1000).toLowerCase()}`;
         const key = siteStagingKey(deployId);

@@ -61,7 +61,11 @@ import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { historyId } from "./team.js";
 import { createS3PosterStore } from "./poster.js";
 import { createS3SiteStore, type SiteStore } from "./site-store.js";
-import { runSiteDeploy, runSiteSweep } from "./site-deploy.js";
+import {
+  runSiteDeploy,
+  runSiteNameSweep,
+  runSiteSweep,
+} from "./site-deploy.js";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
@@ -243,6 +247,10 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     siteStore,
     siteInvoke: siteInvokerFromEnv(),
     siteCdnUrl: process.env.SITE_CDN_URL || undefined,
+    // Both set only once the wildcard record exists (serverless.yml).
+    siteHostSuffix:
+      (process.env.SITE_HOST_RECORD && process.env.SITE_HOST_SUFFIX) ||
+      undefined,
     kv,
     redisAcl,
     redisEndpoint,
@@ -298,7 +306,10 @@ function siteInvokerFromEnv():
  * path in a status write); a malformed event is logged and dropped, since a
  * retry could not fix it.
  */
-export const siteDeploy = async (event: unknown): Promise<void> => {
+export const siteDeploy = async (
+  event: unknown,
+  context?: { getRemainingTimeInMillis?: () => number },
+): Promise<void> => {
   const deployId = (event as { deployId?: unknown } | null)?.deployId;
   if (typeof deployId !== "string" || !/^sd_[0-9a-z]{1,64}$/.test(deployId)) {
     logger.error("site deploy event malformed");
@@ -321,7 +332,13 @@ export const siteDeploy = async (event: unknown): Promise<void> => {
     });
     return;
   }
-  await runSiteDeploy(deployId, { sites, store, logger });
+  await runSiteDeploy(deployId, {
+    sites,
+    store,
+    logger,
+    // A move stops starting copies near the timeout and cleans up instead.
+    remainingMs: context?.getRemainingTimeInMillis?.bind(context),
+  });
 };
 
 /** EventBridge daily schedule. */
@@ -439,6 +456,13 @@ export const expire = async (): Promise<void> => {
     async () => {
       const store = siteStoreFromEnv();
       if (store) await runSiteSweep({ sites, store, logger });
+    },
+    // Released site prefixes still holding objects (a move's old tree after a
+    // failed cleanup, a failed move's partial copy): the per-site host has no
+    // lookup, so anything left under a valid label is served until this runs.
+    async () => {
+      const store = siteStoreFromEnv();
+      if (store) await runSiteNameSweep({ sites, store, logger });
     },
     // Persists the event statuses the API only derives and retries poster
     // objects whose delete failed at replacement time.

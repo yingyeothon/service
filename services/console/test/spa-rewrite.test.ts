@@ -1,27 +1,15 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { functionCode, loadFunction } from "./cf-function.js";
 
 /**
- * The CloudFront Function in serverless.yml is plain ES5-ish JS; extract the
- * `FunctionCode` block so the SPA-fallback rules are covered without yaml deps.
+ * The CloudFront Function in serverless.yml is plain ES5-ish JS; the
+ * `FunctionCode` block is evaluated so the SPA-fallback rules are covered
+ * without yaml deps.
  */
 function loadHandler(): (event: { request: { uri: string } }) => {
   uri: string;
 } {
-  const yml = readFileSync(
-    fileURLToPath(new URL("../serverless.yml", import.meta.url)),
-    "utf8",
-  );
-  const m = /FunctionCode: \|\n((?: {10}.*\n)+)/.exec(yml);
-  if (!m) throw new Error("FunctionCode block not found");
-  const code = (m[1] ?? "").replace(/^ {10}/gm, "");
-  // Evaluating the extracted snippet is the point of this test: it is the
-  // exact code CloudFront runs, read from the repo rather than the network.
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call
-  return new Function(`${code}; return handler;`)() as ReturnType<
-    typeof loadHandler
-  >;
+  return loadFunction(functionCode("SpaRewriteFunction"));
 }
 
 describe("CloudFront SPA rewrite", () => {

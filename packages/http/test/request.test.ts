@@ -14,6 +14,19 @@ describe("request helpers", () => {
       b: " x",
     });
     expect(parseCookies({}, ["c=3"])).toEqual({ c: "3" });
+    // Only ASCII whitespace is trimmed: an NBSP-prefixed name is not `__Host-`.
+    expect(parseCookies({}, ["\u00a0__Host-s=evil", "__Host-s=good"])).toEqual({
+      "__Host-s": "good",
+    });
+    expect(parseCookies({ cookie: "\t a=1 \t" })).toEqual({ a: "1" });
+    expect(parseCookies({ cookie: "\ufeffb=2; a b=3" })).toEqual({});
+    // A malformed first value does not block a valid later one (unprefixed).
+    expect(parseCookies({ cookie: "x=%E0; x=ok" })).toEqual({ x: "ok" });
+    // First occurrence wins; a prefixed name seen twice is ambiguous.
+    expect(parseCookies({ cookie: "x=1; x=2" })).toEqual({ x: "1" });
+    expect(
+      parseCookies({}, ["__Host-s=a", "__Host-s=b", "__Secure-t=1", "k=v"]),
+    ).toEqual({ "__Secure-t": "1", k: "v" });
     expect(parseCookies({})).toEqual({});
   });
   it("serializeCookie defaults are secure", () => {
