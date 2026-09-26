@@ -2,25 +2,67 @@ import 'dart:convert';
 
 import 'package:yyt_console/auth/auth_config.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
+import 'package:yyt_console/projects/channel_models.dart';
 import 'package:yyt_console/projects/models.dart';
+import 'package:yyt_console/projects/site_models.dart';
 import 'package:http/http.dart' as http;
 
-/// A console API error with the server's message (`{error:{code,message}}`).
+/// A console API error with the server's message (`{error:{code,message,
+/// details}}`, packages/http/src/handler.ts). On a 400 `details` is the
+/// validation list (`[{path, message}]`); otherwise it is an object such as
+/// `{reason: "domain_taken"}` or `{retryAfterMs: 1000}`.
 class ApiException implements Exception {
-  const ApiException(this.status, this.message, {this.code});
+  const ApiException(this.status, this.message, {this.code, this.details});
 
   final int status;
   final String message;
   final String? code;
 
+  /// The raw `error.details`, as sent.
+  final Object? details;
+
+  /// `details.reason` when details is an object.
+  String? get reason {
+    final d = details;
+    return d is Map && d['reason'] is String ? d['reason'] as String : null;
+  }
+
+  /// `details.names[].name`: the team's counted names on a `domain_cap` 409
+  /// (docs/decisions.md *Site domains* §7).
+  List<String> get names {
+    final d = details;
+    final list = d is Map ? d['names'] : null;
+    if (list is! List) return const [];
+    return [
+      for (final n in list)
+        if (n is Map && n['name'] is String) n['name'] as String,
+    ];
+  }
+
+  /// `path → message` from a validation list; the first message per path.
+  Map<String, String> get fieldErrors {
+    final d = details;
+    if (d is! List) return const {};
+    final out = <String, String>{};
+    for (final item in d) {
+      if (item is! Map) continue;
+      final path = item['path'];
+      final message = item['message'];
+      if (path is String && message is String) {
+        out.putIfAbsent(path, () => message);
+      }
+    }
+    return out;
+  }
+
   @override
   String toString() => message;
 }
 
-/// Teams → projects → issues → comments, plus team discussions, over the
-/// console API. Every call
-/// carries the saved token; 401 surfaces as [UnauthorizedException] so the
-/// caller logs out like the app list does.
+/// Teams → projects → issues → comments, team discussions, and a project's
+/// sites and channels, over the console API. Every call carries the saved
+/// token; 401 surfaces as [UnauthorizedException] so the caller logs out like
+/// the app list does.
 class ProjectsApi {
   ProjectsApi({required this.token, http.Client? client, String? baseUrl})
     : _client = client ?? http.Client(),
@@ -184,6 +226,105 @@ class ProjectsApi {
     ),
   );
 
+  // ---- sites ------------------------------------------------------------
+
+  Future<List<Site>> listSites(String projectId) async {
+    final body = await _get(AuthConfig.projectSitesUrlOf(baseUrl, projectId));
+    return _list(body['sites']).map(Site.fromJson).toList();
+  }
+
+  Future<SiteDetail> getSite(String id) async => SiteDetail.fromJson(
+    _object(await _get(AuthConfig.siteUrlOf(baseUrl, id))),
+  );
+
+  /// A blank description is left out rather than sent empty.
+  Future<Site> createSite(
+    String projectId, {
+    required String name,
+    String description = '',
+  }) async {
+    final d = description.trim();
+    return Site.fromJson(
+      _object(
+        await _post(AuthConfig.projectSitesUrlOf(baseUrl, projectId), {
+          'name': name.trim(),
+          if (d.isNotEmpty) 'description': d,
+        }),
+      ),
+    );
+  }
+
+  /// [patch] carries only the changed keys ([buildSitePatch]). A 202 means a
+  /// rename queued a move: the view is `busy` with `movingTo` until the
+  /// worker finishes.
+  Future<SiteUpdate> updateSite(String id, Map<String, Object?> patch) async {
+    final r = await _patch(AuthConfig.siteUrlOf(baseUrl, id), patch);
+    final body = _object(_decode(r));
+    return SiteUpdate(
+      site: Site.fromJson(body),
+      moveQueued: r.statusCode == 202,
+    );
+  }
+
+  Future<void> deleteSite(String id) =>
+      _delete(AuthConfig.siteUrlOf(baseUrl, id));
+
+  // ---- channels ---------------------------------------------------------
+
+  /// [kind] narrows the list (`auth` for the auth-channel picker).
+  Future<List<Channel>> listChannels(String projectId, {String? kind}) async {
+    final base = AuthConfig.projectChannelsUrlOf(baseUrl, projectId);
+    final url =
+        kind == null
+            ? base
+            : Uri.parse(
+              base,
+            ).replace(queryParameters: {'kind': kind}).toString();
+    final body = await _get(url);
+    return _list(body['channels']).map(Channel.fromJson).toList();
+  }
+
+  Future<Channel> getChannel(String id) async => Channel.fromJson(
+    _object(await _get(AuthConfig.channelUrlOf(baseUrl, id))),
+  );
+
+  /// The response is the only place the credential ever appears.
+  Future<CreatedChannel> createChannel(
+    String projectId, {
+    required String kind,
+    required String name,
+    required Object config,
+  }) async => CreatedChannel.fromJson(
+    _object(
+      await _post(AuthConfig.projectChannelsUrlOf(baseUrl, projectId), {
+        'kind': kind,
+        'name': name,
+        'config': config,
+      }),
+    ),
+  );
+
+  /// Sends only what is given; the server keeps what is left out.
+  Future<Channel> updateChannel(
+    String id, {
+    String? name,
+    Object? config,
+  }) async {
+    final r = await _patch(AuthConfig.channelUrlOf(baseUrl, id), {
+      if (name != null) 'name': name,
+      if (config != null) 'config': config,
+    });
+    return Channel.fromJson(_object(_decode(r)));
+  }
+
+  /// +7 days, capped at 28 days ahead; a channel already at the cap is 409.
+  Future<Channel> extendChannel(String id) async => Channel.fromJson(
+    _object(await _post(AuthConfig.channelExtendUrlOf(baseUrl, id), null)),
+  );
+
+  Future<void> deleteChannel(String id) =>
+      _delete(AuthConfig.channelUrlOf(baseUrl, id));
+
   /// A single-entity response must carry an id; an empty 2xx (the row vanished
   /// between write and re-read) is reported instead of crashing on a cast.
   static Map<String, dynamic> _object(Map<String, dynamic> body) {
@@ -215,6 +356,21 @@ class ProjectsApi {
     ),
   );
 
+  /// The raw response: the caller decodes it, and a site rename's 202 is
+  /// read from the status.
+  Future<http.Response> _patch(String url, Map<String, Object?> json) =>
+      _client.patch(
+        Uri.parse(url),
+        headers: {..._headers, 'Content-Type': 'application/json'},
+        body: jsonEncode(json),
+      );
+
+  /// DELETE answers 204 with an empty body: checked for errors, never read
+  /// as an entity.
+  Future<void> _delete(String url) async {
+    _decode(await _client.delete(Uri.parse(url), headers: _headers));
+  }
+
   Map<String, dynamic> _decode(http.Response r) {
     if (r.statusCode == 401) {
       throw UnauthorizedException('인증이 만료되었습니다. 다시 로그인해주세요.');
@@ -233,29 +389,89 @@ class ProjectsApi {
     }
     final error = data?['error'];
     final code =
-        error is Map<String, dynamic> ? error['code'] as String? : null;
+        error is Map<String, dynamic> && error['code'] is String
+            ? error['code'] as String
+            : null;
     final serverMessage =
         error is Map<String, dynamic> && error['message'] is String
             ? error['message'] as String
             : null;
+    final details = error is Map<String, dynamic> ? error['details'] : null;
+    final partial = ApiException(
+      r.statusCode,
+      '',
+      code: code,
+      details: details,
+    );
+    final fields = partial.fieldErrors.entries.map(
+      (e) => e.key.isEmpty ? e.value : '${e.key}: ${e.value}',
+    );
+    final base = describeError(
+      r.statusCode,
+      code,
+      serverMessage,
+      reason: partial.reason,
+    );
     throw ApiException(
       r.statusCode,
-      describeError(r.statusCode, code, serverMessage),
+      fields.isEmpty ? base : '$base — ${fields.join('; ')}',
       code: code,
+      details: details,
     );
   }
 
-  /// Korean by status/code; the server's English detail is kept in
-  /// parentheses so validation messages (limits, enum values) stay visible.
-  static String describeError(int status, String? code, String? detail) {
-    final base = switch (code ?? status) {
-      'forbidden' || 403 => '권한이 없습니다. 팀 승인 여부를 확인해주세요.',
-      'not_found' || 404 => '찾을 수 없습니다.',
-      'conflict' || 409 => '요청이 현재 상태와 충돌합니다.',
-      'rate_limited' || 429 => '요청이 너무 잦습니다. 잠시 후 다시 시도해주세요.',
-      'bad_request' || 400 => '입력값이 올바르지 않습니다.',
-      _ => '요청 실패: $status',
-    };
+  static const _reasonMessages = {
+    'domain_taken': '이미 쓰이고 있거나 다른 팀이 쓴 적 있는 이름입니다.',
+    'domain_cap': '팀의 이름 한도(20개)에 도달했습니다.',
+    'domain_cleaning': '이 이름은 아직 정리 중입니다. 잠시 뒤 다시 시도하세요.',
+  };
+
+  static const _codeMessages = {
+    'forbidden': '권한이 없습니다. 팀 승인 여부를 확인해주세요.',
+    'not_found': '찾을 수 없습니다.',
+    'conflict': '요청이 현재 상태와 충돌합니다.',
+    'rate_limited': '요청이 너무 잦습니다. 잠시 뒤 다시 시도하세요.',
+    'bad_request': '입력값이 올바르지 않습니다.',
+    'unavailable': '서버가 잠시 요청을 처리할 수 없습니다. 잠시 뒤 다시 시도하세요.',
+  };
+
+  static const _statusMessages = {
+    403: '권한이 없습니다. 팀 승인 여부를 확인해주세요.',
+    404: '찾을 수 없습니다.',
+    409: '요청이 현재 상태와 충돌합니다.',
+    429: '요청이 너무 잦습니다. 잠시 뒤 다시 시도하세요.',
+    400: '입력값이 올바르지 않습니다.',
+    503: '서버가 잠시 요청을 처리할 수 없습니다. 잠시 뒤 다시 시도하세요.',
+  };
+
+  /// The Korean sentence for a known `details.reason`, without the server's
+  /// English detail (shown under the field the reason is about). A
+  /// `domain_cap` refusal lists the team's counted [names], since reusing
+  /// one of them is the way past the cap.
+  static String? reasonMessage(
+    String? reason, {
+    List<String> names = const [],
+  }) {
+    final base = _reasonMessages[reason];
+    if (base == null || reason != 'domain_cap' || names.isEmpty) return base;
+    return '$base 세는 이름: ${names.join(', ')}. 이 중 하나를 다시 쓰면 '
+        '한도에 더해지지 않고, 놓아준 이름은 30일이 지나면 빠집니다.';
+  }
+
+  /// Korean by `details.reason`, then `code`, then status; the server's
+  /// English detail is kept in parentheses so validation messages (limits,
+  /// enum values) stay visible.
+  static String describeError(
+    int status,
+    String? code,
+    String? detail, {
+    String? reason,
+  }) {
+    final base =
+        _reasonMessages[reason] ??
+        _codeMessages[code] ??
+        _statusMessages[status] ??
+        '요청 실패: $status';
     return detail == null || detail.isEmpty ? base : '$base ($detail)';
   }
 

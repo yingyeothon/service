@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:yyt_console/auth/auth_config.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/projects/project_screen.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/projects/projects_screen.dart';
 import 'package:yyt_console/projects/team_expansion_store.dart';
@@ -85,6 +86,10 @@ http.Client _client(List<String> calls) => MockClient((req) async {
       });
     case '/teams/team_b/issues':
       return _json({'issues': const []});
+    case '/projects/prj_1/issues':
+      return _json({
+        'issues': [_issue('prj_1', 7, 7)],
+      });
   }
   return http.Response('', 404);
 });
@@ -194,5 +199,20 @@ void main() {
     expect(calls.last, '/teams/team_a/issues?limit=200');
     expect(find.text('#3 issue 3'), findsOneWidget);
     expect(find.textContaining('second · me'), findsNWidgets(2));
+  });
+
+  testWidgets('a project row opens the project on its issues tab', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    await pump(tester, _client(calls), MemoryTeamExpansionStore());
+    await tester.tap(find.text('first'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ProjectScreen), findsOneWidget);
+    expect(find.text('alpha / first'), findsOneWidget);
+    expect(calls.last, '/projects/prj_1/issues?status=open');
+    expect(find.text('#7 issue 7'), findsOneWidget);
+    expect(find.text('사이트'), findsOneWidget);
+    expect(find.text('채널'), findsOneWidget);
   });
 }

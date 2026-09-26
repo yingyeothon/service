@@ -10,31 +10,39 @@ import 'package:flutter/material.dart';
 String formatIssueTime(DateTime t) =>
     formatLocalTime(t, pattern: 'yyyy-MM-dd HH:mm');
 
-/// Issues of one project with an open/closed filter and a create button.
-class IssuesScreen extends StatefulWidget {
-  const IssuesScreen({
+/// The issues tab of [ProjectScreen]: an open/closed filter, the list, and a
+/// create button for seated members. Uses the project screen's client.
+class IssuesTab extends StatefulWidget {
+  const IssuesTab({
     super.key,
     required this.authState,
     required this.team,
     required this.project,
+    required this.api,
   });
 
   final AuthState authState;
   final Team team;
   final Project project;
+  final ProjectsApi api;
 
   @override
-  State<IssuesScreen> createState() => _IssuesScreenState();
+  State<IssuesTab> createState() => _IssuesTabState();
 }
 
-class _IssuesScreenState extends State<IssuesScreen> {
+class _IssuesTabState extends State<IssuesTab>
+    with AutomaticKeepAliveClientMixin {
   List<Issue>? _issues;
   String? _error;
   String _status = 'open';
 
-  late final ProjectsApi _api = ProjectsApi(
-    token: widget.authState.token ?? '',
-  );
+  /// Bumped per request so a slow reply for the previous filter is dropped.
+  int _generation = 0;
+
+  ProjectsApi get _api => widget.api;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -42,19 +50,14 @@ class _IssuesScreenState extends State<IssuesScreen> {
     _load();
   }
 
-  @override
-  void dispose() {
-    _api.close();
-    super.dispose();
-  }
-
   Future<void> _load() async {
+    final generation = ++_generation;
     try {
       final issues = await _api.listIssues(
         widget.project.id,
         status: _status == 'all' ? null : _status,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _generation) return;
       setState(() {
         _issues = issues;
         _error = null;
@@ -62,7 +65,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
     } on UnauthorizedException {
       if (mounted) await widget.authState.invalidate(_api.token);
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || generation != _generation) return;
       setState(() => _error = e.toString());
     }
   }
@@ -94,6 +97,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
               team: widget.team,
               project: widget.project,
               number: issue.number,
+              api: _api,
             ),
       ),
     );
@@ -102,13 +106,12 @@ class _IssuesScreenState extends State<IssuesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return Scaffold(
-      appBar: AppBar(
-        title: Text('${widget.team.name} / ${widget.project.name}'),
-      ),
       floatingActionButton:
           widget.team.canWrite
               ? FloatingActionButton.extended(
+                heroTag: 'fab-issues',
                 onPressed: _create,
                 icon: const Icon(Icons.add_rounded),
                 label: const Text('이슈 등록'),
@@ -129,6 +132,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
                 setState(() {
                   _status = s.first;
                   _issues = null;
+                  _error = null;
                 });
                 _load();
               },

@@ -421,11 +421,21 @@ class AuthDiagnosticLogger {
         return MapEntry(key, _sanitizeUri(value));
       }
       if (value is String) {
-        return MapEntry(key, _redact(value));
+        return MapEntry(
+          key,
+          _secretKeys.contains(key) ? '***' : _redact(value),
+        );
       }
       return MapEntry(key, value);
     });
   }
+
+  /// Keys whose values are channel credentials (create/rotate responses,
+  /// OAuth provider config).
+  static const _secretKeys = {'secret', 'apiKey', 'clientSecret'};
+
+  @visibleForTesting
+  static String redact(String input) => _redact(input);
 
   static String _redact(String input) {
     var result = input;
@@ -449,6 +459,18 @@ class AuthDiagnosticLogger {
     result = result.replaceAllMapped(
       RegExp(r'("token"\s*:\s*")[^"]+(")'),
       (match) => '${match.group(1)}***${match.group(2)}',
+    );
+    // `secret: …`, `"apiKey":"…"`, `clientSecret=…` (JSON or a Dart map).
+    result = result.replaceAllMapped(
+      RegExp(
+        r"""(\b(?:secret|apiKey|clientSecret)\b["']?\s*[:=]\s*["']?)[^"',}\s]+""",
+      ),
+      (match) => '${match.group(1)}***',
+    );
+    // Channel secrets and API keys are 32 random bytes in hex.
+    result = result.replaceAll(
+      RegExp(r'(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])'),
+      '(redacted)',
     );
     return result;
   }

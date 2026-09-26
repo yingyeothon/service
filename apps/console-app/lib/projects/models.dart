@@ -1,7 +1,10 @@
 /// Console API views (services/console/src/team.ts `teamView`, `projectView`,
 /// `issueView`, `commentView`). Only the fields the app shows are parsed.
 /// Console timestamps are unix seconds (`nowSec`), not milliseconds.
-DateTime _time(Object? v) =>
+DateTime _time(Object? v) => fromUnixSeconds(v);
+
+/// A console timestamp (unix seconds) as UTC; the epoch when absent.
+DateTime fromUnixSeconds(Object? v) =>
     v is num
         ? DateTime.fromMillisecondsSinceEpoch(v.toInt() * 1000, isUtc: true)
         : DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
@@ -31,6 +34,10 @@ class Team {
   /// Issues and comments need a seat (`secret: true` resource access), which
   /// an unseated platform admin does not have.
   bool get canWrite => role == 'owner' || role == 'member';
+
+  /// Channel extend and delete skip `secret: true` on the server, so an
+  /// unseated platform admin may run them too (services/console/src/app.ts).
+  bool get canManageChannelLifecycle => canWrite || role == 'admin';
 
   static Team fromJson(Map<String, dynamic> j) => Team(
     id: j['id'] as String,

@@ -3,9 +3,9 @@ import 'package:yyt_console/auth/auth_state.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
 import 'package:yyt_console/projects/discussions_screen.dart';
 import 'package:yyt_console/projects/issue_detail_screen.dart';
-import 'package:yyt_console/projects/issues_screen.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/profile_menu.dart';
+import 'package:yyt_console/projects/project_screen.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/projects/team_expansion_store.dart';
 import 'package:yyt_console/projects/team_issues_screen.dart';
@@ -200,14 +200,15 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     if (mounted) await _loadRecent(team, force: true);
   }
 
-  Future<void> _openIssues(Team team, Project project) async {
+  Future<void> _openProject(Team team, Project project) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder:
-            (_) => IssuesScreen(
+            (_) => ProjectScreen(
               authState: widget.authState,
               team: team,
               project: project,
+              api: _api,
             ),
       ),
     );
@@ -364,7 +365,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                       trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: () => _openIssues(team, project),
+                      onTap: () => _openProject(team, project),
                     ),
                   ),
             ],

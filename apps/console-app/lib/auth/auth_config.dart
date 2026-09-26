@@ -86,6 +86,16 @@ class AuthConfig {
       '$base/projects/${Uri.encodeComponent(projectId)}/issues';
   static String projectIssueUrlOf(String base, String projectId, int number) =>
       '${projectIssuesUrlOf(base, projectId)}/$number';
+  static String projectSitesUrlOf(String base, String projectId) =>
+      '$base/projects/${Uri.encodeComponent(projectId)}/sites';
+  static String siteUrlOf(String base, String siteId) =>
+      '$base/sites/${Uri.encodeComponent(siteId)}';
+  static String projectChannelsUrlOf(String base, String projectId) =>
+      '$base/projects/${Uri.encodeComponent(projectId)}/channels';
+  static String channelUrlOf(String base, String channelId) =>
+      '$base/channels/${Uri.encodeComponent(channelId)}';
+  static String channelExtendUrlOf(String base, String channelId) =>
+      '${channelUrlOf(base, channelId)}/extend';
   static String installerDownloadsUrlOf(String base) =>
       '$base/catalog/installer/downloads';
   static String appArtifactsUrlOf(String base, String appId) =>

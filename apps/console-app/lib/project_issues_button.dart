@@ -1,9 +1,9 @@
 import 'package:yyt_console/app_home.dart';
 import 'package:yyt_console/auth/auth_state.dart';
-import 'package:yyt_console/projects/issues_screen.dart';
+import 'package:yyt_console/projects/project_screen.dart';
 import 'package:flutter/material.dart';
 
-/// Opens the issues of the project an app belongs to.
+/// Opens the project an app belongs to, on its issues tab.
 class ProjectIssuesButton extends StatelessWidget {
   const ProjectIssuesButton({
     super.key,
@@ -23,7 +23,7 @@ class ProjectIssuesButton extends StatelessWidget {
           () => Navigator.of(context).push(
             MaterialPageRoute<void>(
               builder:
-                  (_) => IssuesScreen(
+                  (_) => ProjectScreen(
                     authState: authState,
                     team: home.team,
                     project: home.project,

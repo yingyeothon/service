@@ -2,8 +2,10 @@
 
 Android app with two tabs: **앱** lists catalog apps and installs their APKs
 directly from the public CDN (the original installer role), **프로젝트** lists
-the member's teams and projects and lets them read, file, comment on, close
-and reopen project issues — the console's issue tracker on a phone. It talks
+the member's teams and projects. A project opens with three tabs: **이슈**
+(read, file, comment on, close and reopen issues), **사이트** and **채널**
+(view, create, edit and delete the project's static sites and channels, and
+extend a channel by 7 days) — the console's project page on a phone. It talks
 only to the console API.
 
 - Sign in: **QR only**. The console SPA's _App login_ page mints an API token
@@ -26,7 +28,7 @@ only to the console API.
 - Times: the API sends UTC unix seconds; every screen formats them in the
   device time zone through `lib/format_time.dart`.
 - The app detail hero has a `team › project 이슈` button that opens the
-  app's project issues directly (team/project come from the app view's
+  app's project on its issues tab (team/project come from the app view's
   breadcrumb fields; the button is hidden when they are absent).
 - Apps tab layout: a grid of small cards (name, description, version, state,
   install button) — 2 columns, 4 on near-square screens at least 600dp wide
@@ -45,10 +47,77 @@ only to the console API.
   full team list with an open/closed filter), then the plain project list.
   The first team (by name) starts open, the rest closed; toggles are kept in
   secure storage (`projects_expanded_teams`) and restored on the next launch.
-- Projects: `GET /teams/{id}/projects`, `GET|POST /projects/{id}/issues`,
+- Project screen (`lib/projects/project_screen.dart`): tabs 이슈 / 사이트 /
+  채널, opened from a project row (or the app detail's issues button) on the
+  issues tab. The screen owns one `ProjectsApi` — server and token captured
+  together when it opens — and hands it to every tab and every screen pushed
+  from them. Tabs are kept alive (each loads once; pull to refresh), each has
+  its own create button, and a banner says when the caller is read-only.
+- Permissions: writes need a seat (`owner`/`member`, `Team.canWrite`). An
+  unseated platform admin (team role `admin`) reads everything and may also
+  extend or delete a channel, as the server allows
+  (`Team.canManageChannelLifecycle`); nothing else.
+- Issues: `GET /teams/{id}/projects`, `GET|POST /projects/{id}/issues`,
   `GET /projects/{id}/issues/{n}` (with comments), `POST …/{n}/close|reopen`,
-  `POST …/{n}/comments`. Writes need a seat (`owner`/`member`); an unseated
-  platform admin reads only.
+  `POST …/{n}/comments`.
+- Sites: `GET|POST /projects/{id}/sites`, `GET|PATCH|DELETE /sites/{id}`. A
+  row shows the name, the primary link (`domain != null ? (hostUrl ??
+  publicUrl) : publicUrl`, docs/decisions.md _Site domains_ §10) and a state
+  (배포 중 / 이동 중 / 라이브 / 비어 있음). The create form shows the
+  shared-origin warning (`siteSharedOriginWarning`, byte-identical to the
+  console's); the detail shows the server's `warning` verbatim, both
+  addresses with copy, the name, the current deploy and the last 20 deploys
+  (a move deploy reads "이름 이동 → name"). While the site is `busy` it
+  re-reads `GET /sites/{id}` every 3 s until it settles (a failed read keeps
+  trying), stops on a 404 (the site is gone) and when the screen closes.
+  Uploads stay in the web console and `yyt site deploy`; the app never
+  uploads.
+- Site names (docs/decisions.md _Site domains_): the edit form has a name
+  field, sent as `domain` only when changed (blank = `null`, back to a random
+  slug), trimmed and lower-cased, with the grammar checked locally as a hint
+  (3–32, `[a-z0-9-]`, no leading/trailing or doubled `-`). With a name host
+  (`hostSuffix`) the field shows `.{hostSuffix}`; without one it shows the
+  path it will take (`g.yyt.life/<name>/`). `PATCH` 200 = saved, 202 = a move
+  was queued (the detail then polls). While the site is busy the field is
+  locked and `domain` never sent: a busy site's 409 comes after the team's
+  one-per-second name slot is spent. The help says a `/{slug}/` build must be
+  rebuilt after a rename (`./` works on both hosts, `/` only on the site's
+  own). A 409 with `details.reason` `domain_taken`, `domain_cap` (listing
+  the team's counted `details.names`) or `domain_cleaning` and a 400 on
+  `domain` are shown under the field; a busy-site 409 and a 429 are a
+  SnackBar. A server
+  without these fields (`domain`, `hostUrl`, `hostSuffix`, `movingTo`, a
+  deploy's `moveTo`) reads them as null.
+- Channels: `GET|POST /projects/{id}/channels` (`?kind=auth` for the auth
+  channel picker), `GET|PATCH|DELETE /channels/{id}`,
+  `POST /channels/{id}/extend`. The form (`channel_config_form.dart`, pure
+  Dart) is a port of the SPA's `channelForm.ts`: same fields, defaults and
+  checks, and the config is always rebuilt from the form because the server
+  schemas are strict. An edit sends `name` only when it changed and `config`
+  only when a config field changed; an auth provider left on with a blank
+  client secret sends `{clientId}` so the stored secret is kept, a provider
+  switched off sends `null`. A non-auth kind cannot be created until the
+  project has an auth channel. Rotate-secret, the q Redis account and the auth
+  doc key stay in the web console.
+- One-time credentials: a create that returns one (auth `secret`, topic/match
+  `apiKey`; lobby/q have none and open the detail directly) shows it on
+  `SecretOnceScreen`. It awaits `FLAG_SECURE` (MethodChannel
+  `life.yyt.console/window` in `MainActivity.kt`) before the first frame that
+  renders the value and clears it on dispose — the flag covers the whole
+  single-activity app. The value is plain text; copy marks the clip sensitive
+  and `MainActivity` clears it after 60 s if the primary clip still carries
+  that copy's unique label (a timer on the main looper: from Android 10 a
+  backgrounded app cannot read the clip's text, so a Dart timer comparing
+  it never cleared anything; without the channel the Dart fallback does
+  exactly that); leaving asks
+  first and replaces the screen with the channel detail, so the value leaves
+  the navigation stack. It is never stored or logged: `CreatedChannel` redacts
+  its `toString`, and the diagnostics logger redacts 64-hex strings and the
+  values of `secret`/`apiKey`/`clientSecret`.
+- Errors: the console's `{error:{code,message,details}}` becomes an
+  `ApiException` with `details`, `reason` (`details.reason`) and
+  `fieldErrors` (a 400's `[{path,message}]`); the Korean message is chosen by
+  reason, then code, then status.
 - Pre-release builds (`life.yyt.catalog`, the legacy vendor id before it) are
   abandoned; install this package fresh. The launcher icon is
   `assets/icon.png` (`dart run flutter_launcher_icons`).

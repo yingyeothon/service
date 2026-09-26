@@ -15,12 +15,17 @@ class IssueDetailScreen extends StatefulWidget {
     required this.team,
     required this.project,
     required this.number,
+    this.api,
   });
 
   final AuthState authState;
   final Team team;
   final Project project;
   final int number;
+
+  /// The caller's client (the project screen's); built and owned here
+  /// otherwise.
+  final ProjectsApi? api;
 
   @override
   State<IssueDetailScreen> createState() => _IssueDetailScreenState();
@@ -40,9 +45,8 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
   bool _busy = false;
   final _comment = TextEditingController();
 
-  late final ProjectsApi _api = ProjectsApi(
-    token: widget.authState.token ?? '',
-  );
+  late final ProjectsApi _api =
+      widget.api ?? ProjectsApi(token: widget.authState.token ?? '');
 
   /// Server cap for a comment (services/console/src/team.ts `commentMd`).
   static const commentMaxLength = 10000;
@@ -55,7 +59,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
 
   @override
   void dispose() {
-    _api.close();
+    if (widget.api == null) _api.close();
     _comment.dispose();
     super.dispose();
   }

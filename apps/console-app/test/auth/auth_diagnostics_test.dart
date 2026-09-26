@@ -75,4 +75,28 @@ void main() {
     expect(error.context.operation, 'poll_device_token');
     expect(error.message, '네트워크 연결 실패');
   });
+
+  test('redact hides channel secrets, API keys and provider secrets', () {
+    final hex = '0123456789abcdef' * 4;
+    final out = AuthDiagnosticLogger.redact(
+      'created {"id":"auth_1","secret":"$hex"} '
+      '{apiKey: $hex, name: n} clientSecret=abc123 bare $hex.',
+    );
+    expect(out, isNot(contains(hex)));
+    expect(out, isNot(contains('abc123')));
+    expect(out, contains('"secret":"***"'));
+    expect(out, contains('apiKey: ***'));
+    expect(out, contains('clientSecret=***'));
+    expect(out, contains('bare (redacted).'));
+    // Ids and ordinary words survive.
+    expect(out, contains('"id":"auth_1"'));
+    expect(out, contains('name: n'));
+    expect(
+      AuthDiagnosticLogger.redact('the secret is required'),
+      'the secret is required',
+    );
+    // A 63-char run is not a credential; a 65-char one is not ours either.
+    expect(AuthDiagnosticLogger.redact(hex.substring(1)), hex.substring(1));
+    expect(AuthDiagnosticLogger.redact('${hex}0'), '${hex}0');
+  });
 }

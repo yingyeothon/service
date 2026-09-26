@@ -71,6 +71,30 @@ void main() {
     );
   });
 
+  test('site and channel urls encode their path segments', () {
+    const base = 'https://one.example';
+    expect(
+      AuthConfig.projectSitesUrlOf(base, 'prj 1'),
+      'https://one.example/projects/prj%201/sites',
+    );
+    expect(
+      AuthConfig.siteUrlOf(base, 'st/1'),
+      'https://one.example/sites/st%2F1',
+    );
+    expect(
+      AuthConfig.projectChannelsUrlOf(base, 'prj_1'),
+      'https://one.example/projects/prj_1/channels',
+    );
+    expect(
+      AuthConfig.channelUrlOf(base, 'auth?x'),
+      'https://one.example/channels/auth%3Fx',
+    );
+    expect(
+      AuthConfig.channelExtendUrlOf(base, 'q_1'),
+      'https://one.example/channels/q_1/extend',
+    );
+  });
+
   test('rejects a server URL carrying userinfo', () {
     expect(
       () => AuthConfig.normalizeServerUrl(
