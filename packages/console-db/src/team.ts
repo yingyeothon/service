@@ -131,6 +131,12 @@ export interface TeamRow {
   updatedAt: number;
 }
 
+/** A team's or project's name, all a breadcrumb needs (no MEDIUMTEXT description). */
+export interface IdName {
+  id: string;
+  name: string;
+}
+
 export interface TeamInput {
   id: string;
   name: string;
@@ -369,6 +375,11 @@ export interface TeamDb {
   /** Creates the team and seats `createdBy` as its first `owner`; records `team.create`. */
   createTeam(o: TeamInput, at: number): Promise<void>;
   findTeam(id: string): Promise<TeamRow | undefined>;
+  /**
+   * Names of the teams among `ids` that exist, by id ascending, each once. One
+   * statement for a page of rows instead of one `findTeam` per id.
+   */
+  findTeamNamesByIds(ids: readonly string[]): Promise<IdName[]>;
   /** Case-insensitive, like the unique index. */
   findTeamByName(name: string): Promise<TeamRow | undefined>;
   /** Every team this member has a row in (any role, any state), oldest first; `q` matches name or description. */
@@ -476,6 +487,8 @@ export interface TeamDb {
   /* --- projects --- */
   createProject(p: ProjectInput, by: Actor): Promise<void>;
   findProject(id: string): Promise<ProjectRow | undefined>;
+  /** `findTeamNamesByIds` for projects. */
+  findProjectNamesByIds(ids: readonly string[]): Promise<IdName[]>;
   findProjectByName(
     teamId: string,
     name: string,
@@ -1030,6 +1043,16 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const r = await prisma.teams.findUnique({ where: { id } });
         return r ? toTeam(r) : undefined;
       }),
+    findTeamNamesByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : prisma.teams.findMany({
+              where: { id: { in: [...new Set(ids)] } },
+              select: { id: true, name: true },
+              orderBy: { id: "asc" },
+            }),
+      ),
     findTeamByName: (name) =>
       run(async () => {
         const r = await prisma.teams.findUnique({ where: { name } });
@@ -1409,6 +1432,16 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
         const r = await prisma.projects.findUnique({ where: { id } });
         return r ? toProject(r) : undefined;
       }),
+    findProjectNamesByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : prisma.projects.findMany({
+              where: { id: { in: [...new Set(ids)] } },
+              select: { id: true, name: true },
+              orderBy: { id: "asc" },
+            }),
+      ),
     findProjectByName: (teamId, name) =>
       run(async () => {
         const r = await prisma.projects.findUnique({
@@ -2015,6 +2048,18 @@ function sortMembers(a: TeamMemberRow, b: TeamMemberRow): number {
 
 /* Shared by the repository and the fake for the keys that order after the fetch. */
 const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
+
+/** The fake's by-ids name lookup: existing rows only, each once, by id. */
+const namesByIds = (
+  rows: ReadonlyMap<string, IdName>,
+  ids: readonly string[],
+): IdName[] =>
+  [...new Set(ids)]
+    .flatMap((id) => {
+      const r = rows.get(id);
+      return r ? [{ id: r.id, name: r.name }] : [];
+    })
+    .sort(byId);
 const byMemberId = (a: TeamMemberRow, b: TeamMemberRow) =>
   cmpBin(a.memberId, b.memberId);
 const bySince = (a: TeamMemberRow, b: TeamMemberRow) =>
@@ -2300,6 +2345,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       const r = teams.get(id);
       return r && { ...r };
     },
+    findTeamNamesByIds: async (ids) => namesByIds(teams, ids),
     findTeamByName: async (name) => {
       const r = [...teams.values()].find((x) => ci(x.name) === ci(name));
       return r && { ...r };
@@ -2624,6 +2670,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       const r = projects.get(id);
       return r && { ...r };
     },
+    findProjectNamesByIds: async (ids) => namesByIds(projects, ids),
     findProjectByName: async (teamId, name) => {
       const r = [...projects.values()].find(
         (x) => x.teamId === teamId && ci(x.name) === ci(name),

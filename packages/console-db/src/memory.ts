@@ -139,7 +139,8 @@ export function createMemoryConsoleDb(
       return m && { ...m };
     },
     findMembersByIds: async (ids) =>
-      [...ids].sort().flatMap((id) => {
+      // Deduplicated like SQL `IN`, which returns each row once.
+      [...new Set(ids)].sort().flatMap((id) => {
         const m = members.get(id);
         return m ? [{ ...m }] : [];
       }),
@@ -193,6 +194,13 @@ export function createMemoryConsoleDb(
         (x) => x.tokenHash === hash && x.revokedAt === null,
       );
       return t && { ...t };
+    },
+    findTokenIdentity: async (hash) => {
+      const t = [...tokens.values()].find(
+        (x) => x.tokenHash === hash && x.revokedAt === null,
+      );
+      const m = t && members.get(t.memberId);
+      return t && m ? { token: { ...t }, member: { ...m } } : undefined;
     },
     listApiTokens: async (memberId, opts = {}) =>
       sortRows(

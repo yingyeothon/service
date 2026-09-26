@@ -325,10 +325,82 @@ export function memberLookupContract(
     expect(
       (await db.findMembersByIds(["ml2", "zz", "ml1"])).map((m) => m.id),
     ).toEqual(["ml1", "ml2"]);
+    // SQL `IN` returns a row once however often its id is listed.
+    expect(
+      (await db.findMembersByIds(["ml2", "ml1", "ml2"])).map((m) => m.id),
+    ).toEqual(["ml1", "ml2"]);
     expect(await db.findMembersByIds([])).toEqual([]);
     expect((await db.findMemberByLogin("OCTOCAT"))?.id).toBe("ml1");
     expect((await db.findMemberByLogin("octocat"))?.id).toBe("ml1");
     expect(await db.findMemberByLogin("nobody")).toBeUndefined();
+  });
+
+  it("token identity: the live token and its member in one lookup", async () => {
+    const db = await make();
+    const hash = (c: string) => c.repeat(64);
+    for (const [id, login, githubId] of [
+      ["mt1", "Octocat", 9101],
+      ["mt2", "hubot", 9102],
+    ] as const)
+      await db.upsertMember({
+        id,
+        githubId,
+        githubLogin: login,
+        role: "member",
+        createdAt: 1,
+      });
+    await db.setMemberRole("mt2", "admin", { at: 7, by: "mt1" });
+    await db.insertApiToken({
+      id: "tk1",
+      memberId: "mt1",
+      tokenHash: hash("a"),
+      name: "cli",
+      createdAt: 5,
+    });
+    await db.insertApiToken({
+      id: "tk2",
+      memberId: "mt2",
+      tokenHash: hash("b"),
+      name: "app",
+      createdAt: 6,
+    });
+    await db.touchApiToken("tk2", 9);
+
+    // Exact values: a raw row must not leak a bigint or a string timestamp.
+    expect(await db.findTokenIdentity(hash("a"))).toEqual({
+      token: {
+        id: "tk1",
+        memberId: "mt1",
+        tokenHash: hash("a"),
+        name: "cli",
+        createdAt: 5,
+        lastUsedAt: null,
+        revokedAt: null,
+      },
+      member: {
+        id: "mt1",
+        githubId: 9101,
+        githubLogin: "Octocat",
+        role: "member",
+        createdAt: 1,
+        approvedAt: null,
+        approvedBy: null,
+      },
+    });
+    expect(await db.findTokenIdentity(hash("b"))).toEqual({
+      token: await db.findApiTokenByHash(hash("b")),
+      member: await db.findMember("mt2"),
+    });
+    expect((await db.findTokenIdentity(hash("b")))?.member).toMatchObject({
+      role: "admin",
+      approvedAt: 7,
+      approvedBy: "mt1",
+    });
+    expect((await db.findTokenIdentity(hash("b")))?.token.lastUsedAt).toBe(9);
+
+    expect(await db.revokeApiToken("tk1", "mt1", 11)).toBe(true);
+    expect(await db.findTokenIdentity(hash("a"))).toBeUndefined();
+    expect(await db.findTokenIdentity(hash("c"))).toBeUndefined();
   });
 }
 

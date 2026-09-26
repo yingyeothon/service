@@ -485,6 +485,31 @@ export function teamContract(
   });
 
   describe("projects", () => {
+    it("names by a page of ids: existing rows only, each once, by id", async () => {
+      const db = await make();
+      await seedTeam(db);
+      await seedTeam(db, "team_2", "Beta");
+      await seedProject(db, "team_1");
+      await db.createProject(
+        { id: "prj_2", teamId: "team_2", name: "tools" },
+        by(M1, 21),
+      );
+      expect(
+        await db.findTeamNamesByIds(["team_2", "zz", "team_1", "team_2"]),
+      ).toEqual([
+        { id: "team_1", name: "Acme" },
+        { id: "team_2", name: "Beta" },
+      ]);
+      expect(await db.findTeamNamesByIds([])).toEqual([]);
+      expect(
+        await db.findProjectNamesByIds(["prj_2", "prj_1", "prj_1", "nope"]),
+      ).toEqual([
+        { id: "prj_1", name: "game" },
+        { id: "prj_2", name: "tools" },
+      ]);
+      expect(await db.findProjectNamesByIds([])).toEqual([]);
+    });
+
     it("creates, lists, renames within team-unique ci names, and records", async () => {
       const db = await make();
       await seedTeam(db);
