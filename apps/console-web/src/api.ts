@@ -20,6 +20,7 @@ import type {
   SiteDeploy,
   SiteDeployGrant,
   SiteDetail,
+  SiteNameRecord,
   AssetFile,
   AssetUploadGrant,
   CatalogApp,
@@ -702,9 +703,18 @@ export function createApiClient({
     createSite: (prj: string, body: { name: string; description?: string }) =>
       post<Site & { warning: string }>(`${projectPath(prj)}/sites`, body),
     site: (id: string) => get<SiteDetail>(`/sites/${enc(id)}`),
+    /**
+     * 200 = saved (an empty site is renamed at once); 202 = a move is queued:
+     * the view carries `movingTo` and `busy`, poll `site` until not busy.
+     * `domain: null` moves a named site back to a random slug.
+     */
     updateSite: (
       id: string,
-      body: { name?: string; description?: string | null },
+      body: {
+        name?: string;
+        description?: string | null;
+        domain?: string | null;
+      },
     ) => patch<Site>(`/sites/${enc(id)}`, body),
     deleteSite: (id: string) => del(`/sites/${enc(id)}`),
     siteDeploys: (id: string, p: ListParams = {}) =>
@@ -726,6 +736,12 @@ export function createApiClient({
         `/sites/${enc(id)}/deploys/${enc(grant.deployId)}/commit`,
       );
     },
+    /** Platform admin: the ledger row behind a site name (404 when unknown). */
+    siteName: (name: string) =>
+      get<SiteNameRecord>(`/admin/site-names/${enc(name)}`),
+    /** Platform admin: frees a kept name (204); 409 while a site uses it. */
+    releaseSiteName: (name: string, reason: string) =>
+      post<void>(`/admin/site-names/${enc(name)}/release`, { reason }),
     // ---- key-value collections (addressed by id) ----------------------------
     projectKv: (prj: string, p: ListParams = {}) =>
       get<{ collections: KvCollection[] }>(

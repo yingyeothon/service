@@ -1,0 +1,15 @@
+id:          st_2
+name:        named-web
+project:     dooroo/game
+url:         https://my-game.dev-g.yyt.life/
+domain:      my-game
+hostUrl:     https://my-game.dev-g.yyt.life/
+publicUrl:   https://dev-g.yyt.life/my-game/
+basePath:    /my-game/
+movingTo:    -
+description: browser client
+createdBy:   octo
+created:     2025-08-24T01:46:40Z
+updated:     2025-08-24T01:48:20Z
+live:        sd_01j5
+busy:        false

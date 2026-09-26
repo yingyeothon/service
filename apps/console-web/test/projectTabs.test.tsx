@@ -333,6 +333,30 @@ describe("sites tab", () => {
       SITE,
       { ...SITE, id: "site_2", name: "draft", currentDeployId: null },
       { ...SITE, id: "site_3", name: "rolling", busy: true },
+      // Site names: the site host is the link only once a name is claimed.
+      {
+        ...SITE,
+        id: "site_4",
+        name: "named",
+        domain: "my-game",
+        hostUrl: "https://my-game.g.example/",
+        publicUrl: "https://g.example/my-game/",
+      },
+      {
+        ...SITE,
+        id: "site_5",
+        name: "unnamed",
+        domain: null,
+        hostUrl: "https://abc.g.example/",
+      },
+      {
+        ...SITE,
+        id: "site_6",
+        name: "mover",
+        domain: null,
+        busy: true,
+        movingTo: "next",
+      },
     ]);
     mount("sites");
     const link = await screen.findByRole("link", { name: "game-web" });
@@ -350,6 +374,13 @@ describe("sites tab", () => {
     expect(live("game-web")).toBe("live");
     expect(live("draft")).toBe("empty");
     expect(live("rolling")).toBe("deploying");
+    expect(live("mover")).toBe("moving");
+    const url = (name: string) =>
+      within(screen.getByRole("link", { name }).closest("tr")!)
+        .getAllByRole("link")[1]!
+        .getAttribute("href");
+    expect(url("named")).toBe("https://my-game.g.example/");
+    expect(url("unnamed")).toBe("https://g.example/abc/");
     expect(screen.getByText(SITE_SHARED_ORIGIN_WARNING)).toBeInTheDocument();
     const drawer = await openDrawer("site");
     expect(limits(input("Name", drawer))).toEqual({

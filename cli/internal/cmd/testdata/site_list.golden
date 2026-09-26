@@ -1,2 +1,5 @@
-ID    NAME      TEAM/PROJECT  URL                                LIVE     UPDATED
-st_1  game-web  dooroo/game   https://dev-g.yyt.life/k3x9q2mzp/  sd_01j5  2025-08-24T01:48:20Z
+ID    NAME        TEAM/PROJECT  URL                                STATE   LIVE     UPDATED
+st_1  game-web    dooroo/game   https://dev-g.yyt.life/k3x9q2mzp/  live    sd_01j5  2025-08-24T01:48:20Z
+st_2  named-web   dooroo/game   https://my-game.dev-g.yyt.life/    live    sd_01j5  2025-08-24T01:48:20Z
+st_3  moving-web  dooroo/game   https://dev-g.yyt.life/k3x9q2mzp/  moving  sd_01j5  2025-08-24T01:48:20Z
+st_4  empty-web   dooroo/game   https://dev-g.yyt.life/k3x9q2mzp/  empty   -        2025-08-24T01:48:20Z

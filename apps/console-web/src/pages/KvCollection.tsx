@@ -1,20 +1,18 @@
 import {
   Button,
   Code,
-  Collapse,
   Group,
   NumberInput,
   Table,
   Text,
   TextInput,
   Textarea,
-  Tooltip,
-  UnstyledButton,
 } from "@mantine/core";
 import { useDebouncedValue } from "@mantine/hooks";
-import { useId, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api";
+import { Clipped } from "../components/Clipped";
 import { Crumbs } from "../components/Crumbs";
 import { DataTable, NumCell } from "../components/DataTable";
 import { FilterBar, TextFilter } from "../components/FilterBar";
@@ -93,80 +91,6 @@ export function ScopeBadges({
       <Badge tone="neutral">read: {col.readScope}</Badge>
       <Badge tone="neutral">write: {col.writeScope}</Badge>
       {col.encrypted && <Badge tone="accent">encrypted</Badge>}
-    </>
-  );
-}
-
-/**
- * One line, ellipsed at a fixed width (`max-width` on a `td` of an
- * auto-layout table does not hold, `rules/ui.md`). The full text is a
- * tooltip for the pointer and, for a tap or a keyboard, a fold inside the
- * cell where it is selectable — an owner id is 32 hex and always clipped,
- * and it is what a member types into the filter or `--owner`.
- */
-function Clipped({
-  text,
-  width,
-  what,
-}: {
-  text: string;
-  width: number;
-  /** The fold's accessible name: "Full key". */
-  what: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [armed, setArmed] = useState(false);
-  const foldId = useId();
-  return (
-    <>
-      <Tooltip
-        label={text}
-        multiline
-        w={Math.max(width, 320)}
-        position="top-start"
-        events={{ hover: !open, focus: !open, touch: false }}
-        opened={open || armed ? false : undefined}
-      >
-        <UnstyledButton
-          onClick={() => {
-            setOpen((o) => !o);
-            setArmed(true);
-          }}
-          onMouseLeave={() => setArmed(false)}
-          onBlur={() => setArmed(false)}
-          aria-expanded={open}
-          aria-controls={foldId}
-          style={{ display: "block", width, cursor: "pointer" }}
-        >
-          <Code
-            style={{
-              display: "block",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {text}
-          </Code>
-        </UnstyledButton>
-      </Tooltip>
-      <Collapse in={open}>
-        <Code
-          block
-          id={foldId}
-          role="group"
-          aria-label={what}
-          mt={4}
-          style={{
-            maxWidth: Math.max(width, 320),
-            whiteSpace: "pre-wrap",
-            overflowWrap: "anywhere",
-            userSelect: "all",
-          }}
-        >
-          {text}
-        </Code>
-      </Collapse>
     </>
   );
 }

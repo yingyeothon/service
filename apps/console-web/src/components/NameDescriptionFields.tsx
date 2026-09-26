@@ -13,6 +13,8 @@ export function NameDescriptionFields({
   markdown,
   nameLabel = "Name",
   namePlaceholder,
+  nameError,
+  descriptionError,
 }: {
   name: string;
   description: string;
@@ -21,6 +23,10 @@ export function NameDescriptionFields({
   markdown?: boolean;
   nameLabel?: string;
   namePlaceholder?: string;
+  /** An API refusal about the field, shown under it. */
+  nameError?: string | null;
+  /** Same, for the plain (non-markdown) description. */
+  descriptionError?: string | null;
 }) {
   return (
     <>
@@ -34,6 +40,7 @@ export function NameDescriptionFields({
         autoComplete="off"
         spellCheck={false}
         data-autofocus
+        error={nameError}
       />
       {markdown ? (
         <MdField
@@ -49,6 +56,7 @@ export function NameDescriptionFields({
           onChange={(e) => onDescription(e.currentTarget.value)}
           maxLength={2000}
           autoComplete="off"
+          error={descriptionError}
         />
       )}
     </>

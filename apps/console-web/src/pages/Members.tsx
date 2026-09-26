@@ -1,4 +1,4 @@
-import { Button, Group, Table, Text, TextInput } from "@mantine/core";
+import { Button, Code, Group, Table, Text, TextInput } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
@@ -14,7 +14,7 @@ import { notify } from "../lib/notify";
 import { useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { teamUrl } from "../lib/team";
-import type { Member, Role } from "../types";
+import type { Member, Role, SiteNameRecord } from "../types";
 
 /**
  * Which catalog app `GET /catalog/installer/downloads` serves. Its team must
@@ -114,6 +114,102 @@ export function InstallerAppSection() {
   );
 }
 
+/**
+ * A site name that has served files stays with its team for good
+ * (docs/decisions.md *Site domains* §5); a platform admin's release, with a
+ * reason for the audit log, is the one way it becomes claimable again.
+ */
+export function SiteNameSection() {
+  const act = useAction();
+  const confirm = useConfirm();
+  const [name, setName] = useState("");
+  const [row, setRow] = useState<SiteNameRecord | null>(null);
+  const lookUp = async (e: FormEvent) => {
+    e.preventDefault();
+    setRow(null);
+    const r = await act.run(() => api.siteName(name.trim().toLowerCase()));
+    if (r) setRow(r);
+  };
+  const release = async (r: SiteNameRecord) => {
+    const c = await confirm({
+      title: `Release ${r.name}?`,
+      message:
+        "Its files are deleted and any team may claim the name. Browser state on its origin (storage, service workers) outlives the release.",
+      confirmLabel: `Release ${r.name}`,
+      danger: true,
+      reason: { required: true, maxLength: 500 },
+    });
+    if (!c.ok || !c.reason) return;
+    const reason = c.reason;
+    const ok = await act.run(async () => {
+      await api.releaseSiteName(r.name, reason);
+      return true;
+    });
+    if (!ok) return;
+    notify.done(`Released ${r.name}`);
+    setRow(null);
+    setName("");
+  };
+  const inUse = row !== null && row.releasedAt === null;
+  return (
+    <Section
+      title="Site names"
+      description="Who keeps a site name. Releasing one deletes what is left under it and frees it for every team; refused while a site uses it."
+    >
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      <form onSubmit={(e) => void lookUp(e)}>
+        <Group align="end" wrap="wrap">
+          <TextInput
+            label="Site name"
+            placeholder="my-game"
+            value={name}
+            onChange={(e) => setName(e.currentTarget.value)}
+            maxLength={32}
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+          />
+          <Button
+            type="submit"
+            variant="default"
+            disabled={act.busy || !name.trim()}
+          >
+            Look up
+          </Button>
+        </Group>
+      </form>
+      {row && (
+        <Group mt="sm" gap="md" wrap="wrap" align="center">
+          <Text size="sm" component="div">
+            <Code>{row.name}</Code> · {row.kind} ·{" "}
+            {row.teamId ? (
+              <Link to={teamUrl(row.teamId)}>{row.teamId}</Link>
+            ) : (
+              "no team"
+            )}{" "}
+            · recorded {fmtTime(row.createdAt)}
+            {row.createdBy ? ` by ${row.createdBy}` : ""} ·{" "}
+            {inUse ? (
+              <Badge tone="ok">in use</Badge>
+            ) : (
+              <>released {fmtTime(row.releasedAt)}</>
+            )}
+            {row.served ? " · served files" : ""}
+            {row.purgedAt !== null ? ` · emptied ${fmtTime(row.purgedAt)}` : ""}
+          </Text>
+          <Button
+            variant="default"
+            disabled={act.busy || inUse}
+            onClick={() => void release(row)}
+          >
+            Release name
+          </Button>
+        </Group>
+      )}
+    </Section>
+  );
+}
+
 const TONE: Record<Role, string> = {
   admin: "accent",
   member: "ok",
@@ -178,6 +274,7 @@ export function MembersPage() {
         description="Everyone who signed in with GitHub. New sign-ups wait here until an admin approves them."
       />
       <InstallerAppSection />
+      <SiteNameSection />
       <Section title="Platform members">
         {act.error && <Notice kind="error">{act.error}</Notice>}
         {pending.length > 0 && (

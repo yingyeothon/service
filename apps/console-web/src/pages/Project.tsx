@@ -80,7 +80,7 @@ import {
   lbUrl,
   retainOk,
 } from "./Leaderboard";
-import { SITE_SHARED_ORIGIN_WARNING } from "./Site";
+import { SITE_SHARED_ORIGIN_WARNING, sitePrimaryUrl } from "./Site";
 import { DiscussionFields } from "./Team";
 
 const TABS = [
@@ -659,6 +659,16 @@ function AssetsTab(props: { project: ProjectDetail; canWrite: boolean }) {
   );
 }
 
+/** One ellipsed line; the longest URL a name allows (~56 chars) still fits. */
+const URL_CELL = {
+  display: "inline-block",
+  maxWidth: "26rem",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  verticalAlign: "bottom",
+} as const;
+
 function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
   return (
     <ResourceListTab
@@ -670,7 +680,7 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
       }
       noun="site"
       title="Sites"
-      intro="Static web builds (a browser game client, a landing page) served at the shared static host under a random path. One live tree per site: a deploy replaces the previous files."
+      intro="Static web builds (a browser game client, a landing page) served at the shared static host under a random path, which a site can replace with a name of its own (Edit on the site's page). One live tree per site: a deploy replaces the previous files."
       warn={<Notice kind="warn">{SITE_SHARED_ORIGIN_WARNING}</Notice>}
       namePlaceholder="name (e.g. game-web)"
       second={{
@@ -695,18 +705,23 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
           <NameCell to={`/sites/${encodeURIComponent(s.id)}`}>
             {s.name}
           </NameCell>
-          <Table.Td>
+          <Table.Td style={{ whiteSpace: "nowrap" }}>
+            {/* The primary link (docs/decisions.md *Site domains* §10); the
+                site page lists the others. One line, ellipsed past 26rem. */}
             <Anchor
-              href={s.publicUrl}
+              href={sitePrimaryUrl(s)}
               size="sm"
               target="_blank"
               rel="noopener noreferrer"
+              style={URL_CELL}
             >
-              {s.publicUrl}
+              {sitePrimaryUrl(s)}
             </Anchor>
           </Table.Td>
-          <Table.Td>
-            {s.busy ? (
+          <Table.Td style={{ whiteSpace: "nowrap" }}>
+            {s.movingTo ? (
+              <Badge tone="warn">moving</Badge>
+            ) : s.busy ? (
               <Badge tone="warn">deploying</Badge>
             ) : s.currentDeployId ? (
               <Badge tone="ok">live</Badge>
@@ -714,7 +729,9 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
               <Badge tone="neutral">empty</Badge>
             )}
           </Table.Td>
-          <Table.Td>{fmtTime(s.updatedAt)}</Table.Td>
+          <Table.Td style={{ whiteSpace: "nowrap" }}>
+            {fmtTime(s.updatedAt)}
+          </Table.Td>
         </>
       )}
       emptyText="No sites yet."

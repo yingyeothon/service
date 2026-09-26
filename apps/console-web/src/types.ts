@@ -625,6 +625,9 @@ export interface AssetFile {
 export type SiteDeployStatus =
   "pending" | "queued" | "extracting" | "live" | "failed";
 
+/** `move` is a rename (docs/decisions.md *Site domains* §2): no zip. */
+export type SiteDeployKind = "upload" | "move";
+
 export interface SiteDeploy {
   id: string;
   siteId: string;
@@ -638,6 +641,11 @@ export interface SiteDeploy {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+  /** Absent from an API without site names: read as `upload`. */
+  kind?: SiteDeployKind;
+  /** The prefix a move copies to (a claimed name or a fresh random slug). */
+  moveTo?: string | null;
+  moveFrom?: string | null;
 }
 
 export interface Site extends ResourceCrumbs {
@@ -645,10 +653,23 @@ export interface Site extends ResourceCrumbs {
   name: string;
   slug: string;
   description: string | null;
+  /** The path URL (`https://g.yyt.life/{slug}/`); follows the slug. */
   publicUrl: string;
   basePath: string;
+  /*
+   * Site names (docs/decisions.md *Site domains* §10). Optional so a view
+   * from an API without them still renders; `null` is the API's own answer.
+   */
+  /** The claimed name, or null while the slug is random. */
+  domain?: string | null;
+  /** `https://{slug}.{hostSuffix}/`, null on a stage without the per-site host. */
+  hostUrl?: string | null;
+  /** `dev-g.yyt.life` / `g.yyt.life`, null on a stage without the per-site host. */
+  hostSuffix?: string | null;
+  /** The target of a move in flight (the site is `busy` meanwhile). */
+  movingTo?: string | null;
   currentDeployId: string | null;
-  /** A deploy or a delete holds the site; a new deploy is refused meanwhile. */
+  /** A deploy, a move or a delete holds the site; a new deploy is refused meanwhile. */
   busy: boolean;
   createdAt: number;
   updatedAt: number;
@@ -658,6 +679,22 @@ export interface SiteDetail extends Site {
   currentDeploy: SiteDeploy | null;
   deploys: SiteDeploy[];
   warning: string;
+}
+
+/** Platform admin: one row of the site-name ledger (`GET /admin/site-names/{name}`). */
+export interface SiteNameRecord {
+  name: string;
+  /** Null for a deleted team's name or a prefix nobody recorded. */
+  teamId: string | null;
+  /** `name` = claimed by a team; `slug` = a random slug a site gave up or moved to. */
+  kind: "name" | "slug";
+  createdBy: string | null;
+  createdAt: number;
+  /** Null while a site uses it (or a move to it is in flight). */
+  releasedAt: number | null;
+  /** The prefix served files: kept for its team for good. */
+  served: boolean;
+  purgedAt: number | null;
 }
 
 export interface SiteDeployGrant {

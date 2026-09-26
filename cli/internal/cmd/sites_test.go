@@ -3,6 +3,7 @@ package cmd
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,14 +11,52 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yingyeothon/service/cli/internal/api"
 )
 
 var sampleSite = map[string]any{
 	"id": "st_1", "name": "game-web", "slug": "k3x9q2mzp", "description": "browser client",
 	"teamId": "team_1", "teamName": "dooroo", "projectId": "prj_1", "projectName": "game", "createdBy": "octo",
 	"publicUrl": "https://dev-g.yyt.life/k3x9q2mzp/", "basePath": "/k3x9q2mzp/",
+	// Unnamed: the path URL stays the primary link although the host exists.
+	"domain": nil, "hostUrl": "https://k3x9q2mzp.dev-g.yyt.life/", "hostSuffix": "dev-g.yyt.life", "movingTo": nil,
 	"currentDeployId": "sd_01j5", "busy": false,
 	"createdAt": 1756000000, "updatedAt": 1756000100,
+}
+
+// siteWith is sampleSite with some fields replaced.
+func siteWith(kv map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range sampleSite {
+		out[k] = v
+	}
+	for k, v := range kv {
+		out[k] = v
+	}
+	return out
+}
+
+// namedSite is sampleSite after it claimed `my-game`.
+var namedSite = siteWith(map[string]any{
+	"id": "st_2", "name": "named-web", "slug": "my-game", "domain": "my-game",
+	"publicUrl": "https://dev-g.yyt.life/my-game/", "basePath": "/my-game/",
+	"hostUrl": "https://my-game.dev-g.yyt.life/",
+})
+
+// movingSite is mid-move; emptySite has never been deployed.
+var (
+	movingSite = siteWith(map[string]any{"id": "st_3", "name": "moving-web", "busy": true, "movingTo": "new-name"})
+	emptySite  = siteWith(map[string]any{"id": "st_4", "name": "empty-web", "currentDeployId": nil})
+)
+
+func sampleMove(id, status, to string) map[string]any {
+	d := sampleDeploy(id, status, 12)
+	d["kind"], d["moveTo"], d["moveFrom"], d["zipBytes"], d["bytes"] = "move", to, "k3x9q2mzp", 0, 0
+	if status == "failed" {
+		d["error"] = "copy_failed"
+	}
+	return d
 }
 
 func sampleDeploy(id, status string, files int) map[string]any {
@@ -37,9 +76,14 @@ func TestSiteListAndGet(t *testing.T) {
 		detail[k] = v
 	}
 	detail["currentDeploy"] = sampleDeploy("sd_01j5", "live", 12)
-	detail["deploys"] = []any{sampleDeploy("sd_01j6", "failed", 0), sampleDeploy("sd_01j5", "live", 12)}
+	detail["deploys"] = []any{sampleMove("sd_01j7", "live", "k3x9q2mzp"), sampleDeploy("sd_01j6", "failed", 0), sampleDeploy("sd_01j5", "live", 12)}
+	namedDetail := siteWith(namedSite)
+	namedDetail["deploys"] = []any{}
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
-		"GET /sites":                func(recorded) (int, any) { return 200, map[string]any{"sites": []any{sampleSite}} },
+		"GET /sites": func(recorded) (int, any) {
+			return 200, map[string]any{"sites": []any{sampleSite, namedSite, movingSite, emptySite}}
+		},
+		"GET /sites/st_2":           func(recorded) (int, any) { return 200, namedDetail },
 		"GET /projects/prj_1/sites": func(recorded) (int, any) { return 200, map[string]any{"sites": []any{sampleSite}} },
 		"GET /sites/st_1":           func(recorded) (int, any) { return 200, detail },
 		"GET /sites/st_1/deploys": func(recorded) (int, any) {
@@ -56,6 +100,12 @@ func TestSiteListAndGet(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "site_get", out)
+	// A named site links its own host and still lists the path URL.
+	out, _, err = run(t, f, "site", "get", "st_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "site_get_named", out)
 	out, _, err = run(t, f, "site", "deploys", "st_1")
 	if err != nil {
 		t.Fatal(err)
@@ -195,5 +245,250 @@ func TestSiteUpdateRequiresAFlagAndClearsDescription(t *testing.T) {
 	v, ok := sent["description"]
 	if !ok || v != nil {
 		t.Fatalf("expected description:null, got %#v", sent)
+	}
+}
+
+// updateRoutes serves one site whose PATCH answers `patch` and whose GET
+// answers `gets` in turn (the last one repeats).
+func updateRoutes(sent *[]map[string]any, patch func() (int, any), gets ...map[string]any) map[string]func(recorded) (int, any) {
+	n := 0
+	return ctxRoutes(map[string]func(recorded) (int, any){
+		"PATCH /sites/st_1": func(r recorded) (int, any) {
+			*sent = append(*sent, r.Body)
+			return patch()
+		},
+		"GET /sites/st_1": func(recorded) (int, any) {
+			g := gets[min(n, len(gets)-1)]
+			n++
+			return 200, g
+		},
+	}, nil, nil, nil)
+}
+
+func TestSiteUpdateDomainSendsOnlyTheGivenKeys(t *testing.T) {
+	withProject(t)
+	var sent []map[string]any
+	named := siteWith(map[string]any{"slug": "my-game", "domain": "my-game", "hostUrl": "https://my-game.dev-g.yyt.life/", "publicUrl": "https://dev-g.yyt.life/my-game/"})
+	f := newFake(t, updateRoutes(&sent, func() (int, any) { return 200, named }, named))
+	// An empty site is renamed at once (200): no wait, the new URL printed.
+	out, errOut, err := run(t, f, "site", "update", "st_1", "--domain", "My-Game")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 || len(sent[0]) != 1 || sent[0]["domain"] != "My-Game" {
+		t.Fatalf("body %v, want only the domain", sent)
+	}
+	if !strings.Contains(out, "url:         https://my-game.dev-g.yyt.life/") || strings.Contains(errOut, "queued") {
+		t.Fatalf("stdout %q stderr %q", out, errOut)
+	}
+	// --clear-domain is an explicit null; nothing else rides along.
+	if _, _, err := run(t, f, "site", "update", "st_1", "--clear-domain"); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := sent[1]["domain"]; !ok || v != nil || len(sent[1]) != 1 {
+		t.Fatalf("expected {domain:null}, got %#v", sent[1])
+	}
+	// A rename or a description alone never carries the domain.
+	if _, _, err := run(t, f, "site", "update", "st_1", "--name", "web2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sent[2]["domain"]; ok {
+		t.Fatalf("domain sent without --domain: %v", sent[2])
+	}
+	// Refused locally, before any request.
+	n := len(f.reqs)
+	for _, args := range [][]string{
+		{"site", "update", "st_1", "--domain", " "},
+		{"site", "update", "st_1", "--domain", "a", "--clear-domain"},
+	} {
+		if _, _, err := run(t, f, args...); err == nil {
+			t.Fatalf("%v: expected a refusal", args)
+		}
+	}
+	if len(f.reqs) != n {
+		t.Fatal("a refused flag set must not reach the API")
+	}
+}
+
+func TestSiteUpdateDomainNeedsAnExplicitContext(t *testing.T) {
+	f := newFake(t, ctxRoutes(nil, nil, nil, nil))
+	if _, _, err := run(t, f, "site", "update", "game-web", "--domain", "my-game"); err == nil || !strings.Contains(err.Error(), "no team context") {
+		t.Fatalf("err = %v, want a context error", err)
+	}
+	for _, r := range f.reqs {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected write %s %s", r.Method, r.Path)
+		}
+	}
+}
+
+func TestSiteUpdateDomainWaitsForTheMove(t *testing.T) {
+	withProject(t)
+	var sent []map[string]any
+	moving := siteWith(map[string]any{"busy": true, "movingTo": "my-game"})
+	done := siteWith(map[string]any{"slug": "my-game", "domain": "my-game", "hostUrl": "https://my-game.dev-g.yyt.life/", "publicUrl": "https://dev-g.yyt.life/my-game/"})
+	done["deploys"] = []any{sampleMove("sd_mv", "live", "my-game")}
+	f := newFake(t, updateRoutes(&sent, func() (int, any) { return 202, moving }, done))
+	out, errOut, err := run(t, f, "site", "update", "st_1", "--domain", "my-game")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "move to my-game queued") {
+		t.Fatalf("stderr %q", errOut)
+	}
+	if !strings.Contains(out, "url:         https://my-game.dev-g.yyt.life/") || !strings.Contains(out, "move  my-game  live") {
+		t.Fatalf("stdout:\n%s", out)
+	}
+	// --no-wait prints the queued state and polls nothing.
+	n := len(f.reqs)
+	out, _, err = run(t, f, "site", "update", "st_1", "--domain", "my-game", "--no-wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.reqs) != n+1 || !strings.Contains(out, "movingTo:    my-game") || !strings.Contains(out, "busy:        true") {
+		t.Fatalf("reqs %d→%d stdout:\n%s", n, len(f.reqs), out)
+	}
+}
+
+func TestSiteUpdateDomainRereadsABusyViewWithoutATarget(t *testing.T) {
+	withProject(t)
+	busy := siteWith(map[string]any{"busy": true})
+	moving := siteWith(map[string]any{"busy": true, "movingTo": "my-game"})
+	done := siteWith(map[string]any{"slug": "my-game", "domain": "my-game", "hostUrl": "https://my-game.dev-g.yyt.life/", "publicUrl": "https://dev-g.yyt.life/my-game/"})
+	done["deploys"] = []any{sampleMove("sd_mv", "live", "my-game")}
+	// The re-read names the target: waited for like any queued move.
+	var sent []map[string]any
+	f := newFake(t, updateRoutes(&sent, func() (int, any) { return 202, busy }, moving, done))
+	out, errOut, err := run(t, f, "site", "update", "st_1", "--domain", "my-game")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "move to my-game queued") || !strings.Contains(out, "url:         https://my-game.dev-g.yyt.life/") {
+		t.Fatalf("stdout:\n%s\nstderr: %s", out, errOut)
+	}
+	// Still no target after one re-read: printed as is, no polling.
+	sent = nil
+	f = newFake(t, updateRoutes(&sent, func() (int, any) { return 200, busy }, busy))
+	out, errOut, err = run(t, f, "site", "update", "st_1", "--domain", "my-game")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gets := countReqs(f, "GET /sites/st_1"); gets != 1 || strings.Contains(errOut, "queued") || !strings.Contains(out, "busy:        true") {
+		t.Fatalf("gets %d stdout:\n%s\nstderr: %s", gets, out, errOut)
+	}
+}
+
+func TestSiteUpdateWithoutDomainNeverWaits(t *testing.T) {
+	withProject(t)
+	var sent []map[string]any
+	moving := siteWith(map[string]any{"busy": true, "movingTo": "my-game"})
+	f := newFake(t, updateRoutes(&sent, func() (int, any) { return 200, moving }, moving))
+	_, errOut, err := run(t, f, "site", "update", "st_1", "--name", "web2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gets := countReqs(f, "GET /sites/st_1"); gets != 0 || strings.Contains(errOut, "queued") {
+		t.Fatalf("a rename waited for someone else's move: gets %d stderr %q", gets, errOut)
+	}
+}
+
+// countReqs counts the fake's requests to one `METHOD /path`.
+func countReqs(f *fakeConsole, route string) int {
+	n := 0
+	for _, r := range f.reqs {
+		if r.Method+" "+r.Path == route {
+			n++
+		}
+	}
+	return n
+}
+
+func TestSiteUpdateDomainReportsAFailedMove(t *testing.T) {
+	withProject(t)
+	var sent []map[string]any
+	moving := siteWith(map[string]any{"busy": true, "movingTo": "my-game"})
+	failed := siteWith(nil)
+	failed["deploys"] = []any{sampleMove("sd_mv", "failed", "my-game"), sampleDeploy("sd_01j5", "live", 12)}
+	f := newFake(t, updateRoutes(&sent, func() (int, any) { return 202, moving }, failed))
+	out, _, err := run(t, f, "site", "update", "st_1", "--domain", "my-game")
+	if err == nil || !strings.Contains(err.Error(), "move sd_mv to my-game failed: copy_failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(out, "sd_mv") {
+		t.Fatalf("the failed move row is missing:\n%s", out)
+	}
+}
+
+func TestSiteUpdateDomainRefusalsCarryAHint(t *testing.T) {
+	withProject(t)
+	for _, tc := range []struct {
+		status  int
+		details any
+		want    string
+	}{
+		{409, map[string]any{"reason": "domain_taken"}, "stays with the team that used it"},
+		{409, map[string]any{"reason": "domain_cap", "names": []any{map[string]any{"name": "one", "releasedAt": nil}, map[string]any{"name": "two", "releasedAt": 1}}}, "(one, two); reclaiming one"},
+		{409, map[string]any{"reason": "domain_cleaning"}, "still being deleted"},
+		{429, map[string]any{"retryAfterMs": 1000}, "one name request per team per second"},
+	} {
+		var sent []map[string]any
+		f := newFake(t, updateRoutes(&sent, func() (int, any) {
+			return tc.status, map[string]any{"error": map[string]any{"code": "conflict", "message": "refused", "details": tc.details}}
+		}, sampleSite))
+		_, _, err := run(t, f, "site", "update", "st_1", "--domain", "my-game")
+		if err == nil || !strings.Contains(err.Error(), "hint: ") || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%d %v: err = %v", tc.status, tc.details, err)
+		}
+		var ae *api.Error
+		if !errors.As(err, &ae) || ae.Status != tc.status {
+			t.Fatalf("the api error (exit code) was lost: %v", err)
+		}
+	}
+	// A plain 409 (a deploy in flight) gets no name hint.
+	var sent []map[string]any
+	f := newFake(t, updateRoutes(&sent, func() (int, any) {
+		return 409, map[string]any{"error": map[string]any{"code": "conflict", "message": "a deploy is in flight; retry later"}}
+	}, sampleSite))
+	if _, _, err := run(t, f, "site", "update", "st_1", "--domain", "my-game"); err == nil || strings.Contains(err.Error(), "hint:") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSiteNameShowAndRelease(t *testing.T) {
+	var reason any
+	f := newFake(t, map[string]func(recorded) (int, any){
+		"GET /admin/site-names/squat": func(recorded) (int, any) {
+			return 200, map[string]any{
+				"name": "squat", "teamId": "team_9", "kind": "name", "createdBy": "m_x", "createdAt": 1756000000,
+				"releasedAt": 1756000100, "served": true, "purgedAt": nil,
+			}
+		},
+		"POST /admin/site-names/squat/release": func(r recorded) (int, any) {
+			reason = r.Body["reason"]
+			return 204, nil
+		},
+	})
+	out, _, err := run(t, f, "site", "name", "show", "Squat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "site_name_show", out)
+	// The reason is required and checked before any request.
+	n := len(f.reqs)
+	if _, _, err := run(t, f, "site", "name", "release", "squat"); err == nil {
+		t.Fatal("expected --reason to be required")
+	}
+	if _, _, err := run(t, f, "site", "name", "release", "squat", "--reason", "  "); err == nil {
+		t.Fatal("expected a blank reason to be refused")
+	}
+	if len(f.reqs) != n {
+		t.Fatal("a refused release must not reach the API")
+	}
+	out, _, err = run(t, f, "site", "name", "release", "squat", "--reason", " squatter ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "released squat\n" || reason != "squatter" {
+		t.Fatalf("out %q reason %v", out, reason)
 	}
 }

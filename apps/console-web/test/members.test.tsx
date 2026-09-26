@@ -13,6 +13,8 @@ const mockApi = {
   memberAction: vi.fn(),
   installerApp: vi.fn(),
   setInstallerApp: vi.fn(),
+  siteName: vi.fn(),
+  releaseSiteName: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -135,5 +137,63 @@ describe("MembersPage", () => {
       "href",
       "/teams/team_1",
     );
+  });
+
+  it("looks up a site name and releases it with a reason", async () => {
+    vi.mocked(mockApi.siteName).mockResolvedValue({
+      name: "squat",
+      teamId: "team_9",
+      kind: "name",
+      createdBy: "m_x",
+      createdAt: 0,
+      releasedAt: 10,
+      served: true,
+      purgedAt: 10,
+    });
+    vi.mocked(mockApi.releaseSiteName).mockResolvedValue(undefined);
+    mount(<MembersPage />, { client: mockApi });
+    await screen.findByText("carol");
+    await userEvent.type(screen.getByLabelText("Site name"), "Squat");
+    await userEvent.click(screen.getByRole("button", { name: "Look up" }));
+    await waitFor(() => expect(mockApi.siteName).toHaveBeenCalledWith("squat"));
+    expect(await screen.findByRole("link", { name: "team_9" })).toHaveAttribute(
+      "href",
+      "/teams/team_9",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Release name" }));
+    const modal = (await screen.findByText("Release squat?")).closest(
+      '[role="dialog"]',
+    ) as HTMLElement;
+    const confirm = within(modal).getByRole("button", {
+      name: "Release squat",
+    });
+    expect(confirm).toBeDisabled();
+    await userEvent.type(within(modal).getByLabelText("Reason"), "squatter");
+    await userEvent.click(confirm);
+    await waitFor(() =>
+      expect(mockApi.releaseSiteName).toHaveBeenCalledWith("squat", "squatter"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Release name" })).toBeNull(),
+    );
+  });
+
+  it("does not offer a release while a site uses the name", async () => {
+    vi.mocked(mockApi.siteName).mockResolvedValue({
+      name: "live-one",
+      teamId: "team_9",
+      kind: "name",
+      createdBy: null,
+      createdAt: 0,
+      releasedAt: null,
+      served: false,
+      purgedAt: null,
+    });
+    mount(<MembersPage />, { client: mockApi });
+    await screen.findByText("carol");
+    await userEvent.type(screen.getByLabelText("Site name"), "live-one");
+    await userEvent.click(screen.getByRole("button", { name: "Look up" }));
+    expect(await screen.findByText("in use")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Release name" })).toBeDisabled();
   });
 });

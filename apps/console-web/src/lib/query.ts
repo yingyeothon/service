@@ -26,6 +26,8 @@ export function createQueryClient(): QueryClient {
 export interface AsyncState<T> {
   data: T | undefined;
   error: string | null;
+  /** The HTTP status the error carries (`ApiError.status`), if any. */
+  errorStatus: number | undefined;
   loading: boolean;
   /** A refetch is in flight while `data` still shows (only with `keepPrevious`). */
   fetching: boolean;
@@ -65,6 +67,7 @@ export function useApiQuery<T>(
   return {
     data: q.data,
     error: q.error ? errorMessage(q.error) : null,
+    errorStatus: (q.error as { status?: number } | null)?.status,
     loading: q.isPending,
     fetching: q.isFetching && !q.isPending,
     reload,

@@ -20,7 +20,8 @@ applies to both. Published to S3 + CloudFront by `scripts/deploy-web.sh <stage>`
   by id and carry a breadcrumb from the view's `teamName`/`projectName`.
   `/ui/catalog` and `/ui/assets` redirect to `/ui/teams`.
 - `/ui/tokens` — any signed-in member (tokens carry the role at use time).
-- `/ui/members` — admin; also the installer-app setting.
+- `/ui/members` — admin; also the installer-app setting and the site-name
+  ledger (look up who keeps a name, release it with a reason).
 - `/ui/events`, `/ui/events/:id` — public for waiting/opened/closed events; drafts,
   date votes, comments, page history/diff and owner/admin controls when signed in.
 
