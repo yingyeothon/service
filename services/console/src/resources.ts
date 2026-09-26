@@ -96,8 +96,9 @@ export interface ResourceCrumbs {
 
 /**
  * Resolves the team/project names and creator logins a page of resource rows
- * needs for its breadcrumbs — one `findProject`/`findTeam` per *distinct* id
- * and one `listMembers`, never one per row.
+ * needs for its breadcrumbs in at most three statements — one lookup per kind
+ * over the page's distinct ids, whatever the page spans. (One `findProject`
+ * per distinct project cost a 19-app team list 18 extra round trips.)
  */
 export function createCrumbResolver({
   db,
@@ -109,27 +110,43 @@ export function createCrumbResolver({
   return async function crumbs<T extends ResourceParents>(
     rows: T[],
   ): Promise<(row: T) => ResourceCrumbs> {
-    const logins = new Map(
-      (await db.listMembers()).map((m) => [m.id, m.githubLogin]),
+    const ids = (pick: (r: T) => string | null) => [
+      ...new Set(rows.flatMap((r) => pick(r) ?? [])),
+    ];
+    // An empty page asks nothing. Sequential on purpose: the pool holds one
+    // connection, so a `Promise.all` would only queue (rules/data.md).
+    const byId = async <R extends { id: string }>(
+      want: string[],
+      find: (ids: string[]) => Promise<R[]>,
+    ) =>
+      new Map(
+        (want.length === 0 ? [] : await find(want)).map((x) => [x.id, x]),
+      );
+    const logins = await byId(
+      ids((r) => r.ownerId),
+      (x) => db.findMembersByIds(x),
     );
-    const projectNames = new Map<string, string | null>();
-    const teamNames = new Map<string, string | null>();
-    for (const r of rows) {
-      if (r.projectId !== null && !projectNames.has(r.projectId))
-        projectNames.set(
-          r.projectId,
-          (await team.findProject(r.projectId))?.name ?? null,
-        );
-      if (r.teamId !== null && !teamNames.has(r.teamId))
-        teamNames.set(r.teamId, (await team.findTeam(r.teamId))?.name ?? null);
-    }
+    const projectNames = await byId(
+      ids((r) => r.projectId),
+      (x) => team.findProjectNamesByIds(x),
+    );
+    const teamNames = await byId(
+      ids((r) => r.teamId),
+      (x) => team.findTeamNamesByIds(x),
+    );
     return (r) => ({
       teamId: r.teamId,
-      teamName: r.teamId === null ? null : (teamNames.get(r.teamId) ?? null),
+      teamName:
+        r.teamId === null ? null : (teamNames.get(r.teamId)?.name ?? null),
       projectId: r.projectId,
       projectName:
-        r.projectId === null ? null : (projectNames.get(r.projectId) ?? null),
-      createdBy: r.ownerId === null ? null : (logins.get(r.ownerId) ?? null),
+        r.projectId === null
+          ? null
+          : (projectNames.get(r.projectId)?.name ?? null),
+      createdBy:
+        r.ownerId === null
+          ? null
+          : (logins.get(r.ownerId)?.githubLogin ?? null),
     });
   };
 }

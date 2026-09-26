@@ -44,10 +44,10 @@ export function createIdentityResolver({
     // Bearer wins: the CLI never carries cookies, and the SPA never sends a bearer.
     if (bearer !== undefined) {
       if (!TOKEN.test(bearer)) return undefined;
-      const tok = await db.findApiTokenByHash(sha256Hex(bearer));
-      if (!tok) return undefined;
-      const m = await db.findMember(tok.memberId);
-      if (!m) return undefined;
+      // One statement for the token and its member: this runs on every request.
+      const found = await db.findTokenIdentity(sha256Hex(bearer));
+      if (!found) return undefined;
+      const { token: tok, member: m } = found;
       const now = nowSec(clock);
       if (tok.lastUsedAt === null || now - tok.lastUsedAt >= TOUCH_INTERVAL_SEC)
         await db.touchApiToken(tok.id, now);
