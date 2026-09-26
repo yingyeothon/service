@@ -48,18 +48,18 @@ Four consequences run through everything below:
 
 ## 2. Shape at a glance
 
-| Piece                      | Runtime                                       | Where                                                              | Holds                                            |
-| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------ |
-| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                    | OAuth → per-channel JWT                          |
-| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front) | schema owner, every management route             |
-| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)             | short-lived broadcast rooms                      |
-| `match`                    | Lambda + API Gateway WebSocket                | `match.yyt.life`                                                   | FIFO matchmaker                                  |
-| `state`                    | Lambda                                        | `doc.yyt.life`                                                     | `/s` documents, `/kv`, `/lb`, `/social`, `/time` |
-| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                      | `lobby` relay, `q` actor bridge, `/presence`     |
-| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                         | immutable game data; static web builds           |
-| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                   | all durable and all volatile state               |
-| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                    | every console API as subcommands                 |
-| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                             | installer + project issues                       |
+| Piece                      | Runtime                                       | Where                                                              | Holds                                                  |
+| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------ |
+| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                    | OAuth → per-channel JWT                                |
+| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front) | schema owner, every management route                   |
+| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)             | short-lived broadcast rooms                            |
+| `match`                    | Lambda + API Gateway WebSocket                | `match.yyt.life`                                                   | FIFO matchmaker                                        |
+| `state`                    | Lambda                                        | `doc.yyt.life`                                                     | `/s` documents, `/kv`, `/lb`, `/social`, `/time`       |
+| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                      | `lobby` relay, `q` actor bridge, `/presence`           |
+| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                         | immutable game data; static web builds                 |
+| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                   | all durable and all volatile state                     |
+| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                    | every console API as subcommands                       |
+| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                             | installer + project issues, sites, channels (designed) |
 
 Two deployment classes, and the rule that sorts them: **anything that must hold a socket
 runs as a container; everything else is a Lambda stack.** Region `ap-northeast-2`, stages
@@ -213,7 +213,8 @@ client cannot create a topic and the `lobby` party is the replacement.
 - **catalog** — APK/artifact hosting with version tags, retention, Slack notification, iOS
   ad-hoc OTA, and a self-updating Flutter installer app gated on `admin_locked` teams.
 - **site** — one live tree per site at `g.yyt.life/{slug}/`, no history; redeploy to roll
-  back.
+  back. Every site also has its own origin at `{slug}.g.yyt.life`, and may replace
+  its random slug with a globally unique name (**designed**).
 - **project tracker** — free-string versions linked to artifacts and asset versions,
   per-project numbered issues (close/reopen, comments), team discussions, and an
   append-only team history written in the same transaction as the change it records.
@@ -291,7 +292,7 @@ The rules that generalize, each earned from a specific failure:
 | Authority     | server-authoritative simulation, forgery-proof results | deferred | authority is the game's Lambda or the host client; quorum attestation is designed only |
 | Authorization | per-user or per-resource ACLs on project resources     | refused  | permission is team membership; the catalog's per-app grid was removed on purpose       |
 | Multi-tenancy | per-tenant quotas or isolation                         | deferred | shared Redis with `allkeys-lru`; the answer today is observation and revocation        |
-| Web hosting   | per-site origins (`{slug}.g.yyt.life`)                 | deferred | known shared-origin exposure; the mitigation is a documented rule, not a control       |
+| Web hosting   | per-site origins (`{slug}.g.yyt.life`)                 | designed | every site gets one; the path URL keeps the shared origin and its documented rule      |
 | SDK           | engine plugins; a shipped purpose-shaped kit           | deferred | wire packages exist; the kit is designed, waves A–C unstarted in the client repos      |
 | Contest ops   | judging, scoring, prizes, submission deadlines         | gap      | a gallery records what was built; ranking it is not modelled                           |
 | Platform      | push notifications, email, payments                    | refused  | out of scope for a contest platform                                                    |
@@ -325,7 +326,6 @@ reasoning for each is in `docs/decisions.md`.
 - **Ship the game kit** (waves A–C) in the three client repositories, and recreate the
   gateway container so `/presence` answers — the two things standing between the current
   server surface and a complete client story.
-- **Per-site origins** (`{slug}.g.yyt.life`) — the real fix for the shared-origin exposure.
 - **Quorum-attested writes** — N party members submit one identical value within T seconds;
   the only way a client-only game commits a result nobody can forge alone.
 - **A second Redis instance for participants**, with its own `maxmemory` — the only real
