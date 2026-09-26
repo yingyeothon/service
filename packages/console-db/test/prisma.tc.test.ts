@@ -132,7 +132,23 @@ describe.skipIf(!dockerAvailable())(
           await seedTeamProject(db.client);
           return createSitesDb(db.client);
         },
-        { login },
+        {
+          login,
+          team: async (id) => {
+            await db.client.teams.create({
+              data: {
+                id,
+                name: `team-${id}`,
+                created_by: "m2",
+                created_at: 1,
+                updated_at: 1,
+              },
+            });
+          },
+          dropTeam: async (id) => {
+            await db.client.teams.delete({ where: { id } });
+          },
+        },
       );
     });
 
@@ -434,7 +450,7 @@ describe.skipIf(!dockerAvailable())(
           kv: 0,
           lb: 0,
         });
-        await createSitesDb(db.client).deleteSite("st_1");
+        await createSitesDb(db.client).deleteSite("st_1", 4, false);
         // A parent that does not exist is a foreign-key failure, not a silent null.
         await expect(
           console.insertChannel({

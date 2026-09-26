@@ -299,6 +299,7 @@ model members {
   asset_bundles        asset_bundles[]
   sites                sites[]
   site_deploys         site_deploys[]
+  site_names           site_names[]
   catalog_apps         catalog_apps[]
   channels             channels[]
   events               events[]
@@ -419,6 +420,7 @@ model teams {
   catalog_apps   catalog_apps[]
   asset_bundles  asset_bundles[]
   sites          sites[]
+  site_names     site_names[]
   kv_collections kv_collections[]
   leaderboards   leaderboards[]
 
@@ -623,13 +625,15 @@ model sites {
   team_id           String         @db.VarChar(64)
   project_id        String         @db.VarChar(64)
   name              String         @db.VarChar(255)
-  /// URL path segment; opaque, random, never reused. Binary: it is an S3 key prefix.
-  slug              String         @unique(map: "sites_slug") @db.VarChar(16)
+  /// S3 key prefix, path segment and host label: random, or a claimed name (`named`). Binary.
+  slug              String         @unique(map: "sites_slug") @db.VarChar(32)
   description       String?        @db.MediumText
   owner_id          String?        @db.VarChar(64)
   current_deploy_id String?        @db.VarChar(64)
   /// Claim held by the deploy (or the delete) in flight; null when idle.
   active_deploy_id  String?        @db.VarChar(64)
+  /// The slug is a name the team chose (docs/decisions.md *Site domains*), not a random one.
+  named             Boolean        @default(false)
   created_at        BigInt
   updated_at        BigInt
   members           members?       @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_owner")
@@ -656,12 +660,17 @@ model site_deploys {
   created_at BigInt
   updated_at BigInt
   expires_at BigInt
+  /// A move deploy (no zip): the prefix the site's files move to, and from.
+  move_to    String?             @db.VarChar(32)
+  move_from  String?             @db.VarChar(32)
   sites      sites               @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "site_deploys_site")
   members    members?            @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "site_deploys_creator")
 
   @@index([site_id, created_at], map: "site_deploys_site")
   @@index([status, updated_at], map: "site_deploys_status")
   @@index([created_by], map: "site_deploys_creator")
+  @@index([move_to], map: "site_deploys_move_to")
+  @@index([move_from], map: "site_deploys_move_from")
 }
 
 enum site_deploys_status {
@@ -670,6 +679,33 @@ enum site_deploys_status {
   extracting
   live
   failed
+}
+
+/// Names a team claimed and prefixes it gave up after serving files (docs/decisions.md
+/// *Site domains* §5): `released_at` null = claimed; a released row stays, so only its
+/// team can claim it again. `team_id` null = the team was deleted, and nobody can.
+model site_names {
+  name        String          @id @db.VarChar(32)
+  team_id     String?         @db.VarChar(64)
+  kind        site_names_kind
+  created_by  String?         @db.VarChar(64)
+  created_at  BigInt
+  released_at BigInt?
+  /// The prefix served files before a release; an unserved name is deleted on release instead.
+  served      Boolean         @default(false)
+  /// When the prefix was emptied after its last release (a release resets it); null = objects may be left.
+  purged_at   BigInt?
+  teams       teams?          @relation(fields: [team_id], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "site_names_team_fk")
+  members     members?        @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "site_names_creator")
+
+  @@index([team_id, kind, released_at], map: "site_names_team")
+  @@index([released_at, purged_at], map: "site_names_purge")
+  @@index([created_by], map: "site_names_creator")
+}
+
+enum site_names_kind {
+  name
+  slug
 }
 
 /// A gallery of what members built (docs/decisions.md *Show (console)*).

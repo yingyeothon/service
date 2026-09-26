@@ -13,7 +13,7 @@ import {
   type ListOrder,
   type ListQuery,
 } from "./list.js";
-import { num, nul, run, type PrismaClient } from "./prisma.js";
+import { lockTeamRow, num, nul, run, type PrismaClient } from "./prisma.js";
 
 /*
  * Team → Project → Resource (docs/decisions.md *Teams and
@@ -914,10 +914,8 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
     // on the team row through the foreign key. If only some paths took the
     // exclusive lock first, two lock orders would exist and InnoDB would
     // deadlock one of them — so every recording transaction calls this first.
-    const rows = await tx.$queryRaw<
-      { id: string }[]
-    >`SELECT id FROM teams WHERE id = ${teamId} FOR UPDATE`;
-    return rows.length > 0;
+    // Site renames take the same lock (`sites.ts`), through the same helper.
+    return lockTeamRow(tx, teamId);
   };
 
   const tx = <T>(fn: (tx: Tx) => Promise<T>): Promise<T> =>

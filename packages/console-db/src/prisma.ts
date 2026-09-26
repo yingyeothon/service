@@ -90,6 +90,21 @@ export function translatePrismaError(e: unknown): never {
   });
 }
 
+/** An interactive transaction's client. */
+export type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
+
+/**
+ * `SELECT … FOR UPDATE` on the team row: the mutex every transaction that
+ * counts before it writes takes first (`rules/data.md`, one lock order).
+ * False when the team is gone.
+ */
+export async function lockTeamRow(tx: Tx, teamId: string): Promise<boolean> {
+  const rows = await tx.$queryRaw<
+    { id: string }[]
+  >`SELECT id FROM teams WHERE id = ${teamId} FOR UPDATE`;
+  return rows.length > 0;
+}
+
 /** Runs `fn`, translating any thrown driver/Prisma error. */
 export const run = <T>(fn: () => Promise<T>): Promise<T> =>
   fn().catch(translatePrismaError);
