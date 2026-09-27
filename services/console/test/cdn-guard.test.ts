@@ -11,6 +11,7 @@ import { nullLogger, type Clock } from "@yyt/core";
 import { createMemoryKv, type Kv } from "@yyt/redis";
 import {
   CDN_GUARD_RUN_KEY,
+  CDN_GUARD_WATCH_KEY,
   DEFAULT_CDN_GUARD_THRESHOLDS,
   cdnDistributionsFromEnv,
   cdnGuardDebugFromEvent,
@@ -20,6 +21,7 @@ import {
   createCloudFrontControl,
   evaluateCdn,
   runCdnGuard,
+  runCdnGuardWatch,
   scaleCdnThresholds,
   utcMidnight,
   type CdnControl,
@@ -164,6 +166,23 @@ describe("cdnDistributionsFromEnv / cdnGuardTargets", () => {
         WEB_DISTRIBUTION_ID: undefined,
       }).map((d) => d.label),
     ).toEqual(["artifact", "path-host"]);
+  });
+
+  it("keepUnconfigured keeps a served host whose id is missing, for the digest", () => {
+    const d = cdnDistributionsFromEnv(
+      {
+        ...env,
+        ARTIFACT_CDN_DISTRIBUTION_ID: "",
+        SITE_HOST_DISTRIBUTION_ID: "",
+        SITE_HOST_SUFFIX: "",
+      },
+      { keepUnconfigured: true },
+    );
+    expect(d.map((x) => [x.label, x.id])).toEqual([
+      ["artifact", ""],
+      ["path-host", "DP"],
+      ["console", "DC"],
+    ]);
   });
 
   it("an unparsable URL leaves no host, so that distribution is never disabled", () => {
@@ -887,5 +906,89 @@ describe("createCloudFrontControl", () => {
       lastModifiedSec: NOW,
       aliases: ["dev-g.yyt.life"],
     });
+  });
+});
+
+describe("runCdnGuardWatch", () => {
+  function watch() {
+    let now = NOW;
+    const clock: Clock = { now: () => now * 1000 };
+    const kv = createMemoryKv({ clock });
+    const sent: { subject: string; message: string }[] = [];
+    const run = (extra: Partial<Parameters<typeof runCdnGuardWatch>[0]> = {}) =>
+      runCdnGuardWatch({
+        stage: "prod",
+        kv,
+        clock,
+        logger: nullLogger,
+        notify: async (subject, message) => {
+          sent.push({ subject, message });
+        },
+        ...extra,
+      });
+    return { kv, sent, run, advance: (sec: number) => (now += sec) };
+  }
+
+  it("stays quiet while the guard completes runs", async () => {
+    const w = watch();
+    await w.kv.set(CDN_GUARD_RUN_KEY, String(NOW - 300));
+    await expect(w.run()).resolves.toBe("ok");
+    expect(w.sent).toEqual([]);
+  });
+
+  it("announces a stop once, and the restart once", async () => {
+    const w = watch();
+    await w.kv.set(CDN_GUARD_RUN_KEY, String(NOW - 21 * 60));
+    await expect(w.run()).resolves.toBe("stalled");
+    await expect(w.run()).resolves.toBe("stalled");
+    expect(w.sent.map((m) => m.subject)).toEqual([
+      "[yyt console prod] CDN guard stopped",
+    ]);
+    expect(w.sent[0]!.message).toContain("not completed a run since");
+    expect(w.sent[0]!.message).toContain("yyt-console-prod-cdnGuard");
+    expect(await w.kv.get(CDN_GUARD_WATCH_KEY)).toBe(String(NOW));
+    await w.kv.set(CDN_GUARD_RUN_KEY, String(NOW));
+    await expect(w.run()).resolves.toBe("resumed");
+    await expect(w.run()).resolves.toBe("ok");
+    expect(w.sent.map((m) => m.subject)).toEqual([
+      "[yyt console prod] CDN guard stopped",
+      "[yyt console prod] CDN guard running again",
+    ]);
+  });
+
+  it("an undelivered stop notice is announced again on the next tick", async () => {
+    const w = watch();
+    await w.kv.set(CDN_GUARD_RUN_KEY, String(NOW - 21 * 60));
+    let fail = true;
+    const flaky = async (subject: string, message: string) => {
+      if (fail) throw new Error("sns throttled");
+      w.sent.push({ subject, message });
+    };
+    await expect(w.run({ notify: flaky })).resolves.toBe("stalled");
+    expect(await w.kv.get(CDN_GUARD_WATCH_KEY)).toBeNull();
+    fail = false;
+    await w.run({ notify: flaky });
+    expect(w.sent.map((m) => m.subject)).toEqual([
+      "[yyt console prod] CDN guard stopped",
+    ]);
+  });
+
+  it("a guard that never ran counts as stopped", async () => {
+    const w = watch();
+    await expect(w.run()).resolves.toBe("stalled");
+    expect(w.sent[0]!.message).toContain("no completed run on record");
+  });
+
+  it("never throws: a Redis error is reported as error, and no topic drops the notice", async () => {
+    const w = watch();
+    const broken: Kv = {
+      ...w.kv,
+      get: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    };
+    await expect(w.run({ kv: broken })).resolves.toBe("error");
+    await expect(w.run({ notify: undefined })).resolves.toBe("stalled");
+    expect(w.sent).toEqual([]);
   });
 });

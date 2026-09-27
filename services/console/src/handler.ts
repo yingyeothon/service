@@ -64,6 +64,7 @@ import {
   cdnGuardTargets,
   createCloudFrontControl,
   runCdnGuard,
+  runCdnGuardWatch,
   scaleCdnThresholds,
   type CdnControl,
   type CdnGuardMemory,
@@ -428,9 +429,9 @@ export const expire = async (): Promise<void> => {
         social,
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
-        distributions: cdnDistributionsFromEnv(process.env).map(
-          ({ label, id }) => ({ label, id }),
-        ),
+        distributions: cdnDistributionsFromEnv(process.env, {
+          keepUnconfigured: true,
+        }).map(({ label, id }) => ({ label, id })),
         // Two missed 5-minute ticks would already be odd; an hour is a stop.
         guardHeartbeat: { key: CDN_GUARD_RUN_KEY, staleAfterSec: 3600 },
         kv,
@@ -555,6 +556,17 @@ export const gatewayProbe = async (): Promise<void> => {
       message: e instanceof Error ? e.message : String(e),
     });
   }
+  // The CDN guard's watchdog rides this 5-minute schedule (no alarm slot of
+  // its own): a stopped guard is announced within about 20 minutes.
+  if (probeKv) {
+    const watch = await runCdnGuardWatch({
+      stage,
+      kv: probeKv,
+      notify: alarmNotify(),
+      logger,
+    });
+    logger.info("cdn guard watch", { stage, status: watch });
+  } else logger.error("cdn guard watch: skipped, no Redis client", { stage });
 };
 
 /**

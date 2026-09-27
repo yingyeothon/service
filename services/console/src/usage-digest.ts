@@ -167,7 +167,11 @@ export interface UsageDigestOptions {
   metrics?: UsageMetrics;
   /** Artifact bucket name; empty means no bucket on this stage. */
   bucket?: string;
-  /** The stage's CloudFront distributions; an empty id is skipped. */
+  /**
+   * The stage's CloudFront distributions. An empty id is a host the stage
+   * serves without a configured distribution id: not read, and warned about
+   * (the CDN guard cannot protect it either).
+   */
   distributions?: CdnDistributionRef[];
   /**
    * The CDN cost guard's last-completed-run key (unix seconds); warns when it
@@ -340,6 +344,13 @@ export async function runUsageDigest({
     }
   }
 
+  for (const d of distributions)
+    if (d.id === "")
+      warnings.push({
+        kind: `cdn:${d.label}:unconfigured`,
+        type: "level",
+        text: `cdn ${d.label} has no distribution id: its traffic is not read here and the CDN guard does not protect it (set the SSM parameter)`,
+      });
   const cdnTargets = distributions.filter((d) => d.id !== "");
   if (metrics && cdnTargets.length > 0) {
     const cdn: (CdnTraffic & { label: string })[] = [];

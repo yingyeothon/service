@@ -129,6 +129,7 @@ function hostOf(url: string | undefined): string {
  */
 export function cdnDistributionsFromEnv(
   env: Record<string, string | undefined>,
+  opts: { keepUnconfigured?: boolean } = {},
 ): CdnDistribution[] {
   const suffix = (env.SITE_HOST_SUFFIX ?? "").toLowerCase();
   const all: CdnDistribution[] = [
@@ -153,7 +154,9 @@ export function cdnDistributionsFromEnv(
       host: hostOf(env.PUBLIC_BASE_URL),
     },
   ];
-  return all.filter((d) => d.id !== "");
+  // `keepUnconfigured`: a host the stage serves but whose id is missing
+  // stays in the list (id ""), so the digest can say it is unprotected.
+  return all.filter((d) => d.id !== "" || (opts.keepUnconfigured && d.host));
 }
 
 /**
@@ -1053,4 +1056,110 @@ export async function runCdnGuard({
       }
   }
   return { targets: summaries, stateless, debug: debug !== undefined };
+}
+
+/** Set while a stopped guard is announced (value: when it was first seen). */
+export const CDN_GUARD_WATCH_KEY = "cdn:guard:watch";
+/** Four missed 5-minute runs. */
+export const DEFAULT_GUARD_STALE_SEC = 20 * 60;
+/** A stop is announced again once a day while it lasts: a forgotten pause must not go quiet. */
+const WATCH_KEY_TTL_SEC = 24 * 3600;
+
+export interface CdnGuardWatchOptions {
+  stage: string;
+  kv: Kv;
+  notify?: (subject: string, message: string) => Promise<void>;
+  staleAfterSec?: number;
+  clock?: Clock;
+  logger: Logger;
+}
+
+/**
+ * The guard's watchdog, run by another schedule (the prod gateway probe,
+ * every 5 minutes): the guard has no Errors alarm, and the daily digest
+ * alone would notice a stop up to a day late. Edges only — one message when
+ * the last completed run is older than `staleAfterSec` (or missing), one
+ * when it runs again, and the stop again every day it lasts. A deliberate
+ * pause (EventBridge `disable-rule`) is announced too: that is the reminder
+ * to resume it. Never throws.
+ */
+export async function runCdnGuardWatch({
+  stage,
+  kv,
+  notify,
+  staleAfterSec = DEFAULT_GUARD_STALE_SEC,
+  clock = systemClock,
+  logger,
+}: CdnGuardWatchOptions): Promise<"ok" | "stalled" | "resumed" | "error"> {
+  const now = nowSec(clock);
+  const send = async (subject: string, message: string): Promise<boolean> => {
+    if (!notify) {
+      logger.warn("cdn guard watch: no alarm topic, notice dropped", {
+        subject,
+      });
+      return true;
+    }
+    try {
+      await notify(subject, message);
+      return true;
+    } catch (e) {
+      logger.error("cdn guard watch: notify failed", {
+        subject,
+        message: e instanceof Error ? e.message : String(e),
+      });
+      return false;
+    }
+  };
+  try {
+    const raw = await kv.get(CDN_GUARD_RUN_KEY);
+    const last = raw === null ? undefined : Number(raw);
+    const stale =
+      last === undefined ||
+      !Number.isFinite(last) ||
+      now - last > staleAfterSec;
+    if (stale) {
+      // `nx`: one announcement per stop, however many ticks see it.
+      const first = await kv.set(CDN_GUARD_WATCH_KEY, String(now), {
+        nx: true,
+        ex: WATCH_KEY_TTL_SEC,
+      });
+      if (
+        first &&
+        !(await send(
+          `[yyt console ${stage}] CDN guard stopped`,
+          [
+            last === undefined || !Number.isFinite(last)
+              ? "The CDN guard has no completed run on record."
+              : `The CDN guard has not completed a run since ${iso(last)}.`,
+            "Public CDN cost is unbounded until it runs again (a guard that cannot reach Redis still disables, but records no run). If it was paused on purpose (EventBridge disable-rule), this is the reminder to resume it; otherwise check the yyt-console-" +
+              stage +
+              "-cdnGuard log.",
+          ].join("\n"),
+        ))
+      )
+        // Not delivered: let the next tick announce it again.
+        await kv.del(CDN_GUARD_WATCH_KEY);
+      logger.warn("cdn guard watch: stalled", {
+        stage,
+        last,
+        announced: first,
+      });
+      return "stalled";
+    }
+    // The delete count is the recovery edge: only the tick that removed it announces.
+    if ((await kv.del(CDN_GUARD_WATCH_KEY)) > 0) {
+      await send(
+        `[yyt console ${stage}] CDN guard running again`,
+        `The CDN guard completed a run at ${iso(last)}.`,
+      );
+      return "resumed";
+    }
+    return "ok";
+  } catch (e) {
+    logger.error("cdn guard watch: state error", {
+      stage,
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return "error";
+  }
 }

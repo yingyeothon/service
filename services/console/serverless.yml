@@ -15,7 +15,8 @@ custom:
   alarmTopic: ${ssm:/yyt-service/${self:custom.stage}/alarm-topic-arn, ""}
   # The gateway liveness probe runs on a schedule only where the gateway is
   # expected to be up around the clock; the dev container is stopped outside
-  # test windows and would page every 5 minutes.
+  # test windows and would page every 5 minutes. It also carries the CDN
+  # guard's watchdog: pausing it pauses that too.
   gatewayProbeEnabled:
     dev: false
     prod: true
@@ -55,6 +56,10 @@ custom:
   # `*.dev-g.yyt.life` in SSM by hand (rules/deployment.md); empty = none of
   # the SiteHost* resources exist and `hostUrl` is null.
   siteHostCertArn: ${ssm:${self:custom.stageSsm}/site-host-cert-arn, ""}
+  # Origin lock (scripts/origin-lock.sh): the per-site host sends this as its
+  # `Referer`, and the site bucket's public read requires it, so the bucket
+  # cannot be read around CloudFront. Empty = no header (unlocked stage).
+  originSecret: ${ssm:${self:custom.stageSsm}/origin-secret, ""}
   siteHostSuffix:
     dev: dev-g.yyt.life
     prod: g.yyt.life
@@ -397,6 +402,7 @@ resources:
     HasSiteDistribution:
       !Not [!Equals ["${self:custom.siteDistributionId}", ""]]
     HasSiteHost: !Not [!Equals ["${self:custom.siteHostCertArn}", ""]]
+    HasOriginSecret: !Not [!Equals ["${self:custom.originSecret}", ""]]
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
@@ -754,6 +760,11 @@ resources:
               DomainName: ${self:custom.siteBucket}.s3.${aws:region}.amazonaws.com
               S3OriginConfig:
                 OriginAccessIdentity: ""
+              OriginCustomHeaders: !If
+                - HasOriginSecret
+                - - HeaderName: Referer
+                    HeaderValue: ${self:custom.originSecret}
+                - !Ref AWS::NoValue
           DefaultCacheBehavior:
             TargetOriginId: site
             ViewerProtocolPolicy: redirect-to-https

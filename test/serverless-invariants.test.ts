@@ -116,6 +116,48 @@ describe("serverless.yml invariants", () => {
       "${self:custom.siteHostSuffix.${self:custom.stage}",
     ]);
   });
+  it("console: the per-site host sends the origin secret only where the stage has one", () => {
+    const yml = readFileSync(
+      join(root, "services/console/serverless.yml"),
+      "utf8",
+    );
+    // Without the default every console deploy fails on a stage that has no secret yet.
+    expect(yml).toContain(
+      'originSecret: ${ssm:${self:custom.stageSsm}/origin-secret, ""}',
+    );
+    const doc = parse(yml, { logLevel: "silent" }) as {
+      resources: {
+        Conditions: Record<string, unknown>;
+        Resources: Record<
+          string,
+          {
+            Properties: {
+              DistributionConfig: {
+                Origins: { Id: string; OriginCustomHeaders?: unknown }[];
+              };
+            };
+          }
+        >;
+      };
+    };
+    expect(doc.resources.Conditions.HasOriginSecret).toBeDefined();
+    const origin =
+      doc.resources.Resources.SiteHostDistribution!.Properties.DistributionConfig.Origins.find(
+        (o) => o.Id === "site",
+      )!;
+    // `!If [HasOriginSecret, [{Referer}], NoValue]`, tags dropped by the parser.
+    expect(origin.OriginCustomHeaders).toEqual([
+      "HasOriginSecret",
+      [
+        {
+          HeaderName: "Referer",
+          HeaderValue: "${self:custom.originSecret}",
+        },
+      ],
+      "AWS::NoValue",
+    ]);
+  });
+
   it("console: only the CDN guard's own role may update a distribution, and only the three it may disable", () => {
     const yml = readFileSync(
       join(root, "services/console/serverless.yml"),

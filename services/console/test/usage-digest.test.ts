@@ -213,7 +213,7 @@ describe("usage digest", () => {
       redis: undefined,
       metrics: s.metrics,
       bucket: undefined,
-      distributions: [{ label: "artifact", id: "" }],
+      distributions: [],
       kv: s.kv,
       logger: nullLogger,
     });
@@ -362,13 +362,35 @@ describe("usage digest", () => {
       "site-host",
       "console",
     ]);
+    // The empty id is a served host without a distribution id: warned, not read.
     expect(r.warnings.map((w) => w.kind)).toEqual([
+      "cdn:missing:unconfigured",
       "cdn:path-host:bytes",
       "cdn:site-host:bytes",
     ]);
     expect(s.sent[0]!.message).toContain(
       "cdn path-host served 30.0 GiB in 7 requests",
     );
+  });
+
+  it("warns about a served host with no distribution id, without asking CloudWatch", async () => {
+    const s = setup();
+    const r = await runUsageDigest({
+      stage: "prod",
+      metrics: s.metrics,
+      distributions: [
+        { label: "artifact", id: "" },
+        { label: "console", id: "DC" },
+      ],
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(s.asked).toEqual(["cdn:DC"]);
+    expect(r.warnings.map((w) => w.kind)).toEqual([
+      "cdn:artifact:unconfigured",
+    ]);
+    expect(s.sent[0]!.message).toContain("the CDN guard does not protect it");
   });
 
   it("one unreadable distribution is named in errors and the others still report", async () => {
