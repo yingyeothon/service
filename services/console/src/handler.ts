@@ -56,6 +56,19 @@ import {
   createCloudWatchUsageMetrics,
   runUsageDigest,
 } from "./usage-digest.js";
+import {
+  CDN_GUARD_RUN_KEY,
+  DEFAULT_CDN_GUARD_THRESHOLDS,
+  cdnDistributionsFromEnv,
+  cdnGuardDebugFromEvent,
+  cdnGuardTargets,
+  createCloudFrontControl,
+  runCdnGuard,
+  scaleCdnThresholds,
+  type CdnControl,
+  type CdnGuardMemory,
+} from "./cdn-guard.js";
+import { CloudFrontClient } from "@aws-sdk/client-cloudfront";
 import { createGithubLogin } from "./github.js";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { historyId } from "./team.js";
@@ -415,7 +428,11 @@ export const expire = async (): Promise<void> => {
         social,
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
-        distributionId: process.env.ARTIFACT_CDN_DISTRIBUTION_ID || undefined,
+        distributions: cdnDistributionsFromEnv(process.env).map(
+          ({ label, id }) => ({ label, id }),
+        ),
+        // Two missed 5-minute ticks would already be odd; an hour is a stop.
+        guardHeartbeat: { key: CDN_GUARD_RUN_KEY, staleAfterSec: 3600 },
         kv,
         notify: alarmNotify(),
         logger,
@@ -491,7 +508,11 @@ function alarmNotify():
   ((subject: string, message: string) => Promise<void>) | undefined {
   const topic = process.env.ALARM_TOPIC_ARN ?? "";
   if (!topic) return undefined;
-  sns ??= new SNSClient({});
+  // Bounded like the CloudWatch reads: the probe and the CDN guard wait on it.
+  sns ??= new SNSClient({
+    maxAttempts: 2,
+    requestHandler: { requestTimeout: 5000, connectionTimeout: 3000 },
+  });
   return async (subject, message) => {
     await sns!.send(
       new PublishCommand({
@@ -504,6 +525,10 @@ function alarmNotify():
 }
 let probeKv: Kv | undefined;
 const probeMemory: GatewayProbeMemory = { announcedWithoutState: false };
+let guardKv: Kv | undefined;
+let guardControl: CdnControl | undefined;
+let guardMetrics: ReturnType<typeof createCloudWatchUsageMetrics> | undefined;
+const guardMemory: CdnGuardMemory = { announcedWithoutState: false };
 
 /**
  * EventBridge every 5 minutes (prod only by schedule; the function exists on
@@ -526,6 +551,67 @@ export const gatewayProbe = async (): Promise<void> => {
     logger.info("gateway probe", { stage, ...r });
   } catch (e) {
     logger.error("gateway probe crashed", {
+      stage,
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+};
+
+/**
+ * EventBridge every 5 minutes on every stage (`docs/decisions.md` *CDN cost
+ * guard and emergency stops*): disables a public distribution past a trip
+ * threshold. Its own IAM role (the only one allowed to update a
+ * distribution), its own Redis connection and no MariaDB. Never throws — no
+ * Errors alarm; the usage digest watches `CDN_GUARD_RUN_KEY` instead.
+ *
+ * On dev with `DEBUG_HOOKS=1`, an invoke payload `{"cdnGuardDebug": …}`
+ * runs one label with lowered thresholds, optionally as a dry run.
+ */
+export const cdnGuard = async (event?: unknown): Promise<void> => {
+  const stage = env("STAGE");
+  try {
+    const gate = cdnGuardDebugFromEvent(event, {
+      stage,
+      debugHooks: process.env.DEBUG_HOOKS,
+    });
+    if (gate.ignored === "invalid") {
+      logger.warn("cdn guard: debug payload rejected", { stage });
+      return;
+    }
+    if (gate.ignored === "gate")
+      logger.warn("cdn guard: debug payload ignored", { stage });
+    guardKv ??= createRedisKv(redisOptionsFromEnv());
+    guardControl ??= createCloudFrontControl(
+      new CloudFrontClient({
+        maxAttempts: 2,
+        requestHandler: { requestTimeout: 5000, connectionTimeout: 3000 },
+      }),
+    );
+    guardMetrics ??= createCloudWatchUsageMetrics({
+      region: env("AWS_REGION"),
+    });
+    const r = await runCdnGuard({
+      stage,
+      targets: cdnGuardTargets(
+        cdnDistributionsFromEnv(process.env),
+        process.env.CDN_GUARD_CONSOLE,
+        process.env.CDN_GUARD_MODE,
+      ),
+      thresholds: scaleCdnThresholds(
+        DEFAULT_CDN_GUARD_THRESHOLDS,
+        process.env.CDN_GUARD_SCALE,
+      ),
+      metrics: guardMetrics,
+      control: guardControl,
+      kv: guardKv,
+      notify: alarmNotify(),
+      memory: guardMemory,
+      ...(gate.debug ? { debug: gate.debug } : {}),
+      logger,
+    });
+    logger.info("cdn guard", { stage, ...r });
+  } catch (e) {
+    logger.error("cdn guard crashed", {
       stage,
       message: e instanceof Error ? e.message : String(e),
     });

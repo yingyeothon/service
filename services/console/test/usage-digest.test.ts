@@ -58,7 +58,7 @@ describe("usage digest", () => {
       redis: s.redis(),
       metrics: s.metrics,
       bucket: "b",
-      distributionId: "D1",
+      distributions: [{ label: "artifact", id: "D1" }],
       kv: s.kv,
       notify: s.notify,
       clock: s.clock,
@@ -73,7 +73,7 @@ describe("usage digest", () => {
       objects: 42,
       growthSinceLast: undefined,
     });
-    expect(r.cdn).toEqual({ bytes: 1000, requests: 7 });
+    expect(r.cdn).toEqual([{ label: "artifact", bytes: 1000, requests: 7 }]);
     expect(s.asked).toEqual(["bucket:b", "cdn:D1"]);
     // The readings are kept for tomorrow's comparison.
     expect(await s.kv.get(USAGE_LAST_EVICTED_KEY)).toBe("0");
@@ -97,7 +97,7 @@ describe("usage digest", () => {
       }),
       metrics: s.metrics,
       bucket: "b",
-      distributionId: "D1",
+      distributions: [{ label: "artifact", id: "D1" }],
       kv: s.kv,
       notify: s.notify,
       clock: s.clock,
@@ -111,7 +111,7 @@ describe("usage digest", () => {
       "redis:evicted",
       "channel:q_x",
       "bucket:growth",
-      "cdn:bytes",
+      "cdn:artifact:bytes",
     ]);
     expect(r.announced).toHaveLength(5);
     expect(r.notified).toBe(true);
@@ -123,9 +123,9 @@ describe("usage digest", () => {
     expect(m).toContain("evicted 7 key(s)");
     expect(m).toContain("channel q_x holds 999 redis keys (warn at 500)");
     expect(m).toContain("bucket grew 10.0 GiB");
-    expect(m).toContain("cdn served 30.0 GiB in 7 requests");
+    expect(m).toContain("cdn artifact served 30.0 GiB in 7 requests");
     expect(await s.kv.get(USAGE_LAST_LEVEL_WARNINGS_KEY)).toBe(
-      JSON.stringify(["redis:memory", "channel:q_x", "cdn:bytes"]),
+      JSON.stringify(["redis:memory", "channel:q_x", "cdn:artifact:bytes"]),
     );
   });
 
@@ -178,12 +178,12 @@ describe("usage digest", () => {
       stage: "dev",
       redis: s.redis({ usedBytes: 95 }),
       metrics: s.metrics,
-      distributionId: "D1",
+      distributions: [{ label: "artifact", id: "D1" }],
       kv: s.kv,
       notify: s.notify,
       logger: nullLogger,
     });
-    expect(r.announced.map((w) => w.kind)).toEqual(["cdn:bytes"]);
+    expect(r.announced.map((w) => w.kind)).toEqual(["cdn:artifact:bytes"]);
     expect(s.sent[0]!.message).toContain("1 new usage warning(s) at");
     expect(s.sent[0]!.message).toContain(
       "(1 still present since an earlier digest)",
@@ -213,7 +213,7 @@ describe("usage digest", () => {
       redis: undefined,
       metrics: s.metrics,
       bucket: undefined,
-      distributionId: "",
+      distributions: [{ label: "artifact", id: "" }],
       kv: s.kv,
       logger: nullLogger,
     });
@@ -252,14 +252,14 @@ describe("usage digest", () => {
       redis: s.redis(),
       metrics,
       bucket: "b",
-      distributionId: "D1",
+      distributions: [{ label: "artifact", id: "D1" }],
       kv: s.kv,
       notify: s.notify,
       logger: nullLogger,
     });
     expect(r.errors).toEqual(["bucket"]);
     expect(r.bucket).toBeUndefined();
-    expect(r.cdn?.bytes).toBe(30 * GIB);
+    expect(r.cdn?.[0]?.bytes).toBe(30 * GIB);
     expect(r.notified).toBe(true);
   });
 
@@ -269,7 +269,7 @@ describe("usage digest", () => {
     await s.kv.set(USAGE_LAST_BUCKET_BYTES_KEY, String(90 * GIB));
     await s.kv.set(
       USAGE_LAST_LEVEL_WARNINGS_KEY,
-      JSON.stringify(["cdn:bytes"]),
+      JSON.stringify(["cdn:artifact:bytes"]),
     );
     const r = await runUsageDigest({
       stage: "dev",
@@ -292,7 +292,7 @@ describe("usage digest", () => {
     expect(await s.kv.get(USAGE_LAST_EVICTED_KEY)).toBe("5");
     expect(await s.kv.get(USAGE_LAST_BUCKET_BYTES_KEY)).toBe(String(90 * GIB));
     expect(await s.kv.get(USAGE_LAST_LEVEL_WARNINGS_KEY)).toBe(
-      JSON.stringify(["cdn:bytes"]),
+      JSON.stringify(["cdn:artifact:bytes"]),
     );
     // Tomorrow announces the same growth again.
     const again = await runUsageDigest({
@@ -317,13 +317,130 @@ describe("usage digest", () => {
     const r = await runUsageDigest({
       stage: "dev",
       metrics: s.metrics,
-      distributionId: "D1",
+      distributions: [{ label: "artifact", id: "D1" }],
       kv: s.kv,
       logger: nullLogger,
     });
     expect(r.warnings).toHaveLength(1);
     expect(r.announced).toHaveLength(1);
     expect(r.notified).toBe(false);
+  });
+
+  it("reads every labelled distribution and warns per label", async () => {
+    const s = setup();
+    const bytesById: Record<string, number> = {
+      DA: 1000,
+      DP: 30 * GIB,
+      DS: 21 * GIB,
+      DC: 5,
+    };
+    const metrics: UsageMetrics = {
+      ...s.metrics,
+      cdnTraffic: async (id) => {
+        s.asked.push(`cdn:${id}`);
+        return { bytes: bytesById[id] ?? 0, requests: 7 };
+      },
+    };
+    const r = await runUsageDigest({
+      stage: "prod",
+      metrics,
+      distributions: [
+        { label: "artifact", id: "DA" },
+        { label: "path-host", id: "DP" },
+        { label: "site-host", id: "DS" },
+        { label: "console", id: "DC" },
+        { label: "missing", id: "" },
+      ],
+      kv: s.kv,
+      notify: s.notify,
+      logger: nullLogger,
+    });
+    expect(s.asked).toEqual(["cdn:DA", "cdn:DP", "cdn:DS", "cdn:DC"]);
+    expect(r.cdn?.map((c) => c.label)).toEqual([
+      "artifact",
+      "path-host",
+      "site-host",
+      "console",
+    ]);
+    expect(r.warnings.map((w) => w.kind)).toEqual([
+      "cdn:path-host:bytes",
+      "cdn:site-host:bytes",
+    ]);
+    expect(s.sent[0]!.message).toContain(
+      "cdn path-host served 30.0 GiB in 7 requests",
+    );
+  });
+
+  it("one unreadable distribution is named in errors and the others still report", async () => {
+    const s = setup({ cdnBytes: 1 });
+    const metrics: UsageMetrics = {
+      ...s.metrics,
+      cdnTraffic: async (id) => {
+        if (id === "DP") throw new Error("throttled");
+        return { bytes: 1, requests: 1 };
+      },
+    };
+    const r = await runUsageDigest({
+      stage: "dev",
+      metrics,
+      distributions: [
+        { label: "artifact", id: "DA" },
+        { label: "path-host", id: "DP" },
+      ],
+      kv: s.kv,
+      logger: nullLogger,
+    });
+    expect(r.errors).toEqual(["cdn:path-host"]);
+    expect(r.cdn).toEqual([{ label: "artifact", bytes: 1, requests: 1 }]);
+  });
+
+  it("warns once when the CDN guard has stopped completing runs", async () => {
+    const s = setup();
+    const heartbeat = { key: "cdn:guard:run", staleAfterSec: 3600 };
+    const run = () =>
+      runUsageDigest({
+        stage: "prod",
+        kv: s.kv,
+        notify: s.notify,
+        guardHeartbeat: heartbeat,
+        clock: s.clock,
+        logger: nullLogger,
+      });
+    // Never ran.
+    const none = await run();
+    expect(none.warnings.map((w) => w.kind)).toEqual(["cdn:guard:stale"]);
+    expect(none.warnings[0]!.text).toContain("no completed run on record");
+    expect(s.sent).toHaveLength(1);
+    // Fresh: the level warning clears.
+    await s.kv.set("cdn:guard:run", String(NOW_SEC - 300));
+    expect((await run()).warnings).toEqual([]);
+    // Stale again: announced again, with the time of the last run.
+    await s.kv.set("cdn:guard:run", String(NOW_SEC - 3601));
+    const stale = await run();
+    expect(stale.announced.map((w) => w.kind)).toEqual(["cdn:guard:stale"]);
+    expect(stale.warnings[0]!.text).toContain(
+      "has not completed a run since 2023-11-14T21:13:19.000Z",
+    );
+    expect(s.sent).toHaveLength(2);
+  });
+
+  it("an unreadable heartbeat is an error, not a stale warning", async () => {
+    const s = setup();
+    const kv = {
+      ...s.kv,
+      get: async (key: string) => {
+        if (key === "cdn:guard:run") throw new Error("redis down");
+        return s.kv.get(key);
+      },
+    };
+    const r = await runUsageDigest({
+      stage: "dev",
+      kv,
+      guardHeartbeat: { key: "cdn:guard:run", staleAfterSec: 3600 },
+      logger: nullLogger,
+    });
+    expect(r.errors).toEqual(["cdn-guard"]);
+    expect(r.warnings).toEqual([]);
   });
 
   it("keeps the size warning when only the collection scan times out", async () => {
@@ -613,5 +730,42 @@ describe("cloudwatch usage metrics", () => {
       bytes: 0,
       requests: 0,
     });
+  });
+  it("reads 5-minute CloudFront buckets from us-east-1 and merges bytes with requests", async () => {
+    const FIVE = 300;
+    const start = dayEnd; // UTC midnight
+    const { metrics, calls } = fakeClients((_, input) =>
+      input.MetricName === "BytesDownloaded"
+        ? [
+            { Timestamp: new Date((start + 2 * FIVE) * 1000), Sum: 70 },
+            { Timestamp: new Date(start * 1000), Sum: 10 },
+          ]
+        : [
+            { Timestamp: new Date(start * 1000), Sum: 1 },
+            { Timestamp: new Date((start + FIVE) * 1000), Sum: 2 },
+          ],
+    );
+    await expect(
+      metrics.cdnBuckets("DIST", start + 17, NOW_SEC),
+    ).resolves.toEqual([
+      { t: start, bytes: 10, requests: 1 },
+      { t: start + FIVE, bytes: 0, requests: 2 },
+      { t: start + 2 * FIVE, bytes: 70, requests: 0 },
+    ]);
+    expect(calls.map((c) => c.region)).toEqual(["us-east-1", "us-east-1"]);
+    const bytes = calls[0]!.input;
+    expect(bytes.MetricName).toBe("BytesDownloaded");
+    expect(bytes.Dimensions).toEqual([
+      { Name: "DistributionId", Value: "DIST" },
+      { Name: "Region", Value: "Global" },
+    ]);
+    expect(bytes.Period).toBe(FIVE);
+    expect(bytes.Statistics).toEqual(["Sum"]);
+    // Both ends on the 5-minute grid: the start rounds down, the end up.
+    expect(bytes.StartTime).toEqual(new Date(start * 1000));
+    expect(bytes.EndTime).toEqual(
+      new Date(Math.ceil(NOW_SEC / FIVE) * FIVE * 1000),
+    );
+    expect(calls[1]!.input.MetricName).toBe("Requests");
   });
 });

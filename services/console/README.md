@@ -45,9 +45,13 @@ Every mutation writes `audit_log` (best effort: a failed audit insert is logged,
 
 The GitHub OAuth app's callback must be `https://console{-dev}.yyt.life/auth/github/callback`.
 
+`expire` and `cdnGuard` also get `SITE_HOST_DISTRIBUTION_ID`/`WEB_DISTRIBUTION_ID` (the stack's own two distributions, function-level so `api` does not depend on them); `cdnGuard` reads `CDN_GUARD_CONSOLE` (`--param cdnGuardConsole=off` stops it watching the console distribution), `CDN_GUARD_MODE` (`--param cdnGuardMode=alert`: announce trips, disable nothing) and `CDN_GUARD_SCALE` (`--param cdnGuardScale=<k>` multiplies every threshold), and holds none of the provider's secrets.
+
 ## Debug hook (dev + `DEBUG_HOOKS=1` only)
 
 `POST /debug/login {login, githubId<0, role}` with `x-debug-key` → creates/updates a synthetic member (`dbg_{login}`) and returns a session cookie, so the API can be exercised without GitHub.
+
+`cdnGuard` takes an invoke payload `{"cdnGuardDebug": {"label", "thresholds"?, "dryRun"?}}` to run one label with lowered thresholds (`rules/manual-verification.md`); elsewhere the payload is ignored.
 
 ## Verification
 
@@ -55,4 +59,5 @@ The GitHub OAuth app's callback must be `https://console{-dev}.yyt.life/auth/git
 scripts/deploy.sh console dev --param debugHooks=1
 scripts/smoke/console.mjs https://console-dev.yyt.life "$(cat local/deploy/debug-key.dev)" https://auth-dev.yyt.life
 aws lambda invoke --function-name yyt-console-dev-expire /dev/stdout
+aws lambda invoke --function-name yyt-console-dev-cdnGuard --cli-binary-format raw-in-base64-out --payload '{}' /dev/stdout
 ```

@@ -116,4 +116,143 @@ describe("serverless.yml invariants", () => {
       "${self:custom.siteHostSuffix.${self:custom.stage}",
     ]);
   });
+  it("console: only the CDN guard's own role may update a distribution, and only the three it may disable", () => {
+    const yml = readFileSync(
+      join(root, "services/console/serverless.yml"),
+      "utf8",
+    );
+    // Optional pointers keep their defaults, or a stage without them fails to deploy.
+    expect(yml).toContain(
+      'artifactDistributionId: ${ssm:${self:custom.stageSsm}/cdn-distribution-id, ""}',
+    );
+    expect(yml).toContain(
+      'CDN_GUARD_CONSOLE: ${param:cdnGuardConsole, "alert"}',
+    );
+    type Statement = {
+      Effect: string;
+      Action: string | string[];
+      Resource: unknown;
+    };
+    type Fn = {
+      role?: string;
+      environment?: Record<string, unknown>;
+      events?: { schedule?: { rate: string; enabled: string } }[];
+      iam?: unknown;
+    };
+    const doc = parse(yml, { logLevel: "silent" }) as {
+      custom: Record<string, unknown>;
+      provider: {
+        environment: Record<string, unknown>;
+        iam: { role: { statements: unknown[]; managedPolicies?: unknown } };
+      };
+      functions: Record<string, Fn>;
+      resources: {
+        Resources: Record<
+          string,
+          {
+            Type: string;
+            Properties: {
+              Policies?: { PolicyDocument: { Statement: unknown[] } }[];
+            };
+          }
+        >;
+      };
+    };
+    // Tags are dropped by the parser: `!If [cond, statement, NoValue]` is an array.
+    const flat = (list: unknown[]) =>
+      list.map((s) =>
+        Array.isArray(s)
+          ? { condition: s[0] as string, ...(s[1] as Statement) }
+          : { condition: undefined, ...(s as Statement) },
+      );
+    const actions = (s: Statement) => [s.Action].flat();
+
+    // Scheduled on every stage: dev's distributions are public too.
+    expect(doc.custom.cdnGuardEnabled).toEqual({ dev: true, prod: true });
+    const guard = doc.functions.cdnGuard!;
+    expect(guard.events?.[0]?.schedule).toEqual({
+      rate: "rate(5 minutes)",
+      enabled: "${self:custom.cdnGuardEnabled.${self:custom.stage}, false}",
+    });
+
+    // The shared role (and so `api`) can never switch a distribution off,
+    // and no other function has a role of its own.
+    // Wildcards included: `*`, `cloudfront:*` and `cloudfront:Update*` would all grant it.
+    const grantsUpdate = (a: string) =>
+      /^(\*|cloudfront:\*|cloudfront:Update[A-Za-z]*\*?)$/.test(a);
+    for (const s of flat(doc.provider.iam.role.statements))
+      for (const a of actions(s)) expect(a, a).not.toSatisfy(grantsUpdate);
+    expect(doc.provider.iam.role.managedPolicies).toBeUndefined();
+    for (const [name, fn] of Object.entries(doc.functions))
+      if (name !== "cdnGuard") {
+        expect(fn.role, name).toBeUndefined();
+        expect(JSON.stringify(fn.iam ?? {}), name).not.toContain(
+          "UpdateDistribution",
+        );
+      }
+
+    // The guard's role names each distribution it may disable, each behind
+    // the condition that the stage has it; never the console's.
+    expect(guard.role).toBe("CdnGuardRole");
+    const role = doc.resources.Resources.CdnGuardRole!;
+    expect(role.Type).toBe("AWS::IAM::Role");
+    const statements = flat(
+      role.Properties.Policies!.flatMap((p) => p.PolicyDocument.Statement),
+    );
+    const cloudfront = statements.filter(
+      (s) =>
+        s.Effect === "Allow" &&
+        actions(s).some((a) => a.startsWith("cloudfront:")),
+    );
+    expect(cloudfront.map((s) => s.condition).sort()).toEqual([
+      "HasArtifactDistribution",
+      "HasSiteDistribution",
+      "HasSiteHost",
+    ]);
+    for (const s of cloudfront) {
+      const resource = JSON.stringify(s.Resource);
+      expect(resource).not.toContain("WebDistribution");
+      expect(resource).not.toBe('"*"');
+      expect(resource).toMatch(
+        /artifactDistributionId|siteDistributionId|SiteHostDistribution/,
+      );
+    }
+    // And an explicit Deny on the console's own, whatever the SSM ids say.
+    expect(
+      statements.some(
+        (s) =>
+          s.Effect === "Deny" &&
+          actions(s).includes("cloudfront:UpdateDistribution") &&
+          JSON.stringify(s.Resource).includes("WebDistribution"),
+      ),
+    ).toBe(true);
+    for (const [name, r] of Object.entries(doc.resources.Resources))
+      if (name !== "CdnGuardRole")
+        expect(JSON.stringify(r), name).not.toContain("UpdateDistribution");
+
+    // The distribution ids reach only the functions that need them.
+    const guardEnv = guard.environment ?? {};
+    for (const k of [
+      "CDN_GUARD_CONSOLE",
+      "CDN_GUARD_MODE",
+      "CDN_GUARD_SCALE",
+      "SITE_HOST_DISTRIBUTION_ID",
+      "WEB_DISTRIBUTION_ID",
+    ])
+      expect(guardEnv, k).toHaveProperty(k);
+    // The guard holds none of the provider's secrets.
+    for (const k of [
+      "MYSQL_PASSWORD",
+      "REDIS_ACL_PASSWORD",
+      "GITHUB_CLIENT_SECRET",
+      "DEBUG_KEY",
+      "GATEWAY_TOKEN",
+    ])
+      expect(guardEnv[k], k).toBe("");
+    expect(Object.keys(doc.functions.expire?.environment ?? {}).sort()).toEqual(
+      ["SITE_HOST_DISTRIBUTION_ID", "WEB_DISTRIBUTION_ID"],
+    );
+    expect(doc.provider.environment.SITE_HOST_DISTRIBUTION_ID).toBeUndefined();
+    expect(doc.provider.environment.WEB_DISTRIBUTION_ID).toBeUndefined();
+  });
 });

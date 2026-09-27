@@ -19,6 +19,11 @@ custom:
   gatewayProbeEnabled:
     dev: false
     prod: true
+  # CDN cost guard (docs/decisions.md *CDN cost guard and emergency stops*):
+  # every stage's distributions are public, dev's included.
+  cdnGuardEnabled:
+    dev: true
+    prod: true
   domainSuffix:
     dev: "-dev"
     prod: ""
@@ -41,6 +46,9 @@ custom:
     prod: https://g.yyt.life
   # Plain SSM String set by hand (todo/07); empty = no invalidation on this stage.
   siteDistributionId: ${ssm:${self:custom.stageSsm}/site-distribution-id, ""}
+  # The artifact CDN's distribution (hand-made, like the path host's): the
+  # digest's traffic line and a CDN guard target; empty = neither.
+  artifactDistributionId: ${ssm:${self:custom.stageSsm}/cdn-distribution-id, ""}
   # Per-site hosts `{slug}.{suffix}` (docs/decisions.md *Site domains*): a
   # distribution this stack owns, in front of the same bucket. Opt-in per
   # stage: the owner puts the us-east-1 certificate ARN for `*.g.yyt.life` /
@@ -149,8 +157,8 @@ provider:
     ARTIFACT_BUCKET: ${self:custom.artifactBucket}
     ARTIFACT_CDN_URL: ${self:custom.artifactCdn.${self:custom.stage}}
     # CloudFront distribution id of ARTIFACT_CDN_URL, for the daily usage
-    # digest's traffic metric; plain SSM String set by hand, empty = no CDN metric.
-    ARTIFACT_CDN_DISTRIBUTION_ID: ${ssm:${self:custom.stageSsm}/cdn-distribution-id, ""}
+    # digest and the CDN guard; plain SSM String set by hand, empty = neither.
+    ARTIFACT_CDN_DISTRIBUTION_ID: ${self:custom.artifactDistributionId}
     SITE_BUCKET: ${self:custom.siteBucket}
     SITE_CDN_URL: ${self:custom.siteCdn.${self:custom.stage}}
     # CloudFront distribution id of SITE_CDN_URL, invalidated after every site
@@ -288,6 +296,12 @@ functions:
     reservedConcurrency: 1
     # Also runs the catalog and asset sweeps (S3 deletes across apps).
     timeout: 300
+    # The digest's traffic lines for this stack's own two distributions. Set
+    # here, not on the provider, so `api` does not depend on them.
+    environment:
+      SITE_HOST_DISTRIBUTION_ID:
+        !If [HasSiteHost, !Ref SiteHostDistribution, ""]
+      WEB_DISTRIBUTION_ID: !Ref WebDistribution
     events:
       # 03:00 KST daily; a fixed time so operators can predict when channels flip.
       - schedule: cron(0 18 * * ? *)
@@ -316,6 +330,44 @@ functions:
           rate: rate(5 minutes)
           enabled: ${self:custom.gatewayProbeEnabled.${self:custom.stage}, false}
 
+  cdnGuard:
+    handler: src/handler.cdnGuard
+    # Redis only, no MariaDB: outside the connection budget (rules/data.md).
+    reservedConcurrency: 1
+    # A normal run takes a few seconds; the rest is room for slow CloudFront
+    # and CloudWatch calls (each bounded at 5 s, two attempts), billed only if used.
+    timeout: 120
+    # The next tick is 5 minutes away; a retry would only overlap it.
+    maximumRetryAttempts: 0
+    environment:
+      SITE_HOST_DISTRIBUTION_ID:
+        !If [HasSiteHost, !Ref SiteHostDistribution, ""]
+      WEB_DISTRIBUTION_ID: !Ref WebDistribution
+      # alert (default) | off; the console distribution is never disabled.
+      CDN_GUARD_CONSOLE: ${param:cdnGuardConsole, "alert"}
+      # enforce (default) | alert: `alert` announces trips and disables nothing
+      # (a contest day that expects a spike); scale multiplies every threshold.
+      CDN_GUARD_MODE: ${param:cdnGuardMode, "enforce"}
+      CDN_GUARD_SCALE: ${param:cdnGuardScale, "1"}
+      # The guard needs none of the provider's secrets.
+      MYSQL_PASSWORD: ""
+      REDIS_ACL_USER: ""
+      REDIS_ACL_PASSWORD: ""
+      GITHUB_CLIENT_SECRET: ""
+      DEBUG_KEY: ""
+      GATEWAY_TOKEN: ""
+    # Its own role (`CdnGuardRole` below): the only one in the stack allowed
+    # to update a distribution, and only the three it may disable.
+    role: CdnGuardRole
+    events:
+      # docs/decisions.md *CDN cost guard and emergency stops*: disables a
+      # public distribution past a trip threshold; SNS on edges only. No
+      # CloudWatch alarm, and no Errors alarm on it either (10-alarm cap):
+      # the usage digest checks its last run.
+      - schedule:
+          rate: rate(5 minutes)
+          enabled: ${self:custom.cdnGuardEnabled.${self:custom.stage}, false}
+
 package:
   individually: true
 
@@ -340,6 +392,8 @@ resources:
           ThrottlingBurstLimit: 100
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
+    HasArtifactDistribution:
+      !Not [!Equals ["${self:custom.artifactDistributionId}", ""]]
     HasSiteDistribution:
       !Not [!Equals ["${self:custom.siteDistributionId}", ""]]
     HasSiteHost: !Not [!Equals ["${self:custom.siteHostCertArn}", ""]]
@@ -785,6 +839,78 @@ resources:
         TreatMissingData: notBreaching
         AlarmActions:
           !If [HasAlarmTopic, ["${self:custom.alarmTopic}"], !Ref AWS::NoValue]
+    # The CDN guard's role, written out rather than generated per function:
+    # Serverless's per-function roles refuse conditional statements, and every
+    # statement here depends on a pointer a stage may not have. Nothing else
+    # in the stack can switch a distribution off, and the console's own
+    # distribution (alert-only) is not in it.
+    CdnGuardRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: cdn-guard
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: arn:aws:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/${self:service}-${self:custom.stage}-cdnGuard:*
+                - Effect: Allow
+                  Action: cloudwatch:GetMetricStatistics
+                  Resource: "*"
+                - !If
+                  - HasAlarmTopic
+                  - Effect: Allow
+                    Action: sns:Publish
+                    Resource: ${self:custom.alarmTopic}
+                  - !Ref AWS::NoValue
+                - !If
+                  - HasArtifactDistribution
+                  - Effect: Allow
+                    Action:
+                      - cloudfront:GetDistribution
+                      - cloudfront:GetDistributionConfig
+                      - cloudfront:UpdateDistribution
+                    Resource: arn:aws:cloudfront::${aws:accountId}:distribution/${self:custom.artifactDistributionId}
+                  - !Ref AWS::NoValue
+                - !If
+                  - HasSiteDistribution
+                  - Effect: Allow
+                    Action:
+                      - cloudfront:GetDistribution
+                      - cloudfront:GetDistributionConfig
+                      - cloudfront:UpdateDistribution
+                    Resource: arn:aws:cloudfront::${aws:accountId}:distribution/${self:custom.siteDistributionId}
+                  - !Ref AWS::NoValue
+                - !If
+                  - HasSiteHost
+                  - Effect: Allow
+                    Action:
+                      - cloudfront:GetDistribution
+                      - cloudfront:GetDistributionConfig
+                      - cloudfront:UpdateDistribution
+                    Resource: !Join
+                      - ""
+                      - - arn:aws:cloudfront::${aws:accountId}:distribution/
+                        - !Ref SiteHostDistribution
+                  - !Ref AWS::NoValue
+                # Belt and braces: an SSM id that pointed at the console's own
+                # distribution must still not let the guard change it.
+                - Effect: Deny
+                  Action: cloudfront:UpdateDistribution
+                  Resource: !Join
+                    - ""
+                    - - arn:aws:cloudfront::${aws:accountId}:distribution/
+                      - !Ref WebDistribution
   Outputs:
     WebBucketName:
       Value: !Ref WebBucket

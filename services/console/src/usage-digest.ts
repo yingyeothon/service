@@ -22,7 +22,9 @@ import { REDIS_CHANNEL_KEY_WARN, type RedisUsageReport } from "./expire.js";
  * set is capped at the free tier (`rules/serverless-aws.md`). It takes the
  * raw Redis usage report (instance-wide memory, the server-wide eviction
  * counter, key counts per game channel — not per-prefix bytes, see
- * `rules/data.md`), reads the S3 storage and CloudFront traffic metrics,
+ * `rules/data.md`), reads the S3 storage and the CloudFront traffic metrics
+ * of every distribution the stage has, checks that the CDN cost guard
+ * (`cdn-guard.ts`) is still completing runs,
  * judges everything against the thresholds and the previous digest's state
  * kept in Redis, logs the digest, and publishes **one** message to the
  * stage's alarm topic. Gateway RSS is not here: it is read on the host.
@@ -117,6 +119,35 @@ export interface CdnTraffic {
   requests: number;
 }
 
+/** One distribution the digest reports, by a stable label (`artifact`, `path-host`, …). */
+export interface CdnDistributionRef {
+  label: string;
+  /** Empty means the stage has no such distribution; it is skipped. */
+  id: string;
+}
+
+/** One 5-minute CloudFront bucket: `t` is its start, in unix seconds. */
+export interface CdnBucket {
+  t: number;
+  bytes: number;
+  requests: number;
+}
+
+/** What the CDN cost guard reads; `createCloudWatchUsageMetrics` implements it too. */
+export interface CdnBucketMetrics {
+  /**
+   * `BytesDownloaded` and `Requests` summed per 5-minute bucket, oldest
+   * first, for the buckets from the one holding `fromSec` up to `toSec`. A
+   * bucket with no datapoint is absent, which is also what a quiet five
+   * minutes looks like.
+   */
+  cdnBuckets(
+    distributionId: string,
+    fromSec: number,
+    toSec: number,
+  ): Promise<CdnBucket[]>;
+}
+
 /** What the digest reads from CloudWatch; a fake in tests. */
 export interface UsageMetrics {
   /** Latest daily S3 storage datapoint, `undefined` when CloudWatch has none. */
@@ -136,8 +167,13 @@ export interface UsageDigestOptions {
   metrics?: UsageMetrics;
   /** Artifact bucket name; empty means no bucket on this stage. */
   bucket?: string;
-  /** CloudFront distribution id; empty means no CDN metric on this stage. */
-  distributionId?: string;
+  /** The stage's CloudFront distributions; an empty id is skipped. */
+  distributions?: CdnDistributionRef[];
+  /**
+   * The CDN cost guard's last-completed-run key (unix seconds); warns when it
+   * is missing or older than `staleAfterSec`. Omitted: no check.
+   */
+  guardHeartbeat?: { key: string; staleAfterSec: number };
   /** The key-value store; omitted leaves the kv lines out of the digest. */
   kvstore?: Pick<KvStoreDb, "entriesTableBytes" | "topCollections">;
   /** The leaderboards; omitted leaves the leaderboard lines out. */
@@ -169,7 +205,8 @@ export interface UsageDigestResult {
     evictedSinceLast: number;
   };
   bucket?: BucketSize & { growthSinceLast: number | undefined };
-  cdn?: CdnTraffic;
+  /** One entry per distribution read today, in the order given. */
+  cdn?: (CdnTraffic & { label: string })[];
   kv?: { tableBytes?: number; top: KvCollectionUsage[] };
   lb?: { tableBytes?: number; top: LbBoardUsage[] };
   social?: { tableBytes?: number; top: SocialChannelUsage[] };
@@ -212,7 +249,8 @@ export async function runUsageDigest({
   redis,
   metrics,
   bucket,
-  distributionId,
+  distributions = [],
+  guardHeartbeat,
   kvstore,
   leaderboards,
   social,
@@ -302,17 +340,43 @@ export async function runUsageDigest({
     }
   }
 
-  if (metrics && distributionId) {
-    const traffic = await attempt("cdn", () =>
-      metrics.cdnTraffic(distributionId),
-    );
-    if (traffic) {
-      result.cdn = traffic;
+  const cdnTargets = distributions.filter((d) => d.id !== "");
+  if (metrics && cdnTargets.length > 0) {
+    const cdn: (CdnTraffic & { label: string })[] = [];
+    for (const d of cdnTargets) {
+      const traffic = await attempt(`cdn:${d.label}`, () =>
+        metrics.cdnTraffic(d.id),
+      );
+      if (!traffic) continue;
+      cdn.push({ label: d.label, ...traffic });
       if (traffic.bytes > t.cdnBytesPerDay)
         warnings.push({
-          kind: "cdn:bytes",
+          kind: `cdn:${d.label}:bytes`,
           type: "level",
-          text: `cdn served ${formatBytes(traffic.bytes)} in ${traffic.requests} requests over the last day`,
+          text: `cdn ${d.label} served ${formatBytes(traffic.bytes)} in ${traffic.requests} requests over the last day`,
+        });
+    }
+    result.cdn = cdn;
+  }
+
+  if (guardHeartbeat) {
+    // The guard has no Errors alarm (the 10-alarm cap); this is what notices
+    // that it stopped. A level warning: announced once, cleared when it runs.
+    const last = await attempt("cdn-guard", () => kv.get(guardHeartbeat.key));
+    if (last !== undefined) {
+      const at = last === null ? undefined : Number(last);
+      if (
+        at === undefined ||
+        !Number.isFinite(at) ||
+        nowSec(clock) - at > guardHeartbeat.staleAfterSec
+      )
+        warnings.push({
+          kind: "cdn:guard:stale",
+          type: "level",
+          text:
+            at === undefined || !Number.isFinite(at)
+              ? "the CDN cost guard has no completed run on record; public CDN cost is unbounded until it runs"
+              : `the CDN cost guard has not completed a run since ${new Date(at * 1000).toISOString()}; public CDN cost is unbounded until it runs`,
         });
     }
   }
@@ -495,6 +559,7 @@ export async function runUsageDigest({
 
 const HOUR_SEC = 3600;
 const DAY_SEC = 24 * HOUR_SEC;
+const FIVE_MIN_SEC = 300;
 
 /** The one SDK call the metrics reader makes; a fake in tests. */
 export interface MetricStatisticsClient {
@@ -507,9 +572,10 @@ export interface MetricStatisticsClient {
  * CloudWatch-backed metrics. `AWS/S3` storage metrics are daily and land in
  * the bucket's region; `AWS/CloudFront` metrics are global and live in
  * `us-east-1` regardless of where the caller runs. `GetMetricStatistics` is
- * a read within the CloudWatch free tier — no alarm, no custom metric. Short
- * timeouts and a single retry: this runs inside the `expire` sweep's budget
- * and a slow CloudWatch must not delay the sweeps behind it.
+ * a read within the CloudWatch free tier — no alarm, no custom metric, and
+ * never `GetMetricData`, which is billed per metric. Short timeouts and a
+ * single retry: this runs inside the `expire` sweep's budget and the CDN
+ * guard's 5-minute tick, and a slow CloudWatch must not delay either.
  */
 export function createCloudWatchUsageMetrics({
   region,
@@ -524,31 +590,42 @@ export function createCloudWatchUsageMetrics({
   region: string;
   clock?: Clock;
   clientFor?: (region: string) => MetricStatisticsClient;
-}): UsageMetrics {
+}): UsageMetrics & CdnBucketMetrics {
   const regional = clientFor(region);
   const global = clientFor("us-east-1");
-  const query = async (
+  type Input = Omit<GetMetricStatisticsCommandInput, "StartTime" | "EndTime">;
+  const points = async (
     client: MetricStatisticsClient,
-    input: Omit<GetMetricStatisticsCommandInput, "StartTime" | "EndTime"> & {
-      Period: number;
-    },
-    windowSec: number,
+    input: Input,
+    startSec: number,
+    endSec: number,
   ) => {
-    // CloudWatch aligns its buckets to the period, so the window is aligned
-    // too: the daily S3 point then falls inside it, and the hourly CDN sums
-    // add up to exactly the last 24 hours rather than two partial days.
-    const end = Math.floor(nowSec(clock) / input.Period) * input.Period;
     const r = await client.send(
       new GetMetricStatisticsCommand({
         ...input,
-        StartTime: new Date((end - windowSec) * 1000),
-        EndTime: new Date(end * 1000),
+        StartTime: new Date(startSec * 1000),
+        EndTime: new Date(endSec * 1000),
       }),
     );
     return (r.Datapoints ?? [])
       .filter((p) => p.Timestamp !== undefined)
       .sort((a, b) => a.Timestamp!.getTime() - b.Timestamp!.getTime());
   };
+  const query = async (
+    client: MetricStatisticsClient,
+    input: Input & { Period: number },
+    windowSec: number,
+  ) => {
+    // CloudWatch aligns its buckets to the period, so the window is aligned
+    // too: the daily S3 point then falls inside it, and the hourly CDN sums
+    // add up to exactly the last 24 hours rather than two partial days.
+    const end = Math.floor(nowSec(clock) / input.Period) * input.Period;
+    return points(client, input, end - windowSec, end);
+  };
+  const cdnDimensions = (distributionId: string) => [
+    { Name: "DistributionId", Value: distributionId },
+    { Name: "Region", Value: "Global" },
+  ];
   const latestDailyAverage = async (
     metric: string,
     bucket: string,
@@ -581,10 +658,7 @@ export function createCloudWatchUsageMetrics({
       {
         Namespace: "AWS/CloudFront",
         MetricName: metric,
-        Dimensions: [
-          { Name: "DistributionId", Value: distributionId },
-          { Name: "Region", Value: "Global" },
-        ],
+        Dimensions: cdnDimensions(distributionId),
         Period: HOUR_SEC,
         Statistics: ["Sum"],
       },
@@ -607,6 +681,39 @@ export function createCloudWatchUsageMetrics({
         daySum("Requests", distributionId),
       ]);
       return { bytes, requests };
+    },
+    cdnBuckets: async (distributionId, fromSec, toSec) => {
+      // Both ends on the 5-minute grid CloudWatch buckets by, so a bucket is
+      // either wholly in the range or not at all.
+      const start = Math.floor(fromSec / FIVE_MIN_SEC) * FIVE_MIN_SEC;
+      const end = Math.ceil(toSec / FIVE_MIN_SEC) * FIVE_MIN_SEC;
+      const series = (metric: string) =>
+        points(
+          global,
+          {
+            Namespace: "AWS/CloudFront",
+            MetricName: metric,
+            Dimensions: cdnDimensions(distributionId),
+            Period: FIVE_MIN_SEC,
+            Statistics: ["Sum"],
+          },
+          start,
+          end,
+        );
+      const [bytes, requests] = await Promise.all([
+        series("BytesDownloaded"),
+        series("Requests"),
+      ]);
+      const byStart = new Map<number, CdnBucket>();
+      const at = (p: { Timestamp?: Date }) => {
+        const t = Math.floor(p.Timestamp!.getTime() / 1000);
+        let b = byStart.get(t);
+        if (!b) byStart.set(t, (b = { t, bytes: 0, requests: 0 }));
+        return b;
+      };
+      for (const p of bytes) at(p).bytes += p.Sum ?? 0;
+      for (const p of requests) at(p).requests += p.Sum ?? 0;
+      return [...byStart.values()].sort((a, b) => a.t - b.t);
     },
   };
 }
