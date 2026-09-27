@@ -17,6 +17,7 @@
 # to the state it is already in changes nothing. Refuses a distribution whose
 # aliases do not include the label's host (a wrong id in SSM).
 set -euo pipefail
+umask 077
 
 usage="usage: $0 <dev|prod> <artifact|path-host|site-host|console> <off|on> [--apply]"
 STAGE="${1:?$usage}"
@@ -88,6 +89,6 @@ aws cloudfront update-distribution --id "$DIST" --if-match "$ETAG" \
   --distribution-config "file://$TMP/config.json" \
   --query 'Distribution.{Status:Status,Enabled:DistributionConfig.Enabled}' --output json
 echo "submitted; the change reaches every edge within minutes (Status turns Deployed)."
-if [ "$WANT" = on ]; then
+if [ "$WANT" = on ] && [ "$LABEL" != console ]; then
   echo "the CDN guard re-arms on its next run (every 5 minutes) and e-mails 're-armed'."
 fi

@@ -22,6 +22,8 @@
 # (`my-game/`); a single file is its key (`my-game/big.bin`).
 # Dry run unless --apply. Needs AWS_PROFILE=yyt and jq. Idempotent.
 set -euo pipefail
+# Policy backups may carry the origin-lock secret (a Referer condition).
+umask 077
 
 usage="usage: $0 <dev|prod> <site|artifact> <key | prefix/> <on|off> [--apply]  |  $0 <dev|prod> <site|artifact> list"
 STAGE="${1:?$usage}"
@@ -70,6 +72,15 @@ if ! [[ "$TARGET" =~ $key_re ]] ||
   exit 2
 fi
 if [[ "$TARGET" == */ ]]; then RESOURCE="arn:aws:s3:::${BUCKET}/${TARGET}*"; else RESOURCE="arn:aws:s3:::${BUCKET}/${TARGET}"; fi
+
+# A principal that is an IAM unique id (AROA…, AIDA…) names a role or user
+# that was deleted: AWS rejects every rewrite of such a policy ("Invalid
+# principal"), so say so before trying, with the statements to remove.
+dead="$(jq -r '[.Statement[] | select([.Principal | .. | strings] | any(test("^A(ROA|IDA)[0-9A-Z]{16,}$"))) | (.Sid // "(no Sid)")] | join(", ")' "$TMP/old.json")"
+if [ -n "$dead" ]; then
+  echo "refusing: statement(s) ${dead} of the ${KIND} bucket policy name deleted IAM principals; AWS rejects any rewrite of this policy until they are removed (owner step: rules/deployment.md → CDN emergency)" >&2
+  exit 1
+fi
 
 # An existing statement under the Sid must be exactly the Deny this script
 # writes; anything else (an Allow, a condition, another action or principal)

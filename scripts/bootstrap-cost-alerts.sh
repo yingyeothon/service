@@ -82,7 +82,7 @@ if [ -z "$SUB" ]; then
     done_ "anomaly subscription yyt-daily created"
   fi
 elif jq -e --arg e "$EMAIL" --argjson th "$THRESHOLD" \
-  '.Frequency == "DAILY" and ((.ThresholdExpression | fromjson? // .ThresholdExpression) == $th) and any(.Subscribers[]; .Address == $e)' \
+  '.Frequency == "DAILY" and ((.ThresholdExpression | if type == "string" then fromjson else . end) == $th) and any(.Subscribers[]; .Address == $e)' \
   <<<"$SUB" >/dev/null; then
   echo "[ok] anomaly subscription yyt-daily is as wanted"
 elif $DRY; then
