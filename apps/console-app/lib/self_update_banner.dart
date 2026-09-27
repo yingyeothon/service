@@ -14,11 +14,22 @@ class SelfUpdateBanner extends StatefulWidget {
     required this.authState,
     required this.child,
     this.check = checkConsoleAppUpdate,
+    this.startAfter,
   });
 
   final AuthState authState;
   final Widget child;
   final Future<ConsoleAppUpdate?> Function({required String? token}) check;
+
+  /// The check waits for this, at most [startAfterCap]. HomeShell passes the
+  /// first list load, so a launch sends one request at a time: on Lambda each
+  /// concurrent request needs a container of its own, and a quiet stage has
+  /// only cold ones to give.
+  final Future<void>? startAfter;
+
+  /// A courtesy, never a gate: a list load that never ends must not keep the
+  /// banner away for good.
+  static const startAfterCap = Duration(seconds: 30);
 
   @override
   State<SelfUpdateBanner> createState() => _SelfUpdateBannerState();
@@ -35,6 +46,14 @@ class _SelfUpdateBannerState extends State<SelfUpdateBanner> {
   }
 
   Future<void> _run() async {
+    final startAfter = widget.startAfter;
+    if (startAfter != null) {
+      await startAfter.timeout(
+        SelfUpdateBanner.startAfterCap,
+        onTimeout: () {},
+      );
+      if (!mounted) return;
+    }
     final update = await widget.check(token: widget.authState.token);
     if (!mounted || update == null) return;
     setState(() => _update = update);
@@ -43,7 +62,29 @@ class _SelfUpdateBannerState extends State<SelfUpdateBanner> {
   @override
   Widget build(BuildContext context) {
     final update = _update;
-    if (update == null || _dismissed) return widget.child;
+    final showing = update != null && !_dismissed;
+    // One tree shape whether or not the banner shows. Returning [child] bare
+    // in one state and inside a Column in the other rebuilt the child — the
+    // app list, and with it the list load — each time the banner appeared or
+    // was dismissed.
+    return Column(
+      children: [
+        if (showing) _banner(context, update),
+        Expanded(
+          key: const ValueKey('body'),
+          // The child's own AppBar pads for the status bar again unless the
+          // inset the banner already consumed is removed.
+          child: MediaQuery.removePadding(
+            context: context,
+            removeTop: showing,
+            child: widget.child,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _banner(BuildContext context, ConsoleAppUpdate update) {
     final app = AppInfo(
       id: update.artifact.id,
       name: '잉여톤',
@@ -53,56 +94,43 @@ class _SelfUpdateBannerState extends State<SelfUpdateBanner> {
       installedVersion: update.installedVersion,
       needsUpdate: true,
     );
-    return Column(
-      children: [
-        Material(
-          color: CatalogPalette.sunrise,
-          child: SafeArea(
-            bottom: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.system_update_rounded,
-                    color: CatalogPalette.ink,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      '새 버전 ${update.version} 이 있습니다 (현재 ${update.installedVersion})',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: CatalogPalette.ink,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  InstallButton(
-                    state: AppInstallState.old,
-                    app: app,
-                    label: '업데이트',
-                  ),
-                  IconButton(
-                    tooltip: '닫기',
-                    icon: const Icon(Icons.close_rounded),
-                    onPressed: () => setState(() => _dismissed = true),
-                  ),
-                ],
+    return Material(
+      color: CatalogPalette.sunrise,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.system_update_rounded,
+                color: CatalogPalette.ink,
               ),
-            ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '새 버전 ${update.version} 이 있습니다 (현재 ${update.installedVersion})',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: CatalogPalette.ink,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              InstallButton(
+                state: AppInstallState.old,
+                app: app,
+                label: '업데이트',
+              ),
+              IconButton(
+                tooltip: '닫기',
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => setState(() => _dismissed = true),
+              ),
+            ],
           ),
         ),
-        // The child's own AppBar pads for the status bar again unless the
-        // inset the banner already consumed is removed.
-        Expanded(
-          child: MediaQuery.removePadding(
-            context: context,
-            removeTop: true,
-            child: widget.child,
-          ),
-        ),
-      ],
+      ),
     );
   }
 }

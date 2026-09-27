@@ -58,8 +58,8 @@ void main() {
     expect(AuthConfig.meUrl, 'https://console-dev.yyt.life/me');
     expect(AuthConfig.teamsUrl, 'https://console-dev.yyt.life/teams');
     expect(
-      AuthConfig.teamAppsUrl('team_1'),
-      'https://console-dev.yyt.life/teams/team_1/catalog/apps',
+      AuthConfig.catalogAppsUrlOf(AuthConfig.apiBaseUrl),
+      'https://console-dev.yyt.life/catalog/apps',
     );
     expect(
       AuthConfig.projectIssueUrl('prj_1', 7),

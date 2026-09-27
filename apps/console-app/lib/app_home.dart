@@ -1,8 +1,8 @@
 import 'package:yyt_console/projects/models.dart';
 
 /// Where a catalog app lives: its team (with the caller's seat) and project,
-/// from the breadcrumb fields of the app view plus `/teams`. Lets the app
-/// detail screen jump straight to the project's issues.
+/// from the breadcrumb fields of the app view plus the list's `teams` seats.
+/// Lets the app detail screen jump straight to the project's issues.
 class AppHome {
   const AppHome({required this.team, required this.project});
 

@@ -16,15 +16,18 @@ only to the console API.
   app-bar avatar switches, adds (scan another QR) or removes them. The app
   ships no server address at all — the QR carries it. A 401 drops the
   active profile (the token was revoked).
-- Apps: `GET /teams` then
-  `GET /teams/{id}/catalog/apps?artifacts=summary&platform=android` for every
-  seated team (pending seats are skipped), deduplicated by app id. The summary
-  embeds each app's newest Android artifact and its `applicationIds`, so the
-  list needs one request per team, not one per app (the per-app
-  `/catalog/apps/{id}/artifacts` walk made the first load take seconds); the
-  detail screen still lists artifacts by app id. Permission is team membership
-  only, so the app has no permission screen. The flattened `GET /catalog/apps`
-  is no longer used (todo/17 P10 may drop it).
+- Apps: one request, `GET /catalog/apps?artifacts=summary&platform=android`
+  (2026-09-27): every app of every team the caller is seated in, each with
+  its newest Android artifact and `applicationIds`, plus `teams` — the
+  caller's seat per team, which the detail screen's issues button needs.
+  It used to be `GET /teams` and then one request per team in parallel, and
+  on Lambda every concurrent request needs a container of its own: a 4-team
+  launch waited on two waves of cold containers (7.4 s on dev). One request
+  also means one failure answers for all teams — a 5xx shows the retry card
+  instead of a partial list. Against an older console that ignores the
+  query the app walks `/catalog/apps/{id}/artifacts` per app. Requests time
+  out after 20 s. The detail screen still lists artifacts by app id.
+  Permission is team membership only, so the app has no permission screen.
 - Times: the API sends UTC unix seconds; every screen formats them in the
   device time zone through `lib/format_time.dart`.
 - The app detail hero has a `team › project 이슈` button that opens the
@@ -160,7 +163,8 @@ release build falls back to the debug key for local checks.
 
 ## Self-update
 
-At launch the signed-in app asks `GET /catalog/installer/downloads` for the
+Once the first list load has ended (loaded or failed; at most 30 s after
+launch) the signed-in app asks `GET /catalog/installer/downloads` for the
 highest-versioned Android build whose `applicationId` is the running package
 (a `.debug` build is never offered the release APK; rows without the id, from
 an older console, are accepted) and, when that is newer than
@@ -169,6 +173,11 @@ unparseable versions hidden), shows a banner above both tabs with an *업데이�
 button that runs the normal install flow (`lib/self_update_banner.dart`). Any
 failure of the route (no installer configured, team not admin-locked, pending
 seat, offline) just hides the banner; dismiss lasts until the next launch.
+The check waits for the list so a launch sends one request at a time (a
+concurrent one would need a second, cold, Lambda container), and it shares
+the list's HTTP client, so it rides the same connection. The banner keeps
+one widget tree whether it shows or not: swapping the tab body for a
+`Column` rebuilt the app list, and with it the list load.
 
 ## Distribute
 

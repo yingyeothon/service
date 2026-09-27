@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:yyt_console/auth/auth_config.dart';
@@ -226,142 +227,120 @@ void main() {
     },
   );
 
-  test('fetchTeamApps walks seated teams and dedupes app ids', () async {
-    final client = MockClient((req) async {
-      switch (req.url.path) {
-        case '/teams':
-          return _json({
-            'teams': [
-              {'id': 'team_a', 'name': 'a', 'role': 'owner'},
-              {'id': 'team_b', 'name': 'b', 'role': 'member'},
-              {'id': 'team_p', 'name': 'p', 'role': 'pending'},
-              {'id': 'team_x', 'name': 'x', 'role': 'member'},
-            ],
-          });
-        case '/teams/team_a/catalog/apps':
-          return _json({
-            'apps': [
-              {'id': 'ca_1', 'name': 'one', 'path': 'p.one'},
-            ],
-          });
-        case '/teams/team_b/catalog/apps':
-          return _json({
-            'apps': [
-              {'id': 'ca_1', 'name': 'one', 'path': 'p.one'},
-              {'id': 'ca_2', 'name': 'two', 'path': 'p.two'},
-            ],
-          });
-        case '/teams/team_x/catalog/apps':
-          return http.Response('', 403);
-      }
-      fail('unexpected ${req.url.path}');
-    });
-    final apps = await fetchTeamApps(token: 'tok', client: client);
-    expect(apps.map((a) => a['id']), ['ca_1', 'ca_2']);
-  });
-
-  test('fetchRemoteApps builds the list from the summary view alone', () async {
-    final paths = <String>[];
-    final client = MockClient((req) async {
-      paths.add(req.url.path);
-      switch (req.url.path) {
-        case '/teams':
-          return _json({
-            'teams': [
-              {'id': 'team_a', 'name': 'a', 'role': 'owner'},
-            ],
-          });
-        case '/teams/team_a/catalog/apps':
-          expect(req.url.queryParameters, {
-            'artifacts': 'summary',
-            'platform': 'android',
-          });
-          return _json({
-            'apps': [
-              {
-                'id': 'ca_1',
-                'name': 'one',
-                'path': 'p.one',
-                'teamId': 'team_a',
-                'teamName': 'a',
-                'projectId': 'prj_1',
-                'projectName': 'one',
-                'latestArtifact': {
-                  'id': 'art_1',
-                  'url': 'https://cdn.example/one.apk',
-                  'platform': 'android',
-                  'size': 1,
-                  'tags': {'version': '1.0.0', 'application_id': 'p.one'},
-                  'createdAt': 1700000000,
-                },
-                'applicationIds': ['p.one', 'p.one.debug'],
-              },
-              {
-                'id': 'ca_2',
-                'name': 'two',
-                'path': 'p.two',
-                'latestArtifact': null,
-                'applicationIds': <String>[],
-              },
-            ],
-          });
-      }
-      fail('unexpected ${req.url.path}');
-    });
-    final apps = await fetchRemoteApps(token: 'tok', client: client);
-    // No per-app /artifacts round trip.
-    expect(paths, ['/teams', '/teams/team_a/catalog/apps']);
-    expect(apps.map((a) => a.id), ['ca_1']);
-    expect(apps.single.version, '1.0.0');
-    expect(apps.single.installCheckApplicationIds, ['p.one', 'p.one.debug']);
-    expect(apps.single.latestArtifact.createdAt.isUtc, isTrue);
-    // Breadcrumb + the caller's seat feed the detail screen's issues button.
-    final home = apps.single.home!;
-    expect(home.team.id, 'team_a');
-    expect(home.team.role, 'owner');
-    expect(home.project.id, 'prj_1');
-    expect(home.project.name, 'one');
-  });
+  Map<String, Object?> artifact(String id, String version, int createdAt) => {
+    'id': id,
+    'url': 'https://cdn.example/$id.apk',
+    'platform': 'android',
+    'size': 1,
+    'tags': {'version': version, 'application_id': 'p.$id'},
+    'createdAt': createdAt,
+  };
 
   test(
-    'fetchRemoteApps walks /artifacts for a server without the summary',
+    'fetchRemoteApps is one request: the summary list and the seats',
+    () async {
+      final seen = <Uri>[];
+      final client = MockClient((req) async {
+        seen.add(req.url);
+        expect(req.headers['Authorization'], 'Bearer tok');
+        expect(req.url.path, '/catalog/apps');
+        expect(req.url.queryParameters, {
+          'artifacts': 'summary',
+          'platform': 'android',
+        });
+        return _json({
+          'apps': [
+            {
+              'id': 'ca_1',
+              'name': 'one',
+              'path': 'p.one',
+              'teamId': 'team_a',
+              'teamName': 'a',
+              'projectId': 'prj_1',
+              'projectName': 'one',
+              'latestArtifact': {
+                ...artifact('art_1', '1.0.0', 1700000000),
+                'tags': {'version': '1.0.0', 'application_id': 'p.one'},
+              },
+              'applicationIds': ['p.one', 'p.one.debug'],
+            },
+            {
+              'id': 'ca_2',
+              'name': 'two',
+              'path': 'p.two',
+              'teamId': 'team_b',
+              'teamName': 'b',
+              'projectId': 'prj_2',
+              'projectName': 'two',
+              'latestArtifact': artifact('art_2', '2.0.0', 1700000100),
+              'applicationIds': ['p.art_2'],
+            },
+            {
+              // A team the seats do not name reads as `member`.
+              'id': 'ca_3',
+              'name': 'three',
+              'path': 'p.three',
+              'teamId': 'team_z',
+              'projectId': 'prj_3',
+              'latestArtifact': artifact('art_3', '3.0.0', 1699999999),
+              'applicationIds': ['p.art_3'],
+            },
+            {
+              'id': 'ca_4',
+              'name': 'bare',
+              'path': 'p.bare',
+              'teamId': 'team_a',
+              'latestArtifact': null,
+              'applicationIds': <String>[],
+            },
+          ],
+          'teams': [
+            {'id': 'team_a', 'name': 'a', 'role': 'owner'},
+            {'id': 'team_b', 'name': 'b', 'role': 'member'},
+          ],
+        });
+      });
+      final apps = await fetchRemoteApps(token: 'tok', client: client);
+      // One request, whatever the number of teams; no per-app /artifacts walk.
+      expect(seen, hasLength(1));
+      // Newest artifact first; an app without an Android build is skipped.
+      expect(apps.map((a) => a.id), ['ca_2', 'ca_1', 'ca_3']);
+      final one = apps.firstWhere((a) => a.id == 'ca_1');
+      expect(one.version, '1.0.0');
+      expect(one.installCheckApplicationIds, ['p.one', 'p.one.debug']);
+      expect(one.latestArtifact.createdAt.isUtc, isTrue);
+      // Breadcrumb + the caller's seat feed the detail screen's issues button.
+      expect(one.home!.team.id, 'team_a');
+      expect(one.home!.team.role, 'owner');
+      expect(one.home!.project.name, 'one');
+      expect(apps.first.home!.team.role, 'member');
+      expect(apps.last.home!.team.role, 'member');
+    },
+  );
+
+  test(
+    'fetchRemoteApps walks /artifacts for a console without the summary',
     () async {
       final paths = <String>[];
       final client = MockClient((req) async {
         paths.add(req.url.path);
         switch (req.url.path) {
-          case '/teams':
-            return _json({
-              'teams': [
-                {'id': 'team_a', 'name': 'a', 'role': 'member'},
-              ],
-            });
-          case '/teams/team_a/catalog/apps':
-            // Older console: no `latestArtifact` key at all.
+          case '/catalog/apps':
+            // Older console: the query is ignored — no `latestArtifact` key
+            // and no `teams`.
             return _json({
               'apps': [
-                {'id': 'ca_1', 'name': 'one', 'path': 'p.one'},
-                {'id': 'ca_2', 'name': 'two', 'path': 'p.two'},
+                {'id': 'ca_1', 'name': 'one', 'path': 'p.one', 'teamId': 't'},
+                {'id': 'ca_2', 'name': 'two', 'path': 'p.two', 'teamId': 't'},
               ],
             });
           case '/catalog/apps/ca_1/artifacts':
             return _json({
               'artifacts': [
+                artifact('one', '2.0.0', 1700000100),
                 {
-                  'id': 'art_new',
-                  'url': 'https://cdn.example/one.apk',
-                  'platform': 'android',
-                  'size': 1,
-                  'tags': {'version': '2.0.0', 'application_id': 'p.one'},
-                  'createdAt': 1700000100,
-                },
-                {
-                  'id': 'art_old',
-                  'url': 'https://cdn.example/one-debug.apk',
-                  'platform': 'android',
-                  'size': 1,
+                  ...artifact('one_debug', '1.0.0', 1700000000),
                   'tags': {'version': '1.0.0', 'application_id': 'p.one.debug'},
-                  'createdAt': 1700000000,
                 },
               ],
             });
@@ -404,7 +383,7 @@ void main() {
     final hosts = <String>[];
     final client = MockClient((req) async {
       hosts.add(req.url.host);
-      return _json({'teams': []});
+      return _json({'teams': [], 'apps': []});
     });
     final api = ProjectsApi(
       token: 'tok',
@@ -415,7 +394,7 @@ void main() {
     await api.listTeams();
     expect(hosts, ['one.example']);
     expect(
-      await fetchTeamApps(
+      await fetchRemoteApps(
         token: 'tok',
         client: client,
         baseUrl: 'https://one.example',
@@ -425,20 +404,42 @@ void main() {
     expect(hosts, ['one.example', 'one.example']);
   });
 
-  test('fetchTeamApps reports pending accounts and expired tokens', () async {
-    expect(
-      fetchTeamApps(
+  test(
+    'fetchRemoteApps reports pending accounts, expired tokens and failures',
+    () async {
+      expect(
+        fetchRemoteApps(
+          token: 'tok',
+          client: MockClient((_) async => http.Response('', 403)),
+        ),
+        throwsA(predicate((e) => e.toString().contains('승인되지 않은'))),
+      );
+      expect(
+        fetchRemoteApps(
+          token: 'tok',
+          client: MockClient((_) async => http.Response('', 401)),
+        ),
+        throwsA(isA<UnauthorizedException>()),
+      );
+      expect(
+        fetchRemoteApps(
+          token: 'tok',
+          client: MockClient((_) async => http.Response('', 503)),
+        ),
+        throwsA(predicate((e) => e.toString().contains('503'))),
+      );
+    },
+  );
+
+  test('fetchRemoteApps gives up on a request that never answers', () async {
+    final never = Completer<http.Response>();
+    await expectLater(
+      fetchRemoteApps(
         token: 'tok',
-        client: MockClient((_) async => http.Response('', 403)),
+        client: MockClient((_) => never.future),
+        timeout: const Duration(milliseconds: 10),
       ),
-      throwsA(predicate((e) => e.toString().contains('승인되지 않은'))),
-    );
-    expect(
-      fetchTeamApps(
-        token: 'tok',
-        client: MockClient((_) async => http.Response('', 401)),
-      ),
-      throwsA(isA<UnauthorizedException>()),
+      throwsA(isA<TimeoutException>()),
     );
   });
 }

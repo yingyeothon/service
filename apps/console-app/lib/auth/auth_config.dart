@@ -62,9 +62,10 @@ class AuthConfig {
 
   // Console API (services/console): the catalog lives under /catalog
   // (docs/decisions.md "Binary catalog"); login is an API key from a QR.
-  // Tokens are probed with /me; apps are listed per team (`/teams` then
-  // `/teams/{id}/catalog/apps`, the permanent routes); artifact routes are
-  // keyed by app id (docs/decisions.md "Teams and projects").
+  // Tokens are probed with /me; the app list is one
+  // `GET /catalog/apps?artifacts=summary` (every seated team's apps plus the
+  // caller's seats); artifact routes are keyed by app id (docs/decisions.md
+  // "Teams and projects").
   //
   // The `…Of(base, …)` forms take the server explicitly: a request sequence
   // captures the active profile's server once, together with its token, so a
@@ -72,8 +73,7 @@ class AuthConfig {
   // host. The getters are conveniences for one-shot calls.
   static String meUrlOf(String base) => '$base/me';
   static String teamsUrlOf(String base) => '$base/teams';
-  static String teamAppsUrlOf(String base, String teamId) =>
-      '$base/teams/${Uri.encodeComponent(teamId)}/catalog/apps';
+  static String catalogAppsUrlOf(String base) => '$base/catalog/apps';
   static String teamProjectsUrlOf(String base, String teamId) =>
       '$base/teams/${Uri.encodeComponent(teamId)}/projects';
   static String teamIssuesUrlOf(String base, String teamId) =>
@@ -103,7 +103,6 @@ class AuthConfig {
 
   static String get meUrl => meUrlOf(apiBaseUrl);
   static String get teamsUrl => teamsUrlOf(apiBaseUrl);
-  static String teamAppsUrl(String teamId) => teamAppsUrlOf(apiBaseUrl, teamId);
   static String teamProjectsUrl(String teamId) =>
       teamProjectsUrlOf(apiBaseUrl, teamId);
   static String projectIssuesUrl(String projectId) =>

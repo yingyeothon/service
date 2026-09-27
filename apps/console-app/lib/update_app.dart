@@ -11,11 +11,23 @@ import 'package:yyt_console/load_app_info.dart';
 import 'package:yyt_console/profile_menu.dart';
 import 'package:yyt_console/self_update_state.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 class UpdaterApp extends StatefulWidget {
-  const UpdaterApp({super.key, required this.authState});
+  const UpdaterApp({
+    super.key,
+    required this.authState,
+    this.client,
+    this.onFirstLoadDone,
+  });
 
   final AuthState authState;
+
+  /// Shared with the update check (HomeShell); `null` = one client per load.
+  final http.Client? client;
+
+  /// Called once, when the first list load has ended — loaded or failed.
+  final VoidCallback? onFirstLoadDone;
 
   @override
   State<UpdaterApp> createState() => _UpdaterAppState();
@@ -28,6 +40,10 @@ class _UpdaterAppState extends State<UpdaterApp> {
   Timer? _debounceTimer;
   String _searchQuery = '';
   bool _refreshing = false;
+
+  /// The list reloads on refresh, pull-to-refresh and after every install;
+  /// only the first load is reported.
+  bool _firstLoadReported = false;
 
   @override
   void initState() {
@@ -65,9 +81,11 @@ class _UpdaterAppState extends State<UpdaterApp> {
     }
 
     final token = widget.authState.token;
+    final client = widget.client;
+    final onFirstLoadDone = widget.onFirstLoadDone;
     try {
       final infos = await loadAppInfo(
-        fetchRemoteApps,
+        ({String? token}) => fetchRemoteApps(token: token, client: client),
         findInstalledVersion,
         token: token,
       );
@@ -97,6 +115,10 @@ class _UpdaterAppState extends State<UpdaterApp> {
         setState(() {
           _refreshing = false;
         });
+      }
+      if (!_firstLoadReported) {
+        _firstLoadReported = true;
+        onFirstLoadDone?.call();
       }
     }
   }
