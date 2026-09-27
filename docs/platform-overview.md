@@ -97,7 +97,7 @@ deferred, or a real gap.
 | Contest: event lifecycle | Scheduling, date voting, a public page, revision history?              | date-vote events, lazily derived status, every edit a revision, admin early close                      | position |
 | Contest: submissions     | Submission deadlines, judging, scoring, prizes?                        | a `show` gallery with entries, likes and comments; **no judging, scoring or prizes**                   | gap      |
 | Accountability           | Is operator action logged and readable?                                | global audit log, admin-readable, a reason required for every override                                 | position |
-| Ops surface              | How many alarms, dashboards and runbooks does one operator hold?       | 10 alarms, 1 liveness probe, 1 daily digest, 1 contest playbook                                        | position |
+| Ops surface              | How many alarms, dashboards and runbooks does one operator hold?       | 10 alarms, 1 liveness probe, 1 CDN cost guard, 1 daily digest, 1 contest playbook                      | position |
 | Portability              | What happens if the platform disappears mid-contest?                   | the game's own logic is in the team's account; the wire contracts are published                        | position |
 
 When comparing with a **general serverless backend**, expect it to win on managed
@@ -308,6 +308,7 @@ Where the platform binds first, and what binds it:
 | Redis                          | 256 MB, `allkeys-lru`, shared by both stages and every participant                  | no per-account quota exists                           |
 | API throttles                  | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`); console 50 / 100 | one stage's whole surface                             |
 | CloudWatch alarms              | 10 (8 prod + 2 dev)                                                                 | account free tier; adding one means dropping one      |
+| Public CDN traffic             | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day   | the CDN guard disables it (console: alert only)       |
 | Frames                         | 16 KB inbound, 32 KB outbound; topic 16 KB                                          | refused, not truncated                                |
 | Document / kv value            | 64 KB per document, 10 000 documents per channel                                    | refused, not trimmed                                  |
 | Leaderboard                    | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                         | worst case `maxEntries × (1 + 2 × (retain + 1))` rows |
@@ -316,7 +317,10 @@ Where the platform binds first, and what binds it:
 
 Monitoring is one liveness probe reporting only the down and recovered edges after two
 consecutive failures, plus one daily usage digest (Redis memory, evictions, per-channel
-key counts, bucket growth, CDN bytes) published as a single message. No custom metrics.
+key counts, bucket growth, CDN bytes per distribution) published as a single message, plus a
+CDN cost guard every 5 minutes that disables a public distribution past its trip threshold
+(manual stops: `scripts/cdn-switch.sh`, `scripts/cdn-quarantine.sh`). Account-level Budgets
+and Cost Anomaly Detection cover the bill itself. No custom metrics.
 
 ## 8. Evolution levers
 
