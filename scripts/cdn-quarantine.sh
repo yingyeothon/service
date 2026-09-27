@@ -47,10 +47,26 @@ BUCKET="$(ssm "${KIND}-bucket")"
 aws s3api get-bucket-policy --bucket "$BUCKET" --query Policy --output text >"$TMP/old.json"
 jq -e . "$TMP/old.json" >/dev/null
 
-if [ "$TARGET" = list ]; then
+listed() { # policy file → its quarantined keys and prefixes, as `off` takes them
   jq -r --arg sid "$SID" --arg p "arn:aws:s3:::${BUCKET}/" \
-    '[.Statement[] | select(.Sid == $sid) | .Resource] | flatten | .[] | ltrimstr($p)' \
-    "$TMP/old.json"
+    '[.Statement[] | select(.Sid == $sid) | .Resource] | flatten | map(strings)
+      | if length == 0 then "  (nothing quarantined)"
+        else .[] | "  " + (ltrimstr($p) | rtrimstr("*")) end' "$1"
+}
+# An existing statement under the Sid must be exactly the Deny this script
+# writes; anything else (an Allow, a condition, another action or principal,
+# a NotResource) is refused rather than extended.
+owned() {
+  jq -e --arg sid "$SID" '
+    all(.Statement[] | select(.Sid == $sid);
+      .Effect == "Deny" and .Principal == "*" and .Action == "s3:GetObject"
+      and has("Resource") and (has("NotResource") | not) and (has("Condition") | not))' \
+    "$1" >/dev/null
+}
+if [ "$TARGET" = list ]; then
+  listed "$TMP/old.json"
+  owned "$TMP/old.json" ||
+    echo "warning: the bucket policy has a ${SID} statement this script did not write; fix it by hand" >&2
   exit 0
 fi
 
@@ -78,17 +94,11 @@ if [[ "$TARGET" == */ ]]; then RESOURCE="arn:aws:s3:::${BUCKET}/${TARGET}*"; els
 # principal"), so say so before trying, with the statements to remove.
 dead="$(jq -r '[.Statement[] | select([.Principal | .. | strings] | any(test("^A(ROA|IDA)[0-9A-Z]{16,}$"))) | (.Sid // "(no Sid)")] | join(", ")' "$TMP/old.json")"
 if [ -n "$dead" ]; then
-  echo "refusing: statement(s) ${dead} of the ${KIND} bucket policy name deleted IAM principals; AWS rejects any rewrite of this policy until they are removed (owner step: rules/deployment.md → CDN emergency)" >&2
+  echo "refusing: statement(s) ${dead} of the ${KIND} bucket policy name deleted IAM principals; AWS rejects any rewrite of this policy until they are removed (how: rules/deployment.md → CDN emergency)" >&2
   exit 1
 fi
 
-# An existing statement under the Sid must be exactly the Deny this script
-# writes; anything else (an Allow, a condition, another action or principal)
-# is refused rather than extended.
-if ! jq -e --arg sid "$SID" '
-  all(.Statement[] | select(.Sid == $sid);
-    .Effect == "Deny" and .Principal == "*" and .Action == "s3:GetObject" and (has("Condition") | not))' \
-  "$TMP/old.json" >/dev/null; then
+if ! owned "$TMP/old.json"; then
   echo "refusing: the bucket policy has a ${SID} statement this script did not write; fix it by hand" >&2
   exit 1
 fi
@@ -114,15 +124,37 @@ if [ "$(others "$TMP/old.json")" != "$(others "$TMP/new.json")" ]; then
   echo "refusing: the rewrite would change statements other than ${SID}" >&2
   exit 1
 fi
-if [ "$(jq -S . "$TMP/old.json")" = "$(jq -S . "$TMP/new.json")" ]; then
-  echo "${TARGET} is already quarantine ${WANT} in the ${KIND} bucket; nothing to do"
-  exit 0
+# AWS hands a one-element Resource list back as a plain string: compare the
+# Sid's resources as sorted lists, or a repeated `on` rewrites the same policy.
+normalized() {
+  jq -S --arg sid "$SID" \
+    '.Statement |= map(if .Sid == $sid then .Resource = ([.Resource] | flatten | sort) else . end)' "$1"
+}
+WRITE=true
+if [ "$(normalized "$TMP/old.json")" = "$(normalized "$TMP/new.json")" ]; then
+  WRITE=false
+  if [ "$WANT" = off ]; then
+    echo "${TARGET} is not quarantined by itself in the ${KIND} bucket; nothing to write"
+  else
+    # Left by an `on` whose invalidation failed, perhaps: the edges would keep
+    # serving the object until its TTL, so the invalidation runs again.
+    echo "${TARGET} is already quarantined in the ${KIND} bucket policy; only the invalidation runs (again)"
+  fi
+else
+  echo "stage=${STAGE} ${KIND} bucket: quarantine ${WANT} ${TARGET}"
+  echo "resources after the change:"
+  listed "$TMP/new.json"
 fi
-echo "stage=${STAGE} ${KIND} bucket: quarantine ${WANT} ${TARGET}"
-echo "resources after the change:"
-jq -r --arg sid "$SID" --arg p "arn:aws:s3:::${BUCKET}/" \
-  '[.Statement[] | select(.Sid == $sid) | .Resource] | flatten | .[] | "  " + ltrimstr($p)' \
-  "$TMP/new.json"
+covering=""
+if [ "$WANT" = off ]; then
+  covering="$(jq -r --arg sid "$SID" --arg r "$RESOURCE" --arg p "arn:aws:s3:::${BUCKET}/" '
+    [.Statement[] | select(.Sid == $sid) | .Resource] | flatten
+    | map(select(endswith("*") and . != $r) | select(. as $q | $r | startswith($q | rtrimstr("*")))
+      | ltrimstr($p) | rtrimstr("*"))
+    | join(", ")' "$TMP/new.json")"
+  if [ -n "$covering" ]; then echo "note: ${TARGET} stays denied by the quarantined prefix ${covering}"; fi
+  if ! $WRITE; then exit 0; fi
+fi
 
 # Invalidate the directory the object lives in (one wildcard path, from the
 # account's 1000 free per month): the path host and the per-site host key the
@@ -147,21 +179,33 @@ else
 fi
 
 if [ "$APPLY" != "--apply" ]; then
-  echo "[dry-run] would put-bucket-policy and, for 'on', invalidate ${INV} on ${#DISTS[@]} distribution(s); pass --apply"
+  if $WRITE; then
+    echo "[dry-run] would put-bucket-policy and, for 'on', invalidate ${INV} on ${#DISTS[@]} distribution(s); pass --apply"
+  else
+    echo "[dry-run] would invalidate ${INV} on ${#DISTS[@]} distribution(s); pass --apply"
+  fi
   exit 0
 fi
-BACKUP_DIR="$(cd "$(dirname "$0")/.." && pwd)/local/deploy"
-mkdir -p "$BACKUP_DIR"
-BACKUP="${BACKUP_DIR}/${STAGE}-${KIND}-bucket-policy-$(date -u +%Y%m%dT%H%M%SZ).json"
-cp "$TMP/old.json" "$BACKUP"
-aws s3api put-bucket-policy --bucket "$BUCKET" --policy "file://$TMP/new.json"
-echo "bucket policy written (previous one: ${BACKUP})"
+if $WRITE; then
+  BACKUP_DIR="$(cd "$(dirname "$0")/.." && pwd)/local/deploy"
+  mkdir -p "$BACKUP_DIR"
+  # Two writes in one second must not overwrite the first backup.
+  stamp="${BACKUP_DIR}/${STAGE}-${KIND}-bucket-policy-$(date -u +%Y%m%dT%H%M%SZ)"
+  BACKUP="${stamp}.json"
+  n=1
+  while [ -e "$BACKUP" ]; do BACKUP="${stamp}-${n}.json"; n=$((n + 1)); done
+  cp "$TMP/old.json" "$BACKUP"
+  aws s3api put-bucket-policy --bucket "$BUCKET" --policy "file://$TMP/new.json"
+  echo "bucket policy written (previous one: ${BACKUP})"
+fi
 if [ "$WANT" = on ]; then
   for d in "${DISTS[@]}"; do
     aws cloudfront create-invalidation --distribution-id "$d" --paths "$INV" \
       --query Invalidation.Status --output text
   done
   echo "invalidated ${INV}; the hosts answer 403 for it once the invalidations land (a few minutes)"
+elif [ -n "$covering" ]; then
+  echo "still not served: the quarantined prefix ${covering} covers it"
 else
   echo "served again on the next miss (cached 403s last seconds)"
 fi
