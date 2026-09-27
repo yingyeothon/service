@@ -97,8 +97,7 @@ export interface ResourceCrumbs {
 /**
  * Resolves the team/project names and creator logins a page of resource rows
  * needs for its breadcrumbs in at most three statements — one lookup per kind
- * over the page's distinct ids, whatever the page spans. (One `findProject`
- * per distinct project cost a 19-app team list 18 extra round trips.)
+ * over the page's distinct ids (rules/data.md, `test/query-budget.test.ts`).
  */
 export function createCrumbResolver({
   db,
@@ -113,24 +112,25 @@ export function createCrumbResolver({
     const ids = (pick: (r: T) => string | null) => [
       ...new Set(rows.flatMap((r) => pick(r) ?? [])),
     ];
-    // An empty page asks nothing. Sequential on purpose: the pool holds one
-    // connection, so a `Promise.all` would only queue (rules/data.md).
-    const byId = async <R extends { id: string }>(
+    // An empty id set asks nothing (the repositories would answer `[]`
+    // anyway; the budget test pins the call count). Sequential on purpose:
+    // the pool holds one connection, so a `Promise.all` would only queue.
+    const lookup = async <R extends { id: string }>(
       want: string[],
       find: (ids: string[]) => Promise<R[]>,
     ) =>
       new Map(
         (want.length === 0 ? [] : await find(want)).map((x) => [x.id, x]),
       );
-    const logins = await byId(
+    const logins = await lookup(
       ids((r) => r.ownerId),
       (x) => db.findMembersByIds(x),
     );
-    const projectNames = await byId(
+    const projectNames = await lookup(
       ids((r) => r.projectId),
       (x) => team.findProjectNamesByIds(x),
     );
-    const teamNames = await byId(
+    const teamNames = await lookup(
       ids((r) => r.teamId),
       (x) => team.findTeamNamesByIds(x),
     );

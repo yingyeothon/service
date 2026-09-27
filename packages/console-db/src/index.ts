@@ -108,6 +108,7 @@ export {
   type TeamRole,
   type TeamRow,
   type IdName,
+  type SeatRow,
   type TeamSortKey,
   type AllTeamSortKey,
   type TeamMemberSortKey,

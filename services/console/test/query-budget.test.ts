@@ -1,14 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
-import { ev, harness, parse } from "./helpers.js";
+import { ev, harness, parse, type Team } from "./helpers.js";
 
 /*
  * Repository-call budgets for the hot read paths. Every call is a round trip
- * on the api Lambda's single connection (about 24 ms at 256 MB), so a lookup
- * per row is a latency bug even when the answer is right. These pin the
- * shape: per-kind batched lookups, never one per row.
+ * on the api Lambda's single connection (rules/data.md), so a lookup per row
+ * is a latency bug even when the answer is right. Every method of the three
+ * repositories these routes touch is counted, so a new lookup anywhere shows
+ * up as a diff here.
  */
 
+type H = ReturnType<typeof harness>;
 type AppView = Record<string, unknown>;
+
+/** Spies (calling through) on every repository method; returns the counts. */
+function countCalls(h: H): () => Record<string, number> {
+  const spies: Array<[string, { mock: { calls: unknown[] } }]> = [];
+  const repos = { db: h.db, team: h.teamDb, catalog: h.catalog };
+  for (const [label, repo] of Object.entries(repos)) {
+    const methods = repo as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    >;
+    for (const [name, value] of Object.entries(methods))
+      if (typeof value === "function")
+        spies.push([`${label}.${name}`, vi.spyOn(methods, name)]);
+  }
+  return () =>
+    Object.fromEntries(
+      spies
+        .filter(([, s]) => s.mock.calls.length > 0)
+        .map(([name, s]) => [name, s.mock.calls.length]),
+    );
+}
+
+async function makeApp(h: H, u: Team, prjId: string, name: string) {
+  h.clock.tick(1);
+  const a = await h.app(
+    ev("POST", `/projects/${prjId}/catalog/apps`, {
+      headers: u.cookie,
+      body: { name, path: `life.yyt.${name}` },
+    }),
+  );
+  expect(a.statusCode, a.body).toBe(201);
+}
 
 describe("query budget", () => {
   it("a team's app list resolves every breadcrumb with one lookup per kind", async () => {
@@ -26,24 +60,10 @@ describe("query budget", () => {
       expect(p.statusCode, p.body).toBe(201);
       projects.push(parse<{ id: string }>(p).id);
     }
-    for (const [i, prj] of projects.entries()) {
-      h.clock.tick(1);
-      const a = await h.app(
-        ev("POST", `/projects/${prj}/catalog/apps`, {
-          headers: owner.cookie,
-          body: { name: `app${i}`, path: `life.yyt.app${i}` },
-        }),
-      );
-      expect(a.statusCode, a.body).toBe(201);
-    }
+    for (const [i, prj] of projects.entries())
+      await makeApp(h, owner, prj, `app${i}`);
 
-    const findProject = vi.spyOn(h.teamDb, "findProject");
-    const findTeam = vi.spyOn(h.teamDb, "findTeam");
-    const projectNames = vi.spyOn(h.teamDb, "findProjectNamesByIds");
-    const teamNames = vi.spyOn(h.teamDb, "findTeamNamesByIds");
-    const listMembers = vi.spyOn(h.db, "listMembers");
-    const members = vi.spyOn(h.db, "findMembersByIds");
-
+    const calls = countCalls(h);
     const r = await h.app(
       ev("GET", `/teams/${owner.teamId}/catalog/apps`, {
         headers: owner.cookie,
@@ -62,25 +82,23 @@ describe("query budget", () => {
       ["app1", "two", "owner-team", "owner"],
       ["app2", "three", "owner-team", "owner"],
     ]);
-    expect(findProject).not.toHaveBeenCalled();
-    expect(listMembers).not.toHaveBeenCalled();
-    // The one `findTeam` is the access check, not a breadcrumb.
-    expect(findTeam).toHaveBeenCalledTimes(1);
-    expect(projectNames).toHaveBeenCalledTimes(1);
-    expect(projectNames.mock.calls[0]![0]).toHaveLength(3);
-    expect(teamNames).toHaveBeenCalledTimes(1);
-    expect(members).toHaveBeenCalledTimes(1);
+    // Session identity (`findMember`), the access check (`findTeam` +
+    // `findTeamMember`), the list, then one lookup per breadcrumb kind.
+    expect(calls()).toEqual({
+      "db.findMember": 1,
+      "team.findTeam": 1,
+      "team.findTeamMember": 1,
+      "catalog.listApps": 1,
+      "db.findMembersByIds": 1,
+      "team.findProjectNamesByIds": 1,
+      "team.findTeamNamesByIds": 1,
+    });
   });
 
   it("an empty page looks nothing up", async () => {
     const h = harness();
     const owner = await h.team("owner", "member", 9001);
-    const spies = [
-      vi.spyOn(h.teamDb, "findProjectNamesByIds"),
-      vi.spyOn(h.teamDb, "findTeamNamesByIds"),
-      vi.spyOn(h.db, "findMembersByIds"),
-      vi.spyOn(h.db, "listMembers"),
-    ];
+    const calls = countCalls(h);
     const r = await h.app(
       ev("GET", `/teams/${owner.teamId}/catalog/apps`, {
         headers: owner.cookie,
@@ -88,7 +106,12 @@ describe("query budget", () => {
     );
     expect(r.statusCode, r.body).toBe(200);
     expect(parse<{ apps: AppView[] }>(r).apps).toEqual([]);
-    for (const s of spies) expect(s).not.toHaveBeenCalled();
+    expect(calls()).toEqual({
+      "db.findMember": 1,
+      "team.findTeam": 1,
+      "team.findTeamMember": 1,
+      "catalog.listApps": 1,
+    });
   });
 
   it("a bearer resolves in one lookup and touches the token at most hourly", async () => {
@@ -101,74 +124,36 @@ describe("query budget", () => {
     const bearer = {
       authorization: `Bearer ${parse<{ token: string }>(created).token}`,
     };
-
-    const identity = vi.spyOn(h.db, "findTokenIdentity");
-    const byHash = vi.spyOn(h.db, "findApiTokenByHash");
-    const touch = vi.spyOn(h.db, "touchApiToken");
+    const calls = countCalls(h);
     for (let i = 0; i < 2; i++) {
       const me = await h.app(ev("GET", "/me", { headers: bearer }));
       expect(me.statusCode, me.body).toBe(200);
     }
-    expect(identity).toHaveBeenCalledTimes(2);
-    expect(byHash).not.toHaveBeenCalled();
-    expect(touch).toHaveBeenCalledTimes(1);
+    expect(calls()).toEqual({
+      "db.findTokenIdentity": 2,
+      "db.touchApiToken": 1,
+    });
   });
 
   it("the console app's whole list is one request of seven repository calls", async () => {
-    // Nine statements on MariaDB: `listTeamsForMember` (an `include`) and
-    // `summarizeArtifacts` are two each. Whatever the number of teams.
+    // Eight statements on MariaDB (`summarizeArtifacts` runs two), whatever
+    // the number of teams.
     const h = harness();
     const alice = await h.team("alice", "member", 9101);
     const bob = await h.team("bob", "member", 9102);
     await h.seat(bob, bob.teamId, "alice");
-    for (const [u, name] of [
-      [alice, "one"],
-      [bob, "two"],
-    ] as const) {
-      h.clock.tick(1);
-      const a = await h.app(
-        ev("POST", `/projects/${u.prjId}/catalog/apps`, {
-          headers: u.cookie,
-          body: { name, path: `life.yyt.${name}` },
-        }),
-      );
-      expect(a.statusCode, a.body).toBe(201);
-    }
+    await makeApp(h, alice, alice.prjId, "one");
+    await makeApp(h, bob, bob.prjId, "two");
     const created = await h.app(
       ev("POST", "/tokens", { headers: alice.cookie, body: { name: "app" } }),
     );
     const bearer = {
       authorization: `Bearer ${parse<{ token: string }>(created).token}`,
     };
-    // The token's first use touches it; this request is the second.
+    // The token's first use touches it; the measured request is the second.
     await h.app(ev("GET", "/me", { headers: bearer }));
 
-    // Spies call through; only the counts are read.
-    const spies = [
-      ...(
-        [
-          "findTokenIdentity",
-          "touchApiToken",
-          "findMember",
-          "findMembersByIds",
-          "listMembers",
-        ] as const
-      ).map((n) => [n, vi.spyOn(h.db, n)] as const),
-      ...(
-        [
-          "listTeamsForMember",
-          "findTeam",
-          "findTeamMember",
-          "findProject",
-          "findProjectNamesByIds",
-          "findTeamNamesByIds",
-        ] as const
-      ).map((n) => [n, vi.spyOn(h.teamDb, n)] as const),
-      ...(["listApps", "summarizeArtifacts"] as const).map(
-        (n) => [n, vi.spyOn(h.catalog, n)] as const,
-      ),
-    ];
-
+    const calls = countCalls(h);
     const r = await h.app(
       ev("GET", "/catalog/apps", {
         headers: bearer,
@@ -177,20 +162,14 @@ describe("query budget", () => {
     );
     expect(r.statusCode, r.body).toBe(200);
     expect(parse<{ apps: AppView[] }>(r).apps).toHaveLength(2);
-    expect(
-      Object.fromEntries(
-        spies
-          .filter(([, s]) => s.mock.calls.length > 0)
-          .map(([n, s]) => [n, s.mock.calls.length]),
-      ),
-    ).toEqual({
-      findTokenIdentity: 1,
-      listTeamsForMember: 1,
-      listApps: 1,
-      findMembersByIds: 1,
-      findProjectNamesByIds: 1,
-      findTeamNamesByIds: 1,
-      summarizeArtifacts: 1,
+    expect(calls()).toEqual({
+      "db.findTokenIdentity": 1,
+      "team.listSeats": 1,
+      "catalog.listApps": 1,
+      "db.findMembersByIds": 1,
+      "team.findProjectNamesByIds": 1,
+      "team.findTeamNamesByIds": 1,
+      "catalog.summarizeArtifacts": 1,
     });
   });
 });

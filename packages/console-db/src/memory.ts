@@ -189,12 +189,6 @@ export function createMemoryConsoleDb(
         throw new AppError("unavailable", "database error");
       tokens.set(t.id, { ...t, lastUsedAt: null, revokedAt: null });
     },
-    findApiTokenByHash: async (hash) => {
-      const t = [...tokens.values()].find(
-        (x) => x.tokenHash === hash && x.revokedAt === null,
-      );
-      return t && { ...t };
-    },
     findTokenIdentity: async (hash) => {
       const t = [...tokens.values()].find(
         (x) => x.tokenHash === hash && x.revokedAt === null,

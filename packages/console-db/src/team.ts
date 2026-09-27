@@ -137,6 +137,13 @@ export interface IdName {
   name: string;
 }
 
+/** A member's live seat: active and not pending. */
+export interface SeatRow {
+  teamId: string;
+  teamName: string;
+  role: Exclude<TeamRole, "pending">;
+}
+
 export interface TeamInput {
   id: string;
   name: string;
@@ -387,6 +394,12 @@ export interface TeamDb {
     memberId: string,
     opts?: ListQuery<TeamSortKey>,
   ): Promise<TeamMembershipRow[]>;
+  /**
+   * The member's live seats (active, not pending), oldest team first: what
+   * "my teams" means for every list route. One statement, and no MEDIUMTEXT
+   * description, unlike `listTeamsForMember`.
+   */
+  listSeats(memberId: string): Promise<SeatRow[]>;
   /** Admin-only listing; oldest first; `q` matches name or description. */
   listAllTeams(opts?: ListQuery<AllTeamSortKey>): Promise<TeamRow[]>;
   countTeamsCreatedBy(memberId: string): Promise<number>;
@@ -1052,6 +1065,23 @@ export function createTeamDb(prisma: PrismaClient, o: TeamDbOptions): TeamDb {
               select: { id: true, name: true },
               orderBy: { id: "asc" },
             }),
+      ),
+    listSeats: (memberId) =>
+      run(async () =>
+        // Raw because `include` is two statements on the mariadb adapter;
+        // `listTeamsForMember`'s default order. No `_bin` column is selected.
+        (
+          await prisma.$queryRaw<{ id: string; name: string; role: string }[]>`
+            select t.id, t.name, tm.role
+            from team_members tm join teams t on t.id = tm.team_id
+            where tm.member_id = ${memberId}
+              and tm.state = 'active' and tm.role <> 'pending'
+            order by t.created_at asc, tm.team_id asc`
+        ).map((r) => ({
+          teamId: r.id,
+          teamName: r.name,
+          role: r.role as SeatRow["role"],
+        })),
       ),
     findTeamByName: (name) =>
       run(async () => {
@@ -2048,18 +2078,6 @@ function sortMembers(a: TeamMemberRow, b: TeamMemberRow): number {
 
 /* Shared by the repository and the fake for the keys that order after the fetch. */
 const byId = (a: { id: string }, b: { id: string }) => cmpBin(a.id, b.id);
-
-/** The fake's by-ids name lookup: existing rows only, each once, by id. */
-const namesByIds = (
-  rows: ReadonlyMap<string, IdName>,
-  ids: readonly string[],
-): IdName[] =>
-  [...new Set(ids)]
-    .flatMap((id) => {
-      const r = rows.get(id);
-      return r ? [{ id: r.id, name: r.name }] : [];
-    })
-    .sort(byId);
 const byMemberId = (a: TeamMemberRow, b: TeamMemberRow) =>
   cmpBin(a.memberId, b.memberId);
 const bySince = (a: TeamMemberRow, b: TeamMemberRow) =>
@@ -2098,6 +2116,18 @@ function issueOrderBy(
 /* ------------------------------------------------------------------ */
 /* In-memory fake                                                      */
 /* ------------------------------------------------------------------ */
+
+/** The fake's by-ids name lookup: existing rows only, each once, by id. */
+const namesByIds = (
+  rows: ReadonlyMap<string, IdName>,
+  ids: readonly string[],
+): IdName[] =>
+  [...new Set(ids)]
+    .flatMap((id) => {
+      const r = rows.get(id);
+      return r ? [{ id: r.id, name: r.name }] : [];
+    })
+    .sort(byId);
 
 export interface MemoryTeamDbDeps {
   memberExists?: (id: string) => boolean;
@@ -2346,6 +2376,21 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       return r && { ...r };
     },
     findTeamNamesByIds: async (ids) => namesByIds(teams, ids),
+    listSeats: async (memberId) =>
+      [...teamMembers.values()]
+        .filter(
+          (m) =>
+            m.memberId === memberId &&
+            m.state === "active" &&
+            m.role !== "pending",
+        )
+        .map((m) => ({ m, t: teams.get(m.teamId)! }))
+        .sort((a, b) => byCreatedAsc(a.t, b.t))
+        .map(({ m, t }) => ({
+          teamId: t.id,
+          teamName: t.name,
+          role: m.role as SeatRow["role"],
+        })),
     findTeamByName: async (name) => {
       const r = [...teams.values()].find((x) => ci(x.name) === ci(name));
       return r && { ...r };

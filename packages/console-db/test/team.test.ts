@@ -155,6 +155,27 @@ export function teamContract(
   });
 
   describe("members", () => {
+    it("seats: live owner/member rows with the team name, oldest team first", async () => {
+      const db = await make();
+      await seedTeam(db); // team_1 "Acme", M1 owner
+      for (const [id, name, owner, at] of [
+        ["team_2", "Beta", M2, 20],
+        ["team_3", "Gamma", M2, 30],
+        ["team_4", "Delta", M3, 40],
+      ] as const)
+        await db.createTeam({ id, name, createdBy: owner, createdAt: at }, at);
+      await db.addMember("team_2", M1, "member", by(M2, 21));
+      // A pending request and a kicked row are not seats.
+      await db.requestJoin("team_3", M1, 31, 3600);
+      await db.addMember("team_4", M1, "member", by(M3, 41));
+      expect(await db.removeMember("team_4", M1, by(M3, 42))).toBe(true);
+      expect(await db.listSeats(M1)).toEqual([
+        { teamId: "team_1", teamName: "Acme", role: "owner" },
+        { teamId: "team_2", teamName: "Beta", role: "member" },
+      ]);
+      expect(await db.listSeats("nobody")).toEqual([]);
+    });
+
     it("join → pending, approve → member, and the seat sorts after owners", async () => {
       const db = await make();
       await seedTeam(db);

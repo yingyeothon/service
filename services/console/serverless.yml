@@ -275,11 +275,8 @@ functions:
     # One MySQL + one Redis connection per container; console's share of the
     # host budget is 10 (api) + 1 (expire) — rules/data.md.
     reservedConcurrency: 10
-    # CPU scales with memory in the invoke phase (Init does not: 0.86–0.90 s
-    # at 128/256/512 MB for this bundle). At 256 MB (0.145 vCPU) a container's
-    # first DB use — the Prisma query compiler's wasm — took ~2 s and every
-    # statement ~24 ms; 1024 MB (0.58 vCPU) cuts both about fourfold, and
-    # 256 MB also ran at 237 MB used. rules/serverless-aws.md.
+    # Memory buys CPU for the invoke phase; the Prisma query compiler is
+    # CPU-bound (measured sizes and costs: rules/serverless-aws.md).
     memorySize: 1024
     # Catalog commit copies up to 1GB inside the request; keep headroom under
     # API Gateway's ~29s window. Other routes finish far quicker regardless.

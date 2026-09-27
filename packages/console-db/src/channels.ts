@@ -494,11 +494,9 @@ export interface ConsoleDb {
   ): Promise<boolean>;
 
   insertApiToken(t: ApiTokenInput): Promise<void>;
-  /** Non-revoked token by hash; `undefined` otherwise. */
-  findApiTokenByHash(tokenHash: string): Promise<ApiTokenRow | undefined>;
   /**
-   * `findApiTokenByHash` plus the token's member in one statement: the bearer
-   * path runs it on every request, and two lookups cost two round trips.
+   * The non-revoked token with this hash and its member, in one statement:
+   * the bearer path runs it on every request. `undefined` otherwise.
    */
   findTokenIdentity(tokenHash: string): Promise<TokenIdentity | undefined>;
   /** Live tokens, oldest first. */
@@ -782,35 +780,16 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
           },
         });
       }),
-    findApiTokenByHash: (tokenHash) =>
-      run(async () => {
-        const r = await prisma.api_tokens.findFirst({
-          where: { token_hash: tokenHash, revoked_at: null },
-        });
-        return r ? toToken(r) : undefined;
-      }),
     findTokenIdentity: (tokenHash) =>
       run(async () => {
         // Raw SQL because `include: { members: true }` is two statements: the
         // mariadb adapter has no relation joins. Neither table has a `_bin`
         // column, so every string comes back as a string (rules/data.md).
+        type MemberCols = Parameters<typeof toMember>[0];
         const [r] = await prisma.$queryRaw<
-          {
-            id: string;
-            member_id: string;
-            token_hash: string;
-            name: string;
-            created_at: bigint | number;
-            last_used_at: bigint | number | null;
-            revoked_at: bigint | number | null;
-            m_id: string;
-            m_github_id: bigint | number;
-            m_github_login: string;
-            m_role: string;
-            m_created_at: bigint | number;
-            m_approved_at: bigint | number | null;
-            m_approved_by: string | null;
-          }[]
+          (Parameters<typeof toToken>[0] & {
+            [K in keyof MemberCols as `m_${K}`]: MemberCols[K];
+          })[]
         >`select t.id, t.member_id, t.token_hash, t.name, t.created_at,
                  t.last_used_at, t.revoked_at,
                  m.id as m_id, m.github_id as m_github_id,

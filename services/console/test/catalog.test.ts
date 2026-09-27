@@ -359,7 +359,10 @@ describe("catalog apps", () => {
     const alice = await h.team("alice", "member", 9101);
     const bob = await h.team("bob", "member", 9102);
     const carol = await h.team("carol", "member", 9103);
+    const dave = await h.team("dave", "member", 9104);
     await h.seat(bob, bob.teamId, "alice");
+    // A seat in a team without apps is still listed in `teams`.
+    await h.seat(dave, dave.teamId, "alice");
     const mine = await makeApp(h, alice, "mine");
     const theirs = await makeApp(h, bob, "theirs");
     const empty = await makeApp(h, bob, "empty");
@@ -389,6 +392,15 @@ describe("catalog apps", () => {
         tags: { version: "1", application_id: `life.yyt.${id}` },
         createdAt: at,
       });
+    // A newer iOS build: `platform=android` must still pick `art_a`.
+    await h.catalog.insertArtifact({
+      id: "art_ios",
+      appId: mine.id,
+      platform: "ios",
+      url: "https://dev-d.yyt.life/art_ios.ipa",
+      tags: { version: "2", application_id: "life.yyt.ios" },
+      createdAt: NOW_SEC + 3,
+    });
     type Listed = {
       apps: Array<{
         id: string;
@@ -410,6 +422,7 @@ describe("catalog apps", () => {
     expect([...body.teams].sort(byName)).toEqual([
       { id: alice.teamId, name: "alice-team", role: "owner" },
       { id: bob.teamId, name: "bob-team", role: "member" },
+      { id: dave.teamId, name: "dave-team", role: "member" },
     ]);
     expect(
       Object.fromEntries(
@@ -431,6 +444,20 @@ describe("catalog apps", () => {
     );
     expect(plain.apps.every((a) => !("latestArtifact" in a))).toBe(true);
     expect(plain.teams).toEqual(body.teams);
+    // Without `platform` the newest build of any platform is the summary.
+    expect(
+      (j(await get({ artifacts: "summary" })) as Listed).apps.find(
+        (a) => a.id === mine.id,
+      )?.latestArtifact?.id,
+    ).toBe("art_ios");
+    // A list route like any other: `sort`/`order`, and a 400 outside the
+    // vocabulary (docs/decisions.md "List sort and filter").
+    expect(
+      (j(await get({ sort: "name", order: "desc" })) as Listed).apps.map(
+        (a) => a.id,
+      ),
+    ).toEqual([theirs.id, mine.id, empty.id]);
+    expect((await get({ sort: "bogus" })).statusCode).toBe(400);
     expect((await get({ artifacts: "all" })).statusCode).toBe(400);
   });
 

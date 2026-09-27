@@ -114,8 +114,9 @@ const artifactsQuery = listQuery(ARTIFACT_SORT_KEYS)
   })
   .passthrough();
 const appsQuery = listQuery(APP_SORT_KEYS).passthrough();
-const teamAppsQuery = z
-  .object({
+/** The cross-project app lists: sortable, and `artifacts=summary` embeds the newest artifact. */
+const appListQuery = listQuery(APP_SORT_KEYS)
+  .extend({
     artifacts: z.enum(["summary"]).optional(),
     platform: z.enum(CATALOG_PLATFORMS).optional(),
   })
@@ -458,27 +459,33 @@ export function createCatalogRoutes({
       method: "GET",
       path: "/catalog/apps",
       auth: true,
-      query: teamAppsQuery,
+      query: appListQuery,
       handler: async (ctx) => {
-        // Every app of every team the caller is seated in, flattened — the
-        // shape `GET /channels` has, what `yyt catalog list` answers with
-        // when it is given no team or project, and (with `artifacts=summary`)
-        // the console app's whole list in one request: one request per team
-        // put a cold Lambda container on the launch path for each concurrent
-        // one (2026-09-27). `teams` is the caller's seat in each listed team,
-        // because resource views carry no standing of their own. Permanent.
+        // Every app of every team the caller is seated in: the CLI's
+        // no-context listing and, with `artifacts=summary`, the console app's
+        // whole list in one request (rules/architecture.md). `teams` is every
+        // live seat, apps or not — resource views carry no standing of their
+        // own. Permanent.
         const id = requireRole(ctx, "member");
         const seats = await memberSeats(id);
-        if (seats.length === 0) return { apps: [], teams: [] };
+        const teams = seats.map((s) => ({
+          id: s.id,
+          name: s.name,
+          role: s.role,
+        }));
+        if (seats.length === 0) return { apps: [], teams };
         const apps = await appViews(
-          await catalog.listApps({ teamIds: seats.map((s) => s.id) }),
+          await catalog.listApps({
+            ...listParams(ctx.query),
+            teamIds: seats.map((s) => s.id),
+          }),
         );
         return {
           apps:
             ctx.query.artifacts === "summary"
               ? await withSummary(apps, ctx.query.platform)
               : apps,
-          teams: seats,
+          teams,
         };
       },
     }),
@@ -486,15 +493,19 @@ export function createCatalogRoutes({
       method: "GET",
       path: "/teams/{team}/catalog/apps",
       auth: true,
-      query: teamAppsQuery,
+      query: appListQuery,
       handler: async (ctx) => {
         // Every app of the team across its projects: app names are unique
         // within the team, so this is how the CLI turns a name into an app
-        // (and its project) with only a team context. Permanent, like the
-        // flattened `/catalog/apps`.
+        // (and its project) with only a team context. Permanent. Its
+        // `artifacts=summary` serves app builds up to 1.5.3; later ones use
+        // the flattened route.
         const a = await teamAccess(ctx, ctx.params.team!);
         const apps = await appViews(
-          await catalog.listApps({ teamId: a.team.id }),
+          await catalog.listApps({
+            ...listParams(ctx.query),
+            teamId: a.team.id,
+          }),
         );
         if (ctx.query.artifacts !== "summary") return { apps };
         return { apps: await withSummary(apps, ctx.query.platform) };

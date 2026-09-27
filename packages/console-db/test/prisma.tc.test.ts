@@ -748,14 +748,16 @@ describe.skipIf(!dockerAvailable())(
             createdAt: 2,
           }),
         ).rejects.toMatchObject({ code: "conflict" });
-        expect(await repo.findApiTokenByHash("h".repeat(64))).toMatchObject({
+        expect(
+          (await repo.findTokenIdentity("h".repeat(64)))?.token,
+        ).toMatchObject({
           id: "t1",
         });
         await repo.touchApiToken("t1", 9);
         expect((await repo.listApiTokens("m1"))[0]?.lastUsedAt).toBe(9);
         expect(await repo.revokeApiToken("t1", "m2", 10)).toBe(false);
         expect(await repo.revokeApiToken("t1", "m1", 10)).toBe(true);
-        expect(await repo.findApiTokenByHash("h".repeat(64))).toBeUndefined();
+        expect(await repo.findTokenIdentity("h".repeat(64))).toBeUndefined();
 
         await repo.insertAudit({
           id: "a1",

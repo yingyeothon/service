@@ -238,14 +238,14 @@ export function createTeamAccess({
    * admin override: a seatless admin has no "mine".
    */
   async function memberSeats(id: ConsoleIdentity): Promise<Seat[]> {
-    return (await team.listTeamsForMember(id.subject)).flatMap((o) =>
-      o.state === "active" && o.role !== "pending"
-        ? [{ id: o.id, name: o.name, role: o.role }]
-        : [],
-    );
+    return (await team.listSeats(id.subject)).map((s) => ({
+      id: s.teamId,
+      name: s.teamName,
+      role: s.role,
+    }));
   }
 
-  /** `memberSeats` without the seats. */
+  /** The team ids of `memberSeats`. */
   async function memberTeamIds(id: ConsoleIdentity): Promise<string[]> {
     return (await memberSeats(id)).map((s) => s.id);
   }

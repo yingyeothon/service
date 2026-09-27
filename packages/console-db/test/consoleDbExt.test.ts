@@ -63,14 +63,14 @@ describe("memory console db: members/tokens/channels/audit", () => {
     await expect(
       db.insertApiToken({ ...t, id: "t3", tokenHash: "h3", memberId: "ghost" }),
     ).rejects.toMatchObject({ code: "unavailable" });
-    expect((await db.findApiTokenByHash("h1"))?.id).toBe("t1");
+    expect((await db.findTokenIdentity("h1"))?.token.id).toBe("t1");
     await db.touchApiToken("t1", 9);
     await db.touchApiToken("nope", 9);
     expect((await db.listApiTokens("m1"))[0]?.lastUsedAt).toBe(9);
     expect(await db.revokeApiToken("t1", "m2", 10)).toBe(false);
     expect(await db.revokeApiToken("t1", "m1", 10)).toBe(true);
     expect(await db.revokeApiToken("t1", "m1", 11)).toBe(false);
-    expect(await db.findApiTokenByHash("h1")).toBeUndefined();
+    expect(await db.findTokenIdentity("h1")).toBeUndefined();
     expect(await db.listApiTokens("m1")).toEqual([]);
   });
 
@@ -388,7 +388,7 @@ export function memberLookupContract(
       },
     });
     expect(await db.findTokenIdentity(hash("b"))).toEqual({
-      token: await db.findApiTokenByHash(hash("b")),
+      token: (await db.listApiTokens("mt2"))[0],
       member: await db.findMember("mt2"),
     });
     expect((await db.findTokenIdentity(hash("b")))?.member).toMatchObject({
