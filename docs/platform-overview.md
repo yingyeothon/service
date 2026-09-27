@@ -319,8 +319,10 @@ Monitoring is one liveness probe reporting only the down and recovered edges aft
 consecutive failures, plus one daily usage digest (Redis memory, evictions, per-channel
 key counts, bucket growth, CDN bytes per distribution) published as a single message, plus a
 CDN cost guard every 5 minutes that disables a public distribution past its trip threshold
-(manual stops: `scripts/cdn-switch.sh`, `scripts/cdn-quarantine.sh`). Account-level Budgets
-and Cost Anomaly Detection cover the bill itself. No custom metrics.
+(watched by the prod liveness probe; manual stops: `scripts/cdn-switch.sh`,
+`scripts/cdn-quarantine.sh`), with the public S3 origins locked to CloudFront
+(`scripts/origin-lock.sh`). Account-level Budgets and Cost Anomaly Detection cover the bill
+itself. No custom metrics.
 
 ## 8. Evolution levers
 
