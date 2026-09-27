@@ -320,8 +320,8 @@ consecutive failures, plus one daily usage digest (Redis memory, evictions, per-
 key counts, bucket growth, CDN bytes per distribution) published as a single message, plus a
 CDN cost guard every 5 minutes that disables a public distribution past its trip threshold
 (watched by the prod liveness probe; manual stops: `scripts/cdn-switch.sh`,
-`scripts/cdn-quarantine.sh`), with the public S3 origins locked to CloudFront
-(`scripts/origin-lock.sh`). Account-level Budgets and Cost Anomaly Detection cover the bill
+`scripts/cdn-quarantine.sh`), with the S3 origins closed to anonymous reads
+(CloudFront reads them through origin access control, `scripts/origin-oac.sh`). Account-level Budgets and Cost Anomaly Detection cover the bill
 itself. No custom metrics.
 
 ## 8. Evolution levers
