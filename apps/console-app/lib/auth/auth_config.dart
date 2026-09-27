@@ -74,6 +74,8 @@ class AuthConfig {
   static String meUrlOf(String base) => '$base/me';
   static String teamsUrlOf(String base) => '$base/teams';
   static String catalogAppsUrlOf(String base) => '$base/catalog/apps';
+  static String teamAppsUrlOf(String base, String teamId) =>
+      '$base/teams/${Uri.encodeComponent(teamId)}/catalog/apps';
   static String teamProjectsUrlOf(String base, String teamId) =>
       '$base/teams/${Uri.encodeComponent(teamId)}/projects';
   static String teamIssuesUrlOf(String base, String teamId) =>

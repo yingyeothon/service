@@ -6,8 +6,9 @@ import 'package:yyt_console/install_button.dart';
 import 'package:yyt_console/self_update_check.dart';
 import 'package:flutter/material.dart';
 
-/// Checks once at launch whether the console serves a newer build of this
-/// app and, if so, shows a banner with an update button above [child].
+/// Checks once, after [startAfter], whether the console serves a newer build
+/// of this app and, if so, shows a banner with an update button above
+/// [child].
 class SelfUpdateBanner extends StatefulWidget {
   const SelfUpdateBanner({
     super.key,
@@ -22,13 +23,12 @@ class SelfUpdateBanner extends StatefulWidget {
   final Future<ConsoleAppUpdate?> Function({required String? token}) check;
 
   /// The check waits for this, at most [startAfterCap]. HomeShell passes the
-  /// first list load, so a launch sends one request at a time: on Lambda each
-  /// concurrent request needs a container of its own, and a quiet stage has
-  /// only cold ones to give.
+  /// first list load, so a launch sends one request at a time
+  /// (rules/architecture.md).
   final Future<void>? startAfter;
 
   /// A courtesy, never a gate: a list load that never ends must not keep the
-  /// banner away for good.
+  /// banner away for good. Longer than the list's own 20 s timeout.
   static const startAfterCap = Duration(seconds: 30);
 
   @override
@@ -63,10 +63,9 @@ class _SelfUpdateBannerState extends State<SelfUpdateBanner> {
   Widget build(BuildContext context) {
     final update = _update;
     final showing = update != null && !_dismissed;
-    // One tree shape whether or not the banner shows. Returning [child] bare
-    // in one state and inside a Column in the other rebuilt the child — the
-    // app list, and with it the list load — each time the banner appeared or
-    // was dismissed.
+    // One tree shape whether or not the banner shows: a bare [child] in one
+    // state and a Column in the other would rebuild the child (the app list
+    // and its load) whenever the banner appears or is dismissed.
     return Column(
       children: [
         if (showing) _banner(context, update),

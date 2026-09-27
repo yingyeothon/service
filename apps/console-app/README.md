@@ -25,7 +25,7 @@ only to the console API.
   launch waited on two waves of cold containers (7.4 s on dev). One request
   also means one failure answers for all teams — a 5xx shows the retry card
   instead of a partial list. Against an older console that ignores the
-  query the app walks `/catalog/apps/{id}/artifacts` per app. Requests time
+  query (no `teams`) the app lists per team, as builds up to 1.5.3 do. Requests time
   out after 20 s. The detail screen still lists artifacts by app id.
   Permission is team membership only, so the app has no permission screen.
 - Times: the API sends UTC unix seconds; every screen formats them in the

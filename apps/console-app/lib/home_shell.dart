@@ -10,9 +10,12 @@ import 'package:http/http.dart' as http;
 
 /// Signed-in root: the app catalog and the team projects side by side.
 class HomeShell extends StatefulWidget {
-  const HomeShell({super.key, required this.authState});
+  const HomeShell({super.key, required this.authState, this.client});
 
   final AuthState authState;
+
+  /// Tests pass one; otherwise the shell makes its own and closes it.
+  final http.Client? client;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -27,7 +30,7 @@ class _HomeShellState extends State<HomeShell> {
 
   /// One connection for the launch requests — the list, then the update
   /// check — closed with the profile: HomeShell is keyed by profile id.
-  final http.Client _client = http.Client();
+  late final http.Client _client = widget.client ?? http.Client();
 
   /// Completes when the first list load has ended, whatever its outcome; the
   /// update check waits for it so the launch is one request at a time.
@@ -35,7 +38,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   void dispose() {
-    _client.close();
+    if (widget.client == null) _client.close();
     super.dispose();
   }
 
