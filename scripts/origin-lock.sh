@@ -214,7 +214,7 @@ write_policy() { # bucket jq-program
   mkdir -p "$(dirname "$backup")"
   cp "$TMP/$b.policy.json" "$backup"
   aws s3api put-bucket-policy --bucket "$b" --policy "file://$TMP/$b.new.json"
-  echo "[done] $(label_of "$b") bucket policy written (previous one: local/deploy/$(basename "$backup"), contains the secret)"
+  echo "[done] $(label_of "$b") bucket policy written (previous one: local/deploy/$(basename "$backup"); a locked one carries the secret, 0600)"
   policy_of "$b"
 }
 
