@@ -116,46 +116,54 @@ describe("serverless.yml invariants", () => {
       "${self:custom.siteHostSuffix.${self:custom.stage}",
     ]);
   });
-  it("console: the per-site host sends the origin secret only where the stage has one", () => {
+  it("console: CloudFront reads the site bucket through origin access control, never with a header", () => {
     const yml = readFileSync(
       join(root, "services/console/serverless.yml"),
       "utf8",
     );
-    // Without the default every console deploy fails on a stage that has no secret yet.
-    expect(yml).toContain(
-      'originSecret: ${ssm:${self:custom.stageSsm}/origin-secret, ""}',
-    );
-    const doc = parse(yml, { logLevel: "silent" }) as {
-      resources: {
-        Conditions: Record<string, unknown>;
-        Resources: Record<
-          string,
-          {
-            Properties: {
-              DistributionConfig: {
-                Origins: { Id: string; OriginCustomHeaders?: unknown }[];
-              };
-            };
-          }
-        >;
+    // The Referer origin lock is gone (docs/decisions.md *CDN cost guard* §11).
+    expect(yml).not.toMatch(/originSecret|origin-secret|OriginCustomHeaders/);
+    type Resource = {
+      Condition?: string;
+      Properties: {
+        OriginAccessControlConfig?: Record<string, string>;
+        FunctionCode?: string;
+        DistributionConfig?: {
+          Origins: {
+            Id: string;
+            OriginAccessControlId?: unknown;
+            S3OriginConfig?: unknown;
+          }[];
+        };
       };
     };
-    expect(doc.resources.Conditions.HasOriginSecret).toBeDefined();
+    const doc = parse(yml, { logLevel: "silent" }) as {
+      resources: { Resources: Record<string, Resource> };
+    };
+    const res = doc.resources.Resources;
+    // The hand-made path host and artifact CDN use it on every stage.
+    expect(res.CdnOriginAccessControl?.Condition).toBeUndefined();
+    expect(
+      res.CdnOriginAccessControl?.Properties.OriginAccessControlConfig,
+    ).toMatchObject({
+      OriginAccessControlOriginType: "s3",
+      SigningBehavior: "always",
+      SigningProtocol: "sigv4",
+    });
     const origin =
-      doc.resources.Resources.SiteHostDistribution!.Properties.DistributionConfig.Origins.find(
+      res.SiteHostDistribution?.Properties.DistributionConfig?.Origins.find(
         (o) => o.Id === "site",
-      )!;
-    // `!If [HasOriginSecret, [{Referer}], NoValue]`, tags dropped by the parser.
-    expect(origin.OriginCustomHeaders).toEqual([
-      "HasOriginSecret",
-      [
-        {
-          HeaderName: "Referer",
-          HeaderValue: "${self:custom.originSecret}",
-        },
-      ],
-      "AWS::NoValue",
-    ]);
+      );
+    // `!GetAtt CdnOriginAccessControl.Id`, the tag dropped by the parser.
+    expect(origin?.OriginAccessControlId).toBe("CdnOriginAccessControl.Id");
+    expect(origin?.S3OriginConfig).toEqual({ OriginAccessIdentity: "" });
+    // The functions scripts/origin-oac.sh attaches exist on every stage, and
+    // a `${` in their code would be a Serverless variable.
+    for (const name of ["PathHostRequestFunction", "ArtifactRequestFunction"]) {
+      expect(res[name]?.Condition, name).toBeUndefined();
+      expect(res[name]?.Properties.FunctionCode, name).toBeTypeOf("string");
+      expect(res[name]?.Properties.FunctionCode, name).not.toContain("${");
+    }
   });
 
   it("console: only the CDN guard's own role may update a distribution, and only the three it may disable", () => {

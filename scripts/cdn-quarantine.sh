@@ -22,7 +22,8 @@
 # (`my-game/`); a single file is its key (`my-game/big.bin`).
 # Dry run unless --apply. Needs AWS_PROFILE=yyt and jq. Idempotent.
 set -euo pipefail
-# Policy backups may carry the origin-lock secret (a Referer condition).
+# Policy backups stay private: those from before 2026-09-27 carry the retired
+# origin-lock secret (a Referer condition).
 umask 077
 
 usage="usage: $0 <dev|prod> <site|artifact> <key | prefix/> <on|off> [--apply]  |  $0 <dev|prod> <site|artifact> list"

@@ -37,10 +37,12 @@ custom:
   artifactCdn:
     dev: https://dev-d.yyt.life
     prod: https://d.yyt.life
-  # Static sites (docs/decisions.md *Static sites*): pre-existing public S3
-  # website buckets behind hand-made CloudFront distributions, outside this
-  # stack like the artifact buckets; the stack only grants IAM on them. Zips
-  # are staged in the private poster bucket, never here.
+  # Static sites (docs/decisions.md *Static sites*): pre-existing S3 buckets
+  # behind hand-made CloudFront distributions, outside this stack like the
+  # artifact buckets; the stack only grants IAM on them. Private since
+  # 2026-09-27: CloudFront reads them through origin access control
+  # (`CdnOriginAccessControl`, scripts/origin-oac.sh). Zips are staged in the
+  # private poster bucket, never here.
   siteBucket: ${ssm:${self:custom.stageSsm}/site-bucket}
   siteCdn:
     dev: https://dev-g.yyt.life
@@ -56,10 +58,6 @@ custom:
   # `*.dev-g.yyt.life` in SSM by hand (rules/deployment.md); empty = none of
   # the SiteHost* resources exist and `hostUrl` is null.
   siteHostCertArn: ${ssm:${self:custom.stageSsm}/site-host-cert-arn, ""}
-  # Origin lock (scripts/origin-lock.sh): the per-site host sends this as its
-  # `Referer`, and the site bucket's public read requires it, so the bucket
-  # cannot be read around CloudFront. Empty = no header (unlocked stage).
-  originSecret: ${ssm:${self:custom.stageSsm}/origin-secret, ""}
   siteHostSuffix:
     dev: dev-g.yyt.life
     prod: g.yyt.life
@@ -402,7 +400,6 @@ resources:
     HasSiteDistribution:
       !Not [!Equals ["${self:custom.siteDistributionId}", ""]]
     HasSiteHost: !Not [!Equals ["${self:custom.siteHostCertArn}", ""]]
-    HasOriginSecret: !Not [!Equals ["${self:custom.originSecret}", ""]]
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
@@ -644,6 +641,88 @@ resources:
               FunctionAssociations:
                 - EventType: viewer-request
                   FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
+    # Private origins (docs/decisions.md *CDN cost guard* §11): one origin
+    # access control per stage for the S3 REST origins of the site and
+    # artifact buckets. The per-site host uses it here; scripts/origin-oac.sh
+    # attaches it to the hand-made path host and artifact CDN, which exist on
+    # every stage, so it is unconditional. The bucket policies name the
+    # distributions, not this control.
+    CdnOriginAccessControl:
+      Type: AWS::CloudFront::OriginAccessControl
+      Properties:
+        OriginAccessControlConfig:
+          Name: ${self:service}-${self:custom.stage}-cdn-origin
+          Description: Site and artifact buckets behind CloudFront
+          OriginAccessControlOriginType: s3
+          SigningBehavior: always
+          SigningProtocol: sigv4
+    # The hand-made path host (`g.yyt.life/{slug}/…`) over the site bucket's
+    # REST endpoint, attached by scripts/origin-oac.sh: only what the website
+    # endpoint did that clients rely on. `/{slug}` redirects to `/{slug}/`, or
+    # the relative URLs of its index.html break; only a segment in the prefix
+    # grammar (slugs, names, legacy prefixes: `[a-z0-9-]`, no top-level files
+    # in the bucket) is redirected, so a Location can never hold `\`, `%` or
+    # another host; a path ending in `/` gets `index.html`; a literal `+` is
+    # sent as `%2B`, since the REST endpoint reads it as a space and the
+    # website endpoint read it as `+`. The query string only goes into that
+    # Location, never to S3: a signed request honours `response-content-type`
+    # and the other response overrides. Nothing is refused: legacy prefixes
+    # are served as they are. No `${…}` in the code: Serverless would resolve it.
+    PathHostRequestFunction:
+      Type: AWS::CloudFront::Function
+      Properties:
+        Name: ${self:service}-${self:custom.stage}-path-host
+        AutoPublish: true
+        FunctionConfig:
+          Comment: Path host over the site bucket's REST endpoint
+          Runtime: cloudfront-js-2.0
+        FunctionCode: |
+          var ROOT = /^\/[a-z0-9][a-z0-9-]*$/;
+          function query(q) {
+            var parts = [];
+            for (var name in q) {
+              var v = q[name];
+              var list = v.multiValue ? v.multiValue : [v];
+              for (var i = 0; i < list.length; i++)
+                parts.push(list[i].value === '' ? name : name + '=' + list[i].value);
+            }
+            return parts.length ? '?' + parts.join('&') : '';
+          }
+          function handler(event) {
+            var req = event.request;
+            var uri = req.uri;
+            if (ROOT.test(uri)) {
+              return {
+                statusCode: 302,
+                statusDescription: 'Found',
+                headers: { location: { value: uri + '/' + query(req.querystring) } }
+              };
+            }
+            if (uri.charAt(uri.length - 1) === '/') uri += 'index.html';
+            req.uri = uri.replace(/\+/g, '%2B');
+            req.querystring = {};
+            return req;
+          }
+    # The hand-made artifact CDN over its bucket's REST endpoint, attached by
+    # scripts/origin-oac.sh: a literal `+` (build metadata in an APK name) is
+    # sent as `%2B` and the query string is dropped, as on the path host, and
+    # `/` asks for `/index.html`, since `GET /` on the REST endpoint is a
+    # bucket listing.
+    ArtifactRequestFunction:
+      Type: AWS::CloudFront::Function
+      Properties:
+        Name: ${self:service}-${self:custom.stage}-artifact-cdn
+        AutoPublish: true
+        FunctionConfig:
+          Comment: Artifact CDN over the artifact bucket's REST endpoint
+          Runtime: cloudfront-js-2.0
+        FunctionCode: |
+          function handler(event) {
+            var req = event.request;
+            req.uri = req.uri === '/' ? '/index.html' : req.uri.replace(/\+/g, '%2B');
+            req.querystring = {};
+            return req;
+          }
     # Per-site hosts (docs/decisions.md *Site domains*). A site's slug is its
     # S3 prefix and its host label, so the edge needs no lookup: the function
     # checks the Host against the name grammar (`site-domains.ts` SITE_NAME,
@@ -754,17 +833,15 @@ resources:
             SslSupportMethod: sni-only
             MinimumProtocolVersion: TLSv1.2_2021
           Origins:
-            # The bucket is public-read (bucket policy), so no OAC; the REST
-            # endpoint answers 403 for a missing key.
+            # Read through origin access control: the site bucket's policy
+            # lets this distribution in (scripts/origin-oac.sh, before the
+            # deploy that creates or switches it; deploy.sh checks). A
+            # missing key is the REST endpoint's 403.
             - Id: site
               DomainName: ${self:custom.siteBucket}.s3.${aws:region}.amazonaws.com
+              OriginAccessControlId: !GetAtt CdnOriginAccessControl.Id
               S3OriginConfig:
                 OriginAccessIdentity: ""
-              OriginCustomHeaders: !If
-                - HasOriginSecret
-                - - HeaderName: Referer
-                    HeaderValue: ${self:custom.originSecret}
-                - !Ref AWS::NoValue
           DefaultCacheBehavior:
             TargetOriginId: site
             ViewerProtocolPolicy: redirect-to-https

@@ -31,8 +31,8 @@ export interface SiteObjectHeaders {
 
 /**
  * Two buckets and one distribution behind one interface. The staging zip
- * goes to the **private** poster bucket (SSE-KMS, presigned PUT only): the
- * site bucket is a public website endpoint, and a build zip must not be
+ * goes to the **private** poster bucket (SSE-KMS, presigned PUT only): every
+ * object in the site bucket is served by the CDN, and a build zip must not be
  * world-readable before the worker has looked at it. The site bucket holds
  * `{slug}/{path}` and nothing else of ours.
  */

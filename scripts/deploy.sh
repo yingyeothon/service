@@ -6,11 +6,11 @@ set -euo pipefail
 SERVICE="${1:?service}"; STAGE="${2:?stage}"
 export AWS_PROFILE="${AWS_PROFILE:-yyt}"
 cd "$(dirname "$0")/.."
-# A locked site bucket (scripts/origin-lock.sh) requires the per-site host to
-# keep sending the current origin secret: refuse a console deploy that would
-# drop or change it (docs/decisions.md *CDN cost guard* §11).
+# The per-site host reads the site bucket through origin access control:
+# refuse a console deploy while the bucket would not let it in
+# (docs/decisions.md *CDN cost guard* §11, scripts/origin-oac.sh).
 if [[ "${SERVICE}" == "console" ]]; then
-  scripts/origin-lock.sh "${STAGE}" check-deploy
+  scripts/origin-oac.sh "${STAGE}" check-deploy
 fi
 # Services bundle packages from their dist/, so always rebuild them first.
 pnpm -r --filter "./packages/**" build
