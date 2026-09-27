@@ -194,6 +194,40 @@ if (up.status === 201) {
     summary.status === 200 && mine?.latestArtifact?.id === artifact?.id,
     `${summary.status} ${mine?.latestArtifact?.id ?? "-"}`,
   );
+  // The console app's whole list in one request (2026-09-27): the flattened
+  // route embeds the same summary plus the caller's seat in every listed
+  // team. Asked through a bearer, as the app does, then revoked.
+  const tok = await call("/tokens", {
+    method: "POST",
+    headers: as(mate),
+    body: { name: `smoke-catalog-${suffix}` },
+  });
+  check("mint a bearer for the flattened list", tok.status === 201);
+  const bearer = { authorization: `Bearer ${tok.body?.token}` };
+  try {
+    const flat = await call("/catalog/apps?artifacts=summary&platform=bin", {
+      headers: bearer,
+    });
+    const flatMine = flat.body?.apps?.find((a) => a.id === appId);
+    const seatOf = flat.body?.teams?.find((t) => t.id === team.teamId);
+    check(
+      "flattened list embeds the newest artifact and the caller's seat",
+      flat.status === 200 &&
+        flatMine?.latestArtifact?.id === artifact?.id &&
+        seatOf?.role === "member",
+      `${flat.status} ${flatMine?.latestArtifact?.id ?? "-"} ${seatOf?.role ?? "-"}`,
+    );
+    check(
+      "flattened list refuses an unknown artifacts view",
+      (await call("/catalog/apps?artifacts=all", { headers: bearer }))
+        .status === 400,
+    );
+  } finally {
+    await call(`/tokens/${tok.body?.id}`, {
+      method: "DELETE",
+      headers: as(mate),
+    });
+  }
   const again = await call(`/catalog/uploads/${up.body.uploadId}/commit`, {
     method: "POST",
     headers: as(owner),

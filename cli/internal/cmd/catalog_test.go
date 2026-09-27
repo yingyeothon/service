@@ -17,7 +17,12 @@ var sampleApp = map[string]any{
 func TestCatalogAppListAndGet(t *testing.T) {
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /catalog/apps": func(recorded) (int, any) {
-			return 200, map[string]any{"apps": []any{sampleApp}}
+			// `teams` (the caller's seats, 2026-09-27) is for the console
+			// app; the CLI ignores it, which the unchanged golden proves.
+			return 200, map[string]any{
+				"apps":  []any{sampleApp},
+				"teams": []any{map[string]any{"id": "team_1", "name": "acme", "role": "owner"}},
+			}
 		},
 		"GET /catalog/apps/ca_1": func(recorded) (int, any) { return 200, sampleApp },
 	}, nil, []any{sampleApp}, nil))

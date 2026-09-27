@@ -113,4 +113,84 @@ describe("query budget", () => {
     expect(byHash).not.toHaveBeenCalled();
     expect(touch).toHaveBeenCalledTimes(1);
   });
+
+  it("the console app's whole list is one request of seven repository calls", async () => {
+    // Nine statements on MariaDB: `listTeamsForMember` (an `include`) and
+    // `summarizeArtifacts` are two each. Whatever the number of teams.
+    const h = harness();
+    const alice = await h.team("alice", "member", 9101);
+    const bob = await h.team("bob", "member", 9102);
+    await h.seat(bob, bob.teamId, "alice");
+    for (const [u, name] of [
+      [alice, "one"],
+      [bob, "two"],
+    ] as const) {
+      h.clock.tick(1);
+      const a = await h.app(
+        ev("POST", `/projects/${u.prjId}/catalog/apps`, {
+          headers: u.cookie,
+          body: { name, path: `life.yyt.${name}` },
+        }),
+      );
+      expect(a.statusCode, a.body).toBe(201);
+    }
+    const created = await h.app(
+      ev("POST", "/tokens", { headers: alice.cookie, body: { name: "app" } }),
+    );
+    const bearer = {
+      authorization: `Bearer ${parse<{ token: string }>(created).token}`,
+    };
+    // The token's first use touches it; this request is the second.
+    await h.app(ev("GET", "/me", { headers: bearer }));
+
+    // Spies call through; only the counts are read.
+    const spies = [
+      ...(
+        [
+          "findTokenIdentity",
+          "touchApiToken",
+          "findMember",
+          "findMembersByIds",
+          "listMembers",
+        ] as const
+      ).map((n) => [n, vi.spyOn(h.db, n)] as const),
+      ...(
+        [
+          "listTeamsForMember",
+          "findTeam",
+          "findTeamMember",
+          "findProject",
+          "findProjectNamesByIds",
+          "findTeamNamesByIds",
+        ] as const
+      ).map((n) => [n, vi.spyOn(h.teamDb, n)] as const),
+      ...(["listApps", "summarizeArtifacts"] as const).map(
+        (n) => [n, vi.spyOn(h.catalog, n)] as const,
+      ),
+    ];
+
+    const r = await h.app(
+      ev("GET", "/catalog/apps", {
+        headers: bearer,
+        query: { artifacts: "summary", platform: "android" },
+      }),
+    );
+    expect(r.statusCode, r.body).toBe(200);
+    expect(parse<{ apps: AppView[] }>(r).apps).toHaveLength(2);
+    expect(
+      Object.fromEntries(
+        spies
+          .filter(([, s]) => s.mock.calls.length > 0)
+          .map(([n, s]) => [n, s.mock.calls.length]),
+      ),
+    ).toEqual({
+      findTokenIdentity: 1,
+      listTeamsForMember: 1,
+      listApps: 1,
+      findMembersByIds: 1,
+      findProjectNamesByIds: 1,
+      findTeamNamesByIds: 1,
+      summarizeArtifacts: 1,
+    });
+  });
 });

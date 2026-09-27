@@ -223,7 +223,7 @@ export interface CatalogRoutesOptions {
   team: TeamDb;
   access: Pick<
     TeamAccessHelpers,
-    "teamAccess" | "projectAccess" | "projectResource" | "memberTeamIds"
+    "teamAccess" | "projectAccess" | "projectResource" | "memberSeats"
   >;
   crumbs: CrumbResolver;
   history: ResourceHistory;
@@ -256,7 +256,7 @@ export function createCatalogRoutes({
   audit,
   fetchFn,
 }: CatalogRoutesOptions): AnyRoute[] {
-  const { teamAccess, projectAccess, projectResource, memberTeamIds } = access;
+  const { teamAccess, projectAccess, projectResource, memberSeats } = access;
   const versions = createVersionLinker({ team, clock, logger });
 
   function requireStore(): ArtifactStore {
@@ -408,6 +408,37 @@ export function createCatalogRoutes({
     };
   }
 
+  /**
+   * `artifacts=summary`: what a list screen needs per app, in one query
+   * instead of one `/artifacts` round trip per app — the newest artifact
+   * (`platform` narrows) and every distinct `application_id`. Build variants
+   * install under different ids, so an installer must probe every
+   * `application_id` the app ever shipped.
+   */
+  async function withSummary<V extends { id: string }>(
+    apps: V[],
+    platform: CatalogPlatform | undefined,
+  ) {
+    const summary = new Map(
+      (
+        await catalog.summarizeArtifacts(
+          apps.map((a) => a.id),
+          platform ? { platform } : {},
+        )
+      ).map((s) => [
+        s.appId,
+        {
+          latestArtifact: artifactView(s.latest),
+          applicationIds: s.applicationIds,
+        },
+      ]),
+    );
+    return apps.map((app) => ({
+      ...app,
+      ...(summary.get(app.id) ?? { latestArtifact: null, applicationIds: [] }),
+    }));
+  }
+
   const uploadView = (u: CatalogPendingUploadRow) => ({
     id: u.id,
     appId: u.appId,
@@ -423,24 +454,34 @@ export function createCatalogRoutes({
 
   return [
     // ---- apps --------------------------------------------------------------
-    {
+    defineRoute({
       method: "GET",
       path: "/catalog/apps",
       auth: true,
+      query: teamAppsQuery,
       handler: async (ctx) => {
         // Every app of every team the caller is seated in, flattened — the
-        // shape `GET /channels` has, and what `yyt catalog list` answers with
-        // when it is given no team or project. **Permanent**, despite having
-        // once been listed as installer compatibility: the compatibility that
-        // mattered was the *name* resolution `appWith` used to do, not this
-        // list, and removing it would only cost the CLI its no-context listing
-        // (narrowed 2026-09-10, `todo/17` P10).
+        // shape `GET /channels` has, what `yyt catalog list` answers with
+        // when it is given no team or project, and (with `artifacts=summary`)
+        // the console app's whole list in one request: one request per team
+        // put a cold Lambda container on the launch path for each concurrent
+        // one (2026-09-27). `teams` is the caller's seat in each listed team,
+        // because resource views carry no standing of their own. Permanent.
         const id = requireRole(ctx, "member");
-        const teamIds = await memberTeamIds(id);
-        if (teamIds.length === 0) return { apps: [] };
-        return { apps: await appViews(await catalog.listApps({ teamIds })) };
+        const seats = await memberSeats(id);
+        if (seats.length === 0) return { apps: [], teams: [] };
+        const apps = await appViews(
+          await catalog.listApps({ teamIds: seats.map((s) => s.id) }),
+        );
+        return {
+          apps:
+            ctx.query.artifacts === "summary"
+              ? await withSummary(apps, ctx.query.platform)
+              : apps,
+          teams: seats,
+        };
       },
-    },
+    }),
     defineRoute({
       method: "GET",
       path: "/teams/{team}/catalog/apps",
@@ -449,40 +490,14 @@ export function createCatalogRoutes({
       handler: async (ctx) => {
         // Every app of the team across its projects: app names are unique
         // within the team, so this is how the CLI turns a name into an app
-        // (and its project) with only a team context. Permanent, unlike the
+        // (and its project) with only a team context. Permanent, like the
         // flattened `/catalog/apps`.
         const a = await teamAccess(ctx, ctx.params.team!);
-        const rows = await catalog.listApps({ teamId: a.team.id });
-        const apps = await appViews(rows);
-        if (ctx.query.artifacts !== "summary") return { apps };
-        // `artifacts=summary` embeds what a list screen needs per app in one
-        // query instead of one `/artifacts` round trip per app: the newest
-        // artifact (`platform` narrows) and every distinct `application_id`.
-        // Build variants install under different ids, so an installer must
-        // probe every `application_id` the app ever shipped.
-        const summary = new Map(
-          (
-            await catalog.summarizeArtifacts(
-              rows.map((r) => r.id),
-              ctx.query.platform ? { platform: ctx.query.platform } : {},
-            )
-          ).map((s) => [
-            s.appId,
-            {
-              latestArtifact: artifactView(s.latest),
-              applicationIds: s.applicationIds,
-            },
-          ]),
+        const apps = await appViews(
+          await catalog.listApps({ teamId: a.team.id }),
         );
-        return {
-          apps: apps.map((app) => ({
-            ...app,
-            ...(summary.get(app.id) ?? {
-              latestArtifact: null,
-              applicationIds: [],
-            }),
-          })),
-        };
+        if (ctx.query.artifacts !== "summary") return { apps };
+        return { apps: await withSummary(apps, ctx.query.platform) };
       },
     }),
     defineRoute({

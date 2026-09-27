@@ -87,16 +87,10 @@ describe("catalog apps", () => {
         }
       ).apps.map((a) => a.name),
     ).toEqual(["myapp"]);
-    // An admin without a membership has no "mine" list either.
+    // An admin without a membership has no "mine" list either, and no seats.
     expect(
-      (
-        j(
-          await h.app(ev("GET", "/catalog/apps", { headers: admin.cookie })),
-        ) as {
-          apps: unknown[];
-        }
-      ).apps,
-    ).toHaveLength(0);
+      j(await h.app(ev("GET", "/catalog/apps", { headers: admin.cookie }))),
+    ).toEqual({ apps: [], teams: [] });
     // The team route lists across projects for members, 404 for outsiders,
     // 403 for a pending seat (the team is visible to it, the apps are not).
     expect(
@@ -353,8 +347,91 @@ describe("catalog apps", () => {
     // shape and what `yyt catalog list` answers with when given no context.
     const mine = j(
       await h.app(ev("GET", "/catalog/apps", { headers: u.cookie })),
-    ) as { apps: { name: string }[] };
+    ) as { apps: { name: string }[]; teams: unknown[] };
     expect(mine.apps.map((a) => a.name)).toEqual(["tools"]);
+    expect(mine.teams).toEqual([
+      { id: u.teamId, name: "alice-team", role: "owner" },
+    ]);
+  });
+
+  it("the flattened list embeds the summary across teams and carries the caller's seats", async () => {
+    const h = harness();
+    const alice = await h.team("alice", "member", 9101);
+    const bob = await h.team("bob", "member", 9102);
+    const carol = await h.team("carol", "member", 9103);
+    await h.seat(bob, bob.teamId, "alice");
+    const mine = await makeApp(h, alice, "mine");
+    const theirs = await makeApp(h, bob, "theirs");
+    const empty = await makeApp(h, bob, "empty");
+    const hidden = await makeApp(h, carol, "hidden");
+    // alice asks to join carol's team: a pending seat lists neither the team
+    // nor its apps, exactly like `memberTeamIds`.
+    expect(
+      (
+        await h.app(
+          ev("POST", "/teams/join", {
+            headers: alice.cookie,
+            body: { name: "carol-team" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(202);
+    for (const [id, appId, at] of [
+      ["art_a", mine.id, NOW_SEC],
+      ["art_b", theirs.id, NOW_SEC + 1],
+      ["art_h", hidden.id, NOW_SEC + 2],
+    ] as const)
+      await h.catalog.insertArtifact({
+        id,
+        appId,
+        platform: "android",
+        url: `https://dev-d.yyt.life/${id}.apk`,
+        tags: { version: "1", application_id: `life.yyt.${id}` },
+        createdAt: at,
+      });
+    type Listed = {
+      apps: Array<{
+        id: string;
+        teamId: string;
+        teamName: string;
+        latestArtifact?: { id: string } | null;
+        applicationIds?: string[];
+      }>;
+      teams: Array<{ id: string; name: string; role: string }>;
+    };
+    const get = (query?: Record<string, string>) =>
+      h.app(ev("GET", "/catalog/apps", { headers: alice.cookie, query }));
+
+    const r = await get({ artifacts: "summary", platform: "android" });
+    expect(r.statusCode, r.body).toBe(200);
+    const body = j(r) as Listed;
+    const byName = (a: { name: string }, b: { name: string }) =>
+      a.name.localeCompare(b.name);
+    expect([...body.teams].sort(byName)).toEqual([
+      { id: alice.teamId, name: "alice-team", role: "owner" },
+      { id: bob.teamId, name: "bob-team", role: "member" },
+    ]);
+    expect(
+      Object.fromEntries(
+        body.apps.map((a) => [
+          a.id,
+          [a.teamName, a.latestArtifact?.id ?? null, a.applicationIds],
+        ]),
+      ),
+    ).toEqual({
+      [mine.id]: ["alice-team", "art_a", ["life.yyt.art_a"]],
+      [theirs.id]: ["bob-team", "art_b", ["life.yyt.art_b"]],
+      [empty.id]: ["bob-team", null, []],
+    });
+
+    // Without the flag: the same apps without summary keys, the same seats.
+    const plain = j(await get()) as Listed;
+    expect(plain.apps.map((a) => a.id).sort()).toEqual(
+      body.apps.map((a) => a.id).sort(),
+    );
+    expect(plain.apps.every((a) => !("latestArtifact" in a))).toBe(true);
+    expect(plain.teams).toEqual(body.teams);
+    expect((await get({ artifacts: "all" })).statusCode).toBe(400);
   });
 
   it("embeds the newest artifact and application ids per app on request", async () => {

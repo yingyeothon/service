@@ -24,6 +24,7 @@ GET    /teams/{team}/history          team member  ?cursor&limit (cursor = (at, 
 GET|POST /teams/{team}/discussions ; GET|PATCH|DELETE …/{id} ; POST …/{id}/comments ; PATCH|DELETE …/comments/{cid}
 GET|POST /teams/{team}/projects
 GET    /teams/{team}/catalog/apps[?artifacts=summary&platform=]   every app of the team + projectId (permanent)
+GET    /catalog/apps[?artifacts=summary&platform=]                every app of every seated team + `teams` (the caller's seats); the console app's list (permanent)
 GET    /teams/{team}/issues?status=&limit=                        recent issues across the team's projects
 GET|PATCH|DELETE /projects/{prj}      member / member / owner|admin (409 while resources exist, soft-deleted channels count)
 GET|POST /projects/{prj}/versions ; POST …/versions/bump {part} ; GET|PATCH|DELETE …/versions/{ver}
@@ -88,7 +89,10 @@ name and `appWith` resolved one across the caller's teams when exactly one match
 since the SPA has only ever sent ids and the CLI resolves a name itself through `GET /teams/{team}/catalog/apps`.
 `GET /catalog/apps` (flattened over the caller's teams) is **kept and permanent** — it was listed as
 compatibility, but it is `GET /channels`'s shape and is what `yyt catalog list` answers with when given no
-team or project. `GET /catalog/installer/downloads` is permanent
+team or project. Since 2026-09-27 it is also the console app's whole list: `artifacts=summary[&platform=]`
+embeds the newest artifact like the team route, and every response carries `teams: [{id, name, role}]`, the
+caller's seat in each listed team (pending seats list nothing), so a launch is one request whatever the team
+count. `GET /catalog/installer/downloads` is permanent
 and serves `platform_settings.installer_app_id`; with no installer app configured it answers `200 {downloads: []}`,
 and `503` (`details.reason: installer_untrusted`) when the configured app's team is not `admin_locked`.
 

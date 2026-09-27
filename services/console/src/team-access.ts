@@ -40,6 +40,13 @@ import { requireRole, type ConsoleIdentity } from "./identity.js";
 
 export type Standing = TeamRole | "admin";
 
+/** The caller's seat in a team, in `GET /teams`' vocabulary (`role`). */
+export interface Seat {
+  id: string;
+  name: string;
+  role: Exclude<TeamRole, "pending">;
+}
+
 const STANDING_RANK: Record<Standing, number> = {
   pending: 0,
   admin: 1,
@@ -225,15 +232,22 @@ export function createTeamAccess({
   }
 
   /**
-   * Ids of every team the caller is seated in (owner or member — pending does
-   * not count). What "my channels / my apps" means; one query, so list routes
-   * can filter with `teamIds` instead of asking per team.
+   * Every team the caller is seated in (owner or member — pending does not
+   * count), with the seat. What "my channels / my apps" means; one query, so
+   * list routes can filter with `teamIds` instead of asking per team. No
+   * admin override: a seatless admin has no "mine".
    */
+  async function memberSeats(id: ConsoleIdentity): Promise<Seat[]> {
+    return (await team.listTeamsForMember(id.subject)).flatMap((o) =>
+      o.state === "active" && o.role !== "pending"
+        ? [{ id: o.id, name: o.name, role: o.role }]
+        : [],
+    );
+  }
+
+  /** `memberSeats` without the seats. */
   async function memberTeamIds(id: ConsoleIdentity): Promise<string[]> {
-    const rows = await team.listTeamsForMember(id.subject);
-    return rows
-      .filter((o) => o.state === "active" && o.role !== "pending")
-      .map((o) => o.id);
+    return (await memberSeats(id)).map((s) => s.id);
   }
 
   return {
@@ -241,6 +255,7 @@ export function createTeamAccess({
     projectAccess,
     projectResource,
     standingOf,
+    memberSeats,
     memberTeamIds,
   };
 }
