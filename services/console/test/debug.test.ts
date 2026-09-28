@@ -2,6 +2,7 @@
 import {
   createMemoryAssetsDb,
   createMemoryCatalogDb,
+  createMemoryListingsDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
   createMemoryShowsDb,
@@ -36,6 +37,7 @@ describe("debug login hook", () => {
       events: createMemoryEventsDb(),
       shows: createMemoryShowsDb(),
       catalog: createMemoryCatalogDb(),
+      listings: createMemoryListingsDb({ appOf: () => undefined }),
       assets: createMemoryAssetsDb(),
       limits: createMemoryLimitsDb(),
       sites: createMemorySitesDb(),

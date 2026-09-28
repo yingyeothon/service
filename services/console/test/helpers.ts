@@ -3,6 +3,7 @@ import { MockAgent, fetch as undiciFetch } from "undici";
 import {
   createMemoryAssetsDb,
   createMemoryCatalogDb,
+  createMemoryListingsDb,
   createMemoryConsoleDb,
   createMemoryEventsDb,
   createMemoryShowsDb,
@@ -90,6 +91,12 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   });
   const catalog = createMemoryCatalogDb((id) => db.members.has(id), {
     loginOf,
+    // The listing tables cascade from `catalog_apps`.
+    appDeleted: (id) => listings.appDeleted(id),
+  });
+  const listings = createMemoryListingsDb({
+    appOf: (id) => catalog.apps.get(id),
+    memberExists: (id) => db.members.has(id),
   });
   const assets = createMemoryAssetsDb((id) => db.members.has(id), {
     loginOf,
@@ -173,6 +180,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     shows,
     catalog,
+    listings,
     assets,
     sites,
     team: teamDb,
@@ -304,6 +312,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     events,
     shows,
     catalog,
+    listings,
     assets,
     sites,
     siteStore,

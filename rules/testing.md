@@ -54,6 +54,8 @@
 
 ## Ordering and time (2026-08-29)
 
+- **Two history rows written in the same fake second have no order.** `team_history.id` is a ULID from `at * 1000`, so two resource writes without a `clock.tick(1)` between them get ids that differ only in random bits and `listHistory` may return them either way round; a test that asserts the sequence ticks the clock before each write (`listings.test.ts`, 2026-09-28).
+
 - A route test that asserts a list's **default** order must give each row its own second: `created_at` is in seconds, the tiebreak is the random id, and two writes inside one second come back in an order no fixture controls (2026-09-02, `services/console/test/list-order.test.ts` ticks the clock by 1 s per write). Where a tie is intended (case-equal names, equal timestamps), assert the head of the list and compare the tied tail as a sorted set, not a sequence. The ordering itself is the repository contract's business (`packages/console-db/test/*`, fake and testcontainers); the route test pins the key vocabulary, the pass-through and the 400.
 
 - A list ordered by `(created_at, id)` is only deterministic when the id is time-ordered. Poster uploads minted `ep_${randomHex(6)}`, two uploads landed in the same second on dev, and the events smoke flipped between passes — a unit test with the fake clock never sees it. Use `ulid().toLowerCase()` for any id that serves as a sort tiebreaker (posters, comments); keep `randomHex` only for ids that are never ordered.

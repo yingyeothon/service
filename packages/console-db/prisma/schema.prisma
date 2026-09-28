@@ -154,24 +154,26 @@ model audit_log {
 }
 
 model catalog_apps {
-  id                      String                    @id @db.VarChar(64)
-  name                    String                    @db.VarChar(255)
-  path                    String                    @db.VarChar(255)
-  description             String?                   @db.MediumText
-  owner_id                String?                   @db.VarChar(64)
-  slack_hook_url          String?                   @db.VarChar(1024)
-  slack_channel           String?                   @db.VarChar(255)
-  message_template        String?                   @db.MediumText
-  keep_recent_versions    Int                       @default(3)
-  created_at              BigInt
-  updated_at              BigInt
-  team_id                 String                    @db.VarChar(64)
-  project_id              String                    @db.VarChar(64)
-  members                 members?                  @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_owner")
-  teams                   teams                     @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_team_fk")
-  projects                projects                  @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_project_fk")
-  catalog_artifacts       catalog_artifacts[]
-  catalog_pending_uploads catalog_pending_uploads[]
+  id                       String                     @id @db.VarChar(64)
+  name                     String                     @db.VarChar(255)
+  path                     String                     @db.VarChar(255)
+  description              String?                    @db.MediumText
+  owner_id                 String?                    @db.VarChar(64)
+  slack_hook_url           String?                    @db.VarChar(1024)
+  slack_channel            String?                    @db.VarChar(255)
+  message_template         String?                    @db.MediumText
+  keep_recent_versions     Int                        @default(3)
+  created_at               BigInt
+  updated_at               BigInt
+  team_id                  String                     @db.VarChar(64)
+  project_id               String                     @db.VarChar(64)
+  members                  members?                   @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_owner")
+  teams                    teams                      @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_team_fk")
+  projects                 projects                   @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_project_fk")
+  catalog_artifacts        catalog_artifacts[]
+  catalog_pending_uploads  catalog_pending_uploads[]
+  catalog_listing          catalog_listings?
+  catalog_listing_takedown catalog_listing_takedowns?
 
   @@unique([team_id, name], map: "catalog_apps_team_name")
   @@index([owner_id], map: "catalog_apps_owner")
@@ -211,6 +213,63 @@ model catalog_pending_uploads {
   @@index([app_id], map: "catalog_pending_uploads_app")
   @@index([expires_at], map: "catalog_pending_uploads_expires")
   @@index([status], map: "catalog_pending_uploads_status")
+}
+
+/// A published app (docs/decisions.md *Catalog listings*): one row per app,
+/// pointing at the app's newest artifact per platform. Goes with its app.
+model catalog_listings {
+  app_id       String                    @id @db.VarChar(64)
+  title        String                    @db.VarChar(255)
+  summary      String?                   @db.MediumText
+  audience     catalog_listings_audience
+  published_by String?                   @db.VarChar(64)
+  published_at BigInt
+  updated_at   BigInt
+  catalog_apps catalog_apps              @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_listings_app")
+  publisher    members?                  @relation("listing_publisher", fields: [published_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_listings_publisher")
+  tags         catalog_listing_tags[]
+  viewers      catalog_listing_viewers[]
+
+  @@index([published_at], map: "catalog_listings_published")
+  @@index([title], map: "catalog_listings_title")
+  @@index([published_by], map: "catalog_listings_publisher")
+}
+
+model catalog_listing_tags {
+  app_id  String           @db.VarChar(64)
+  tag     String           @db.VarChar(32)
+  listing catalog_listings @relation(fields: [app_id], references: [app_id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_listing_tags_listing")
+
+  @@id([app_id, tag])
+  @@index([tag], map: "catalog_listing_tags_tag")
+}
+
+/// The members a `members` listing names; a row is read, never a seat.
+model catalog_listing_viewers {
+  app_id    String           @db.VarChar(64)
+  member_id String           @db.VarChar(64)
+  added_by  String?          @db.VarChar(64)
+  added_at  BigInt
+  listing   catalog_listings @relation(fields: [app_id], references: [app_id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_listing_viewers_listing")
+  member    members          @relation("listing_viewer", fields: [member_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_listing_viewers_member")
+  adder     members?         @relation("listing_viewer_adder", fields: [added_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_listing_viewers_adder")
+
+  @@id([app_id, member_id])
+  @@index([member_id], map: "catalog_listing_viewers_member")
+  @@index([added_by], map: "catalog_listing_viewers_adder")
+}
+
+/// A platform admin's takedown. Hangs off the app, not the listing, so it
+/// outlives an unpublish and a republish stays refused until an admin clears it.
+model catalog_listing_takedowns {
+  app_id        String       @id @db.VarChar(64)
+  taken_down_by String?      @db.VarChar(64)
+  taken_down_at BigInt
+  reason        String?      @db.VarChar(500)
+  catalog_apps  catalog_apps @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_listing_takedowns_app")
+  admin         members?     @relation("listing_takedown_admin", fields: [taken_down_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_listing_takedowns_admin")
+
+  @@index([taken_down_by], map: "catalog_listing_takedowns_admin")
 }
 
 model channels {
@@ -346,50 +405,54 @@ model event_comments {
 }
 
 model members {
-  id                     String                @id @db.VarChar(64)
-  github_id              BigInt                @unique(map: "members_github_id")
-  github_login           String                @db.VarChar(255)
-  role                   members_role
-  created_at             BigInt
-  approved_at            BigInt?
-  approved_by            String?               @db.VarChar(64)
-  api_tokens             api_tokens[]
-  asset_bundles          asset_bundles[]
-  sites                  sites[]
-  site_deploys           site_deploys[]
-  site_names             site_names[]
-  catalog_apps           catalog_apps[]
-  channels               channels[]
-  events                 events[]
-  event_votes            event_votes[]
-  event_revisions        event_revisions[]
-  event_posters          event_posters[]
-  event_comments         event_comments[]
-  teams_created          teams[]               @relation("team_creator")
-  team_members           team_members[]        @relation("team_member")
-  team_members_decided   team_members[]        @relation("team_decider")
-  team_history_acted     team_history[]        @relation("history_actor")
-  team_history_subject   team_history[]        @relation("history_subject")
-  discussions            discussions[]
-  discussion_comments    discussion_comments[]
-  projects               projects[]
-  project_versions       project_versions[]
-  issues                 issues[]
-  issue_comments         issue_comments[]
-  platform_settings      platform_settings[]
-  shows_created          shows[]               @relation("show_creator")
-  shows_closed           shows[]               @relation("show_closer")
-  show_grants_held       show_grants[]         @relation("show_grant_member")
-  show_grants_given      show_grants[]         @relation("show_grant_granter")
-  show_entries           show_entries[]
-  show_entry_shots       show_entry_shots[]
-  show_entry_likes       show_entry_likes[]
-  show_comments          show_comments[]
-  kv_collections         kv_collections[]
-  leaderboards           leaderboards[]
-  limit_requests_created limit_requests[]      @relation("limit_request_creator")
-  limit_requests_decided limit_requests[]      @relation("limit_request_decider")
-  limit_overrides        limit_overrides[]
+  id                            String                      @id @db.VarChar(64)
+  github_id                     BigInt                      @unique(map: "members_github_id")
+  github_login                  String                      @db.VarChar(255)
+  role                          members_role
+  created_at                    BigInt
+  approved_at                   BigInt?
+  approved_by                   String?                     @db.VarChar(64)
+  api_tokens                    api_tokens[]
+  asset_bundles                 asset_bundles[]
+  sites                         sites[]
+  site_deploys                  site_deploys[]
+  site_names                    site_names[]
+  catalog_apps                  catalog_apps[]
+  channels                      channels[]
+  events                        events[]
+  event_votes                   event_votes[]
+  event_revisions               event_revisions[]
+  event_posters                 event_posters[]
+  event_comments                event_comments[]
+  teams_created                 teams[]                     @relation("team_creator")
+  team_members                  team_members[]              @relation("team_member")
+  team_members_decided          team_members[]              @relation("team_decider")
+  team_history_acted            team_history[]              @relation("history_actor")
+  team_history_subject          team_history[]              @relation("history_subject")
+  discussions                   discussions[]
+  discussion_comments           discussion_comments[]
+  projects                      projects[]
+  project_versions              project_versions[]
+  issues                        issues[]
+  issue_comments                issue_comments[]
+  platform_settings             platform_settings[]
+  shows_created                 shows[]                     @relation("show_creator")
+  shows_closed                  shows[]                     @relation("show_closer")
+  show_grants_held              show_grants[]               @relation("show_grant_member")
+  show_grants_given             show_grants[]               @relation("show_grant_granter")
+  show_entries                  show_entries[]
+  show_entry_shots              show_entry_shots[]
+  show_entry_likes              show_entry_likes[]
+  show_comments                 show_comments[]
+  kv_collections                kv_collections[]
+  leaderboards                  leaderboards[]
+  limit_requests_created        limit_requests[]            @relation("limit_request_creator")
+  limit_requests_decided        limit_requests[]            @relation("limit_request_decider")
+  limit_overrides               limit_overrides[]
+  catalog_listings_published    catalog_listings[]          @relation("listing_publisher")
+  catalog_listing_viewers       catalog_listing_viewers[]   @relation("listing_viewer")
+  catalog_listing_viewers_added catalog_listing_viewers[]   @relation("listing_viewer_adder")
+  catalog_listing_takedowns     catalog_listing_takedowns[] @relation("listing_takedown_admin")
 }
 
 model schema_migrations {
@@ -468,6 +531,11 @@ enum catalog_pending_uploads_status {
   pending
   completed
   failed
+}
+
+enum catalog_listings_audience {
+  public
+  members
 }
 
 model teams {

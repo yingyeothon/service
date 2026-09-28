@@ -30,6 +30,7 @@ import type {
   SitesDb,
   TeamDb,
   StateDb,
+  ListingsDb,
 } from "@yyt/console-db";
 import {
   createHttpHandler,
@@ -71,6 +72,7 @@ import {
   revokeChannelRedis,
 } from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
+import { createListingRoutes } from "./listings.js";
 import { createKvStoreRoutes, deleteChannelKvEntries } from "./kvstore.js";
 import {
   createLeaderboardRoutes,
@@ -117,6 +119,8 @@ export interface ConsoleAppOptions {
   /** The gallery: platform-global, so it hangs off no team and no project. */
   shows: ShowsDb;
   catalog: CatalogDb;
+  /** Published apps (docs/decisions.md *Catalog listings*). */
+  listings: ListingsDb;
   assets: AssetsDb;
   sites: SitesDb;
   /** Teams, projects, versions, issues, discussions and platform settings. */
@@ -216,6 +220,7 @@ export function createConsoleApp({
   events,
   shows,
   catalog,
+  listings,
   assets,
   sites,
   team,
@@ -1203,8 +1208,21 @@ export function createConsoleApp({
     audit,
   });
 
+  const listingRoutes = createListingRoutes({
+    listings,
+    catalog,
+    db,
+    team,
+    access,
+    history,
+    writeSlot: createWriteSlot({ kv, clock }),
+    clock,
+    audit,
+  });
+
   const catalogRoutes = createCatalogRoutes({
     catalog,
+    listings,
     team,
     access,
     crumbs,
@@ -1225,6 +1243,7 @@ export function createConsoleApp({
       ...showRoutes,
       ...teamRoutes,
       ...catalogRoutes,
+      ...listingRoutes,
       ...assetRoutes,
       ...siteRoutes,
       ...kvStoreRoutes,

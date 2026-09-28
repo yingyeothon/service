@@ -13,6 +13,8 @@ import {
   type CatalogDb,
   type CatalogPendingUploadRow,
   type CatalogPlatform,
+  type ListingRow,
+  type ListingsDb,
   type TeamDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
@@ -219,8 +221,39 @@ export function finalObjectKey(
   return `apps/${app.id}/${uploadId}/${filename}`;
 }
 
+/** The artifact as every route shows it; iOS ad-hoc rows carry their OTA links. */
+export function artifactView(a: CatalogArtifactRow) {
+  let ios;
+  if (
+    a.platform === "ios" &&
+    a.tags.distribution_method === IOS_AD_HOC &&
+    a.url
+  ) {
+    try {
+      const manifestUrl = manifestUrlForPackageUrl(a.url);
+      ios = { manifestUrl, installUrl: installUrl(manifestUrl) };
+    } catch {
+      ios = undefined; // legacy row with a non-https URL
+    }
+  }
+  return {
+    id: a.id,
+    appId: a.appId,
+    platform: a.platform,
+    url: a.url,
+    objectKey: a.objectKey,
+    size: a.size,
+    hash: a.hash,
+    tags: a.tags,
+    createdAt: a.createdAt,
+    ...(ios ? { ios } : {}),
+  };
+}
+
 export interface CatalogRoutesOptions {
   catalog: CatalogDb;
+  /** The `members` listings naming the caller join the flattened summary list. */
+  listings: ListingsDb;
   team: TeamDb;
   access: Pick<
     TeamAccessHelpers,
@@ -246,6 +279,7 @@ export interface CatalogRoutesOptions {
 
 export function createCatalogRoutes({
   catalog,
+  listings,
   team,
   access,
   crumbs,
@@ -381,34 +415,6 @@ export function createCatalogRoutes({
     }),
   });
 
-  function artifactView(a: CatalogArtifactRow) {
-    let ios;
-    if (
-      a.platform === "ios" &&
-      a.tags.distribution_method === IOS_AD_HOC &&
-      a.url
-    ) {
-      try {
-        const manifestUrl = manifestUrlForPackageUrl(a.url);
-        ios = { manifestUrl, installUrl: installUrl(manifestUrl) };
-      } catch {
-        ios = undefined; // legacy row with a non-https URL
-      }
-    }
-    return {
-      id: a.id,
-      appId: a.appId,
-      platform: a.platform,
-      url: a.url,
-      objectKey: a.objectKey,
-      size: a.size,
-      hash: a.hash,
-      tags: a.tags,
-      createdAt: a.createdAt,
-      ...(ios ? { ios } : {}),
-    };
-  }
-
   /**
    * `artifacts=summary`: what a list screen needs per app, in one query
    * instead of one `/artifacts` round trip per app — the newest artifact
@@ -473,18 +479,57 @@ export function createCatalogRoutes({
           name: s.name,
           role: s.role,
         }));
-        if (seats.length === 0) return { apps: [], teams };
-        const apps = await appViews(
-          await catalog.listApps({
-            ...listParams(ctx.query),
-            teamIds: seats.map((s) => s.id),
-          }),
-        );
+        if (ctx.query.artifacts !== "summary") {
+          if (seats.length === 0) return { apps: [], teams };
+          return {
+            apps: await appViews(
+              await catalog.listApps({
+                ...listParams(ctx.query),
+                teamIds: seats.map((s) => s.id),
+              }),
+            ),
+            teams,
+          };
+        }
+        // The summary list is the console app's one request, so it also
+        // carries the `members` listings that name the caller (decision #5),
+        // after the team's own apps and marked `access: "listing"`. One
+        // crumb pass and one artifact summary cover both kinds of row.
+        const seatIds = new Set(seats.map((s) => s.id));
+        const own =
+          seats.length === 0
+            ? []
+            : await catalog.listApps({
+                ...listParams(ctx.query),
+                teamIds: [...seatIds],
+              });
+        const named = await namedListingApps(listings, id.subject, seatIds);
+        const crumb = await crumbs([...own, ...named]);
+        const rows = [
+          ...own.map((a) => ({
+            id: a.id,
+            name: a.name,
+            path: a.path,
+            description: a.description,
+            ...crumb(a),
+            createdAt: a.createdAt,
+            updatedAt: a.updatedAt,
+            access: "team" as const,
+          })),
+          ...named.map((a) => ({
+            id: a.id,
+            name: a.name,
+            path: a.path,
+            description: a.description,
+            ...crumb(a),
+            createdAt: a.createdAt,
+            updatedAt: a.updatedAt,
+            access: a.access,
+            listing: a.listing,
+          })),
+        ];
         return {
-          apps:
-            ctx.query.artifacts === "summary"
-              ? await withSummary(apps, ctx.query.platform)
-              : apps,
+          apps: await withSummary(rows, ctx.query.platform),
           teams,
         };
       },
@@ -946,4 +991,60 @@ export async function deleteArtifactObjects(
     });
     return false;
   }
+}
+
+/**
+ * The app-list rows a viewer gains (decision #5): every `members` listing
+ * naming the caller whose team the caller is not seated in, shaped like an
+ * app view with `access: "listing"` so the console app lists it beside the
+ * team's own apps — install and update, nothing else. `catalog.ts` merges
+ * these into `GET /catalog/apps?artifacts=summary`.
+ */
+export async function namedListingApps(
+  listings: ListingsDb,
+  memberId: string,
+  seatTeamIds: ReadonlySet<string>,
+): Promise<
+  Array<{
+    id: string;
+    name: string;
+    path: string;
+    description: string | null;
+    ownerId: null;
+    teamId: string;
+    projectId: null;
+    createdAt: number;
+    updatedAt: number;
+    access: "listing";
+    listing: {
+      title: string;
+      summary: string | null;
+      tags: string[];
+      audience: ListingRow["audience"];
+    };
+  }>
+> {
+  const rows = await listings.listListings({
+    reader: { public: false, memberId },
+  });
+  return rows
+    .filter((r) => !seatTeamIds.has(r.teamId))
+    .map((r) => ({
+      id: r.appId,
+      name: r.appName,
+      path: r.appPath,
+      description: r.summary,
+      ownerId: null,
+      teamId: r.teamId,
+      projectId: null,
+      createdAt: r.publishedAt,
+      updatedAt: r.updatedAt,
+      access: "listing" as const,
+      listing: {
+        title: r.title,
+        summary: r.summary,
+        tags: r.tags,
+        audience: r.audience,
+      },
+    }));
 }

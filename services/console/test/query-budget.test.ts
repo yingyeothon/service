@@ -19,6 +19,7 @@ function countCalls(h: H): () => Record<string, number> {
     db: h.db,
     team: h.teamDb,
     catalog: h.catalog,
+    listings: h.listings,
     assets: h.assets,
     limits: h.limits,
   };
@@ -172,6 +173,9 @@ describe("query budget", () => {
       "db.findTokenIdentity": 1,
       "team.listSeats": 1,
       "catalog.listApps": 1,
+      // The `members` listings naming the caller (docs/decisions.md *Catalog
+      // listings* #5): one query, indexed on the viewer, whatever the seats.
+      "listings.listListings": 1,
       "db.findMembersByIds": 1,
       "team.findProjectNamesByIds": 1,
       "team.findTeamNamesByIds": 1,

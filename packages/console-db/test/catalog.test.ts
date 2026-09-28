@@ -350,6 +350,32 @@ export function catalogContract(
     expect(await db.summarizeArtifacts([])).toEqual([]);
   });
 
+  it("newestArtifactsPerPlatform: one winner per (app, platform), newest first, platform narrow", async () => {
+    const db = await make();
+    await db.insertApp(app("p1"));
+    await db.insertApp(app("p2"));
+    await db.insertApp(app("p3"));
+    await db.insertArtifact(art("q1", "p1", 1));
+    await db.insertArtifact(art("q3", "p1", 3));
+    await db.insertArtifact({ ...art("q2", "p1", 2), platform: "ios" });
+    await db.insertArtifact({ ...art("q5", "p2", 5), platform: "ios" });
+    // Same second as q3: the higher id wins, like `listArtifacts`.
+    await db.insertArtifact(art("q4", "p1", 3));
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+    expect(
+      ids(await db.newestArtifactsPerPlatform(["p1", "p2", "p3"])),
+    ).toEqual(["q5", "q4", "q2"]);
+    expect(
+      ids(
+        await db.newestArtifactsPerPlatform(["p1", "p2"], {
+          platform: "android",
+        }),
+      ),
+    ).toEqual(["q4"]);
+    expect(await db.newestArtifactsPerPlatform([])).toEqual([]);
+    expect(await db.newestArtifactsPerPlatform(["p3"])).toEqual([]);
+  });
+
   it("pending uploads: lifecycle and expiry sweep", async () => {
     const db = await make();
     await db.insertApp(app("a1"));

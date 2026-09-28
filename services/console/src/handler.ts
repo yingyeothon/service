@@ -1,6 +1,7 @@
 import {
   createAssetsDb,
   createCatalogDb,
+  createListingsDb,
   createConsoleDb,
   createEventsDb,
   createShowsDb,
@@ -20,6 +21,7 @@ import {
   type KvStoreDb,
   type LeaderboardDb,
   type LimitsDb,
+  type ListingsDb,
   type SocialDb,
   type ShowsDb,
   type SitesDb,
@@ -108,6 +110,7 @@ interface Deps {
   events: EventsDb;
   shows: ShowsDb;
   catalog: CatalogDb;
+  listings: ListingsDb;
   assets: AssetsDb;
   sites: SitesDb;
   team: TeamDb;
@@ -154,6 +157,7 @@ function getDeps(): Promise<Deps> {
       events: createEventsDb(raw),
       shows: createShowsDb(raw),
       catalog: createCatalogDb(raw),
+      listings: createListingsDb(raw),
       assets: createAssetsDb(raw),
       sites: createSitesDb(raw),
       team: createTeamDb(raw, { newHistoryId: historyId }),
@@ -209,6 +213,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     shows,
     catalog,
+    listings,
     assets,
     sites,
     team,
@@ -291,6 +296,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     events,
     shows,
     catalog,
+    listings,
     assets,
     sites,
     team,

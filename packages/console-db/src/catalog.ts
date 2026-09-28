@@ -233,6 +233,15 @@ export interface CatalogDb {
     appIds: string[],
     filter?: { platform?: CatalogPlatform },
   ): Promise<CatalogArtifactSummary[]>;
+  /**
+   * The newest artifact of every `(app, platform)` pair among `appIds`,
+   * newest first — what a listing publishes (docs/decisions.md *Catalog
+   * listings* #1). One query, like `summarizeArtifacts`.
+   */
+  newestArtifactsPerPlatform(
+    appIds: readonly string[],
+    filter?: { platform?: CatalogPlatform },
+  ): Promise<CatalogArtifactRow[]>;
   /** The app's newest artifact — the build a show entry pins (decision 5). */
   findNewestArtifact(appId: string): Promise<CatalogArtifactRow | undefined>;
   deleteArtifact(id: string): Promise<boolean>;
@@ -534,6 +543,29 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
           byApp.get(r.app_id)?.applicationIds.push(r.application_id);
         return [...byApp.values()];
       }),
+    newestArtifactsPerPlatform: (appIds, filter = {}) =>
+      run(async () => {
+        if (appIds.length === 0) return [];
+        const where = Prisma.sql`app_id in (${Prisma.join([...appIds])})${
+          filter.platform
+            ? Prisma.sql` and platform = ${filter.platform}`
+            : Prisma.empty
+        }`;
+        // Same shape as `summarizeArtifacts`' winner query, partitioned on
+        // the platform too; the join reads the winners by primary key.
+        const rows = await prisma.$queryRaw<
+          Parameters<typeof toArtifact>[0][]
+        >`select a.id, a.app_id, a.platform, a.url, a.object_key, a.size, a.hash,
+                 a.tags_json, a.created_at
+          from (select id, row_number() over (
+                  partition by app_id, platform
+                  order by created_at desc, id desc) as rn
+                from catalog_artifacts where ${where}) t
+          join catalog_artifacts a on a.id = t.id
+          where t.rn = 1
+          order by a.created_at desc, a.id desc`;
+        return rows.map(toArtifact);
+      }),
     findNewestArtifact: (appId) =>
       run(async () => {
         const r = await prisma.catalog_artifacts.findFirst({
@@ -604,7 +636,11 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
 /** In-memory `CatalogDb` with the same contract as the MySQL repository. */
 export function createMemoryCatalogDb(
   memberExists: (id: string) => boolean = () => true,
-  deps: { loginOf?: (id: string) => string } = {},
+  deps: {
+    loginOf?: (id: string) => string;
+    /** The `ON DELETE CASCADE` into the listing tables (`createMemoryListingsDb().appDeleted`). */
+    appDeleted?: (id: string) => void;
+  } = {},
 ): CatalogDb & {
   apps: Map<string, CatalogAppRow>;
   artifacts: Map<string, CatalogArtifactRow>;
@@ -704,6 +740,7 @@ export function createMemoryCatalogDb(
       if (!apps.delete(id)) return false;
       for (const [k, a] of artifacts) if (a.appId === id) artifacts.delete(k);
       for (const [k, u] of uploads) if (u.appId === id) uploads.delete(k);
+      deps.appDeleted?.(id);
       return true;
     },
 
@@ -768,6 +805,23 @@ export function createMemoryCatalogDb(
         if (id && !s.applicationIds.includes(id)) s.applicationIds.push(id);
       }
       return [...byApp.values()];
+    },
+    newestArtifactsPerPlatform: async (appIds, filter = {}) => {
+      const seen = new Set<string>();
+      return [...artifacts.values()]
+        .filter(
+          (a) =>
+            appIds.includes(a.appId) &&
+            (!filter.platform || a.platform === filter.platform),
+        )
+        .sort(artifactsNewestFirst)
+        .filter((a) => {
+          const k = `${a.appId}/${a.platform}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        })
+        .map((a) => ({ ...a, tags: { ...a.tags } }));
     },
     findNewestArtifact: async (appId) => {
       const a = [...artifacts.values()]

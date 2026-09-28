@@ -12,6 +12,7 @@ import {
   createStateDb,
   createSocialDb,
   createLimitsDb,
+  createListingsDb,
   contractPreflight,
   toLobbyChannel,
   toQChannel,
@@ -23,6 +24,7 @@ import {
   assetUsageContract,
 } from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
+import { listingsContract } from "./listings.test.js";
 import { sitesContract } from "./sites.test.js";
 import { eventsContract } from "./events.test.js";
 import { showsContract } from "./shows.test.js";
@@ -118,6 +120,55 @@ describe.skipIf(!dockerAvailable())(
         },
         { login },
       );
+    });
+
+    describe("listings contract", () => {
+      listingsContract(async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        const catalog = createCatalogDb(db.client);
+        return {
+          db: createListingsDb(db.client),
+          seedApp: async (id, teamId = "team_1") => {
+            if (teamId !== "team_1") {
+              await db.client.teams.upsert({
+                where: { id: teamId },
+                update: {},
+                create: {
+                  id: teamId,
+                  name: teamId,
+                  created_by: "m1",
+                  created_at: 1,
+                  updated_at: 1,
+                },
+              });
+              await db.client.projects.upsert({
+                where: { id: `prj_${teamId}` },
+                update: {},
+                create: {
+                  id: `prj_${teamId}`,
+                  team_id: teamId,
+                  name: "game",
+                  created_by: "m1",
+                  created_at: 1,
+                  updated_at: 1,
+                },
+              });
+            }
+            await catalog.insertApp({
+              id,
+              name: `app-${id}`,
+              path: `apps/${id}`,
+              teamId,
+              projectId: teamId === "team_1" ? "prj_1" : `prj_${teamId}`,
+              createdAt: 1,
+            });
+          },
+          deleteApp: async (id) => {
+            await catalog.deleteApp(id);
+          },
+        };
+      });
     });
 
     describe("assets contract", () => {
