@@ -458,7 +458,7 @@ func newChannels(a *App) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Channels))
 			for _, ch := range res.Channels {
-				rows = append(rows, []string{ch.ID, ch.Kind, ch.Name, ch.Status, output.Time(ch.ExpiresAt), crumb(ch.TeamName, ch.ProjectName)})
+				rows = append(rows, []string{ch.ID, ch.Kind, ch.Name, ch.Status, expiryText(ch.ExpiresAt), crumb(ch.TeamName, ch.ProjectName)})
 			}
 			return a.printer().Table([]string{"ID", "KIND", "NAME", "STATUS", "EXPIRES", "TEAM/PROJECT"}, rows)
 		},
@@ -623,7 +623,7 @@ func newChannels(a *App) *cobra.Command {
 			},
 		}
 	}
-	c.AddCommand(postAction("extend <channel>", "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel", "/extend", false))
+	c.AddCommand(postAction("extend <channel>", "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel. A channel with no expiry (`yyt limit request channel.lifetime unlimited`) refuses", "/extend", false))
 	c.AddCommand(postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (owner only); the new value is printed once", "/rotate-secret", true))
 	c.AddCommand(a.channelRedisUserCmd(channelID))
 	c.AddCommand(a.channelDocKeyCmd(channelID))
@@ -936,7 +936,7 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 	pairs := [][2]string{
 		{"id", ch.ID}, {"kind", ch.Kind}, {"name", ch.Name}, {"status", ch.Status},
 		{"project", crumb(ch.TeamName, ch.ProjectName)},
-		{"created", output.Time(ch.CreatedAt)}, {"expires", output.Time(ch.ExpiresAt)},
+		{"created", output.Time(ch.CreatedAt)}, {"expires", expiryText(ch.ExpiresAt)},
 	}
 	if ch.DisabledAt != nil {
 		pairs = append(pairs, [2]string{"disabled", output.Time(*ch.DisabledAt)})
@@ -1023,4 +1023,16 @@ func resolveAuthChannel(cmd *cobra.Command, cc *ctxClient, cfg map[string]any) e
 	}
 	cfg["authChannelId"] = id
 	return nil
+}
+
+// channelNoExpirySec is `expires_at` of a channel granted no expiry
+// (9999-12-31T23:59:59Z, docs/decisions.md "Limit requests" #7).
+const channelNoExpirySec = 253402300799
+
+// expiryText prints a channel's expiry, or `no expiry` for the sentinel.
+func expiryText(sec int64) string {
+	if sec >= channelNoExpirySec {
+		return "no expiry"
+	}
+	return output.Time(sec)
 }

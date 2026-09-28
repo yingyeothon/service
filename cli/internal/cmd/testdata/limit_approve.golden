@@ -1,0 +1,12 @@
+id:        lr_01k
+team:      dooroo
+scope:     bundle ab_1
+limit:     asset.fileBytes
+requested: 64 MiB
+status:    approved
+by:        octo
+created:   2025-08-24T01:46:40Z
+granted:   32 MiB
+decided:   2025-08-24T01:48:20Z
+decidedBy: boss
+reason:    music packs

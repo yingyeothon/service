@@ -1,0 +1,9 @@
+id:        lr_01k
+team:      dooroo
+scope:     bundle ab_1
+limit:     asset.fileBytes
+requested: 64 MiB
+status:    pending
+by:        octo
+created:   2025-08-24T01:46:40Z
+reason:    music packs

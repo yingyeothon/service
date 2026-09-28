@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ type assetBundle struct {
 	UpdatedAt   int64   `json:"updatedAt"`
 	// Only on the detail route.
 	Versions []assetVersion `json:"versions,omitempty"`
+	Files    int            `json:"files,omitempty"`
 	Bytes    int64          `json:"bytes,omitempty"`
 }
 
@@ -115,7 +117,7 @@ func (a *App) printBundle(b assetBundle) error {
 		{"updated", output.Time(b.UpdatedAt)},
 	}
 	if len(b.Versions) > 0 || b.Bytes > 0 {
-		pairs = append(pairs, [2]string{"bytes", fmt.Sprint(b.Bytes)})
+		pairs = append(pairs, [2]string{"files", fmt.Sprint(b.Files)}, [2]string{"bytes", fmt.Sprint(b.Bytes)})
 	}
 	if err := a.printer().KV(pairs); err != nil {
 		return err
@@ -232,16 +234,33 @@ func newAssetFiles(a *App, bundleID bundleResolver) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var res struct {
-				Bundle  string      `json:"bundle"`
-				Version string      `json:"version"`
-				Files   []assetFile `json:"files"`
+			// The route pages by path; a version holds at most the hard
+			// `asset.filesPerVersion` (5,000), so follow every page.
+			var bundle, version string
+			var files []assetFile
+			cursor := ""
+			for {
+				var res struct {
+					Bundle  string      `json:"bundle"`
+					Version string      `json:"version"`
+					Files   []assetFile `json:"files"`
+					Next    *string     `json:"next"`
+				}
+				path := "/assets/bundles/" + api.PathID(id) + "/versions/" + api.PathID(args[1]) + "?limit=1000"
+				if cursor != "" {
+					path += "&cursor=" + url.QueryEscape(cursor)
+				}
+				if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
+					return err
+				}
+				bundle, version = res.Bundle, res.Version
+				files = append(files, res.Files...)
+				if res.Next == nil || *res.Next == "" || *res.Next == cursor {
+					break
+				}
+				cursor = *res.Next
 			}
-			path := "/assets/bundles/" + api.PathID(id) + "/versions/" + api.PathID(args[1])
-			if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
-				return err
-			}
-			return a.printFiles(res.Bundle, res.Version, res.Files)
+			return a.printFiles(bundle, version, files)
 		},
 	}
 }

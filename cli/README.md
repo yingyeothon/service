@@ -171,7 +171,7 @@ yyt catalog installer
 yyt asset list                                         # project context → that project; none → every team you sit in
 yyt asset create <name> [--description d]              # in the project context (explicit)
 yyt asset get|update|delete <bundle>                   # id or name; update: [--name n] [--description d]
-yyt asset files <bundle> <version>                     # public URLs of one version
+yyt asset files <bundle> <version>                     # public URLs of one version (follows every page)
 yyt asset upload <bundle> <version> <file> [--path inside/the/bundle.json]
 yyt asset push <bundle> <version> <dir>                # a whole directory as one version
 yyt asset rm-version <bundle> <version>
@@ -221,9 +221,28 @@ yyt lb clear <lb> <period>                             # empty one bucket (a per
 
 `--period` names a period (`alltime`, `daily`, `weekly`) for the live bucket or a key (`2026-09-10`, `2026-W37`) for a past one; omitted, it is the board's first period at its live key. Keys are computed by the platform in `Asia/Seoul`, never by the client, and `lb top` prints which bucket answered on **stderr** so a piped table stays a table. `rank` is `1 + count(better)`, so equal scores share one. Scores are safe integers; an optional `meta` is JSON text stored byte for byte (at most 1 KiB) and belongs to the accepted score — `best` keeps the better one, `latest` the newest, `sum` adds and saturates.
 
-`push` searches `.yyt.json` from the current directory, not from `<dir>` (the directory is a payload, not a project). It keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`, 2 MB per file and 20 MB per bundle.
+`push` searches `.yyt.json` from the current directory, not from `<dir>` (the directory is a payload, not a project). It keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`. Sizes and counts are limits (`yyt limit list --bundle <bundle>`): 2 MiB per file and 20 MiB per bundle unless a platform admin granted more; a refused upload names the limit to ask for.
 
 Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing/ambiguous context), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending platform member or team seat, or the action needs an owner/admin), `5` not found (including a team/project/resource name that does not resolve), `6` context missing or ambiguous (no request was made).
+
+### Limits
+
+```sh
+yyt limit list [--bundle b | --channel c]              # usage, effective, soft, hard, override; no flag = the project in context
+yyt limit request <limit> <value|unlimited> [--bundle b | --channel c] --reason "…"
+                                                       # sizes in binary units (256MiB, 3GiB); channel.lifetime takes only `unlimited`
+yyt limit requests [--status s] [--cursor c] [--limit n]   # the team's requests, newest first
+yyt limit get <request-id>                             # reason, and once decided the grant and the admin's note
+yyt limit cancel <request-id>                          # the requester or a team owner; counts as a refusal for 7 days
+# platform admin
+yyt limit requests --all [--status pending]            # every team's; stderr says how many are pending
+yyt limit approve <request-id> [--value v] [--note n]
+yyt limit reject <request-id> --note "…"
+yyt limit set <limit> <value|unlimited> [--bundle b | --channel c] [--expires 7d] --note "…"
+yyt limit revoke <limit> [--bundle b | --channel c] --note "…"   # channel.lifetime: back to 28 days
+```
+
+Every limit has a soft value every scope gets and a hard ceiling (`docs/decisions.md` _Limit requests_). One request per limit and scope may be pending, ten per team; a refused or cancelled one blocks the same limit for 7 days (exit 2, the error says when). A channel granted no expiry prints `expires: no expiry`, and `channels extend` refuses it.
 
 ## Smoke helpers
 

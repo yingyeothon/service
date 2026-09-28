@@ -1,0 +1,8 @@
+LIMIT                    USAGE   EFFECTIVE  SOFT   HARD     OVERRIDE
+asset.fileBytes          10 MiB  32 MiB     2 MiB  256 MiB  32 MiB until 2025-08-31T00:26:40Z
+asset.versionsPerBundle  3       50         50     500      -
+
+asset.fileBytes: by boss at 2025-08-24T01:46:40Z: contest
+
+ID      TEAM    SCOPE        LIMIT            REQUESTED  STATUS   BY    CREATED
+lr_01k  dooroo  bundle maps  asset.fileBytes  64 MiB     pending  octo  2025-08-24T01:46:40Z

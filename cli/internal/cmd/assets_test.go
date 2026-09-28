@@ -30,6 +30,7 @@ func TestAssetListAndGet(t *testing.T) {
 		detail[k] = v
 	}
 	detail["bytes"] = 96
+	detail["files"] = 3
 	detail["versions"] = []any{
 		map[string]any{"version": "v2", "files": 1, "bytes": 32, "createdAt": 1756000300},
 		map[string]any{"version": "v1", "files": 2, "bytes": 64, "createdAt": 1756000200},
@@ -199,5 +200,30 @@ func TestResourceDeleteAndUpdateDescription(t *testing.T) {
 	}
 	if len(deleted) != 2 || deleted[0] != "/assets/bundles/ab_1" || deleted[1] != "/sites/st_1" {
 		t.Fatalf("deletes %v", deleted)
+	}
+}
+
+func TestAssetFilesFollowsEveryPage(t *testing.T) {
+	withProject(t)
+	var cursors []string
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /assets/bundles/ab_1/versions/v1": func(r recorded) (int, any) {
+			cursors = append(cursors, r.Path)
+			if !strings.Contains(r.Path, "cursor=") {
+				return 200, map[string]any{"bundle": "dungeon-maps", "version": "v1", "files": []any{assetFileJSON("v1", "a.json", 1)}, "next": "a.json"}
+			}
+			return 200, map[string]any{"bundle": "dungeon-maps", "version": "v1", "files": []any{assetFileJSON("v1", "b.json", 2)}, "next": nil}
+		},
+	}, nil, nil, []any{sampleBundle}))
+	out, _, err := run(t, f, "asset", "files", "dungeon-maps", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "a.json") || !strings.Contains(out, "b.json") {
+		t.Errorf("files = %s", out)
+	}
+	want := []string{"/assets/bundles/ab_1/versions/v1?limit=1000", "/assets/bundles/ab_1/versions/v1?limit=1000&cursor=a.json"}
+	if strings.Join(cursors, " ") != strings.Join(want, " ") {
+		t.Errorf("pages = %v", cursors)
 	}
 }
