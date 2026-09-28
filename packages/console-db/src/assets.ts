@@ -9,6 +9,7 @@ import {
   type ListOrder,
   type ResourceSortKey,
 } from "./list.js";
+import { Prisma } from "./generated/prisma/client.js";
 import { num, run, type PrismaClient } from "./prisma.js";
 
 export const BUNDLE_SORT_KEYS = RESOURCE_SORT_KEYS;
@@ -21,6 +22,21 @@ export const ASSET_UPLOAD_STATUSES = [
 ] as const;
 export type AssetUploadStatus = (typeof ASSET_UPLOAD_STATUSES)[number];
 
+/**
+ * Fixed at creation (docs/decisions.md *Live and encrypted asset bundles* #1):
+ * a versioned bundle keys every file under a version, a live bundle has one
+ * namespace whose rows store `version = ''`.
+ */
+export const ASSET_BUNDLE_MODES = ["versioned", "live"] as const;
+export type AssetBundleMode = (typeof ASSET_BUNDLE_MODES)[number];
+/** The version every row of a live bundle stores. */
+export const LIVE_VERSION = "";
+/**
+ * How long a deleted immutable path of a live bundle takes only its old bytes
+ * again: a year of edge TTL (`max-age=31536000`) plus margin.
+ */
+export const ASSET_TOMBSTONE_SEC = 400 * 86400;
+
 export interface AssetBundleRow {
   id: string;
   /** Unique within the team (case-insensitive). Legacy rows' object keys still carry it. */
@@ -31,6 +47,7 @@ export interface AssetBundleRow {
   /** Null only for rows created before migration `6_org_project` was mapped. */
   teamId: string | null;
   projectId: string | null;
+  mode: AssetBundleMode;
   createdAt: number;
   updatedAt: number;
 }
@@ -43,6 +60,8 @@ export interface AssetBundleInput {
   /** The project must belong to the team; the writer asserts it. */
   teamId: string;
   projectId: string;
+  /** Default `versioned`. */
+  mode?: AssetBundleMode;
   createdAt: number;
 }
 
@@ -63,7 +82,16 @@ export interface AssetFileRow {
   contentType: string;
   size: number;
   hash: string | null;
+  /** When these bytes were committed (a mutable replacement moves it). */
   createdAt: number;
+  /** Live bundles only: served `no-cache` and replaceable in place. */
+  mutable: boolean;
+  /** Hex SHA-256 of the bytes; always set in a live bundle. */
+  sha256: string | null;
+  /** The committed object's ETag, the `If-Match` of a mutable file's next copy. */
+  etag: string | null;
+  /** When a sync first found the file missing locally; `null` = fresh. */
+  staleSince: number | null;
 }
 
 export interface AssetFileInput {
@@ -76,7 +104,26 @@ export interface AssetFileInput {
   contentType: string;
   size: number;
   hash?: string | null;
+  mutable?: boolean;
+  sha256?: string | null;
+  etag?: string | null;
   createdAt: number;
+}
+
+/** A mutable file's next bytes (`replaceFile`). */
+export interface AssetFileReplace {
+  sha256: string;
+  etag: string;
+  size: number;
+  contentType: string;
+  hash: string | null;
+  at: number;
+}
+
+export interface AssetTombstone {
+  path: string;
+  sha256: string;
+  deletedAt: number;
 }
 
 export interface AssetUploadRow {
@@ -89,7 +136,16 @@ export interface AssetUploadRow {
   status: AssetUploadStatus;
   objectKey: string | null;
   etag: string | null;
+  /**
+   * The file row this upload committed. On a `failed` upload it names a
+   * claim whose object could not be checked (a 403, an S3 error): the sweep
+   * settles it (`listUnsettledUploads`) instead of dropping the upload.
+   */
   fileId: string | null;
+  sha256: string | null;
+  mutable: boolean;
+  /** The sha256 a mutable replacement expects to replace. */
+  ifSha256: string | null;
   createdAt: number;
   expiresAt: number;
 }
@@ -110,7 +166,7 @@ export interface ProjectAssetUsage {
   bundles: number;
   files: number;
   bytes: number;
-  /** Bytes reserved by pending, unexpired uploads (minus `exceptUploadId`). */
+  /** Bytes reserved by pending, unexpired uploads (minus `exceptUploadIds`). */
   inFlightBytes: number;
 }
 
@@ -124,6 +180,9 @@ export interface AssetUploadInput {
   path: string;
   contentType: string;
   size: number;
+  sha256?: string | null;
+  mutable?: boolean;
+  ifSha256?: string | null;
   createdAt: number;
   expiresAt: number;
 }
@@ -202,12 +261,12 @@ export interface AssetsDb {
   /**
    * The project's bundle count, committed file rows and bytes, and the bytes
    * of every pending, unexpired upload into its bundles except
-   * `exceptUploadId` (a commit must not count its own reservation).
+   * `exceptUploadIds` (a commit must not count its own reservations).
    */
   projectAssetUsage(
     projectId: string,
     now: number,
-    exceptUploadId?: string,
+    exceptUploadIds?: readonly string[],
   ): Promise<ProjectAssetUsage>;
   /**
    * The bundle's newest version, by the time its first file was committed —
@@ -220,9 +279,84 @@ export interface AssetsDb {
   deleteFile(id: string): Promise<boolean>;
   /** Drops every file row of one version; returns how many. */
   deleteVersion(bundleId: string, version: string): Promise<number>;
+  /** The rows at these paths of one version, case-sensitively, path ascending. */
+  findFilesByPaths(
+    bundleId: string,
+    version: string,
+    paths: readonly string[],
+  ): Promise<AssetFileRow[]>;
+  /**
+   * The committed file stored at exactly this object key: a lobby `mapUrl`
+   * names its file through the key, which legacy rows derive from the name.
+   */
+  findFileByObjectKey(objectKey: string): Promise<AssetFileRow | undefined>;
+  /** Records the committed object's ETag once its copy landed. */
+  setFileEtag(id: string, etag: string | null): Promise<void>;
+  /**
+   * A mutable file's new bytes, written only while the row still holds
+   * `expectEtag` (compare-and-set); clears the stale mark. `false` when the
+   * row moved on or is gone.
+   */
+  replaceFile(
+    id: string,
+    expectEtag: string,
+    next: AssetFileReplace,
+  ): Promise<boolean>;
+  /**
+   * Marks (`at`) or clears (`null`) `stale_since` on these paths of a live
+   * bundle; a mark never moves an earlier one. Returns the rows changed.
+   */
+  setStale(
+    bundleId: string,
+    paths: readonly string[],
+    at: number | null,
+  ): Promise<number>;
+  /** Deletes these rows; returns how many went. */
+  deleteFiles(ids: readonly string[]): Promise<number>;
+  /**
+   * Up to `limit` rows by id ascending after `afterId`, `version` narrowing:
+   * what a batched delete walks, a page at a time.
+   */
+  listFileBatch(
+    bundleId: string,
+    o: { version?: string; afterId?: string; limit: number },
+  ): Promise<AssetFileRow[]>;
+  /**
+   * The distinct `assets/{x}/` prefixes the bundle's objects sit under (or
+   * `assets/{x}/{version}/` with `version`): `{x}` is the id since
+   * 2026-08-26 and the name before, so a reference check needs both.
+   */
+  objectKeyPrefixes(bundleId: string, version?: string): Promise<string[]>;
+  /**
+   * Records that these bytes left these paths at `at`. Deleting the same
+   * bytes again moves the time forward (the 400 days restart).
+   */
+  insertTombstones(
+    bundleId: string,
+    rows: readonly { path: string; sha256: string }[],
+    at: number,
+  ): Promise<void>;
+  /** Tombstones at these paths deleted at or after `since`. */
+  findTombstones(
+    bundleId: string,
+    paths: readonly string[],
+    since: number,
+  ): Promise<AssetTombstone[]>;
+  /** Deletes up to `limit` tombstones deleted before `before`, oldest first. */
+  purgeTombstones(before: number, limit: number): Promise<number>;
 
   insertUpload(u: AssetUploadInput): Promise<void>;
+  /** A batch presign's reservations, in one statement. */
+  insertUploads(rows: readonly AssetUploadInput[]): Promise<void>;
   findUpload(id: string): Promise<AssetUploadRow | undefined>;
+  deleteUpload(id: string): Promise<boolean>;
+  /**
+   * Uploads that name a claim (`file_id`) but never completed, oldest first:
+   * `failed` ones (the commit could not tell whether its object landed) and
+   * `pending` ones past `expires_at` (the commit died after its claim). The
+   * sweep checks the key and either drops the claim or keeps it.
+   */
+  listUnsettledUploads(now: number, limit: number): Promise<AssetUploadRow[]>;
   /**
    * Still-pending, not-yet-expired uploads of one bundle. Quotas must count
    * these: presigns are granted before anything is committed, so a caller that
@@ -232,7 +366,10 @@ export interface AssetsDb {
   /** One query for many ids — the sweep resolves a whole listing page at once. */
   listUploadsByIds(ids: string[]): Promise<AssetUploadRow[]>;
   updateUpload(id: string, patch: AssetUploadPatch): Promise<boolean>;
-  /** Hard-deletes rows whose `expires_at` passed and are not completed. */
+  /**
+   * Hard-deletes rows whose `expires_at` passed and are not completed, except
+   * the ones naming a claim (`file_id`), which the sweep settles first.
+   */
   deleteExpiredUploads(now: number): Promise<number>;
 }
 
@@ -243,6 +380,7 @@ type BundleModel = {
   owner_id: string | null;
   team_id: string | null;
   project_id: string | null;
+  mode: string;
   created_at: bigint | number;
   updated_at: bigint | number;
 };
@@ -258,6 +396,10 @@ type FileModel = {
   size: bigint | number;
   hash: string | null;
   created_at: bigint | number;
+  mutable: boolean;
+  sha256: string | null;
+  etag: string | null;
+  stale_since: bigint | number | null;
 };
 
 type UploadModel = {
@@ -271,6 +413,9 @@ type UploadModel = {
   object_key: string | null;
   etag: string | null;
   file_id: string | null;
+  sha256: string | null;
+  mutable: boolean;
+  if_sha256: string | null;
   created_at: bigint | number;
   expires_at: bigint | number;
 };
@@ -282,6 +427,7 @@ const toBundle = (r: BundleModel): AssetBundleRow => ({
   ownerId: r.owner_id,
   teamId: r.team_id,
   projectId: r.project_id,
+  mode: r.mode as AssetBundleMode,
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
 });
@@ -297,6 +443,10 @@ const toFile = (r: FileModel): AssetFileRow => ({
   size: num(r.size),
   hash: r.hash,
   createdAt: num(r.created_at),
+  mutable: r.mutable,
+  sha256: r.sha256,
+  etag: r.etag,
+  staleSince: r.stale_since === null ? null : num(r.stale_since),
 });
 
 const toUpload = (r: UploadModel): AssetUploadRow => ({
@@ -310,9 +460,18 @@ const toUpload = (r: UploadModel): AssetUploadRow => ({
   objectKey: r.object_key,
   etag: r.etag,
   fileId: r.file_id,
+  sha256: r.sha256,
+  mutable: r.mutable,
+  ifSha256: r.if_sha256,
   createdAt: num(r.created_at),
   expiresAt: num(r.expires_at),
 });
+
+/** `assets/{x}/` or `assets/{x}/{version}/` of one object key; `null` if shorter. */
+export function objectKeyPrefix(key: string, depth: 2 | 3): string | null {
+  const parts = key.split("/");
+  return parts.length > depth ? `${parts.slice(0, depth).join("/")}/` : null;
+}
 
 const filePageLimit = (n: number | undefined) =>
   Math.min(
@@ -332,6 +491,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             owner_id: b.ownerId ?? null,
             team_id: b.teamId,
             project_id: b.projectId,
+            mode: b.mode ?? "versioned",
             created_at: b.createdAt,
             updated_at: b.createdAt,
           },
@@ -408,6 +568,9 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             content_type: f.contentType,
             size: f.size,
             hash: f.hash ?? null,
+            mutable: f.mutable ?? false,
+            sha256: f.sha256 ?? null,
+            etag: f.etag ?? null,
             created_at: f.createdAt,
           },
         });
@@ -472,7 +635,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
           createdAt: num(r._min.created_at ?? 0),
         }));
       }),
-    projectAssetUsage: (projectId, now, exceptUploadId) =>
+    projectAssetUsage: (projectId, now, exceptUploadIds = []) =>
       run(async () => {
         const bundles = await prisma.asset_bundles.count({
           where: { project_id: projectId },
@@ -488,7 +651,11 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
           select cast(coalesce(sum(u.size), 0) as signed) as bytes
           from asset_bundles b join asset_pending_uploads u on u.bundle_id = b.id
           where b.project_id = ${projectId} and u.status = 'pending'
-            and u.expires_at >= ${now} and u.id <> ${exceptUploadId ?? ""}`;
+            and u.expires_at >= ${now}${
+              exceptUploadIds.length > 0
+                ? Prisma.sql` and u.id not in (${Prisma.join([...exceptUploadIds])})`
+                : Prisma.empty
+            }`;
         return {
           bundles,
           files: num(f?.files ?? 0),
@@ -524,7 +691,162 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         });
         return r.count;
       }),
+    findFilesByPaths: (bundleId, version, paths) =>
+      run(async () =>
+        paths.length === 0
+          ? []
+          : (
+              await prisma.asset_files.findMany({
+                where: {
+                  bundle_id: bundleId,
+                  version,
+                  path: { in: [...paths] },
+                },
+                orderBy: { path: "asc" },
+              })
+            ).map(toFile),
+      ),
+    findFileByObjectKey: (objectKey) =>
+      run(async () => {
+        // `object_key` is `utf8mb4_bin` (`4_assets_binary_paths`), so the
+        // equality is exact, like the S3 key it names.
+        const r = await prisma.asset_files.findFirst({
+          where: { object_key: objectKey },
+        });
+        return r ? toFile(r) : undefined;
+      }),
+    setFileEtag: (id, etag) =>
+      run(async () => {
+        await prisma.asset_files.updateMany({ where: { id }, data: { etag } });
+      }),
+    replaceFile: (id, expectEtag, next) =>
+      run(async () => {
+        const r = await prisma.asset_files.updateMany({
+          where: { id, etag: expectEtag, mutable: true },
+          data: {
+            sha256: next.sha256,
+            etag: next.etag,
+            size: next.size,
+            content_type: next.contentType,
+            hash: next.hash,
+            created_at: next.at,
+            stale_since: null,
+          },
+        });
+        return r.count > 0;
+      }),
+    setStale: (bundleId, paths, at) =>
+      run(async () => {
+        if (paths.length === 0) return 0;
+        const r = await prisma.asset_files.updateMany({
+          where: {
+            bundle_id: bundleId,
+            version: LIVE_VERSION,
+            path: { in: [...paths] },
+            stale_since: at === null ? { not: null } : null,
+          },
+          data: { stale_since: at },
+        });
+        return r.count;
+      }),
+    deleteFiles: (ids) =>
+      run(async () => {
+        if (ids.length === 0) return 0;
+        const r = await prisma.asset_files.deleteMany({
+          where: { id: { in: [...ids] } },
+        });
+        return r.count;
+      }),
+    listFileBatch: (bundleId, o) =>
+      run(async () =>
+        (
+          await prisma.asset_files.findMany({
+            where: {
+              bundle_id: bundleId,
+              ...(o.version !== undefined ? { version: o.version } : {}),
+              ...(o.afterId !== undefined ? { id: { gt: o.afterId } } : {}),
+            },
+            orderBy: { id: "asc" },
+            take: Math.max(1, o.limit),
+          })
+        ).map(toFile),
+      ),
+    objectKeyPrefixes: (bundleId, version) =>
+      run(async () => {
+        const depth = version === undefined ? 2 : 3;
+        const rows = await prisma.$queryRaw<{ p: string }[]>`
+          select distinct cast(substring_index(object_key, '/', ${Prisma.raw(String(depth))}) as char(1024)) as p
+          from asset_files
+          where bundle_id = ${bundleId}${
+            version === undefined
+              ? Prisma.empty
+              : Prisma.sql` and version = ${version}`
+          }`;
+        return rows
+          .map((r) => objectKeyPrefix(`${r.p}/x`, depth))
+          .filter((p): p is string => p !== null)
+          .sort();
+      }),
+    insertTombstones: (bundleId, rows, at) =>
+      run(async () => {
+        if (rows.length === 0) return;
+        const values = Prisma.join(
+          rows.map(
+            (t) => Prisma.sql`(${bundleId}, ${t.path}, ${t.sha256}, ${at})`,
+          ),
+        );
+        await prisma.$executeRaw`
+          insert into asset_tombstones (bundle_id, path, sha256, deleted_at)
+          values ${values}
+          on duplicate key update deleted_at = greatest(deleted_at, values(deleted_at))`;
+      }),
+    findTombstones: (bundleId, paths, since) =>
+      run(async () =>
+        paths.length === 0
+          ? []
+          : (
+              await prisma.asset_tombstones.findMany({
+                where: {
+                  bundle_id: bundleId,
+                  path: { in: [...paths] },
+                  deleted_at: { gte: since },
+                },
+                orderBy: [{ path: "asc" }, { sha256: "asc" }],
+              })
+            ).map((t) => ({
+              path: t.path,
+              sha256: t.sha256,
+              deletedAt: num(t.deleted_at),
+            })),
+      ),
+    purgeTombstones: (before, limit) =>
+      run(async () => {
+        if (!Number.isInteger(limit) || limit < 1)
+          throw new AppError("bad_request", "limit must be a positive integer");
+        return prisma.$executeRaw`
+          delete from asset_tombstones where deleted_at < ${before}
+          order by deleted_at limit ${limit}`;
+      }),
 
+    insertUploads: (rows) =>
+      run(async () => {
+        if (rows.length === 0) return;
+        await prisma.asset_pending_uploads.createMany({
+          data: rows.map((u) => ({
+            id: u.id,
+            bundle_id: u.bundleId,
+            version: u.version,
+            path: u.path,
+            content_type: u.contentType,
+            size: u.size,
+            sha256: u.sha256 ?? null,
+            mutable: u.mutable ?? false,
+            if_sha256: u.ifSha256 ?? null,
+            created_at: u.createdAt,
+            expires_at: u.expiresAt,
+          })),
+        });
+      }),
     insertUpload: (u) =>
       run(async () => {
         await prisma.asset_pending_uploads.create({
@@ -535,6 +857,9 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             path: u.path,
             content_type: u.contentType,
             size: u.size,
+            sha256: u.sha256 ?? null,
+            mutable: u.mutable ?? false,
+            if_sha256: u.ifSha256 ?? null,
             created_at: u.createdAt,
             expires_at: u.expiresAt,
           },
@@ -547,6 +872,29 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         });
         return r ? toUpload(r) : undefined;
       }),
+    deleteUpload: (id) =>
+      run(async () => {
+        const r = await prisma.asset_pending_uploads.deleteMany({
+          where: { id },
+        });
+        return r.count > 0;
+      }),
+    listUnsettledUploads: (now, limit) =>
+      run(async () =>
+        (
+          await prisma.asset_pending_uploads.findMany({
+            where: {
+              file_id: { not: null },
+              OR: [
+                { status: "failed" },
+                { status: "pending", expires_at: { lt: now } },
+              ],
+            },
+            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+            take: Math.max(1, limit),
+          })
+        ).map(toUpload),
+      ),
     listInFlightUploads: (bundleId, now) =>
       run(async () => {
         const rows = await prisma.asset_pending_uploads.findMany({
@@ -587,7 +935,11 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
     deleteExpiredUploads: (now) =>
       run(async () => {
         const r = await prisma.asset_pending_uploads.deleteMany({
-          where: { expires_at: { lt: now }, status: { not: "completed" } },
+          where: {
+            expires_at: { lt: now },
+            status: { not: "completed" },
+            file_id: null,
+          },
         });
         return r.count;
       }),
@@ -606,10 +958,14 @@ export function createMemoryAssetsDb(
   bundles: Map<string, AssetBundleRow>;
   files: Map<string, AssetFileRow>;
   uploads: Map<string, AssetUploadRow>;
+  tombstones: Map<string, AssetTombstone & { bundleId: string }>;
 } {
   const bundles = new Map<string, AssetBundleRow>();
   const files = new Map<string, AssetFileRow>();
   const uploads = new Map<string, AssetUploadRow>();
+  const tombstones = new Map<string, AssetTombstone & { bundleId: string }>();
+  const tombKey = (bundleId: string, path: string, sha256: string) =>
+    JSON.stringify([bundleId, path, sha256]);
   const conflict = () => new AppError("conflict", "duplicate key");
   const fk = () => new AppError("unavailable", "database error");
   /**
@@ -633,10 +989,37 @@ export function createMemoryAssetsDb(
     [...bundles.values()].some(
       (x) => x.id !== exceptId && x.teamId === teamId && eqI(x.name, name),
     );
-  return {
+  const insertOne = (u: AssetUploadInput) => {
+    if (!bundles.has(u.bundleId)) throw fk();
+    if (uploads.has(u.id)) throw conflict();
+    uploads.set(u.id, {
+      id: u.id,
+      bundleId: u.bundleId,
+      version: u.version,
+      path: u.path,
+      contentType: u.contentType,
+      size: u.size,
+      sha256: u.sha256 ?? null,
+      mutable: u.mutable ?? false,
+      ifSha256: u.ifSha256 ?? null,
+      createdAt: u.createdAt,
+      expiresAt: u.expiresAt,
+      status: "pending",
+      objectKey: null,
+      etag: null,
+      fileId: null,
+    });
+  };
+  const self: AssetsDb & {
+    bundles: Map<string, AssetBundleRow>;
+    files: Map<string, AssetFileRow>;
+    uploads: Map<string, AssetUploadRow>;
+    tombstones: Map<string, AssetTombstone & { bundleId: string }>;
+  } = {
     bundles,
     files,
     uploads,
+    tombstones,
     insertBundle: async (b) => {
       checkOwner(b.ownerId);
       if (bundles.has(b.id) || nameTaken(b.teamId, b.name)) throw conflict();
@@ -647,6 +1030,7 @@ export function createMemoryAssetsDb(
         ownerId: b.ownerId ?? null,
         teamId: b.teamId,
         projectId: b.projectId,
+        mode: b.mode ?? "versioned",
         createdAt: b.createdAt,
         updatedAt: b.createdAt,
       });
@@ -707,6 +1091,8 @@ export function createMemoryAssetsDb(
       for (const [k, f] of [...files]) if (f.bundleId === id) files.delete(k);
       for (const [k, u] of [...uploads])
         if (u.bundleId === id) uploads.delete(k);
+      for (const [k, t] of [...tombstones])
+        if (t.bundleId === id) tombstones.delete(k);
       deps.bundleDeleted?.(id);
       return true;
     },
@@ -734,6 +1120,10 @@ export function createMemoryAssetsDb(
         size: f.size,
         hash: f.hash ?? null,
         createdAt: f.createdAt,
+        mutable: f.mutable ?? false,
+        sha256: f.sha256 ?? null,
+        etag: f.etag ?? null,
+        staleSince: null,
       });
     },
     findFile: async (id) => {
@@ -796,7 +1186,7 @@ export function createMemoryAssetsDb(
       }
       return [...by.values()].sort((a, b) => cmp(a.version, b.version));
     },
-    projectAssetUsage: async (projectId, now, exceptUploadId) => {
+    projectAssetUsage: async (projectId, now, exceptUploadIds = []) => {
       const ids = new Set(
         [...bundles.values()]
           .filter((b) => b.projectId === projectId)
@@ -815,7 +1205,7 @@ export function createMemoryAssetsDb(
           ids.has(u.bundleId) &&
           u.status === "pending" &&
           u.expiresAt >= now &&
-          u.id !== exceptUploadId
+          !exceptUploadIds.includes(u.id)
         )
           inFlightBytes += u.size;
       return { bundles: ids.size, files: n, bytes, inFlightBytes };
@@ -839,22 +1229,144 @@ export function createMemoryAssetsDb(
         }
       return n;
     },
-
-    insertUpload: async (u) => {
-      if (!bundles.has(u.bundleId)) throw fk();
-      if (uploads.has(u.id)) throw conflict();
-      uploads.set(u.id, {
-        ...u,
-        status: "pending",
-        objectKey: null,
-        etag: null,
-        fileId: null,
-      });
+    findFilesByPaths: async (bundleId, version, paths) => {
+      const want = new Set(paths);
+      return [...files.values()]
+        .filter(
+          (f) =>
+            f.bundleId === bundleId &&
+            f.version === version &&
+            want.has(f.path),
+        )
+        .sort((a, b) => cmp(a.path, b.path))
+        .map((f) => ({ ...f }));
     },
+    findFileByObjectKey: async (objectKey) => {
+      const f = [...files.values()].find((x) => x.objectKey === objectKey);
+      return f && { ...f };
+    },
+    setFileEtag: async (id, etag) => {
+      const f = files.get(id);
+      if (f) files.set(id, { ...f, etag });
+    },
+    replaceFile: async (id, expectEtag, next) => {
+      const f = files.get(id);
+      if (!f || !f.mutable || f.etag !== expectEtag) return false;
+      files.set(id, {
+        ...f,
+        sha256: next.sha256,
+        etag: next.etag,
+        size: next.size,
+        contentType: next.contentType,
+        hash: next.hash,
+        createdAt: next.at,
+        staleSince: null,
+      });
+      return true;
+    },
+    setStale: async (bundleId, paths, at) => {
+      const want = new Set(paths);
+      let n = 0;
+      for (const [k, f] of files) {
+        if (
+          f.bundleId !== bundleId ||
+          f.version !== LIVE_VERSION ||
+          !want.has(f.path) ||
+          (at === null) === (f.staleSince === null)
+        )
+          continue;
+        files.set(k, { ...f, staleSince: at });
+        n++;
+      }
+      return n;
+    },
+    deleteFiles: async (ids) => {
+      let n = 0;
+      for (const id of new Set(ids)) if (files.delete(id)) n++;
+      return n;
+    },
+    listFileBatch: async (bundleId, o) =>
+      [...files.values()]
+        .filter(
+          (f) =>
+            f.bundleId === bundleId &&
+            (o.version === undefined || f.version === o.version) &&
+            (o.afterId === undefined || cmp(f.id, o.afterId) > 0),
+        )
+        .sort(byId)
+        .slice(0, Math.max(1, o.limit))
+        .map((f) => ({ ...f })),
+    objectKeyPrefixes: async (bundleId, version) => {
+      const out = new Set<string>();
+      for (const f of files.values()) {
+        if (f.bundleId !== bundleId) continue;
+        if (version !== undefined && f.version !== version) continue;
+        const p = objectKeyPrefix(f.objectKey, version === undefined ? 2 : 3);
+        if (p) out.add(p);
+      }
+      return [...out].sort();
+    },
+    insertTombstones: async (bundleId, rows, at) => {
+      if (rows.length > 0 && !bundles.has(bundleId)) throw fk();
+      for (const t of rows) {
+        const k = tombKey(bundleId, t.path, t.sha256);
+        const prev = tombstones.get(k);
+        tombstones.set(k, {
+          bundleId,
+          path: t.path,
+          sha256: t.sha256,
+          deletedAt: Math.max(prev?.deletedAt ?? at, at),
+        });
+      }
+    },
+    findTombstones: async (bundleId, paths, since) => {
+      const want = new Set(paths);
+      return [...tombstones.values()]
+        .filter(
+          (t) =>
+            t.bundleId === bundleId && want.has(t.path) && t.deletedAt >= since,
+        )
+        .sort((a, b) => cmp(a.path, b.path) || cmp(a.sha256, b.sha256))
+        .map(({ path, sha256, deletedAt }) => ({ path, sha256, deletedAt }));
+    },
+    purgeTombstones: async (before, limit) => {
+      if (!Number.isInteger(limit) || limit < 1)
+        throw new AppError("bad_request", "limit must be a positive integer");
+      const old = [...tombstones.entries()]
+        .filter(([, t]) => t.deletedAt < before)
+        .sort(([, a], [, b]) => a.deletedAt - b.deletedAt)
+        .slice(0, limit);
+      for (const [k] of old) tombstones.delete(k);
+      return old.length;
+    },
+
+    insertUploads: async (rows) => {
+      // One statement: all or nothing, like `createMany` without skipDuplicates.
+      const ids = new Set<string>();
+      for (const u of rows) {
+        if (!bundles.has(u.bundleId)) throw fk();
+        if (uploads.has(u.id) || ids.has(u.id)) throw conflict();
+        ids.add(u.id);
+      }
+      for (const u of rows) insertOne(u);
+    },
+    insertUpload: async (u) => insertOne(u),
     findUpload: async (id) => {
       const u = uploads.get(id);
       return u && { ...u };
     },
+    deleteUpload: async (id) => uploads.delete(id),
+    listUnsettledUploads: async (now, limit) =>
+      [...uploads.values()]
+        .filter(
+          (u) =>
+            u.fileId !== null &&
+            (u.status === "failed" ||
+              (u.status === "pending" && u.expiresAt < now)),
+        )
+        .sort((a, b) => a.createdAt - b.createdAt || cmp(a.id, b.id))
+        .slice(0, Math.max(1, limit))
+        .map((u) => ({ ...u })),
     listInFlightUploads: async (bundleId, now) =>
       [...uploads.values()]
         .filter(
@@ -890,11 +1402,16 @@ export function createMemoryAssetsDb(
     deleteExpiredUploads: async (now) => {
       let n = 0;
       for (const [k, u] of [...uploads])
-        if (u.expiresAt < now && u.status !== "completed") {
+        if (
+          u.expiresAt < now &&
+          u.status !== "completed" &&
+          u.fileId === null
+        ) {
           uploads.delete(k);
           n++;
         }
       return n;
     },
   };
+  return self;
 }

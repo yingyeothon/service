@@ -199,22 +199,23 @@ describe("query budget", () => {
       }),
     );
     expect(up.statusCode, up.body).toBe(201);
-    // The session, access (bundle → project → team → seat), the uploads in
-    // flight (the path claim reuses them for the quota), one override
-    // read for the bundle and its project, the per-version totals, the
-    // project total, then the reservation and the audit row.
+    // The session, access (bundle → project → team → seat), one override
+    // read for the bundle and its project, the committed paths (one query
+    // for the whole batch), the uploads in flight (the path claim reuses
+    // them for the quota), the per-version totals, the project total, then
+    // the reservation and the audit row.
     expect(calls()).toEqual({
       "db.findMember": 1,
       "assets.findBundle": 1,
       "team.findProject": 1,
       "team.findTeam": 1,
       "team.findTeamMember": 1,
-      "assets.findFileByPath": 1,
+      "assets.findFilesByPaths": 1,
       "assets.listInFlightUploads": 1,
       "limits.listOverrides": 1,
       "assets.versionSummaries": 1,
       "assets.projectAssetUsage": 1,
-      "assets.insertUpload": 1,
+      "assets.insertUploads": 1,
       "db.insertAudit": 1,
     });
   });

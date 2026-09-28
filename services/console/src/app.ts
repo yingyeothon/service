@@ -61,7 +61,7 @@ import {
   type ServiceUrls,
 } from "./channels.js";
 import type { ArtifactStore } from "./artifact-store.js";
-import { createAssetRoutes } from "./assets.js";
+import { createAssetRoutes, requireMapFile } from "./assets.js";
 import { createSiteRoutes, type SiteDeployInvoker } from "./sites.js";
 import { createSiteMemberBudget, createSiteNameSlot } from "./site-domains.js";
 import type { SiteStore } from "./site-store.js";
@@ -391,6 +391,32 @@ export function createConsoleApp({
   const channelOptions = {
     assetOrigin: new URL(cdn).origin,
   } satisfies ChannelOptions;
+
+  /**
+   * A lobby's `mapUrl` names a committed file of one of the team's own
+   * versioned bundles (docs/decisions.md *Live and encrypted asset bundles*
+   * #2). Checked when the value is set or changed, so a channel that already
+   * held a URL from before the rule stays editable.
+   */
+  async function requireMapUrl(
+    teamId: string,
+    config: unknown,
+    beforeJson: string | undefined,
+  ): Promise<void> {
+    const c = config as { mapUrl?: unknown } | null;
+    const url = c?.mapUrl;
+    if (!c || typeof url !== "string" || url === "") return;
+    if (beforeJson !== undefined) {
+      try {
+        if ((JSON.parse(beforeJson) as { mapUrl?: unknown }).mapUrl === url)
+          return;
+      } catch {
+        // an unparseable stored config is replaced like any other change
+      }
+    }
+    // The file's own URL is what is stored: the delete guard matches it.
+    c.mapUrl = await requireMapFile(assets, teamId, url);
+  }
 
   const routes: AnyRoute[] = [
     // ---- login -------------------------------------------------------
@@ -809,6 +835,7 @@ export function createConsoleApp({
         const split = buildChannel(kind, config, channelOptions);
         if (kind !== "auth")
           await requireAuthChannel(a.project.id, split.config);
+        await requireMapUrl(a.team.id, split.config, undefined);
         const now = nowSec(clock);
         const channelId = newChannelId(kind);
         await db.insertChannel({
@@ -883,6 +910,7 @@ export function createConsoleApp({
           const split = patchChannel(row, ctx.body.config, channelOptions);
           if (row.kind !== "auth")
             await requireAuthChannel(project.id, split.config);
+          await requireMapUrl(o.id, split.config, row.configJson);
           patch.config = split.config;
           patch.secret = split.secret;
         }
@@ -1072,6 +1100,7 @@ export function createConsoleApp({
   });
 
   const assetRoutes = createAssetRoutes({
+    writeSlot: createWriteSlot({ kv, clock }),
     db,
     assets,
     limits,

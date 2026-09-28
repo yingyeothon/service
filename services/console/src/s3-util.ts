@@ -25,11 +25,23 @@ export function isMissingObject(e: unknown): boolean {
   );
 }
 
+/** A hex SHA-256 as the base64 S3 expects in `x-amz-checksum-sha256`. */
+export function sha256Base64(hex: string): string {
+  return Buffer.from(hex, "hex").toString("base64");
+}
+
 /**
  * A presigned PUT whose `Content-Type` and `Content-Length` are part of the
  * signature. Without `signableHeaders` the presigner only signs `host`, and
  * the uploader could substitute any type or size; every commit re-checks the
  * object anyway.
+ *
+ * With `sha256` (hex) the checksum is signed as a **header** too, so S3
+ * refuses any other bytes (`BadDigest`). It has to be named in both sets: the
+ * presigner otherwise hoists `x-amz-checksum-*` into the query string, where
+ * S3 does not check it (`rules/serverless-aws.md`). The client that signs
+ * must be built with `requestChecksumCalculation: "WHEN_REQUIRED"`, or the
+ * SDK adds a CRC32 of an empty body to every URL.
  */
 export function presignPutUrl(
   client: S3Client,
@@ -39,8 +51,10 @@ export function presignPutUrl(
     contentType: string;
     contentLength: number;
     ttlSec: number;
+    sha256?: string;
   },
 ): Promise<string> {
+  const checksum = o.sha256 ? ["x-amz-checksum-sha256"] : [];
   return getSignedUrl(
     client,
     new PutObjectCommand({
@@ -48,10 +62,12 @@ export function presignPutUrl(
       Key: o.key,
       ContentType: o.contentType,
       ContentLength: o.contentLength,
+      ...(o.sha256 ? { ChecksumSHA256: sha256Base64(o.sha256) } : {}),
     }),
     {
       expiresIn: o.ttlSec,
-      signableHeaders: new Set(["content-type", "content-length"]),
+      signableHeaders: new Set(["content-type", "content-length", ...checksum]),
+      ...(o.sha256 ? { unhoistableHeaders: new Set(checksum) } : {}),
     },
   );
 }

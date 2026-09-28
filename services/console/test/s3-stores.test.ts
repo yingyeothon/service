@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import { CloudFrontClient } from "@aws-sdk/client-cloudfront";
 import {
+  CopyObjectCommand,
+  DeleteObjectsCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   S3Client,
@@ -247,5 +249,147 @@ describe("S3 stores: listing", () => {
     expect(
       s3.commandCalls(ListObjectsV2Command)[0]!.args[0].input,
     ).toMatchObject({ Bucket: "b", Prefix: "site-uploads/" });
+  });
+});
+
+describe("S3 artifact store: live-bundle primitives (todo/46 P2)", () => {
+  const status = (code: number, name: string) =>
+    Object.assign(new Error(name), {
+      name,
+      $metadata: { httpStatusCode: code },
+    });
+
+  it("signs a SHA-256 as a header and never hoists it into the query", async () => {
+    const { artifact } = stores();
+    const hex =
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    const url = new URL(
+      await artifact.presignPut({
+        key: "asset-uploads/u/a.txt",
+        contentLength: 5,
+        contentType: "text/plain; charset=utf-8",
+        sha256: hex,
+      }),
+    );
+    expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe(
+      "content-length;content-type;host;x-amz-checksum-sha256",
+    );
+    // Neither the chosen checksum nor an SDK default CRC is in the query.
+    expect(
+      [...url.searchParams.keys()].filter((k) =>
+        /checksum|x-amz-sdk-checksum/i.test(k),
+      ),
+    ).toEqual([]);
+    expect(lastPut()).toEqual({
+      input: {
+        Bucket: "b",
+        Key: "asset-uploads/u/a.txt",
+        ContentType: "text/plain; charset=utf-8",
+        ContentLength: 5,
+        ChecksumSHA256: "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+      },
+      options: {
+        expiresIn: 3600,
+        signableHeaders: new Set([
+          "content-type",
+          "content-length",
+          "x-amz-checksum-sha256",
+        ]),
+        unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
+      },
+    });
+  });
+
+  it("inspects: present with the stored SHA-256, absent only on 404, unknown otherwise", async () => {
+    const { artifact } = stores();
+    s3.on(HeadObjectCommand).resolves({
+      ContentLength: 5,
+      ETag: '"e1"',
+      ChecksumSHA256: "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+      LastModified: new Date(1_700_000_000_000),
+    });
+    expect(await artifact.inspect("k")).toEqual({
+      state: "present",
+      contentLength: 5,
+      etag: "e1",
+      sha256:
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      lastModifiedSec: 1_700_000_000,
+    });
+    expect(s3.commandCalls(HeadObjectCommand)[0]!.args[0].input).toMatchObject({
+      ChecksumMode: "ENABLED",
+    });
+    s3.on(HeadObjectCommand).rejects(status(404, "NotFound"));
+    expect(await artifact.inspect("k")).toEqual({ state: "absent" });
+    // A quarantine Deny is a 403 to the console's own role: not "missing".
+    s3.on(HeadObjectCommand).rejects(status(403, "Forbidden"));
+    expect(await artifact.inspect("k")).toEqual({
+      state: "unknown",
+      reason: "403 Forbidden",
+    });
+    s3.on(HeadObjectCommand).rejects(missing("TimeoutError"));
+    expect(await artifact.inspect("k")).toEqual({
+      state: "unknown",
+      reason: "TimeoutError",
+    });
+  });
+
+  it("copies with S3's own conditions and maps a refusal", async () => {
+    const { artifact } = stores();
+    s3.on(CopyObjectCommand).resolves({ CopyObjectResult: { ETag: '"e2"' } });
+    expect(
+      await artifact.copy(
+        "asset-uploads/u/m.json",
+        "assets/ab_1/m.json",
+        { contentType: "application/json", cacheControl: "no-cache" },
+        { ifMatch: "e1", checksum: true },
+      ),
+    ).toEqual({ etag: "e2" });
+    expect(s3.commandCalls(CopyObjectCommand)[0]!.args[0].input).toEqual({
+      Bucket: "b",
+      CopySource: "/b/asset-uploads/u/m.json",
+      Key: "assets/ab_1/m.json",
+      MetadataDirective: "REPLACE",
+      ContentType: "application/json",
+      CacheControl: "no-cache",
+      IfMatch: '"e1"',
+      ChecksumAlgorithm: "SHA256",
+    });
+    await artifact.copy("s", "d", undefined, { ifNoneMatch: true });
+    expect(s3.commandCalls(CopyObjectCommand)[1]!.args[0].input).toMatchObject({
+      IfNoneMatch: "*",
+    });
+    s3.on(CopyObjectCommand).rejects(status(412, "PreconditionFailed"));
+    await expect(artifact.copy("s", "d")).rejects.toMatchObject({
+      name: "ConditionalWriteError",
+      kind: "precondition",
+    });
+    s3.on(CopyObjectCommand).rejects(status(409, "ConditionalRequestConflict"));
+    await expect(artifact.copy("s", "d")).rejects.toMatchObject({
+      kind: "conflict",
+    });
+    s3.on(CopyObjectCommand).rejects(status(500, "InternalError"));
+    await expect(artifact.copy("s", "d")).rejects.toMatchObject({
+      name: "InternalError",
+    });
+  });
+
+  it("deletes in calls of at most 1,000 keys and reports what stayed", async () => {
+    const { artifact } = stores();
+    s3.on(DeleteObjectsCommand)
+      .resolvesOnce({ Errors: [{ Key: "k7", Code: "AccessDenied" }] })
+      .rejectsOnce(missing("SlowDown"))
+      .resolves({});
+    const keys = Array.from({ length: 2001 }, (_, i) => `k${i}`);
+    const r = await artifact.deleteMany(keys);
+    const calls = s3.commandCalls(DeleteObjectsCommand);
+    expect(calls.map((c) => c.args[0].input.Delete!.Objects!.length)).toEqual([
+      1000, 1000, 1,
+    ]);
+    expect(calls[0]!.args[0].input.Delete!.Quiet).toBe(true);
+    expect(r.failed).toHaveLength(1 + 1000);
+    expect(r.failed[0]).toEqual({ key: "k7", code: "AccessDenied" });
+    expect(r.failed[1]).toEqual({ key: "k1000", code: "SlowDown" });
+    expect((await artifact.deleteMany([])).failed).toEqual([]);
   });
 });

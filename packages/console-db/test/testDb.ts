@@ -32,8 +32,10 @@ export async function startTestDb(
     through?: string;
   } = {},
 ): Promise<TestDb> {
+  // `mariadb:11` (11.8) by default; the stages run 10.5, and
+  // `YYT_TC_IMAGE=mariadb:10.5` runs the same contracts against it.
   const container: StartedTestContainer = await new GenericContainer(
-    "mariadb:11",
+    process.env.YYT_TC_IMAGE || "mariadb:11",
   )
     .withEnvironment({
       MARIADB_ROOT_PASSWORD: "test",

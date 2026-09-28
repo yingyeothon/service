@@ -31,6 +31,44 @@ async function authFor(
   ).id as string;
 }
 
+/**
+ * A committed file of a bundle in `u`'s project, seeded straight into the
+ * repository; returns its CDN URL (what a lobby `mapUrl` must name).
+ */
+async function mapFile(
+  h: ReturnType<typeof harness>,
+  u: Team,
+  o: { bundle?: string; path?: string; mode?: "versioned" | "live" } = {},
+): Promise<string> {
+  const bundle = o.bundle ?? `ab_${u.teamId.slice(-6)}`;
+  const version = o.mode === "live" ? "" : "v1";
+  const path = o.path ?? "map.json";
+  if (!(await h.assets.findBundle(bundle)))
+    await h.assets.insertBundle({
+      id: bundle,
+      name: `maps-${bundle}`,
+      teamId: u.teamId,
+      projectId: u.prjId,
+      mode: o.mode ?? "versioned",
+      createdAt: NOW_SEC,
+    });
+  const key = `assets/${bundle}/${version ? `${version}/` : ""}${path}`;
+  // Stored the way a commit stores it (`artifactUrl`: each segment encoded).
+  const url = `${CDN}/${key.split("/").map(encodeURIComponent).join("/")}`;
+  await h.assets.insertFile({
+    id: `af_${bundle}_${path}`,
+    bundleId: bundle,
+    version,
+    path,
+    objectKey: key,
+    url,
+    contentType: "application/json",
+    size: 1,
+    createdAt: NOW_SEC,
+  });
+  return url;
+}
+
 let seq = 0;
 async function create(
   h: ReturnType<typeof harness>,
@@ -164,14 +202,32 @@ describe("lobby/q channels", () => {
     const a = await h.team("alice");
     const authChannelId = await authFor(h, a);
 
+    // A path with a space: the URL carries it encoded, the key does not.
+    const map = await mapFile(h, a, { path: "map 7.json" });
+    expect(map).toContain("map%207.json");
     const ok = parse(
       await create(h, a, "lobby", {
         authChannelId,
-        mapUrl: `${CDN}/assets/map/7`,
+        mapUrl: map,
         capabilities: { say: ["user", "zone", "zone"] },
       }),
     );
-    expect(ok.config.mapUrl).toBe(`${CDN}/assets/map/7`);
+    expect(ok.config.mapUrl).toBe(map);
+    // Other spellings of the same object (an escaped `_`, a doubled slash,
+    // a query) are stored as the file's own URL, which the delete guard's
+    // prefix match sees.
+    for (const spelling of [
+      map.replace("assets/ab_", "assets/ab%5F"),
+      map.replace("/assets/", "/assets//"),
+      `${map}?v=2`,
+    ]) {
+      const r = await create(h, a, "lobby", {
+        authChannelId,
+        mapUrl: spelling,
+      });
+      expect(r.statusCode, spelling).toBe(201);
+      expect(parse(r).config.mapUrl, spelling).toBe(map);
+    }
     expect(ok.config.capabilities.say).toEqual(["zone", "user"]);
 
     for (const mapUrl of [
@@ -190,6 +246,73 @@ describe("lobby/q channels", () => {
       const r = await create(h, a, "lobby", { authChannelId, mapUrl });
       expect(r.statusCode, mapUrl).toBe(400);
     }
+  });
+
+  it("pins mapUrl to a committed file of the team's own versioned bundle", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const b = await h.team("bob");
+    const authChannelId = await authFor(h, a);
+    const mine = await mapFile(h, a);
+    const theirs = await mapFile(h, b);
+    const live = await mapFile(h, a, { bundle: "ab_live", mode: "live" });
+    const refused = async (mapUrl: string, why: RegExp) => {
+      const r = await create(h, a, "lobby", { authChannelId, mapUrl });
+      expect(r.statusCode, mapUrl).toBe(400);
+      expect(parse(r).error.message, mapUrl).toMatch(why);
+    };
+    // A claim whose copy has not landed is not a committed file.
+    const claimed = await mapFile(h, a, { path: "claimed.json" });
+    const cf = (await h.assets.findFileByObjectKey(
+      `assets/ab_${a.teamId.slice(-6)}/v1/claimed.json`,
+    ))!;
+    await h.assets.deleteFile(cf.id);
+    await h.assets.insertUpload({
+      id: "upl_claim",
+      bundleId: cf.bundleId,
+      version: "v1",
+      path: "claimed.json",
+      contentType: "application/json",
+      size: 1,
+      createdAt: NOW_SEC,
+      expiresAt: NOW_SEC + 3600,
+    });
+    await h.assets.insertFile({ ...cf, id: "af_upl_claim" });
+    await refused(claimed, /still being committed/);
+    // Another team's bundle, a file that is not there, a prefix, a live file.
+    await refused(theirs, /this team's bundles/);
+    await refused(`${CDN}/assets/ab_nope/v1/map.json`, /this team's bundles/);
+    await refused(mine.replace("map.json", ""), /this team's bundles/);
+    await refused(mine.replace("map.json", "MAP.json"), /this team's bundles/);
+    await refused(live, /live bundle/);
+    const ok = await create(h, a, "lobby", { authChannelId, mapUrl: mine });
+    expect(ok.statusCode).toBe(201);
+    const lobby = parse(ok);
+
+    // A URL stored before the rule stays: a PATCH that keeps it is not
+    // refused, one that changes it to another bad target is.
+    const legacy = `${CDN}/assets/smoke/map.json`;
+    const row = await h.db.findChannelRow(lobby.id as string);
+    await h.db.updateChannel(lobby.id as string, {
+      config: {
+        ...(JSON.parse(row!.configJson) as Record<string, unknown>),
+        mapUrl: legacy,
+      },
+    });
+    const keep = await h.app(
+      ev("PATCH", `/channels/${lobby.id}`, {
+        headers: a.cookie,
+        body: { config: { authChannelId, mapUrl: legacy, partySizeMax: 6 } },
+      }),
+    );
+    expect(keep.statusCode, keep.body).toBe(200);
+    const move = await h.app(
+      ev("PATCH", `/channels/${lobby.id}`, {
+        headers: a.cookie,
+        body: { config: { authChannelId, mapUrl: theirs } },
+      }),
+    );
+    expect(move.statusCode).toBe(400);
   });
 
   it("rejects unknown fields, bad zones and out-of-range tuning", async () => {
@@ -248,7 +371,7 @@ describe("lobby/q channels", () => {
       await create(h, a, "lobby", {
         authChannelId,
         partySizeMax: 8,
-        mapUrl: `${CDN}/assets/map/1`,
+        mapUrl: await mapFile(h, a),
       }),
     );
     const patched = parse(

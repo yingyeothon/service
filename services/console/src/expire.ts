@@ -1,5 +1,5 @@
 import { nowSec, systemClock, ulid, type Clock, type Logger } from "@yyt/core";
-import { lbRetainCutoff } from "@yyt/console-db";
+import { ASSET_TOMBSTONE_SEC, lbRetainCutoff } from "@yyt/console-db";
 import type {
   AssetsDb,
   CatalogDb,
@@ -13,6 +13,7 @@ import type {
 } from "@yyt/console-db";
 import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import type { ArtifactStore } from "./artifact-store.js";
+import { settleAssetUpload } from "./asset-commit.js";
 import { ASSET_UPLOAD_KEY_PREFIX } from "./assets.js";
 import { planDeletions } from "./catalog-cleanup.js";
 import { deleteArtifactObjects } from "./catalog.js";
@@ -672,12 +673,28 @@ export async function runCatalogSweep({
   return { uploadsDropped, objectsDeleted, artifactsDeleted };
 }
 
+/** Unsettled claims the asset sweep checks per run (one `HeadObject` each). */
+export const ASSET_SETTLE_MAX = 50;
+/** Tombstone batches (1,000 rows each) the asset sweep deletes per run. */
+export const ASSET_TOMBSTONE_BATCHES = 10;
+const ASSET_TOMBSTONE_BATCH = 1000;
+
 /**
- * Daily asset sweep, sharing the `expire` schedule. It touches only the
- * staging prefix: committed objects under `assets/` are pointed at by channel
- * config (`mapUrl`), so no retention policy may delete them — a 404 there is
- * not a degraded game, it is a game that cannot load at all
- * (`docs/decisions.md` *Storage shapes*).
+ * Daily asset sweep, sharing the `expire` schedule. Committed objects under
+ * `assets/` are pointed at by channel config (`mapUrl`) and by clients that
+ * cached them, so no retention policy may delete them — a 404 there is not a
+ * degraded game, it is a game that cannot load at all (`docs/decisions.md`
+ * *Storage shapes*). What it does touch, each phase with a fixed budget so a
+ * backlog waits for tomorrow instead of running into the 300 s:
+ *
+ * 1. Commits that could not tell whether their object landed (a 403 from a
+ *    quarantined key, an S3 error) left the upload `failed` with its claim,
+ *    and commits that died after their claim left it `pending` past its
+ *    expiry: the key is checked again, a 404 releases the claim, bytes keep
+ *    it (`settleAssetUpload`). `deleteExpiredUploads` skips every row that
+ *    names a claim, so none of them is dropped unsettled.
+ * 2. Expired uploads, then staging objects nothing pending names.
+ * 3. Tombstones past their 400 days.
  */
 export async function runAssetSweep({
   assets,
@@ -691,8 +708,31 @@ export async function runAssetSweep({
   db: ConsoleDb;
   clock?: Clock;
   logger: Logger;
-}): Promise<{ uploadsDropped: number; objectsDeleted: number }> {
+}): Promise<{
+  uploadsDropped: number;
+  objectsDeleted: number;
+  claimsSettled: number;
+  tombstonesPurged: number;
+}> {
   const now = nowSec(clock);
+  let claimsSettled = 0;
+  let claimsUnknown = 0;
+  if (artifacts)
+    for (const u of await assets.listUnsettledUploads(now, ASSET_SETTLE_MAX)) {
+      // One claim's failure must not stop the rest of the sweep.
+      const r = await settleAssetUpload(
+        { assets, store: artifacts, logger },
+        u,
+      ).catch((e: unknown) => {
+        logger.warn("asset claim settle failed", {
+          uploadId: u.id,
+          message: e instanceof Error ? e.message : String(e),
+        });
+        return "unknown" as const;
+      });
+      if (r === "unknown") claimsUnknown++;
+      else claimsSettled++;
+    }
   const uploadsDropped = await assets.deleteExpiredUploads(now);
 
   let objectsDeleted = 0;
@@ -727,18 +767,42 @@ export async function runAssetSweep({
     }
   }
 
-  if (uploadsDropped + objectsDeleted > 0) {
+  let tombstonesPurged = 0;
+  for (let i = 0; i < ASSET_TOMBSTONE_BATCHES; i++) {
+    const n = await assets.purgeTombstones(
+      now - ASSET_TOMBSTONE_SEC,
+      ASSET_TOMBSTONE_BATCH,
+    );
+    tombstonesPurged += n;
+    if (n < ASSET_TOMBSTONE_BATCH) break;
+  }
+
+  if (uploadsDropped + objectsDeleted + claimsSettled + tombstonesPurged > 0) {
     await db.insertAudit({
       id: ulid(),
       actorId: null,
       action: "asset.sweep",
       target: null,
       at: now,
-      detail: { uploadsDropped, objectsDeleted, s3Failures },
+      detail: {
+        uploadsDropped,
+        objectsDeleted,
+        s3Failures,
+        claimsSettled,
+        claimsUnknown,
+        tombstonesPurged,
+      },
     });
   }
-  logger.info("asset sweep", { uploadsDropped, objectsDeleted, s3Failures });
-  return { uploadsDropped, objectsDeleted };
+  logger.info("asset sweep", {
+    uploadsDropped,
+    objectsDeleted,
+    s3Failures,
+    claimsSettled,
+    claimsUnknown,
+    tombstonesPurged,
+  });
+  return { uploadsDropped, objectsDeleted, claimsSettled, tombstonesPurged };
 }
 
 /**

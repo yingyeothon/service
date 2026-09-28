@@ -163,8 +163,15 @@ export {
   type AssetUploadStatus,
   type AssetVersionSummary,
   type ProjectAssetUsage,
+  type AssetBundleMode,
+  type AssetFileReplace,
+  type AssetTombstone,
+  ASSET_BUNDLE_MODES,
   ASSET_FILE_PAGE_DEFAULT,
   ASSET_FILE_PAGE_MAX,
+  ASSET_TOMBSTONE_SEC,
+  LIVE_VERSION,
+  objectKeyPrefix,
 } from "./assets.js";
 export {
   createLimitsDb,

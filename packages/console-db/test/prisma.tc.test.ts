@@ -17,7 +17,11 @@ import {
   toQChannel,
   type ConsoleDb,
 } from "../src/index.js";
-import { assetsContract, assetUsageContract } from "./assets.test.js";
+import {
+  assetLiveContract,
+  assetsContract,
+  assetUsageContract,
+} from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
 import { sitesContract } from "./sites.test.js";
 import { eventsContract } from "./events.test.js";
@@ -129,6 +133,14 @@ describe.skipIf(!dockerAvailable())(
 
     describe("asset usage contract", () => {
       assetUsageContract(async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        return createAssetsDb(db.client);
+      });
+    });
+
+    describe("asset live contract", () => {
+      assetLiveContract(async () => {
         await resetTestDb(db.client);
         await seedTeamProject(db.client);
         return createAssetsDb(db.client);

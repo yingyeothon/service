@@ -1123,6 +1123,13 @@ export function createTeamRoutes({
     const bundle = await assets.findBundle(body.bundleId);
     if (!bundle || bundle.projectId !== projectId)
       throw new AppError("not_found", "bundle not found in this project");
+    // Project versions link versioned bundles only (docs/decisions.md *Live
+    // and encrypted asset bundles* #2): a live bundle has nothing to pin.
+    if (bundle.mode === "live")
+      throw new AppError(
+        "bad_request",
+        "a live bundle has no versions to link",
+      );
     if (!(await assets.hasVersion(bundle.id, body.assetVersion)))
       throw new AppError("not_found", "asset version not found");
   }

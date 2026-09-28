@@ -1,16 +1,15 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
 import { describe, expect, it } from "vitest";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
-import {
-  ASSET_CACHE_CONTROL,
-  assetContentType,
-  bundlePrefixes,
-  versionPrefixes,
-} from "../src/assets.js";
+import { ASSET_CACHE_CONTROL, assetContentType } from "../src/assets.js";
 import { LIMITS } from "../src/limits.js";
 import { runAssetSweep } from "../src/expire.js";
 import { nullLogger } from "@yyt/core";
-import { createMemoryAssetsDb, createMemoryConsoleDb } from "@yyt/console-db";
+import {
+  createMemoryAssetsDb,
+  createMemoryConsoleDb,
+  objectKeyPrefix,
+} from "@yyt/console-db";
 import {
   CDN,
   ev,
@@ -704,16 +703,13 @@ describe("asset plumbing", () => {
   });
 
   it("derives reference prefixes from stored keys, legacy names included", () => {
-    const files = [
-      { objectKey: "assets/ab_1/v1/map.json" },
-      { objectKey: "assets/ab_1/v1/art/tiles.png" },
-      { objectKey: "assets/oldname/v1/map.json" },
-    ];
-    expect(versionPrefixes(files)).toEqual([
+    expect(objectKeyPrefix("assets/ab_1/v1/art/tiles.png", 3)).toBe(
       "assets/ab_1/v1/",
-      "assets/oldname/v1/",
-    ]);
-    expect(bundlePrefixes(files)).toEqual(["assets/ab_1/", "assets/oldname/"]);
+    );
+    expect(objectKeyPrefix("assets/oldname/v1/map.json", 2)).toBe(
+      "assets/oldname/",
+    );
+    expect(objectKeyPrefix("assets/ab_1/map.json", 3)).toBeNull();
   });
 
   it("answers 503 when no artifact bucket is configured", async () => {
@@ -946,7 +942,7 @@ describe("asset deletion safety", () => {
     });
   };
 
-  it("refuses to delete a version or bundle a lobby channel still points at, naming only visible channels", async () => {
+  it("refuses to delete a version or bundle the team's own lobby still points at; another team's pointer does not count", async () => {
     const h = harness();
     const alice = await h.team("alice");
     const bob = await h.team("bob");
@@ -954,9 +950,9 @@ describe("asset deletion safety", () => {
     await publish(h, alice, id, { version: "v1" });
     await publish(h, alice, id, { version: "v2" });
     await pointAt(h, alice, "lobby_1", `${CDN}/assets/${id}/v1/map.json`);
-    // The CDN is public, so another team pointing at the file is legitimate —
-    // it still blocks the delete, but its id is not revealed.
-    await pointAt(h, bob, "lobby_2", `${CDN}/assets/${id}/v1/map.json`);
+    // Another team's lobby (seeded directly: the mapUrl rule refuses it
+    // today) cannot hold alice's bundle, and her storage limit, hostage.
+    await pointAt(h, bob, "lobby_2", `${CDN}/assets/${id}/v2/map.json`);
 
     const v1 = await h.app(
       ev("DELETE", `/assets/bundles/${id}/versions/v1`, {
@@ -964,7 +960,7 @@ describe("asset deletion safety", () => {
       }),
     );
     expect(v1.statusCode).toBe(409);
-    expect(parse(v1).error.message).toMatch(/2 lobby channel/);
+    expect(parse(v1).error.message).toMatch(/1 lobby channel/);
     expect(parse(v1).error.details.channels).toEqual(["lobby_1"]);
     expect(
       (
@@ -976,7 +972,7 @@ describe("asset deletion safety", () => {
     // The object is still there — a refused delete must not half-happen.
     expect(h.artifacts.objects.has(`assets/${id}/v1/map.json`)).toBe(true);
 
-    // An unreferenced version goes.
+    // The version only bob's lobby names goes.
     expect(
       (
         await h.app(
@@ -986,6 +982,7 @@ describe("asset deletion safety", () => {
         )
       ).statusCode,
     ).toBe(204);
+    expect(h.artifacts.objects.has(`assets/${id}/v2/map.json`)).toBe(false);
   });
 
   it("a legacy name-keyed file is still protected by its stored key", async () => {
@@ -1025,17 +1022,13 @@ describe("asset deletion safety", () => {
   });
 
   it("keeps the row when the object delete fails, so a retry can finish", async () => {
-    const artifacts = createMemoryArtifactStore();
-    const realDelete = artifacts.delete.bind(artifacts);
-    let broken = true;
-    artifacts.delete = async (key: string) => {
-      if (broken && key.startsWith("assets/")) throw new Error("s3 down");
-      return realDelete(key);
-    };
-    const h = harness({ artifacts });
+    const h = harness();
     const alice = await h.team("alice");
     const id = await mkBundle(h, alice);
-    await publish(h, alice, id, { version: "v1", store: artifacts });
+    await publish(h, alice, id, { version: "v1" });
+    await publish(h, alice, id, { version: "v1", path: "b.json" });
+    // One key refuses (a quarantine Deny answers 403 to the console too).
+    h.artifacts.quarantined.add(`assets/${id}/v1/b.json`);
 
     const failed = await h.app(
       ev("DELETE", `/assets/bundles/${id}/versions/v1`, {
@@ -1043,19 +1036,20 @@ describe("asset deletion safety", () => {
       }),
     );
     expect(failed.statusCode).toBe(503);
-    // The row survived: dropping it would strand a public immutable object
-    // that no sweep ever looks at.
-    expect(
-      parse(
-        await h.app(
-          ev("GET", `/assets/bundles/${id}/versions/v1`, {
-            headers: alice.cookie,
-          }),
-        ),
-      ).files,
-    ).toHaveLength(1);
+    expect(parse(failed).error.message).toMatch(/1 object/);
+    // Only the row whose object went is gone: dropping the other would
+    // strand a public immutable object that no sweep ever looks at.
+    const left = parse(
+      await h.app(
+        ev("GET", `/assets/bundles/${id}/versions/v1`, {
+          headers: alice.cookie,
+        }),
+      ),
+    ).files as Json[];
+    expect(left.map((f) => f.path)).toEqual(["b.json"]);
+    expect(h.artifacts.objects.has(`assets/${id}/v1/map.json`)).toBe(false);
 
-    broken = false;
+    h.artifacts.quarantined.clear();
     expect(
       (
         await h.app(
@@ -1065,7 +1059,56 @@ describe("asset deletion safety", () => {
         )
       ).statusCode,
     ).toBe(204);
-    expect(artifacts.objects.has(`assets/${id}/v1/map.json`)).toBe(false);
+    expect(h.artifacts.objects.has(`assets/${id}/v1/b.json`)).toBe(false);
+  });
+
+  it("deletes in DeleteObjects batches and answers 202 with progress past its budget", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const id = await mkBundle(h, alice);
+    // Every batch spends 10 s of the 15 s budget: two batches per request.
+    const realMany = h.artifacts.deleteMany.bind(h.artifacts);
+    h.artifacts.deleteMany = async (keys) => {
+      h.clock.tick(10);
+      return realMany(keys);
+    };
+    for (let i = 0; i < 2500; i++)
+      await h.assets.insertFile({
+        id: `af_${String(i).padStart(5, "0")}`,
+        bundleId: id,
+        version: "v1",
+        path: `f${i}.json`,
+        objectKey: `assets/${id}/v1/f${i}.json`,
+        url: `${CDN}/assets/${id}/v1/f${i}.json`,
+        contentType: "application/json",
+        size: 1,
+        createdAt: NOW_SEC,
+      });
+    const first = await h.app(
+      ev("DELETE", `/assets/bundles/${id}`, { headers: alice.cookie }),
+    );
+    expect(first.statusCode).toBe(202);
+    expect(parse(first)).toEqual({ done: false, deleted: 2000, failed: 0 });
+    expect(h.artifacts.batches.map((b) => b.length)).toEqual([1000, 1000]);
+    // The bundle is still there, with what is left.
+    expect(
+      parse(
+        await h.app(
+          ev("GET", `/assets/bundles/${id}`, { headers: alice.cookie }),
+        ),
+      ).files,
+    ).toBe(500);
+    const second = await h.app(
+      ev("DELETE", `/assets/bundles/${id}`, { headers: alice.cookie }),
+    );
+    expect(second.statusCode).toBe(204);
+    expect(
+      (
+        await h.app(
+          ev("GET", `/assets/bundles/${id}`, { headers: alice.cookie }),
+        )
+      ).statusCode,
+    ).toBe(404);
   });
 
   it("rolls the claim back when the copy fails, leaving the path free", async () => {
@@ -1083,7 +1126,9 @@ describe("asset deletion safety", () => {
     // stops a lost race from overwriting a live `immutable` object. So a failed
     // copy must drop the row again, or the version would list a file that 404s.
     const failed = await publish(h, alice, id, { store: artifacts });
-    expect(failed.statusCode).toBe(503);
+    // The upload is spent (the key answered 404): upload again, not retry.
+    expect(failed.statusCode).toBe(409);
+    expect(parse(failed).error.message).toMatch(/upload the file again/);
     expect(
       (
         await h.app(

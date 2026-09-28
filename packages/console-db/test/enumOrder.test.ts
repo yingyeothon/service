@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { ASSET_BUNDLE_MODES, ASSET_UPLOAD_STATUSES } from "../src/assets.js";
 import { CATALOG_PLATFORMS } from "../src/catalog.js";
 import { CHANNEL_KINDS, MEMBER_ROLES } from "../src/channels.js";
 import { EVENT_STATUSES } from "../src/events.js";
@@ -48,6 +49,8 @@ describe("enum arrays follow the schema declaration order", () => {
     ["lb_period", LB_PERIODS],
     ["social_relation_state", SOCIAL_RELATION_STATES],
     ["limit_requests_status", LIMIT_REQUEST_STATUSES],
+    ["asset_bundles_mode", ASSET_BUNDLE_MODES],
+    ["asset_pending_uploads_status", ASSET_UPLOAD_STATUSES],
   ] as const)("%s", (name, values) => {
     expect([...values]).toEqual(enumValues(name));
   });

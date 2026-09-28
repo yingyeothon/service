@@ -46,6 +46,7 @@ import {
 import { createConsoleApp } from "./app.js";
 import { createS3ArtifactStore, type ArtifactStore } from "./artifact-store.js";
 import { createDebugRoutes } from "./debug.js";
+import { runS3Probe, s3SdkVersions } from "./s3-probe.js";
 import { revokeChannelRedis } from "./channel-redis.js";
 import {
   runAssetSweep,
@@ -79,6 +80,7 @@ import {
   type CdnGuardMemory,
 } from "./cdn-guard.js";
 import { CloudFrontClient } from "@aws-sdk/client-cloudfront";
+import { S3Client } from "@aws-sdk/client-s3";
 import { createGithubLogin } from "./github.js";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { historyId } from "./team.js";
@@ -226,6 +228,9 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
   const posterBucket = process.env.POSTER_BUCKET ?? "";
   if (!posterBucket)
     logger.warn("POSTER_BUCKET is empty: poster upload is disabled", { stage });
+  // The runtime's SDK, not the one in the lockfile: `@aws-sdk/*` is excluded
+  // from the bundle (docs/decisions.md *Large asset uploads* #3).
+  logger.info("runtime sdk", s3SdkVersions());
   const artifactBucket = process.env.ARTIFACT_BUCKET ?? "";
   if (!artifactBucket)
     logger.warn("ARTIFACT_BUCKET is empty: catalog upload is disabled", {
@@ -244,6 +249,15 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
         db,
         kv,
         clock,
+        s3Probe: artifactBucket
+          ? () =>
+              runS3Probe({
+                client: new S3Client({
+                  requestChecksumCalculation: "WHEN_REQUIRED",
+                }),
+                bucket: artifactBucket,
+              })
+          : undefined,
       });
       logger.warn("debug hooks enabled", { stage });
     } catch (e) {

@@ -533,10 +533,18 @@ export function createShowRoutes({
         // The pinned build has to still exist *and* still belong to the app.
         url = available && art && art.appId === e.targetId ? art.url : null;
       } else if (e.targetKind === "bundle") {
-        available = bundles.has(e.targetId);
+        const b = bundles.get(e.targetId);
+        available = b !== undefined;
+        // A live bundle has no version to pin: it links live, like a site.
+        const prefix =
+          b?.mode === "live"
+            ? `${ASSET_KEY_PREFIX}${e.targetId}`
+            : e.targetRef !== null
+              ? `${ASSET_KEY_PREFIX}${e.targetId}/${e.targetRef}`
+              : null;
         url =
-          available && e.targetRef !== null && cdnBaseUrl
-            ? `${artifactUrl(cdnBaseUrl, `${ASSET_KEY_PREFIX}${e.targetId}/${e.targetRef}`)}/`
+          available && prefix !== null && cdnBaseUrl
+            ? `${artifactUrl(cdnBaseUrl, prefix)}/`
             : null;
       } else {
         const s = siteRows.get(e.targetId);
@@ -1690,7 +1698,9 @@ export function createShowRoutes({
     if (kind === "app")
       return (await catalog.findNewestArtifact(targetId))?.id ?? null;
     if (kind === "bundle")
-      return (await assets.findNewestVersion(targetId)) ?? null;
+      return (await assets.findBundle(targetId))?.mode === "live"
+        ? null
+        : ((await assets.findNewestVersion(targetId)) ?? null);
     return null;
   }
 
@@ -1703,6 +1713,11 @@ export function createShowRoutes({
   async function checkRef(entry: ShowEntryRow, ref: string): Promise<void> {
     if (entry.targetKind === "site")
       throw new AppError("bad_request", "a site entry links live");
+    if (
+      entry.targetKind === "bundle" &&
+      (await assets.findBundle(entry.targetId))?.mode === "live"
+    )
+      throw new AppError("bad_request", "a live bundle entry links live");
     const ok =
       entry.targetKind === "app"
         ? (await catalog.findArtifact(ref))?.appId === entry.targetId

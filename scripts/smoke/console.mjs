@@ -154,6 +154,45 @@ check(
   "create match channel",
   match.status === 201 && typeof match.body?.wsUrl === "string",
 );
+// A lobby's map must be a committed file of one of the team's own versioned
+// bundles (docs/decisions.md *Live and encrypted asset bundles* #2), so the
+// smoke publishes one and deletes it at the end.
+const mapBody = JSON.stringify({ smoke: stamp });
+const mapBundle = await call(`/projects/${team.prjId}/assets/bundles`, {
+  method: "POST",
+  headers: as(member),
+  body: { name: `smoke-map-${stamp}` },
+});
+// Stamped, so a crashed run's bundle is found and reaped by the next one
+// (the project holds at most 20); the lobby that pinned it is soft-deleted
+// by then or dies with its own run's cleanup.
+for (const b of (
+  await call(`/projects/${team.prjId}/assets/bundles`, { headers: as(member) })
+).body?.bundles ?? [])
+  if (/^smoke-map-/.test(b.name) && b.id !== mapBundle.body?.id)
+    await call(`/assets/bundles/${b.id}`, {
+      method: "DELETE",
+      headers: as(member),
+    });
+const mapGrant = await call(`/assets/bundles/${mapBundle.body?.id}/files`, {
+  method: "POST",
+  headers: as(member),
+  body: { version: "v1", path: "map.json", size: Buffer.byteLength(mapBody) },
+});
+const mapPut = await fetch(mapGrant.body?.url, {
+  method: "PUT",
+  headers: mapGrant.body?.headers,
+  body: mapBody,
+});
+const mapFile = await call(
+  `/assets/uploads/${mapGrant.body?.uploadId}/commit`,
+  { method: "POST", headers: as(member) },
+);
+check(
+  "publish the lobby's map",
+  mapBundle.status === 201 && mapPut.ok && mapFile.status === 200,
+  `${mapBundle.status}/${mapPut.status}/${mapFile.status}`,
+);
 const lobby = await call(`/projects/${team.prjId}/channels`, {
   method: "POST",
   headers: as(member),
@@ -163,8 +202,8 @@ const lobby = await call(`/projects/${team.prjId}/channels`, {
     config: {
       authChannelId: chId,
       capabilities: { say: ["zone", "user"] },
-      // Pinned to the asset CDN; any other host is rejected.
-      mapUrl: "https://dev-d.yyt.life/smoke/map.json",
+      // Pinned to a committed file of this team's own versioned bundle.
+      mapUrl: mapFile.body?.url,
       defaultZone: "town",
     },
   },
@@ -197,6 +236,23 @@ check(
         kind: "lobby",
         name: "bad-map",
         config: { authChannelId: chId, mapUrl: "https://evil.test/map.json" },
+      },
+    })
+  ).status === 400,
+);
+check(
+  "lobby rejects a map URL that names no file of this team",
+  (
+    await call(`/projects/${team.prjId}/channels`, {
+      method: "POST",
+      headers: as(member),
+      body: {
+        kind: "lobby",
+        name: "bad-map-path",
+        config: {
+          authChannelId: chId,
+          mapUrl: `${new URL(mapFile.body?.url ?? "https://x").origin}/smoke/map.json`,
+        },
       },
     })
   ).status === 400,
@@ -531,6 +587,17 @@ for (const c of [auth, topic, match, lobby, q]) {
       ).status === 204,
     );
 }
+// The lobby is gone, so its map's bundle may go too.
+if (mapBundle.body?.id)
+  check(
+    "delete the map bundle",
+    (
+      await call(`/assets/bundles/${mapBundle.body.id}`, {
+        method: "DELETE",
+        headers: as(member),
+      })
+    ).status === 204,
+  );
 const pendingChannels = await call("/channels", { headers: as(pending) });
 for (const c of pendingChannels.body?.channels ?? [])
   await call(`/channels/${c.id}`, { method: "DELETE", headers: as(pending) });

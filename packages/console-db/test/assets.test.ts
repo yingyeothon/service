@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createMemoryAssetsDb, type AssetsDb } from "../src/index.js";
+import {
+  createMemoryAssetsDb,
+  LIVE_VERSION,
+  type AssetFileInput,
+  type AssetsDb,
+} from "../src/index.js";
 
 const bundle = (id: string, at = 1) => ({
   id,
@@ -365,9 +370,12 @@ export function assetUsageContract(make: () => AssetsDb | Promise<AssetsDb>) {
     expect(await db.projectAssetUsage("prj_1", 50)).toMatchObject({
       inFlightBytes: 20,
     });
-    expect(await db.projectAssetUsage("prj_1", 50, "u2")).toMatchObject({
+    expect(await db.projectAssetUsage("prj_1", 50, ["u2"])).toMatchObject({
       inFlightBytes: 10,
     });
+    expect(
+      await db.projectAssetUsage("prj_1", 50, ["u1", "u2", "u4"]),
+    ).toMatchObject({ inFlightBytes: 0 });
     expect(await db.projectAssetUsage("prj_9", 0)).toEqual({
       bundles: 0,
       files: 0,
@@ -377,8 +385,282 @@ export function assetUsageContract(make: () => AssetsDb | Promise<AssetsDb>) {
   });
 }
 
+const SHA_A = "a".repeat(64);
+const SHA_B = "b".repeat(64);
+const SHA_C = "c".repeat(64);
+
+/** Live bundles, mutable files, tombstones and batched deletes (todo/46 P2). */
+export function assetLiveContract(make: () => AssetsDb | Promise<AssetsDb>) {
+  const live = (
+    id: string,
+    path: string,
+    over: Partial<AssetFileInput> = {},
+  ) => ({
+    id,
+    bundleId: "b1",
+    version: LIVE_VERSION,
+    path,
+    objectKey: `assets/b1/${path}`,
+    url: `https://cdn.example/assets/b1/${path}`,
+    contentType: "application/json",
+    size: 10,
+    createdAt: 1,
+    sha256: SHA_A,
+    ...over,
+  });
+
+  it("stores the mode and the live columns, and defaults both", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("b0"));
+    await db.insertBundle({ ...bundle("b1"), mode: "live" });
+    expect((await db.findBundle("b0"))?.mode).toBe("versioned");
+    expect((await db.findBundle("b1"))?.mode).toBe("live");
+    await db.insertFile(file("f0", "b0"));
+    expect(await db.findFile("f0")).toMatchObject({
+      mutable: false,
+      sha256: null,
+      etag: null,
+      staleSince: null,
+    });
+    await db.insertFile(
+      live("f1", "m.json", { mutable: true, etag: "e1", sha256: SHA_B }),
+    );
+    expect(await db.findFile("f1")).toMatchObject({
+      version: "",
+      mutable: true,
+      sha256: SHA_B,
+      etag: "e1",
+      staleSince: null,
+    });
+    await db.insertUpload({
+      ...upload("u1", "b1"),
+      version: "",
+      sha256: SHA_A,
+      mutable: true,
+      ifSha256: SHA_B,
+    });
+    expect(await db.findUpload("u1")).toMatchObject({
+      sha256: SHA_A,
+      mutable: true,
+      ifSha256: SHA_B,
+    });
+    await db.insertUpload(upload("u0", "b0"));
+    expect(await db.findUpload("u0")).toMatchObject({
+      sha256: null,
+      mutable: false,
+      ifSha256: null,
+    });
+  });
+
+  it("finds by paths and by object key, case-sensitively", async () => {
+    const db = await make();
+    await db.insertBundle({ ...bundle("b1"), mode: "live" });
+    await db.insertFile(live("f1", "a.json"));
+    await db.insertFile(live("f2", "A.json"));
+    await db.insertFile(live("f3", "dir/c.json"));
+    expect(
+      (await db.findFilesByPaths("b1", "", ["dir/c.json", "a.json", "x"])).map(
+        (f) => f.id,
+      ),
+    ).toEqual(["f1", "f3"]);
+    expect(await db.findFilesByPaths("b1", "", [])).toEqual([]);
+    expect(await db.findFilesByPaths("b1", "v1", ["a.json"])).toEqual([]);
+    expect((await db.findFileByObjectKey("assets/b1/A.json"))?.id).toBe("f2");
+    expect((await db.findFileByObjectKey("assets/b1/a.json"))?.id).toBe("f1");
+    expect(await db.findFileByObjectKey("assets/b1/a.JSON")).toBeUndefined();
+  });
+
+  it("replaces a mutable file only while it holds the expected etag", async () => {
+    const db = await make();
+    await db.insertBundle({ ...bundle("b1"), mode: "live" });
+    await db.insertFile(live("f1", "m.json", { mutable: true }));
+    await db.insertFile(live("f2", "i.json", { etag: "e0" }));
+    await db.setFileEtag("f1", "e1");
+    expect((await db.findFile("f1"))?.etag).toBe("e1");
+    await db.setStale("b1", ["m.json"], 5);
+    const next = {
+      sha256: SHA_B,
+      etag: "e2",
+      size: 20,
+      contentType: "text/plain; charset=utf-8",
+      hash: "h2",
+      at: 9,
+    };
+    expect(await db.replaceFile("f1", "e0", next)).toBe(false);
+    expect(await db.replaceFile("f1", "e1", next)).toBe(true);
+    expect(await db.findFile("f1")).toMatchObject({
+      sha256: SHA_B,
+      etag: "e2",
+      size: 20,
+      contentType: "text/plain; charset=utf-8",
+      hash: "h2",
+      createdAt: 9,
+      staleSince: null,
+    });
+    // The old etag no longer matches, and an immutable row never does.
+    expect(await db.replaceFile("f1", "e1", next)).toBe(false);
+    expect(await db.replaceFile("f2", "e0", next)).toBe(false);
+    expect(await db.replaceFile("nope", "e2", next)).toBe(false);
+  });
+
+  it("marks and clears stale paths without moving an earlier mark", async () => {
+    const db = await make();
+    await db.insertBundle({ ...bundle("b1"), mode: "live" });
+    await db.insertBundle(bundle("b0"));
+    await db.insertFile(live("f1", "a.json"));
+    await db.insertFile(live("f2", "b.json"));
+    await db.insertFile(file("f3", "b0", { path: "a.json" }));
+    expect(await db.setStale("b1", ["a.json", "b.json", "zz"], 5)).toBe(2);
+    expect(await db.setStale("b1", ["a.json"], 9)).toBe(0);
+    expect((await db.findFile("f1"))?.staleSince).toBe(5);
+    expect(await db.setStale("b1", ["b.json"], null)).toBe(1);
+    expect(await db.setStale("b1", ["b.json"], null)).toBe(0);
+    expect((await db.findFile("f2"))?.staleSince).toBeNull();
+    // Only a live bundle's rows (`version = ''`).
+    expect(await db.setStale("b0", ["a.json"], 5)).toBe(0);
+    expect(await db.setStale("b1", [], 5)).toBe(0);
+  });
+
+  it("walks a bundle in id batches, deletes by ids and lists its prefixes", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("b0"));
+    for (const [id, v] of [
+      ["f3", "v2"],
+      ["f1", "v1"],
+      ["f2", "v1"],
+    ] as const)
+      await db.insertFile(file(id, "b0", { version: v, path: `${id}.json` }));
+    await db.insertFile({
+      ...file("f4", "b0", { version: "v1", path: "old.json" }),
+      objectKey: "assets/legacy-name/v1/old.json",
+    });
+    const first = await db.listFileBatch("b0", { limit: 2 });
+    expect(first.map((f) => f.id)).toEqual(["f1", "f2"]);
+    const rest = await db.listFileBatch("b0", { afterId: "f2", limit: 10 });
+    expect(rest.map((f) => f.id)).toEqual(["f3", "f4"]);
+    expect(
+      (await db.listFileBatch("b0", { version: "v1", limit: 10 })).map(
+        (f) => f.id,
+      ),
+    ).toEqual(["f1", "f2", "f4"]);
+    expect(await db.objectKeyPrefixes("b0")).toEqual([
+      "assets/b-b0/",
+      "assets/legacy-name/",
+    ]);
+    expect(await db.objectKeyPrefixes("b0", "v1")).toEqual([
+      "assets/b-b0/v1/",
+      "assets/legacy-name/v1/",
+    ]);
+    expect(await db.objectKeyPrefixes("b0", "v9")).toEqual([]);
+    expect(await db.deleteFiles(["f1", "f3", "nope"])).toBe(2);
+    expect(await db.deleteFiles([])).toBe(0);
+    expect(
+      (await db.listFileBatch("b0", { limit: 10 })).map((f) => f.id),
+    ).toEqual(["f2", "f4"]);
+  });
+
+  it("keeps tombstones per bytes, restarts a repeated one and purges in batches", async () => {
+    const db = await make();
+    await db.insertBundle({ ...bundle("b1"), mode: "live" });
+    await db.insertBundle({ ...bundle("b2"), mode: "live" });
+    await db.insertTombstones(
+      "b1",
+      [
+        { path: "a.json", sha256: SHA_A },
+        { path: "A.json", sha256: SHA_B },
+      ],
+      10,
+    );
+    await db.insertTombstones("b1", [{ path: "a.json", sha256: SHA_C }], 20);
+    await db.insertTombstones("b2", [{ path: "a.json", sha256: SHA_A }], 30);
+    // A later deletion of the same bytes restarts the clock; an older one does not.
+    await db.insertTombstones("b1", [{ path: "a.json", sha256: SHA_A }], 40);
+    await db.insertTombstones("b1", [{ path: "a.json", sha256: SHA_A }], 5);
+    await db.insertTombstones("b1", [], 50);
+    expect(await db.findTombstones("b1", ["a.json"], 0)).toEqual([
+      { path: "a.json", sha256: SHA_A, deletedAt: 40 },
+      { path: "a.json", sha256: SHA_C, deletedAt: 20 },
+    ]);
+    expect(await db.findTombstones("b1", ["a.json", "A.json"], 21)).toEqual([
+      { path: "a.json", sha256: SHA_A, deletedAt: 40 },
+    ]);
+    expect(await db.findTombstones("b1", [], 0)).toEqual([]);
+    expect(await db.purgeTombstones(35, 1)).toBe(1);
+    expect(await db.findTombstones("b1", ["A.json"], 0)).toEqual([]);
+    expect(await db.purgeTombstones(35, 10)).toBe(2);
+    expect(await db.purgeTombstones(35, 10)).toBe(0);
+    await expect(db.purgeTombstones(35, 0)).rejects.toMatchObject({
+      code: "bad_request",
+    });
+    // The bundle's delete cascades.
+    await db.deleteBundle("b1");
+    expect(await db.findTombstones("b1", ["a.json"], 0)).toEqual([]);
+  });
+
+  it("inserts a batch of reservations all or nothing", async () => {
+    const db = await make();
+    await db.insertBundle({ ...bundle("b1"), mode: "live" });
+    await db.insertUploads([
+      { ...upload("u1", "b1"), version: "", sha256: SHA_A },
+      { ...upload("u2", "b1"), version: "", sha256: SHA_B, mutable: true },
+    ]);
+    expect(await db.findUpload("u2")).toMatchObject({
+      sha256: SHA_B,
+      mutable: true,
+      status: "pending",
+    });
+    await expect(
+      db.insertUploads([upload("u3", "b1"), upload("u1", "b1")]),
+    ).rejects.toBeDefined();
+    expect(await db.findUpload("u3")).toBeUndefined();
+    await db.insertUploads([]);
+  });
+
+  it("keeps uploads that name a claim past expiry and lists the unsettled ones oldest first", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("b0"));
+    await db.insertUpload({ ...upload("u1", "b0"), createdAt: 3 });
+    await db.insertUpload({ ...upload("u2", "b0"), createdAt: 2 });
+    await db.insertUpload(upload("u3", "b0"));
+    // A commit that died after its claim: still pending, naming the claim.
+    await db.insertUpload({ ...upload("u4", "b0"), createdAt: 1 });
+    // Pending with a claim and not yet expired: its commit may be running.
+    await db.insertUpload({
+      ...upload("u5", "b0"),
+      createdAt: 0,
+      expiresAt: 5000,
+    });
+    await db.updateUpload("u1", { status: "failed", fileId: "af_u1" });
+    await db.updateUpload("u2", { status: "failed", fileId: "af_u2" });
+    await db.updateUpload("u3", { status: "failed" });
+    await db.updateUpload("u4", { fileId: "af_u4", objectKey: "assets/x/k" });
+    await db.updateUpload("u5", { fileId: "af_u5" });
+    expect((await db.listUnsettledUploads(1000, 10)).map((u) => u.id)).toEqual([
+      "u4",
+      "u2",
+      "u1",
+    ]);
+    expect((await db.listUnsettledUploads(1000, 1)).map((u) => u.id)).toEqual([
+      "u4",
+    ]);
+    // Before u4 expires it is not the sweep's business yet.
+    expect((await db.listUnsettledUploads(50, 10)).map((u) => u.id)).toEqual([
+      "u2",
+      "u1",
+    ]);
+    // Only the upload that names no claim goes.
+    expect(await db.deleteExpiredUploads(10_000)).toBe(1);
+    expect(await db.findUpload("u3")).toBeUndefined();
+    for (const id of ["u1", "u2", "u4", "u5"])
+      expect(await db.findUpload(id), id).toBeDefined();
+    expect(await db.deleteUpload("u1")).toBe(true);
+    expect(await db.deleteUpload("u1")).toBe(false);
+  });
+}
+
 describe("memory assets repository", () => {
   assetUsageContract(() => createMemoryAssetsDb());
+  assetLiveContract(() => createMemoryAssetsDb());
   const logins = new Map<string, string>();
   assetsContract(
     () => {

@@ -32,20 +32,24 @@ const mailResetBody = z
 /**
  * Dev-only (`STAGE=dev` + `DEBUG_HOOKS=1`): mint a console session for a
  * synthetic member without GitHub, so channel/token flows can be verified with
- * curl, and reset today's limit-request mail counters so the per-team and
- * per-stage caps can be exercised again. The handler refuses to register
- * these unless the guard passes.
+ * curl, reset today's limit-request mail counters so the per-team and
+ * per-stage caps can be exercised again, and probe what the runtime's S3 SDK
+ * does with conditional copies and signed checksums (`s3-probe.ts`). The
+ * handler refuses to register these unless the guard passes.
  */
 export function createDebugRoutes({
   debugKey,
   db,
   kv,
   clock,
+  s3Probe,
 }: {
   debugKey: string;
   db: ConsoleDb;
   kv: Kv;
   clock: Clock;
+  /** `undefined` when the artifact bucket is not configured (503). */
+  s3Probe?: () => Promise<unknown>;
 }): AnyRoute[] {
   if (debugKey.length < 16)
     throw new Error("DEBUG_KEY must be at least 16 characters");
@@ -57,6 +61,19 @@ export function createDebugRoutes({
       throw new AppError("unauthorized", "debug key required");
   };
   return [
+    {
+      method: "POST",
+      path: "/debug/s3-probe",
+      handler: async ({ headers }) => {
+        requireKey(headers);
+        if (!s3Probe)
+          throw new AppError(
+            "unavailable",
+            "artifact storage is not configured",
+          );
+        return s3Probe();
+      },
+    },
     defineRoute({
       method: "POST",
       path: "/debug/limit-mail-reset",

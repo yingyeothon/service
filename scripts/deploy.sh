@@ -11,6 +11,10 @@ cd "$(dirname "$0")/.."
 # (docs/decisions.md *CDN cost guard* §11, scripts/origin-oac.sh).
 if [[ "${SERVICE}" == "console" ]]; then
   scripts/origin-oac.sh "${STAGE}" check-deploy
+  # Abandoned multipart parts are invisible and billed: the artifact bucket's
+  # lifecycle rule is the backstop behind the console's own sweep
+  # (docs/decisions.md *Large asset uploads* #4).
+  scripts/s3-intelligent-tiering.sh "${STAGE}" check
 fi
 # Services bundle packages from their dist/, so always rebuild them first.
 pnpm -r --filter "./packages/**" build

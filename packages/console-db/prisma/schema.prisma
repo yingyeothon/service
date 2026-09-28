@@ -31,6 +31,8 @@ model asset_bundles {
   updated_at            BigInt
   team_id               String                  @db.VarChar(64)
   project_id            String                  @db.VarChar(64)
+  /// Fixed at creation (docs/decisions.md *Live and encrypted asset bundles* #1).
+  mode                  asset_bundles_mode      @default(versioned)
   members               members?                @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_owner")
   teams                 teams                   @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_team_fk")
   projects              projects                @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_project_fk")
@@ -39,6 +41,7 @@ model asset_bundles {
   project_version_links project_version_links[]
   limit_requests        limit_requests[]
   limit_overrides       limit_overrides[]
+  asset_tombstones      asset_tombstones[]
 
   @@unique([team_id, name], map: "asset_bundles_team_name")
   @@index([owner_id], map: "asset_bundles_owner")
@@ -56,11 +59,34 @@ model asset_files {
   size          BigInt
   hash          String?       @db.VarChar(128)
   created_at    BigInt
+  /// Live bundles only: served `no-cache` and replaceable in place.
+  mutable       Boolean       @default(false)
+  /// Hex SHA-256 of the object's bytes; required in a live bundle.
+  sha256        String?       @db.Char(64)
+  /// The committed object's ETag, the `If-Match` of a mutable file's next copy.
+  etag          String?       @db.VarChar(128)
+  /// Set by a sync when the file vanished locally; `--prune` deletes only these.
+  stale_since   BigInt?
   asset_bundles asset_bundles @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "asset_files_bundle")
 
   @@unique([bundle_id, version, path], map: "asset_files_path")
   /// Covering: per-version COUNT, SUM(size) and MIN(created_at) read the index alone.
   @@index([bundle_id, version, size, created_at], map: "asset_files_version")
+  /// A lobby `mapUrl` resolves to its file through the stored key.
+  @@index([object_key(length: 255)], map: "asset_files_object_key")
+}
+
+/// A deleted immutable file of a live bundle: for 400 days its path takes only
+/// the same bytes again, so no edge keeps serving old content under a reused name.
+model asset_tombstones {
+  bundle_id     String        @db.VarChar(64)
+  path          String        @db.VarChar(255)
+  sha256        String        @db.Char(64)
+  deleted_at    BigInt
+  asset_bundles asset_bundles @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "asset_tombstones_bundle")
+
+  @@id([bundle_id, path, sha256])
+  @@index([deleted_at], map: "asset_tombstones_deleted")
 }
 
 model asset_pending_uploads {
@@ -76,6 +102,10 @@ model asset_pending_uploads {
   file_id       String?                      @db.VarChar(64)
   created_at    BigInt
   expires_at    BigInt
+  sha256        String?                      @db.Char(64)
+  mutable       Boolean                      @default(false)
+  /// The sha256 a mutable replacement expects to replace (optional).
+  if_sha256     String?                      @db.Char(64)
   asset_bundles asset_bundles                @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "asset_pending_uploads_bundle")
 
   @@index([bundle_id], map: "asset_pending_uploads_bundle")
@@ -403,6 +433,11 @@ enum asset_pending_uploads_status {
   pending
   completed
   failed
+}
+
+enum asset_bundles_mode {
+  versioned
+  live
 }
 
 enum catalog_pending_uploads_status {
