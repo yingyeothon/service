@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
-import type { AssetBundleDetail, TeamDetail } from "../src/types";
+import type {
+  AssetBundleDetail,
+  AssetFile,
+  LimitsView,
+  TeamDetail,
+} from "../src/types";
 
 const mockApi = {
   me: vi.fn(),
@@ -17,6 +22,9 @@ const mockApi = {
   deleteAssetBundle: vi.fn(),
   deleteAssetVersion: vi.fn(),
   uploadAssetFile: vi.fn(),
+  limits: vi.fn(),
+  requestLimit: vi.fn(),
+  cancelLimitRequest: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -39,9 +47,58 @@ const BUNDLE: AssetBundleDetail = {
   projectId: "prj_1",
   projectName: "dungeon",
   createdBy: "alice",
+  files: 2,
   bytes: 4096,
   versions: [{ version: "v1", files: 2, bytes: 4096, createdAt: 0 }],
 };
+
+const MiB = 1024 * 1024;
+const LIMITS: LimitsView = {
+  scope: { kind: "bundle", id: "ab_1" },
+  teamId: "team_1",
+  limits: [
+    {
+      key: "asset.fileBytes",
+      unit: "bytes",
+      soft: 2 * MiB,
+      hard: 256 * MiB,
+      effective: 8 * MiB,
+      usage: 10,
+      override: {
+        value: 8 * MiB,
+        expiresAt: null,
+        note: "big tilesets",
+        requestId: "lr_1",
+        grantedBy: "u9",
+        grantedByLogin: "boss",
+        grantedAt: 0,
+      },
+    },
+    {
+      key: "asset.bundleBytes",
+      unit: "bytes",
+      soft: 20 * MiB,
+      hard: 3072 * MiB,
+      effective: 20 * MiB,
+      usage: 4096,
+      override: null,
+    },
+  ],
+  pending: [],
+};
+
+const file = (path: string): AssetFile => ({
+  id: `f_${path}`,
+  bundleId: "ab_1",
+  version: "v1",
+  path,
+  url: `https://cdn.example/assets/ab_1/v1/${path}`,
+  objectKey: "k",
+  contentType: "application/json",
+  size: 10,
+  hash: null,
+  createdAt: 0,
+});
 
 function open(bundle = BUNDLE) {
   vi.mocked(mockApi.assetBundle).mockResolvedValue(bundle);
@@ -67,22 +124,14 @@ describe("AssetBundlePage", () => {
       via: "session",
     });
     vi.mocked(mockApi.team).mockResolvedValue(TEAM);
+    vi.mocked(mockApi.limits).mockResolvedValue(LIMITS);
     vi.mocked(mockApi.assetVersion).mockResolvedValue({
-      files: [
-        {
-          id: "f1",
-          bundleId: "ab_1",
-          version: "v1",
-          path: "maps/a.json",
-          url: "https://cdn.example/assets/ab_1/v1/maps/a.json",
-          objectKey: "k",
-          contentType: "application/json",
-          size: 10,
-          hash: null,
-          createdAt: 0,
-        },
-      ],
-    } as never);
+      bundle: "dungeon-maps",
+      bundleId: "ab_1",
+      version: "v1",
+      files: [file("maps/a.json")],
+      next: null,
+    });
   });
 
   it("lists versions, opens a version's files and shows the CDN prefix", async () => {
@@ -94,7 +143,9 @@ describe("AssetBundlePage", () => {
     expect(screen.getByText("assets/ab_1/")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Show files" }));
     await waitFor(() =>
-      expect(mockApi.assetVersion).toHaveBeenCalledWith("ab_1", "v1"),
+      expect(mockApi.assetVersion).toHaveBeenCalledWith("ab_1", "v1", {
+        cursor: undefined,
+      }),
     );
     expect(await screen.findByText("maps/a.json")).toBeInTheDocument();
     for (const col of ["Path", "Type", "URL"])
@@ -103,6 +154,54 @@ describe("AssetBundlePage", () => {
       ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Hide files" }),
+    ).toBeInTheDocument();
+  });
+
+  it("pages a version's files with Load more", async () => {
+    vi.mocked(mockApi.assetVersion)
+      .mockResolvedValueOnce({
+        bundle: "dungeon-maps",
+        bundleId: "ab_1",
+        version: "v1",
+        files: [file("maps/a.json")],
+        next: "maps/a.json",
+      })
+      .mockResolvedValueOnce({
+        bundle: "dungeon-maps",
+        bundleId: "ab_1",
+        version: "v1",
+        files: [file("maps/b.json")],
+        next: null,
+      });
+    open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show files" }),
+    );
+    expect(await screen.findByText("maps/a.json")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("maps/b.json")).toBeInTheDocument();
+    expect(mockApi.assetVersion).toHaveBeenLastCalledWith("ab_1", "v1", {
+      cursor: "maps/a.json",
+    });
+    // Both pages stay; the last one had no cursor, so the button goes.
+    expect(screen.getByText("maps/a.json")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("states the bundle's effective limits instead of fixed numbers", async () => {
+    open();
+    await screen.findByRole("heading", { name: "dungeon-maps" });
+    expect(mockApi.limits).toHaveBeenCalledWith("bundle:ab_1");
+    // Binary units, as the limits are defined and asked for.
+    expect(await screen.findByText(/4 KiB of 20 MiB/)).toBeInTheDocument();
+    expect(screen.getByText(/up to 8 MiB per file/)).toBeInTheDocument();
+    const limits = screen
+      .getByRole("heading", { name: "Limits" })
+      .closest("section")!;
+    expect(within(limits).getByText("File size")).toBeInTheDocument();
+    expect(within(limits).getByText("256 MiB")).toBeInTheDocument();
+    expect(
+      within(limits).getByRole("button", { name: /^raised/ }),
     ).toBeInTheDocument();
   });
 

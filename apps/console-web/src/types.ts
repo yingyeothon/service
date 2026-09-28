@@ -250,6 +250,12 @@ export interface InstallerAppSetting {
 
 // ---- channels ---------------------------------------------------------------
 
+/**
+ * `expiresAt` of a channel granted no expiry (9999-12-31T23:59:59Z,
+ * docs/decisions.md *Limit requests* #7); `isNoExpiry` in `lib/format.ts`.
+ */
+export const CHANNEL_NO_EXPIRY_SEC = 253402300799;
+
 export interface AuthConfig {
   audience: string;
   tokenTtlSec: number;
@@ -604,7 +610,27 @@ export interface AssetBundle extends ResourceCrumbs {
 
 export interface AssetBundleDetail extends AssetBundle {
   versions: AssetVersion[];
+  /** Files over every version; `versions[].files` counts one version. */
+  files: number;
   bytes: number;
+}
+
+/** One page of a version's files, `path` order; `next` is the last path. */
+export interface AssetFilePage {
+  bundleId: string;
+  version: string;
+  files: AssetFile[];
+  next: string | null;
+}
+
+/** `GET /assets/bundles/{b}/versions/{v}`: the page plus the bundle's name. */
+export interface AssetVersionPage extends AssetFilePage {
+  bundle: string;
+}
+
+export interface CursorPage {
+  cursor?: string;
+  limit?: number;
 }
 
 export interface AssetFile {
@@ -1064,4 +1090,105 @@ export interface KitConfig {
   /** Absent, not empty, when the project has none — same rule as the sections above. */
   collections?: Record<string, string>;
   boards?: Record<string, string>;
+}
+
+// ---- limits (docs/decisions.md *Limit requests (soft/hard)*) --------------
+
+export type LimitScopeKind = "project" | "bundle" | "channel";
+export type LimitUnit = "bytes" | "count" | "seconds";
+/** `unlimited` exists only where the hard value is (`channel.lifetime`). */
+export type LimitValue = number | "unlimited";
+export type LimitRequestStatus =
+  "pending" | "approved" | "rejected" | "cancelled";
+export const LIMIT_REQUEST_STATUSES: readonly LimitRequestStatus[] = [
+  "pending",
+  "approved",
+  "rejected",
+  "cancelled",
+];
+
+export interface LimitOverride {
+  value: LimitValue;
+  /** A temporary raise ends here; `null` = until revoked. */
+  expiresAt: number | null;
+  note: string;
+  requestId: string | null;
+  grantedBy: string;
+  grantedByLogin: string | null;
+  grantedAt: number;
+}
+
+/** One key of `GET /limits`: the registry row plus this scope's standing. */
+export interface LimitRow {
+  key: string;
+  unit: LimitUnit;
+  soft: number;
+  hard: LimitValue;
+  effective: LimitValue;
+  /** `null` where nothing is counted (`channel.lifetime`). */
+  usage: number | null;
+  override: LimitOverride | null;
+}
+
+export interface LimitRequest {
+  id: string;
+  teamId: string;
+  teamName: string | null;
+  scope: { kind: LimitScopeKind; id: string; name: string | null };
+  key: string;
+  /** The registry's unit and ceiling for `key`; `null` for a retired key. */
+  unit: LimitUnit | null;
+  hard: LimitValue | null;
+  requestedValue: LimitValue;
+  reason: string;
+  status: LimitRequestStatus;
+  /** What was granted; only on an approved request. */
+  decidedValue: LimitValue | null;
+  decisionNote: string | null;
+  createdBy: string;
+  createdByLogin: string | null;
+  createdAt: number;
+  decidedBy: string | null;
+  decidedByLogin: string | null;
+  decidedAt: number | null;
+}
+
+export interface LimitsView {
+  scope: { kind: LimitScopeKind; id: string };
+  teamId: string;
+  /** Channel scope only: the channel's `expiresAt`. */
+  expiresAt?: number;
+  limits: LimitRow[];
+  /** This scope's pending requests. */
+  pending: LimitRequest[];
+}
+
+/** Body of `POST /limit-requests`; `scope` is `<kind>:<id>`. */
+export interface LimitRequestInput {
+  scope: string;
+  key: string;
+  value: LimitValue;
+  reason: string;
+}
+
+export interface LimitRequestQuery extends CursorPage {
+  status?: LimitRequestStatus;
+}
+
+export interface LimitRequestPage {
+  requests: LimitRequest[];
+  next: string | null;
+}
+
+/** The platform-wide list also counts what waits, for the menu badge. */
+export interface AdminLimitRequestPage extends LimitRequestPage {
+  pending: number;
+  oldestPendingAt: number | null;
+}
+
+export interface LimitOverrideResult {
+  scope: { kind: LimitScopeKind; id: string };
+  key: string;
+  effective: LimitValue;
+  override: LimitOverride | null;
 }

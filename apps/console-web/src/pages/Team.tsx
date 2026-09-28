@@ -16,6 +16,7 @@ import { Crumbs } from "../components/Crumbs";
 import { DataTable, NameCell } from "../components/DataTable";
 import { FilterBar, TextFilter } from "../components/FilterBar";
 import { HistoryList } from "../components/HistoryList";
+import { cancelItem, RequestDetailsDrawer } from "../components/Limits";
 import { PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
 import { MdField } from "../components/MdField";
@@ -27,7 +28,9 @@ import { RowMenu, type RowMenuItem } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { Badge, CopyField, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
+import { useCursorList } from "../lib/cursor";
 import { fmtTime } from "../lib/format";
+import { fmtRequestValue, limitLabel } from "../lib/limits";
 import { notify } from "../lib/notify";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
@@ -39,10 +42,17 @@ import {
   useTeamStanding,
   useInvalidateTeams,
 } from "../lib/team";
-import type { Member, TeamDetail, TeamMember } from "../types";
+import type { LimitRequest, Member, TeamDetail, TeamMember } from "../types";
+import { RequesterCell, ScopeCell, StatusCell } from "./LimitRequests";
 import { RotationNotice, type LeftState } from "./Teams";
 
-const TABS = ["projects", "members", "discussions", "history"];
+const TABS = [
+  "projects",
+  "members",
+  "discussions",
+  "limit-requests",
+  "history",
+];
 const TEAMS_CRUMB = [{ label: "Teams", to: "/teams" }];
 
 export function TeamPage() {
@@ -222,6 +232,7 @@ export function TeamPage() {
           <Tabs.Tab value="projects">Projects</Tabs.Tab>
           <Tabs.Tab value="members">Members</Tabs.Tab>
           <Tabs.Tab value="discussions">Discussions</Tabs.Tab>
+          <Tabs.Tab value="limit-requests">Limit requests</Tabs.Tab>
           <Tabs.Tab value="history">History</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="projects" pt="lg">
@@ -232,6 +243,9 @@ export function TeamPage() {
         </Tabs.Panel>
         <Tabs.Panel value="discussions" pt="lg">
           <DiscussionsTab team={team} canWrite={t.canWrite} />
+        </Tabs.Panel>
+        <Tabs.Panel value="limit-requests" pt="lg">
+          <LimitRequestsTab team={team} />
         </Tabs.Panel>
         <Tabs.Panel value="history" pt="lg">
           <Section title="History">
@@ -866,5 +880,92 @@ export function DiscussionFields({
         onChange={(bodyMd) => onChange({ bodyMd })}
       />
     </Stack>
+  );
+}
+
+/**
+ * The team's limit requests, newest first (docs/decisions.md *Limit requests*
+ * #2). Asking happens on the scope's own page (bundle, project assets,
+ * channel); here the requester or an owner may cancel one still pending.
+ */
+function LimitRequestsTab({ team }: { team: TeamDetail }) {
+  const { me } = useAuth();
+  const list = useCursorList(
+    ["limit-requests", team.id],
+    (cursor) => api.limitRequests(team.id, { cursor }),
+    (page) => page.requests,
+  );
+  const act = useAction();
+  const seated = team.role === "owner" || team.role === "member";
+  const [viewing, setViewing] = useState<LimitRequest | null>(null);
+  const cancel = async (r: LimitRequest) => {
+    const ok = await act.run(() => api.cancelLimitRequest(r.id));
+    if (!ok) return;
+    notify.done("Request cancelled");
+    await list.reload();
+  };
+  return (
+    <Section
+      title="Limit requests"
+      description="Asked for on a bundle, the project's Assets tab or a channel; a platform admin decides. A rejected or cancelled request blocks the same limit for 7 days."
+    >
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={[
+          { key: "limit", label: "Limit" },
+          { key: "scope", label: "Scope" },
+          { key: "value", label: "Requested", align: "right" },
+          { key: "by", label: "Requester" },
+          { key: "status", label: "Status" },
+        ]}
+        rows={list.rows}
+        loading={list.loading}
+        error={list.error}
+        rowKey={(r) => r.id}
+        minWidth={640}
+        empty={{ title: "No limit requests yet." }}
+        render={(r) => (
+          <>
+            <Table.Td style={{ whiteSpace: "nowrap" }}>
+              {limitLabel(r.key)}
+            </Table.Td>
+            <ScopeCell r={r} />
+            <Table.Td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+              {fmtRequestValue(r, r.requestedValue)}
+            </Table.Td>
+            <RequesterCell r={r} />
+            <StatusCell r={r} />
+          </>
+        )}
+        actions={(r) => (
+          <RowMenu
+            name={`${limitLabel(r.key)} of ${r.scope.name ?? r.scope.id}`}
+            items={[
+              // What was granted and the admin's note live here.
+              { label: "Details", onClick: () => setViewing(r) },
+              ...(seated &&
+              r.status === "pending" &&
+              (team.role === "owner" || r.createdBy === me?.id)
+                ? [cancelItem(r, act.busy, () => cancel(r))]
+                : []),
+            ]}
+          />
+        )}
+      />
+      {list.next && (
+        <Button
+          variant="default"
+          mt="md"
+          disabled={list.busy || list.fetching}
+          onClick={() => void list.loadMore()}
+        >
+          Load more
+        </Button>
+      )}
+      <RequestDetailsDrawer
+        request={viewing}
+        onClose={() => setViewing(null)}
+      />
+    </Section>
   );
 }

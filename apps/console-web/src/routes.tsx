@@ -13,6 +13,7 @@ import { InstallerPage } from "./pages/Installer";
 import { IssuePage } from "./pages/Issue";
 import { KvCollectionPage } from "./pages/KvCollection";
 import { LeaderboardPage } from "./pages/Leaderboard";
+import { LimitRequestsPage } from "./pages/LimitRequests";
 import { VersionPage } from "./pages/Version";
 import { MembersPage } from "./pages/Members";
 import { ProjectPage } from "./pages/Project";
@@ -53,6 +54,11 @@ export const ROUTES: AppRoute[] = [
     element: <ShowEntryPage />,
   },
   { path: "/audit", guard: "/audit", element: <AuditPage /> },
+  {
+    path: "/admin/limit-requests",
+    guard: "/admin/limit-requests",
+    element: <LimitRequestsPage />,
+  },
   { path: "/teams", guard: "/teams", element: <TeamsPage /> },
   { path: "/teams/:team", guard: "/teams", element: <TeamPage /> },
   { path: "/teams/:team/:tab", guard: "/teams", element: <TeamPage /> },

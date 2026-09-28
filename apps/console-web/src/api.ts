@@ -14,8 +14,12 @@ import type {
   ShowSubmittable,
   ShowSummary,
   ShowTargetKind,
+  AdminLimitRequestPage,
   AssetBundle,
   AssetBundleDetail,
+  AssetFilePage,
+  AssetVersionPage,
+  CursorPage,
   Site,
   SiteDeploy,
   SiteDeployGrant,
@@ -68,6 +72,15 @@ import type {
   Leaderboard,
   LeaderboardDetail,
   LeaderboardWrite,
+  LimitOverrideResult,
+  LimitRequest,
+  LimitRequestInput,
+  LimitRequestPage,
+  LimitRequestQuery,
+  LimitRequestStatus,
+  LimitScopeKind,
+  LimitValue,
+  LimitsView,
   Me,
   Member,
   PosterUpload,
@@ -605,6 +618,52 @@ export function createApiClient({
       ),
     auditRow: (id: string) => get<AuditDetail>(`/admin/audit/${enc(id)}`),
 
+    // ---- limits (docs/decisions.md *Limit requests*) -----------------------
+    /** `scope` is `<kind>:<id>` (`limitScope` in `lib/limits.ts`). */
+    limits: (scope: string) => get<LimitsView>(`/limits${qs({ scope })}`),
+    /** 201; 403 for a seatless admin, 409 while one is pending, 429 in the cooldown. */
+    requestLimit: (body: LimitRequestInput) =>
+      post<LimitRequest>("/limit-requests", body),
+    /** The team's requests, newest first. */
+    limitRequests: (team: string, q: LimitRequestQuery = {}) =>
+      get<LimitRequestPage>(`/limit-requests${qs({ team, ...q })}`),
+    /** The requester while seated, or a team owner. */
+    cancelLimitRequest: (id: string) =>
+      post<LimitRequest>(`/limit-requests/${enc(id)}/cancel`),
+    /** Platform admin: every team's requests plus the pending count. */
+    adminLimitRequests: (
+      q: { status?: LimitRequestStatus } & CursorPage = {},
+    ) => get<AdminLimitRequestPage>(`/admin/limit-requests${qs(q)}`),
+    /** Platform admin: grants the requested value, or `value` (≤ hard). */
+    approveLimitRequest: (
+      id: string,
+      body: { value?: LimitValue; note?: string } = {},
+    ) => post<LimitRequest>(`/admin/limit-requests/${enc(id)}/approve`, body),
+    /** Platform admin: the note is required. */
+    rejectLimitRequest: (id: string, note: string) =>
+      post<LimitRequest>(`/admin/limit-requests/${enc(id)}/reject`, { note }),
+    /** Platform admin: sets an override without a request. */
+    setLimitOverride: (
+      kind: LimitScopeKind,
+      id: string,
+      key: string,
+      body: { value: LimitValue; expiresAt?: number; note: string },
+    ) =>
+      put<LimitOverrideResult>(
+        `/admin/limit-overrides/${enc(kind)}/${enc(id)}/${enc(key)}`,
+        body,
+      ),
+    /** Platform admin: 204; stored data stays, new writes meet the soft value. */
+    revokeLimitOverride: (
+      kind: LimitScopeKind,
+      id: string,
+      key: string,
+      note: string,
+    ) =>
+      del(`/admin/limit-overrides/${enc(kind)}/${enc(id)}/${enc(key)}`, {
+        note,
+      }),
+
     // ---- binary catalog (apps are addressed by id) -------------------------
     projectCatalogApps: (prj: string, p: ListParams = {}) =>
       get<{ apps: CatalogApp[] }>(
@@ -671,9 +730,15 @@ export function createApiClient({
       body: { name?: string; description?: string | null },
     ) => patch<AssetBundle>(`/assets/bundles/${enc(id)}`, body),
     deleteAssetBundle: (id: string) => del(`/assets/bundles/${enc(id)}`),
-    assetVersion: (id: string, version: string) =>
-      get<{ bundle: string; version: string; files: AssetFile[] }>(
-        `/assets/bundles/${enc(id)}/versions/${enc(version)}`,
+    /** One page of a version's files (`path` order); 404 for an unknown version. */
+    assetVersion: (id: string, version: string, page: CursorPage = {}) =>
+      get<AssetVersionPage>(
+        `/assets/bundles/${enc(id)}/versions/${enc(version)}${qs(page)}`,
+      ),
+    /** The same page by query; an unknown version is an empty page. */
+    assetFiles: (id: string, version: string, page: CursorPage = {}) =>
+      get<AssetFilePage>(
+        `/assets/bundles/${enc(id)}/files${qs({ version, ...page })}`,
       ),
     deleteAssetVersion: (id: string, version: string) =>
       del(`/assets/bundles/${enc(id)}/versions/${enc(version)}`),

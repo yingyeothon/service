@@ -18,6 +18,7 @@ const mockApi = {
   members: vi.fn(),
   installerApp: vi.fn(),
   installerDownloads: vi.fn(),
+  adminLimitRequests: vi.fn(),
   setUnauthorizedHandler: vi.fn(),
 } as unknown as ApiClient;
 
@@ -64,6 +65,12 @@ describe("App", () => {
     vi.mocked(mockApi.tokens).mockResolvedValue([]);
     vi.mocked(mockApi.members).mockResolvedValue([]);
     vi.mocked(mockApi.installerDownloads).mockResolvedValue([]);
+    vi.mocked(mockApi.adminLimitRequests).mockResolvedValue({
+      requests: [],
+      next: null,
+      pending: 0,
+      oldestPendingAt: null,
+    });
     vi.mocked(mockApi.installerApp).mockResolvedValue({
       appId: null,
       appName: null,
@@ -216,6 +223,51 @@ describe("App", () => {
       await screen.findByRole("button", { name: "Approve" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/1 sign-up waiting/)).toBeInTheDocument();
+    // Nothing waits: the limit requests entry carries no count.
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(
+      within(nav).getByRole("link", { name: "Limit requests" }),
+    ).toBeInTheDocument();
+  });
+
+  it("badges the limit requests entry with the pending count for an admin", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "m_1",
+      login: "root",
+      role: "admin",
+      via: "session",
+    });
+    vi.mocked(mockApi.adminLimitRequests).mockResolvedValue({
+      requests: [],
+      next: null,
+      pending: 3,
+      oldestPendingAt: 0,
+    });
+    mount("/members");
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(
+      await within(nav).findByRole("link", {
+        name: "Limit requests 3 pending",
+      }),
+    ).toHaveAttribute("href", "/admin/limit-requests");
+    expect(mockApi.adminLimitRequests).toHaveBeenCalledWith({
+      status: "pending",
+      limit: 1,
+    });
+  });
+
+  it("never asks a member for the pending count", async () => {
+    vi.mocked(mockApi.adminLimitRequests).mockClear();
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "m_1",
+      login: "someone",
+      role: "member",
+      via: "session",
+    });
+    mount("/teams");
+    expect(await screen.findByText(/not in any team yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Limit requests/ })).toBeNull();
+    expect(mockApi.adminLimitRequests).not.toHaveBeenCalled();
   });
 });
 

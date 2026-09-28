@@ -3,6 +3,7 @@ import {
   IconClipboardList,
   IconDatabase,
   IconDeviceMobileDown,
+  IconGauge,
   IconHome,
   IconKey,
   IconPackages,
@@ -21,6 +22,12 @@ import type { Role } from "./types";
 
 export type NavIcon = ComponentType<IconProps>;
 
+/**
+ * A count the menu shows beside an item; each id names one query in
+ * `components/layout.tsx` (a hook cannot live in this config).
+ */
+export type NavBadge = "pendingLimitRequests";
+
 export interface NavItem {
   path: string;
   label: string;
@@ -37,6 +44,8 @@ export interface NavItem {
    * the detail pages keep their paths (bookmarks, CLI output).
    */
   hidden?: boolean;
+  /** A count beside the label, hidden while zero. */
+  badge?: NavBadge;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -102,6 +111,13 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { path: "/tokens", label: "API tokens", icon: IconKey, minRole: "pending" },
   { path: "/members", label: "Members", icon: IconUsers, minRole: "admin" },
+  {
+    path: "/admin/limit-requests",
+    label: "Limit requests",
+    icon: IconGauge,
+    minRole: "admin",
+    badge: "pendingLimitRequests",
+  },
   // Visible rather than hidden: `hidden` marks a path that guards routes
   // reached from elsewhere, and `test/routes.test.tsx` pins that list.
   {

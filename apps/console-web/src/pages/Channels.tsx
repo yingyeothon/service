@@ -8,7 +8,7 @@ import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
 import { PageHeader } from "../components/PageHeader";
 import { RowMenu } from "../components/RowMenu";
 import { Badge, Notice } from "../components/ui";
-import { fmtRelative, fmtTime } from "../lib/format";
+import { fmtRelative, fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
@@ -20,6 +20,17 @@ const STATUS_TONE: Record<ChannelStatus, string> = {
   expired: "warn",
   disabled: "danger",
 };
+
+/** "in 5d" (the date on hover), or "No expiry" for a channel granted none. */
+export function ExpiresCell({ expiresAt }: { expiresAt: number }) {
+  if (isNoExpiry(expiresAt))
+    return <Table.Td style={{ whiteSpace: "nowrap" }}>No expiry</Table.Td>;
+  return (
+    <Table.Td title={fmtTime(expiresAt)} style={{ whiteSpace: "nowrap" }}>
+      {fmtRelative(expiresAt)}
+    </Table.Td>
+  );
+}
 
 /** Every channel across the caller's teams; creation happens on a project page. */
 export function ChannelsPage() {
@@ -161,20 +172,23 @@ export function ChannelsPage() {
             <Table.Td>
               <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
             </Table.Td>
-            <Table.Td title={fmtTime(c.expiresAt)}>
-              {fmtRelative(c.expiresAt)}
-            </Table.Td>
+            <ExpiresCell expiresAt={c.expiresAt} />
           </>
         )}
         actions={(c) => (
           <RowMenu
             name={c.name}
             items={[
-              {
-                label: "Extend +7 days",
-                onClick: () => extend(c.id),
-                disabled: act.busy,
-              },
+              // A channel granted no expiry has nothing to extend (409).
+              ...(isNoExpiry(c.expiresAt)
+                ? []
+                : [
+                    {
+                      label: "Extend +7 days",
+                      onClick: () => extend(c.id),
+                      disabled: act.busy,
+                    },
+                  ]),
               {
                 label: "Delete channel",
                 danger: true,

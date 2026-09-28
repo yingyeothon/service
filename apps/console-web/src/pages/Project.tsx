@@ -13,6 +13,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
+import { LimitsSection, useLimits } from "../components/Limits";
 import {
   DataTable,
   NameCell,
@@ -30,7 +31,7 @@ import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { Badge, CopyField, CopyText, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
-import { fmtRelative, fmtTime } from "../lib/format";
+import { fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
@@ -50,8 +51,10 @@ import {
   type LbRule,
   type LbSubmit,
   type ProjectDetail,
+  type TeamStanding,
   type Version,
 } from "../types";
+import { ExpiresCell } from "./Channels";
 import { ISSUE_TONE, VersionSelect } from "./Issue";
 import {
   CapFields,
@@ -232,7 +235,11 @@ export function ProjectPage() {
           <CatalogTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
         <Tabs.Panel value="assets" pt="lg">
-          <AssetsTab project={project} canWrite={canWrite} />
+          <AssetsTab
+            project={project}
+            canWrite={canWrite}
+            standing={t.standing}
+          />
         </Tabs.Panel>
         <Tabs.Panel value="sites" pt="lg">
           <SitesTab project={project} canWrite={canWrite} />
@@ -394,9 +401,7 @@ function ChannelsTab({
             <Table.Td>
               <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
             </Table.Td>
-            <Table.Td title={fmtTime(c.expiresAt)}>
-              {fmtRelative(c.expiresAt)}
-            </Table.Td>
+            <ExpiresCell expiresAt={c.expiresAt} />
           </>
         )}
         actions={
@@ -405,11 +410,16 @@ function ChannelsTab({
                 <RowMenu
                   name={c.name}
                   items={[
-                    {
-                      label: "Extend +7 days",
-                      onClick: () => extend(c.id),
-                      disabled: act.busy,
-                    },
+                    // A channel granted no expiry has nothing to extend (409).
+                    ...(isNoExpiry(c.expiresAt)
+                      ? []
+                      : [
+                          {
+                            label: "Extend +7 days",
+                            onClick: () => extend(c.id),
+                            disabled: act.busy,
+                          },
+                        ]),
                     {
                       label: "Delete channel",
                       danger: true,
@@ -453,6 +463,7 @@ function ResourceListTab<T extends { id: string }>({
   columns,
   row,
   emptyText,
+  onCreated,
 }: {
   project: ProjectDetail;
   canWrite: boolean;
@@ -480,6 +491,8 @@ function ResourceListTab<T extends { id: string }>({
   /** The cells after the name cell. */
   row: (item: T) => ReactNode;
   emptyText: string;
+  /** After a create, for what else counts the rows (the project's limits). */
+  onCreated?: () => Promise<void>;
 }) {
   const lq = useListQuery({ scope: project.id });
   const list = useApiQuery(
@@ -497,7 +510,7 @@ function ResourceListTab<T extends { id: string }>({
     if (!r) return;
     drawer.close();
     notify.created(noun);
-    await list.reload();
+    await Promise.all([list.reload(), onCreated?.()]);
   };
   const canSubmit =
     !!drawer.form.name.trim() &&
@@ -614,48 +627,64 @@ const withDescription = (name: string, description: string) => ({
   ...(description ? { description } : {}),
 });
 
-function AssetsTab(props: { project: ProjectDetail; canWrite: boolean }) {
+function AssetsTab({
+  standing,
+  ...props
+}: {
+  project: ProjectDetail;
+  canWrite: boolean;
+  standing: TeamStanding | undefined;
+}) {
+  const limits = useLimits("project", props.project.id);
   return (
-    <ResourceListTab
-      {...props}
-      queryKey="bundles"
-      load={api.projectAssetBundles}
-      create={(prj, name, description) =>
-        api.createAssetBundle(prj, withDescription(name, description))
-      }
-      noun="bundle"
-      title="Assets"
-      intro="Game content on the public CDN: maps, tilesets, sounds. Every object is versioned, world-readable and cached forever — publishing a fix means uploading a new version and pointing a lobby channel’s map URL at it."
-      namePlaceholder="name (e.g. dungeon-maps)"
-      second={{
-        label: "Description",
-        placeholder: "optional",
-        required: false,
-        maxLength: 2000,
-      }}
-      columns={[
-        { key: "name", label: "Bundle", sortKey: "name" },
-        { key: "desc", label: "Description", sortKey: "description" },
-        { key: "by", label: "Created by", sortKey: "createdBy" },
-        {
-          key: "updated",
-          label: "Updated",
-          sortKey: "updatedAt",
-          defaultOrder: "desc",
-        },
-      ]}
-      row={(b) => (
-        <>
-          <NameCell to={`/assets/${encodeURIComponent(b.id)}`}>
-            {b.name}
-          </NameCell>
-          <Table.Td>{b.description ?? "—"}</Table.Td>
-          <Table.Td>{b.createdBy ?? "—"}</Table.Td>
-          <Table.Td>{fmtTime(b.updatedAt)}</Table.Td>
-        </>
-      )}
-      emptyText="No asset bundles yet."
-    />
+    <>
+      <ResourceListTab
+        {...props}
+        onCreated={limits.reload}
+        queryKey="bundles"
+        load={api.projectAssetBundles}
+        create={(prj, name, description) =>
+          api.createAssetBundle(prj, withDescription(name, description))
+        }
+        noun="bundle"
+        title="Assets"
+        intro="Game content on the public CDN: maps, tilesets, sounds. Every object is versioned, world-readable and cached forever — publishing a fix means uploading a new version and pointing a lobby channel’s map URL at it."
+        namePlaceholder="name (e.g. dungeon-maps)"
+        second={{
+          label: "Description",
+          placeholder: "optional",
+          required: false,
+          maxLength: 2000,
+        }}
+        columns={[
+          { key: "name", label: "Bundle", sortKey: "name" },
+          { key: "desc", label: "Description", sortKey: "description" },
+          { key: "by", label: "Created by", sortKey: "createdBy" },
+          {
+            key: "updated",
+            label: "Updated",
+            sortKey: "updatedAt",
+            defaultOrder: "desc",
+          },
+        ]}
+        row={(b) => (
+          <>
+            <NameCell to={`/assets/${encodeURIComponent(b.id)}`}>
+              {b.name}
+            </NameCell>
+            <Table.Td>{b.description ?? "—"}</Table.Td>
+            <Table.Td>{b.createdBy ?? "—"}</Table.Td>
+            <Table.Td>{fmtTime(b.updatedAt)}</Table.Td>
+          </>
+        )}
+        emptyText="No asset bundles yet."
+      />
+      <LimitsSection
+        limits={limits}
+        standing={standing}
+        description="What the project's bundles may hold together. A team member may ask a platform admin for more, up to the ceiling."
+      />
+    </>
   );
 }
 

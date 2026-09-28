@@ -337,3 +337,74 @@ describe("team and project routes", () => {
     );
   });
 });
+
+describe("limit and paged asset routes", () => {
+  it("builds each limit route and the paged file lists", async () => {
+    const calls: Array<[string, string, string | undefined]> = [];
+    const fetch = vi.fn<typeof globalThis.fetch>((url, init) => {
+      calls.push([
+        init?.method ?? "GET",
+        typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
+        typeof init?.body === "string" ? init.body : undefined,
+      ]);
+      return Promise.resolve(
+        init?.method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : jsonRes(200, {}),
+      );
+    });
+    const api = createApiClient({ fetch });
+    await api.limits("bundle:ab_1");
+    await api.requestLimit({
+      scope: "channel:auth_1",
+      key: "channel.lifetime",
+      value: "unlimited",
+      reason: "event",
+    });
+    await api.limitRequests("team_1", { status: "pending", cursor: "lr_9" });
+    await api.cancelLimitRequest("lr_1");
+    await api.adminLimitRequests({ status: "pending", limit: 1 });
+    await api.approveLimitRequest("lr_1", { value: 1024 });
+    await api.rejectLimitRequest("lr_1", "no");
+    await api.setLimitOverride("bundle", "ab_1", "asset.fileBytes", {
+      value: 4096,
+      note: "contest",
+    });
+    await api.revokeLimitOverride("bundle", "ab_1", "asset.fileBytes", "done");
+    await api.assetVersion("ab_1", "v 1", { cursor: "a/b.json", limit: 500 });
+    await api.assetFiles("ab_1", "v1");
+    expect(calls).toEqual([
+      ["GET", "/limits?scope=bundle%3Aab_1", undefined],
+      [
+        "POST",
+        "/limit-requests",
+        '{"scope":"channel:auth_1","key":"channel.lifetime","value":"unlimited","reason":"event"}',
+      ],
+      [
+        "GET",
+        "/limit-requests?team=team_1&status=pending&cursor=lr_9",
+        undefined,
+      ],
+      ["POST", "/limit-requests/lr_1/cancel", "{}"],
+      ["GET", "/admin/limit-requests?status=pending&limit=1", undefined],
+      ["POST", "/admin/limit-requests/lr_1/approve", '{"value":1024}'],
+      ["POST", "/admin/limit-requests/lr_1/reject", '{"note":"no"}'],
+      [
+        "PUT",
+        "/admin/limit-overrides/bundle/ab_1/asset.fileBytes",
+        '{"value":4096,"note":"contest"}',
+      ],
+      [
+        "DELETE",
+        "/admin/limit-overrides/bundle/ab_1/asset.fileBytes",
+        '{"note":"done"}',
+      ],
+      [
+        "GET",
+        "/assets/bundles/ab_1/versions/v%201?cursor=a%2Fb.json&limit=500",
+        undefined,
+      ],
+      ["GET", "/assets/bundles/ab_1/files?version=v1", undefined],
+    ]);
+  });
+});

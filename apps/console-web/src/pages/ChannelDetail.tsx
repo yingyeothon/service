@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { ChannelForm } from "../components/ChannelForm";
 import { Crumbs } from "../components/Crumbs";
+import { LimitsSection, useLimits } from "../components/Limits";
 import { Loading, PageSkeleton } from "../components/Loading";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
@@ -18,7 +19,7 @@ import {
 } from "../components/ui";
 import { buildConfig, emptyForm, formFromChannel } from "../lib/channelForm";
 import { useConfirm } from "../lib/confirm";
-import { errorMessage, fmtRelative, fmtTime } from "../lib/format";
+import { errorMessage, fmtRelative, fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
@@ -47,6 +48,7 @@ export function ChannelDetailPage() {
     { enabled: projectId !== null },
   );
   const standing = useTeamStanding(ch.data?.teamId);
+  const limits = useLimits("channel", id);
   const act = useAction();
   const confirm = useConfirm();
   const [shown, setShown] = useState<string | null>(
@@ -85,6 +87,8 @@ export function ChannelDetailPage() {
   // lobby/q hold no secret: the gateway verifies tokens by calling auth and
   // neither kind has a server-to-server caller, so there is nothing to rotate.
   const hasSecret = !(GATEWAY_KINDS as readonly string[]).includes(c.kind);
+  // Granted no expiry (docs/decisions.md *Limit requests* #7): extend is 409.
+  const noExpiry = isNoExpiry(c.expiresAt);
   const secretLabel = c.kind === "auth" ? "Channel secret" : "API key";
 
   const startEdit = () => {
@@ -160,11 +164,12 @@ export function ChannelDetailPage() {
 
   const actions: HeaderAction[] = [];
   if (owner) actions.push({ label: "Edit", onClick: startEdit });
-  actions.push({
-    label: "Extend +7 days",
-    onClick: extend,
-    disabled: act.busy,
-  });
+  if (!noExpiry)
+    actions.push({
+      label: "Extend +7 days",
+      onClick: extend,
+      disabled: act.busy,
+    });
   if (owner && hasSecret)
     actions.push({
       label: `Rotate ${secretLabel.toLowerCase()}`,
@@ -209,8 +214,14 @@ export function ChannelDetailPage() {
         }
         meta={
           <>
-            Created by {c.createdBy ?? "—"} · {fmtTime(c.createdAt)} · Expires{" "}
-            {fmtTime(c.expiresAt)} ({fmtRelative(c.expiresAt)})
+            Created by {c.createdBy ?? "—"} · {fmtTime(c.createdAt)} ·{" "}
+            {noExpiry ? (
+              "No expiry"
+            ) : (
+              <>
+                Expires {fmtTime(c.expiresAt)} ({fmtRelative(c.expiresAt)})
+              </>
+            )}
             {c.disabledAt !== null && <> · Disabled {fmtTime(c.disabledAt)}</>}{" "}
             · id <Code>{c.id}</Code>
           </>
@@ -241,6 +252,14 @@ export function ChannelDetailPage() {
       {c.kind === "q" && <QRedisUserCard channel={c} owner={owner} />}
       {c.kind === "auth" && c.docUrl && (
         <AuthDocKeyCard channel={c} owner={owner} />
+      )}
+      {c.teamId !== null && (
+        <LimitsSection
+          limits={limits}
+          standing={standing.standing}
+          onChanged={ch.reload}
+          description="Extend keeps a channel alive up to 28 days ahead. A team member may ask a platform admin for no expiry."
+        />
       )}
 
       <ResourceDrawer

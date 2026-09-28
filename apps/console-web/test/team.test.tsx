@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
-import type { TeamDetail, TeamMember } from "../src/types";
+import type { LimitRequest, TeamDetail, TeamMember } from "../src/types";
 
 const mockApi = {
   me: vi.fn(),
@@ -17,6 +17,8 @@ const mockApi = {
   removeTeamMember: vi.fn(),
   members: vi.fn(),
   projects: vi.fn(),
+  limitRequests: vi.fn(),
+  cancelLimitRequest: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -259,5 +261,112 @@ describe("TeamPage", () => {
     expect(
       await screen.findByRole("menuitem", { name: "Delete team" }),
     ).toBeInTheDocument();
+  });
+
+  it("lists the team's limit requests and lets an owner cancel a pending one", async () => {
+    const req = (over: Partial<LimitRequest>): LimitRequest => ({
+      id: "lr_1",
+      teamId: "team_1",
+      teamName: "studio",
+      scope: { kind: "bundle", id: "ab_1", name: "maps" },
+      key: "asset.filesPerVersion",
+      unit: "count",
+      hard: 5000,
+      requestedValue: 1000,
+      reason: "levels",
+      status: "pending",
+      decidedValue: null,
+      decisionNote: null,
+      createdBy: "m_2",
+      createdByLogin: "bob",
+      createdAt: 0,
+      decidedBy: null,
+      decidedByLogin: null,
+      decidedAt: null,
+      ...over,
+    });
+    vi.mocked(mockApi.limitRequests)
+      .mockResolvedValueOnce({
+        requests: [
+          req({}),
+          req({
+            id: "lr_0",
+            key: "channel.lifetime",
+            unit: "seconds",
+            hard: "unlimited",
+            requestedValue: "unlimited",
+            scope: { kind: "channel", id: "auth_1", name: "login" },
+            status: "rejected",
+            decidedBy: "u9",
+            decidedByLogin: "root",
+            decisionNote: "use extend for a week",
+            decidedAt: 10,
+          }),
+        ],
+        next: "lr_0",
+      })
+      .mockResolvedValueOnce({
+        requests: [
+          req({
+            id: "lr_a",
+            key: "asset.bundleBytes",
+            unit: "bytes",
+            hard: 3 * 1024 * 1024 * 1024,
+            requestedValue: 64 * 1024 * 1024,
+            status: "approved",
+            decidedValue: 64 * 1024 * 1024,
+            decidedAt: 5,
+          }),
+        ],
+        next: null,
+      })
+      .mockResolvedValue({ requests: [], next: null });
+    vi.mocked(mockApi.cancelLimitRequest).mockResolvedValue(
+      req({ status: "cancelled" }),
+    );
+    mount("/teams/team_1/limit-requests");
+    expect(
+      await screen.findByRole("tab", { name: "Limit requests" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("Files per version")).toBeInTheDocument();
+    expect(mockApi.limitRequests).toHaveBeenCalledWith("team_1", {
+      cursor: undefined,
+    });
+    for (const col of ["Limit", "Scope", "Requested", "Requester", "Status"])
+      expect(
+        screen.getByRole("columnheader", { name: col }),
+      ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "login" })).toHaveAttribute(
+      "href",
+      "/channels/auth_1",
+    );
+    expect(screen.getByText("No expiry")).toBeInTheDocument();
+    // A decided row: the admin's decision is readable, and nothing to cancel.
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for Lifetime of login" }),
+    );
+    expect(
+      screen.queryByRole("menuitem", { name: "Cancel request" }),
+    ).toBeNull();
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Details" }),
+    );
+    const details = await screen.findByRole("dialog");
+    expect(within(details).getByText("rejected")).toBeInTheDocument();
+    expect(within(details).getByText(/by root$/)).toBeInTheDocument();
+    expect(
+      within(details).getByText("use extend for a week"),
+    ).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Bundle size")).toBeInTheDocument();
+    expect(mockApi.limitRequests).toHaveBeenLastCalledWith("team_1", {
+      cursor: "lr_0",
+    });
+    await rowVerb("Files per version of maps", "Cancel request");
+    await waitFor(() =>
+      expect(mockApi.cancelLimitRequest).toHaveBeenCalledWith("lr_1"),
+    );
   });
 });

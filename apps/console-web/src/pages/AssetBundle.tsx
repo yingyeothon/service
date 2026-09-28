@@ -12,7 +12,8 @@ import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
 import { DataTable } from "../components/DataTable";
-import { Loading, PageSkeleton } from "../components/Loading";
+import { effectiveLimit, LimitsSection, useLimits } from "../components/Limits";
+import { PageSkeleton } from "../components/Loading";
 import { NameDescriptionFields } from "../components/NameDescriptionFields";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
@@ -21,7 +22,9 @@ import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { CopyField, DropZone, Notice } from "../components/ui";
 import { fmtSize } from "../lib/catalog";
+import { useCursorList } from "../lib/cursor";
 import { fmtTime } from "../lib/format";
+import { fmtBytes } from "../lib/limits";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
@@ -33,9 +36,12 @@ import { projectUrl, useTeamStanding } from "../lib/team";
  */
 function PublishSection({
   bundle,
+  fileMax,
   onUploaded,
 }: {
   bundle: string;
+  /** The bundle's effective `asset.fileBytes`, once the limits are loaded. */
+  fileMax: number | undefined;
   onUploaded: () => Promise<void>;
 }) {
   const act = useAction();
@@ -82,7 +88,7 @@ function PublishSection({
   return (
     <Section
       title="Publish a version"
-      description="Allowed: .json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv — up to 2 MB per file. A published path is never overwritten."
+      description={`Allowed: .json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv${fileMax === undefined ? "" : ` — up to ${fmtBytes(fileMax)} per file`}. A published path is never overwritten.`}
     >
       {act.error && <Notice kind="error">{act.error}</Notice>}
       <form onSubmit={(e) => void upload(e)}>
@@ -120,6 +126,7 @@ function PublishSection({
   );
 }
 
+/** One version's files, a page at a time (`GET …/versions/{v}?cursor=`). */
 function VersionFiles({
   bundle,
   version,
@@ -127,38 +134,54 @@ function VersionFiles({
   bundle: string;
   version: string;
 }) {
-  const files = useApiQuery(["assets", bundle, version], () =>
-    api.assetVersion(bundle, version),
+  const files = useCursorList(
+    ["assets", bundle, version],
+    (cursor) => api.assetVersion(bundle, version, { cursor }),
+    (page) => page.files,
   );
-  if (files.error) return <Notice kind="error">{files.error}</Notice>;
-  if (!files.data) return <Loading />;
   return (
-    <DataTable
-      columns={[
-        { key: "path", label: "Path" },
-        { key: "type", label: "Type" },
-        { key: "size", label: "Size", align: "right" },
-        { key: "url", label: "URL" },
-      ]}
-      rows={files.data.files}
-      rowKey={(f) => f.id}
-      minWidth={640}
-      empty={{ title: "No files in this version." }}
-      render={(f) => (
-        <>
-          <Table.Td>
-            <Code>{f.path}</Code>
-          </Table.Td>
-          <Table.Td>{f.contentType}</Table.Td>
-          <Table.Td style={{ textAlign: "right" }}>{fmtSize(f.size)}</Table.Td>
-          <Table.Td>
-            <Anchor href={f.url} size="sm" style={{ wordBreak: "break-all" }}>
-              {f.url}
-            </Anchor>
-          </Table.Td>
-        </>
+    <>
+      <DataTable
+        columns={[
+          { key: "path", label: "Path" },
+          { key: "type", label: "Type" },
+          { key: "size", label: "Size", align: "right" },
+          { key: "url", label: "URL" },
+        ]}
+        rows={files.rows}
+        loading={files.loading}
+        error={files.error}
+        rowKey={(f) => f.id}
+        minWidth={640}
+        empty={{ title: "No files in this version." }}
+        render={(f) => (
+          <>
+            <Table.Td>
+              <Code>{f.path}</Code>
+            </Table.Td>
+            <Table.Td>{f.contentType}</Table.Td>
+            <Table.Td style={{ textAlign: "right" }}>
+              {fmtSize(f.size)}
+            </Table.Td>
+            <Table.Td>
+              <Anchor href={f.url} size="sm" style={{ wordBreak: "break-all" }}>
+                {f.url}
+              </Anchor>
+            </Table.Td>
+          </>
+        )}
+      />
+      {files.next && (
+        <Button
+          variant="default"
+          mt="md"
+          disabled={files.busy || files.fetching}
+          onClick={() => void files.loadMore()}
+        >
+          Load more
+        </Button>
       )}
-    />
+    </>
   );
 }
 
@@ -169,6 +192,7 @@ export function AssetBundlePage() {
     api.assetBundle(id),
   );
   const standing = useTeamStanding(bundle.data?.teamId);
+  const limits = useLimits("bundle", id);
   const act = useAction();
   const [open, setOpen] = useState<string | null>(null);
   const b = bundle.data;
@@ -185,7 +209,7 @@ export function AssetBundlePage() {
     if (!ok) return;
     if (open === version) setOpen(null);
     notify.deleted(`version ${version}`);
-    await bundle.reload();
+    await Promise.all([bundle.reload(), limits.reload()]);
   };
 
   const removeBundle = async () => {
@@ -239,6 +263,9 @@ export function AssetBundlePage() {
       </>
     );
   const canWrite = standing.canWrite;
+  const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+  const fileMax = num(effectiveLimit(limits.data, "asset.fileBytes"));
+  const bundleMax = num(effectiveLimit(limits.data, "asset.bundleBytes"));
   const actions: HeaderAction[] = canWrite
     ? [
         {
@@ -259,8 +286,12 @@ export function AssetBundlePage() {
         description={b.description ?? undefined}
         meta={
           <>
-            Created by {b.createdBy ?? "—"} · {fmtSize(b.bytes)} of 20 MB · id{" "}
-            <Code>{b.id}</Code>
+            Created by {b.createdBy ?? "—"} ·{" "}
+            {/* Binary units beside a limit, as the limits are defined. */}
+            {bundleMax === undefined
+              ? fmtSize(b.bytes)
+              : `${fmtBytes(b.bytes)} of ${fmtBytes(bundleMax)}`}{" "}
+            · {b.files} file{b.files === 1 ? "" : "s"} · id <Code>{b.id}</Code>
           </>
         }
         actions={actions}
@@ -268,7 +299,13 @@ export function AssetBundlePage() {
       {!canWrite && !standing.loading && <ReadOnlyBanner />}
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
       {canWrite && (
-        <PublishSection bundle={id} onUploaded={() => bundle.reload()} />
+        <PublishSection
+          bundle={id}
+          fileMax={fileMax}
+          onUploaded={async () => {
+            await Promise.all([bundle.reload(), limits.reload()]);
+          }}
+        />
       )}
       <Section
         title="Versions"
@@ -345,6 +382,13 @@ export function AssetBundlePage() {
           </div>
         )}
       </Section>
+      {b.teamId !== null && (
+        <LimitsSection
+          limits={limits}
+          standing={standing.standing}
+          description="What this bundle may hold. A team member may ask a platform admin for more, up to the ceiling; lowering a limit never deletes a file."
+        />
+      )}
       <Section
         title="Publishing a map"
         description={

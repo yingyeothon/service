@@ -1,3 +1,5 @@
+import { CHANNEL_NO_EXPIRY_SEC } from "../types";
+
 /**
  * Unix seconds → local `YYYY-MM-DD<sep>HH:mm` in the browser's zone, or
  * `empty` for a missing value. The display form uses a space and an em dash;
@@ -18,6 +20,15 @@ export function formatLocal(
 export function fmtTime(sec: number | null | undefined): string {
   return formatLocal(sec, " ", "—");
 }
+
+/** Unix seconds → local date (`YYYY-MM-DD`). */
+export function fmtDate(sec: number | null | undefined): string {
+  return fmtTime(sec).slice(0, 10);
+}
+
+/** Whether a channel's `expiresAt` is the no-expiry sentinel. */
+export const isNoExpiry = (expiresAt: number): boolean =>
+  expiresAt >= CHANNEL_NO_EXPIRY_SEC;
 
 /** "in 3d", "2h ago". */
 export function fmtRelative(sec: number, nowSec = Date.now() / 1000): string {

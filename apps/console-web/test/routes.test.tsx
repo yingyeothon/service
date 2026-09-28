@@ -68,4 +68,15 @@ describe("routes", () => {
     expect(NAV_ITEMS.find((i) => i.path === "/audit")?.hidden).toBeUndefined();
     expect(NAV_ITEMS.find((i) => i.path === "/shows")?.minRole).toBeNull();
   });
+
+  it("keeps the limit request queue admin-only and in the menu", () => {
+    const byPath = new Map(ROUTES.map((r) => [r.path, r.guard]));
+    // The path the request e-mail links to (`/ui/admin/limit-requests`).
+    expect(byPath.get("/admin/limit-requests")).toBe("/admin/limit-requests");
+    expect(navMinRole("/admin/limit-requests")).toBe("admin");
+    const item = NAV_ITEMS.find((i) => i.path === "/admin/limit-requests");
+    expect(item?.hidden).toBeUndefined();
+    expect(item?.label).toBe("Limit requests");
+    expect(item?.badge).toBe("pendingLimitRequests");
+  });
 });

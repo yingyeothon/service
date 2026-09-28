@@ -3,6 +3,7 @@ import {
   Anchor,
   AppShell,
   Avatar,
+  Badge,
   Box,
   Burger,
   Button,
@@ -12,6 +13,7 @@ import {
   ScrollArea,
   Stack,
   Text,
+  VisuallyHidden,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { IconLogout } from "@tabler/icons-react";
@@ -20,7 +22,8 @@ import { NavLink as RouterNavLink, useLocation } from "react-router";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
 import { teamUrl, useMyTeams } from "../lib/team";
-import { NAV_ITEMS, isNavActive } from "../navigation";
+import { NAV_ITEMS, isNavActive, type NavBadge } from "../navigation";
+import { usePendingLimitCount } from "./Limits";
 
 /** `next` for the login redirect: the SPA path (without the `/ui` base). */
 export function currentPath(loc: { pathname: string; search: string }): string {
@@ -32,6 +35,22 @@ const NAVBAR_WIDTH = 240;
 const HEADER_HEIGHT = 64;
 
 const navLinkProps = { variant: "light", color: "ink" } as const;
+
+/** A menu item's count (`NavItem.badge`); nothing while zero or unknown. */
+function NavCount({ badge }: { badge: NavBadge }) {
+  const { me } = useAuth();
+  const pending = usePendingLimitCount(
+    badge === "pendingLimitRequests" && hasRole(me, "admin"),
+  );
+  const n = pending.data ?? 0;
+  if (n <= 0) return null;
+  return (
+    <Badge component="span" size="sm" variant="filled" color="ink">
+      {n}
+      <VisuallyHidden> pending</VisuallyHidden>
+    </Badge>
+  );
+}
 
 /**
  * The role-filtered menu, with the caller's own teams nested under _Teams_
@@ -62,6 +81,9 @@ function SideNavigation({ onNavigate }: { onNavigate: () => void }) {
               to={item.path}
               label={item.label}
               leftSection={<item.icon size={18} aria-hidden="true" />}
+              rightSection={
+                item.badge ? <NavCount badge={item.badge} /> : undefined
+              }
               // With a team open, only the team link is the current page.
               end={item.path === "/teams" && !!activeTeam}
               active={
