@@ -806,6 +806,12 @@ export function createApiClient({
         `/assets/bundles/${enc(id)}/files`,
         { version, path, size: file.size },
       );
+      if (grant.multipart)
+        throw new ApiError(
+          413,
+          "multipart_upload",
+          `${path} is over 64 MiB; upload files that size with \`yyt asset sync\``,
+        );
       await putToGrant(grant, file, "asset");
       return post<AssetFile>(`/assets/uploads/${enc(grant.uploadId)}/commit`);
     },

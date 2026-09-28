@@ -247,6 +247,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       extraRoutes = createDebugRoutes({
         debugKey: process.env.DEBUG_KEY ?? "",
         db,
+        assets,
         kv,
         clock,
         s3Probe: artifactBucket
@@ -467,6 +468,7 @@ export const expire = async (): Promise<void> => {
         // Two missed 5-minute ticks would already be odd; an hour is a stop.
         guardHeartbeat: { key: CDN_GUARD_RUN_KEY, staleAfterSec: 3600 },
         limits,
+        assets,
         kv,
         notify: alarmNotify(),
         logger,

@@ -78,6 +78,8 @@ type s3Fake struct {
 	puts map[string]http.Header
 	body map[string]string
 	fail int // answer this many PUTs with 503 first
+	// forbid answers a path's next N PUTs with 403 (a lapsed signature).
+	forbid map[string]int
 }
 
 func newS3Fake(t *testing.T) *s3Fake {
@@ -89,6 +91,11 @@ func newS3Fake(t *testing.T) *s3Fake {
 		if s.fail > 0 {
 			s.fail--
 			w.WriteHeader(503)
+			return
+		}
+		if s.forbid[r.URL.Path] > 0 {
+			s.forbid[r.URL.Path]--
+			w.WriteHeader(403)
 			return
 		}
 		s.puts[r.URL.Path] = r.Header.Clone()

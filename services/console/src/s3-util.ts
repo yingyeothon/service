@@ -1,5 +1,6 @@
 import {
   PutObjectCommand,
+  UploadPartCommand,
   type S3Client,
   type _Object,
 } from "@aws-sdk/client-s3";
@@ -68,6 +69,44 @@ export function presignPutUrl(
       expiresIn: o.ttlSec,
       signableHeaders: new Set(["content-type", "content-length", ...checksum]),
       ...(o.sha256 ? { unhoistableHeaders: new Set(checksum) } : {}),
+    },
+  );
+}
+
+/**
+ * A presigned `UploadPart` of a multipart upload, the part's exact
+ * `Content-Length` and SHA-256 signed as headers like `presignPutUrl`'s: S3
+ * refuses other bytes of the part (`BadDigest`) and another length (the
+ * signature no longer matches). `Content-Type` is a property of the whole
+ * object, set at `CreateMultipartUpload`, so a part signs none.
+ */
+export function presignPartUrl(
+  client: S3Client,
+  o: {
+    bucket: string;
+    key: string;
+    uploadId: string;
+    partNumber: number;
+    contentLength: number;
+    sha256: string;
+    ttlSec: number;
+  },
+): Promise<string> {
+  const checksum = ["x-amz-checksum-sha256"];
+  return getSignedUrl(
+    client,
+    new UploadPartCommand({
+      Bucket: o.bucket,
+      Key: o.key,
+      UploadId: o.uploadId,
+      PartNumber: o.partNumber,
+      ContentLength: o.contentLength,
+      ChecksumSHA256: sha256Base64(o.sha256),
+    }),
+    {
+      expiresIn: o.ttlSec,
+      signableHeaders: new Set(["content-length", ...checksum]),
+      unhoistableHeaders: new Set(checksum),
     },
   );
 }

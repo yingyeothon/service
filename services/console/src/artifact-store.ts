@@ -1,9 +1,13 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  ListPartsCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -12,6 +16,7 @@ import { json, type HttpResult } from "@yyt/http";
 import {
   isMissingObject,
   listedObjects,
+  presignPartUrl,
   presignPutUrl,
   sha256Base64,
 } from "./s3-util.js";
@@ -26,6 +31,12 @@ export const ARTIFACT_UPLOAD_URL_TTL_SEC = 3600;
 export const ARTIFACT_MAX_BYTES = 1024 * 1024 * 1024;
 /** `DeleteObjects` takes at most 1,000 keys per call. */
 export const DELETE_OBJECTS_MAX = 1000;
+/**
+ * A multipart upload lives a day (docs/decisions.md *Large asset uploads*
+ * #1), the lifecycle rule aborting what is still open after that; its part
+ * URLs live the hour of a single PUT and are presigned again on resume.
+ */
+export const MULTIPART_UPLOAD_TTL_SEC = 24 * 3600;
 
 /** What an uploader must send, verbatim, and when the grant lapses. */
 export function grantBody(o: {
@@ -100,6 +111,24 @@ export class ConditionalWriteError extends Error {
   }
 }
 
+/** One uploaded part as `ListParts` reports it. */
+export interface UploadedPart {
+  partNumber: number;
+  size: number;
+  /** Unquoted. */
+  etag: string;
+  /** Hex SHA-256 S3 stored with the part; `null` when the uploader sent none. */
+  sha256: string | null;
+}
+
+/** The multipart upload is no longer open: completed or aborted (`NoSuchUpload`). */
+export class MultipartGoneError extends Error {
+  constructor() {
+    super("the multipart upload is no longer open");
+    this.name = "MultipartGoneError";
+  }
+}
+
 export interface CopyOptions {
   /** The destination must still carry this ETag (unquoted). */
   ifMatch?: string;
@@ -155,10 +184,60 @@ export interface ArtifactStore {
   list(
     prefix: string,
   ): Promise<Array<{ key: string; lastModifiedSec: number }>>;
+
+  /**
+   * Opens a multipart upload at `key` with the object's headers fixed now:
+   * a part signs neither `Content-Type` nor `Cache-Control`. Parts carry
+   * SHA-256 checksums (`ChecksumAlgorithm`).
+   */
+  createMultipart(o: {
+    key: string;
+    contentType: string;
+    cacheControl: string;
+  }): Promise<{ uploadId: string }>;
+  /**
+   * A part's URL, its exact length and SHA-256 (hex) signed as headers;
+   * `ttlSec` defaults to the hour of a single PUT.
+   */
+  presignPart(o: {
+    key: string;
+    uploadId: string;
+    partNumber: number;
+    contentLength: number;
+    sha256: string;
+    ttlSec?: number;
+  }): Promise<string>;
+  /** The parts uploaded so far, by number. Throws `MultipartGoneError`. */
+  listParts(key: string, uploadId: string): Promise<UploadedPart[]>;
+  /**
+   * `CompleteMultipartUpload` with `If-None-Match: *` and the expected object
+   * size: a refused condition throws `ConditionalWriteError`, a closed upload
+   * `MultipartGoneError`. The object's ETag comes back unquoted.
+   */
+  completeMultipart(o: {
+    key: string;
+    uploadId: string;
+    parts: readonly Pick<UploadedPart, "partNumber" | "etag" | "sha256">[];
+    objectSize: number;
+  }): Promise<{ etag: string | null }>;
+  /** Aborts; `gone` when S3 no longer knows the upload (completed or aborted). */
+  abortMultipart(key: string, uploadId: string): Promise<"aborted" | "gone">;
 }
 
 const unquote = (etag: string | undefined) =>
   etag ? etag.replaceAll('"', "") : null;
+
+/**
+ * S3's stored `ChecksumSHA256` as hex, or `null` when it is a composite
+ * (`<base64>-<parts>`, a checksum of the parts' checksums, which a multipart
+ * upload gets): only a whole-object SHA-256 can be compared with the bytes'.
+ */
+function wholeSha256(checksum: string | undefined): string | null {
+  if (!checksum || checksum.includes("-")) return null;
+  return Buffer.from(checksum, "base64").toString("hex");
+}
+
+const isNoSuchUpload = (e: unknown) => errorOf(e).name === "NoSuchUpload";
 
 function errorOf(e: unknown): { status?: number; name: string } {
   return {
@@ -222,9 +301,7 @@ export function createS3ArtifactStore({
           state: "present",
           contentLength: Number(r.ContentLength ?? 0),
           etag: unquote(r.ETag),
-          sha256: r.ChecksumSHA256
-            ? Buffer.from(r.ChecksumSHA256, "base64").toString("hex")
-            : null,
+          sha256: wholeSha256(r.ChecksumSHA256),
           lastModifiedSec: r.LastModified
             ? Math.floor(r.LastModified.getTime() / 1000)
             : null,
@@ -322,6 +399,101 @@ export function createS3ArtifactStore({
       }
       return out;
     },
+    createMultipart: async ({ key, contentType, cacheControl }) => {
+      const r = await client.send(
+        new CreateMultipartUploadCommand({
+          Bucket: bucket,
+          Key: key,
+          ContentType: contentType,
+          CacheControl: cacheControl,
+          ChecksumAlgorithm: "SHA256",
+        }),
+      );
+      if (!r.UploadId)
+        throw new AppError("unavailable", "artifact storage gave no upload id");
+      return { uploadId: r.UploadId };
+    },
+    presignPart: ({ ttlSec, ...o }) =>
+      presignPartUrl(client, {
+        bucket,
+        ...o,
+        ttlSec: Math.max(1, ttlSec ?? ARTIFACT_UPLOAD_URL_TTL_SEC),
+      }),
+    listParts: async (key, uploadId) => {
+      const out: UploadedPart[] = [];
+      let marker: string | undefined;
+      try {
+        // At most 8 parts at the 256 MiB ceiling; the loop is for the contract.
+        for (let page = 0; page < 10; page++) {
+          const r = await client.send(
+            new ListPartsCommand({
+              Bucket: bucket,
+              Key: key,
+              UploadId: uploadId,
+              PartNumberMarker: marker,
+            }),
+          );
+          for (const p of r.Parts ?? [])
+            if (p.PartNumber !== undefined && p.ETag)
+              out.push({
+                partNumber: p.PartNumber,
+                size: Number(p.Size ?? 0),
+                etag: unquote(p.ETag) ?? "",
+                sha256: wholeSha256(p.ChecksumSHA256),
+              });
+          if (!r.IsTruncated || !r.NextPartNumberMarker) break;
+          marker = r.NextPartNumberMarker;
+        }
+      } catch (e) {
+        if (isNoSuchUpload(e)) throw new MultipartGoneError();
+        throw e;
+      }
+      return out.sort((a, b) => a.partNumber - b.partNumber);
+    },
+    completeMultipart: async ({ key, uploadId, parts, objectSize }) => {
+      try {
+        const r = await client.send(
+          new CompleteMultipartUploadCommand({
+            Bucket: bucket,
+            Key: key,
+            UploadId: uploadId,
+            IfNoneMatch: "*",
+            MpuObjectSize: objectSize,
+            MultipartUpload: {
+              Parts: parts.map((p) => ({
+                PartNumber: p.partNumber,
+                ETag: `"${p.etag}"`,
+                ...(p.sha256 ? { ChecksumSHA256: sha256Base64(p.sha256) } : {}),
+              })),
+            },
+          }),
+        );
+        return { etag: unquote(r.ETag) };
+      } catch (e) {
+        const { status, name } = errorOf(e);
+        if (status === 412 || name === "PreconditionFailed")
+          throw new ConditionalWriteError("precondition");
+        if (name === "ConditionalRequestConflict")
+          throw new ConditionalWriteError("conflict");
+        if (isNoSuchUpload(e)) throw new MultipartGoneError();
+        throw e;
+      }
+    },
+    abortMultipart: async (key, uploadId) => {
+      try {
+        await client.send(
+          new AbortMultipartUploadCommand({
+            Bucket: bucket,
+            Key: key,
+            UploadId: uploadId,
+          }),
+        );
+        return "aborted";
+      } catch (e) {
+        if (isNoSuchUpload(e)) return "gone";
+        throw e;
+      }
+    },
   };
 }
 
@@ -334,7 +506,22 @@ export interface MemoryObject {
   lastModifiedSec?: number | null;
 }
 
-type FailPoint = "copy" | "inspect" | "deleteMany";
+type FailPoint =
+  | "copy"
+  | "inspect"
+  | "deleteMany"
+  | "createMultipart"
+  | "listParts"
+  | "completeMultipart"
+  | "abortMultipart";
+
+/** A multipart upload the fake holds open. */
+export interface MemoryMultipart {
+  key: string;
+  contentType: string;
+  cacheControl: string;
+  parts: Map<number, UploadedPart>;
+}
 
 /**
  * Test double mirroring the poster store fake. Conditional copies behave like
@@ -351,6 +538,16 @@ export function createMemoryArtifactStore(): ArtifactStore & {
   copies: { src: string; dst: string; options: CopyOptions }[];
   /** Keys per `deleteMany` call, in order. */
   batches: string[][];
+  /** Open multipart uploads by upload id; completed and aborted ones are removed. */
+  multiparts: Map<string, MemoryMultipart>;
+  /** Upload ids ever aborted, in order. */
+  aborted: string[];
+  /** What an uploader's PUT to a part URL leaves behind. */
+  putPart(
+    uploadId: string,
+    partNumber: number,
+    o: { size: number; sha256: string | null; etag?: string },
+  ): void;
   putObject(
     key: string,
     o: {
@@ -373,6 +570,8 @@ export function createMemoryArtifactStore(): ArtifactStore & {
   const quarantined = new Set<string>();
   const copies: { src: string; dst: string; options: CopyOptions }[] = [];
   const batches: string[][] = [];
+  const multiparts = new Map<string, MemoryMultipart>();
+  const aborted: string[] = [];
   const failures: {
     method: FailPoint;
     when: string;
@@ -396,6 +595,18 @@ export function createMemoryArtifactStore(): ArtifactStore & {
     quarantined,
     copies,
     batches,
+    multiparts,
+    aborted,
+    putPart: (uploadId, partNumber, o) => {
+      const m = multiparts.get(uploadId);
+      if (!m) throw new Error(`no open multipart upload ${uploadId}`);
+      m.parts.set(partNumber, {
+        partNumber,
+        size: o.size,
+        etag: o.etag ?? `p-${partNumber}-${(o.sha256 ?? "").slice(0, 8)}`,
+        sha256: o.sha256,
+      });
+    },
     putObject: (key, o) =>
       objects.set(key, {
         contentLength: o.contentLength,
@@ -491,5 +702,78 @@ export function createMemoryArtifactStore(): ArtifactStore & {
       [...objects.keys()]
         .filter((k) => k.startsWith(prefix))
         .map((key) => ({ key, lastModifiedSec: 0 })),
+    createMultipart: async ({ key, contentType, cacheControl }) => {
+      const f = takeFailure("createMultipart", key);
+      if (f) throw f.error;
+      if (quarantined.has(key)) throw denied();
+      const uploadId = `mpu-${++seq}`;
+      multiparts.set(uploadId, {
+        key,
+        contentType,
+        cacheControl,
+        parts: new Map(),
+      });
+      return { uploadId };
+    },
+    presignPart: async ({ key, uploadId, partNumber, contentLength, sha256 }) =>
+      `https://artifacts.test/part/${key}?uploadId=${uploadId}&partNumber=${partNumber}&len=${contentLength}&sha256=${sha256}`,
+    listParts: async (key, uploadId) => {
+      const f = takeFailure("listParts", key);
+      if (f) throw f.error;
+      const m = multiparts.get(uploadId);
+      if (!m || m.key !== key) throw new MultipartGoneError();
+      return [...m.parts.values()].sort((a, b) => a.partNumber - b.partNumber);
+    },
+    completeMultipart: async ({ key, uploadId, parts, objectSize }) => {
+      const f = takeFailure("completeMultipart", key);
+      if (f?.when === "before") throw f.error;
+      const m = multiparts.get(uploadId);
+      if (!m || m.key !== key) throw new MultipartGoneError();
+      if (quarantined.has(key)) throw denied();
+      // S3 checks the manifest against the parts and the size before the
+      // condition; the order matters to nobody here, the outcome does. Not
+      // mirrored: S3's `InvalidPart` on a manifest checksum that differs
+      // from the stored one and `EntityTooSmall` under 5 MiB, neither
+      // reachable with parts of 32 MiB whose checksums come from ListParts.
+      let total = 0;
+      for (const p of parts) {
+        const have = m.parts.get(p.partNumber);
+        if (!have || have.etag !== p.etag)
+          throw Object.assign(
+            new Error("One or more parts could not be found"),
+            {
+              name: "InvalidPart",
+              $metadata: { httpStatusCode: 400 },
+            },
+          );
+        total += have.size;
+      }
+      if (total !== objectSize)
+        throw Object.assign(new Error("object size mismatch"), {
+          name: "InvalidRequest",
+          $metadata: { httpStatusCode: 400 },
+        });
+      if (objects.has(key)) throw new ConditionalWriteError("precondition");
+      const etag = `mp-${++seq}-${parts.length}`;
+      objects.set(key, {
+        contentLength: total,
+        etag,
+        metadata: { contentType: m.contentType, cacheControl: m.cacheControl },
+        // A composite checksum is not the bytes' SHA-256: `inspect` sees none.
+        sha256: null,
+      });
+      multiparts.delete(uploadId);
+      if (f?.when === "after-mutation") throw f.error;
+      return { etag };
+    },
+    abortMultipart: async (key, uploadId) => {
+      const f = takeFailure("abortMultipart", key);
+      if (f) throw f.error;
+      const m = multiparts.get(uploadId);
+      if (!m || m.key !== key) return "gone";
+      multiparts.delete(uploadId);
+      aborted.push(uploadId);
+      return "aborted";
+    },
   };
 }

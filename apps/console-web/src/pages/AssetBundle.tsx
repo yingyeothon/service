@@ -95,7 +95,7 @@ function PublishSection({
   return (
     <Section
       title="Publish a version"
-      description={`Allowed: ${ALLOWED_EXTENSIONS}${fileMax === undefined ? "" : ` — up to ${fmtBytes(fileMax)} per file`}. A published path is never overwritten.`}
+      description={`Allowed: ${ALLOWED_EXTENSIONS}${fileMax === undefined ? "" : ` — up to ${fmtBytes(fileMax)} per file`}. A published path is never overwritten. Files over 64 MiB upload with the CLI (yyt asset sync).`}
     >
       {act.error && <Notice kind="error">{act.error}</Notice>}
       <form onSubmit={(e) => void upload(e)}>

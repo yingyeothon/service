@@ -42,15 +42,24 @@ import {
   ARTIFACT_UPLOAD_URL_TTL_SEC,
   DELETE_OBJECTS_MAX,
   grantBody,
+  MULTIPART_UPLOAD_TTL_SEC,
+  MultipartGoneError,
   type ArtifactStore,
   uploadGrant,
 } from "./artifact-store.js";
 import {
+  ASSET_CACHE_CONTROL,
+  assetObjectKey,
   assetStagingKey,
   createAssetCommitter,
+  MULTIPART_PART_BYTES,
+  MULTIPART_THRESHOLD_BYTES,
+  multipartPartCount,
+  multipartPartSize,
   tombstoned,
   type AssetCommitter,
 } from "./asset-commit.js";
+import { sha256Base64 } from "./s3-util.js";
 import { artifactUrl } from "./catalog.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
@@ -125,6 +134,23 @@ export const ASSET_COMMIT_BUDGET_MS = 15_000;
  * `DeleteObjects` of up to 1,000 keys plus one statement.
  */
 export const ASSET_DELETE_BUDGET_MS = 15_000;
+
+/** The part checksums a multipart uploader asks URLs for (`POST …/parts`). */
+const partsBody = z
+  .object({
+    parts: z
+      .array(
+        z
+          .object({
+            partNumber: z.number().int().min(1).max(64),
+            sha256: z.string().regex(/^[0-9a-f]{64}$/),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(10_000),
+  })
+  .strict();
 
 /** Versions become object-key and URL path segments. */
 const bundlesQuery = listQuery(BUNDLE_SORT_KEYS).passthrough();
@@ -476,9 +502,85 @@ export function createAssetRoutes({
     mutable: u.mutable,
     status: u.status,
     fileId: u.fileId,
+    multipart: u.s3UploadId !== null,
+    partSize: u.partSize,
+    partCount: u.partCount,
     createdAt: u.createdAt,
     expiresAt: u.expiresAt,
   });
+
+  /**
+   * The 201 body of a file over the single-PUT ceiling: no URL yet — the
+   * uploader asks `POST /assets/uploads/{id}/parts` for its part URLs, with
+   * each part's SHA-256 (docs/decisions.md *Large asset uploads* #1).
+   */
+  const multipartGrant = (o: {
+    uploadId: string;
+    key: string;
+    size: number;
+    sha256: string;
+    contentType: string;
+    expiresAt: number;
+  }) => ({
+    uploadId: o.uploadId,
+    key: o.key,
+    multipart: true as const,
+    partSize: MULTIPART_PART_BYTES,
+    partCount: multipartPartCount(o.size),
+    size: o.size,
+    sha256: o.sha256,
+    contentType: o.contentType,
+    expiresAt: o.expiresAt,
+  });
+
+  /**
+   * Aborts a bundle's (or one version's) multipart uploads S3 may still hold
+   * before their rows go: a dropped row leaves invisible, billed parts until
+   * the lifecycle rule's day, and a completion after the delete would
+   * publish an object no row names.
+   */
+  async function abortOpenUploads(
+    bundle: AssetBundleRow,
+    version?: string,
+  ): Promise<number> {
+    const open = (await assets.listOpenMultipartUploads(bundle.id)).filter(
+      (u) => version === undefined || u.version === version,
+    );
+    if (open.length === 0) return 0;
+    const store = requireStore();
+    for (const u of open) {
+      const key = assetObjectKey(bundle, u.version, u.path);
+      const r = await store.abortMultipart(key, u.s3UploadId!);
+      // The claim rule holds here too (decisions #2): the file row is never
+      // dropped on the upload's word alone. An upload already gone may have
+      // completed; then the row stays and the delete that follows takes the
+      // object with every other file. A claim whose object is absent leaves
+      // its row to `deleteAll`, where a missing key counts as deleted.
+      if (r === "gone" && (await store.inspect(key)).state !== "absent") {
+        await assets.updateUpload(u.id, { status: "completed" });
+        continue;
+      }
+      await assets.deleteUpload(u.id);
+    }
+    return open.length;
+  }
+
+  /**
+   * A file row whose `af_` upload has not completed is a claim, not a file:
+   * the object may not exist yet. A presign of the same bytes must not call
+   * it present — the commit is what makes it one — so it names the upload
+   * for the caller to commit again (decisions *Large asset uploads* #2).
+   */
+  async function requireCommitted(ex: AssetFileRow): Promise<void> {
+    if (!ex.id.startsWith("af_")) return;
+    const u = await assets.findUpload(ex.id.slice(3));
+    if (!u || u.status === "completed") return;
+    throw new AppError(
+      "conflict",
+      `"${ex.path}" is being committed; commit that upload again`,
+      { details: { path: ex.path, reason: "committing", uploadId: u.id } },
+    );
+  }
 
   /** `{version, files, bytes, createdAt}` per version, newest first. */
   const versionsOf = (summaries: AssetVersionSummary[]) =>
@@ -918,6 +1020,7 @@ export function createAssetRoutes({
           ),
           `bundle "${bundle.name}"`,
         );
+        await abortOpenUploads(bundle);
         // An empty bundle is just a row: it stays deletable even when no
         // artifact bucket is configured (`deleteAll` asks for the store only
         // once it has a row to delete).
@@ -1018,6 +1121,7 @@ export function createAssetRoutes({
           ),
           `version "${version}"`,
         );
+        await abortOpenUploads(bundle, version);
         const r = await deleteAll(bundle, version);
         if (!r.done) return progress(r);
         if (r.failed > 0)
@@ -1059,6 +1163,14 @@ export function createAssetRoutes({
             throw new AppError(
               "bad_request",
               "sha256 is required in a live bundle",
+              { details: { path: s.path } },
+            );
+          // Every part carries a checksum, and the file's own sha256 is what
+          // the resume and the file row are keyed on (decisions #3, #6).
+          if (s.size > MULTIPART_THRESHOLD_BYTES && !s.sha256)
+            throw new AppError(
+              "bad_request",
+              "sha256 is required for a file uploaded in parts",
               { details: { path: s.path } },
             );
           if (!live && (s.mutable || s.ifSha256))
@@ -1115,6 +1227,7 @@ export function createAssetRoutes({
             // name the same bytes (a sync run again after a failed PUT),
             // which the commit's claim settles either way.
             if (ex && s.sha256 && ex.sha256 === s.sha256) {
+              await requireCommitted(ex);
               present.set(s.path, ex);
               continue;
             }
@@ -1168,6 +1281,7 @@ export function createAssetRoutes({
               { details: { path: s.path, sha256: ex.sha256 } },
             );
           if (ex.sha256 === s.sha256) {
+            await requireCommitted(ex);
             present.set(s.path, ex);
             continue;
           }
@@ -1186,8 +1300,10 @@ export function createAssetRoutes({
         }
         await checkQuota(bundle, items, now, "bad_request", { inFlight, lim });
         const expiresAt = now + ARTIFACT_UPLOAD_URL_TTL_SEC;
+        const multipartExpiresAt = now + MULTIPART_UPLOAD_TTL_SEC;
         const out: Array<
           | ({ path: string } & ReturnType<typeof grantBody>)
+          | ({ path: string } & ReturnType<typeof multipartGrant>)
           | {
               path: string;
               alreadyPresent: true;
@@ -1196,6 +1312,11 @@ export function createAssetRoutes({
         > = [];
         const granted: { uploadId: string; path: string }[] = [];
         const rows: Parameters<AssetsDb["insertUploads"]>[0][number][] = [];
+        const multiparts: {
+          uploadId: string;
+          key: string;
+          contentType: string;
+        }[] = [];
         for (const [i, s] of specs.entries()) {
           const ex = present.get(s.path);
           if (ex) {
@@ -1208,6 +1329,7 @@ export function createAssetRoutes({
           }
           const uploadId = randomHex(16);
           const contentType = types[i]!;
+          const multipart = s.size > MULTIPART_THRESHOLD_BYTES;
           rows.push({
             id: uploadId,
             bundleId: bundle.id,
@@ -1218,9 +1340,35 @@ export function createAssetRoutes({
             sha256: s.sha256 ?? null,
             mutable: s.mutable ?? false,
             ifSha256: s.ifSha256 ?? null,
+            ...(multipart
+              ? {
+                  partSize: MULTIPART_PART_BYTES,
+                  partCount: multipartPartCount(s.size),
+                }
+              : {}),
             createdAt: now,
-            expiresAt,
+            expiresAt: multipart ? multipartExpiresAt : expiresAt,
           });
+          granted.push({ uploadId, path: s.path });
+          if (multipart) {
+            // The multipart upload is opened at the file's final key, once
+            // its row exists (below): a row without an upload expires, an
+            // upload without a row would be billed parts nobody aborts.
+            const key = assetObjectKey(bundle, v, s.path);
+            multiparts.push({ uploadId, key, contentType });
+            out.push({
+              path: s.path,
+              ...multipartGrant({
+                uploadId,
+                key,
+                size: s.size,
+                sha256: s.sha256!,
+                contentType,
+                expiresAt: multipartExpiresAt,
+              }),
+            });
+            continue;
+          }
           const key = assetStagingKey(uploadId, s.path);
           // Signing is local (no request), so a hundred of these are cheap.
           const url = await store.presignPut({
@@ -1229,7 +1377,6 @@ export function createAssetRoutes({
             contentType,
             ...(s.sha256 ? { sha256: s.sha256 } : {}),
           });
-          granted.push({ uploadId, path: s.path });
           out.push({
             path: s.path,
             ...grantBody({
@@ -1245,6 +1392,40 @@ export function createAssetRoutes({
         }
         // Every reservation in one statement, before any URL leaves.
         await assets.insertUploads(rows);
+        const opened: { key: string; s3UploadId: string }[] = [];
+        for (const m of multiparts) {
+          let s3UploadId: string;
+          try {
+            ({ uploadId: s3UploadId } = await store.createMultipart({
+              key: m.key,
+              contentType: m.contentType,
+              cacheControl: ASSET_CACHE_CONTROL,
+            }));
+          } catch (e) {
+            // Nothing of this call leaves: the uploads it opened are aborted
+            // (billed parts nobody would name), its multipart rows spent, and
+            // the caller presigns again. The single-PUT reservations of the
+            // call expire in their hour.
+            for (const o of opened)
+              await store
+                .abortMultipart(o.key, o.s3UploadId)
+                .catch(() => undefined);
+            for (const x of multiparts)
+              await assets
+                .updateUpload(x.uploadId, {
+                  status: "failed",
+                  s3UploadId: null,
+                })
+                .catch(() => undefined);
+            throw new AppError(
+              "unavailable",
+              "artifact storage could not open the upload; presign again",
+              { cause: e },
+            );
+          }
+          opened.push({ key: m.key, s3UploadId });
+          await assets.updateUpload(m.uploadId, { s3UploadId });
+        }
         if (granted.length > 0)
           await audit(id.subject, "asset.file.upload", bundle.id, {
             version: v,
@@ -1260,6 +1441,10 @@ export function createAssetRoutes({
             { alreadyPresent: true, file: one.file },
             { noStore: true },
           );
+        if ("multipart" in one) {
+          const { path: _path, ...grant } = one;
+          return json(grant, { status: 201, noStore: true });
+        }
         return uploadGrant({
           uploadId: one.uploadId,
           key: one.key,
@@ -1354,6 +1539,149 @@ export function createAssetRoutes({
       path: "/assets/uploads/{id}",
       auth: true,
       handler: async (ctx) => uploadView((await uploadWith(ctx)).upload),
+    },
+    defineRoute({
+      method: "POST",
+      path: "/assets/uploads/{id}/parts",
+      auth: true,
+      body: partsBody,
+      handler: async (ctx) => {
+        const { upload: u, row: bundle } = await uploadWith(ctx);
+        const store = requireStore();
+        if (u.s3UploadId === null)
+          throw new AppError(
+            "bad_request",
+            "this upload is a single PUT; it has no parts",
+          );
+        if (u.status !== "pending")
+          throw new AppError("conflict", `upload is ${u.status}`);
+        const now = nowSec(clock);
+        if (now > u.expiresAt) throw new AppError("conflict", "upload expired");
+        const count = u.partCount ?? multipartPartCount(u.size);
+        const seen = new Set<number>();
+        for (const p of ctx.body.parts) {
+          if (p.partNumber > count)
+            throw new AppError(
+              "bad_request",
+              `this upload has ${count} part(s)`,
+              { details: { partNumber: p.partNumber } },
+            );
+          if (seen.has(p.partNumber))
+            throw new AppError("bad_request", "a part appears twice", {
+              details: { partNumber: p.partNumber },
+            });
+          seen.add(p.partNumber);
+        }
+        const key = assetObjectKey(bundle, u.version, u.path);
+        // Part URLs live the hour of a single PUT (the upload a day):
+        // a resume asks for them again.
+        const expiresAt = Math.min(
+          u.expiresAt,
+          now + ARTIFACT_UPLOAD_URL_TTL_SEC,
+        );
+        const parts = [];
+        for (const p of ctx.body.parts) {
+          const contentLength = multipartPartSize(u, p.partNumber);
+          const url = await store.presignPart({
+            key,
+            uploadId: u.s3UploadId,
+            partNumber: p.partNumber,
+            contentLength,
+            sha256: p.sha256,
+            ttlSec: expiresAt - now,
+          });
+          parts.push({
+            partNumber: p.partNumber,
+            url,
+            method: "PUT" as const,
+            headers: {
+              "content-length": String(contentLength),
+              "x-amz-checksum-sha256": sha256Base64(p.sha256),
+            },
+          });
+        }
+        return json(
+          {
+            uploadId: u.id,
+            key,
+            partSize: u.partSize ?? MULTIPART_PART_BYTES,
+            partCount: count,
+            expiresAt,
+            parts,
+          },
+          { status: 201, noStore: true },
+        );
+      },
+    }),
+    {
+      method: "GET",
+      path: "/assets/uploads/{id}/parts",
+      auth: true,
+      handler: async (ctx) => {
+        const { upload: u, row: bundle } = await uploadWith(ctx);
+        const store = requireStore();
+        if (u.s3UploadId === null)
+          throw new AppError(
+            "bad_request",
+            "this upload is a single PUT; it has no parts",
+          );
+        const key = assetObjectKey(bundle, u.version, u.path);
+        let open = true;
+        let parts: Awaited<ReturnType<ArtifactStore["listParts"]>> = [];
+        try {
+          parts = await store.listParts(key, u.s3UploadId);
+        } catch (e) {
+          if (!(e instanceof MultipartGoneError)) throw e;
+          open = false;
+        }
+        return json(
+          {
+            uploadId: u.id,
+            status: u.status,
+            partSize: u.partSize ?? MULTIPART_PART_BYTES,
+            partCount: u.partCount ?? multipartPartCount(u.size),
+            open,
+            parts,
+          },
+          { noStore: true },
+        );
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/assets/uploads/{id}",
+      auth: true,
+      handler: async (ctx) => {
+        const { id, upload: u, row: bundle } = await uploadWith(ctx);
+        if (u.status === "completed")
+          throw new AppError("conflict", "upload is completed");
+        if (u.fileId !== null || u.status === "completing")
+          // A claim in flight or unsettled: only its commit or the sweep may
+          // decide what the key holds.
+          throw new AppError(
+            "conflict",
+            "this upload is being committed; the daily sweep settles it",
+          );
+        await writeSlot(id);
+        const store = requireStore();
+        if (u.s3UploadId !== null) {
+          const key = assetObjectKey(bundle, u.version, u.path);
+          const r = await store.abortMultipart(key, u.s3UploadId);
+          // Gone can mean completed by a commit this row did not record yet.
+          if (r === "gone" && (await store.inspect(key)).state !== "absent")
+            throw new AppError("conflict", "upload is completed");
+        } else
+          await store
+            .delete(assetStagingKey(u.id, u.path))
+            .catch(() => undefined);
+        await assets.deleteUpload(u.id);
+        await audit(id.subject, "asset.upload.abort", bundle.id, {
+          uploadId: u.id,
+          path: u.path,
+          multipart: u.s3UploadId !== null,
+        });
+        return undefined;
+      },
     },
     {
       method: "POST",

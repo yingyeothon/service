@@ -106,6 +106,10 @@ model asset_pending_uploads {
   mutable       Boolean                      @default(false)
   /// The sha256 a mutable replacement expects to replace (optional).
   if_sha256     String?                      @db.Char(64)
+  /// S3 multipart upload id of a file over 64 MiB (docs/decisions.md *Large asset uploads* #1); null for a single PUT.
+  s3_upload_id  String?                      @db.VarChar(255)
+  part_size     Int?
+  part_count    Int?
   asset_bundles asset_bundles                @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "asset_pending_uploads_bundle")
 
   @@index([bundle_id], map: "asset_pending_uploads_bundle")
@@ -433,6 +437,7 @@ enum asset_pending_uploads_status {
   pending
   completed
   failed
+  completing
 }
 
 enum asset_bundles_mode {

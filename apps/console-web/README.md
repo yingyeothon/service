@@ -19,6 +19,8 @@ applies to both. Published to S3 + CloudFront by `scripts/deploy-web.sh <stage>`
   `/ui/catalog/apps/:id`, `/ui/assets/:id` — member+; detail pages are addressed
   by id and carry a breadcrumb from the view's `teamName`/`projectName`.
   `/ui/catalog` and `/ui/assets` redirect to `/ui/teams`.
+- The browser publishes asset files up to 64 MiB; a larger file is refused with
+  a message naming `yyt asset sync`, which uploads it in parts.
 - `/ui/tokens` — any signed-in member (tokens carry the role at use time).
 - `/ui/members` — admin; also the installer-app setting and the site-name
   ledger (look up who keeps a name, release it with a reason).

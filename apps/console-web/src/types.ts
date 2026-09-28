@@ -780,6 +780,13 @@ export interface AssetUploadGrant {
   method: "PUT";
   headers: Record<string, string>;
   expiresAt: number;
+  /**
+   * A file over the single-PUT ceiling (64 MiB) is granted parts instead of
+   * a URL; the browser does not upload those (`yyt asset sync` does).
+   */
+  multipart?: boolean;
+  partSize?: number;
+  partCount?: number;
 }
 
 /* ---- show (the gallery) --------------------------------------------------- */

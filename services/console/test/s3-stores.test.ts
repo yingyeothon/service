@@ -2,16 +2,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import { CloudFrontClient } from "@aws-sdk/client-cloudfront";
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectsCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  ListPartsCommand,
   S3Client,
   type PutObjectCommandInput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type * as Presigner from "@aws-sdk/s3-request-presigner";
-import { createS3ArtifactStore } from "../src/artifact-store.js";
+import {
+  ConditionalWriteError,
+  createS3ArtifactStore,
+  MultipartGoneError,
+} from "../src/artifact-store.js";
 import { createS3PosterStore, POSTER_LIST_MAX_KEYS } from "../src/poster.js";
 import { createS3SiteStore } from "../src/site-store.js";
 
@@ -391,5 +399,184 @@ describe("S3 artifact store: live-bundle primitives (todo/46 P2)", () => {
     expect(r.failed[0]).toEqual({ key: "k7", code: "AccessDenied" });
     expect(r.failed[1]).toEqual({ key: "k1000", code: "SlowDown" });
     expect((await artifact.deleteMany([])).failed).toEqual([]);
+  });
+});
+
+describe("S3 artifact store: multipart primitives (todo/46 P3)", () => {
+  const status = (code: number, name: string) =>
+    Object.assign(new Error(name), {
+      name,
+      $metadata: { httpStatusCode: code },
+    });
+  const hex =
+    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+  it("opens the upload with the object's headers and a SHA-256 checksum algorithm", async () => {
+    const { artifact } = stores();
+    s3.on(CreateMultipartUploadCommand).resolves({ UploadId: "mpu-1" });
+    expect(
+      await artifact.createMultipart({
+        key: "assets/b/a.bin",
+        contentType: "application/octet-stream",
+        cacheControl: "public, max-age=31536000, immutable",
+      }),
+    ).toEqual({ uploadId: "mpu-1" });
+    expect(
+      s3.commandCalls(CreateMultipartUploadCommand)[0]!.args[0].input,
+    ).toEqual({
+      Bucket: "b",
+      Key: "assets/b/a.bin",
+      ContentType: "application/octet-stream",
+      CacheControl: "public, max-age=31536000, immutable",
+      ChecksumAlgorithm: "SHA256",
+    });
+    s3.on(CreateMultipartUploadCommand).resolves({});
+    await expect(
+      artifact.createMultipart({
+        key: "k",
+        contentType: "t",
+        cacheControl: "c",
+      }),
+    ).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("signs a part's length and checksum as headers, for the asked TTL", async () => {
+    const { artifact } = stores();
+    const url = new URL(
+      await artifact.presignPart({
+        key: "assets/b/a.bin",
+        uploadId: "mpu-1",
+        partNumber: 3,
+        contentLength: 7,
+        sha256: hex,
+        ttlSec: 120,
+      }),
+    );
+    expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe(
+      "content-length;host;x-amz-checksum-sha256",
+    );
+    expect(url.searchParams.get("X-Amz-Expires")).toBe("120");
+    expect(url.searchParams.get("partNumber")).toBe("3");
+    expect(url.searchParams.get("uploadId")).toBe("mpu-1");
+    expect(
+      [...url.searchParams.keys()].filter((k) =>
+        /checksum|x-amz-sdk-checksum/i.test(k),
+      ),
+    ).toEqual([]);
+  });
+
+  it("lists parts across pages, as hex checksums, and tells a closed upload", async () => {
+    const { artifact } = stores();
+    s3.on(ListPartsCommand, { PartNumberMarker: undefined }).resolves({
+      Parts: [
+        {
+          PartNumber: 1,
+          Size: 5,
+          ETag: '"e1"',
+          ChecksumSHA256: "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+        },
+      ],
+      IsTruncated: true,
+      NextPartNumberMarker: "1",
+    });
+    s3.on(ListPartsCommand, { PartNumberMarker: "1" }).resolves({
+      Parts: [{ PartNumber: 2, Size: 3, ETag: '"e2"' }],
+      IsTruncated: false,
+    });
+    expect(await artifact.listParts("k", "mpu-1")).toEqual([
+      { partNumber: 1, size: 5, etag: "e1", sha256: hex },
+      { partNumber: 2, size: 3, etag: "e2", sha256: null },
+    ]);
+    s3.on(ListPartsCommand).rejects(status(404, "NoSuchUpload"));
+    await expect(artifact.listParts("k", "mpu-1")).rejects.toBeInstanceOf(
+      MultipartGoneError,
+    );
+  });
+
+  it("completes under If-None-Match and the object size, mapping S3's refusals", async () => {
+    const { artifact } = stores();
+    s3.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final-3"' });
+    expect(
+      await artifact.completeMultipart({
+        key: "assets/b/a.bin",
+        uploadId: "mpu-1",
+        parts: [
+          { partNumber: 1, etag: "e1", sha256: hex },
+          { partNumber: 2, etag: "e2", sha256: null },
+        ],
+        objectSize: 8,
+      }),
+    ).toEqual({ etag: "final-3" });
+    expect(
+      s3.commandCalls(CompleteMultipartUploadCommand)[0]!.args[0].input,
+    ).toEqual({
+      Bucket: "b",
+      Key: "assets/b/a.bin",
+      UploadId: "mpu-1",
+      IfNoneMatch: "*",
+      MpuObjectSize: 8,
+      MultipartUpload: {
+        Parts: [
+          {
+            PartNumber: 1,
+            ETag: '"e1"',
+            ChecksumSHA256: "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+          },
+          { PartNumber: 2, ETag: '"e2"' },
+        ],
+      },
+    });
+    const complete = () =>
+      artifact.completeMultipart({
+        key: "k",
+        uploadId: "mpu-1",
+        parts: [],
+        objectSize: 0,
+      });
+    s3.on(CompleteMultipartUploadCommand).rejects(
+      status(412, "PreconditionFailed"),
+    );
+    await expect(complete()).rejects.toEqual(
+      new ConditionalWriteError("precondition"),
+    );
+    s3.on(CompleteMultipartUploadCommand).rejects(
+      status(409, "ConditionalRequestConflict"),
+    );
+    await expect(complete()).rejects.toEqual(
+      new ConditionalWriteError("conflict"),
+    );
+    s3.on(CompleteMultipartUploadCommand).rejects(status(404, "NoSuchUpload"));
+    await expect(complete()).rejects.toBeInstanceOf(MultipartGoneError);
+    s3.on(CompleteMultipartUploadCommand).rejects(
+      status(400, "InvalidRequest"),
+    );
+    await expect(complete()).rejects.toMatchObject({ name: "InvalidRequest" });
+  });
+
+  it("aborts, and reports an upload S3 no longer knows as gone", async () => {
+    const { artifact } = stores();
+    s3.on(AbortMultipartUploadCommand).resolves({});
+    expect(await artifact.abortMultipart("k", "mpu-1")).toBe("aborted");
+    s3.on(AbortMultipartUploadCommand).rejects(status(404, "NoSuchUpload"));
+    expect(await artifact.abortMultipart("k", "mpu-1")).toBe("gone");
+    s3.on(AbortMultipartUploadCommand).rejects(status(403, "AccessDenied"));
+    await expect(artifact.abortMultipart("k", "mpu-1")).rejects.toMatchObject({
+      name: "AccessDenied",
+    });
+  });
+
+  it("reads a multipart object's composite checksum as no SHA-256", async () => {
+    const { artifact } = stores();
+    s3.on(HeadObjectCommand).resolves({
+      ContentLength: 8,
+      ETag: '"final-3"',
+      ChecksumSHA256: "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=-3",
+    });
+    expect(await artifact.inspect("k")).toMatchObject({
+      state: "present",
+      contentLength: 8,
+      etag: "final-3",
+      sha256: null,
+    });
   });
 });

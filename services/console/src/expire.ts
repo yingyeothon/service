@@ -1,6 +1,7 @@
 import { nowSec, systemClock, ulid, type Clock, type Logger } from "@yyt/core";
 import { ASSET_TOMBSTONE_SEC, lbRetainCutoff } from "@yyt/console-db";
 import type {
+  AssetUploadRow,
   AssetsDb,
   CatalogDb,
   ConsoleDb,
@@ -13,7 +14,7 @@ import type {
 } from "@yyt/console-db";
 import type { Kv, RedisAclAdmin } from "@yyt/redis";
 import type { ArtifactStore } from "./artifact-store.js";
-import { settleAssetUpload } from "./asset-commit.js";
+import { assetObjectKey, settleAssetUpload } from "./asset-commit.js";
 import { ASSET_UPLOAD_KEY_PREFIX } from "./assets.js";
 import { planDeletions } from "./catalog-cleanup.js";
 import { deleteArtifactObjects } from "./catalog.js";
@@ -693,8 +694,11 @@ const ASSET_TOMBSTONE_BATCH = 1000;
  *    expiry: the key is checked again, a 404 releases the claim, bytes keep
  *    it (`settleAssetUpload`). `deleteExpiredUploads` skips every row that
  *    names a claim, so none of them is dropped unsettled.
- * 2. Expired uploads, then staging objects nothing pending names.
- * 3. Tombstones past their 400 days.
+ * 2. Expired multipart uploads: aborted (the parts are invisible and billed;
+ *    docs/decisions.md *Large asset uploads* #4), a claim settled the same
+ *    way as 1, then the row dropped. `deleteExpiredUploads` skips them too.
+ * 3. Expired uploads, then staging objects nothing pending names.
+ * 4. Tombstones past their 400 days.
  */
 export async function runAssetSweep({
   assets,
@@ -712,27 +716,70 @@ export async function runAssetSweep({
   uploadsDropped: number;
   objectsDeleted: number;
   claimsSettled: number;
+  multipartsAborted: number;
   tombstonesPurged: number;
 }> {
   const now = nowSec(clock);
   let claimsSettled = 0;
   let claimsUnknown = 0;
-  if (artifacts)
-    for (const u of await assets.listUnsettledUploads(now, ASSET_SETTLE_MAX)) {
-      // One claim's failure must not stop the rest of the sweep.
-      const r = await settleAssetUpload(
-        { assets, store: artifacts, logger },
-        u,
-      ).catch((e: unknown) => {
+  const settle = async (u: AssetUploadRow, store: ArtifactStore) => {
+    // One claim's failure must not stop the rest of the sweep.
+    const r = await settleAssetUpload({ assets, store, logger }, u).catch(
+      (e: unknown) => {
         logger.warn("asset claim settle failed", {
           uploadId: u.id,
           message: e instanceof Error ? e.message : String(e),
         });
         return "unknown" as const;
-      });
-      if (r === "unknown") claimsUnknown++;
-      else claimsSettled++;
+      },
+    );
+    if (r === "unknown") claimsUnknown++;
+    else claimsSettled++;
+    return r;
+  };
+  const settled = new Set<string>();
+  if (artifacts)
+    for (const u of await assets.listUnsettledUploads(now, ASSET_SETTLE_MAX)) {
+      await settle(u, artifacts);
+      settled.add(u.id);
     }
+
+  let multipartsAborted = 0;
+  let multipartsUnknown = 0;
+  if (artifacts)
+    for (const u of await assets.listExpiredMultipartUploads(
+      now,
+      ASSET_SETTLE_MAX,
+    )) {
+      // A failed multipart claim is in both lists: one look per run.
+      if (settled.has(u.id)) continue;
+      if (u.fileId !== null) {
+        // The claim rule decides (and aborts before it releases).
+        if ((await settle(u, artifacts)) === "unknown") multipartsUnknown++;
+        continue;
+      }
+      try {
+        const bundle = await assets.findBundle(u.bundleId);
+        if (bundle)
+          await artifacts.abortMultipart(
+            assetObjectKey(bundle, u.version, u.path),
+            u.s3UploadId!,
+          );
+        // A bundle already gone took its uploads' rows with it (cascade).
+        await assets.deleteUpload(u.id);
+        multipartsAborted++;
+      } catch (e) {
+        multipartsUnknown++;
+        logger.warn("asset multipart abort failed", {
+          uploadId: u.id,
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  if (multipartsUnknown > 0)
+    logger.warn("asset multipart uploads left for tomorrow", {
+      count: multipartsUnknown,
+    });
   const uploadsDropped = await assets.deleteExpiredUploads(now);
 
   let objectsDeleted = 0;
@@ -777,7 +824,14 @@ export async function runAssetSweep({
     if (n < ASSET_TOMBSTONE_BATCH) break;
   }
 
-  if (uploadsDropped + objectsDeleted + claimsSettled + tombstonesPurged > 0) {
+  if (
+    uploadsDropped +
+      objectsDeleted +
+      claimsSettled +
+      multipartsAborted +
+      tombstonesPurged >
+    0
+  ) {
     await db.insertAudit({
       id: ulid(),
       actorId: null,
@@ -790,6 +844,8 @@ export async function runAssetSweep({
         s3Failures,
         claimsSettled,
         claimsUnknown,
+        multipartsAborted,
+        multipartsUnknown,
         tombstonesPurged,
       },
     });
@@ -800,9 +856,17 @@ export async function runAssetSweep({
     s3Failures,
     claimsSettled,
     claimsUnknown,
+    multipartsAborted,
+    multipartsUnknown,
     tombstonesPurged,
   });
-  return { uploadsDropped, objectsDeleted, claimsSettled, tombstonesPurged };
+  return {
+    uploadsDropped,
+    objectsDeleted,
+    claimsSettled,
+    multipartsAborted,
+    tombstonesPurged,
+  };
 }
 
 /**

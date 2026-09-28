@@ -1,5 +1,6 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
 import type {
+  AssetsDb,
   KvCollectionUsage,
   KvStoreDb,
   LbBoardUsage,
@@ -189,6 +190,8 @@ export interface UsageDigestOptions {
   social?: Pick<SocialDb, "socialTableBytes" | "topSocialChannels">;
   /** Limit requests; omitted leaves the pending-request line out. */
   limits?: Pick<LimitsDb, "countPending">;
+  /** Asset uploads; omitted leaves the stuck-completion line out. */
+  assets?: Pick<AssetsDb, "countStuckUploads">;
   kv: Kv;
   /** Publishes to the alarm topic; absent when the stage has none. */
   notify?: (subject: string, message: string) => Promise<void>;
@@ -196,6 +199,9 @@ export interface UsageDigestOptions {
   clock?: Clock;
   logger: Logger;
 }
+
+/** How long a `completing` upload may sit before the digest names it. */
+export const STUCK_COMPLETING_SEC = 3600;
 
 export interface UsageWarning {
   /** Stable identity for the announce-once rule, e.g. `channel:q_x`. */
@@ -268,6 +274,7 @@ export async function runUsageDigest({
   leaderboards,
   social,
   limits,
+  assets,
   kv,
   notify,
   thresholds: overrides,
@@ -357,6 +364,21 @@ export async function runUsageDigest({
         text: `pending limit requests: ${pending.count} (oldest ${days}d)`,
       });
     }
+  }
+
+  if (assets) {
+    // A multipart commit that died between `completing` and its answer: the
+    // retry or the sweep settles it, and a count that stays is one that
+    // neither did (docs/decisions.md *Large asset uploads* #2).
+    const stuck = await attempt("assets", () =>
+      assets.countStuckUploads(nowSec(clock) - STUCK_COMPLETING_SEC),
+    );
+    if (stuck && stuck > 0)
+      warnings.push({
+        kind: "assets:completing",
+        type: "daily",
+        text: `asset uploads stuck completing for over an hour: ${stuck}`,
+      });
   }
 
   if (metrics && bucket) {

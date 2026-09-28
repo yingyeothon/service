@@ -15,10 +15,17 @@ import { num, run, type PrismaClient } from "./prisma.js";
 export const BUNDLE_SORT_KEYS = RESOURCE_SORT_KEYS;
 export type BundleSortKey = ResourceSortKey;
 
+/**
+ * Declaration order is the column's ENUM order (`test/enumOrder.test.ts`):
+ * `completing` was appended in m0023 and stays last. It is a multipart
+ * upload whose commit has checked the parts and is completing them, or died
+ * doing so (docs/decisions.md *Large asset uploads* #2).
+ */
 export const ASSET_UPLOAD_STATUSES = [
   "pending",
   "completed",
   "failed",
+  "completing",
 ] as const;
 export type AssetUploadStatus = (typeof ASSET_UPLOAD_STATUSES)[number];
 
@@ -146,6 +153,13 @@ export interface AssetUploadRow {
   mutable: boolean;
   /** The sha256 a mutable replacement expects to replace. */
   ifSha256: string | null;
+  /**
+   * The S3 multipart upload of a file over the single-PUT ceiling, created
+   * at the file's final key; `null` for a single PUT into staging.
+   */
+  s3UploadId: string | null;
+  partSize: number | null;
+  partCount: number | null;
   createdAt: number;
   expiresAt: number;
 }
@@ -183,6 +197,8 @@ export interface AssetUploadInput {
   sha256?: string | null;
   mutable?: boolean;
   ifSha256?: string | null;
+  partSize?: number | null;
+  partCount?: number | null;
   createdAt: number;
   expiresAt: number;
 }
@@ -192,6 +208,9 @@ export interface AssetUploadPatch {
   objectKey?: string | null;
   etag?: string | null;
   fileId?: string | null;
+  s3UploadId?: string | null;
+  /** Test and dev-hook use: an upload made to expire earlier. */
+  expiresAt?: number;
 }
 
 /**
@@ -358,17 +377,41 @@ export interface AssetsDb {
    */
   listUnsettledUploads(now: number, limit: number): Promise<AssetUploadRow[]>;
   /**
-   * Still-pending, not-yet-expired uploads of one bundle. Quotas must count
-   * these: presigns are granted before anything is committed, so a caller that
-   * pipelines them would otherwise see a zero total every time.
+   * Still-pending (or completing), not-yet-expired uploads of one bundle.
+   * Quotas must count these: presigns are granted before anything is
+   * committed, so a caller that pipelines them would otherwise see a zero
+   * total every time.
    */
   listInFlightUploads(bundleId: string, now: number): Promise<AssetUploadRow[]>;
+  /**
+   * A bundle's multipart uploads S3 may still hold (not completed), expired
+   * or not: a bundle delete aborts them before it drops the rows.
+   */
+  listOpenMultipartUploads(bundleId: string): Promise<AssetUploadRow[]>;
+  /**
+   * Multipart uploads past `expires_at` that never completed, oldest first,
+   * with or without a claim: the sweep aborts them (`deleteExpiredUploads`
+   * skips them) and settles the ones that name a claim.
+   */
+  listExpiredMultipartUploads(
+    now: number,
+    limit: number,
+  ): Promise<AssetUploadRow[]>;
+  /**
+   * Multipart uploads `completing` whose row was created before `before`: a
+   * commit that died mid-way. The row keeps no transition time, so a commit
+   * started a minute ago on an old upload counts too (a false positive the
+   * digest accepts; a real one stays until the retry or the sweep).
+   */
+  countStuckUploads(before: number): Promise<number>;
   /** One query for many ids — the sweep resolves a whole listing page at once. */
   listUploadsByIds(ids: string[]): Promise<AssetUploadRow[]>;
   updateUpload(id: string, patch: AssetUploadPatch): Promise<boolean>;
   /**
    * Hard-deletes rows whose `expires_at` passed and are not completed, except
-   * the ones naming a claim (`file_id`), which the sweep settles first.
+   * the ones naming a claim (`file_id`), which the sweep settles first, and
+   * the multipart ones (`s3_upload_id`), which it aborts first: a dropped row
+   * would leave invisible, billed parts until the lifecycle rule's day.
    */
   deleteExpiredUploads(now: number): Promise<number>;
 }
@@ -416,6 +459,9 @@ type UploadModel = {
   sha256: string | null;
   mutable: boolean;
   if_sha256: string | null;
+  s3_upload_id: string | null;
+  part_size: number | null;
+  part_count: number | null;
   created_at: bigint | number;
   expires_at: bigint | number;
 };
@@ -463,6 +509,9 @@ const toUpload = (r: UploadModel): AssetUploadRow => ({
   sha256: r.sha256,
   mutable: r.mutable,
   ifSha256: r.if_sha256,
+  s3UploadId: r.s3_upload_id,
+  partSize: r.part_size,
+  partCount: r.part_count,
   createdAt: num(r.created_at),
   expiresAt: num(r.expires_at),
 });
@@ -650,7 +699,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         const [u] = await prisma.$queryRaw<{ bytes: bigint | number }[]>`
           select cast(coalesce(sum(u.size), 0) as signed) as bytes
           from asset_bundles b join asset_pending_uploads u on u.bundle_id = b.id
-          where b.project_id = ${projectId} and u.status = 'pending'
+          where b.project_id = ${projectId} and u.status in ('pending', 'completing')
             and u.expires_at >= ${now}${
               exceptUploadIds.length > 0
                 ? Prisma.sql` and u.id not in (${Prisma.join([...exceptUploadIds])})`
@@ -842,6 +891,8 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             sha256: u.sha256 ?? null,
             mutable: u.mutable ?? false,
             if_sha256: u.ifSha256 ?? null,
+            part_size: u.partSize ?? null,
+            part_count: u.partCount ?? null,
             created_at: u.createdAt,
             expires_at: u.expiresAt,
           })),
@@ -860,6 +911,8 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             sha256: u.sha256 ?? null,
             mutable: u.mutable ?? false,
             if_sha256: u.ifSha256 ?? null,
+            part_size: u.partSize ?? null,
+            part_count: u.partCount ?? null,
             created_at: u.createdAt,
             expires_at: u.expiresAt,
           },
@@ -900,12 +953,45 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         const rows = await prisma.asset_pending_uploads.findMany({
           where: {
             bundle_id: bundleId,
-            status: "pending",
+            status: { in: ["pending", "completing"] },
             expires_at: { gte: now },
           },
         });
         return rows.map(toUpload);
       }),
+    listOpenMultipartUploads: (bundleId) =>
+      run(async () =>
+        (
+          await prisma.asset_pending_uploads.findMany({
+            where: {
+              bundle_id: bundleId,
+              s3_upload_id: { not: null },
+              status: { not: "completed" },
+            },
+            orderBy: [{ created_at: "asc" }, { id: "asc" }],
+          })
+        ).map(toUpload),
+      ),
+    listExpiredMultipartUploads: (now, limit) =>
+      run(async () =>
+        (
+          await prisma.asset_pending_uploads.findMany({
+            where: {
+              s3_upload_id: { not: null },
+              status: { not: "completed" },
+              expires_at: { lt: now },
+            },
+            orderBy: [{ expires_at: "asc" }, { id: "asc" }],
+            take: Math.max(1, limit),
+          })
+        ).map(toUpload),
+      ),
+    countStuckUploads: (before) =>
+      run(() =>
+        prisma.asset_pending_uploads.count({
+          where: { status: "completing", created_at: { lt: before } },
+        }),
+      ),
     listUploadsByIds: (ids) =>
       run(async () => {
         if (ids.length === 0) return [];
@@ -916,11 +1002,14 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
       }),
     updateUpload: (id, patch) =>
       run(async () => {
-        const data: Record<string, string | null> = {};
+        const data: Record<string, string | number | null> = {};
         if (patch.status !== undefined) data.status = patch.status;
         if (patch.objectKey !== undefined) data.object_key = patch.objectKey;
         if (patch.etag !== undefined) data.etag = patch.etag;
         if (patch.fileId !== undefined) data.file_id = patch.fileId;
+        if (patch.s3UploadId !== undefined)
+          data.s3_upload_id = patch.s3UploadId;
+        if (patch.expiresAt !== undefined) data.expires_at = patch.expiresAt;
         // An empty patch is a no-op, and `updateMany` with no `data` is a
         // statement that touches every column with itself. The catalog's own
         // pending-upload writer has answered `false` here since it was
@@ -939,6 +1028,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             expires_at: { lt: now },
             status: { not: "completed" },
             file_id: null,
+            s3_upload_id: null,
           },
         });
         return r.count;
@@ -1002,6 +1092,9 @@ export function createMemoryAssetsDb(
       sha256: u.sha256 ?? null,
       mutable: u.mutable ?? false,
       ifSha256: u.ifSha256 ?? null,
+      s3UploadId: null,
+      partSize: u.partSize ?? null,
+      partCount: u.partCount ?? null,
       createdAt: u.createdAt,
       expiresAt: u.expiresAt,
       status: "pending",
@@ -1203,7 +1296,7 @@ export function createMemoryAssetsDb(
       for (const u of uploads.values())
         if (
           ids.has(u.bundleId) &&
-          u.status === "pending" &&
+          (u.status === "pending" || u.status === "completing") &&
           u.expiresAt >= now &&
           !exceptUploadIds.includes(u.id)
         )
@@ -1372,10 +1465,35 @@ export function createMemoryAssetsDb(
         .filter(
           (u) =>
             u.bundleId === bundleId &&
-            u.status === "pending" &&
+            (u.status === "pending" || u.status === "completing") &&
             u.expiresAt >= now,
         )
         .map((u) => ({ ...u })),
+    listOpenMultipartUploads: async (bundleId) =>
+      [...uploads.values()]
+        .filter(
+          (u) =>
+            u.bundleId === bundleId &&
+            u.s3UploadId !== null &&
+            u.status !== "completed",
+        )
+        .sort((a, b) => a.createdAt - b.createdAt || cmp(a.id, b.id))
+        .map((u) => ({ ...u })),
+    listExpiredMultipartUploads: async (now, limit) =>
+      [...uploads.values()]
+        .filter(
+          (u) =>
+            u.s3UploadId !== null &&
+            u.status !== "completed" &&
+            u.expiresAt < now,
+        )
+        .sort((a, b) => a.expiresAt - b.expiresAt || cmp(a.id, b.id))
+        .slice(0, Math.max(1, limit))
+        .map((u) => ({ ...u })),
+    countStuckUploads: async (before) =>
+      [...uploads.values()].filter(
+        (u) => u.status === "completing" && u.createdAt < before,
+      ).length,
     listUploadsByIds: async (ids) =>
       ids
         .map((id) => uploads.get(id))
@@ -1396,6 +1514,12 @@ export function createMemoryAssetsDb(
           : {}),
         ...(patch.etag !== undefined ? { etag: patch.etag } : {}),
         ...(patch.fileId !== undefined ? { fileId: patch.fileId } : {}),
+        ...(patch.s3UploadId !== undefined
+          ? { s3UploadId: patch.s3UploadId }
+          : {}),
+        ...(patch.expiresAt !== undefined
+          ? { expiresAt: patch.expiresAt }
+          : {}),
       });
       return true;
     },
@@ -1405,7 +1529,8 @@ export function createMemoryAssetsDb(
         if (
           u.expiresAt < now &&
           u.status !== "completed" &&
-          u.fileId === null
+          u.fileId === null &&
+          u.s3UploadId === null
         ) {
           uploads.delete(k);
           n++;

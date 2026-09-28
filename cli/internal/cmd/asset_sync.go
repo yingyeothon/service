@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -248,6 +249,8 @@ type syncer struct {
 	version  string
 	parallel int
 	rl       *rateLimiter
+	// progress takes one line per multipart part (stderr; nil = quiet).
+	progress func(string)
 	mu       sync.Mutex
 	failed   []string
 }
@@ -278,6 +281,13 @@ type presignResult struct {
 	URL            string            `json:"url"`
 	Method         string            `json:"method"`
 	Headers        map[string]string `json:"headers"`
+	// A file over the single-PUT ceiling: no URL, parts instead.
+	Multipart bool  `json:"multipart"`
+	PartSize  int64 `json:"partSize"`
+	PartCount int   `json:"partCount"`
+	ExpiresAt int64 `json:"expiresAt"`
+	// CommitOnly: the parts are in (a `completing` upload); commit it.
+	CommitOnly bool `json:"-"`
 }
 
 type commitResult struct {
@@ -302,7 +312,14 @@ func (s *syncer) send(ctx context.Context, files []localFile, ifSHA map[string]s
 		batch := files[start:min(start+assetBatchMax, len(files))]
 		specs := make([]map[string]any, 0, len(batch))
 		byPath := map[string]localFile{}
+		// Multipart uploads a dead run left open resume instead of presigning.
+		var resumed []presignResult
 		for _, f := range batch {
+			byPath[f.Path] = f
+			if g := resumableUpload(ctx, s.call, s.id, f); g != nil {
+				resumed = append(resumed, presignResult{Path: f.Path, UploadID: g.UploadID, Multipart: true, PartSize: g.PartSize, PartCount: g.PartCount, ExpiresAt: g.ExpiresAt, CommitOnly: g.CommitOnly})
+				continue
+			}
 			spec := map[string]any{"path": f.Path, "size": f.Size, "sha256": f.SHA256}
 			if f.Mutable {
 				spec["mutable"] = true
@@ -311,23 +328,41 @@ func (s *syncer) send(ctx context.Context, files []localFile, ifSHA map[string]s
 				}
 			}
 			specs = append(specs, spec)
-			byPath[f.Path] = f
-		}
-		body := map[string]any{"files": specs}
-		if s.version != "" {
-			body["version"] = s.version
 		}
 		var res struct {
 			Uploads []presignResult `json:"uploads"`
 		}
-		if err := s.callWith(ctx, presignRetry, http.MethodPost, "/assets/bundles/"+api.PathID(s.id)+"/files", body, &res); err != nil {
-			for _, f := range batch {
-				s.fail(f.Path, err)
+		// A path whose file row is a claim still being committed refuses the
+		// presign and names the upload: that upload is committed instead, and
+		// the rest of the batch is presigned again without it.
+		for attempt := 0; len(specs) > 0; attempt++ {
+			body := map[string]any{"files": specs}
+			if s.version != "" {
+				body["version"] = s.version
 			}
-			continue
+			err := s.callWith(ctx, presignRetry, http.MethodPost, "/assets/bundles/"+api.PathID(s.id)+"/files", body, &res)
+			if err == nil {
+				break
+			}
+			if id, p, ok := committingUpload(err); ok && attempt < len(batch) {
+				resumed = append(resumed, presignResult{Path: p, UploadID: id, Multipart: true, CommitOnly: true})
+				kept := specs[:0]
+				for _, spec := range specs {
+					if spec["path"] != p {
+						kept = append(kept, spec)
+					}
+				}
+				specs = kept
+				continue
+			}
+			for _, spec := range specs {
+				s.fail(spec["path"].(string), err)
+			}
+			res.Uploads = nil
+			break
 		}
 		var grants []presignResult
-		for _, u := range res.Uploads {
+		for _, u := range append(res.Uploads, resumed...) {
 			if u.AlreadyPresent {
 				done = append(done, u.Path)
 			} else {
@@ -345,14 +380,21 @@ func (s *syncer) send(ctx context.Context, files []localFile, ifSHA map[string]s
 				defer wg.Done()
 				for g := range jobs {
 					f := byPath[g.Path]
-					err := defaultRetry.do(ctx, func() error {
-						fh, err := os.Open(f.Local)
-						if err != nil {
-							return err
-						}
-						defer fh.Close()
-						return putPresigned(ctx, s.cl, uploadGrant{UploadID: g.UploadID, URL: g.URL, Method: g.Method, Headers: g.Headers}, fh, f.Size)
-					})
+					var err error
+					if g.CommitOnly {
+						// Nothing to send: the commit below resumes it.
+					} else if g.Multipart {
+						err = s.sendParts(ctx, g, f)
+					} else {
+						err = defaultRetry.do(ctx, func() error {
+							fh, err := os.Open(f.Local)
+							if err != nil {
+								return err
+							}
+							defer fh.Close()
+							return putPresigned(ctx, s.cl, uploadGrant{UploadID: g.UploadID, URL: g.URL, Method: g.Method, Headers: g.Headers}, fh, f.Size)
+						})
+					}
 					if err != nil {
 						s.fail(g.Path, err)
 						continue
@@ -373,9 +415,40 @@ func (s *syncer) send(ctx context.Context, files []localFile, ifSHA map[string]s
 			pathOf[g.UploadID] = g.Path
 		}
 		sort.Strings(put) // a stable request whatever order the PUTs finished in
-		done = append(done, s.commit(ctx, put, pathOf)...)
+		committed := s.commit(ctx, put, pathOf)
+		// A committed multipart upload needs no resume any more.
+		for _, p := range committed {
+			if f, ok := byPath[p]; ok && f.Size > 0 {
+				dropUploadState(s.id, f.SHA256)
+			}
+		}
+		done = append(done, committed...)
 	}
 	return done
+}
+
+// sendParts uploads one multipart grant's parts with their own pool of
+// `parallel` workers (so a batch of big files runs up to parallel² PUTs at
+// once — 16 by default) and keeps the resume state until the file is
+// committed.
+func (s *syncer) sendParts(ctx context.Context, g presignResult, f localFile) error {
+	mg := multipartGrant{UploadID: g.UploadID, PartSize: g.PartSize, PartCount: g.PartCount, Size: f.Size, ExpiresAt: g.ExpiresAt}
+	if err := saveUploadState(uploadState{UploadID: g.UploadID, BundleID: s.id, Path: f.Path, SHA256: f.SHA256, Size: f.Size, ExpiresAt: g.ExpiresAt}); err != nil {
+		// Not fatal: the upload still happens, only a resume is lost.
+		if s.progress != nil {
+			s.progress(f.Path + ": resume state not saved: " + err.Error())
+		}
+	}
+	progress := func(line string) {
+		if s.progress != nil {
+			s.progress(f.Path + ": " + line)
+		}
+	}
+	err := uploadMultipart(ctx, s.call, s.cl, mg, f.Local, s.parallel, progress)
+	if errors.Is(err, errUploadGone) {
+		dropUploadState(s.id, f.SHA256)
+	}
+	return err
 }
 
 func (s *syncer) commit(ctx context.Context, ids []string, pathOf map[string]string) []string {
@@ -447,6 +520,10 @@ func newAssetSync(a *App, bundleID bundleResolver) *cobra.Command {
 			"stale before this run (the previous generation keeps working for one more\n" +
 			"deploy); --prune=now deletes every file missing locally. An immutable file\n" +
 			"whose bytes changed is a conflict, reported before anything is sent.\n\n" +
+			"A file over 64 MiB goes up in 32 MiB parts, in parallel, and a run that\n" +
+			"dies is resumed by the next one (the upload id is kept under the user\n" +
+			"cache directory, $YYT_CACHE or ~/.cache/yyt, for the day S3 holds it);\n" +
+			"`asset upload` and `asset push` take such files too but start over.\n\n" +
 			"--version syncs one version of a versioned bundle (no --mutable, no\n" +
 			"--prune): files already in the version must match.",
 		Args: cobra.ExactArgs(2),
@@ -460,6 +537,9 @@ func newAssetSync(a *App, bundleID bundleResolver) *cobra.Command {
 				return err
 			}
 			s := &syncer{cl: cc.cl, id: id, version: version, parallel: parallel, rl: newRateLimiter(rate)}
+			if !a.jsonOut {
+				s.progress = func(line string) { fmt.Fprintln(a.Err, line) }
+			}
 			var b assetBundle
 			if err := s.call(ctx, http.MethodGet, "/assets/bundles/"+api.PathID(id), nil, &b); err != nil {
 				return err

@@ -280,6 +280,25 @@ describe("serverless.yml invariants", () => {
       if (name !== "CdnGuardRole")
         expect(JSON.stringify(r), name).not.toContain("UpdateDistribution");
 
+    // The artifact bucket grant carries what a multipart upload needs
+    // beyond PutObject (docs/decisions.md *Large asset uploads*): without
+    // these a sweep cannot abort billed parts, nor a commit list them.
+    const artifactObjects = flat(doc.provider.iam.role.statements).find(
+      (s) =>
+        s.Effect === "Allow" &&
+        JSON.stringify(s.Resource).includes("artifactBucket}/*"),
+    );
+    expect(artifactObjects).toBeDefined();
+    expect(actions(artifactObjects!)).toEqual(
+      expect.arrayContaining([
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts",
+      ]),
+    );
+
     // The distribution ids reach only the functions that need them.
     const guardEnv = guard.environment ?? {};
     for (const k of [

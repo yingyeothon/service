@@ -510,3 +510,29 @@ describe("live asset bundles", () => {
     });
   });
 });
+
+describe("asset uploads over the single-PUT ceiling", () => {
+  it("refuses a multipart grant before any PUT and names the CLI", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(
+      jsonRes(201, {
+        uploadId: "u1",
+        key: "assets/ab_1/v1/world.bin",
+        multipart: true,
+        partSize: 32 * 1024 * 1024,
+        partCount: 4,
+        size: 100 * 1024 * 1024,
+        expiresAt: 1,
+      }),
+    );
+    const api = createApiClient({ baseUrl: "https://x.test/", fetch });
+    const file = new File(["x"], "world.bin");
+    const err = await api
+      .uploadAssetFile("ab_1", "v1", "world.bin", file)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe("multipart_upload");
+    expect((err as ApiError).message).toMatch(/yyt asset sync/);
+    // The presign only: no PUT, no commit.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

@@ -9,8 +9,10 @@ import {
 } from "@yyt/console-db";
 import {
   ConditionalWriteError,
+  MultipartGoneError,
   type ArtifactStore,
   type ObjectState,
+  type UploadedPart,
 } from "./artifact-store.js";
 import { artifactUrl } from "./catalog.js";
 
@@ -38,6 +40,54 @@ export const ASSET_MUTABLE_CACHE_CONTROL = "no-cache";
 export const STRAY_WRITE_SEC = 60;
 /** `ConditionalRequestConflict` retries before a 409 (another write in flight). */
 const CONFLICT_RETRIES = 2;
+/**
+ * Above this a file is uploaded in parts (docs/decisions.md *Large asset
+ * uploads* #1): the single PUT is bounded by the commit's synchronous copy.
+ */
+export const MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024;
+/** 32 MiB parts: at most 8 at the 256 MiB `asset.fileBytes` ceiling. */
+export const MULTIPART_PART_BYTES = 32 * 1024 * 1024;
+
+export function multipartPartCount(size: number): number {
+  return Math.ceil(size / MULTIPART_PART_BYTES);
+}
+
+/** The exact length of part `n` (1-based) of a `size`-byte upload. */
+export function multipartPartSize(
+  u: { size: number; partSize: number | null; partCount: number | null },
+  n: number,
+): number {
+  const partSize = u.partSize ?? MULTIPART_PART_BYTES;
+  const count = u.partCount ?? Math.ceil(u.size / partSize);
+  return n < count ? partSize : u.size - partSize * (count - 1);
+}
+
+/**
+ * The parts a multipart commit needs, or what is wrong with them: every
+ * number 1..count present, each with its exact length and a checksum.
+ */
+export function checkParts(
+  u: { size: number; partSize: number | null; partCount: number | null },
+  parts: readonly UploadedPart[],
+):
+  | { ok: true; parts: UploadedPart[] }
+  | { ok: false; missing: number[]; bad: number[] } {
+  const count = u.partCount ?? multipartPartCount(u.size);
+  const by = new Map(parts.map((p) => [p.partNumber, p]));
+  const missing: number[] = [];
+  const bad: number[] = [];
+  const out: UploadedPart[] = [];
+  for (let n = 1; n <= count; n++) {
+    const p = by.get(n);
+    if (!p) missing.push(n);
+    else if (p.size !== multipartPartSize(u, n) || p.sha256 === null)
+      bad.push(n);
+    else out.push(p);
+  }
+  return missing.length + bad.length === 0
+    ? { ok: true, parts: out }
+    : { ok: false, missing, bad };
+}
 
 export function assetStagingKey(uploadId: string, path: string): string {
   return `${ASSET_UPLOAD_KEY_PREFIX}${uploadId}/${path}`;
@@ -135,10 +185,12 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
   const sleep =
     o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
+  // A multipart object's stored checksum is a composite, not the bytes' SHA-256:
+  // its size is all S3 can confirm, and its claim is the only writer of the key.
   const same = (st: ObjectState, u: AssetUploadRow) =>
     st.state === "present" &&
     st.contentLength === u.size &&
-    (u.sha256 === null || st.sha256 === u.sha256);
+    (u.sha256 === null || u.s3UploadId !== null || st.sha256 === u.sha256);
 
   async function done(
     u: AssetUploadRow,
@@ -152,7 +204,9 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
       etag,
       fileId,
     });
-    await store.delete(assetStagingKey(u.id, u.path)).catch(() => undefined);
+    // A multipart upload wrote its final key directly: nothing is staged.
+    if (u.s3UploadId === null)
+      await store.delete(assetStagingKey(u.id, u.path)).catch(() => undefined);
   }
 
   async function fail(u: AssetUploadRow, e: AppError): Promise<never> {
@@ -183,7 +237,10 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
   /**
    * A new key: insert the claim, copy with `If-None-Match: *`. The same
    * bytes already committed at the path (with a sha256 to compare) are
-   * success.
+   * success. A multipart commit passes its `write` (the completion) and an
+   * `absent` verdict: whether a 404 after a failed write releases the claim
+   * (the upload is known gone) or keeps it for a retry (S3 may still be
+   * completing it).
    */
   async function claimAndCopy(
     u: AssetUploadRow,
@@ -191,6 +248,19 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
     finalKey: string,
     stagingEtag: string | null,
     { quota }: CommitChecks,
+    write: () => Promise<{ etag: string | null }> = () =>
+      store.copy(
+        assetStagingKey(u.id, u.path),
+        finalKey,
+        {
+          contentType: u.contentType,
+          cacheControl: u.mutable
+            ? ASSET_MUTABLE_CACHE_CONTROL
+            : ASSET_CACHE_CONTROL,
+        },
+        { ifNoneMatch: true, checksum: true },
+      ),
+    absent: () => Promise<"release" | "retry"> = async () => "release",
   ): Promise<CommitOutcome> {
     const now = nowSec(clock);
     const fileId = `af_${u.id}`;
@@ -266,17 +336,7 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
     }
     let etag: string | null;
     try {
-      ({ etag } = await store.copy(
-        assetStagingKey(u.id, u.path),
-        finalKey,
-        {
-          contentType: u.contentType,
-          cacheControl: u.mutable
-            ? ASSET_MUTABLE_CACHE_CONTROL
-            : ASSET_CACHE_CONTROL,
-        },
-        { ifNoneMatch: true, checksum: true },
-      ));
+      ({ etag } = await write());
     } catch (e) {
       if (e instanceof ConditionalWriteError && e.kind === "conflict")
         // Another attempt of this very upload is writing the key right now:
@@ -290,6 +350,15 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
         // Our bytes are there: an earlier attempt of this upload landed and
         // lost its answer (the only writer of a claimed key is its claim).
         etag = st.etag;
+      } else if (st.state === "absent" && (await absent()) === "retry") {
+        // A multipart completion whose answer was lost while the upload is
+        // still open: S3 may yet publish it. The claim stays for the retry
+        // (or the sweep), never rolled back blindly (decisions #2).
+        throw new AppError(
+          "unavailable",
+          "the completion did not answer; retry the commit",
+          { cause: e },
+        );
       } else if (st.state === "absent") {
         // Nothing was published: free the path and the reservation. The
         // upload is spent, so the answer says to upload again, not to retry.
@@ -529,6 +598,7 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
       const f = await assets.findFile(u.fileId);
       if (f) return { file: f, alreadyPresent: false };
     }
+    if (u.s3UploadId !== null) return commitMultipart(u, bundle, c);
     if (u.status !== "pending")
       throw new AppError("conflict", `upload is ${u.status}`);
     if (nowSec(clock) > u.expiresAt)
@@ -574,6 +644,110 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
       : claimAndCopy(u, bundle, finalKey, staging.etag, c);
   }
 
+  /**
+   * A file over the single-PUT ceiling (docs/decisions.md *Large asset
+   * uploads* #2): the parts are checked, the upload marked `completing`, the
+   * claim inserted, and S3 completes the upload at the final key under
+   * `If-None-Match: *` and the expected size. A retry of a `completing`
+   * upload resumes: its claim is found, and a completion that already
+   * landed is recognised by the object.
+   */
+  async function commitMultipart(
+    u: AssetUploadRow,
+    bundle: AssetBundleRow,
+    c: CommitChecks,
+  ): Promise<CommitOutcome> {
+    const uploadId = u.s3UploadId!;
+    if (u.status !== "pending" && u.status !== "completing")
+      throw new AppError("conflict", `upload is ${u.status}`);
+    if (u.mutable)
+      throw new AppError(
+        "conflict",
+        "a mutable file is never uploaded in parts",
+      );
+    if (nowSec(clock) > u.expiresAt)
+      throw new AppError("conflict", "upload expired");
+    const finalKey = assetObjectKey(bundle, u.version, u.path);
+    const fileId = `af_${u.id}`;
+    const landed = async (): Promise<CommitOutcome | undefined> => {
+      // Our earlier completion landed and lost its answer: the object is
+      // there, our claim names it, and nothing else writes a claimed key.
+      if (u.fileId !== fileId) return undefined;
+      const st = await store.inspect(finalKey);
+      const row = await assets.findFile(fileId);
+      if (!same(st, u) || !row || row.objectKey !== finalKey) return undefined;
+      await done(u, fileId, finalKey, st.state === "present" ? st.etag : null);
+      return { file: row, alreadyPresent: false };
+    };
+    let listed: UploadedPart[];
+    try {
+      listed = await store.listParts(finalKey, uploadId);
+    } catch (e) {
+      if (!(e instanceof MultipartGoneError)) throw e;
+      const ok = await landed();
+      if (ok) return ok;
+      // Gone and no object: nothing can complete any more. A claim is
+      // released only on a 404 of the key (decisions #2).
+      if (u.fileId === fileId) {
+        const st = await store.inspect(finalKey);
+        if (st.state !== "absent") {
+          // `failed` with its claim: what `listUnsettledUploads` looks for.
+          await assets
+            .updateUpload(u.id, { status: "failed" })
+            .catch(() => undefined);
+          throw new AppError(
+            "conflict",
+            "the file's state could not be confirmed; the daily sweep settles it, then sync again",
+            { details: { path: u.path, reason: "unsettled" } },
+          );
+        }
+        await assets.deleteFile(fileId).catch(() => undefined);
+      }
+      return fail(
+        u,
+        new AppError(
+          "conflict",
+          "the multipart upload is no longer open; upload the file again",
+          { details: { path: u.path, reason: "upload_gone" } },
+        ),
+      );
+    }
+    const parts = checkParts(u, listed);
+    if (!parts.ok)
+      throw new AppError("bad_request", "not every part was uploaded", {
+        details: { path: u.path, missing: parts.missing, bad: parts.bad },
+      });
+    if (u.status === "pending")
+      await assets.updateUpload(u.id, { status: "completing" });
+    return claimAndCopy(
+      u,
+      bundle,
+      finalKey,
+      null,
+      c,
+      () =>
+        store.completeMultipart({
+          key: finalKey,
+          uploadId,
+          parts: parts.parts,
+          objectSize: u.size,
+        }),
+      async () => {
+        // A 404 after a failed completion: the upload still open means S3
+        // may yet complete it (a lost answer), so the claim waits for the
+        // retry; an upload gone with no object is a completion that never
+        // happened.
+        try {
+          await store.listParts(finalKey, uploadId);
+          return "retry";
+        } catch (e) {
+          if (e instanceof MultipartGoneError) return "release";
+          return "retry";
+        }
+      },
+    );
+  }
+
   return { commit };
 }
 
@@ -581,7 +755,8 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
  * The daily sweep's half of the claim rule: a `failed` upload that still
  * names its claim is settled once the key answers. Present bytes keep the row
  * (the upload becomes `completed`), a 404 drops the claim, and another 403
- * waits for tomorrow.
+ * waits for tomorrow. A multipart upload is aborted before its claim is
+ * released: until then S3 could still complete it onto the freed path.
  */
 export async function settleAssetUpload(
   {
@@ -597,13 +772,18 @@ export async function settleAssetUpload(
   if (st.state === "unknown") return "unknown";
   const row = await assets.findFile(u.fileId);
   if (st.state === "absent") {
+    if (u.s3UploadId !== null) {
+      await store.abortMultipart(key, u.s3UploadId);
+      // The abort could have raced a completion: the key decides once more.
+      if ((await store.inspect(key)).state !== "absent") return "unknown";
+    }
     if (row && row.objectKey === key) await assets.deleteFile(row.id);
     await assets.deleteUpload(u.id);
     return "released";
   }
   if (
     st.contentLength !== u.size ||
-    (u.sha256 !== null && st.sha256 !== u.sha256)
+    (u.sha256 !== null && u.s3UploadId === null && st.sha256 !== u.sha256)
   )
     logger.error("asset claim names other bytes", { uploadId: u.id, key });
   if (row && row.mutable && row.etag === null)

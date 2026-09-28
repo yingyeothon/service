@@ -171,11 +171,21 @@ yyt catalog installer
 yyt asset list                                         # project context → that project; none → every team you sit in
 yyt asset create <name> [--description d]              # in the project context (explicit)
 yyt asset get|update|delete <bundle>                   # id or name; update: [--name n] [--description d]
-yyt asset files <bundle> <version>                     # public URLs of one version (follows every page)
+yyt asset files <bundle> [<version>] [--json]          # public URLs of one version, or a live bundle's files (follows every page)
 yyt asset upload <bundle> <version> <file> [--path inside/the/bundle.json]
 yyt asset push <bundle> <version> <dir>                # a whole directory as one version
+yyt asset sync <bundle> <dir> [--version v] [--mutable <glob>...] [--prune[=now]] [--dry-run]
+yyt asset download <bundle> <path> [-o file] [--range a-b]
+yyt asset rm <bundle> <path...>                        # live bundle files
 yyt asset rm-version <bundle> <version>
 ```
+
+`asset create --mode live` makes a live bundle (one namespace, files compared by
+SHA-256, `--mutable` manifests replaced in place); `sync` mirrors a directory
+into it. A file over 64 MiB goes up in 32 MiB parts and a `sync` that dies is
+resumed by the next one (the upload id is kept under `$YYT_CACHE`, default
+`~/.cache/yyt`, for the day S3 holds the upload); `upload` and `push` take such
+files too but start over.
 
 ### Key-value collections
 

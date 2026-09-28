@@ -88,6 +88,10 @@ type uploadGrant struct {
 	Method    string            `json:"method"`
 	Headers   map[string]string `json:"headers"`
 	ExpiresAt int64             `json:"expiresAt"`
+	// An asset over the single-PUT ceiling (`asset_multipart.go`).
+	Multipart bool  `json:"multipart"`
+	PartSize  int64 `json:"partSize"`
+	PartCount int   `json:"partCount"`
 }
 
 func parseTags(pairs []string) (map[string]string, error) {
@@ -160,7 +164,12 @@ func uploadFile[T any](ctx context.Context, cl *api.Client, localPath, presign s
 	if err := cl.Do(ctx, http.MethodPost, presign, body(st.Size()), &grant); err != nil {
 		return nil, err
 	}
-	if err := putPresigned(ctx, cl, grant, f, st.Size()); err != nil {
+	if grant.Multipart {
+		mg := multipartGrant{UploadID: grant.UploadID, PartSize: grant.PartSize, PartCount: grant.PartCount, Size: st.Size(), ExpiresAt: grant.ExpiresAt}
+		if err := uploadMultipart(ctx, cl.Do, cl, mg, localPath, 4, nil); err != nil {
+			return nil, err
+		}
+	} else if err := putPresigned(ctx, cl, grant, f, st.Size()); err != nil {
 		return nil, err
 	}
 	var out T

@@ -246,12 +246,17 @@ provider:
         # Binary catalog artifacts and game assets share this bucket: presigned
         # PUT into uploads/ or asset-uploads/, commit copies to the app prefix
         # or assets/{bundle}/{version}/, delete covers cleanup — whole-bucket
-        # object CRUD because both key spaces are named by the caller.
+        # object CRUD because both key spaces are named by the caller. A file
+        # over 64 MiB is a multipart upload at its final key: Create, UploadPart
+        # and Complete are PutObject; ListParts and Abort have their own actions
+        # (docs/decisions.md *Large asset uploads*).
         - Effect: Allow
           Action:
             - s3:PutObject
             - s3:GetObject
             - s3:DeleteObject
+            - s3:AbortMultipartUpload
+            - s3:ListMultipartUploadParts
           Resource: arn:aws:s3:::${self:custom.artifactBucket}/*
         # ListBucket: HeadObject 404s (vs 403) + the uploads/ and
         # asset-uploads/ garbage sweeps.

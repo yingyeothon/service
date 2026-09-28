@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { AppError, nowSec, sha256Hex, type Clock } from "@yyt/core";
-import type { ConsoleDb } from "@yyt/console-db";
+import type { AssetsDb, ConsoleDb } from "@yyt/console-db";
 import { defineRoute, serializeCookie, type AnyRoute } from "@yyt/http";
 import { z } from "zod";
 import {
@@ -20,6 +20,14 @@ const loginBody = z
   })
   .strict();
 
+const uploadExpireBody = z
+  .object({
+    uploadId: z.string().regex(/^[0-9a-f]{32}$/),
+    /** Unix seconds; defaults to one second ago. */
+    expiresAt: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
 const mailResetBody = z
   .object({
     teamId: z
@@ -33,19 +41,23 @@ const mailResetBody = z
  * Dev-only (`STAGE=dev` + `DEBUG_HOOKS=1`): mint a console session for a
  * synthetic member without GitHub, so channel/token flows can be verified with
  * curl, reset today's limit-request mail counters so the per-team and
- * per-stage caps can be exercised again, and probe what the runtime's S3 SDK
- * does with conditional copies and signed checksums (`s3-probe.ts`). The
- * handler refuses to register these unless the guard passes.
+ * per-stage caps can be exercised again, probe what the runtime's S3 SDK
+ * does with conditional copies and signed checksums (`s3-probe.ts`), and
+ * pull a pending asset upload's expiry into the past so the daily sweep's
+ * abort-and-settle can be watched without waiting a day. The handler refuses
+ * to register these unless the guard passes.
  */
 export function createDebugRoutes({
   debugKey,
   db,
+  assets,
   kv,
   clock,
   s3Probe,
 }: {
   debugKey: string;
   db: ConsoleDb;
+  assets?: Pick<AssetsDb, "findUpload" | "updateUpload">;
   kv: Kv;
   clock: Clock;
   /** `undefined` when the artifact bucket is not configured (503). */
@@ -74,6 +86,20 @@ export function createDebugRoutes({
         return s3Probe();
       },
     },
+    defineRoute({
+      method: "POST",
+      path: "/debug/asset-upload-expire",
+      body: uploadExpireBody,
+      handler: async ({ headers, body }) => {
+        requireKey(headers);
+        if (!assets) throw new AppError("unavailable", "assets not configured");
+        const u = await assets.findUpload(body.uploadId);
+        if (!u) throw new AppError("not_found", "upload not found");
+        const expiresAt = body.expiresAt ?? nowSec(clock) - 1;
+        await assets.updateUpload(u.id, { expiresAt });
+        return { uploadId: u.id, status: u.status, expiresAt };
+      },
+    }),
     defineRoute({
       method: "POST",
       path: "/debug/limit-mail-reset",

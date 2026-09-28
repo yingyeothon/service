@@ -5,15 +5,19 @@ import { readFileSync } from "node:fs";
 import * as nodeModule from "node:module";
 import { dirname, join } from "node:path";
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectsCommand,
   HeadObjectCommand,
+  ListPartsCommand,
   PutObjectCommand,
   type S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomHex, sha256Hex } from "@yyt/core";
-import { presignPutUrl, sha256Base64 } from "./s3-util.js";
+import { presignPartUrl, presignPutUrl, sha256Base64 } from "./s3-util.js";
 
 /*
  * What the Lambda runtime's AWS SDK actually does with the S3 features the
@@ -296,6 +300,127 @@ export async function runS3Probe({
     });
     const text = await r.text();
     observations.hoistedChecksumWrongBody = `${r.status}${s3Code(text) ? ` ${s3Code(text)}` : ""}`;
+
+    // Multipart (docs/decisions.md *Large asset uploads* #1-#2): a part URL
+    // signs its length and SHA-256, ListParts reports the part's checksum,
+    // and Complete honours `If-None-Match: *` and `MpuObjectSize`. One
+    // 5-byte part: S3's 5 MiB minimum does not apply to the last part.
+    const mpuKey = key("mpu.bin");
+    written.push("mpu.bin");
+    const created = await client.send(
+      new CreateMultipartUploadCommand({
+        Bucket: bucket,
+        Key: mpuKey,
+        ContentType: "application/octet-stream",
+        CacheControl: "public, max-age=31536000, immutable",
+        ChecksumAlgorithm: "SHA256",
+      }),
+    );
+    const mpuId = created.UploadId ?? "";
+    const abort = () =>
+      client
+        .send(
+          new AbortMultipartUploadCommand({
+            Bucket: bucket,
+            Key: mpuKey,
+            UploadId: mpuId,
+          }),
+        )
+        .catch(() => undefined);
+    try {
+      const partUrl = await presignPartUrl(client, {
+        bucket,
+        key: mpuKey,
+        uploadId: mpuId,
+        partNumber: 1,
+        contentLength: 5,
+        sha256: sha,
+        ttlSec: 300,
+      });
+      const signed = (
+        new URL(partUrl).searchParams.get("X-Amz-SignedHeaders") ?? ""
+      ).split(";");
+      check(
+        "part URL signs content-length and the checksum header",
+        "true",
+        String(
+          signed.includes("content-length") &&
+            signed.includes("x-amz-checksum-sha256"),
+        ),
+      );
+      const partPut = async (body: string) => {
+        const r = await fetchFn(partUrl, {
+          method: "PUT",
+          headers: {
+            "content-length": String(body.length),
+            "x-amz-checksum-sha256": sha256Base64(sha),
+          },
+          body,
+        });
+        const text = await r.text();
+        return `${r.status}${s3Code(text) ? ` ${s3Code(text)}` : ""}`;
+      };
+      check(
+        "part refuses other bytes",
+        "400 BadDigest",
+        await partPut("hellx"),
+      );
+      check("part refuses another length", "403", await partPut("hello!"));
+      check("part accepts its bytes", "200", await partPut(good));
+      const listed = await client.send(
+        new ListPartsCommand({ Bucket: bucket, Key: mpuKey, UploadId: mpuId }),
+      );
+      const part = listed.Parts?.[0];
+      check(
+        "ListParts reports the part's SHA-256",
+        sha256Base64(sha),
+        part?.ChecksumSHA256 ?? "none",
+      );
+      const complete = (o: { size: number; ifNoneMatch: boolean }) =>
+        client.send(
+          new CompleteMultipartUploadCommand({
+            Bucket: bucket,
+            Key: mpuKey,
+            UploadId: mpuId,
+            ...(o.ifNoneMatch ? { IfNoneMatch: "*" } : {}),
+            MpuObjectSize: o.size,
+            MultipartUpload: {
+              Parts: [
+                {
+                  PartNumber: 1,
+                  ETag: part?.ETag ?? "",
+                  ChecksumSHA256: part?.ChecksumSHA256 ?? "",
+                },
+              ],
+            },
+          }),
+        );
+      const wrongSize = await outcome(complete({ size: 6, ifNoneMatch: true }));
+      check(
+        "Complete refuses a wrong MpuObjectSize",
+        "refused",
+        wrongSize === "200" ? "200" : "refused",
+      );
+      observations.completeWrongSize = wrongSize;
+      // The key already holds an object: the conditional completion loses.
+      await put("mpu.bin", "taken");
+      check(
+        "Complete If-None-Match:* onto an existing key",
+        "412",
+        await outcome(complete({ size: 5, ifNoneMatch: true })),
+      );
+      observations.completeAfterRefusal = await outcome(
+        client.send(
+          new ListPartsCommand({
+            Bucket: bucket,
+            Key: mpuKey,
+            UploadId: mpuId,
+          }),
+        ),
+      );
+    } finally {
+      await abort();
+    }
   } finally {
     await client
       .send(
