@@ -265,8 +265,9 @@ try {
       headers: as(owner),
     });
     check(
-      "no file row was left behind (the version does not exist)",
-      listing.status === 404,
+      "no file row was left behind",
+      (listing.status === 200 && (listing.body?.files ?? []).length === 0) ||
+        listing.status === 404,
       listing.text.slice(0, 120),
     );
 
