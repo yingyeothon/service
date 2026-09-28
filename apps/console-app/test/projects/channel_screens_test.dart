@@ -383,6 +383,19 @@ void main() {
     expect(find.text('이미 최대 만료일(28일 뒤)까지 연장되어 있습니다.'), findsOneWidget);
   });
 
+  testWidgets('a channel with no expiry says so and offers no extend', (
+    tester,
+  ) async {
+    final server = _ChannelServer();
+    server.channels['auth_1'] = {
+      ...server.channels['auth_1']!,
+      'expiresAt': 253402300799,
+    };
+    await pumpDetail(tester, server);
+    expect(find.textContaining('만료 없음'), findsOneWidget);
+    expect(find.text('+7일 연장'), findsNothing);
+  });
+
   testWidgets('an unseated admin may extend and delete but not edit', (
     tester,
   ) async {

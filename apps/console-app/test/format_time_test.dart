@@ -25,4 +25,17 @@ void main() {
     expect(rel(const Duration(hours: -3)), '3시간 전');
     expect(rel(const Duration(days: -2)), '2일 전');
   });
+
+  test('the no-expiry sentinel is recognised, a real date is not', () {
+    expect(
+      isNoExpiry(
+        DateTime.fromMillisecondsSinceEpoch(
+          channelNoExpirySec * 1000,
+          isUtc: true,
+        ),
+      ),
+      isTrue,
+    );
+    expect(isNoExpiry(DateTime.utc(2100)), isFalse);
+  });
 }

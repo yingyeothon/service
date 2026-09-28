@@ -221,12 +221,14 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
         const SizedBox(height: 4),
         Text(
           '만든 사람 ${c.createdBy ?? '—'} · ${formatLocalTime(c.createdAt)}\n'
-          '만료 ${formatLocalTime(c.expiresAt)} (${formatRelative(c.expiresAt)})'
+          '${isNoExpiry(c.expiresAt) ? '만료 없음' : '만료 ${formatLocalTime(c.expiresAt)} (${formatRelative(c.expiresAt)})'}'
           '${c.disabledAt == null ? '' : ' · 비활성 ${formatLocalTime(c.disabledAt!)}'}',
           style: textTheme.bodySmall?.copyWith(color: CatalogPalette.slate),
         ),
         const SizedBox(height: 8),
-        if (widget.team.canManageChannelLifecycle)
+        // A channel granted no expiry is not extended (the console answers
+        // 409); an admin revokes the grant instead.
+        if (widget.team.canManageChannelLifecycle && !isNoExpiry(c.expiresAt))
           Align(
             alignment: Alignment.centerLeft,
             child: FilledButton.tonalIcon(

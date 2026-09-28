@@ -191,7 +191,9 @@ class _ChannelsTabState extends State<ChannelsTab>
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          '만료 ${formatRelative(ch.expiresAt)}',
+                          isNoExpiry(ch.expiresAt)
+                              ? '만료 없음'
+                              : '만료 ${formatRelative(ch.expiresAt)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),

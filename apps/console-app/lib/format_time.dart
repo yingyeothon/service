@@ -20,3 +20,11 @@ String formatRelative(DateTime t, {DateTime? now}) {
           : '${max(1, (abs / 60).round())}분';
   return diff >= 0 ? '$unit 후' : '$unit 전';
 }
+
+/// `expires_at` of a channel granted no expiry (9999-12-31T23:59:59Z; the
+/// console's `CHANNEL_NO_EXPIRY_SEC`). Every other expiry is a real date.
+const channelNoExpirySec = 253402300799;
+
+/// Whether a channel expiry is the no-expiry sentinel.
+bool isNoExpiry(DateTime t) =>
+    t.millisecondsSinceEpoch ~/ 1000 >= channelNoExpirySec;
