@@ -17,7 +17,11 @@ import type {
   AdminLimitRequestPage,
   AssetBundle,
   AssetBundleDetail,
+  AssetBundleMode,
+  AssetDeleteProgress,
+  AssetFileDeleteResult,
   AssetFilePage,
+  AssetLiveFilePage,
   AssetVersionPage,
   CursorPage,
   Site,
@@ -95,6 +99,9 @@ import type {
   VersionLink,
   VersionLinkInput,
 } from "./types";
+
+/** How many 202 rounds a bundle or version delete repeats before giving up. */
+export const ASSET_DELETE_ROUNDS = 20;
 
 /** Error body shape of `@yyt/http`: `{ error: { code, message, details? } }`. */
 export class ApiError extends Error {
@@ -210,6 +217,31 @@ export function createApiClient({
         "upload_failed",
         `${what} upload failed (${res.status})`,
       );
+  }
+
+  /**
+   * A bundle or version delete runs a time budget per request and answers
+   * 202 `{done: false, deleted}` when it ran out: the rows it removed are
+   * gone, so the same delete resumes. Repeats until the 204, a bounded
+   * number of times (each round is up to ~15 s of `DeleteObjects`).
+   */
+  async function drainDelete(
+    path: string,
+    onProgress?: (deleted: number) => void,
+    rounds = ASSET_DELETE_ROUNDS,
+  ): Promise<void> {
+    let deleted = 0;
+    for (let i = 0; i < rounds; i++) {
+      const r = await del<AssetDeleteProgress | undefined>(path);
+      if (!r || r.done !== false) return;
+      deleted += r.deleted;
+      onProgress?.(deleted);
+    }
+    throw new ApiError(
+      503,
+      "unavailable",
+      `still deleting after ${rounds} rounds (${deleted} files so far); delete again to continue`,
+    );
   }
 
   const teamPath = (team: string) => `/teams/${enc(team)}`;
@@ -721,7 +753,7 @@ export function createApiClient({
       ).then((r) => r.bundles),
     createAssetBundle: (
       prj: string,
-      body: { name: string; description?: string },
+      body: { name: string; description?: string; mode?: AssetBundleMode },
     ) => post<AssetBundle>(`${projectPath(prj)}/assets/bundles`, body),
     assetBundle: (id: string) =>
       get<AssetBundleDetail>(`/assets/bundles/${enc(id)}`),
@@ -729,7 +761,9 @@ export function createApiClient({
       id: string,
       body: { name?: string; description?: string | null },
     ) => patch<AssetBundle>(`/assets/bundles/${enc(id)}`, body),
-    deleteAssetBundle: (id: string) => del(`/assets/bundles/${enc(id)}`),
+    /** Repeats the delete while it answers 202 (see `drainDelete`). */
+    deleteAssetBundle: (id: string, onProgress?: (deleted: number) => void) =>
+      drainDelete(`/assets/bundles/${enc(id)}`, onProgress),
     /** One page of a version's files (`path` order); 404 for an unknown version. */
     assetVersion: (id: string, version: string, page: CursorPage = {}) =>
       get<AssetVersionPage>(
@@ -740,8 +774,23 @@ export function createApiClient({
       get<AssetFilePage>(
         `/assets/bundles/${enc(id)}/files${qs({ version, ...page })}`,
       ),
-    deleteAssetVersion: (id: string, version: string) =>
-      del(`/assets/bundles/${enc(id)}/versions/${enc(version)}`),
+    /** One page of a live bundle's files (`path` order); it has no versions. */
+    assetLiveFiles: (id: string, page: CursorPage = {}) =>
+      get<AssetLiveFilePage>(`/assets/bundles/${enc(id)}/files${qs(page)}`),
+    /** Live bundles only; an immutable path keeps a 400-day tombstone. */
+    deleteAssetFiles: (id: string, paths: string[]) =>
+      del<AssetFileDeleteResult>(`/assets/bundles/${enc(id)}/files`, {
+        paths,
+      }),
+    deleteAssetVersion: (
+      id: string,
+      version: string,
+      onProgress?: (deleted: number) => void,
+    ) =>
+      drainDelete(
+        `/assets/bundles/${enc(id)}/versions/${enc(version)}`,
+        onProgress,
+      ),
     /**
      * presign → browser PUT to S3 → commit, once per file. `path` is where the
      * file sits *inside* the bundle, which is what a map JSON's relative

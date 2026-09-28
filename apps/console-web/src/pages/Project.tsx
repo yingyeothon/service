@@ -4,12 +4,13 @@ import {
   Checkbox,
   Code,
   NativeSelect,
+  SegmentedControl,
   Table,
   Tabs,
   Text,
   TextInput,
 } from "@mantine/core";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
@@ -460,6 +461,7 @@ function ResourceListTab<T extends { id: string }>({
   warn,
   namePlaceholder,
   second,
+  choice,
   columns,
   row,
   emptyText,
@@ -474,7 +476,12 @@ function ResourceListTab<T extends { id: string }>({
    * Must resolve to the created row: `useAction.run` reports failure as
    * `undefined`, so a 204 here would read as a failed create.
    */
-  create: (projectId: string, name: string, second: string) => Promise<object>;
+  create: (
+    projectId: string,
+    name: string,
+    second: string,
+    choice: string,
+  ) => Promise<object>;
   /** "app" → `New app`, `Create app`, "App created". */
   noun: string;
   title: string;
@@ -486,6 +493,15 @@ function ResourceListTab<T extends { id: string }>({
     placeholder: string;
     required: boolean;
     maxLength: number;
+  };
+  /**
+   * A fixed-at-creation choice below the two fields (a bundle's mode): the
+   * first option is the default, and the chosen option's description is
+   * shown under the control.
+   */
+  choice?: {
+    label: string;
+    options: { value: string; label: string; description: string }[];
   };
   columns: Column[];
   /** The cells after the name cell. */
@@ -501,11 +517,21 @@ function ResourceListTab<T extends { id: string }>({
     { keepPrevious: true },
   );
   const act = useAction();
-  const drawer = useDrawerForm(() => ({ name: "", extra: "" }));
+  const drawer = useDrawerForm(() => ({
+    name: "",
+    extra: "",
+    choice: choice?.options[0]?.value ?? "",
+  }));
+  const choiceLabelId = useId();
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const r = await act.run(() =>
-      create(project.id, drawer.form.name.trim(), drawer.form.extra.trim()),
+      create(
+        project.id,
+        drawer.form.name.trim(),
+        drawer.form.extra.trim(),
+        drawer.form.choice,
+      ),
     );
     if (!r) return;
     drawer.close();
@@ -571,6 +597,28 @@ function ResourceListTab<T extends { id: string }>({
           maxLength={second.maxLength}
           autoComplete="off"
         />
+        {choice && (
+          <div>
+            <Text size="sm" fw={500} mb={4} id={choiceLabelId}>
+              {choice.label}
+            </Text>
+            <SegmentedControl
+              aria-labelledby={choiceLabelId}
+              value={drawer.form.choice}
+              onChange={(v) => drawer.patch({ choice: v })}
+              data={choice.options.map(({ value, label }) => ({
+                value,
+                label,
+              }))}
+            />
+            <Text size="xs" c="dimmed" mt={4}>
+              {
+                choice.options.find((o) => o.value === drawer.form.choice)
+                  ?.description
+              }
+            </Text>
+          </div>
+        )}
       </ResourceDrawer>
     </Section>
   );
@@ -643,18 +691,39 @@ function AssetsTab({
         onCreated={limits.reload}
         queryKey="bundles"
         load={api.projectAssetBundles}
-        create={(prj, name, description) =>
-          api.createAssetBundle(prj, withDescription(name, description))
+        create={(prj, name, description, mode) =>
+          api.createAssetBundle(prj, {
+            ...withDescription(name, description),
+            // The server's default; sent only when it differs.
+            ...(mode === "live" ? { mode: "live" as const } : {}),
+          })
         }
         noun="bundle"
         title="Assets"
-        intro="Game content on the public CDN: maps, tilesets, sounds. Every object is versioned, world-readable and cached forever — publishing a fix means uploading a new version and pointing a lobby channel’s map URL at it."
+        intro="Game content on the public CDN: maps, tilesets, sounds, data files. A versioned bundle publishes immutable versions — a fix is a new version and a lobby channel’s map URL pointed at it; a live bundle is one set of files that yyt asset sync keeps up to date."
         namePlaceholder="name (e.g. dungeon-maps)"
         second={{
           label: "Description",
           placeholder: "optional",
           required: false,
           maxLength: 2000,
+        }}
+        choice={{
+          label: "Mode (fixed once created)",
+          options: [
+            {
+              value: "versioned",
+              label: "Versioned",
+              description:
+                "Immutable versions, each cached forever. A lobby channel's map must be a file of a versioned bundle.",
+            },
+            {
+              value: "live",
+              label: "Live",
+              description:
+                "One set of files kept current by yyt asset sync. Files are immutable unless marked mutable (served no-cache, for a manifest).",
+            },
+          ],
         }}
         columns={[
           { key: "name", label: "Bundle", sortKey: "name" },
@@ -669,7 +738,17 @@ function AssetsTab({
         ]}
         row={(b) => (
           <>
-            <NameCell to={`/assets/${encodeURIComponent(b.id)}`}>
+            <NameCell
+              to={`/assets/${encodeURIComponent(b.id)}`}
+              after={
+                b.mode === "live" && (
+                  <>
+                    {" "}
+                    <Badge tone="accent">live</Badge>
+                  </>
+                )
+              }
+            >
               {b.name}
             </NameCell>
             <Table.Td>{b.description ?? "—"}</Table.Td>

@@ -93,6 +93,7 @@ const BUNDLE: AssetBundle = {
   id: "ab_1",
   name: "dungeon-maps",
   description: "tiles",
+  mode: "versioned",
   createdBy: null,
   createdAt: 0,
   updatedAt: 60,
@@ -269,6 +270,47 @@ describe("catalog tab", () => {
 });
 
 describe("assets tab", () => {
+  it("creates a live bundle, explains the mode and marks live rows", async () => {
+    vi.mocked(mockApi.projectAssetBundles).mockResolvedValue([
+      BUNDLE,
+      { ...BUNDLE, id: "ab_9", name: "content", mode: "live" },
+    ]);
+    vi.mocked(mockApi.createAssetBundle).mockResolvedValue({
+      ...BUNDLE,
+      id: "ab_2",
+      mode: "live",
+    });
+    mount("assets");
+    const liveLink = await screen.findByRole("link", { name: "content" });
+    // The badge sits beside the link, outside its accessible name.
+    expect(within(liveLink.closest("td")!).getByText("live")).toBeTruthy();
+    expect(
+      within(
+        screen.getByRole("link", { name: "dungeon-maps" }).closest("td")!,
+      ).queryByText("live"),
+    ).toBeNull();
+    const drawer = await openDrawer("bundle");
+    const mode = within(drawer).getByRole("radiogroup", {
+      name: "Mode (fixed once created)",
+    });
+    expect(
+      within(mode).getByRole("radio", { name: "Versioned" }),
+    ).toBeChecked();
+    expect(within(drawer).getByText(/Immutable versions/)).toBeInTheDocument();
+    await userEvent.click(within(mode).getByRole("radio", { name: "Live" }));
+    expect(
+      within(drawer).getByText(/kept current by yyt asset sync/),
+    ).toBeInTheDocument();
+    await userEvent.type(input("Name", drawer), "content2");
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Create bundle" }),
+    );
+    expect(mockApi.createAssetBundle).toHaveBeenCalledWith("prj_1", {
+      name: "content2",
+      mode: "live",
+    });
+  });
+
   it("lists bundles and sends the description only when given", async () => {
     vi.mocked(mockApi.createAssetBundle).mockResolvedValue({
       ...BUNDLE,

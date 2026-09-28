@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, createApiClient } from "../src/api";
+import { ApiError, ASSET_DELETE_ROUNDS, createApiClient } from "../src/api";
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -406,5 +406,107 @@ describe("limit and paged asset routes", () => {
       ],
       ["GET", "/assets/bundles/ab_1/files?version=v1", undefined],
     ]);
+  });
+});
+
+describe("live asset bundles", () => {
+  it("creates with a mode, pages live files and deletes paths", async () => {
+    const calls: Array<[string, string, string | undefined]> = [];
+    const fetch = vi.fn<typeof globalThis.fetch>((url, init) => {
+      calls.push([
+        init?.method ?? "GET",
+        typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
+        typeof init?.body === "string" ? init.body : undefined,
+      ]);
+      return Promise.resolve(
+        jsonRes(200, {
+          deleted: ["a.json"],
+          missing: [],
+          skipped: [],
+          failed: [],
+        }),
+      );
+    });
+    const api = createApiClient({ fetch });
+    await api.createAssetBundle("prj_1", { name: "content", mode: "live" });
+    await api.assetLiveFiles("ab_1", { cursor: "a/b.json" });
+    await api.assetLiveFiles("ab_1");
+    expect(await api.deleteAssetFiles("ab_1", ["a.json"])).toMatchObject({
+      deleted: ["a.json"],
+    });
+    expect(calls).toEqual([
+      [
+        "POST",
+        "/projects/prj_1/assets/bundles",
+        '{"name":"content","mode":"live"}',
+      ],
+      ["GET", "/assets/bundles/ab_1/files?cursor=a%2Fb.json", undefined],
+      ["GET", "/assets/bundles/ab_1/files", undefined],
+      ["DELETE", "/assets/bundles/ab_1/files", '{"paths":["a.json"]}'],
+    ]);
+  });
+
+  it("repeats a bundle or version delete while it answers 202", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        jsonRes(202, { done: false, deleted: 2000, failed: 0 }),
+      )
+      .mockResolvedValueOnce(
+        jsonRes(202, { done: false, deleted: 1000, failed: 1 }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = createApiClient({ fetch });
+    const seen: number[] = [];
+    await expect(
+      api.deleteAssetBundle("ab_1", (n) => seen.push(n)),
+    ).resolves.toBeUndefined();
+    expect(seen).toEqual([2000, 3000]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const [url, init] of fetch.mock.calls) {
+      expect(url).toBe("/assets/bundles/ab_1");
+      expect(init).toMatchObject({ method: "DELETE" });
+    }
+    await api.deleteAssetVersion("ab_1", "v 1");
+    expect(fetch.mock.calls[3]![0]).toBe("/assets/bundles/ab_1/versions/v%201");
+  });
+
+  it("gives up after a bounded number of 202s and says how far it got", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() =>
+        Promise.resolve(jsonRes(202, { done: false, deleted: 10, failed: 0 })),
+      );
+    const api = createApiClient({ fetch });
+    const err = await api.deleteAssetBundle("ab_1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).message).toMatch(
+      new RegExp(
+        `after ${ASSET_DELETE_ROUNDS} rounds \\(${ASSET_DELETE_ROUNDS * 10} files`,
+      ),
+    );
+    expect(fetch).toHaveBeenCalledTimes(ASSET_DELETE_ROUNDS);
+  });
+
+  it("surfaces an error that arrives mid-way", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        jsonRes(202, { done: false, deleted: 5, failed: 0 }),
+      )
+      .mockResolvedValueOnce(
+        jsonRes(503, {
+          error: {
+            code: "unavailable",
+            message: "1 object(s) could not be deleted; retry",
+          },
+        }),
+      );
+    const api = createApiClient({ fetch });
+    await expect(api.deleteAssetVersion("ab_1", "v1")).rejects.toMatchObject({
+      status: 503,
+      message: "1 object(s) could not be deleted; retry",
+    });
   });
 });

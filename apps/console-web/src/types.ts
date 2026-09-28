@@ -600,15 +600,24 @@ export interface AssetVersion {
   createdAt: number;
 }
 
+/**
+ * Fixed at creation (docs/decisions.md *Live and encrypted asset bundles*):
+ * `versioned` keys every file under a version, `live` is one namespace that
+ * `yyt asset sync` keeps up to date.
+ */
+export type AssetBundleMode = "versioned" | "live";
+
 export interface AssetBundle extends ResourceCrumbs {
   id: string;
   name: string;
   description: string | null;
+  mode: AssetBundleMode;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface AssetBundleDetail extends AssetBundle {
+  /** Always empty for a live bundle. */
   versions: AssetVersion[];
   /** Files over every version; `versions[].files` counts one version. */
   files: number;
@@ -621,6 +630,33 @@ export interface AssetFilePage {
   version: string;
   files: AssetFile[];
   next: string | null;
+}
+
+/** `GET /assets/bundles/{b}/files` of a live bundle: no version. */
+export interface AssetLiveFilePage {
+  bundleId: string;
+  mode: "live";
+  version: null;
+  files: AssetFile[];
+  next: string | null;
+}
+
+/** `DELETE /assets/bundles/{b}/files`: what happened to each path asked for. */
+export interface AssetFileDeleteResult {
+  deleted: string[];
+  /** Not in the bundle. */
+  missing: string[];
+  /** Not stale, with `stale: true`. */
+  skipped: string[];
+  /** The object delete failed; the row stays, delete again. */
+  failed: string[];
+}
+
+/** A bundle or version delete that ran out of time answers 202 with this. */
+export interface AssetDeleteProgress {
+  done: false;
+  deleted: number;
+  failed: number;
 }
 
 /** `GET /assets/bundles/{b}/versions/{v}`: the page plus the bundle's name. */
@@ -643,6 +679,12 @@ export interface AssetFile {
   contentType: string;
   size: number;
   hash: string | null;
+  /** Hex SHA-256; always set in a live bundle. */
+  sha256: string | null;
+  /** Live bundles only: served `no-cache`, replaced by the next sync. */
+  mutable: boolean;
+  /** When a sync found it missing locally; `--prune` deletes it next time. */
+  staleSince: number | null;
   createdAt: number;
 }
 
