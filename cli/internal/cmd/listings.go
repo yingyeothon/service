@@ -110,6 +110,7 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 			"audience whole. A listing a platform admin took down stays hidden.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			title = strings.TrimSpace(title)
 			if title == "" {
 				return errors.New("--title is required")
 			}
@@ -132,7 +133,7 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 		},
 	}
 	publish.Flags().StringVar(&title, "title", "", "listing title (1-100 chars)")
-	publish.Flags().StringVar(&summary, "summary", "", "summary shown to readers (empty clears)")
+	publish.Flags().StringVar(&summary, "summary", "", "summary shown to readers (omitted or empty clears it: a publish replaces the listing whole)")
 	publish.Flags().StringVar(&audience, "audience", "public", "public or members")
 	publish.Flags().StringArrayVar(&tags, "tag", nil, "lowercase slug tag, repeatable (max 10)")
 

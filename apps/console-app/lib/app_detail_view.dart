@@ -13,6 +13,8 @@ import 'package:yyt_console/download_install_launch.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
 import 'package:yyt_console/install_progress_dialog.dart';
+import 'package:yyt_console/listing/listing_section.dart';
+import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/project_issues_button.dart';
 import 'package:flutter/material.dart';
 
@@ -38,10 +40,22 @@ class _AppDetailViewState extends State<AppDetailView>
   final ValueNotifier<InstallProgress?> _progressNotifier =
       ValueNotifier<InstallProgress?>(null);
 
+  /// The listing panel's client, built once from the active profile so a
+  /// profile switch cannot redirect an in-flight write; a shared app has no
+  /// panel and no client.
+  ProjectsApi? _listingApi;
+
+  ProjectsApi? _buildListingApi() {
+    if (widget.app.shared || widget.app.home == null) return null;
+    final p = widget.authState.activeProfile;
+    return ProjectsApi(token: p?.apiKey ?? '', baseUrl: p?.server);
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _listingApi = _buildListingApi();
     final seedApplicationId = widget.app.applicationId;
     if (seedApplicationId.isNotEmpty) {
       _installedVersions = <String, String?>{
@@ -371,6 +385,7 @@ class _AppDetailViewState extends State<AppDetailView>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _progressNotifier.dispose();
+    _listingApi?.close();
     super.dispose();
   }
 
@@ -512,6 +527,19 @@ class _AppDetailViewState extends State<AppDetailView>
               ),
             ),
           ),
+        // The team's own app carries its publish panel, after the builds it
+        // publishes; a shared app is read through someone else's listing and
+        // has none.
+        if (_listingApi case final api? when home != null) ...[
+          const SizedBox(height: 12),
+          ListingSection(
+            api: api,
+            appId: widget.app.id,
+            appName: widget.app.name,
+            canWrite: home.team.canPublish,
+            onUnauthorized: () => widget.authState.invalidate(api.token),
+          ),
+        ],
       ],
     );
   }

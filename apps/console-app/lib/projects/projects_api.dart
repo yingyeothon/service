@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:yyt_console/auth/auth_config.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
+import 'package:yyt_console/listing/listing_models.dart';
 import 'package:yyt_console/projects/channel_models.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/projects/site_models.dart';
@@ -325,6 +326,58 @@ class ProjectsApi {
   Future<void> deleteChannel(String id) =>
       _delete(AuthConfig.channelUrlOf(baseUrl, id));
 
+  // ---- catalog listings (docs/decisions.md *Catalog listings*) ----------
+
+  /// The app's listing, or null when it is not published (404). Any other
+  /// failure (a viewer's 404 is indistinguishable and means the same) is
+  /// thrown as usual.
+  Future<CatalogListing?> getListing(String appId) async {
+    try {
+      return CatalogListing.fromJson(
+        await _get(AuthConfig.appListingUrlOf(baseUrl, appId)),
+      );
+    } on ApiException catch (e) {
+      if (e.status == 404) return null;
+      rethrow;
+    }
+  }
+
+  /// Publish (201) or edit (200) the listing; a takedown answers 409 with
+  /// `details.reason` `taken_down` when no listing row exists.
+  Future<CatalogListing> publishListing(
+    String appId,
+    Map<String, Object?> body,
+  ) async => CatalogListing.fromJson(
+    await _put(AuthConfig.appListingUrlOf(baseUrl, appId), body),
+  );
+
+  Future<void> unpublishListing(String appId) =>
+      _delete(AuthConfig.appListingUrlOf(baseUrl, appId));
+
+  Future<List<ListingViewer>> listListingViewers(String appId) async {
+    final body = await _get(AuthConfig.appListingViewersUrlOf(baseUrl, appId));
+    return _list(body['viewers']).map(ListingViewer.fromJson).toList();
+  }
+
+  /// Names a platform member by GitHub login; an unknown or still-pending
+  /// login is a 404, the cap a 409.
+  Future<ListingViewerAdded> addListingViewer(
+    String appId,
+    String login,
+  ) async {
+    final body = await _post(
+      AuthConfig.appListingViewersUrlOf(baseUrl, appId),
+      {'login': login},
+    );
+    return ListingViewerAdded(
+      login: (body['login'] as String?) ?? login,
+      added: body['added'] == true,
+    );
+  }
+
+  Future<void> removeListingViewer(String appId, String login) =>
+      _delete(AuthConfig.appListingViewerUrlOf(baseUrl, appId, login));
+
   /// A single-entity response must carry an id; an empty 2xx (the row vanished
   /// between write and re-read) is reported instead of crashing on a cast.
   static Map<String, dynamic> _object(Map<String, dynamic> body) {
@@ -353,6 +406,17 @@ class ProjectsApi {
         if (json != null) 'Content-Type': 'application/json',
       },
       body: json == null ? null : jsonEncode(json),
+    ),
+  );
+
+  Future<Map<String, dynamic>> _put(
+    String url,
+    Map<String, Object?> json,
+  ) async => _decode(
+    await _client.put(
+      Uri.parse(url),
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode(json),
     ),
   );
 
@@ -424,6 +488,7 @@ class ProjectsApi {
     'domain_taken': '이미 쓰이고 있거나 다른 팀이 쓴 적 있는 이름입니다.',
     'domain_cap': '팀의 이름 한도(20개)에 도달했습니다.',
     'domain_cleaning': '이 이름은 아직 정리 중입니다. 잠시 뒤 다시 시도하세요.',
+    'taken_down': '플랫폼 관리자가 내린 게시입니다. 관리자가 해제하기 전에는 다시 게시할 수 없습니다.',
   };
 
   static const _codeMessages = {

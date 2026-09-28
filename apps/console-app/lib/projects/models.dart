@@ -39,6 +39,10 @@ class Team {
   /// unseated platform admin may run them too (services/console/src/app.ts).
   bool get canManageChannelLifecycle => canWrite || role == 'admin';
 
+  /// Publishing an app is an ordinary app write (`min: "member"`, not
+  /// `secret`), which the server also grants a seatless platform admin.
+  bool get canPublish => canWrite || role == 'admin';
+
   static Team fromJson(Map<String, dynamic> j) => Team(
     id: j['id'] as String,
     name: j['name'] as String,

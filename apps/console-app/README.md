@@ -1,8 +1,9 @@
 # 잉여톤 — yyt console companion app (`life.yyt.console`)
 
-Android app with two tabs: **앱** lists catalog apps and installs their APKs
+Android app with three tabs: **앱** lists catalog apps and installs their APKs
 directly from the public CDN (the original installer role), **프로젝트** lists
-the member's teams and projects. A project opens with three tabs: **이슈**
+the member's teams and projects, **둘러보기** lists the catalog listings the
+caller may read (`GET /catalog/listings?platform=android`). A project opens with three tabs: **이슈**
 (read, file, comment on, close and reopen issues), **사이트** and **채널**
 (view, create, edit and delete the project's static sites and channels, and
 extend a channel by 7 days) — the console's project page on a phone. It talks
@@ -117,6 +118,18 @@ only to the console API.
   the navigation stack. It is never stored or logged: `CreatedChannel` redacts
   its `toString`, and the diagnostics logger redacts 64-hex strings and the
   values of `secret`/`apiKey`/`clientSecret`.
+- Listings (docs/decisions.md _Catalog listings_, 1.5.6): the detail screen
+  of an app the caller's team owns (`home != null`, not `shared`) carries a
+  **게시** panel (`lib/listing/`): `GET /catalog/apps/{id}/listing` (404 =
+  not published), `PUT` (publish 201 / edit 200 — the body replaces title,
+  summary, tags and audience whole), `DELETE` (unpublish; the viewers go with
+  it), `GET|POST …/listing/viewers`, `DELETE …/viewers/{login}`. The form
+  checks the server's grammar first (title 1–100 without control characters,
+  summary ≤ 2000, tags `[a-z0-9-]{1,32}` × 10, typed as free text split on
+  commas/spaces) and puts a 400 under its field; a takedown's 409
+  `taken_down` and a 429 (one recorded write per member per 500 ms) are a
+  SnackBar. Writes need `Team.canWrite`; a reader sees the panel without
+  controls. A shared app (read through someone else's listing) has no panel.
 - Errors: the console's `{error:{code,message,details}}` becomes an
   `ApiException` with `details`, `reason` (`details.reason`) and
   `fieldErrors` (a 400's `[{path,message}]`); the Korean message is chosen by

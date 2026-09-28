@@ -99,6 +99,15 @@ class AuthConfig {
       '$base/channels/${Uri.encodeComponent(channelId)}';
   static String channelExtendUrlOf(String base, String channelId) =>
       '${channelUrlOf(base, channelId)}/extend';
+  static String appListingUrlOf(String base, String appId) =>
+      '${catalogAppsUrlOf(base)}/${Uri.encodeComponent(appId)}/listing';
+  static String appListingViewersUrlOf(String base, String appId) =>
+      '${appListingUrlOf(base, appId)}/viewers';
+  static String appListingViewerUrlOf(
+    String base,
+    String appId,
+    String login,
+  ) => '${appListingViewersUrlOf(base, appId)}/${Uri.encodeComponent(login)}';
   static String installerDownloadsUrlOf(String base) =>
       '$base/catalog/installer/downloads';
   static String appArtifactsUrlOf(String base, String appId) =>
