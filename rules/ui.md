@@ -33,3 +33,4 @@ with the probe writing `getBoundingClientRect()` widths, row heights, `scrollWid
 - `Collapse` keeps its children mounted when closed (`display: none`): they are out of the a11y tree and out of Ctrl+F, but present in the DOM — a test that queries by text will find them.
 - `env="test"` renders portals inline, so a tooltip label and an in-cell fold share one `<td>`: query a fold by `role="group"` with its own `aria-label`, never by its text.
 - `Text` defaults to a `<p>`; inside a phrasing context pass `component="span"`.
+- A `Badge` is `inline-grid` with `overflow: hidden`: as a flex item (inside `Group wrap="nowrap"`) it shrinks before the table widens and ellipses its own label (`pending` → "p…", `cancelled` → "cancell…" on the limit-request tables, 2026-09-28 — jsdom cannot see it). Put it in plain inline content, or give its wrapper `flex-shrink: 0`.

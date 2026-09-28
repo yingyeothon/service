@@ -262,7 +262,7 @@ The rules that generalize, each earned from a specific failure:
    one daily sweep runs eleven budgeted phases over channels, catalog, assets, kv,
    leaderboards, social, events, shows, sites and Redis ACLs. Channels live 7 days,
    extendable by 7 up to 28; expired → disabled → deleted after 30 days (an admin-granted
-   no-expiry is **designed**).
+   no-expiry is **merged**).
 4. **Credentials are derived, scoped and printed whole.** Redis prefixes and ACL usernames
    are computed from the channel id, never typed; a credential is shown as one copyable
    block because a retyped prefix fails `NOPERM` or — worse — silently relays nothing.
@@ -303,20 +303,20 @@ The rules that generalize, each earned from a specific failure:
 
 Where the platform binds first, and what binds it:
 
-| Ceiling                        | Value                                                                                                                                                    | Bound by                                                  |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| Concurrent players (gateway)   | design ~10; socket cap 64; 256 MB container                                                                                                              | one process on a shared box                               |
-| MariaDB connections            | 55 reserved of 60                                                                                                                                        | `reservedConcurrency` summed across five stacks           |
-| Redis                          | 256 MB, `allkeys-lru`, shared by both stages and every participant                                                                                       | no per-account quota exists                               |
-| API throttles                  | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`); console 50 / 100                                                                      | one stage's whole surface                                 |
-| CloudWatch alarms              | 10 (8 prod + 2 dev)                                                                                                                                      | account free tier; adding one means dropping one          |
-| Public CDN traffic             | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day                                                                        | the CDN guard disables it (console: alert only)           |
-| Frames                         | 16 KB inbound, 32 KB outbound; topic 16 KB                                                                                                               | refused, not truncated                                    |
-| Document / kv value            | 64 KB per document, 10 000 documents per channel                                                                                                         | refused, not trimmed                                      |
-| Leaderboard                    | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                                                                                              | worst case `maxEntries × (1 + 2 × (retain + 1))` rows     |
-| Per-project and per-team scope | 5 teams/member, 20 projects/team, ~50 resources of each kind per project                                                                                 | list scans stay bounded without an index                  |
-| Asset storage                  | 2 MiB per file, 20 MiB per bundle, 400 MiB per project; an admin may grant up to 256 MiB per file, 3 GiB per bundle and 5 GiB per project (**designed**) | the CDN guard's lines; per-bundle totals instead of scans |
-| Recorded writes                | 2/s per member                                                                                                                                           | every team, event and show write takes the slot           |
+| Ceiling                        | Value                                                                                                                                                  | Bound by                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Concurrent players (gateway)   | design ~10; socket cap 64; 256 MB container                                                                                                            | one process on a shared box                                    |
+| MariaDB connections            | 55 reserved of 60                                                                                                                                      | `reservedConcurrency` summed across five stacks                |
+| Redis                          | 256 MB, `allkeys-lru`, shared by both stages and every participant                                                                                     | no per-account quota exists                                    |
+| API throttles                  | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`); console 50 / 100                                                                    | one stage's whole surface                                      |
+| CloudWatch alarms              | 10 (8 prod + 2 dev)                                                                                                                                    | account free tier; adding one means dropping one               |
+| Public CDN traffic             | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day                                                                      | the CDN guard disables it (console: alert only)                |
+| Frames                         | 16 KB inbound, 32 KB outbound; topic 16 KB                                                                                                             | refused, not truncated                                         |
+| Document / kv value            | 64 KB per document, 10 000 documents per channel                                                                                                       | refused, not trimmed                                           |
+| Leaderboard                    | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                                                                                            | worst case `maxEntries × (1 + 2 × (retain + 1))` rows          |
+| Per-project and per-team scope | 5 teams/member, 20 projects/team, ~50 resources of each kind per project                                                                               | list scans stay bounded without an index                       |
+| Asset storage                  | 2 MiB per file, 20 MiB per bundle, 400 MiB per project; an admin may grant up to 256 MiB per file, 3 GiB per bundle and 5 GiB per project (**merged**) | the CDN guard's lines; totals from a covering index, not scans |
+| Recorded writes                | 2/s per member                                                                                                                                         | every team, event and show write takes the slot                |
 
 Monitoring is one liveness probe reporting only the down and recovered edges after two
 consecutive failures, plus one daily usage digest (Redis memory, evictions, per-channel

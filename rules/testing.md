@@ -25,6 +25,11 @@
 - The synchronous-throw trap above has a second face: a validator called **outside** `run(...)` in a non-`async` arrow throws out of the repository call while the fake's `async` method rejects, so the same `expect(...).rejects` passes on the fake and fails on testcontainers (2026-09-04, the `LIMIT` bound check). Put every guard inside the `async` wrapper.
 - Test a cron/sweep step through the function the handler calls, not by re-implementing the wiring in the test: with the wiring re-implemented, deleting the line in `handler.ts` kept the suite green. Extract the step (`runRedisAclReconcile` pattern) and call it directly.
 
+## A transaction across repositories is a hook in the fakes (2026-09-28)
+
+- The Prisma side of a channel delete cancels its limit requests in the same transaction because both tables are one database; the memory fakes are separate objects. `createMemoryConsoleDb({ channelsDeleted, channelsPurged })`, `createMemoryAssetsDb(…, { bundleDeleted })`, `createMemoryTeamDb({ projectDeleted })` and `createMemoryLimitsDb({ scopeExists, writeChannel })` take callbacks, and `test/helpers.ts` (and each contract's `make`) wires them to each other. A fake that skipped the hook would pass every route test while the cascade it stands for went untested; the shared contract (`packages/console-db/test/limits.test.ts`) runs the same deletes against both.
+- A route that notifies takes the publisher as an option (`notify`), and the harness records it (`h.mails`): the e-mail template is then asserted like any response, including what it must not contain (the member's reason).
+
 ## A cross-package signature change hides behind a stale `dist` (2026-09-09)
 
 - Workspace packages resolve to their **built** `dist`, and vitest does not typecheck. Adding a
