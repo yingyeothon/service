@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import { Navigate } from "react-router";
+import { AdminListingsPage } from "./pages/AdminListings";
 import { AssetBundlePage } from "./pages/AssetBundle";
 import { CatalogAppPage } from "./pages/CatalogApp";
 import { ChannelDetailPage } from "./pages/ChannelDetail";
@@ -14,6 +15,7 @@ import { IssuePage } from "./pages/Issue";
 import { KvCollectionPage } from "./pages/KvCollection";
 import { LeaderboardPage } from "./pages/Leaderboard";
 import { LimitRequestsPage } from "./pages/LimitRequests";
+import { ListingsPage } from "./pages/Listings";
 import { VersionPage } from "./pages/Version";
 import { MembersPage } from "./pages/Members";
 import { ProjectPage } from "./pages/Project";
@@ -53,7 +55,15 @@ export const ROUTES: AppRoute[] = [
     guard: null,
     element: <ShowEntryPage />,
   },
+  // Public like `/shows`: a `public` listing is readable by anonymous
+  // visitors; what a `members` one hides is the row, not the page.
+  { path: "/listings", guard: null, element: <ListingsPage /> },
   { path: "/audit", guard: "/audit", element: <AuditPage /> },
+  {
+    path: "/admin/listings",
+    guard: "/admin/listings",
+    element: <AdminListingsPage />,
+  },
   {
     path: "/admin/limit-requests",
     guard: "/admin/limit-requests",

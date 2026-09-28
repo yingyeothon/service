@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
-import type { CatalogApp, CatalogArtifact, TeamDetail } from "../src/types";
+import type {
+  CatalogApp,
+  CatalogArtifact,
+  CatalogListing,
+  TeamDetail,
+} from "../src/types";
 
 const mockApi = {
   me: vi.fn(),
@@ -20,11 +25,24 @@ const mockApi = {
   deleteCatalogArtifact: vi.fn(),
   cleanupCatalogArtifacts: vi.fn(),
   uploadCatalogArtifact: vi.fn(),
+  catalogListing: vi.fn(),
+  publishCatalogApp: vi.fn(),
+  unpublishCatalogApp: vi.fn(),
+  catalogListingViewers: vi.fn(),
+  addCatalogListingViewer: vi.fn(),
+  removeCatalogListingViewer: vi.fn(),
 } as unknown as ApiClient;
 
+class MockApiError extends Error {
+  status: number;
+  constructor(status: number) {
+    super(String(status));
+    this.status = status;
+  }
+}
 vi.mock("../src/api", () => ({
   api: mockApi,
-  ApiError: class extends Error {},
+  ApiError: MockApiError,
 }));
 
 const { CatalogAppPage } = await import("../src/pages/CatalogApp");
@@ -94,6 +112,124 @@ describe("CatalogAppPage", () => {
       messageTemplate: null,
       keepRecentVersions: 5,
     });
+    // Not published: the listing route answers 404 until the team publishes.
+    vi.mocked(mockApi.catalogListing).mockRejectedValue(new MockApiError(404));
+    vi.mocked(mockApi.catalogListingViewers).mockResolvedValue([]);
+  });
+
+  it("publishes from the listing section, names a member, and unpublishes", async () => {
+    const listing: CatalogListing = {
+      appId: "ca_1",
+      appName: "my-game",
+      teamId: "team_1",
+      teamName: "studio",
+      title: "My Game",
+      summary: "Fun.",
+      tags: ["rpg"],
+      audience: "members",
+      publishedBy: "alice",
+      publishedAt: 0,
+      updatedAt: 0,
+      takenDown: false,
+    };
+    vi.mocked(mockApi.publishCatalogApp).mockResolvedValue(listing);
+    vi.mocked(mockApi.addCatalogListingViewer).mockResolvedValue({
+      login: "bob",
+      added: true,
+    });
+    vi.mocked(mockApi.unpublishCatalogApp).mockResolvedValue(undefined);
+    open();
+    expect(await screen.findByText("Not published.")).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Publish" }),
+    );
+    let drawer = await screen.findByRole("dialog");
+    // The title is seeded from the app name; the audience defaults to everyone.
+    expect(within(drawer).getByLabelText(/^Title/)).toHaveValue("my-game");
+    await userEvent.clear(within(drawer).getByLabelText(/^Title/));
+    await userEvent.type(within(drawer).getByLabelText(/^Title/), "My Game");
+    await userEvent.type(within(drawer).getByLabelText("Summary"), "Fun.");
+    await userEvent.type(
+      within(drawer).getByRole("textbox", { name: "Tags" }),
+      "rpg{enter}",
+    );
+    await userEvent.click(
+      within(drawer).getByRole("radio", { name: "Named members" }),
+    );
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Publish" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.publishCatalogApp).toHaveBeenCalledWith("ca_1", {
+        title: "My Game",
+        summary: "Fun.",
+        tags: ["rpg"],
+        audience: "members",
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByText("named members")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Nobody is named yet, so nobody outside the team can install it.",
+      ),
+    ).toBeInTheDocument();
+    // Naming a member.
+    vi.mocked(mockApi.catalogListingViewers).mockResolvedValue([
+      { login: "bob", addedBy: "alice", addedAt: 0 },
+    ]);
+    await userEvent.type(screen.getByLabelText("GitHub login"), "bob");
+    await userEvent.click(screen.getByRole("button", { name: "Add member" }));
+    await waitFor(() =>
+      expect(mockApi.addCatalogListingViewer).toHaveBeenCalledWith(
+        "ca_1",
+        "bob",
+      ),
+    );
+    expect(await screen.findByText("bob")).toBeInTheDocument();
+    // Unpublishing lives in the drawer's danger zone.
+    vi.mocked(mockApi.catalogListing).mockRejectedValue(new MockApiError(404));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit listing" }),
+    );
+    drawer = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Unpublish" }),
+    );
+    const modal = (await screen.findByText("Unpublish this app?")).closest(
+      '[role="dialog"]',
+    ) as HTMLElement;
+    await userEvent.click(
+      within(modal).getByRole("button", { name: "Unpublish" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.unpublishCatalogApp).toHaveBeenCalledWith("ca_1"),
+    );
+    expect(await screen.findByText("Not published.")).toBeInTheDocument();
+  });
+
+  it("shows a taken-down listing as hidden and keeps Edit listing available", async () => {
+    vi.mocked(mockApi.catalogListing).mockResolvedValue({
+      appId: "ca_1",
+      appName: "my-game",
+      teamId: "team_1",
+      teamName: "studio",
+      title: "Bad",
+      summary: null,
+      tags: [],
+      audience: "public",
+      publishedBy: "alice",
+      publishedAt: 0,
+      updatedAt: 0,
+      takenDown: true,
+    });
+    open();
+    expect(
+      await screen.findByText(/A platform admin took this listing down/),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Edit listing" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the app, its artifacts grouped by version and the settings in the drawer", async () => {

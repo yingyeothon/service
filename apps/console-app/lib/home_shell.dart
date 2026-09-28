@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/browse_screen.dart';
 import 'package:yyt_console/projects/projects_screen.dart';
 import 'package:yyt_console/self_update_banner.dart';
 import 'package:yyt_console/self_update_check.dart';
@@ -27,6 +28,9 @@ class _HomeShellState extends State<HomeShell> {
   /// The projects tab is built on first visit so a launch does not walk every
   /// team's projects for a user who only installs apps.
   bool _projectsVisited = false;
+
+  /// Same for the browse tab: its list is a second request.
+  bool _browseVisited = false;
 
   /// One connection for the launch requests — the list, then the update
   /// check — closed with the profile: HomeShell is keyed by profile id.
@@ -61,6 +65,9 @@ class _HomeShellState extends State<HomeShell> {
                 if (!_firstLoad.isCompleted) _firstLoad.complete();
               },
             ),
+            _browseVisited
+                ? BrowseScreen(authState: widget.authState, client: _client)
+                : const SizedBox.shrink(),
             _projectsVisited
                 ? ProjectsScreen(authState: widget.authState)
                 : const SizedBox.shrink(),
@@ -72,10 +79,16 @@ class _HomeShellState extends State<HomeShell> {
         onDestinationSelected:
             (i) => setState(() {
               _index = i;
-              if (i == 1) _projectsVisited = true;
+              if (i == 1) _browseVisited = true;
+              if (i == 2) _projectsVisited = true;
             }),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.apps_rounded), label: '앱'),
+          NavigationDestination(
+            icon: Icon(Icons.storefront_outlined),
+            selectedIcon: Icon(Icons.storefront_rounded),
+            label: '둘러보기',
+          ),
           NavigationDestination(
             icon: Icon(Icons.bug_report_outlined),
             selectedIcon: Icon(Icons.bug_report_rounded),

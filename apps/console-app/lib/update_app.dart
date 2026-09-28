@@ -6,10 +6,12 @@ import 'package:yyt_console/app_list_view.dart';
 import 'package:yyt_console/app_theme.dart';
 import 'package:yyt_console/auth/auth_state.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
+import 'package:yyt_console/filter_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
 import 'package:yyt_console/load_app_info.dart';
 import 'package:yyt_console/profile_menu.dart';
 import 'package:yyt_console/self_update_state.dart';
+import 'package:yyt_console/state_card.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -185,7 +187,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
           padding: const EdgeInsets.all(20),
           children: [
             const SizedBox(height: 100),
-            _StateCard(
+            CatalogStateCard(
               icon: Icons.cloud_off_rounded,
               title: '앱 목록을 불러오지 못했습니다',
               body: errorMessage!,
@@ -211,7 +213,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
           padding: const EdgeInsets.all(20),
           children: [
             const SizedBox(height: 100),
-            _StateCard(
+            CatalogStateCard(
               icon: Icons.check_circle_outline_rounded,
               title: '설치 가능한 앱이 없습니다',
               body: '새 앱이 게시되면 이 화면에 표시됩니다.',
@@ -275,7 +277,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
           ),
           const SizedBox(height: 10),
           if (filteredApps.isEmpty)
-            const _StateCard(
+            const CatalogStateCard(
               icon: Icons.search_off_rounded,
               title: '검색 결과가 없습니다',
               body: '다른 이름이나 버전, 메모로 다시 검색해보세요.',
@@ -292,24 +294,8 @@ class _UpdaterAppState extends State<UpdaterApp> {
     );
   }
 
-  List<AppInfo> _filterApps(List<AppInfo> source) {
-    if (_searchQuery.isEmpty) {
-      return source;
-    }
-
-    return source.where((app) {
-      final values = <String>[
-        app.name,
-        app.description,
-        app.package,
-        app.version,
-        app.releaseNote,
-        app.buildType,
-        ...app.tags.values,
-      ];
-      return values.any((value) => value.toLowerCase().contains(_searchQuery));
-    }).toList();
-  }
+  List<AppInfo> _filterApps(List<AppInfo> source) =>
+      filterAppsByQuery(source, _searchQuery);
 }
 
 class _CatalogWordmark extends StatelessWidget {
@@ -388,54 +374,6 @@ class _MetricTile extends StatelessWidget {
             ).textTheme.bodySmall?.copyWith(color: CatalogPalette.slate),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _StateCard extends StatelessWidget {
-  const _StateCard({
-    required this.icon,
-    required this.title,
-    required this.body,
-    this.actionLabel,
-    this.onPressed,
-    this.compact = false,
-  });
-
-  final IconData icon;
-  final String title;
-  final String body;
-  final String? actionLabel;
-  final Future<void> Function()? onPressed;
-  final bool compact;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: EdgeInsets.all(compact ? 18 : 20),
-        child: Column(
-          children: [
-            Container(
-              width: compact ? 44 : 50,
-              height: compact ? 44 : 50,
-              decoration: BoxDecoration(
-                color: CatalogPalette.sky,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Icon(icon, color: CatalogPalette.ocean, size: 24),
-            ),
-            const SizedBox(height: 14),
-            Text(title, style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(body, textAlign: TextAlign.center),
-            if (actionLabel != null && onPressed != null) ...[
-              const SizedBox(height: 14),
-              FilledButton(onPressed: onPressed, child: Text(actionLabel!)),
-            ],
-          ],
-        ),
       ),
     );
   }

@@ -98,6 +98,12 @@ class AppGridCard extends StatelessWidget {
                 color: _stateColor(state),
                 dense: true,
               ),
+              if (app.shared)
+                const CatalogStateChip(
+                  label: '공유됨',
+                  color: CatalogPalette.ocean,
+                  dense: true,
+                ),
             ],
           ),
           if (action != null) ...[

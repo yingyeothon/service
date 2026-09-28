@@ -14,6 +14,9 @@ class AppInfo {
   /// Team + project of the app, when known (see [AppHome]).
   final AppHome? home;
 
+  /// Shared with this member through a listing, not through a team seat.
+  final bool shared;
+
   AppInfo({
     required this.id,
     required this.name,
@@ -23,6 +26,7 @@ class AppInfo {
     required this.installedVersion,
     required this.needsUpdate,
     this.home,
+    this.shared = false,
   });
 
   String get version => latestArtifact.version;

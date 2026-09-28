@@ -19,6 +19,7 @@ import { useId, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api";
 import { Crumbs } from "../components/Crumbs";
+import { ListingSection } from "../components/ListingSection";
 import { DataTable } from "../components/DataTable";
 import { PageSkeleton } from "../components/Loading";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
@@ -689,6 +690,7 @@ export function CatalogAppPage() {
           }
         />
       </Section>
+      <ListingSection app={a} canWrite={canWrite} />
       {canWrite && <CleanupSection app={a} onDone={() => artifacts.reload()} />}
       <ResourceDrawer
         opened={edit.opened}

@@ -90,10 +90,12 @@ class _AppDetailViewState extends State<AppDetailView>
         throw UnauthorizedException('로그인이 필요합니다.');
       }
 
-      final artifacts = await fetchAppArtifacts(
-        appId: widget.app.id,
-        token: token,
-      );
+      // A shared app is read through its listing: the artifact history is
+      // the team's (404 to a viewer), so the newest build is the whole list.
+      final artifacts =
+          widget.app.shared
+              ? [widget.app.latestArtifact]
+              : await fetchAppArtifacts(appId: widget.app.id, token: token);
       final installedVersions = await _resolveInstalledVersions(artifacts);
       if (!mounted) {
         return;
@@ -420,6 +422,7 @@ class _AppDetailViewState extends State<AppDetailView>
       installedVersion: heroInstalledVersion,
       needsUpdate: checkIfNeedToUpdate(latestVersion, heroInstalledVersion),
       home: widget.app.home,
+      shared: widget.app.shared,
     );
     final home = widget.app.home;
 
@@ -443,6 +446,8 @@ class _AppDetailViewState extends State<AppDetailView>
                     home: home,
                   ),
           extraChips: [
+            if (widget.app.shared)
+              const CatalogStateChip(label: '공유됨', color: CatalogPalette.ocean),
             CatalogStateChip(
               label: state == AppInstallState.latest ? '최신' : '최신 아님',
               color:

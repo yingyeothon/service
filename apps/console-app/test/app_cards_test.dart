@@ -52,6 +52,50 @@ void main() {
     expect(find.textContaining('build_type'), findsNothing);
   });
 
+  testWidgets('AppGridCard marks an app shared through a listing', (
+    tester,
+  ) async {
+    AppInfo app({required bool shared}) => AppInfo(
+      id: 'ca_s',
+      name: 'Shared Game',
+      package: 'com.example.shared',
+      description: 'From another team',
+      latestArtifact: ArtifactInfo(
+        id: 'artifact-s',
+        url: 'https://example.com/s.apk',
+        platform: 'android',
+        size: 1,
+        createdAt: DateTime.parse('2026-09-28T00:00:00Z'),
+        tags: {'version': '1.0.0'},
+      ),
+      installedVersion: null,
+      needsUpdate: false,
+      shared: shared,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AppGridCard(
+            app: app(shared: true),
+            state: AppInstallState.notInstalled,
+          ),
+        ),
+      ),
+    );
+    expect(find.text('공유됨'), findsOneWidget);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AppGridCard(
+            app: app(shared: false),
+            state: AppInstallState.notInstalled,
+          ),
+        ),
+      ),
+    );
+    expect(find.text('공유됨'), findsNothing);
+  });
+
   testWidgets('ArtifactReleaseCard shows old-version chip and install button', (
     tester,
   ) async {

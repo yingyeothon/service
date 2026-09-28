@@ -14,6 +14,10 @@ A change is not done until all seven hold. The owner should never have to ask fo
 6. **The CLI (and, for the resources it edits, the app) is the other half of the surface.** Anything the console shows about a resource, `yyt <noun> get/list` should already print — and vice versa: the catalog CLI printed every upload tag for months while the console showed none, which is what started this. When a route's shape changes, `src/types.ts` + `src/api.ts` + the page **and** the CLI command with its `httptest` fake move in one commit. A value people copy (`sha256`, `commit`) must be selectable somewhere: tooltip content is `pointer-events: none`.
 7. **Prove it where it runs.** Unit tests pin props and wiring; **jsdom performs no layout**, so `toHaveStyle` only proves the component wrote what it wrote. A claim about width, height, wrapping or overflow needs a browser (recipe below), and after that the `dev` deploy and the owner's own pass.
 
+## Lessons
+
+- **Measure before the first push, not after the owner's pass** (`todo/47`, 2026-09-28). The first browse table — title, summary, team, audience, tags, one link per platform, an absolute time — came out at **1903 px** in a 1048 px body on the standalone probe; nothing in jsdom said so. The shape that fits (974 px, row 47 px) moved the summary into the title's fold, kept the first download inline with a `+N` disclosure for the rest, clipped the title/team/tags at 160/110/110 px and used the relative time. `components/FoldCell.tsx` is the reusable half: one clipped line that is a real `UnstyledButton` (`aria-expanded`, `aria-controls`), a tooltip for the pointer (`touch: false`) and a `role="group"` fold in the same cell for a tap; `before` puts inline content (a link) on the same line. A table whose cells are all "one value" fits by clipping; a table with a per-row list (links per platform) fits only by folding the list.
+
 ## Measuring a layout claim
 
 A standalone HTML page with Mantine's computed values (`table-layout: auto`, `td` padding `12px 16px`, 14px/1.25, the real column contents) inside the page's own `maw` wrapper, probed at 420 / 700 / 900 / 1080 / 1280 / 1600:

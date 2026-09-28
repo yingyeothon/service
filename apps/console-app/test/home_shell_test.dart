@@ -113,6 +113,41 @@ void main() {
     ]);
   });
 
+  testWidgets('the browse tab is built on first visit and asks once', (
+    tester,
+  ) async {
+    await signIn(tester);
+    final paths = <String>[];
+    final client = MockClient((req) async {
+      paths.add(req.url.path);
+      switch (req.url.path) {
+        case '/catalog/apps':
+          return _json({'apps': [], 'teams': []});
+        case '/catalog/listings':
+          expect(req.url.queryParameters, {'platform': 'android'});
+          return _json({'listings': []});
+      }
+      return http.Response('', 404);
+    });
+    await tester.pumpWidget(
+      MaterialApp(home: HomeShell(authState: auth, client: client)),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(paths, isNot(contains('/catalog/listings')));
+    await tester.tap(find.text('둘러보기'));
+    await tester.pump();
+    await tester.pump();
+    expect(paths.where((p) => p == '/catalog/listings'), hasLength(1));
+    expect(find.text('게시된 앱이 없습니다'), findsOneWidget);
+    // Coming back does not reload it.
+    await tester.tap(find.text('앱'));
+    await tester.pump();
+    await tester.tap(find.text('둘러보기'));
+    await tester.pump();
+    expect(paths.where((p) => p == '/catalog/listings'), hasLength(1));
+  });
+
   testWidgets('a failed first load still releases the update check', (
     tester,
   ) async {

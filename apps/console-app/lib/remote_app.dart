@@ -17,6 +17,11 @@ class RemoteApp {
   /// Team + project of the app, when the server sent the breadcrumb.
   final AppHome? home;
 
+  /// Published to this member by name or to everyone (`access: "listing"`
+  /// on the app list, or a browse row): install and update only, no entry
+  /// into the project (docs/decisions.md *Catalog listings* #4).
+  final bool shared;
+
   RemoteApp({
     required this.id,
     required this.name,
@@ -25,6 +30,7 @@ class RemoteApp {
     required this.latestArtifact,
     List<String>? applicationIds,
     this.home,
+    this.shared = false,
   }) : applicationIds = applicationIds ?? const <String>[];
 
   Map<String, dynamic> toJson() {

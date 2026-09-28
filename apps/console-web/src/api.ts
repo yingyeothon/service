@@ -99,6 +99,13 @@ import type {
   VersionDetail,
   VersionLink,
   VersionLinkInput,
+  AdminCatalogListing,
+  CatalogListing,
+  CatalogListingTakedown,
+  CatalogListingViewer,
+  ListingAudience,
+  ListingListParams,
+  PublicListing,
 } from "./types";
 
 /** How many 202 rounds a bundle or version delete repeats before giving up. */
@@ -742,6 +749,50 @@ export function createApiClient({
         `/catalog/uploads/${enc(grant.uploadId)}/commit`,
       );
     },
+    // ---- catalog listings ----------------------------------------------
+    catalogListing: (id: string) =>
+      get<CatalogListing>(`/catalog/apps/${enc(id)}/listing`),
+    publishCatalogApp: (
+      id: string,
+      body: {
+        title: string;
+        summary?: string | null;
+        tags?: string[];
+        audience: ListingAudience;
+      },
+    ) => put<CatalogListing>(`/catalog/apps/${enc(id)}/listing`, body),
+    unpublishCatalogApp: (id: string) =>
+      del(`/catalog/apps/${enc(id)}/listing`),
+    catalogListingViewers: (id: string) =>
+      get<{ viewers: CatalogListingViewer[] }>(
+        `/catalog/apps/${enc(id)}/listing/viewers`,
+      ).then((r) => r.viewers),
+    addCatalogListingViewer: (id: string, login: string) =>
+      post<{ login: string; added: boolean }>(
+        `/catalog/apps/${enc(id)}/listing/viewers`,
+        { login },
+      ),
+    removeCatalogListingViewer: (id: string, login: string) =>
+      del(`/catalog/apps/${enc(id)}/listing/viewers/${enc(login)}`),
+    /** Anonymous-friendly: public listings plus, signed in, the named and seated ones. */
+    catalogListings: (p: ListingListParams = {}) =>
+      get<{ listings: PublicListing[] }>(`/catalog/listings${qs(p)}`).then(
+        (r) => r.listings,
+      ),
+    adminCatalogListings: (p: ListingListParams = {}) =>
+      get<{ listings: AdminCatalogListing[] }>(
+        `/admin/catalog/listings${qs(p)}`,
+      ).then((r) => r.listings),
+    takedownCatalogListing: (id: string, reason?: string) =>
+      post<{
+        appId: string;
+        takedown: CatalogListingTakedown;
+        listing: AdminCatalogListing | null;
+      }>(`/admin/catalog/listings/${enc(id)}/takedown`, {
+        ...(reason ? { reason } : {}),
+      }),
+    restoreCatalogListing: (id: string) =>
+      del(`/admin/catalog/listings/${enc(id)}/takedown`),
     installerDownloads: () =>
       get<{ downloads: InstallerDownload[] }>(
         "/catalog/installer/downloads",

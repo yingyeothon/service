@@ -105,6 +105,148 @@ void main() {
   });
 
   test(
+    'a listing that names the caller is shared, with no project home',
+    () async {
+      final client = MockClient(
+        (req) async => _json({
+          'apps': [
+            {
+              ..._app('mine', 'team_a', latest: _artifact('a1', '1.0.0', 10)),
+              'access': 'team',
+            },
+            {
+              'id': 'ca_shared',
+              'name': 'shared',
+              'path': 'p.shared',
+              'description': 'A summary.',
+              'teamId': 'team_x',
+              'teamName': 'x',
+              'projectId': null,
+              'projectName': null,
+              'createdBy': null,
+              'access': 'listing',
+              'listing': {
+                'title': 'Shared Game',
+                'summary': 'A summary.',
+                'tags': ['rpg'],
+                'audience': 'members',
+              },
+              'latestArtifact': _artifact('s1', '2.0.0', 20),
+              'applicationIds': ['p.s1'],
+            },
+          ],
+          'teams': [
+            {'id': 'team_a', 'name': 'a', 'role': 'owner'},
+          ],
+        }),
+      );
+      final apps = await fetchRemoteApps(token: 'tok', client: client);
+      final byId = {for (final a in apps) a.id: a};
+      expect(byId['mine']!.shared, isFalse);
+      expect(byId['mine']!.home, isNotNull);
+      final shared = byId['ca_shared']!;
+      expect(shared.shared, isTrue);
+      expect(shared.home, isNull);
+      expect(shared.name, 'Shared Game');
+      expect(shared.description, 'A summary.');
+      expect(shared.installCheckApplicationIds, ['p.s1']);
+    },
+  );
+
+  test('the browse list maps listings to installable apps', () async {
+    Uri? seen;
+    final client = MockClient((req) async {
+      seen = req.url;
+      expect(req.headers['Authorization'], 'Bearer tok');
+      return _json({
+        'listings': [
+          {
+            'appId': 'ca_1',
+            'appName': 'game',
+            'teamName': 'a',
+            'title': 'My Game',
+            'summary': 'Fun.',
+            'tags': ['rpg'],
+            'audience': 'public',
+            'publishedAt': 30,
+            'updatedAt': 30,
+            // The newest build overall is iOS; the Android entry is what installs.
+            'artifacts': [
+              {..._artifact('i1', '1.5.0', 30), 'platform': 'ios'},
+              _artifact('g1', '1.4.2', 25, applicationId: 'p.game'),
+            ],
+            'latestArtifact': {
+              ..._artifact('i1', '1.5.0', 30),
+              'platform': 'ios',
+            },
+            'applicationIds': ['p.game', 'p.game.debug'],
+          },
+          {
+            // No application id anywhere: the package falls back to the name.
+            'appId': 'ca_2',
+            'appName': 'bare',
+            'teamName': 'b',
+            'title': 'Bare',
+            'summary': null,
+            'tags': [],
+            'audience': 'members',
+            'publishedAt': 20,
+            'updatedAt': 20,
+            'artifacts': [
+              {
+                'id': 'b1',
+                'url': 'https://cdn.example/b1.apk',
+                'platform': 'android',
+                'tags': {'version': '0.1'},
+                'createdAt': 5,
+              },
+            ],
+            'latestArtifact': {
+              'id': 'b1',
+              'url': 'https://cdn.example/b1.apk',
+              'platform': 'android',
+              'tags': {'version': '0.1'},
+              'createdAt': 5,
+            },
+            'applicationIds': [],
+          },
+          {
+            // No Android build: not installable here.
+            'appId': 'ca_3',
+            'appName': 'ios-only',
+            'teamName': 'c',
+            'title': 'iOS only',
+            'summary': null,
+            'tags': [],
+            'audience': 'public',
+            'publishedAt': 10,
+            'updatedAt': 10,
+            'artifacts': [],
+            'latestArtifact': null,
+            'applicationIds': [],
+          },
+        ],
+      });
+    });
+    final apps = await fetchPublicListings(token: 'tok', client: client);
+    expect(seen!.path, '/catalog/listings');
+    expect(seen!.queryParameters, {'platform': 'android'});
+    expect(apps.map((a) => a.id), ['ca_1', 'ca_2']);
+    expect(apps.first.name, 'My Game');
+    expect(apps.first.version, '1.4.2');
+    expect(apps.first.description, 'Fun.');
+    expect(apps.first.shared, isTrue);
+    expect(apps.first.home, isNull);
+    expect(apps.first.installCheckApplicationIds, ['p.game', 'p.game.debug']);
+    expect(apps.last.package, 'bare');
+    expect(apps.last.description, '');
+    await expectLater(
+      fetchPublicListings(token: '', client: client),
+      throwsA(isA<UnauthorizedException>()),
+    );
+  });
+
+  test(
     'an older console without `teams` is listed per team, as 1.5.3 did',
     () async {
       final paths = <String>[];

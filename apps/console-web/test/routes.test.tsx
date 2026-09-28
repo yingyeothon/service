@@ -69,6 +69,18 @@ describe("routes", () => {
     expect(NAV_ITEMS.find((i) => i.path === "/shows")?.minRole).toBeNull();
   });
 
+  it("keeps the listing browse page public and the admin list admin-only", () => {
+    const byPath = new Map(ROUTES.map((r) => [r.path, r.guard]));
+    expect(byPath.has("/listings")).toBe(true);
+    expect(byPath.get("/listings")).toBeNull();
+    expect(NAV_ITEMS.find((i) => i.path === "/listings")?.minRole).toBeNull();
+    expect(byPath.get("/admin/listings")).toBe("/admin/listings");
+    expect(navMinRole("/admin/listings")).toBe("admin");
+    expect(
+      NAV_ITEMS.find((i) => i.path === "/admin/listings")?.hidden,
+    ).toBeUndefined();
+  });
+
   it("keeps the limit request queue admin-only and in the menu", () => {
     const byPath = new Map(ROUTES.map((r) => [r.path, r.guard]));
     // The path the request e-mail links to (`/ui/admin/limit-requests`).

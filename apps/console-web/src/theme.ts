@@ -11,6 +11,7 @@ import {
   Modal,
   Notification,
   Paper,
+  Pill,
   SegmentedControl,
   Skeleton,
   Table,
@@ -155,6 +156,8 @@ export const theme = createTheme({
       },
       styles: { title: { fontSize: rem(18), fontWeight: 500 } },
     }),
+    // The listing drawer's tag chips (`TagsInput`): the badge's shape.
+    Pill: Pill.extend({ defaultProps: { radius: "sm" } }),
     Badge: Badge.extend({
       defaultProps: { variant: "light", radius: "sm" },
       styles: {

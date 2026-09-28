@@ -207,13 +207,103 @@ RemoteApp? _toRemoteApp(Map<String, dynamic> appJson) {
     for (final v in (appJson['applicationIds'] as List<dynamic>? ?? const []))
       if (v is String && v.isNotEmpty) v,
   ];
+  final shared = appJson['access'] == 'listing';
+  final listing = appJson['listing'];
+  // A listing row shows under the title its team chose, like the browse tab.
+  final title =
+      shared && listing is Map<String, dynamic> && listing['title'] is String
+          ? listing['title'] as String
+          : name;
   return RemoteApp(
     id: id,
-    name: name,
+    name: title,
     package: packageName,
     description: (appJson['description'] as String?) ?? '',
     latestArtifact: latestArtifact,
     applicationIds: applicationIds,
     home: AppHome.fromAppJson(appJson),
+    // A listing row carries no project crumb, so `home` is null by
+    // construction; the flag is what the card's badge reads.
+    shared: shared,
+  );
+}
+
+/// The browse tab: `GET /catalog/listings?platform=android` — every listing
+/// the caller may read (public ones, the ones naming them, their own teams')
+/// that has an Android build, newest published first, as installable apps.
+/// The token is optional on the server; the app always has one, and sends it
+/// so the named and seated listings are included.
+Future<List<RemoteApp>> fetchPublicListings({
+  String? token,
+  http.Client? client,
+  String? baseUrl,
+  Duration timeout = catalogRequestTimeout,
+}) async {
+  if (token == null || token.isEmpty) {
+    throw UnauthorizedException('로그인이 필요합니다.');
+  }
+  final base = baseUrl ?? AuthConfig.apiBaseUrl;
+  final http.Client c = client ?? http.Client();
+  try {
+    final body = await _getter(c, token, timeout)(
+      Uri.parse(
+        AuthConfig.catalogListingsUrlOf(base),
+      ).replace(queryParameters: const {'platform': 'android'}),
+    );
+    return [
+      for (final row in (body['listings'] as List<dynamic>? ?? const []))
+        if (row is Map<String, dynamic>)
+          if (_toListedApp(row) case final app?) app,
+    ];
+  } finally {
+    if (client == null) c.close();
+  }
+}
+
+/// A browse row as an app: the listing's title and summary are what the
+/// reader sees, the app id and its newest Android artifact are what install
+/// needs. A row without an Android build is skipped, like the app list.
+RemoteApp? _toListedApp(Map<String, dynamic> row) {
+  final id = row['appId'] as String?;
+  final title = row['title'] as String?;
+  if (id == null || title == null) return null;
+  // The Android entry of the per-platform list, whatever the newest build
+  // overall is; `latestArtifact` is the fallback for an older console.
+  final artifacts = [
+    for (final a in (row['artifacts'] as List<dynamic>? ?? const []))
+      if (a is Map<String, dynamic>) ArtifactInfo.fromJson(a),
+  ];
+  final latestJson = row['latestArtifact'];
+  final latest = artifacts.cast<ArtifactInfo?>().firstWhere(
+    (a) => a!.platform.toLowerCase() == 'android',
+    orElse:
+        () =>
+            latestJson is Map<String, dynamic>
+                ? ArtifactInfo.fromJson(latestJson)
+                : null,
+  );
+  if (latest == null || latest.platform.toLowerCase() != 'android') {
+    return null;
+  }
+  final applicationIds = <String>[
+    for (final v in (row['applicationIds'] as List<dynamic>? ?? const []))
+      if (v is String && v.isNotEmpty) v,
+  ];
+  // The public row carries no `path`: the install checks key on the
+  // application ids the artifacts declare, falling back to the app's name.
+  final package =
+      latest.applicationId.isNotEmpty
+          ? latest.applicationId
+          : applicationIds.isNotEmpty
+          ? applicationIds.first
+          : (row['appName'] as String?) ?? id;
+  return RemoteApp(
+    id: id,
+    name: title,
+    package: package,
+    description: (row['summary'] as String?) ?? '',
+    latestArtifact: latest,
+    applicationIds: applicationIds,
+    shared: true,
   );
 }

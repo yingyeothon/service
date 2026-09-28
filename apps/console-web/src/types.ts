@@ -561,6 +561,71 @@ export interface CatalogArtifactCommit extends CatalogArtifact {
   } | null;
 }
 
+// ---- catalog listings (docs/decisions.md *Catalog listings*) ---------------
+
+export const LISTING_AUDIENCES = ["public", "members"] as const;
+export type ListingAudience = (typeof LISTING_AUDIENCES)[number];
+export const LISTING_SORT_KEYS = ["publishedAt", "title"] as const;
+/** Lowercase slugs, 1–32 chars, at most 10 per listing (decision #6). */
+export const LISTING_TAG = /^[a-z0-9-]{1,32}$/;
+export const LISTING_TAGS_MAX = 10;
+
+/** The team's (and the admin's) view of how an app is published. */
+export interface CatalogListing {
+  appId: string;
+  appName: string;
+  teamId: string;
+  teamName: string | null;
+  title: string;
+  summary: string | null;
+  tags: string[];
+  audience: ListingAudience;
+  publishedBy: string | null;
+  publishedAt: number;
+  updatedAt: number;
+  /** A platform admin hid it; the team may edit or unpublish, not republish. */
+  takenDown: boolean;
+}
+
+export interface CatalogListingTakedown {
+  by: string | null;
+  at: number;
+  reason: string | null;
+}
+
+/** The admin list's row: the listing plus who took it down and why. */
+export interface AdminCatalogListing extends CatalogListing {
+  takedown: CatalogListingTakedown | null;
+}
+
+export interface CatalogListingViewer {
+  login: string | null;
+  addedBy: string | null;
+  addedAt: number;
+}
+
+/** A row of the public browse list: names and CDN links, never a storage key. */
+export interface PublicListing {
+  appId: string;
+  appName: string;
+  teamName: string | null;
+  title: string;
+  summary: string | null;
+  tags: string[];
+  audience: ListingAudience;
+  publishedAt: number;
+  updatedAt: number;
+  /** The newest artifact per platform, newest first. */
+  artifacts: Omit<CatalogArtifact, "objectKey">[];
+  latestArtifact: Omit<CatalogArtifact, "objectKey"> | null;
+  applicationIds: string[];
+}
+
+export interface ListingListParams extends ListParams {
+  tag?: string;
+  platform?: CatalogPlatform;
+}
+
 export interface CatalogUploadGrant {
   uploadId: string;
   key: string;
