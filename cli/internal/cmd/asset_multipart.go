@@ -91,15 +91,23 @@ type uploadState struct {
 // directory defaulting to the user's (`~/.cache/yyt` on Linux). Both ids
 // are hex/underscore, so they are safe path segments.
 func uploadStatePath(bundleID, sha string) (string, error) {
-	dir := os.Getenv("YYT_CACHE")
-	if dir == "" {
-		base, err := os.UserCacheDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(base, "yyt")
+	dir, err := cacheDir()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(dir, "uploads", bundleID, sha+".json"), nil
+}
+
+// cacheDir is `$YYT_CACHE`, else the user's cache directory plus `yyt`.
+func cacheDir() (string, error) {
+	if dir := os.Getenv("YYT_CACHE"); dir != "" {
+		return dir, nil
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "yyt"), nil
 }
 
 func loadUploadState(bundleID, sha string) *uploadState {

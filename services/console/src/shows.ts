@@ -1527,6 +1527,17 @@ export function createShowRoutes({
             "bad_request",
             "reason is required to submit another team's resource",
           );
+        // Ciphertext is not an exhibit (docs/decisions.md *Live and
+        // encrypted asset bundles* #2): the gallery would link bytes no
+        // browser can render.
+        if (
+          b.targetKind === "bundle" &&
+          (target.row as { encrypted?: boolean }).encrypted
+        )
+          throw new AppError(
+            "bad_request",
+            "an encrypted bundle holds ciphertext, which a gallery cannot show",
+          );
         if ((await shows.countEntries(show.id)) >= ENTRIES_PER_SHOW)
           throw new AppError(
             "conflict",
@@ -1718,6 +1729,14 @@ export function createShowRoutes({
       (await assets.findBundle(entry.targetId))?.mode === "live"
     )
       throw new AppError("bad_request", "a live bundle entry links live");
+    if (
+      entry.targetKind === "bundle" &&
+      (await assets.findBundle(entry.targetId))?.encrypted
+    )
+      throw new AppError(
+        "bad_request",
+        "an encrypted bundle holds ciphertext, which a gallery cannot show",
+      );
     const ok =
       entry.targetKind === "app"
         ? (await catalog.findArtifact(ref))?.appId === entry.targetId

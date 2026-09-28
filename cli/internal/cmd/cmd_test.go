@@ -25,6 +25,12 @@ func TestMain(m *testing.M) {
 	for _, k := range []string{"YYT_TEAM", "YYT_PROJECT", "YYT_PROFILE"} {
 		_ = os.Unsetenv(k)
 	}
+	// Never the developer's real cache: a test that forgets to set it would
+	// write digests and resume state under ~/.cache/yyt.
+	if dir, err := os.MkdirTemp("", "yyt-test-cache-*"); err == nil {
+		_ = os.Setenv("YYT_CACHE", dir)
+		defer os.RemoveAll(dir)
+	}
 	os.Exit(m.Run())
 }
 

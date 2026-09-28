@@ -1,5 +1,13 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { sha256Hex } from "@yyt/core";
+import {
+  createKeyWrapper,
+  KEK_HEX_RE,
+  KEY_WRAP_PREFIX,
+  KeyWrapError,
+  openAesGcm,
+  sealAesGcm,
+  WRAPPED_KEY_BYTES,
+  type KeyWrapFailure,
+} from "@yyt/core";
 
 /**
  * Envelope encryption for `encrypted` kv collections
@@ -12,33 +20,26 @@ import { sha256Hex } from "@yyt/core";
  * sizes and times and can delete entries, but can neither read nor write a
  * value, which is the whole promise the flag makes.
  *
- * This module knows nothing about rows, requests or HTTP: it turns strings into
- * strings and throws {@link KvCryptoError}. Mapping that to a 503 and logging it
- * with the collection id alone is the route's job -- a message here must stay
- * safe to log, so none of them names a value, a key or an owner.
+ * The DEK envelope and the value envelope share `@yyt/core`'s `keywrap`
+ * (extracted 2026-09-28 for the console's asset bundle keys) with the formats
+ * on disk unchanged. This module knows nothing about rows, requests or HTTP:
+ * it turns strings into strings and throws {@link KvCryptoError}. Mapping that
+ * to a 503 and logging it with the collection id alone is the route's job --
+ * a message here must stay safe to log, so none of them names a value, a key
+ * or an owner.
  */
 
 /** Value envelope: `enc1.{iv}.{ct}.{tag}`, every part base64url. */
 export const KV_ENC_PREFIX = "enc1.";
 /** Wrapped-DEK envelope: `v1.{iv}.{ct}.{tag}`. `v2.` is reserved for a KEK rotation. */
-export const KV_DEK_PREFIX = "v1.";
+export const KV_DEK_PREFIX = KEY_WRAP_PREFIX;
 /** AES-256: both the KEK and every DEK are 32 bytes. */
-export const KV_KEY_BYTES = 32;
-/** GCM's nominal nonce size; anything else costs an extra derivation step. */
-const IV_BYTES = 12;
-/** GCM tag, the full 128 bits. */
-const TAG_BYTES = 16;
+export const KV_KEY_BYTES = WRAPPED_KEY_BYTES;
 /** The KEK as the environment carries it: 32 bytes of hex, `openssl rand -hex 32`. */
-export const KV_KEK_HEX_RE = /^[0-9a-fA-F]{64}$/;
-/** base64url, unpadded -- what `Buffer.toString("base64url")` emits. */
-const B64URL_RE = /^[A-Za-z0-9_-]*$/;
+export const KV_KEK_HEX_RE = KEK_HEX_RE;
 
 /** Why a decrypt refused. Safe to log; none of these names caller data. */
-export type KvCryptoFailure =
-  /** Not the expected envelope: wrong prefix, part count, alphabet or length. */
-  | "malformed"
-  /** The envelope parsed but GCM refused the tag: tampering, wrong key or wrong slot. */
-  | "auth_failed";
+export type KvCryptoFailure = KeyWrapFailure;
 
 /**
  * A failure the route turns into one 503 plus one log line. Both reasons answer
@@ -47,15 +48,8 @@ export type KvCryptoFailure =
  * id. (The other 503 a kv route can give, `kv_encryption_not_configured`, is
  * the cold-start one below and is a different condition entirely.)
  */
-export class KvCryptoError extends Error {
-  readonly reason: KvCryptoFailure;
-
-  constructor(reason: KvCryptoFailure, message: string) {
-    super(message);
-    this.name = "KvCryptoError";
-    this.reason = reason;
-  }
-}
+export const KvCryptoError = KeyWrapError;
+export type KvCryptoError = KeyWrapError;
 
 /** What a value's ciphertext is bound to; a row moved into another slot fails to open. */
 export interface KvValueAad {
@@ -104,83 +98,6 @@ function valueAad({ collectionId, ownerId, key }: KvValueAad): Buffer {
 }
 
 /**
- * A wrong-sized key makes `createCipheriv` throw a `TypeError`, which the route
- * would report as an unhandled 500. Every key that reaches here is either
- * `mintDek`'s or one {@link KvCrypto.unwrapDek} already measured, so this only
- * ever fires on a programming mistake -- but it fires as a typed failure.
- */
-function requireKey(key: Buffer): Buffer {
-  if (key.length !== KV_KEY_BYTES)
-    throw new KvCryptoError("malformed", "key has the wrong length");
-  return key;
-}
-
-function seal(key: Buffer, aad: Buffer, plaintext: Buffer, prefix: string) {
-  requireKey(key);
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", key, iv, {
-    authTagLength: TAG_BYTES,
-  });
-  cipher.setAAD(aad, { plaintextLength: plaintext.length });
-  const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const parts = [iv, ct, cipher.getAuthTag()].map((b) =>
-    b.toString("base64url"),
-  );
-  return prefix + parts.join(".");
-}
-
-/**
- * Splits an envelope without trusting its content. `Buffer.from(…,
- * "base64url")` *skips* characters outside the alphabet instead of failing, so
- * a shape check has to come first or a mangled row would decode to a short
- * buffer and fail later with a confusing reason.
- */
-function openParts(
-  stored: string,
-  prefix: string,
-): { iv: Buffer; ct: Buffer; tag: Buffer } {
-  if (!stored.startsWith(prefix))
-    throw new KvCryptoError("malformed", "unexpected envelope prefix");
-  const parts = stored.slice(prefix.length).split(".");
-  if (parts.length !== 3)
-    throw new KvCryptoError("malformed", "envelope needs three parts");
-  if (!parts.every((p) => B64URL_RE.test(p)))
-    throw new KvCryptoError("malformed", "envelope is not base64url");
-  const [iv, ct, tag] = parts.map((p) => Buffer.from(p, "base64url")) as [
-    Buffer,
-    Buffer,
-    Buffer,
-  ];
-  if (iv.length !== IV_BYTES)
-    throw new KvCryptoError("malformed", "envelope iv has the wrong length");
-  if (tag.length !== TAG_BYTES)
-    throw new KvCryptoError("malformed", "envelope tag has the wrong length");
-  return { iv, ct, tag };
-}
-
-function open(
-  key: Buffer,
-  aad: Buffer,
-  stored: string,
-  prefix: string,
-): Buffer {
-  requireKey(key);
-  const { iv, ct, tag } = openParts(stored, prefix);
-  const decipher = createDecipheriv("aes-256-gcm", key, iv, {
-    authTagLength: TAG_BYTES,
-  });
-  decipher.setAAD(aad, { plaintextLength: ct.length });
-  decipher.setAuthTag(tag);
-  try {
-    return Buffer.concat([decipher.update(ct), decipher.final()]);
-  } catch {
-    // The driver message ("Unsupported state or unable to authenticate data")
-    // says nothing an operator can act on and is not worth carrying as a cause.
-    throw new KvCryptoError("auth_failed", "authentication failed");
-  }
-}
-
-/**
  * Builds the crypto for one stage from the hex KEK.
  *
  * Throws a plain `Error` -- not {@link KvCryptoError} -- when the KEK is
@@ -188,43 +105,22 @@ function open(
  * the handler answers every kv route 503 rather than starting without it.
  */
 export function createKvCrypto(kekHex: string | undefined): KvCrypto {
-  // SSM hands back whatever was stored, and a value pasted with a trailing
-  // newline is a realistic way to lose a stage's worth of encrypted values.
-  const hex = kekHex?.trim();
-  if (!hex || !KV_KEK_HEX_RE.test(hex))
-    // Never echo the value, not even its length: a truncated secret in a log
-    // is still a secret (`rules/security.md`).
+  let wrapper: ReturnType<typeof createKeyWrapper>;
+  try {
+    wrapper = createKeyWrapper(kekHex);
+  } catch {
+    // The message names this stack's variable; the value is never echoed.
     throw new Error("KV_KEK must be 32 bytes of hex");
-  const kek = Buffer.from(hex, "hex");
-  /**
-   * A short digest of the KEK, safe to log: it is what tells "this stage has
-   * the wrong KEK" (every collection fails at once) apart from "this row is
-   * corrupt". Recorded at bootstrap and printed at cold start, the two are one
-   * glance apart instead of a guess.
-   */
-  const kekId = sha256Hex(kek).slice(0, 12);
-
+  }
   return {
-    kekId,
+    kekId: wrapper.kekId,
     mintDek(collectionId) {
-      const dek = randomBytes(KV_KEY_BYTES);
-      const aad = Buffer.from(collectionId, "utf8");
-      return { dek, wrapped: seal(kek, aad, dek, KV_DEK_PREFIX) };
+      const { key, wrapped } = wrapper.mint(collectionId);
+      return { dek: key, wrapped };
     },
-    unwrapDek(collectionId, wrapped) {
-      const aad = Buffer.from(collectionId, "utf8");
-      const dek = open(kek, aad, wrapped, KV_DEK_PREFIX);
-      // A short DEK would make `createCipheriv` throw a `TypeError` on the next
-      // write instead of a typed failure here.
-      if (dek.length !== KV_KEY_BYTES)
-        throw new KvCryptoError(
-          "malformed",
-          "wrapped key has the wrong length",
-        );
-      return dek;
-    },
+    unwrapDek: (collectionId, wrapped) => wrapper.unwrap(collectionId, wrapped),
     encryptValue(dek, aad, plaintext) {
-      return seal(
+      return sealAesGcm(
         dek,
         valueAad(aad),
         Buffer.from(plaintext, "utf8"),
@@ -232,7 +128,9 @@ export function createKvCrypto(kekHex: string | undefined): KvCrypto {
       );
     },
     decryptValue(dek, aad, stored) {
-      return open(dek, valueAad(aad), stored, KV_ENC_PREFIX).toString("utf8");
+      return openAesGcm(dek, valueAad(aad), stored, KV_ENC_PREFIX).toString(
+        "utf8",
+      );
     },
   };
 }

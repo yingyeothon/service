@@ -93,10 +93,17 @@ export interface RotationHint {
   name: string;
 }
 
+/** Encrypted asset bundles whose key a departed member could have read. */
+export interface EncryptedBundleHint {
+  id: string;
+  name: string;
+}
+
 export interface RemoveMemberResult {
   removed: string;
   action: "leave" | "kick";
   rotate: RotationHint[];
+  encryptedBundles: EncryptedBundleHint[];
 }
 
 export interface TeamHistoryEntry {
@@ -612,8 +619,17 @@ export interface AssetBundle extends ResourceCrumbs {
   name: string;
   description: string | null;
   mode: AssetBundleMode;
+  /** Every object is `yyt-enc v1` ciphertext; the console holds the key. */
+  encrypted: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+/** `POST /assets/bundles/{b}/key`: the bundle key in its `yak1.` text form. */
+export interface AssetBundleKey {
+  bundleId: string;
+  key: string;
+  format: "yyt-enc-v1";
 }
 
 export interface AssetBundleDetail extends AssetBundle {

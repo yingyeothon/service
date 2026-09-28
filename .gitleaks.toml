@@ -21,4 +21,18 @@ regexes = [
 [allowlist]
 description = "Lockfile, this config, and the one shared non-secret test fixture value"
 paths = ['''pnpm-lock\.yaml$''', '''\.gitleaks\.toml$''']
-regexes = ['''(0123456789abcdef){1,4}''']
+regexes = [
+  '''(0123456789abcdef){1,4}''',
+  '''yak1\.ASNFZ4mrze8BI0VniavN7wEjRWeJq83vASNFZ4mrze8''', # the same bytes as an asset bundle key (docs/asset-encryption-vectors.json)
+]
+
+# An encrypted asset bundle's key in its text form (docs/asset-encryption.md):
+# `yak1.` + 43 base64url characters. Readable by the bundle's team and meant
+# to ship inside an app, never inside this repository. The one allowed value
+# is the test-vector key (bytes 0123456789abcdef x4) in that form.
+[[rules]]
+id = "yyt-asset-bundle-key"
+description = "Encrypted asset bundle key (yak1.<43 base64url>)"
+regex = '''yak1\.[A-Za-z0-9_-]{43}'''
+[rules.allowlist]
+regexes = ['''yak1\.ASNFZ4mrze8BI0VniavN7wEjRWeJq83vASNFZ4mrze8''']

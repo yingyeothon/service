@@ -60,6 +60,14 @@ import {
   type AssetCommitter,
 } from "./asset-commit.js";
 import { sha256Base64 } from "./s3-util.js";
+import {
+  ASSET_ENC_FORMAT,
+  ASSET_ENC_MIN_BYTES,
+  assetEncryptionNotConfigured,
+  assetPlaintextLength,
+  isAssetCiphertextLength,
+  type AssetKeyring,
+} from "./asset-crypto.js";
 import { artifactUrl } from "./catalog.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
@@ -208,6 +216,8 @@ export const bundleCreateBody = z
     name: bundleName,
     description: description.optional(),
     mode: z.enum(["versioned", "live"]).optional(),
+    /** Every object is `yyt-enc v1` ciphertext; fixed at creation (decisions #4). */
+    encrypted: z.boolean().optional(),
   })
   .strict();
 export const bundlePatchBody = z
@@ -226,13 +236,20 @@ const fileSpec = z
     ifSha256: sha256.optional(),
   })
   .strict();
+/**
+ * Required on an encrypted bundle, refused on a plain one: an uploader that
+ * does not know the format (an older CLI, the SPA) cannot put plaintext into
+ * an encrypted bundle by accident.
+ */
+const format = z.literal(ASSET_ENC_FORMAT).optional();
 /** One file: `version` for a versioned bundle, none for a live one. */
 export const assetUploadBody = fileSpec
-  .extend({ version: version.optional() })
+  .extend({ version: version.optional(), format })
   .strict();
 export const assetUploadBatchBody = z
   .object({
     version: version.optional(),
+    format,
     files: z.array(fileSpec).min(1).max(ASSET_BATCH_MAX),
   })
   .strict();
@@ -313,6 +330,8 @@ export async function requireMapFile(
     throw refuse(
       "a live bundle can change under a running game; use a versioned bundle",
     );
+  if (bundle.encrypted)
+    throw refuse("an encrypted bundle holds ciphertext, which is not a map");
   // A row is inserted before its object is copied (the claim): until its
   // upload completes, the row may name an object that never lands.
   if (file.id.startsWith("af_")) {
@@ -336,6 +355,8 @@ export interface AssetRoutesOptions {
   history: ResourceHistory;
   /** `undefined` = artifact storage not configured (upload routes answer 503). */
   artifacts?: ArtifactStore;
+  /** `undefined` = no usable `ASSET_KEK` on this stage (encrypted routes answer 503). */
+  keyring?: AssetKeyring;
   /** `https://dev-d.yyt.life` — public CDN in front of the artifact bucket. */
   cdnBaseUrl: string;
   clock: Clock;
@@ -378,6 +399,7 @@ export function createAssetRoutes({
   crumbs,
   history,
   artifacts,
+  keyring,
   cdnBaseUrl,
   clock,
   logger,
@@ -393,6 +415,11 @@ export function createAssetRoutes({
     if (!artifacts)
       throw new AppError("unavailable", "artifact storage is not configured");
     return artifacts;
+  }
+
+  function requireKeyring(): AssetKeyring {
+    if (!keyring) throw assetEncryptionNotConfigured();
+    return keyring;
   }
 
   /**
@@ -468,6 +495,7 @@ export function createAssetRoutes({
       name: b.name,
       description: b.description,
       mode: b.mode,
+      encrypted: b.encrypted,
       ...crumb(b),
       createdAt: b.createdAt,
       updatedAt: b.updatedAt,
@@ -639,8 +667,13 @@ export function createAssetRoutes({
     if (items.length === 0) return;
     const except = new Set(o.except ?? []);
     const { limit, over } = o.lim ?? (await limitsOf(bundle, now));
+    // The per-file ceiling is a plaintext ceiling: an encrypted file's
+    // 0.05 % of overhead does not count against it (the totals below do
+    // count what is stored).
+    const plainSize = (n: number) =>
+      bundle.encrypted ? assetPlaintextLength(n) : n;
     for (const it of items)
-      if (it.size > limit("asset.fileBytes"))
+      if (plainSize(it.size) > limit("asset.fileBytes"))
         throw over(
           status,
           "asset.fileBytes",
@@ -935,6 +968,10 @@ export function createAssetRoutes({
         await requireFreeName(a.team.id, ctx.body.name);
         const bundleId = `ab_${randomHex(8)}`;
         const mode = ctx.body.mode ?? "versioned";
+        const encrypted = ctx.body.encrypted ?? false;
+        // The key is minted here and stored wrapped; the console never sees
+        // it again except to hand it to the team (`POST …/key`).
+        const key = encrypted ? requireKeyring().mint(bundleId) : undefined;
         await assets.insertBundle({
           id: bundleId,
           name: ctx.body.name,
@@ -943,12 +980,14 @@ export function createAssetRoutes({
           teamId: a.team.id,
           projectId: a.project.id,
           mode,
+          ...(key ? { key } : {}),
           createdAt: now,
         });
         await audit(a.id.subject, "asset.bundle.create", bundleId, {
           name: ctx.body.name,
           projectId: a.project.id,
           mode,
+          ...(encrypted ? { encrypted } : {}),
         });
         const b = await assets.findBundle(bundleId);
         if (!b) throw new AppError("unavailable", "bundle vanished");
@@ -973,6 +1012,36 @@ export function createAssetRoutes({
           files: summaries.reduce((n, v) => n + v.files, 0),
           bytes: summaries.reduce((n, v) => n + v.bytes, 0),
         };
+      },
+    },
+    {
+      // A POST so that the console's Origin check applies: a GET would let
+      // any same-site page make a member's browser write audit rows in
+      // their name (decisions #4, rules/security.md).
+      method: "POST",
+      path: "/assets/bundles/{bundle}/key",
+      auth: true,
+      handler: async (ctx) => {
+        // `secret: true`: a seatless admin gets 403, as for every secret.
+        const { id, row: bundle } = await bundleWith(ctx, true);
+        if (!bundle.encrypted)
+          throw new AppError("bad_request", "this bundle is not encrypted");
+        const ring = requireKeyring();
+        const row = await assets.findBundleKey(bundle.id);
+        if (!row)
+          // The same body as every other failure to read it (no oracle).
+          throw new AppError("unavailable", "asset key cannot be read", {
+            cause: new Error("no key row for an encrypted bundle"),
+            details: { reason: "asset_key_unreadable" },
+          });
+        await writeSlot(id);
+        const key = ring.reveal(row);
+        // The key never enters a log line; the audit row says who read which.
+        await audit(id.subject, "asset.key.read", bundle.id, {});
+        return json(
+          { bundleId: bundle.id, key, format: ASSET_ENC_FORMAT },
+          { noStore: true },
+        );
       },
     },
     defineRoute({
@@ -1154,11 +1223,37 @@ export function createAssetRoutes({
         const specs = "files" in ctx.body ? ctx.body.files : [ctx.body];
         const v = versionFor(bundle, ctx.body.version);
         const live = bundle.mode === "live";
+        const enc = bundle.encrypted;
+        if (enc && ctx.body.format !== ASSET_ENC_FORMAT)
+          throw new AppError(
+            "bad_request",
+            `this bundle is encrypted: uploads carry format "${ASSET_ENC_FORMAT}" (yyt asset sync from cli/v0.12.0)`,
+          );
+        if (!enc && ctx.body.format !== undefined)
+          throw new AppError(
+            "bad_request",
+            "format applies to an encrypted bundle",
+          );
         const paths = specs.map((s) => s.path);
         if (new Set(paths).size !== paths.length)
           throw new AppError("bad_request", "a path appears twice");
         const types = specs.map((s) => {
-          const type = assetContentType(s.path);
+          // The extension rule still applies (nothing scriptable, even by
+          // name); the stored type of ciphertext is octet-stream regardless.
+          const extType = assetContentType(s.path);
+          const type = enc ? ASSET_CONTENT_TYPES[".bin"]! : extType;
+          if (enc && !s.sha256)
+            throw new AppError(
+              "bad_request",
+              "sha256 is required in an encrypted bundle",
+              { details: { path: s.path } },
+            );
+          if (enc && !isAssetCiphertextLength(s.size))
+            throw new AppError(
+              "bad_request",
+              `size is not a yyt-enc v1 ciphertext length (at least ${ASSET_ENC_MIN_BYTES} bytes, 32-byte tag per 64 KiB segment)`,
+              { details: { path: s.path, reason: "not_ciphertext" } },
+            );
           if (live && !s.sha256)
             throw new AppError(
               "bad_request",
@@ -1183,7 +1278,7 @@ export function createAssetRoutes({
               "bad_request",
               "ifSha256 applies to a mutable file",
             );
-          if (s.mutable && !MUTABLE_CONTENT_TYPES.has(type))
+          if (s.mutable && !MUTABLE_CONTENT_TYPES.has(extType))
             throw new AppError(
               "bad_request",
               "a mutable file is .json or .txt",

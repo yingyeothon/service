@@ -148,6 +148,30 @@ export function assetsContract(
     expect(await db.deleteBundle("a1")).toBe(false);
   });
 
+  it("stores an encrypted bundle's wrapped key with it and drops both together", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("p1"));
+    await db.insertBundle({
+      ...bundle("e1"),
+      key: { wrapped: "v1.a.b.c", kekId: "0123456789ab" },
+    });
+    expect((await db.findBundle("p1"))?.encrypted).toBe(false);
+    expect(await db.findBundleKey("p1")).toBeUndefined();
+    expect((await db.findBundle("e1"))?.encrypted).toBe(true);
+    expect(await db.findBundleKey("e1")).toEqual({
+      bundleId: "e1",
+      wrapped: "v1.a.b.c",
+      kekId: "0123456789ab",
+      createdAt: 1,
+    });
+    expect((await db.listBundles()).map((b) => [b.id, b.encrypted])).toEqual([
+      ["e1", true],
+      ["p1", false],
+    ]);
+    expect(await db.deleteBundle("e1")).toBe(true);
+    expect(await db.findBundleKey("e1")).toBeUndefined();
+  });
+
   it("bundles come back for a page of ids in one call", async () => {
     const db = await make();
     await db.insertBundle(bundle("ab_1"));

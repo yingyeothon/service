@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yingyeothon/service/cli/internal/api"
+	"github.com/yingyeothon/service/cli/internal/assetcrypt"
 )
 
 // The console's limits on one call (services/console/src/assets.ts): 100
@@ -119,13 +120,20 @@ func newAssetRm(a *App, bundleID bundleResolver) *cobra.Command {
 	}
 }
 
-// localFile is one file of the directory a sync mirrors.
+// localFile is one file of the directory a sync mirrors. In an encrypted
+// bundle Size and SHA256 are the ciphertext's; Local is the ciphertext on
+// disk once it exists, and "" while it is still to be made from Plain
+// (`materialize`).
 type localFile struct {
 	Path    string // slash-separated, relative to the directory
 	Local   string // on disk
 	Size    int64
 	SHA256  string
 	Mutable bool
+	// Encrypted bundles only.
+	Plain       string // the plaintext on disk
+	PlainSHA256 string
+	AD          string
 }
 
 func hashFile(p string) (string, int64, error) {
@@ -249,6 +257,10 @@ type syncer struct {
 	version  string
 	parallel int
 	rl       *rateLimiter
+	// encrypted: every file is sent as ciphertext, and the presign says so.
+	encrypted bool
+	key       assetcrypt.Key
+	tmpDir    string
 	// progress takes one line per multipart part (stderr; nil = quiet).
 	progress func(string)
 	mu       sync.Mutex
@@ -340,6 +352,9 @@ func (s *syncer) send(ctx context.Context, files []localFile, ifSHA map[string]s
 			if s.version != "" {
 				body["version"] = s.version
 			}
+			if s.encrypted {
+				body["format"] = assetEncFormat
+			}
 			err := s.callWith(ctx, presignRetry, http.MethodPost, "/assets/bundles/"+api.PathID(s.id)+"/files", body, &res)
 			if err == nil {
 				break
@@ -383,6 +398,8 @@ func (s *syncer) send(ctx context.Context, files []localFile, ifSHA map[string]s
 					var err error
 					if g.CommitOnly {
 						// Nothing to send: the commit below resumes it.
+					} else if f, err = s.materialize(f); err != nil {
+						// falls through to the failure below
 					} else if g.Multipart {
 						err = s.sendParts(ctx, g, f)
 					} else {
@@ -425,6 +442,25 @@ func (s *syncer) send(ctx context.Context, files []localFile, ifSHA map[string]s
 		done = append(done, committed...)
 	}
 	return done
+}
+
+// materialize makes the ciphertext of a file the sync decided to send from
+// its digest-cache entry: encrypted now, and refused when the bytes no
+// longer produce the digest the plan was made with (the file changed).
+func (s *syncer) materialize(f localFile) (localFile, error) {
+	if !s.encrypted || f.Local != "" {
+		return f, nil
+	}
+	p, size, sha, err := encryptLocal(s.key, f.AD, f.Plain, s.tmpDir)
+	if err != nil {
+		return f, err
+	}
+	if sha != f.SHA256 || size != f.Size {
+		os.Remove(p)
+		return f, fmt.Errorf("changed since the sync started; run it again")
+	}
+	f.Local = p
+	return f, nil
 }
 
 // sendParts uploads one multipart grant's parts with their own pool of
@@ -525,7 +561,14 @@ func newAssetSync(a *App, bundleID bundleResolver) *cobra.Command {
 			"cache directory, $YYT_CACHE or ~/.cache/yyt, for the day S3 holds it);\n" +
 			"`asset upload` and `asset push` take such files too but start over.\n\n" +
 			"--version syncs one version of a versioned bundle (no --mutable, no\n" +
-			"--prune): files already in the version must match.",
+			"--prune): files already in the version must match.\n\n" +
+			"An encrypted bundle is encrypted here: the key is fetched from the console\n" +
+			"(audited) and kept in memory; a file that must be sent is encrypted into a\n" +
+			"temporary directory under the cache directory ($YYT_CACHE or ~/.cache/yyt;\n" +
+			"yyt-enc v1, read twice so a file that changes meanwhile is refused), and\n" +
+			"sizes and SHA-256s are the ciphertext's. The ciphertext digest of each\n" +
+			"plaintext is remembered there too, so an unchanged file is compared without\n" +
+			"being encrypted again. Nothing on this machine ever writes the key to disk.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -557,18 +600,47 @@ func newAssetSync(a *App, bundleID bundleResolver) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if b.Encrypted {
+				if s.key, err = bundleKey(ctx, cc.cl, id); err != nil {
+					return err
+				}
+				if s.tmpDir, err = encTempDir(); err != nil {
+					return err
+				}
+				defer os.RemoveAll(s.tmpDir)
+				s.encrypted = true
+			}
 			local := make([]localFile, 0, len(rels))
 			for _, rel := range rels {
 				p := filepath.Join(args[1], filepath.FromSlash(rel))
-				sha, size, err := hashFile(p)
-				if err != nil {
-					return err
-				}
 				m, err := matchesAny(mutable, rel)
 				if err != nil {
 					return err
 				}
-				local = append(local, localFile{Path: rel, Local: p, Size: size, SHA256: sha, Mutable: m})
+				sha, size, err := hashFile(p)
+				if err != nil {
+					return fmt.Errorf("%s: %w", rel, err)
+				}
+				f := localFile{Path: rel, Local: p, Size: size, SHA256: sha, Mutable: m}
+				if b.Encrypted {
+					// The ciphertext is what the bundle holds and compares. Its
+					// digest is remembered per plaintext digest, so an unchanged
+					// file is compared without being encrypted again; a file
+					// the plan sends is encrypted at send time.
+					ad := assetAD(version, rel)
+					f.Plain, f.PlainSHA256, f.AD, f.Local = p, sha, ad, ""
+					if d := loadEncDigest(id, s.key, ad, sha); d != nil {
+						f.SHA256, f.Size = d.SHA256, d.Size
+					} else {
+						ct, ctSize, ctSha, err := encryptLocal(s.key, ad, p, s.tmpDir)
+						if err != nil {
+							return fmt.Errorf("%s: %w", rel, err)
+						}
+						f.Local, f.SHA256, f.Size = ct, ctSha, ctSize
+						saveEncDigest(id, s.key, ad, encDigest{PlainSHA256: sha, SHA256: ctSha, Size: ctSize})
+					}
+				}
+				local = append(local, f)
 			}
 			remote, err := listAssetFiles(ctx, s.call, id, version, false)
 			if err != nil {

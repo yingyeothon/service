@@ -22,6 +22,7 @@ const mockApi = {
   deleteAssetBundle: vi.fn(),
   deleteAssetVersion: vi.fn(),
   uploadAssetFile: vi.fn(),
+  assetBundleKey: vi.fn(),
   assetLiveFiles: vi.fn(),
   deleteAssetFiles: vi.fn(),
   limits: vi.fn(),
@@ -43,6 +44,7 @@ const BUNDLE: AssetBundleDetail = {
   name: "dungeon-maps",
   description: "maps",
   mode: "versioned",
+  encrypted: false,
   createdAt: 0,
   updatedAt: 0,
   teamId: "team_1",
@@ -318,6 +320,54 @@ describe("AssetBundlePage", () => {
     ).toBeInTheDocument();
     finish();
     expect(await screen.findByText("project tab")).toBeInTheDocument();
+  });
+
+  describe("an encrypted bundle", () => {
+    const ENC: AssetBundleDetail = {
+      ...BUNDLE,
+      name: "vault",
+      encrypted: true,
+    };
+
+    it("badges it, reveals the key on demand by POST, and points uploads at the CLI", async () => {
+      vi.mocked(mockApi.assetBundleKey).mockResolvedValue({
+        bundleId: "ab_1",
+        key: "yak1." + "A".repeat(43),
+        format: "yyt-enc-v1",
+      });
+      open(ENC);
+      await screen.findByRole("heading", { name: "vault" });
+      expect(screen.getByText("encrypted")).toBeInTheDocument();
+      // No drop zone: the CLI encrypts and uploads.
+      expect(screen.queryByText("Publish a version")).toBeNull();
+      expect(
+        await screen.findByText(
+          "yyt asset sync vault <dir> --version <version>",
+        ),
+      ).toBeInTheDocument();
+      // Nothing is fetched until asked; then the key shows, once per click.
+      expect(mockApi.assetBundleKey).not.toHaveBeenCalled();
+      expect(screen.queryByText(/^yak1\./)).toBeNull();
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Show key" }),
+      );
+      expect(await screen.findByText("yak1." + "A".repeat(43))).toBeTruthy();
+      expect(mockApi.assetBundleKey).toHaveBeenCalledWith("ab_1");
+      expect(
+        screen.getByRole("button", { name: "Show key again" }),
+      ).toBeInTheDocument();
+      // The versions and the map hint stay: it is still a versioned bundle.
+      expect(screen.getByText("v1")).toBeInTheDocument();
+    });
+
+    it("hides the key from a seatless admin", async () => {
+      vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+      open(ENC);
+      await screen.findByRole("heading", { name: "vault" });
+      await screen.findByText(/Read-only/);
+      expect(screen.queryByRole("button", { name: "Show key" })).toBeNull();
+      expect(screen.queryByText(/yyt asset sync/)).toBeNull();
+    });
   });
 
   it("hides publishing from a seatless admin", async () => {

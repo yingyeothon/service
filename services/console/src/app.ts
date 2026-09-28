@@ -62,6 +62,7 @@ import {
 } from "./channels.js";
 import type { ArtifactStore } from "./artifact-store.js";
 import { createAssetRoutes, requireMapFile } from "./assets.js";
+import { createAssetKeyring } from "./asset-crypto.js";
 import { createSiteRoutes, type SiteDeployInvoker } from "./sites.js";
 import { createSiteMemberBudget, createSiteNameSlot } from "./site-domains.js";
 import type { SiteStore } from "./site-store.js";
@@ -137,6 +138,12 @@ export interface ConsoleAppOptions {
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
   artifacts?: ArtifactStore;
+  /**
+   * The stage KEK of encrypted asset bundles (SSM `console/asset-kek`, the
+   * `api` function only). Empty or malformed = the encrypted routes answer
+   * 503 and everything else works.
+   */
+  assetKek?: string;
   /** Public CDN in front of the artifact bucket, e.g. `https://dev-d.yyt.life`. */
   cdnBaseUrl?: string;
   /** Omit when no site bucket is configured: site deploy routes answer 503. */
@@ -219,6 +226,7 @@ export function createConsoleApp({
   notify,
   posters,
   artifacts,
+  assetKek,
   cdnBaseUrl,
   siteStore,
   siteInvoke,
@@ -1109,6 +1117,7 @@ export function createConsoleApp({
     crumbs,
     history,
     artifacts,
+    keyring: createAssetKeyring(assetKek),
     cdnBaseUrl: cdn,
     clock,
     logger,

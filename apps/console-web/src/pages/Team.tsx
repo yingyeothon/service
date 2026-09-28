@@ -140,7 +140,11 @@ export function TeamPage() {
       async () => (await api.removeTeamMember(team.id, me.id)) ?? null,
     );
     if (res === undefined) return;
-    const state: LeftState = { left: team.name, rotate: res?.rotate ?? [] };
+    const state: LeftState = {
+      left: team.name,
+      rotate: res?.rotate ?? [],
+      encryptedBundles: res?.encryptedBundles ?? [],
+    };
     void invalidateTeams();
     void nav("/teams", { state });
   };
@@ -494,6 +498,7 @@ function MembersTab({
   const [kicked, setKicked] = useState<{
     who: string;
     rotate: LeftState["rotate"];
+    encryptedBundles: LeftState["encryptedBundles"];
   } | null>(null);
 
   const refresh = async () => {
@@ -518,7 +523,12 @@ function MembersTab({
       async () => (await api.removeTeamMember(team.id, m.id)) ?? null,
     );
     if (r === undefined) return;
-    if (r) setKicked({ who: m.login ?? m.id, rotate: r.rotate });
+    if (r)
+      setKicked({
+        who: m.login ?? m.id,
+        rotate: r.rotate,
+        encryptedBundles: r.encryptedBundles ?? [],
+      });
     notify.done(
       m.role === "pending"
         ? `${m.login ?? m.id} declined`
@@ -632,7 +642,13 @@ function MembersTab({
       {act.error && !add.opened && !appoint.opened && (
         <Notice kind="error">{act.error}</Notice>
       )}
-      {kicked && <RotationNotice rotate={kicked.rotate} who={kicked.who} />}
+      {kicked && (
+        <RotationNotice
+          rotate={kicked.rotate}
+          encryptedBundles={kicked.encryptedBundles}
+          who={kicked.who}
+        />
+      )}
       <DataTable
         columns={[
           { key: "login", label: "Login", sortKey: "login" },

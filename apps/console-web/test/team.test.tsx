@@ -134,6 +134,7 @@ describe("TeamPage", () => {
       removed: "m_2",
       action: "kick",
       rotate: [{ id: "auth_9", kind: "auth", name: "login" }],
+      encryptedBundles: [{ id: "ab_7", name: "content" }],
     });
     mount("/teams/team_1/members");
     await rowVerb("bob", "Kick");
@@ -143,6 +144,11 @@ describe("TeamPage", () => {
     expect(
       screen.getByRole("link", { name: "login" }).getAttribute("href"),
     ).toBe("/channels/auth_9");
+    // The encrypted bundles whose key the member could have read.
+    expect(screen.getByText(/could have read the key/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "content" }).getAttribute("href"),
+    ).toBe("/assets/ab_7");
     expect(mockApi.removeTeamMember).toHaveBeenCalledWith("team_1", "m_2");
   });
 
@@ -198,6 +204,7 @@ describe("TeamPage", () => {
       removed: "m_1",
       action: "leave",
       rotate: [{ id: "q_1", kind: "q", name: "dungeon" }],
+      encryptedBundles: [],
     });
     mount("/teams/team_1/members");
     // Leaving is the page's verb, not a row's: it sits in the header menu.

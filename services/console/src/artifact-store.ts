@@ -5,6 +5,7 @@ import {
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   ListPartsCommand,
@@ -161,6 +162,16 @@ export interface ArtifactStore {
   /** `HeadObject` that tells a 404 from everything else (`ObjectState`). */
   inspect(key: string): Promise<ObjectState>;
   /**
+   * Bytes `[start, end]` (inclusive, an HTTP `Range`) of an object, or
+   * `undefined` when it does not exist. An encrypted bundle's commit reads
+   * the first byte of a staged or completed object this way.
+   */
+  readRange(
+    key: string,
+    start: number,
+    end: number,
+  ): Promise<Buffer | undefined>;
+  /**
    * Without `metadata` the source object's headers are carried over. A
    * refused condition throws `ConditionalWriteError`; the destination's ETag
    * comes back (unquoted) when S3 names it.
@@ -314,6 +325,24 @@ export function createS3ArtifactStore({
           state: "unknown",
           reason: status ? `${status} ${name}` : name,
         };
+      }
+    },
+    readRange: async (key, start, end) => {
+      try {
+        const r = await client.send(
+          new GetObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Range: `bytes=${start}-${end}`,
+          }),
+        );
+        const body = await r.Body?.transformToByteArray();
+        return Buffer.from(body ?? []);
+      } catch (e) {
+        if (isMissingObject(e)) return undefined;
+        throw new AppError("unavailable", "artifact storage error", {
+          cause: e,
+        });
       }
     },
     copy: async (srcKey, dstKey, metadata, o = {}) => {
@@ -501,6 +530,8 @@ export interface MemoryObject {
   contentLength: number;
   etag: string | null;
   body?: string;
+  /** The object's bytes when a test cares about them (`readRange`). */
+  bytes?: Buffer;
   metadata?: ObjectMetadata;
   sha256?: string | null;
   lastModifiedSec?: number | null;
@@ -520,7 +551,7 @@ export interface MemoryMultipart {
   key: string;
   contentType: string;
   cacheControl: string;
-  parts: Map<number, UploadedPart>;
+  parts: Map<number, UploadedPart & { bytes?: Buffer }>;
 }
 
 /**
@@ -546,7 +577,7 @@ export function createMemoryArtifactStore(): ArtifactStore & {
   putPart(
     uploadId: string,
     partNumber: number,
-    o: { size: number; sha256: string | null; etag?: string },
+    o: { size: number; sha256: string | null; etag?: string; bytes?: Buffer },
   ): void;
   putObject(
     key: string,
@@ -555,6 +586,7 @@ export function createMemoryArtifactStore(): ArtifactStore & {
       etag?: string | null;
       sha256?: string | null;
       lastModifiedSec?: number | null;
+      bytes?: Buffer;
     },
   ): void;
   failNext(
@@ -605,6 +637,7 @@ export function createMemoryArtifactStore(): ArtifactStore & {
         size: o.size,
         etag: o.etag ?? `p-${partNumber}-${(o.sha256 ?? "").slice(0, 8)}`,
         sha256: o.sha256,
+        ...(o.bytes ? { bytes: o.bytes } : {}),
       });
     },
     putObject: (key, o) =>
@@ -613,6 +646,7 @@ export function createMemoryArtifactStore(): ArtifactStore & {
         etag: o.etag ?? null,
         sha256: o.sha256 ?? null,
         lastModifiedSec: o.lastModifiedSec ?? null,
+        ...(o.bytes ? { bytes: o.bytes } : {}),
       }),
     failNext: (method, when = "before", error = storageError(), key) => {
       failures.push({ method, when, error, ...(key ? { key } : {}) });
@@ -623,6 +657,18 @@ export function createMemoryArtifactStore(): ArtifactStore & {
       if (quarantined.has(key)) return undefined;
       const o = objects.get(key);
       return o && { contentLength: o.contentLength, etag: o.etag };
+    },
+    readRange: async (key, start, end) => {
+      if (quarantined.has(key)) return undefined;
+      const o = objects.get(key);
+      if (!o) return undefined;
+      const bytes = o.bytes ?? (o.body ? Buffer.from(o.body) : undefined);
+      // An object put without bytes is opaque: read as zeros of its length,
+      // which is never a valid ciphertext header.
+      return (bytes ?? Buffer.alloc(o.contentLength)).subarray(
+        start,
+        Math.min(end + 1, o.contentLength),
+      );
     },
     inspect: async (key) => {
       const f = takeFailure("inspect", key);
@@ -755,12 +801,20 @@ export function createMemoryArtifactStore(): ArtifactStore & {
         });
       if (objects.has(key)) throw new ConditionalWriteError("precondition");
       const etag = `mp-${++seq}-${parts.length}`;
+      const chunks: Buffer[] = [];
+      for (const p of parts) {
+        const b = m.parts.get(p.partNumber)?.bytes;
+        if (b) chunks.push(b);
+      }
       objects.set(key, {
         contentLength: total,
         etag,
         metadata: { contentType: m.contentType, cacheControl: m.cacheControl },
         // A composite checksum is not the bytes' SHA-256: `inspect` sees none.
         sha256: null,
+        ...(chunks.length === parts.length
+          ? { bytes: Buffer.concat(chunks) }
+          : {}),
       });
       multiparts.delete(uploadId);
       if (f?.when === "after-mutation") throw f.error;

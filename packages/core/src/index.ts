@@ -13,3 +13,14 @@ export {
   type ChannelLifecycle,
 } from "./channel.js";
 export { createJsonLogger, requireEnv, type LogSink } from "./runtime.js";
+export {
+  createKeyWrapper,
+  KEK_HEX_RE,
+  KEY_WRAP_PREFIX,
+  KeyWrapError,
+  openAesGcm,
+  sealAesGcm,
+  WRAPPED_KEY_BYTES,
+  type KeyWrapFailure,
+  type KeyWrapper,
+} from "./keywrap.js";

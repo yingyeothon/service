@@ -33,6 +33,10 @@ model asset_bundles {
   project_id            String                  @db.VarChar(64)
   /// Fixed at creation (docs/decisions.md *Live and encrypted asset bundles* #1).
   mode                  asset_bundles_mode      @default(versioned)
+  /// Fixed at creation (#4): every object is `yyt-enc v1` ciphertext and the
+  /// bundle's key sits in `asset_bundle_keys`.
+  encrypted             Boolean                 @default(false)
+  asset_bundle_keys     asset_bundle_keys?
   members               members?                @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_owner")
   teams                 teams                   @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_team_fk")
   projects              projects                @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "asset_bundles_project_fk")
@@ -46,6 +50,21 @@ model asset_bundles {
   @@unique([team_id, name], map: "asset_bundles_team_name")
   @@index([owner_id], map: "asset_bundles_owner")
   @@index([project_id], map: "asset_bundles_project")
+}
+
+/// One row per encrypted bundle: the bundle key wrapped by the stage KEK
+/// (SSM `console/asset-kek`, the `api` function only). Only the console
+/// account reads this table; the other services' grants are table-scoped and
+/// never name it (docs/decisions.md *Live and encrypted asset bundles* #4).
+model asset_bundle_keys {
+  bundle_id     String        @id @db.VarChar(64)
+  /// `v1.{iv}.{ct}.{tag}`, base64url, AES-256-GCM(KEK) with the bundle id as
+  /// associated data (`@yyt/core` keywrap).
+  wrapped       String        @db.VarChar(255)
+  /// 12 hex of sha256(KEK): names the KEK that wrapped it in a log.
+  kek_id        String        @db.VarChar(12)
+  created_at    BigInt
+  asset_bundles asset_bundles @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "asset_bundle_keys_bundle")
 }
 
 model asset_files {

@@ -21,12 +21,6 @@ import (
 // byteRange is `a-b` or `a-` (inclusive, as in an HTTP Range header).
 var byteRange = regexp.MustCompile(`^(\d+)-(\d*)$`)
 
-// assetBody is the seam where a bundle's content is turned into what the
-// caller asked for. Today every bundle is plaintext, so the body passes
-// through; an encrypted bundle (todo/46 P4) decrypts here, segment by
-// segment, and maps a --range onto whole segments before the request.
-func assetBody(_ assetBundle, body io.Reader) io.Reader { return body }
-
 func newAssetDownload(a *App, bundleID bundleResolver) *cobra.Command {
 	var version, out, rng string
 	c := &cobra.Command{
@@ -35,7 +29,10 @@ func newAssetDownload(a *App, bundleID bundleResolver) *cobra.Command {
 		Long: "Download one file of a bundle from the public CDN: the file of --version\n" +
 			"in a versioned bundle, or the file at <path> in a live one. -o names the\n" +
 			"output (default: the file's base name here; - is stdout), and --range\n" +
-			"a-b fetches bytes a..b only (inclusive, `a-` to the end).",
+			"a-b fetches bytes a..b only (inclusive, `a-` to the end).\n\n" +
+			"A file of an encrypted bundle is decrypted here with the bundle key (fetched\n" +
+			"from the console, audited): every 64 KiB segment is verified before a byte\n" +
+			"is written, and --range fetches only the segments it needs.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -75,8 +72,24 @@ func newAssetDownload(a *App, bundleID bundleResolver) *cobra.Command {
 			if dst == "" {
 				dst = path.Base(f.Path)
 			}
+			if b.Encrypted {
+				key, err := bundleKey(ctx, cc.cl, id)
+				if err != nil {
+					return err
+				}
+				from, to := int64(0), int64(-1)
+				if m := byteRange.FindStringSubmatch(rng); m != nil {
+					from, _ = strconv.ParseInt(m[1], 10, 64)
+					if m[2] != "" {
+						to, _ = strconv.ParseInt(m[2], 10, 64)
+					}
+				}
+				return defaultRetry.do(ctx, func() error {
+					return fetchEncrypted(ctx, cc.cl.HTTP, key, assetAD(f.Version, f.Path), f.URL, from, to, dst, a)
+				})
+			}
 			return defaultRetry.do(ctx, func() error {
-				return fetchTo(ctx, cc.cl.HTTP, f.URL, rng, dst, func(body io.Reader) io.Reader { return assetBody(b, body) }, a)
+				return fetchTo(ctx, cc.cl.HTTP, f.URL, rng, dst, a)
 			})
 		},
 	}
@@ -90,7 +103,7 @@ func newAssetDownload(a *App, bundleID bundleResolver) *cobra.Command {
 // fetchTo GETs `src` (a public CDN URL: no credentials go with it) and
 // writes the body to `dst` through a temp file and a rename, so an
 // interrupted download never leaves a half file under the final name.
-func fetchTo(ctx context.Context, hc *http.Client, src, rng, dst string, decode func(io.Reader) io.Reader, a *App) error {
+func fetchTo(ctx context.Context, hc *http.Client, src, rng, dst string, a *App) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 	if err != nil {
 		return err
@@ -119,7 +132,7 @@ func fetchTo(ctx context.Context, hc *http.Client, src, rng, dst string, decode 
 		}
 		return &httpStatusError{Op: "download", Status: res.StatusCode, RetryAfter: after}
 	}
-	body := decode(res.Body)
+	body := res.Body
 	if dst == "-" {
 		// Bytes already on stdout cannot be taken back, so a failure here is
 		// final (%v drops the type the retry policy would act on).

@@ -45,6 +45,7 @@ import {
 } from "@yyt/redis";
 import { createConsoleApp } from "./app.js";
 import { createS3ArtifactStore, type ArtifactStore } from "./artifact-store.js";
+import { createAssetKeyring } from "./asset-crypto.js";
 import { createDebugRoutes } from "./debug.js";
 import { runS3Probe, s3SdkVersions } from "./s3-probe.js";
 import { revokeChannelRedis } from "./channel-redis.js";
@@ -231,6 +232,22 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
   // The runtime's SDK, not the one in the lockfile: `@aws-sdk/*` is excluded
   // from the bundle (docs/decisions.md *Large asset uploads* #3).
   logger.info("runtime sdk", s3SdkVersions());
+  // Which KEK this container wraps asset keys with, or that it has none: the
+  // digest to compare with `bootstrap-ssm.sh`'s log when every key read
+  // fails at once (rules/security.md). The value itself is never logged.
+  const assetKeyring = createAssetKeyring(process.env.ASSET_KEK);
+  if (assetKeyring)
+    logger.info("asset keyring", { kekId: assetKeyring.kekId, stage });
+  else if (process.env.ASSET_KEK)
+    // Only a hand edit of the parameter gets here (the init mode writes hex):
+    // `error` so the log metric sees it.
+    logger.error("ASSET_KEK is malformed: encrypted asset bundles answer 503", {
+      stage,
+    });
+  else
+    logger.warn("ASSET_KEK is empty: encrypted asset bundles are disabled", {
+      stage,
+    });
   const artifactBucket = process.env.ARTIFACT_BUCKET ?? "";
   if (!artifactBucket)
     logger.warn("ARTIFACT_BUCKET is empty: catalog upload is disabled", {
@@ -289,6 +306,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       ? createS3PosterStore({ bucket: posterBucket })
       : undefined,
     artifacts: artifactStoreFromEnv(),
+    assetKek: process.env.ASSET_KEK || undefined,
     cdnBaseUrl: process.env.ARTIFACT_CDN_URL || undefined,
     siteStore,
     siteInvoke: siteInvokerFromEnv(),

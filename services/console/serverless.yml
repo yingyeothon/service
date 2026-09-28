@@ -291,6 +291,14 @@ functions:
     # One MySQL + one Redis connection per container; console's share of the
     # host budget is 10 (api) + 1 (expire) — rules/data.md.
     reservedConcurrency: 10
+    # The KEK of encrypted asset bundles reaches this function only, never
+    # the provider (which `expire`, `siteDeploy`, `gatewayProbe` and
+    # `cdnGuard` inherit). Created once by `ASSET_KEK_INIT=1
+    # scripts/bootstrap-ssm.sh <stage>`; the `""` default keeps a stage
+    # without it deployable, and the routes that need it answer 503
+    # (docs/decisions.md *Live and encrypted asset bundles* #4).
+    environment:
+      ASSET_KEK: ${ssm:${self:custom.ssm}/asset-kek, ""}
     # Memory buys CPU for the invoke phase; the Prisma query compiler is
     # CPU-bound (measured sizes and costs: rules/serverless-aws.md).
     memorySize: 1024

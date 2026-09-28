@@ -55,8 +55,20 @@ export interface AssetBundleRow {
   teamId: string | null;
   projectId: string | null;
   mode: AssetBundleMode;
+  /** Fixed at creation: every object is `yyt-enc v1` ciphertext (decisions #4). */
+  encrypted: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+/** An encrypted bundle's key as `asset_bundle_keys` stores it. */
+export interface AssetBundleKeyRow {
+  bundleId: string;
+  /** `v1.` envelope (`@yyt/core` keywrap), the bundle id as associated data. */
+  wrapped: string;
+  /** 12 hex of sha256(KEK): which KEK wrapped it. */
+  kekId: string;
+  createdAt: number;
 }
 
 export interface AssetBundleInput {
@@ -69,6 +81,11 @@ export interface AssetBundleInput {
   projectId: string;
   /** Default `versioned`. */
   mode?: AssetBundleMode;
+  /**
+   * The wrapped key of an encrypted bundle, inserted in the same
+   * transaction; its presence is what makes the bundle `encrypted`.
+   */
+  key?: { wrapped: string; kekId: string };
   createdAt: number;
 }
 
@@ -221,8 +238,11 @@ export interface AssetUploadPatch {
  * and re-pointing the channel config at it.
  */
 export interface AssetsDb {
+  /** The bundle row and, for an encrypted bundle, its key row, atomically. */
   insertBundle(b: AssetBundleInput): Promise<void>;
   findBundle(id: string): Promise<AssetBundleRow | undefined>;
+  /** An encrypted bundle's wrapped key; `undefined` for a plain bundle. */
+  findBundleKey(bundleId: string): Promise<AssetBundleKeyRow | undefined>;
   /** Case-insensitive name lookup within one team (`asset_bundles_team_name`). */
   findBundleByName(
     teamId: string,
@@ -423,6 +443,7 @@ type BundleModel = {
   owner_id: string | null;
   team_id: string | null;
   project_id: string | null;
+  encrypted: boolean;
   mode: string;
   created_at: bigint | number;
   updated_at: bigint | number;
@@ -474,6 +495,7 @@ const toBundle = (r: BundleModel): AssetBundleRow => ({
   teamId: r.team_id,
   projectId: r.project_id,
   mode: r.mode as AssetBundleMode,
+  encrypted: r.encrypted,
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
 });
@@ -532,6 +554,8 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
   return {
     insertBundle: (b) =>
       run(async () => {
+        // A nested create is one statement pair inside one transaction: an
+        // encrypted bundle never exists without its key row.
         await prisma.asset_bundles.create({
           data: {
             id: b.id,
@@ -541,8 +565,20 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
             team_id: b.teamId,
             project_id: b.projectId,
             mode: b.mode ?? "versioned",
+            encrypted: b.key !== undefined,
             created_at: b.createdAt,
             updated_at: b.createdAt,
+            ...(b.key
+              ? {
+                  asset_bundle_keys: {
+                    create: {
+                      wrapped: b.key.wrapped,
+                      kek_id: b.key.kekId,
+                      created_at: b.createdAt,
+                    },
+                  },
+                }
+              : {}),
           },
         });
       }),
@@ -550,6 +586,20 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
       run(async () => {
         const r = await prisma.asset_bundles.findUnique({ where: { id } });
         return r ? toBundle(r) : undefined;
+      }),
+    findBundleKey: (bundleId) =>
+      run(async () => {
+        const r = await prisma.asset_bundle_keys.findUnique({
+          where: { bundle_id: bundleId },
+        });
+        return r
+          ? {
+              bundleId: r.bundle_id,
+              wrapped: r.wrapped,
+              kekId: r.kek_id,
+              createdAt: num(r.created_at),
+            }
+          : undefined;
       }),
     findBundleByName: (teamId, name) =>
       run(async () => {
@@ -1046,11 +1096,13 @@ export function createMemoryAssetsDb(
   } = {},
 ): AssetsDb & {
   bundles: Map<string, AssetBundleRow>;
+  keys: Map<string, AssetBundleKeyRow>;
   files: Map<string, AssetFileRow>;
   uploads: Map<string, AssetUploadRow>;
   tombstones: Map<string, AssetTombstone & { bundleId: string }>;
 } {
   const bundles = new Map<string, AssetBundleRow>();
+  const keys = new Map<string, AssetBundleKeyRow>();
   const files = new Map<string, AssetFileRow>();
   const uploads = new Map<string, AssetUploadRow>();
   const tombstones = new Map<string, AssetTombstone & { bundleId: string }>();
@@ -1105,11 +1157,13 @@ export function createMemoryAssetsDb(
   };
   const self: AssetsDb & {
     bundles: Map<string, AssetBundleRow>;
+    keys: Map<string, AssetBundleKeyRow>;
     files: Map<string, AssetFileRow>;
     uploads: Map<string, AssetUploadRow>;
     tombstones: Map<string, AssetTombstone & { bundleId: string }>;
   } = {
     bundles,
+    keys,
     files,
     uploads,
     tombstones,
@@ -1124,10 +1178,19 @@ export function createMemoryAssetsDb(
         teamId: b.teamId,
         projectId: b.projectId,
         mode: b.mode ?? "versioned",
+        encrypted: b.key !== undefined,
         createdAt: b.createdAt,
         updatedAt: b.createdAt,
       });
+      if (b.key)
+        keys.set(b.id, {
+          bundleId: b.id,
+          wrapped: b.key.wrapped,
+          kekId: b.key.kekId,
+          createdAt: b.createdAt,
+        });
     },
+    findBundleKey: async (bundleId) => keys.get(bundleId),
     findBundle: async (id) => {
       const b = bundles.get(id);
       return b && { ...b };
@@ -1181,6 +1244,7 @@ export function createMemoryAssetsDb(
     deleteBundle: async (id) => {
       if (!bundles.delete(id)) return false;
       // FK cascade.
+      keys.delete(id);
       for (const [k, f] of [...files]) if (f.bundleId === id) files.delete(k);
       for (const [k, u] of [...uploads])
         if (u.bundleId === id) uploads.delete(k);

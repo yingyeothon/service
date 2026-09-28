@@ -462,6 +462,7 @@ function ResourceListTab<T extends { id: string }>({
   namePlaceholder,
   second,
   choice,
+  toggle,
   columns,
   row,
   emptyText,
@@ -481,6 +482,7 @@ function ResourceListTab<T extends { id: string }>({
     name: string,
     second: string,
     choice: string,
+    toggle: boolean,
   ) => Promise<object>;
   /** "app" → `New app`, `Create app`, "App created". */
   noun: string;
@@ -503,6 +505,8 @@ function ResourceListTab<T extends { id: string }>({
     label: string;
     options: { value: string; label: string; description: string }[];
   };
+  /** A fixed-at-creation yes/no below the choice (a bundle's encryption). */
+  toggle?: { label: string; description: string };
   columns: Column[];
   /** The cells after the name cell. */
   row: (item: T) => ReactNode;
@@ -521,6 +525,7 @@ function ResourceListTab<T extends { id: string }>({
     name: "",
     extra: "",
     choice: choice?.options[0]?.value ?? "",
+    toggle: false,
   }));
   const choiceLabelId = useId();
   const submit = async (e: FormEvent) => {
@@ -531,6 +536,7 @@ function ResourceListTab<T extends { id: string }>({
         drawer.form.name.trim(),
         drawer.form.extra.trim(),
         drawer.form.choice,
+        drawer.form.toggle,
       ),
     );
     if (!r) return;
@@ -619,6 +625,14 @@ function ResourceListTab<T extends { id: string }>({
             </Text>
           </div>
         )}
+        {toggle && (
+          <Checkbox
+            label={toggle.label}
+            description={toggle.description}
+            checked={drawer.form.toggle}
+            onChange={(e) => drawer.patch({ toggle: e.currentTarget.checked })}
+          />
+        )}
       </ResourceDrawer>
     </Section>
   );
@@ -691,11 +705,12 @@ function AssetsTab({
         onCreated={limits.reload}
         queryKey="bundles"
         load={api.projectAssetBundles}
-        create={(prj, name, description, mode) =>
+        create={(prj, name, description, mode, encrypted) =>
           api.createAssetBundle(prj, {
             ...withDescription(name, description),
             // The server's default; sent only when it differs.
             ...(mode === "live" ? { mode: "live" as const } : {}),
+            ...(encrypted ? { encrypted: true } : {}),
           })
         }
         noun="bundle"
@@ -725,6 +740,11 @@ function AssetsTab({
             },
           ],
         }}
+        toggle={{
+          label: "Encrypted (fixed once created)",
+          description:
+            "Every file is encrypted by yyt asset sync on your machine and the CDN serves ciphertext only. The console mints the key and any team member can read it; the app embeds it. This is not kv's encrypted: the console can read this key.",
+        }}
         columns={[
           { key: "name", label: "Bundle", sortKey: "name" },
           { key: "desc", label: "Description", sortKey: "description" },
@@ -741,10 +761,20 @@ function AssetsTab({
             <NameCell
               to={`/assets/${encodeURIComponent(b.id)}`}
               after={
-                b.mode === "live" && (
+                (b.mode === "live" || b.encrypted) && (
                   <>
-                    {" "}
-                    <Badge tone="accent">live</Badge>
+                    {b.mode === "live" && (
+                      <>
+                        {" "}
+                        <Badge tone="accent">live</Badge>
+                      </>
+                    )}
+                    {b.encrypted && (
+                      <>
+                        {" "}
+                        <Badge tone="warn">encrypted</Badge>
+                      </>
+                    )}
                   </>
                 )
               }

@@ -32,6 +32,40 @@ import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
 import type { AssetFile } from "../types";
 
+/**
+ * The key of an encrypted bundle, fetched by a POST on demand and never
+ * cached: `useAction`, not a query, so nothing keeps it after the section
+ * unmounts (docs/decisions.md *Live and encrypted asset bundles* #4).
+ */
+function KeySection({ bundle }: { bundle: string }) {
+  const act = useAction();
+  const [key, setKey] = useState<string | null>(null);
+  return (
+    <Section
+      title="Key"
+      description="Every file is yyt-enc v1 ciphertext; this key decrypts it. Embed it in the app and never commit it. Every read is audited, and a key is never rotated in place: a leak means a new bundle and an app release. Unlike an encrypted kv collection, the console can read this key — the promise is only that the CDN never serves plaintext."
+      actions={
+        <Button
+          variant="default"
+          disabled={act.busy}
+          onClick={() => {
+            void act
+              .run(() => api.assetBundleKey(bundle))
+              .then((r) => {
+                if (r) setKey(r.key);
+              });
+          }}
+        >
+          {key ? "Show key again" : "Show key"}
+        </Button>
+      }
+    >
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      {key && <CopyField label="Bundle key" value={key} />}
+    </Section>
+  );
+}
+
 /** What the server accepts (`services/console/src/assets.ts`), for the hint. */
 const ALLOWED_EXTENSIONS =
   ".json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv .db .sqlite .bin .zip";
@@ -409,6 +443,7 @@ export function AssetBundlePage() {
     );
   const canWrite = standing.canWrite;
   const live = b.mode === "live";
+  const encrypted = b.encrypted;
   // A large delete repeats (202s); it can take minutes, so say how far it is,
   // in the drawer when the delete came from its danger zone.
   const deleting = act.busy && progress !== null && (
@@ -434,7 +469,17 @@ export function AssetBundlePage() {
       {crumbs}
       <PageHeader
         title={b.name}
-        badges={<Badge tone={live ? "accent" : "neutral"}>{b.mode}</Badge>}
+        badges={
+          <>
+            <Badge tone={live ? "accent" : "neutral"}>{b.mode}</Badge>
+            {encrypted && (
+              <>
+                {" "}
+                <Badge tone="warn">encrypted</Badge>
+              </>
+            )}
+          </>
+        }
         description={b.description ?? undefined}
         meta={
           <>
@@ -451,14 +496,30 @@ export function AssetBundlePage() {
       {!canWrite && !standing.loading && <ReadOnlyBanner />}
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}
       {!edit.opened && deleting}
+      {encrypted && canWrite && <KeySection bundle={id} />}
       {live && canWrite && (
         <Section
           title="Sync"
-          description="The console does not upload to a live bundle; yyt asset sync does. It uploads what changed (by SHA-256), then the mutable files, marks files missing from the directory as stale, and with --prune deletes the ones already stale since the previous sync."
+          description={
+            encrypted
+              ? "The console does not upload to an encrypted bundle; yyt asset sync does. It fetches the key, encrypts every file on your machine (sizes and SHA-256s are the ciphertext's), uploads what changed, then the mutable files, and marks or prunes what vanished locally."
+              : "The console does not upload to a live bundle; yyt asset sync does. It uploads what changed (by SHA-256), then the mutable files, marks files missing from the directory as stale, and with --prune deletes the ones already stale since the previous sync."
+          }
         >
           <CopyText
             label="Sync command"
             value={`yyt asset sync ${b.name} <dir> --mutable manifest.json --prune`}
+          />
+        </Section>
+      )}
+      {!live && encrypted && canWrite && (
+        <Section
+          title="Publish"
+          description="The console does not upload to an encrypted bundle; yyt asset sync does, one version at a time: it fetches the key, encrypts every file on your machine and uploads the ciphertext."
+        >
+          <CopyText
+            label="Sync command"
+            value={`yyt asset sync ${b.name} <dir> --version <version>`}
           />
         </Section>
       )}
@@ -476,7 +537,7 @@ export function AssetBundlePage() {
           />
         </Section>
       )}
-      {!live && canWrite && (
+      {!live && !encrypted && canWrite && (
         <PublishSection
           bundle={id}
           fileMax={fileMax}

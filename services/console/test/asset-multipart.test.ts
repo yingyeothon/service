@@ -818,6 +818,7 @@ describe("aborts and the sweep (docs/decisions.md *Large asset uploads* #4)", ()
       teamId: "team_x",
       projectId: "prj_x",
       mode: "live",
+      encrypted: false,
       createdAt: NOW_SEC,
       updatedAt: NOW_SEC,
     });

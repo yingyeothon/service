@@ -17,6 +17,7 @@ import type {
   AdminLimitRequestPage,
   AssetBundle,
   AssetBundleDetail,
+  AssetBundleKey,
   AssetBundleMode,
   AssetDeleteProgress,
   AssetFileDeleteResult,
@@ -753,10 +754,18 @@ export function createApiClient({
       ).then((r) => r.bundles),
     createAssetBundle: (
       prj: string,
-      body: { name: string; description?: string; mode?: AssetBundleMode },
+      body: {
+        name: string;
+        description?: string;
+        mode?: AssetBundleMode;
+        encrypted?: boolean;
+      },
     ) => post<AssetBundle>(`${projectPath(prj)}/assets/bundles`, body),
     assetBundle: (id: string) =>
       get<AssetBundleDetail>(`/assets/bundles/${enc(id)}`),
+    /** A POST: every read is audited and the response is `no-store`. */
+    assetBundleKey: (id: string) =>
+      post<AssetBundleKey>(`/assets/bundles/${enc(id)}/key`),
     updateAssetBundle: (
       id: string,
       body: { name?: string; description?: string | null },

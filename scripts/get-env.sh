@@ -5,7 +5,8 @@
 # For `console` it also restores the stage-wide keys that live in that file
 # (github-client-*, admin-github-logins, and the optional ACL issuer pair), so a
 # FORCE=1 re-pull cannot leave bootstrap-ssm.sh with an empty OAuth app; for
-# `state`, the optional KV_KEK, for the same reason.
+# `state`, the optional KV_KEK, for the same reason; for `console`, the optional
+# ASSET_KEK (the asset-bundle KEK), so the ops-repo backup is one pull.
 set -euo pipefail
 umask 077
 STAGE="${1:?stage (dev|prod)}"; shift || true
@@ -57,6 +58,16 @@ for svc in "${SERVICES[@]}"; do
     # console only and optional (todo/16 B): absent means the stage has no
     # participant-credential issuer, which is a valid state, not an error.
     if [ "$svc" = console ]; then
+      # console only and optional (todo/46 P4): the asset-bundle KEK. Absent
+      # means the stage has no encrypted bundles configured (those routes
+      # answer 503, everything else works). bootstrap-ssm.sh's init mode
+      # reads it from this file only to seed a stage from a backup; a
+      # routine run never touches it.
+      v="$(get asset-kek)"
+      if [ -n "$v" ]; then
+        case "$v" in *$'\n'*) echo "${prefix}asset-kek contains a newline" >&2; rm -f "$tmp"; exit 1;; esac
+        echo "ASSET_KEK=${v}"
+      fi
       # The env var name is derived from the SSM key rather than written as a
       # `VAR:key` pair like the loop above. Written that way, the pair for the
       # ACL password is long enough to read as a credential assignment to

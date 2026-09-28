@@ -151,6 +151,7 @@ export {
   createAssetsDb,
   createMemoryAssetsDb,
   type AssetBundleInput,
+  type AssetBundleKeyRow,
   type AssetBundlePatch,
   type AssetBundleRow,
   type BundleSortKey,

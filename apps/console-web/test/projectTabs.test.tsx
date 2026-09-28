@@ -94,6 +94,7 @@ const BUNDLE: AssetBundle = {
   name: "dungeon-maps",
   description: "tiles",
   mode: "versioned",
+  encrypted: false,
   createdBy: null,
   createdAt: 0,
   updatedAt: 60,
@@ -308,6 +309,38 @@ describe("assets tab", () => {
     expect(mockApi.createAssetBundle).toHaveBeenCalledWith("prj_1", {
       name: "content2",
       mode: "live",
+    });
+  });
+
+  it("creates an encrypted bundle from the toggle and badges it in the list", async () => {
+    vi.mocked(mockApi.projectAssetBundles).mockResolvedValue([
+      BUNDLE,
+      { ...BUNDLE, id: "ab_3", name: "secret", encrypted: true },
+    ]);
+    vi.mocked(mockApi.createAssetBundle).mockResolvedValue({
+      ...BUNDLE,
+      id: "ab_4",
+      encrypted: true,
+    });
+    mount("assets");
+    const link = await screen.findByRole("link", { name: "secret" });
+    expect(within(link.closest("td")!).getByText("encrypted")).toBeTruthy();
+    const drawer = await openDrawer("bundle");
+    const toggle = within(drawer).getByRole("checkbox", {
+      name: /Encrypted \(fixed once created\)/,
+    });
+    expect(toggle).not.toBeChecked();
+    expect(
+      within(drawer).getByText(/the console can read this key/),
+    ).toBeInTheDocument();
+    await userEvent.click(toggle);
+    await userEvent.type(input("Name", drawer), "vault");
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Create bundle" }),
+    );
+    expect(mockApi.createAssetBundle).toHaveBeenCalledWith("prj_1", {
+      name: "vault",
+      encrypted: true,
     });
   });
 

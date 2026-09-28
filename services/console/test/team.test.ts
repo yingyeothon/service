@@ -409,6 +409,7 @@ describe("teams", () => {
       removed: member.id,
       action: "kick",
       rotate: [{ id: "auth_00000001", kind: "auth", name: "login" }],
+      encryptedBundles: [],
     });
     expect(kick.body).not.toContain("c0de-secret-zz");
     // The creator of the channel is out: the team and its project are gone for them.
@@ -1392,7 +1393,11 @@ describe("review follow-ups (correctness)", () => {
       }),
     );
     expect(leave.statusCode).toBe(200);
-    expect(parse(leave)).toMatchObject({ action: "leave", rotate: [] });
+    expect(parse(leave)).toMatchObject({
+      action: "leave",
+      rotate: [],
+      encryptedBundles: [],
+    });
     expect(
       (await h.app(ev("GET", `/teams/${team.id}`, { headers: member.cookie })))
         .statusCode,

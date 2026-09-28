@@ -25,9 +25,16 @@
 #   Taken from KV_KEK or local/env/state.<stage>.env, generated when neither SSM nor the env
 #   file has one, and otherwise kept — replacing it needs KV_KEK_ROTATE=1 and makes every
 #   stored kv value unreadable, so it is excluded from the blanket rotation below.
+# console only (todo/46 P4): asset-kek is the stage KEK that wraps every encrypted asset
+#   bundle's key. It is NEVER touched by a routine run. `ASSET_KEK_INIT=1 scripts/bootstrap-ssm.sh
+#   <stage>` is a dedicated mode that does nothing else: it creates the parameter when it is
+#   absent (from ASSET_KEK, else local/env/console.<stage>.env, else generated) and keeps an
+#   existing one unconditionally -- there is no rotate flag, because a replacement orphans every
+#   wrapped bundle key and no re-wrap exists. Then `deploy.sh console <stage>` bakes it into the
+#   api function, and the value goes to the private ops repo (pull: FORCE=1 get-env.sh <stage> console).
 # Rotation: update local/env via yyt-stateful → run this → redeploy EVERY stack of the stage
 #   (values are baked into Lambda env at deploy time) → only then revoke the old credentials.
-#   kv-kek is NOT part of that pass: see above.
+#   kv-kek and asset-kek are NOT part of that pass: see above.
 set -euo pipefail
 umask 077 # everything this script writes (logs, debug key, temp files) is owner-only
 STAGE="${1:?stage (dev|prod)}"; shift || true
@@ -49,6 +56,60 @@ put() { # name value — the value goes through a 0600 temp file, never argv (vi
 envval() { # file VAR — plain KEY=value parse; the file is never sourced as shell.
   grep -E "^${2}=" "$1" | head -n1 | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/'
 }
+
+# The dedicated asset-KEK mode (docs/decisions.md *Live and encrypted asset bundles* #4).
+# Nothing else of this script runs: the console's other credentials are not re-uploaded, so
+# the prod KEK can be created without a full console.prod.env on this machine.
+if [ "${ASSET_KEK_INIT:-0}" = "1" ]; then
+  AKEK_NAME="console/asset-kek"
+  # Service arguments would be ignored here; refuse rather than let
+  # `ASSET_KEK_INIT=1 bootstrap-ssm.sh prod console` look like a console run.
+  if [ $# -gt 0 ]; then
+    echo "ASSET_KEK_INIT=1 takes the stage only (it touches nothing but ${AKEK_NAME})" >&2; exit 1
+  fi
+  # Same read discipline as kv-kek below: only ParameterNotFound means "not there yet".
+  AKEK_ERR="$(mktemp)"
+  if akek_read="$(aws ssm get-parameter --name "/yyt-service/${STAGE}/${AKEK_NAME}" --with-decryption --query Parameter.Value --output text 2>"$AKEK_ERR")"; then
+    CURRENT_AKEK="$akek_read"
+  else
+    case "$(cat "$AKEK_ERR")" in
+      *ParameterNotFound*) CURRENT_AKEK="" ;;
+      *) echo "failed to read /yyt-service/${STAGE}/${AKEK_NAME}: $(cat "$AKEK_ERR")" >&2; rm -f "$AKEK_ERR"; exit 1 ;;
+    esac
+  fi
+  rm -f "$AKEK_ERR"
+  is_akek() { printf '%s' "$1" | grep -qE '^[0-9a-fA-F]{64}$'; }
+  # A digest of the KEK, safe to log: the console prints the same `kekId` at cold start
+  # (`asset keyring`), so "this stage runs the wrong KEK" is one glance, not a guess.
+  akek_id() { printf '%b' "$(printf '%s' "$1" | sed 's/../\\x&/g')" | sha256sum | cut -c1-12; }
+  WANT_AKEK="${ASSET_KEK:-}"
+  if [ -z "$WANT_AKEK" ] && [ -f "local/env/console.${STAGE}.env" ]; then
+    WANT_AKEK="$(envval "local/env/console.${STAGE}.env" ASSET_KEK || true)"
+  fi
+  if [ -n "$CURRENT_AKEK" ]; then
+    is_akek "$CURRENT_AKEK" || log "WARN /yyt-service/${STAGE}/${AKEK_NAME} is not 32 bytes of hex; encrypted bundles answer 503 until it is fixed by hand"
+    log "keep /yyt-service/${STAGE}/${AKEK_NAME} (exists; never replaced: a new KEK orphans every wrapped bundle key) kekId=$(akek_id "$CURRENT_AKEK")"
+    # A supplied value that differs is a mis-targeted restore: say so, loudly, and still change nothing.
+    if [ -n "$WANT_AKEK" ] && [ "$WANT_AKEK" != "$CURRENT_AKEK" ]; then
+      log "WARN the supplied ASSET_KEK was ignored (its kekId would be $(akek_id "$WANT_AKEK")); this stage keeps what SSM holds"
+    fi
+    log "done stage=${STAGE} asset-kek init (unchanged)"
+    exit 0
+  fi
+  if [ -n "$WANT_AKEK" ] && ! is_akek "$WANT_AKEK"; then
+    echo "ASSET_KEK must be 32 bytes of hex (64 hex characters)" >&2; exit 1
+  fi
+  if [ -n "$WANT_AKEK" ]; then
+    log "seeding ${AKEK_NAME} from the supplied value (a restore from the ops repo)"
+  else
+    WANT_AKEK="$(openssl rand -hex 32)"
+    log "generated a new ${AKEK_NAME} — pull it with FORCE=1 scripts/get-env.sh ${STAGE} console and copy it into the ops repo before anything depends on it"
+  fi
+  put "$AKEK_NAME" "$WANT_AKEK"
+  log "asset-kek kekId=$(akek_id "$WANT_AKEK"); now deploy.sh console ${STAGE} bakes it into the api function"
+  log "done stage=${STAGE} asset-kek init"
+  exit 0
+fi
 
 for svc in "${SERVICES[@]}"; do
   f="local/env/${svc}.${STAGE}.env"

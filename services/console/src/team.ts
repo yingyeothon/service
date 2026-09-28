@@ -475,6 +475,18 @@ export function createTeamRoutes({
       .map((c) => ({ id: c.id, kind: c.kind, name: c.name }));
   }
 
+  /**
+   * Encrypted asset bundles whose key a departing member could have read.
+   * A key is never rotated in place (rotation is a new bundle), so this is
+   * the nudge, like the channels above (docs/decisions.md *Live and
+   * encrypted asset bundles* #4).
+   */
+  async function encryptedBundleHints(teamId: string) {
+    return (await assets.listBundles({ teamId }))
+      .filter((b) => b.encrypted)
+      .map((b) => ({ id: b.id, name: b.name }));
+  }
+
   /** `admin_locked` teams seat platform admins only; checked on every seating. */
   async function requireLockable(o: TeamRow, memberId: string): Promise<void> {
     if (!o.adminLocked) return;
@@ -790,6 +802,7 @@ export function createTeamRoutes({
           action: self ? "leave" : "kick",
           // Nothing is revoked automatically; these are what to rotate.
           rotate: await rotationHints(a.team.id),
+          encryptedBundles: await encryptedBundleHints(a.team.id),
         };
       },
     },

@@ -82,6 +82,29 @@ describe("serverless.yml invariants", () => {
     expect(yml).toContain('KV_KEK: ${ssm:${self:custom.ssm}/kv-kek, ""}');
   });
 
+  it("console: the asset KEK reaches the api function only, with a default", () => {
+    const yml = readFileSync(
+      join(root, "services/console/serverless.yml"),
+      "utf8",
+    );
+    // Same reasoning as `KV_KEK` above: a missing parameter must not block
+    // the whole stack, and the runtime treats an empty value as "encrypted
+    // bundles are not configured" (`services/console/src/asset-crypto.ts`).
+    expect(yml).toContain('ASSET_KEK: ${ssm:${self:custom.ssm}/asset-kek, ""}');
+    const doc = parse(yml, { logLevel: "silent" }) as {
+      provider: { environment?: Record<string, unknown> };
+      functions: Record<string, { environment?: Record<string, unknown> }>;
+    };
+    // The provider environment is inherited by every function, and only
+    // `api` may hold the KEK (docs/decisions.md *Live and encrypted asset
+    // bundles* #4).
+    expect(doc.provider.environment?.ASSET_KEK).toBeUndefined();
+    for (const [name, fn] of Object.entries(doc.functions))
+      expect(fn.environment?.ASSET_KEK !== undefined, name).toBe(
+        name === "api",
+      );
+  });
+
   it("console: the per-site host is opt-in and never needs a template literal", () => {
     const yml = readFileSync(
       join(root, "services/console/serverless.yml"),

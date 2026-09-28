@@ -1,0 +1,2 @@
+# Generated conformance vectors (`go test ./internal/assetcrypt -update` in cli/): a regeneration is not a diff to read.
+docs/asset-encryption-vectors.json -diff

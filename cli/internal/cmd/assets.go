@@ -22,7 +22,9 @@ type assetBundle struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
 	// "versioned" or "live", fixed at creation.
-	Mode        string  `json:"mode"`
+	Mode string `json:"mode"`
+	// Every object is yyt-enc v1 ciphertext; fixed at creation.
+	Encrypted   bool    `json:"encrypted"`
 	TeamID      *string `json:"teamId"`
 	TeamName    *string `json:"teamName"`
 	ProjectID   *string `json:"projectId"`
@@ -106,7 +108,10 @@ func newAssets(a *App) *cobra.Command {
 			"<bundle> is an id (ab_…) or a name unique within the team; a name is looked\n" +
 			"up in the project context (--project, YYT_PROJECT, " + ContextFile + ",\n" +
 			"`yyt project use`). `create`, `upload`, `push` and `sync` need an explicit\n" +
-			"context.",
+			"context.\n\n" +
+			"An encrypted bundle (`create --encrypted`) holds ciphertext only: `asset sync`\n" +
+			"encrypts on this machine with the key the console minted (`asset key show`),\n" +
+			"`asset download` decrypts, and `upload`/`push` refuse it.",
 	}
 	// bundleID resolves <bundle> (id or name); write=true refuses auto-selection.
 	bundleID := func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error) {
@@ -130,6 +135,7 @@ func newAssets(a *App) *cobra.Command {
 		newAssetRm(a, bundleID),
 		newAssetSync(a, bundleID),
 		newAssetDownload(a, bundleID),
+		newAssetKey(a, bundleID),
 	)
 	return group(c)
 }
@@ -144,6 +150,7 @@ func (a *App) printBundle(b assetBundle) error {
 		{"id", b.ID},
 		{"name", b.Name},
 		{"mode", modeOf(b.Mode)},
+		{"encrypted", fmt.Sprint(b.Encrypted)},
 		{"project", crumb(b.TeamName, b.ProjectName)},
 		{"description", output.Str(b.Description)},
 		{"createdBy", output.Str(b.CreatedBy)},
@@ -206,6 +213,7 @@ func newAssetList(a *App) *cobra.Command {
 
 func newAssetCreate(a *App) *cobra.Command {
 	var description, mode string
+	var encrypted bool
 	c := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create an asset bundle in the project context (explicit)",
@@ -228,6 +236,9 @@ func newAssetCreate(a *App) *cobra.Command {
 			if mode == "live" {
 				body["mode"] = mode
 			}
+			if encrypted {
+				body["encrypted"] = true
+			}
 			if description != "" {
 				body["description"] = description
 			}
@@ -240,6 +251,7 @@ func newAssetCreate(a *App) *cobra.Command {
 	}
 	c.Flags().StringVar(&description, "description", "", "human-readable description")
 	c.Flags().StringVar(&mode, "mode", "versioned", "versioned (files under versions, never overwritten) or live (one namespace kept by `asset sync`); fixed at creation")
+	c.Flags().BoolVar(&encrypted, "encrypted", false, "every file is encrypted on this machine by `asset sync` and served as ciphertext (yyt-enc v1); the console mints the key; fixed at creation")
 	return c
 }
 
@@ -444,7 +456,7 @@ func newAssetUpload(a *App, bundleID bundleResolver) *cobra.Command {
 			}
 			f, err := uploadAssetFile(cmd.Context(), cc.cl, id, args[1], inBundle, args[2])
 			if err != nil {
-				return liveHint(err, args[0])
+				return encryptHint(liveHint(err, args[0]), args[0])
 			}
 			return a.printFiles(args[0], args[1], []assetFile{*f})
 		},
@@ -480,7 +492,7 @@ func newAssetPush(a *App, bundleID bundleResolver) *cobra.Command {
 				f, err := uploadAssetFile(cmd.Context(), cl, id, version, rel, filepath.Join(dir, filepath.FromSlash(rel)))
 				if err != nil {
 					if len(uploaded) == 0 {
-						if hinted := liveHint(err, bundle); hinted != err {
+						if hinted := encryptHint(liveHint(err, bundle), bundle); hinted != err {
 							return hinted
 						}
 					}

@@ -15,6 +15,10 @@ import {
   type UploadedPart,
 } from "./artifact-store.js";
 import { artifactUrl } from "./catalog.js";
+import {
+  ASSET_ENC_HEADER_BYTE,
+  isAssetCiphertextLength,
+} from "./asset-crypto.js";
 
 /** Committed asset objects; never touched by the catalog retention sweep. */
 export const ASSET_KEY_PREFIX = "assets/";
@@ -124,6 +128,48 @@ export async function tombstoneAgainst(
   return t.length === 0
     ? undefined
     : Math.max(...t.map((x) => x.deletedAt)) + ASSET_TOMBSTONE_SEC;
+}
+
+/**
+ * An object in an encrypted bundle that is not `yyt-enc v1` ciphertext by
+ * its outer shape: the first byte or the length rule
+ * (docs/decisions.md *Live and encrypted asset bundles* #4). The commit
+ * refuses it; a multipart object that reached its final key is deleted.
+ */
+export class NotCiphertextError extends Error {
+  constructor(readonly path: string) {
+    super("the uploaded bytes are not yyt-enc v1 ciphertext");
+    this.name = "NotCiphertextError";
+  }
+  toAppError(): AppError {
+    return new AppError("bad_request", this.message, {
+      details: { path: this.path, reason: "not_ciphertext" },
+    });
+  }
+}
+
+/**
+ * The outer shape of an object in an encrypted bundle: a ciphertext length
+ * and byte 0 = `0x28` (docs/decisions.md *Live and encrypted asset bundles*
+ * #4). `undefined` when the object is missing or the read failed -- the
+ * caller decides. The check proves shape, not authenticity: a file that
+ * starts with `(` at a ciphertext length passes, which is the promise's
+ * stated limit (only the bundle's own team can put one there).
+ */
+export async function looksLikeCiphertext(
+  store: Pick<ArtifactStore, "readRange">,
+  key: string,
+  size: number,
+): Promise<boolean | undefined> {
+  if (!isAssetCiphertextLength(size)) return false;
+  let head: Buffer | undefined;
+  try {
+    head = await store.readRange(key, 0, 0);
+  } catch {
+    return undefined;
+  }
+  if (head === undefined) return undefined;
+  return head[0] === ASSET_ENC_HEADER_BYTE;
 }
 
 export function tombstoned(path: string, until: number): AppError {
@@ -338,6 +384,12 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
     try {
       ({ etag } = await write());
     } catch (e) {
+      if (e instanceof NotCiphertextError) {
+        // The object is gone again (the writer deleted it); the path and
+        // the reservation are freed, and the caller uploads ciphertext.
+        await assets.deleteFile(fileId).catch(() => undefined);
+        return fail(u, e.toAppError());
+      }
       if (e instanceof ConditionalWriteError && e.kind === "conflict")
         // Another attempt of this very upload is writing the key right now:
         // a 404 read now proves nothing. Keep the claim and the upload.
@@ -349,6 +401,19 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
       if (same(st, u) && st.state === "present") {
         // Our bytes are there: an earlier attempt of this upload landed and
         // lost its answer (the only writer of a claimed key is its claim).
+        // In an encrypted bundle a multipart completion is checked only
+        // after it lands, so an attempt that died between the completion
+        // and the check re-checks here rather than publish plaintext.
+        if (bundle.encrypted && u.s3UploadId !== null) {
+          const ok = await looksLikeCiphertext(store, finalKey, u.size);
+          if (ok === false) {
+            await store.delete(finalKey);
+            await assets.deleteFile(fileId).catch(() => undefined);
+            return fail(u, new NotCiphertextError(u.path).toAppError());
+          }
+          if (ok === undefined)
+            throw new AppError("unavailable", "artifact storage error");
+        }
         etag = st.etag;
       } else if (st.state === "absent" && (await absent()) === "retry") {
         // A multipart completion whose answer was lost while the upload is
@@ -615,6 +680,23 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
     // catches a grant that was used without its header.
     if (u.sha256 !== null && staging.sha256 !== u.sha256)
       throw new AppError("bad_request", "uploaded bytes do not match sha256");
+    if (bundle.encrypted) {
+      // Plaintext never enters an encrypted bundle (decisions #4): the outer
+      // shape is checked on the staged bytes before any claim is taken.
+      const ok = await looksLikeCiphertext(
+        store,
+        assetStagingKey(u.id, u.path),
+        u.size,
+      );
+      if (ok === undefined)
+        throw new AppError("unavailable", "artifact storage error");
+      if (!ok) {
+        await store
+          .delete(assetStagingKey(u.id, u.path))
+          .catch(() => undefined);
+        return fail(u, new NotCiphertextError(u.path).toAppError());
+      }
+    }
     const finalKey = assetObjectKey(bundle, u.version, u.path);
     if (!u.mutable) return claimAndCopy(u, bundle, finalKey, staging.etag, c);
 
@@ -676,6 +758,18 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
       const st = await store.inspect(finalKey);
       const row = await assets.findFile(fileId);
       if (!same(st, u) || !row || row.objectKey !== finalKey) return undefined;
+      if (bundle.encrypted) {
+        // The completion landed but its shape check never ran (the attempt
+        // died in between): run it now, never publish plaintext.
+        const ok = await looksLikeCiphertext(store, finalKey, u.size);
+        if (ok === false) {
+          await store.delete(finalKey);
+          await assets.deleteFile(fileId).catch(() => undefined);
+          return fail(u, new NotCiphertextError(u.path).toAppError());
+        }
+        if (ok === undefined)
+          throw new AppError("unavailable", "artifact storage error");
+      }
       await done(u, fileId, finalKey, st.state === "present" ? st.etag : null);
       return { file: row, alreadyPresent: false };
     };
@@ -717,6 +811,8 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
       throw new AppError("bad_request", "not every part was uploaded", {
         details: { path: u.path, missing: parts.missing, bad: parts.bad },
       });
+    if (bundle.encrypted && !isAssetCiphertextLength(u.size))
+      return fail(u, new NotCiphertextError(u.path).toAppError());
     if (u.status === "pending")
       await assets.updateUpload(u.id, { status: "completing" });
     return claimAndCopy(
@@ -725,13 +821,23 @@ export function createAssetCommitter(o: AssetCommitterOptions) {
       finalKey,
       null,
       c,
-      () =>
-        store.completeMultipart({
+      async () => {
+        const r = await store.completeMultipart({
           key: finalKey,
           uploadId,
           parts: parts.parts,
           objectSize: u.size,
-        }),
+        });
+        if (!bundle.encrypted) return r;
+        // S3 has no whole-object checksum for parts, and no part signs its
+        // first byte: the assembled object is read once it exists, and a
+        // plaintext one is deleted before anything can serve it. Its claim
+        // is the only writer of the key, so the delete removes our bytes.
+        const head = await store.readRange(finalKey, 0, 0);
+        if (head !== undefined && head[0] === ASSET_ENC_HEADER_BYTE) return r;
+        await store.delete(finalKey);
+        throw new NotCiphertextError(u.path);
+      },
       async () => {
         // A 404 after a failed completion: the upload still open means S3
         // may yet complete it (a lost answer), so the claim waits for the
@@ -786,6 +892,27 @@ export async function settleAssetUpload(
     (u.sha256 !== null && u.s3UploadId === null && st.sha256 !== u.sha256)
   )
     logger.error("asset claim names other bytes", { uploadId: u.id, key });
+  // A multipart completion in an encrypted bundle whose shape check never
+  // ran (the commit died after the completion): the sweep is the last gate
+  // before the row is published for good. The expire function needs no KEK
+  // for this -- the check is the object's first byte.
+  if (u.s3UploadId !== null) {
+    const bundle = await assets.findBundle(u.bundleId);
+    if (bundle?.encrypted) {
+      const ok = await looksLikeCiphertext(store, key, u.size);
+      if (ok === undefined) return "unknown";
+      if (!ok) {
+        logger.warn("asset sweep removed plaintext from an encrypted bundle", {
+          uploadId: u.id,
+          key,
+        });
+        await store.delete(key);
+        if (row && row.objectKey === key) await assets.deleteFile(row.id);
+        await assets.updateUpload(u.id, { status: "failed", fileId: null });
+        return "released";
+      }
+    }
+  }
   if (row && row.mutable && row.etag === null)
     await assets.setFileEtag(row.id, st.etag);
   await assets.updateUpload(u.id, { status: "completed", etag: st.etag });

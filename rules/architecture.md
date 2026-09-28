@@ -50,6 +50,8 @@
 
 ## Go CLI (`cli/`)
 
+- `cli/internal/assetcrypt` is the reference implementation of `yyt-enc v1` (`docs/asset-encryption.md`) and the only encryptor on the platform; `github.com/tink-crypto/tink-go/v2` is a **test-only** dependency (its streaming primitive cross-checks the vectors) and must stay out of non-test files so the binary does not carry it.
+
 - Config is per-profile (`~/.config/yyt/config.json`, `{"profiles":{name:{api,token}},"default":name}`); resolution is `--profile` > `YYT_PROFILE` > file default, and `--api`/`--token`/`YYT_API`/`YYT_TOKEN` override the resolved profile field-wise. A legacy flat file auto-migrates on load; the re-save failure is tolerated (read-only config dirs). When a token override is in effect, `Config.Profile` is blanked so `whoami` never claims a profile it is not using.
 - Cobra: a local flag on a subcommand silently shadows a same-named persistent flag (the global `--profile` vs deploy's build profile forced the rename to `--build-profile`). Also, adding subcommands under a positional-arg command (`artifact upload android|ios`) makes those literals unusable as the first positional — accepted trade-off, documented in README.
 - `catalog deploy` safety rules learned from review: verify uploads by artifact **id** (a version-tag count false-passes on re-deploys and cross-platform uploads); delete matching build outputs before running `flutter build` (a stale `app-<abi>-<profile>.apk` from a wider `--target-platform` would otherwise be uploaded under the new version); refresh-login must default to the profile's stored API, never the prod default.
