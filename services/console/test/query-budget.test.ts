@@ -15,7 +15,13 @@ type AppView = Record<string, unknown>;
 /** Spies (calling through) on every repository method; returns the counts. */
 function countCalls(h: H): () => Record<string, number> {
   const spies: Array<[string, { mock: { calls: unknown[] } }]> = [];
-  const repos = { db: h.db, team: h.teamDb, catalog: h.catalog };
+  const repos = {
+    db: h.db,
+    team: h.teamDb,
+    catalog: h.catalog,
+    assets: h.assets,
+    limits: h.limits,
+  };
   for (const [label, repo] of Object.entries(repos)) {
     const methods = repo as unknown as Record<
       string,
@@ -170,6 +176,46 @@ describe("query budget", () => {
       "team.findProjectNamesByIds": 1,
       "team.findTeamNamesByIds": 1,
       "catalog.summarizeArtifacts": 1,
+    });
+  });
+  it("an asset presign reads totals, never a bundle's rows", async () => {
+    const h = harness();
+    const u = await h.team("owner", "member", 9002);
+    h.clock.tick(1);
+    const b = await h.app(
+      ev("POST", `/projects/${u.prjId}/assets/bundles`, {
+        headers: u.cookie,
+        body: { name: "maps" },
+      }),
+    );
+    expect(b.statusCode, b.body).toBe(201);
+    const bundle = parse(b).id as string;
+    h.clock.tick(1);
+    const calls = countCalls(h);
+    const up = await h.app(
+      ev("POST", `/assets/bundles/${bundle}/files`, {
+        headers: u.cookie,
+        body: { version: "v1", path: "map.json", size: 10 },
+      }),
+    );
+    expect(up.statusCode, up.body).toBe(201);
+    // The session, access (bundle → project → team → seat), the uploads in
+    // flight (the path claim reuses them for the quota), one override
+    // read for the bundle and its project, the per-version totals, the
+    // project total, then the reservation and the audit row.
+    expect(calls()).toEqual({
+      "db.findMember": 1,
+      "assets.findBundle": 1,
+      "team.findProject": 1,
+      "team.findTeam": 1,
+      "team.findTeamMember": 1,
+      "assets.findFileByPath": 1,
+      "assets.listInFlightUploads": 1,
+      "limits.listOverrides": 1,
+      "assets.versionSummaries": 1,
+      "assets.projectAssetUsage": 1,
+      "assets.insertUpload": 1,
+      "db.insertAudit": 1,
     });
   });
 });

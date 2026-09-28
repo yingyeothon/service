@@ -11,12 +11,22 @@ import type {
   AssetFileRow,
   AssetsDb,
   AssetUploadRow,
+  AssetVersionSummary,
   ConsoleDb,
+  LimitsDb,
+  LimitScope,
   TeamDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
 import { listParams, listQuery } from "./list-query.js";
+import {
+  formatLimitValue,
+  LIMITS,
+  overLimit,
+  resolveLimits,
+  type LimitKey,
+} from "./limits.js";
 import {
   ARTIFACT_UPLOAD_URL_TTL_SEC,
   type ArtifactStore,
@@ -27,7 +37,6 @@ import { requireRole } from "./identity.js";
 import type { TeamAccessHelpers, ResourceAccess } from "./team-access.js";
 import { resourceName } from "./team.js";
 import {
-  BUNDLES_PER_PROJECT,
   type CrumbResolver,
   type ResourceHistory,
   asUploadOwner,
@@ -43,16 +52,13 @@ export const ASSET_UPLOAD_KEY_PREFIX = "asset-uploads/";
  * the channel's `mapUrl`, so no CDN invalidation is ever needed.
  */
 export const ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
-/** Per file. A map bundle is JSON plus a tileset, not a game download. */
-export const ASSET_MAX_FILE_BYTES = 2 * 1024 * 1024;
-/** Per bundle, summed over every version it still holds. */
-export const ASSET_MAX_BUNDLE_BYTES = 20 * 1024 * 1024;
-/** Per version, so one bundle cannot become a filesystem. */
-export const ASSET_MAX_FILES_PER_VERSION = 200;
-/** Per bundle. Bytes alone bound cost, not row count: 1-byte files are legal. */
-export const ASSET_MAX_VERSIONS = 50;
-/** Per project (`resources.ts`); re-exported under the name the tests use. */
-export const ASSET_MAX_BUNDLES_PER_PROJECT = BUNDLES_PER_PROJECT;
+/*
+ * Sizes and counts are limits with a soft and a hard value (`limits.ts`,
+ * docs/decisions.md *Limit requests*): every bundle and project gets the soft
+ * value, and an admin may grant one more. Every check counts committed rows
+ * through the aggregates (`versionSummaries`, `projectAssetUsage`) plus the
+ * presigns still in flight, and never loads a bundle's rows.
+ */
 
 /**
  * Extension → `Content-Type`, signed into the presigned PUT. The caller never
@@ -78,6 +84,12 @@ export const ASSET_CONTENT_TYPES: Record<string, string> = {
 
 /** Versions become object-key and URL path segments. */
 const bundlesQuery = listQuery(BUNDLE_SORT_KEYS).passthrough();
+const filePageQuery = z
+  .object({
+    cursor: z.string().max(255).optional(),
+    limit: z.coerce.number().int().min(1).max(1000).optional(),
+  })
+  .strict();
 const SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 /**
  * No dot: the bundle name is also a SPA route segment (`/ui/assets/{name}`) and
@@ -132,7 +144,8 @@ export const assetUploadBody = z
       .string()
       .max(200)
       .regex(RELATIVE_PATH, "relative path (max 8 segments)"),
-    size: z.number().int().positive().max(ASSET_MAX_FILE_BYTES),
+    // The hard ceiling; the effective per-bundle value is checked in the route.
+    size: z.number().int().positive().max(LIMITS["asset.fileBytes"].hard),
   })
   .strict();
 
@@ -177,6 +190,7 @@ export function bundlePrefixes(files: Pick<AssetFileRow, "objectKey">[]) {
 export interface AssetRoutesOptions {
   db: ConsoleDb;
   assets: AssetsDb;
+  limits: Pick<LimitsDb, "listOverrides">;
   team: TeamDb;
   access: Pick<
     TeamAccessHelpers,
@@ -201,6 +215,7 @@ export interface AssetRoutesOptions {
 export function createAssetRoutes({
   db,
   assets,
+  limits,
   team,
   access,
   crumbs,
@@ -325,51 +340,93 @@ export function createAssetRoutes({
   });
 
   /** `{version, files, bytes, createdAt}` per version, newest first. */
-  function versionsOf(files: AssetFileRow[]) {
-    const byVersion = new Map<
-      string,
-      { version: string; files: number; bytes: number; createdAt: number }
-    >();
-    for (const f of files) {
-      const v = byVersion.get(f.version);
-      if (v) {
-        v.files++;
-        v.bytes += f.size;
-        v.createdAt = Math.min(v.createdAt, f.createdAt);
-      } else
-        byVersion.set(f.version, {
-          version: f.version,
-          files: 1,
-          bytes: f.size,
-          createdAt: f.createdAt,
-        });
-    }
-    return [...byVersion.values()].sort(
-      (a, b) => b.createdAt - a.createdAt || b.version.localeCompare(a.version),
-    );
-  }
+  const versionsOf = (summaries: AssetVersionSummary[]) =>
+    summaries
+      .map(({ version, files, bytes, createdAt }) => ({
+        version,
+        files,
+        bytes,
+        createdAt,
+      }))
+      .sort(
+        (a, b) =>
+          b.createdAt - a.createdAt || b.version.localeCompare(a.version),
+      );
 
   /**
-   * Bytes a bundle already owes us: committed files plus every presign still in
-   * flight. Counting only committed rows would let a caller pipeline a hundred
-   * grants past the cap, each one seeing a total of zero.
+   * Every quota a new file must fit, against committed rows (aggregates) plus
+   * every presign still in flight: a grant is a reservation, and counting
+   * only committed rows would let a caller pipeline a hundred grants past the
+   * cap, each one seeing an empty bundle. A commit passes its own upload as
+   * `except`, since its reservation is the file it is about to write. A
+   * presign refuses with 400, a commit (whose grant saw an older state, or a
+   * limit lowered since) with 409.
    */
-  async function bundleBytes(
-    bundleId: string,
+  async function checkQuota(
+    bundle: AssetBundleRow,
+    file: { version: string; size: number },
     now: number,
-    exceptUploadId?: string,
-  ): Promise<number> {
-    const files = await assets.listFiles(bundleId);
-    const live = await assets.listLiveUploads(bundleId, now);
-    return (
-      files.reduce((n, f) => n + f.size, 0) +
-      // A commit must not count its own reservation: the grant is still
-      // `pending` at this point, and adding the bytes it is about to write on
-      // top of the bytes it reserved would refuse every last upload.
-      live
-        .filter((u) => u.id !== exceptUploadId)
-        .reduce((n, u) => n + u.size, 0)
-    );
+    status: "bad_request" | "conflict",
+    o: { except?: string; inFlight?: AssetUploadRow[] } = {},
+  ): Promise<void> {
+    const { except } = o;
+    const scopes: LimitScope[] = [{ kind: "bundle", id: bundle.id }];
+    if (bundle.projectId)
+      scopes.push({ kind: "project", id: bundle.projectId });
+    const limit = await resolveLimits(limits, scopes, now);
+    const over = (key: LimitKey, message: (max: string) => string) => {
+      const max = limit(key);
+      return overLimit(status, key, max, message(formatLimitValue(key, max)));
+    };
+    const fileMax = limit("asset.fileBytes");
+    if (file.size > fileMax)
+      throw over(
+        "asset.fileBytes",
+        (m) => `a file in this bundle holds at most ${m}`,
+      );
+    const summaries = await assets.versionSummaries(bundle.id);
+    const inFlight = (
+      o.inFlight ?? (await assets.listInFlightUploads(bundle.id, now))
+    ).filter((u) => u.id !== except);
+    const inVersion =
+      (summaries.find((v) => v.version === file.version)?.files ?? 0) +
+      inFlight.filter((u) => u.version === file.version).length;
+    if (inVersion + 1 > limit("asset.filesPerVersion"))
+      throw over(
+        "asset.filesPerVersion",
+        (m) => `a version holds at most ${m} files`,
+      );
+    const versions = new Set([
+      ...summaries.map((v) => v.version),
+      ...inFlight.map((u) => u.version),
+    ]);
+    if (
+      !versions.has(file.version) &&
+      versions.size + 1 > limit("asset.versionsPerBundle")
+    )
+      throw over(
+        "asset.versionsPerBundle",
+        (m) => `a bundle holds at most ${m} versions`,
+      );
+    const files = summaries.reduce((n, v) => n + v.files, 0) + inFlight.length;
+    if (files + 1 > limit("asset.filesPerBundle"))
+      throw over(
+        "asset.filesPerBundle",
+        (m) => `a bundle holds at most ${m} files`,
+      );
+    const bytes =
+      summaries.reduce((n, v) => n + v.bytes, 0) +
+      inFlight.reduce((n, u) => n + u.size, 0);
+    if (bytes + file.size > limit("asset.bundleBytes"))
+      throw over("asset.bundleBytes", (m) => `bundle would exceed ${m}`);
+    if (bundle.projectId) {
+      const p = await assets.projectAssetUsage(bundle.projectId, now, except);
+      if (p.bytes + p.inFlightBytes + file.size > limit("asset.projectBytes"))
+        throw over(
+          "asset.projectBytes",
+          (m) => `project assets would exceed ${m}`,
+        );
+    }
   }
 
   /**
@@ -489,16 +546,24 @@ export function createAssetRoutes({
       body: bundleCreateBody,
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
+        const now = nowSec(clock);
+        const limit = await resolveLimits(
+          limits,
+          [{ kind: "project", id: a.project.id }],
+          now,
+        );
+        const max = limit("asset.bundlesPerProject");
+        // Bounded by the hard value (50), so the list is small.
         if (
-          (await assets.listBundles({ projectId: a.project.id })).length >=
-          BUNDLES_PER_PROJECT
+          (await assets.listBundles({ projectId: a.project.id })).length >= max
         )
-          throw new AppError(
+          throw overLimit(
             "conflict",
-            `too many asset bundles (max ${BUNDLES_PER_PROJECT} per project)`,
+            "asset.bundlesPerProject",
+            max,
+            `too many asset bundles (max ${max} per project)`,
           );
         await requireFreeName(a.team.id, ctx.body.name);
-        const now = nowSec(clock);
         const bundleId = `ab_${randomHex(8)}`;
         await assets.insertBundle({
           id: bundleId,
@@ -529,11 +594,12 @@ export function createAssetRoutes({
       auth: true,
       handler: async (ctx) => {
         const { row: bundle } = await bundleWith(ctx, false);
-        const files = await assets.listFiles(bundle.id);
+        const summaries = await assets.versionSummaries(bundle.id);
         return {
           ...(await bundleView(bundle)),
-          versions: versionsOf(files),
-          bytes: files.reduce((n, f) => n + f.size, 0),
+          versions: versionsOf(summaries),
+          files: summaries.reduce((n, v) => n + v.files, 0),
+          bytes: summaries.reduce((n, v) => n + v.bytes, 0),
         };
       },
     },
@@ -591,26 +657,53 @@ export function createAssetRoutes({
         return undefined;
       },
     },
-    {
+    defineRoute({
       method: "GET",
       path: "/assets/bundles/{bundle}/versions/{version}",
       auth: true,
+      query: filePageQuery,
       handler: async (ctx) => {
         const { row: bundle } = await bundleWith(ctx, false);
-        const files = await assets.listFiles(bundle.id, {
-          version: ctx.params.version!,
+        const version = ctx.params.version!;
+        const page = await assets.listFilesPage(bundle.id, version, {
+          after: ctx.query.cursor,
+          limit: ctx.query.limit,
         });
-        if (files.length === 0)
+        if (
+          page.rows.length === 0 &&
+          !(await assets.hasVersion(bundle.id, version))
+        )
           throw new AppError("not_found", "version not found");
         return {
           bundle: bundle.name,
           bundleId: bundle.id,
-          // The stored spelling, not the caller's: these are S3 key segments.
-          version: files[0]!.version,
-          files: files.map(fileView),
+          // Version and path are `utf8mb4_bin`, so the stored spelling is the
+          // caller's: these are S3 key segments.
+          version,
+          files: page.rows.map(fileView),
+          next: page.next,
         };
       },
-    },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/assets/bundles/{bundle}/files",
+      auth: true,
+      query: filePageQuery.extend({ version }),
+      handler: async (ctx) => {
+        const { row: bundle } = await bundleWith(ctx, false);
+        const page = await assets.listFilesPage(bundle.id, ctx.query.version, {
+          after: ctx.query.cursor,
+          limit: ctx.query.limit,
+        });
+        return {
+          bundleId: bundle.id,
+          version: ctx.query.version,
+          files: page.rows.map(fileView),
+          next: page.next,
+        };
+      },
+    }),
     {
       method: "DELETE",
       path: "/assets/bundles/{bundle}/versions/{version}",
@@ -651,49 +744,31 @@ export function createAssetRoutes({
         const store = requireStore();
         const contentType = assetContentType(ctx.body.path);
         const now = nowSec(clock);
-        const files = await assets.listFiles(bundle.id);
-        // Every quota counts committed rows AND presigns still in flight: a
-        // grant is a reservation, and a caller that pipelines them would
-        // otherwise see an empty bundle on every single request.
-        const live = await assets.listLiveUploads(bundle.id, now);
-        const taken = (v: string, path: string) =>
-          files.some((f) => f.version === v && f.path === path) ||
-          live.some((u) => u.version === v && u.path === path);
         // Write-once: the object is `immutable`, so a second upload to the same
         // (version, path) could never reach a client that already cached it.
-        if (taken(ctx.body.version, ctx.body.path))
+        // A presign in flight holds the path too.
+        const inFlight = await assets.listInFlightUploads(bundle.id, now);
+        if (
+          inFlight.some(
+            (u) => u.version === ctx.body.version && u.path === ctx.body.path,
+          ) ||
+          (await assets.findFileByPath(
+            bundle.id,
+            ctx.body.version,
+            ctx.body.path,
+          ))
+        )
           throw new AppError(
             "conflict",
             "this path already exists in this version; publish a new version",
           );
-        const inVersion =
-          files.filter((f) => f.version === ctx.body.version).length +
-          live.filter((u) => u.version === ctx.body.version).length;
-        if (inVersion >= ASSET_MAX_FILES_PER_VERSION)
-          throw new AppError(
-            "bad_request",
-            `a version holds at most ${ASSET_MAX_FILES_PER_VERSION} files`,
-          );
-        const versions = new Set([
-          ...files.map((f) => f.version),
-          ...live.map((u) => u.version),
-        ]);
-        if (
-          !versions.has(ctx.body.version) &&
-          versions.size >= ASSET_MAX_VERSIONS
-        )
-          throw new AppError(
-            "bad_request",
-            `a bundle holds at most ${ASSET_MAX_VERSIONS} versions`,
-          );
-        const used =
-          files.reduce((n, f) => n + f.size, 0) +
-          live.reduce((n, u) => n + u.size, 0);
-        if (used + ctx.body.size > ASSET_MAX_BUNDLE_BYTES)
-          throw new AppError(
-            "bad_request",
-            `bundle would exceed ${ASSET_MAX_BUNDLE_BYTES} bytes`,
-          );
+        await checkQuota(
+          bundle,
+          { version: ctx.body.version, size: ctx.body.size },
+          now,
+          "bad_request",
+          { inFlight },
+        );
         const uploadId = randomHex(16);
         await assets.insertUpload({
           id: uploadId,
@@ -752,22 +827,29 @@ export function createAssetRoutes({
         const stagingKey = assetStagingKey(upload.id, upload.path);
         const obj = await store.head(stagingKey);
         if (!obj) throw new AppError("bad_request", "file was not uploaded");
-        if (obj.contentLength <= 0 || obj.contentLength > ASSET_MAX_FILE_BYTES)
+        // The presign signed the length; any other size is not this grant's.
+        if (obj.contentLength !== upload.size)
           throw new AppError("bad_request", "uploaded file has a bad size");
-        // Re-check the bundle total against everything that has landed since
-        // the presign: the grant only ever saw the state of its own moment.
-        const used = await bundleBytes(bundle.id, now, upload.id);
-        if (used + obj.contentLength > ASSET_MAX_BUNDLE_BYTES)
-          throw new AppError(
-            "conflict",
-            `bundle would exceed ${ASSET_MAX_BUNDLE_BYTES} bytes`,
-          );
         const finalKey = assetObjectKey(bundle, upload.version, upload.path);
         const url = artifactUrl(cdnBaseUrl, finalKey);
         // The full upload id, not a prefix of it: `asset_files.id` is a global
         // primary key, and an 8-hex-char slice collides often enough that a
         // legitimate commit could heal onto an unrelated file's row.
         const fileId = `af_${upload.id}`;
+        // Re-check every quota against everything that has landed since the
+        // presign: the grant only ever saw the state of its own moment, and a
+        // limit may have been lowered since. Not when resuming our own claim:
+        // that row already passed, and counting it beside its own reservation
+        // would refuse the retry at an exact cap for good.
+        const resumed = (await assets.findFile(fileId))?.objectKey === finalKey;
+        if (!resumed)
+          await checkQuota(
+            bundle,
+            { version: upload.version, size: obj.contentLength },
+            now,
+            "conflict",
+            { except: upload.id },
+          );
         // The ROW IS THE CLAIM, taken before the object is written. Copying
         // first would let a second upload of the same (version, path) overwrite
         // a live `immutable` object before discovering it lost the race, and

@@ -3,14 +3,11 @@ import { describe, expect, it } from "vitest";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import {
   ASSET_CACHE_CONTROL,
-  ASSET_MAX_BUNDLE_BYTES,
-  ASSET_MAX_BUNDLES_PER_PROJECT,
-  ASSET_MAX_FILE_BYTES,
-  ASSET_MAX_VERSIONS,
   assetContentType,
   bundlePrefixes,
   versionPrefixes,
 } from "../src/assets.js";
+import { LIMITS } from "../src/limits.js";
 import { runAssetSweep } from "../src/expire.js";
 import { nullLogger } from "@yyt/core";
 import { createMemoryAssetsDb, createMemoryConsoleDb } from "@yyt/console-db";
@@ -67,6 +64,12 @@ async function publish(
     ev("POST", `/assets/uploads/${uploadId}/commit`, { headers: auth.cookie }),
   );
 }
+
+/** The soft values every bundle and project gets without an override. */
+const ASSET_MAX_FILE_BYTES = LIMITS["asset.fileBytes"].soft;
+const ASSET_MAX_BUNDLE_BYTES = LIMITS["asset.bundleBytes"].soft;
+const ASSET_MAX_VERSIONS = LIMITS["asset.versionsPerBundle"].soft;
+const ASSET_MAX_BUNDLES_PER_PROJECT = LIMITS["asset.bundlesPerProject"].soft;
 
 describe("asset bundles", () => {
   it("creates, lists (per project and flattened), patches and refuses a duplicate name", async () => {
@@ -369,6 +372,119 @@ describe("asset upload and commit", () => {
           }),
         )
       ).statusCode,
+    ).toBe(400);
+  });
+
+  it("a commit resuming its own claim is not refused by the cap it already passed", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const id = await mkBundle(h, alice);
+    const cap = LIMITS["asset.filesPerVersion"].soft;
+    // One short of the cap, straight into the fake (the route path is covered elsewhere).
+    for (let i = 0; i < cap - 1; i++)
+      await h.assets.insertFile({
+        id: `af_seed${i}`,
+        bundleId: id,
+        version: "v1",
+        path: `f${i}.json`,
+        objectKey: `assets/${id}/v1/f${i}.json`,
+        url: `${CDN}/assets/${id}/v1/f${i}.json`,
+        contentType: "application/json",
+        size: 1,
+        createdAt: 1,
+      });
+    h.clock.tick(1);
+    const up = parse(
+      await h.app(
+        ev("POST", `/assets/bundles/${id}/files`, {
+          body: { version: "v1", path: "last.json", size: 5 },
+          headers: alice.cookie,
+        }),
+      ),
+    );
+    h.artifacts.putObject(up.key, { contentLength: 5, etag: "e" });
+    // A first commit claimed the path (the row) and died before the copy.
+    await h.assets.insertFile({
+      id: `af_${up.uploadId}`,
+      bundleId: id,
+      version: "v1",
+      path: "last.json",
+      objectKey: `assets/${id}/v1/last.json`,
+      url: `${CDN}/assets/${id}/v1/last.json`,
+      contentType: "application/json",
+      size: 5,
+      createdAt: 2,
+    });
+    const retry = await h.app(
+      ev("POST", `/assets/uploads/${up.uploadId}/commit`, {
+        headers: alice.cookie,
+      }),
+    );
+    expect(retry.statusCode, retry.body).toBe(200);
+    expect(parse(retry).path).toBe("last.json");
+  });
+
+  it("reports version totals and pages a version's files by path", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const id = await mkBundle(h, alice);
+    for (const [version, path, size] of [
+      ["v1", "b.json", 10],
+      ["v1", "a.json", 20],
+      ["v1", "C.json", 30],
+      ["v2", "x.json", 5],
+    ] as const) {
+      h.clock.tick(1);
+      expect(
+        (await publish(h, alice, id, { version, path, size })).statusCode,
+      ).toBe(200);
+    }
+    const detail = parse(
+      await h.app(
+        ev("GET", `/assets/bundles/${id}`, { headers: alice.cookie }),
+      ),
+    );
+    expect(detail).toMatchObject({ files: 4, bytes: 65 });
+    expect(
+      detail.versions.map((v: { version: string; files: number }) => [
+        v.version,
+        v.files,
+      ]),
+    ).toEqual([
+      ["v2", 1],
+      ["v1", 3],
+    ]);
+    const page = (path: string, query: Record<string, string>) =>
+      h.app(ev("GET", path, { headers: alice.cookie, query }));
+    // `utf8mb4_bin`: capitals sort first.
+    const p1 = parse(
+      await page(`/assets/bundles/${id}/versions/v1`, { limit: "2" }),
+    );
+    expect(p1.files.map((f: { path: string }) => f.path)).toEqual([
+      "C.json",
+      "a.json",
+    ]);
+    expect(p1.next).toBe("a.json");
+    const p2 = parse(
+      await page(`/assets/bundles/${id}/versions/v1`, {
+        cursor: String(p1.next),
+      }),
+    );
+    expect(p2.files.map((f: { path: string }) => f.path)).toEqual(["b.json"]);
+    expect(p2.next).toBeNull();
+    const f1 = parse(
+      await page(`/assets/bundles/${id}/files`, { version: "v1", limit: "2" }),
+    );
+    expect(f1).toMatchObject({ bundleId: id, version: "v1", next: "a.json" });
+    expect(
+      (await page(`/assets/bundles/${id}/versions/v9`, {})).statusCode,
+    ).toBe(404);
+    expect((await page(`/assets/bundles/${id}/files`, {})).statusCode).toBe(
+      400,
+    );
+    expect(
+      (await page(`/assets/bundles/${id}/files`, { version: "v1", limit: "0" }))
+        .statusCode,
     ).toBe(400);
   });
 

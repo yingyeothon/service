@@ -9,6 +9,7 @@ import {
   SESSION_TTL_SEC,
 } from "./session.js";
 import type { Kv } from "@yyt/redis";
+import { limitMailKeys } from "./limits.js";
 
 const loginBody = z
   .object({
@@ -19,10 +20,21 @@ const loginBody = z
   })
   .strict();
 
+const mailResetBody = z
+  .object({
+    teamId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,64}$/)
+      .optional(),
+  })
+  .strict();
+
 /**
  * Dev-only (`STAGE=dev` + `DEBUG_HOOKS=1`): mint a console session for a
  * synthetic member without GitHub, so channel/token flows can be verified with
- * curl. The handler refuses to register this unless the guard passes.
+ * curl, and reset today's limit-request mail counters so the per-team and
+ * per-stage caps can be exercised again. The handler refuses to register
+ * these unless the guard passes.
  */
 export function createDebugRoutes({
   debugKey,
@@ -39,18 +51,32 @@ export function createDebugRoutes({
     throw new Error("DEBUG_KEY must be at least 16 characters");
   const expected = Buffer.from(sha256Hex(debugKey), "hex");
   const sessions = createSessionStore(kv);
+  const requireKey = (headers: Record<string, string | undefined>) => {
+    const given = Buffer.from(sha256Hex(headers["x-debug-key"] ?? ""), "hex");
+    if (!timingSafeEqual(given, expected))
+      throw new AppError("unauthorized", "debug key required");
+  };
   return [
+    defineRoute({
+      method: "POST",
+      path: "/debug/limit-mail-reset",
+      body: mailResetBody,
+      handler: async ({ headers, body }) => {
+        requireKey(headers);
+        const keys = limitMailKeys(body.teamId ?? "", nowSec(clock));
+        const deleted = await kv.del(
+          keys.stage,
+          ...(body.teamId ? [keys.team] : []),
+        );
+        return { deleted };
+      },
+    }),
     defineRoute({
       method: "POST",
       path: "/debug/login",
       body: loginBody,
       handler: async ({ headers, body }) => {
-        const given = Buffer.from(
-          sha256Hex(headers["x-debug-key"] ?? ""),
-          "hex",
-        );
-        if (!timingSafeEqual(given, expected))
-          throw new AppError("unauthorized", "debug key required");
+        requireKey(headers);
         const now = nowSec(clock);
         const memberId = await db.upsertMember({
           id: `dbg_${body.login.toLowerCase()}`,

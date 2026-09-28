@@ -4,6 +4,7 @@ import { createMemoryKv } from "@yyt/redis";
 import type { GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
 import type { RedisUsageReport } from "../src/expire.js";
 import {
+  BUCKET_SIZE_STORAGE_TYPES,
   createCloudWatchUsageMetrics,
   formatBytes,
   runUsageDigest,
@@ -640,6 +641,76 @@ describe("usage digest", () => {
     expect(r.warnings.map((w) => w.kind)).toEqual(["social:unread"]);
   });
 
+  it("says the pending limit requests once each UTC day they are there, and nothing at zero", async () => {
+    const s = setup();
+    let now = NOW_SEC;
+    const clock: Clock = { now: () => now * 1000 };
+    const kv = createMemoryKv({ clock });
+    let pending: { count: number; oldestAt: number | null } = {
+      count: 2,
+      oldestAt: NOW_SEC - 3 * 86400 - 5,
+    };
+    const run = () =>
+      runUsageDigest({
+        stage: "dev",
+        limits: { countPending: async () => pending },
+        kv,
+        notify: s.notify,
+        clock,
+        logger: nullLogger,
+      });
+    const first = await run();
+    expect(first.announced).toEqual([
+      {
+        kind: "limits:pending",
+        type: "daily",
+        text: "pending limit requests: 2 (oldest 3d)",
+      },
+    ]);
+    // A retry or a manual invoke the same day says nothing new.
+    expect((await run()).announced).toEqual([]);
+    expect(s.sent).toHaveLength(1);
+    // Unlike a level warning, the next day says it again.
+    now += 86400;
+    expect((await run()).announced).toHaveLength(1);
+    expect(s.sent).toHaveLength(2);
+    pending = { count: 0, oldestAt: null };
+    now += 86400;
+    expect((await run()).warnings).toEqual([]);
+    expect(s.sent).toHaveLength(2);
+  });
+
+  it("an undelivered pending line is sent again the same day, and a failed read is its own warning", async () => {
+    const s = setup();
+    let fail = true;
+    const notify = async (subject: string, message: string) => {
+      if (fail) throw new Error("sns down");
+      s.sent.push({ subject, message });
+    };
+    const run = (
+      countPending: () => Promise<{ count: number; oldestAt: number | null }>,
+    ) =>
+      runUsageDigest({
+        stage: "dev",
+        limits: { countPending },
+        kv: s.kv,
+        notify,
+        clock: s.clock,
+        logger: nullLogger,
+      });
+    const one = async () => ({ count: 1, oldestAt: NOW_SEC });
+    expect((await run(one)).notified).toBe(false);
+    fail = false;
+    expect((await run(one)).announced.map((w) => w.kind)).toEqual([
+      "limits:pending",
+    ]);
+    const blind = await run(async () => {
+      throw new Error("db down");
+    });
+    expect(blind.errors).toEqual(["limits"]);
+    expect(blind.announced.map((w) => w.kind)).toEqual(["limits:unread"]);
+  });
+
   it("formats bytes for humans", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(1536)).toBe("1.5 KiB");
@@ -678,40 +749,50 @@ describe("cloudwatch usage metrics", () => {
     return { metrics, calls };
   }
 
-  it("reads the latest daily S3 storage point from the bucket's region", async () => {
-    const { metrics, calls } = fakeClients((_, input) =>
-      input.MetricName === "BucketSizeBytes"
-        ? [
+  it("sums the latest daily S3 storage points of Standard and the Intelligent-Tiering tiers", async () => {
+    const perType: Record<string, number> = {
+      StandardStorage: 6_510_861_271,
+      IntelligentTieringFAStorage: 1_000,
+      IntelligentTieringIAStorage: 20,
+      // No point for AIA: a tier nothing has reached yet.
+    };
+    const { metrics, calls } = fakeClients((_, input) => {
+      const type = input.Dimensions![1]!.Value!;
+      if (input.MetricName === "NumberOfObjects")
+        return [{ Timestamp: new Date((dayEnd - DAY) * 1000), Average: 131 }];
+      const v = perType[type];
+      return v === undefined
+        ? []
+        : [
             { Timestamp: new Date((dayEnd - 2 * DAY) * 1000), Average: 1 },
-            {
-              Timestamp: new Date((dayEnd - DAY) * 1000),
-              Average: 6_510_861_271,
-            },
-          ]
-        : [{ Timestamp: new Date((dayEnd - DAY) * 1000), Average: 131 }],
-    );
+            { Timestamp: new Date((dayEnd - DAY) * 1000), Average: v },
+          ];
+    });
     await expect(metrics.bucketSize("some-bucket")).resolves.toEqual({
-      bytes: 6_510_861_271,
+      bytes: 6_510_861_271 + 1_000 + 20,
       objects: 131,
     });
-    expect(calls.map((c) => c.region)).toEqual([
-      "ap-northeast-2",
-      "ap-northeast-2",
+    expect(new Set(calls.map((c) => c.region))).toEqual(
+      new Set(["ap-northeast-2"]),
+    );
+    const sizes = calls.filter((c) => c.input.MetricName === "BucketSizeBytes");
+    expect(sizes.map((c) => c.input.Dimensions![1]!.Value)).toEqual([
+      ...BUCKET_SIZE_STORAGE_TYPES,
     ]);
-    const size = calls[0]!.input;
+    const size = sizes[0]!.input;
     expect(size.Namespace).toBe("AWS/S3");
-    expect(size.Dimensions).toEqual([
-      { Name: "BucketName", Value: "some-bucket" },
-      { Name: "StorageType", Value: "StandardStorage" },
-    ]);
+    expect(size.Dimensions![0]).toEqual({
+      Name: "BucketName",
+      Value: "some-bucket",
+    });
     expect(size.Period).toBe(DAY);
     expect(size.Statistics).toEqual(["Average"]);
     expect(size.EndTime).toEqual(new Date(dayEnd * 1000));
     expect(size.StartTime).toEqual(new Date((dayEnd - 3 * DAY) * 1000));
-    expect(calls[1]!.input.Dimensions![1]).toEqual({
-      Name: "StorageType",
-      Value: "AllStorageTypes",
-    });
+    expect(
+      calls.find((c) => c.input.MetricName === "NumberOfObjects")!.input
+        .Dimensions![1],
+    ).toEqual({ Name: "StorageType", Value: "AllStorageTypes" });
   });
 
   it("returns undefined for a bucket CloudWatch has no point for", async () => {

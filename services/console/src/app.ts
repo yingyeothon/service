@@ -5,6 +5,7 @@ import {
 } from "@yyt/console-db";
 import {
   AppError,
+  isNoExpiry,
   nowSec,
   nullLogger,
   randomHex,
@@ -23,6 +24,7 @@ import type {
   EventsDb,
   KvStoreDb,
   LeaderboardDb,
+  LimitsDb,
   SocialDb,
   ShowsDb,
   SitesDb,
@@ -74,6 +76,7 @@ import {
   deleteChannelLbScores,
 } from "./leaderboard.js";
 import { createKitConfigRoutes } from "./kit-config.js";
+import { createLimitRoutes, type LimitNotify } from "./limits.js";
 import { createEventRoutes } from "./events.js";
 import { canReadShow, createShowRoutes } from "./shows.js";
 import {
@@ -122,6 +125,14 @@ export interface ConsoleAppOptions {
   leaderboards: LeaderboardDb;
   /** Profiles and relations; the state stack serves `/social/*` from the same tables. */
   social: SocialDb;
+  /** Limit requests and overrides (docs/decisions.md *Limit requests*). */
+  limits: LimitsDb;
+  /**
+   * Publishes one e-mail per new limit request to the stage's alarm topic;
+   * omit when the stage has none. Bounded (a short timeout, one attempt): it
+   * runs inside the request.
+   */
+  notify?: LimitNotify;
   /** Omit when no poster bucket is configured: poster routes answer 503. */
   posters?: PosterStore;
   /** Omit when no artifact bucket is configured: catalog upload routes answer 503. */
@@ -204,6 +215,8 @@ export function createConsoleApp({
   kvstore,
   leaderboards,
   social,
+  limits,
+  notify,
   posters,
   artifacts,
   cdnBaseUrl,
@@ -898,6 +911,9 @@ export function createConsoleApp({
           id: ctx.params.id!,
         });
         const now = nowSec(clock);
+        // A granted lifetime is not extended; revoking it is the way back.
+        if (isNoExpiry(row.expiresAt))
+          throw new AppError("conflict", "the channel has no expiry");
         const from = Math.max(row.expiresAt, now);
         const expiresAt = Math.min(
           from + CHANNEL_EXTEND_SEC,
@@ -906,8 +922,17 @@ export function createConsoleApp({
         if (expiresAt <= row.expiresAt)
           throw new AppError("conflict", "already at the maximum expiry");
         // A channel the sweep disabled is revived by extending it (until the
-        // 30-day deletion, after which it is gone for good).
-        await db.updateChannel(row.id, { expiresAt, disabledAt: null });
+        // 30-day deletion, after which it is gone for good). Conditional on
+        // the expiry this read: a lifetime grant that landed in between must
+        // not be overwritten with a date.
+        if (
+          !(await db.updateChannel(
+            row.id,
+            { expiresAt, disabledAt: null },
+            { expiresAt: row.expiresAt },
+          ))
+        )
+          throw new AppError("conflict", "the channel changed; reload it");
         await audit(id.subject, "channel.extend", row.id, { expiresAt });
         await channelHistory(row, id.subject, "resource.update", ["expiresAt"]);
         return view({ ...row, expiresAt, disabledAt: null });
@@ -947,12 +972,11 @@ export function createConsoleApp({
           id: ctx.params.id!,
         });
         const now = nowSec(clock);
-        // Secrets go with the row: a soft-deleted channel must not keep a usable key.
-        await db.updateChannel(row.id, {
-          deletedAt: now,
-          disabledAt: row.disabledAt ?? now,
-          secret: {},
-        });
+        // Secrets go with the row: a soft-deleted channel must not keep a
+        // usable key. Its pending limit requests and its overrides go in the
+        // same transaction (docs/decisions.md *Limit requests* #2).
+        if (!(await db.deleteChannel(row.id, now)))
+          throw new AppError("not_found", "channel not found");
         // The participant credential goes with the channel. Deliberately not on
         // *disable*: an expired channel can be revived by extending it, and a
         // revoke there would silently strip a credential the owner still holds.
@@ -1050,6 +1074,7 @@ export function createConsoleApp({
   const assetRoutes = createAssetRoutes({
     db,
     assets,
+    limits,
     team,
     access,
     crumbs,
@@ -1098,6 +1123,23 @@ export function createConsoleApp({
     clock,
     logger,
     writeSlot: createWriteSlot({ kv, clock }),
+    audit,
+  });
+
+  const limitRoutes = createLimitRoutes({
+    limits,
+    db,
+    team,
+    assets,
+    access,
+    history,
+    kv,
+    writeSlot: createWriteSlot({ kv, clock }),
+    notify,
+    webUrl: web,
+    stage,
+    clock,
+    logger,
     audit,
   });
 
@@ -1150,6 +1192,7 @@ export function createConsoleApp({
       ...kvStoreRoutes,
       ...leaderboardRoutes,
       ...kitConfigRoutes,
+      ...limitRoutes,
       ...channelRedisRoutes,
       ...channelDocKeyRoutes,
       ...gatewayRoutes,

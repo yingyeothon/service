@@ -4,6 +4,7 @@ import type {
   KvStoreDb,
   LbBoardUsage,
   LeaderboardDb,
+  LimitsDb,
   SocialChannelUsage,
   SocialDb,
 } from "@yyt/console-db";
@@ -49,6 +50,8 @@ import { REDIS_CHANNEL_KEY_WARN, type RedisUsageReport } from "./expire.js";
 export const USAGE_LAST_EVICTED_KEY = "usage:redis:evicted";
 export const USAGE_LAST_BUCKET_BYTES_KEY = "usage:bucket:bytes";
 export const USAGE_LAST_LEVEL_WARNINGS_KEY = "usage:warned";
+/** `usage:daily:{kind}` = the UTC day a `daily` warning was last delivered. */
+export const USAGE_DAILY_PREFIX = "usage:daily:";
 /** A reading older than this is stale: comparing against it would report days of growth as one. */
 const LAST_READING_TTL_SEC = 3 * 24 * 3600;
 
@@ -184,6 +187,8 @@ export interface UsageDigestOptions {
   leaderboards?: Pick<LeaderboardDb, "scoresTableBytes" | "topBoards">;
   /** Social profiles and relations; omitted leaves the social lines out. */
   social?: Pick<SocialDb, "socialTableBytes" | "topSocialChannels">;
+  /** Limit requests; omitted leaves the pending-request line out. */
+  limits?: Pick<LimitsDb, "countPending">;
   kv: Kv;
   /** Publishes to the alarm topic; absent when the stage has none. */
   notify?: (subject: string, message: string) => Promise<void>;
@@ -195,8 +200,12 @@ export interface UsageDigestOptions {
 export interface UsageWarning {
   /** Stable identity for the announce-once rule, e.g. `channel:q_x`. */
   kind: string;
-  /** `level`: a condition that persists day to day; `delta`: a new event each day. */
-  type: "level" | "delta";
+  /**
+   * `level`: a condition that persists day to day, announced once;
+   * `delta`: a new event each day; `daily`: a queue of work, announced once
+   * every UTC day it is there (pending limit requests).
+   */
+  type: "level" | "delta" | "daily";
   text: string;
 }
 
@@ -258,6 +267,7 @@ export async function runUsageDigest({
   kvstore,
   leaderboards,
   social,
+  limits,
   kv,
   notify,
   thresholds: overrides,
@@ -324,6 +334,29 @@ export async function runUsageDigest({
           type: "level",
           text: `channel ${c.channelId} holds ${c.keys} redis keys (warn at ${t.channelKeys})`,
         });
+  }
+
+  if (limits) {
+    const pending = await attempt("limits", () => limits.countPending());
+    if (errors.includes("limits"))
+      // The queue going blind is its own condition: without it, a failing
+      // read looks exactly like an empty queue.
+      warnings.push({
+        kind: "limits:unread",
+        type: "level",
+        text: "pending limit requests could not be read; the queue is unmonitored until it answers again",
+      });
+    if (pending && pending.count > 0) {
+      const days =
+        pending.oldestAt === null
+          ? 0
+          : Math.floor((nowSec(clock) - pending.oldestAt) / 86400);
+      warnings.push({
+        kind: "limits:pending",
+        type: "daily",
+        text: `pending limit requests: ${pending.count} (oldest ${days}d)`,
+      });
+    }
   }
 
   if (metrics && bucket) {
@@ -530,8 +563,22 @@ export async function runUsageDigest({
   const levelKinds = warnings
     .filter((w) => w.type === "level")
     .map((w) => w.kind);
-  const announced = warnings.filter(
-    (w) => w.type === "delta" || !seen.has(w.kind),
+  // A `daily` warning goes out once per UTC day: `expire` is retried and
+  // invoked by hand, and a second run the same day must not repeat it.
+  const today = new Date(nowSec(clock) * 1000).toISOString().slice(0, 10);
+  const dailyDone = new Set<string>();
+  for (const w of warnings)
+    if (
+      w.type === "daily" &&
+      (await kv.get(`${USAGE_DAILY_PREFIX}${w.kind}`)) === today
+    )
+      dailyDone.add(w.kind);
+  const announced = warnings.filter((w) =>
+    w.type === "level"
+      ? !seen.has(w.kind)
+      : w.type === "daily"
+        ? !dailyDone.has(w.kind)
+        : true,
   );
   result.announced = announced;
 
@@ -562,11 +609,26 @@ export async function runUsageDigest({
     USAGE_LAST_LEVEL_WARNINGS_KEY,
     JSON.stringify(levelKindsToStore),
   ]);
+  if (result.notified)
+    for (const w of announced)
+      if (w.type === "daily")
+        readings.push([`${USAGE_DAILY_PREFIX}${w.kind}`, today]);
 
   for (const [key, value] of readings)
     await kv.set(key, value, { ex: LAST_READING_TTL_SEC });
   return result;
 }
+
+/**
+ * Standard plus the Intelligent-Tiering tiers that need no opt-in (frequent,
+ * infrequent, archive instant access); the archive tiers are never enabled.
+ */
+export const BUCKET_SIZE_STORAGE_TYPES = [
+  "StandardStorage",
+  "IntelligentTieringFAStorage",
+  "IntelligentTieringIAStorage",
+  "IntelligentTieringAIAStorage",
+] as const;
 
 const HOUR_SEC = 3600;
 const DAY_SEC = 24 * HOUR_SEC;
@@ -679,12 +741,21 @@ export function createCloudWatchUsageMetrics({
   };
   return {
     bucketSize: async (bucket) => {
-      const [bytes, objects] = await Promise.all([
-        latestDailyAverage("BucketSizeBytes", bucket, "StandardStorage"),
+      // `BucketSizeBytes` has no all-classes storage type, and the artifact
+      // buckets' lifecycle rule moves objects into Intelligent-Tiering, whose
+      // automatic tiers report under their own types: reading only
+      // `StandardStorage` saw the bucket shrink as objects aged.
+      const [objects, ...sizes] = await Promise.all([
         latestDailyAverage("NumberOfObjects", bucket, "AllStorageTypes"),
+        ...BUCKET_SIZE_STORAGE_TYPES.map((type) =>
+          latestDailyAverage("BucketSizeBytes", bucket, type),
+        ),
       ]);
-      if (bytes === undefined) return undefined;
-      return { bytes, objects: objects ?? 0 };
+      if (sizes.every((b) => b === undefined)) return undefined;
+      return {
+        bytes: sizes.reduce<number>((n, b) => n + (b ?? 0), 0),
+        objects: objects ?? 0,
+      };
     },
     cdnTraffic: async (distributionId) => {
       const [bytes, requests] = await Promise.all([

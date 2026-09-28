@@ -8,6 +8,7 @@ import {
   createMemoryShowsDb,
   createMemoryKvStoreDb,
   createMemoryLeaderboardDb,
+  createMemoryLimitsDb,
   createMemorySocialDb,
   createMemorySitesDb,
   createMemoryTeamDb,
@@ -64,6 +65,12 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   // The channel list sorts by project name; the real table joins `projects`.
   const db = createMemoryConsoleDb({
     projectName: (id) => teamDb.projects.get(id)?.name,
+    // The limit half of a channel delete and the purge's cascade, which the
+    // real schema runs in the delete's transaction and through the FK.
+    channelsDeleted: (ids, at) => limits.channelsDeleted(ids, at),
+    channelsPurged: (ids) => {
+      for (const id of ids) limits.scopeDeleted({ kind: "channel", id });
+    },
   });
   // The `createdBy`/`login` sorts join `members.github_login` on the real DB.
   const loginOf = (id: string) => db.members.get(id)?.githubLogin ?? id;
@@ -84,7 +91,30 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const catalog = createMemoryCatalogDb((id) => db.members.has(id), {
     loginOf,
   });
-  const assets = createMemoryAssetsDb((id) => db.members.has(id), { loginOf });
+  const assets = createMemoryAssetsDb((id) => db.members.has(id), {
+    loginOf,
+    bundleDeleted: (id) => limits.scopeDeleted({ kind: "bundle", id }),
+  });
+  const limits = createMemoryLimitsDb({
+    scopeExists: (s) =>
+      s.kind === "channel"
+        ? db.channels.get(s.id)?.deletedAt === null
+        : s.kind === "bundle"
+          ? assets.bundles.has(s.id)
+          : teamDb.projects.has(s.id),
+    writeChannel: (id, w) => {
+      const c = db.channels.get(id);
+      if (!c || c.deletedAt !== null) return false;
+      db.channels.set(id, {
+        ...c,
+        expiresAt: w.expiresAt,
+        ...(w.revive ? { disabledAt: null } : {}),
+      });
+      return true;
+    },
+  });
+  /** What the request e-mails would have said: `[subject, message]`. */
+  const mails: [string, string][] = [];
   const sites = createMemorySitesDb((id) => db.members.has(id), {
     loginOf,
     teamExists: (id) => teamDb.teams.has(id),
@@ -131,6 +161,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     countResources: (projectId) => countIn((r) => r.projectId === projectId),
     countTeamResources: (teamId) => countIn((r) => r.teamId === teamId),
     newHistoryId: historyId,
+    projectDeleted: (id) => limits.scopeDeleted({ kind: "project", id }),
   });
   const { agent, fetch } = mockAgent();
   const app = createConsoleApp({
@@ -148,6 +179,10 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     kvstore,
     leaderboards,
     social,
+    limits,
+    notify: async (subject, message) => {
+      mails.push([subject, message]);
+    },
     posters,
     artifacts,
     cdnBaseUrl: CDN,
@@ -276,6 +311,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     kvstore,
     leaderboards,
     social,
+    limits,
+    mails,
     teamDb,
     posters,
     artifacts,

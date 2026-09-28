@@ -26,10 +26,12 @@ import type { TeamAccessHelpers } from "./team-access.js";
  * masking.
  */
 
-/** Per project. Bytes and rows are bounded elsewhere; these bound sprawl. */
+/**
+ * Per project. Bytes and rows are bounded elsewhere; these bound sprawl.
+ * Asset bundles are a limit (`asset.bundlesPerProject`, `limits.ts`).
+ */
 export const CHANNELS_PER_PROJECT = 50;
 export const APPS_PER_PROJECT = 50;
-export const BUNDLES_PER_PROJECT = 20;
 
 /** MariaDB's default collation compares names case-insensitively. */
 export function sameName(a: string, b: string): boolean {

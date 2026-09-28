@@ -10,6 +10,7 @@ import {
   createLeaderboardDb,
   createSocialDb,
   createSitesDb,
+  createLimitsDb,
   createStateDb,
   mysqlOptionsFromEnv,
   type AssetsDb,
@@ -18,13 +19,20 @@ import {
   type EventsDb,
   type KvStoreDb,
   type LeaderboardDb,
+  type LimitsDb,
   type SocialDb,
   type ShowsDb,
   type SitesDb,
   type TeamDb,
   type StateDb,
 } from "@yyt/console-db";
-import { createJsonLogger, requireEnv, systemClock } from "@yyt/core";
+import {
+  createJsonLogger,
+  nowSec,
+  requireEnv,
+  systemClock,
+  ulid,
+} from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import {
   createRedisAclAdmin,
@@ -51,6 +59,7 @@ import {
 } from "./expire.js";
 import { runEventSweep } from "./events.js";
 import { runShowSweep } from "./shows.js";
+import { runLimitSweep } from "./limits.js";
 import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 import {
   createCloudWatchUsageMetrics,
@@ -73,6 +82,7 @@ import { CloudFrontClient } from "@aws-sdk/client-cloudfront";
 import { createGithubLogin } from "./github.js";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { historyId } from "./team.js";
+import { createResourceHistory } from "./resources.js";
 import { createS3PosterStore } from "./poster.js";
 import { createS3SiteStore, type SiteStore } from "./site-store.js";
 import {
@@ -91,6 +101,7 @@ const logger = createJsonLogger(console);
 interface Deps {
   stage: string;
   db: ConsoleDb;
+  limits: LimitsDb;
   events: EventsDb;
   shows: ShowsDb;
   catalog: CatalogDb;
@@ -136,6 +147,7 @@ function getDeps(): Promise<Deps> {
     return {
       stage,
       db: createConsoleDb(raw),
+      limits: createLimitsDb(raw),
       events: createEventsDb(raw),
       shows: createShowsDb(raw),
       catalog: createCatalogDb(raw),
@@ -190,6 +202,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
   const {
     stage,
     db,
+    limits,
     events,
     shows,
     catalog,
@@ -252,6 +265,10 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     kvstore,
     leaderboards,
     social,
+    limits,
+    // Inside a request: one attempt, a short timeout (the cron's publisher
+    // retries and waits longer, which a member's click should not).
+    notify: alarmNotify({ attempts: 1, timeoutMs: 3000 }),
     state,
     posters: posterBucket
       ? createS3PosterStore({ bucket: posterBucket })
@@ -360,6 +377,7 @@ export const expire = async (): Promise<void> => {
   const {
     stage,
     db,
+    limits,
     events,
     shows,
     catalog,
@@ -434,11 +452,31 @@ export const expire = async (): Promise<void> => {
         }).map(({ label, id }) => ({ label, id })),
         // Two missed 5-minute ticks would already be odd; an hour is a stop.
         guardHeartbeat: { key: CDN_GUARD_RUN_KEY, staleAfterSec: 3600 },
+        limits,
         kv,
         notify: alarmNotify(),
         logger,
       });
     },
+    // Expired limit overrides and decided requests past 90 days; its own
+    // step so a failure elsewhere cannot keep a temporary raise in force.
+    () =>
+      runLimitSweep({
+        limits,
+        history: createResourceHistory(team, logger),
+        audit: async (actorId, action, target, detail) => {
+          await db.insertAudit({
+            id: ulid(),
+            actorId,
+            action,
+            target,
+            at: nowSec(systemClock),
+            detail,
+          });
+        },
+        clock: systemClock,
+        logger,
+      }),
     // Its own step, after the channel expiry that names the channels whose
     // players' entries go: a soft-deleted collection and an expired entry are
     // storage nobody can address, and nothing else ever reclaims them.
@@ -502,20 +540,35 @@ export const expire = async (): Promise<void> => {
   if (failures.length > 0) throw failures[0];
 };
 
-let sns: SNSClient | undefined;
+const snsClients = new Map<string, SNSClient>();
 
-/** Publisher for the stage's alarm topic; `undefined` when the stage has none. */
-function alarmNotify():
+/**
+ * Publisher for the stage's alarm topic; `undefined` when the stage has none.
+ * The default is bounded like the CloudWatch reads (the probe and the CDN
+ * guard wait on it); a request path passes a tighter bound.
+ */
+function alarmNotify({
+  attempts = 2,
+  timeoutMs = 5000,
+}: { attempts?: number; timeoutMs?: number } = {}):
   ((subject: string, message: string) => Promise<void>) | undefined {
   const topic = process.env.ALARM_TOPIC_ARN ?? "";
   if (!topic) return undefined;
-  // Bounded like the CloudWatch reads: the probe and the CDN guard wait on it.
-  sns ??= new SNSClient({
-    maxAttempts: 2,
-    requestHandler: { requestTimeout: 5000, connectionTimeout: 3000 },
-  });
+  const k = `${attempts}:${timeoutMs}`;
+  let sns = snsClients.get(k);
+  if (!sns) {
+    sns = new SNSClient({
+      maxAttempts: attempts,
+      requestHandler: {
+        requestTimeout: timeoutMs,
+        connectionTimeout: Math.min(3000, timeoutMs),
+      },
+    });
+    snsClients.set(k, sns);
+  }
+  const client = sns;
   return async (subject, message) => {
-    await sns!.send(
+    await client.send(
       new PublishCommand({
         TopicArn: topic,
         Subject: subject,

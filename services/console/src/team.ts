@@ -1123,10 +1123,7 @@ export function createTeamRoutes({
     const bundle = await assets.findBundle(body.bundleId);
     if (!bundle || bundle.projectId !== projectId)
       throw new AppError("not_found", "bundle not found in this project");
-    const files = await assets.listFiles(bundle.id, {
-      version: body.assetVersion,
-    });
-    if (files.length === 0)
+    if (!(await assets.hasVersion(bundle.id, body.assetVersion)))
       throw new AppError("not_found", "asset version not found");
   }
 
