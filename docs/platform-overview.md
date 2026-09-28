@@ -177,14 +177,14 @@ No skill rating, no rule expressions, no backfill into a running match.
 The platform generalises **storage shapes, never game logic**, and never interprets a
 game's schema — it lives opaquely inside the value.
 
-| Store           | Backing                   | Written by                                                                        | Read by                       | Guarantee                                |
-| --------------- | ------------------------- | --------------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------- |
-| **asset**       | S3 + CDN, immutable       | team (presign → commit)                                                           | anyone, unauthenticated       | write-once per `(bundle, version, path)` |
-| **doc** (`/s`)  | MariaDB, versioned JSON   | server apiKey only                                                                | its owner, or the server      | `If-Match` mandatory; 428/409            |
-| **ephemeral**   | Redis, TTL mandatory      | gateway; a `q` game's own Lambda in its prefix                                    | the same                      | survives a reconnect, not a logout       |
-| **kv** (`/kv`)  | MariaDB, per collection   | by scope                                                                          | by scope                      | optional CAS, TTL, AES-256-GCM           |
-| **leaderboard** | MariaDB, per board        | `submit: server \| owner`                                                         | any credential of the project | platform-computed periods, bounded rank  |
-| **social**      | MariaDB, per auth channel | players; a server key may write a profile and delete, **never create a relation** | players                       | two-row transitions in canonical order   |
+| Store           | Backing                                                                  | Written by                                                                        | Read by                                                     | Guarantee                                |
+| --------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------- |
+| **asset**       | S3 + CDN, immutable; live and client-side encrypted bundles **designed** | team (presign → commit)                                                           | anyone, unauthenticated (an encrypted bundle as ciphertext) | write-once per `(bundle, version, path)` |
+| **doc** (`/s`)  | MariaDB, versioned JSON                                                  | server apiKey only                                                                | its owner, or the server                                    | `If-Match` mandatory; 428/409            |
+| **ephemeral**   | Redis, TTL mandatory                                                     | gateway; a `q` game's own Lambda in its prefix                                    | the same                                                    | survives a reconnect, not a logout       |
+| **kv** (`/kv`)  | MariaDB, per collection                                                  | by scope                                                                          | by scope                                                    | optional CAS, TTL, AES-256-GCM           |
+| **leaderboard** | MariaDB, per board                                                       | `submit: server \| owner`                                                         | any credential of the project                               | platform-computed periods, bounded rank  |
+| **social**      | MariaDB, per auth channel                                                | players; a server key may write a profile and delete, **never create a relation** | players                                                     | two-row transitions in canonical order   |
 
 Cross-cutting: a value is **stored as sent, byte for byte** — the request is parsed only
 to prove it is JSON, because `JSON.stringify(JSON.parse(x))` loses integers past 2^53,
@@ -239,8 +239,9 @@ revocation would kill a running game.
 
 ### Client libraries
 
-The wire packages — `gamebase-client`, `kvstore-client`, `auth-client`, and a
-`platform-client` for the surfaces without one — map to the server. Above them, **designed
+The wire packages — `gamebase-client`, `kvstore-client`, `auth-client`, a
+`platform-client` for the surfaces without one, and an `asset-client` for encrypted and
+resumable asset downloads (**designed**, `docs/asset-encryption.md`) — map to the server. Above them, **designed
 but not yet shipped in any language**, sits one **game kit** per language (TypeScript, C#,
 Dart) whose modules are shaped by _purpose_ rather than by routes: `session`, `content`,
 `save`, `room`, `turns`, `board`, `mail`, `friends`, `matchmaking`. Identical module,
@@ -260,7 +261,8 @@ The rules that generalize, each earned from a specific failure:
 3. **Everything expires.** Every Redis key carries a TTL in the same command as its write;
    one daily sweep runs eleven budgeted phases over channels, catalog, assets, kv,
    leaderboards, social, events, shows, sites and Redis ACLs. Channels live 7 days,
-   extendable by 7 up to 28; expired → disabled → deleted after 30 days.
+   extendable by 7 up to 28; expired → disabled → deleted after 30 days (an admin-granted
+   no-expiry is **designed**).
 4. **Credentials are derived, scoped and printed whole.** Redis prefixes and ACL usernames
    are computed from the channel id, never typed; a credential is shown as one copyable
    block because a retyped prefix fails `NOPERM` or — worse — silently relays nothing.
@@ -301,19 +303,20 @@ The rules that generalize, each earned from a specific failure:
 
 Where the platform binds first, and what binds it:
 
-| Ceiling                        | Value                                                                               | Bound by                                              |
-| ------------------------------ | ----------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Concurrent players (gateway)   | design ~10; socket cap 64; 256 MB container                                         | one process on a shared box                           |
-| MariaDB connections            | 55 reserved of 60                                                                   | `reservedConcurrency` summed across five stacks       |
-| Redis                          | 256 MB, `allkeys-lru`, shared by both stages and every participant                  | no per-account quota exists                           |
-| API throttles                  | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`); console 50 / 100 | one stage's whole surface                             |
-| CloudWatch alarms              | 10 (8 prod + 2 dev)                                                                 | account free tier; adding one means dropping one      |
-| Public CDN traffic             | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day   | the CDN guard disables it (console: alert only)       |
-| Frames                         | 16 KB inbound, 32 KB outbound; topic 16 KB                                          | refused, not truncated                                |
-| Document / kv value            | 64 KB per document, 10 000 documents per channel                                    | refused, not trimmed                                  |
-| Leaderboard                    | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                         | worst case `maxEntries × (1 + 2 × (retain + 1))` rows |
-| Per-project and per-team scope | 5 teams/member, 20 projects/team, ~50 resources of each kind per project            | list scans stay bounded without an index              |
-| Recorded writes                | 2/s per member                                                                      | every team, event and show write takes the slot       |
+| Ceiling                        | Value                                                                                                                                                    | Bound by                                                  |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Concurrent players (gateway)   | design ~10; socket cap 64; 256 MB container                                                                                                              | one process on a shared box                               |
+| MariaDB connections            | 55 reserved of 60                                                                                                                                        | `reservedConcurrency` summed across five stacks           |
+| Redis                          | 256 MB, `allkeys-lru`, shared by both stages and every participant                                                                                       | no per-account quota exists                               |
+| API throttles                  | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`); console 50 / 100                                                                      | one stage's whole surface                                 |
+| CloudWatch alarms              | 10 (8 prod + 2 dev)                                                                                                                                      | account free tier; adding one means dropping one          |
+| Public CDN traffic             | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day                                                                        | the CDN guard disables it (console: alert only)           |
+| Frames                         | 16 KB inbound, 32 KB outbound; topic 16 KB                                                                                                               | refused, not truncated                                    |
+| Document / kv value            | 64 KB per document, 10 000 documents per channel                                                                                                         | refused, not trimmed                                      |
+| Leaderboard                    | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                                                                                              | worst case `maxEntries × (1 + 2 × (retain + 1))` rows     |
+| Per-project and per-team scope | 5 teams/member, 20 projects/team, ~50 resources of each kind per project                                                                                 | list scans stay bounded without an index                  |
+| Asset storage                  | 2 MiB per file, 20 MiB per bundle, 400 MiB per project; an admin may grant up to 256 MiB per file, 3 GiB per bundle and 5 GiB per project (**designed**) | the CDN guard's lines; per-bundle totals instead of scans |
+| Recorded writes                | 2/s per member                                                                                                                                           | every team, event and show write takes the slot           |
 
 Monitoring is one liveness probe reporting only the down and recovered edges after two
 consecutive failures, plus one daily usage digest (Redis memory, evictions, per-channel

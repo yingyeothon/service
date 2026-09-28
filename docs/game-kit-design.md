@@ -21,7 +21,9 @@ they are (`gateway/README.md`, `services/state/README.md`,
    surface and stay published as they are: `gamebase-client` (gateway),
    `kvstore-client` (kv), `auth-client` (auth), plus a small `platform-client`
    for the HTTP surfaces that have no package yet (`/lb`, `/social`, `/time`,
-   the match socket). The _kit_ is one umbrella package —
+   the match socket), and — decided 2026-09-28, not written yet — an
+   `asset-client` that downloads, resumes and decrypts asset bundles
+   (`docs/asset-encryption.md`). The _kit_ is one umbrella package —
    `@yingyeothon/game-kit`, `Yingyeothon.GameKit`, `yingyeothon_game_kit` —
    whose modules use only the wire packages' public API. A game that needs
    the wire imports a wire package explicitly; the kit never re-exports

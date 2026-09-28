@@ -6,12 +6,13 @@ Read this before your first commit. `CONTRIBUTING.md` requires it; the git hooks
 
 ## What must never enter git
 
-| Class                            | Examples                                                                 | Where it lives instead                                    |
-| -------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------- |
-| Credentials                      | MySQL/Redis passwords, OAuth client secrets, session secrets, debug keys | `local/env/<service>.<stage>.env` (gitignored) → SSM      |
-| Infra identifiers                | stateful hostname/IP, database names, MySQL/Redis account names          | private ops repo `yyt-stateful`; refer to it by name only |
-| Work notes that may cite either  | `todo/`                                                                  | machine-local, gitignored                                 |
-| Generated artifacts with secrets | `local/deploy/*` (SSM logs, `debug-key.dev`), `.serverless/`, `.env*`    | gitignored                                                |
+| Class                            | Examples                                                                 | Where it lives instead                                                                    |
+| -------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Credentials                      | MySQL/Redis passwords, OAuth client secrets, session secrets, debug keys | `local/env/<service>.<stage>.env` (gitignored) → SSM                                      |
+| Infra identifiers                | stateful hostname/IP, database names, MySQL/Redis account names          | private ops repo `yyt-stateful`; refer to it by name only                                 |
+| Work notes that may cite either  | `todo/`                                                                  | machine-local, gitignored                                                                 |
+| Generated artifacts with secrets | `local/deploy/*` (SSM logs, `debug-key.dev`), `.serverless/`, `.env*`    | gitignored                                                                                |
+| Asset bundle keys                | `yak1.…`, the key of an encrypted asset bundle (2026-09-28)              | the console (`yyt asset key show`); a consumer app reads it from a gitignored build input |
 
 Allowed in git: public service domains (`*.yyt.life`), the bucket names this repo's stacks create (`yyt-service-<stage>`, `yyt-console-*-<stage>`), SSM parameter **names**, placeholders (`<stateful-host>`, `<database>`), and the fixed test fixture `0123456789abcdef…`.
 
@@ -22,7 +23,7 @@ Not secrets, on purpose: team, project and resource **ids** (`team_…`, `prj_�
 ## Where secrets live
 
 1. **`local/env/<service>.<stage>.env`** — one file per service × stage (`console|auth|topic|match` × `dev|prod`), layout in `local/env.example`, issued by `yyt-stateful`. Mode 600, directory 700.
-2. **SSM SecureString** `/yyt-service/<stage>/<service>/{mysql-host,mysql-port,mysql-database,mysql-user,mysql-password,redis-host,redis-port,redis-user,redis-password,redis-key-prefix}`, console-only `console/redis-acl-{user,password}` (the participant-credential issuer, optional — set both or neither, and **removing it needs an explicit `aws ssm delete-parameter`**, which `bootstrap-ssm.sh` does when the local env file no longer carries the pair: `put` never deletes, so a stale parameter would be re-baked into the Lambda by the next deploy), plus stage-wide `debug-key` (dev), `github-client-*`, `admin-github-logins`, `session-secret`, `gateway-token`, `gateway-ws-url`, `kv-kek` (the kv key-encryption key — never rotated casually, see `rules/deployment.md` "SSM environment values"), and dev-only `auth/debug-mysql-{user,password}`. Plain-`String` infra pointers (`artifact-bucket`, `site-bucket`, `cdn-distribution-id`, `site-distribution-id`, `doc-base-url`, `cloudfront-cert-arn`, `site-host-cert-arn`) are listed in `rules/deployment.md`. The stage-wide SecureString `origin-secret` (the `Referer` value of the origin lock) was retired on 2026-09-27 together with the lock (private origins, `docs/decisions.md` _CDN cost guard_ §11); `scripts/origin-oac.sh` deletes it once nothing sends or checks it. Policy and distribution backups from that day under `local/deploy/` (0600) still contain it.
+2. **SSM SecureString** `/yyt-service/<stage>/<service>/{mysql-host,mysql-port,mysql-database,mysql-user,mysql-password,redis-host,redis-port,redis-user,redis-password,redis-key-prefix}`, console-only `console/redis-acl-{user,password}` (the participant-credential issuer, optional — set both or neither, and **removing it needs an explicit `aws ssm delete-parameter`**, which `bootstrap-ssm.sh` does when the local env file no longer carries the pair: `put` never deletes, so a stale parameter would be re-baked into the Lambda by the next deploy), plus stage-wide `debug-key` (dev), `github-client-*`, `admin-github-logins`, `session-secret`, `gateway-token`, `gateway-ws-url`, `kv-kek` (the kv key-encryption key — never rotated casually, see `rules/deployment.md` "SSM environment values"), console-only `console/asset-kek` (the key-encryption key of encrypted asset bundles, decided 2026-09-28 and not created yet: created only by a dedicated init mode of `bootstrap-ssm.sh` (never as a side effect of a routine run), kept across runs, backed up in the private ops repo; losing it loses the console's copy of every bundle key, not the apps'), and dev-only `auth/debug-mysql-{user,password}`. Plain-`String` infra pointers (`artifact-bucket`, `site-bucket`, `cdn-distribution-id`, `site-distribution-id`, `doc-base-url`, `cloudfront-cert-arn`, `site-host-cert-arn`) are listed in `rules/deployment.md`. The stage-wide SecureString `origin-secret` (the `Referer` value of the origin lock) was retired on 2026-09-27 together with the lock (private origins, `docs/decisions.md` _CDN cost guard_ §11); `scripts/origin-oac.sh` deletes it once nothing sends or checks it. Policy and distribution backups from that day under `local/deploy/` (0600) still contain it.
 3. **Lambda environment** — `serverless.yml` resolves `${ssm:...}` at deploy time. Values are baked into the function configuration; rotation therefore requires a redeploy.
 4. **CI** (when needed) — GitHub _environment_ secrets only. Never repo files.
 
@@ -44,13 +45,14 @@ Not secrets, on purpose: team, project and resource **ids** (`team_…`, `prj_�
 - `scripts/git-hooks/pre-commit`: refuses secret-bearing paths, lines matching `local/identifiers.txt`, and runs `gitleaks protect --staged`.
 - `scripts/git-hooks/pre-push`: refuses pushes whose tree tracks secret paths or `todo/`, greps the pushed range against `local/identifiers.txt`, runs `gitleaks detect` over the range.
 - CI `secrets-scan`: `gitleaks detect` over full history with `.gitleaks.toml`.
+- `.gitleaks.toml` gains a `yak1.` rule for asset bundle keys with the encrypted bundles (`todo/46` P4); the test-vector key is allowlisted by value.
 - `pnpm install` sets `core.hooksPath=scripts/git-hooks`; `gitleaks` must be installed. **Never use `--no-verify`.**
 - The identifier patterns themselves are not in the repo; without `local/identifiers.txt` the hooks warn, so generate it first.
 
 ## Code rules
 
 - Never log tokens, OAuth codes, `state`, passwords, or request bodies. Driver errors are reduced to codes (`mysql ER_…`, `redis NOPERM`) before logging; HTTP responses never contain driver messages.
-- Secrets are shown once on create/rotate; API tokens are stored hashed.
+- Secrets are shown once on create/rotate; API tokens are stored hashed. The one exception, decided 2026-09-28 and unbuilt: an encrypted asset bundle's key stays readable by its team (a POST route, audited, `no-store`), because the consumer app and every deploying member need it and it cannot be rotated in place.
 - Console's writer DB credentials reach the auth Lambda only on `dev` and only with `--param debugHooks=1`.
 
 ## Rotation
@@ -63,6 +65,7 @@ Not secrets, on purpose: team, project and resource **ids** (`team_…`, `prj_�
 ## If something leaks
 
 1. Rotate the credential first (rotation is the only real fix).
+   An asset bundle key has no rotation: move the content to a new encrypted bundle and release the app that carries the new key (`docs/decisions.md` _Live and encrypted asset bundles_ #4).
 2. Rewrite history (`git filter-repo --replace-text` / `--invert-paths`), force-push, and ask GitHub support to purge cached views; notify anyone with clones.
 3. Add the leaked shape to `.gitleaks.toml` or `local/identifiers.txt` and prove the hook blocks it with a throwaway staged file.
 
