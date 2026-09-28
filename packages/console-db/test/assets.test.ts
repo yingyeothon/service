@@ -253,12 +253,12 @@ export function assetsContract(
     });
     // Quotas are computed from these: an expired or completed grant is not a
     // reservation any more, a live one is.
-    expect((await db.listLiveUploads("b1", 50)).map((u) => u.id)).toEqual([
+    expect((await db.listInFlightUploads("b1", 50)).map((u) => u.id)).toEqual([
       "u1",
       "u2",
       "u3",
     ]);
-    expect((await db.listLiveUploads("b1", 500)).map((u) => u.id)).toEqual([
+    expect((await db.listInFlightUploads("b1", 500)).map((u) => u.id)).toEqual([
       "u3",
     ]);
     expect(
@@ -288,7 +288,7 @@ export function assetsContract(
       status: "completed",
       fileId: "af_1",
     });
-    expect((await db.listLiveUploads("b1", 50)).map((u) => u.id)).toEqual([
+    expect((await db.listInFlightUploads("b1", 50)).map((u) => u.id)).toEqual([
       "u2",
       "u3",
     ]);
@@ -300,7 +300,85 @@ export function assetsContract(
   });
 }
 
+/** The aggregates and pages that replace whole-bundle loads (todo/46 P1). */
+export function assetUsageContract(make: () => AssetsDb | Promise<AssetsDb>) {
+  it("summarizes versions, pages files and finds one path case-sensitively", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("b1"));
+    await db.insertBundle(bundle("b2"));
+    await db.insertFile(
+      file("f1", "b1", { version: "v2", path: "b.json", size: 5, at: 7 }),
+    );
+    await db.insertFile(
+      file("f2", "b1", { version: "v2", path: "a.json", size: 9, at: 3 }),
+    );
+    await db.insertFile(
+      file("f3", "b1", { version: "v1", path: "MAP.json", size: 1, at: 9 }),
+    );
+    await db.insertFile(
+      file("f4", "b1", { version: "v1", path: "map.json", size: 2, at: 8 }),
+    );
+    await db.insertFile(
+      file("f5", "b2", { version: "v1", path: "x.json", size: 100 }),
+    );
+    expect(await db.versionSummaries("b1")).toEqual([
+      { version: "v1", files: 2, bytes: 3, largest: 2, createdAt: 8 },
+      { version: "v2", files: 2, bytes: 14, largest: 9, createdAt: 3 },
+    ]);
+    expect(await db.versionSummaries("nope")).toEqual([]);
+    // `utf8mb4_bin`: `MAP.json` sorts before `map.json` and is another row.
+    const p1 = await db.listFilesPage("b1", "v1", { limit: 1 });
+    expect(p1.rows.map((f) => f.path)).toEqual(["MAP.json"]);
+    expect(p1.next).toBe("MAP.json");
+    const p2 = await db.listFilesPage("b1", "v1", {
+      after: p1.next!,
+      limit: 1,
+    });
+    expect(p2.rows.map((f) => f.path)).toEqual(["map.json"]);
+    expect(p2.next).toBeNull();
+    expect((await db.listFilesPage("b1", "V1")).rows).toEqual([]);
+    expect((await db.findFileByPath("b1", "v1", "map.json"))?.id).toBe("f4");
+    expect((await db.findFileByPath("b1", "v1", "MAP.json"))?.id).toBe("f3");
+    expect(await db.findFileByPath("b1", "v1", "Map.json")).toBeUndefined();
+    expect(await db.findFileByPath("b1", "v2", "map.json")).toBeUndefined();
+  });
+
+  it("totals a project's rows and the uploads in flight", async () => {
+    const db = await make();
+    await db.insertBundle(bundle("b1"));
+    await db.insertBundle(bundle("b2"));
+    await db.insertBundle({ ...bundle("b3"), projectId: "prj_2" });
+    await db.insertFile(file("f1", "b1", { size: 5 }));
+    await db.insertFile(file("f2", "b2", { size: 7 }));
+    await db.insertFile(file("f3", "b3", { size: 1000 }));
+    await db.insertUpload(upload("u1", "b1", { expiresAt: 100 }));
+    await db.insertUpload(upload("u2", "b2", { expiresAt: 50 }));
+    await db.insertUpload(upload("u3", "b3", { expiresAt: 100 }));
+    await db.insertUpload(upload("u4", "b2", { expiresAt: 100 }));
+    await db.updateUpload("u4", { status: "failed" });
+    expect(await db.projectAssetUsage("prj_1", 60)).toEqual({
+      bundles: 2,
+      files: 2,
+      bytes: 12,
+      inFlightBytes: 10,
+    });
+    expect(await db.projectAssetUsage("prj_1", 50)).toMatchObject({
+      inFlightBytes: 20,
+    });
+    expect(await db.projectAssetUsage("prj_1", 50, "u2")).toMatchObject({
+      inFlightBytes: 10,
+    });
+    expect(await db.projectAssetUsage("prj_9", 0)).toEqual({
+      bundles: 0,
+      files: 0,
+      bytes: 0,
+      inFlightBytes: 0,
+    });
+  });
+}
+
 describe("memory assets repository", () => {
+  assetUsageContract(() => createMemoryAssetsDb());
   const logins = new Map<string, string>();
   assetsContract(
     () => {

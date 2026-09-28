@@ -5,5 +5,11 @@ export type { Role, ChannelKind, Logger } from "./types.js";
 export { nullLogger } from "./types.js";
 export { sha256Hex, randomHex } from "./hash.js";
 export { newDocKey, docKeyChannelId, DOC_KEY_PREFIX } from "./docKey.js";
-export { isActive, requireActive, type ChannelLifecycle } from "./channel.js";
+export {
+  CHANNEL_NO_EXPIRY_SEC,
+  isActive,
+  isNoExpiry,
+  requireActive,
+  type ChannelLifecycle,
+} from "./channel.js";
 export { createJsonLogger, requireEnv, type LogSink } from "./runtime.js";

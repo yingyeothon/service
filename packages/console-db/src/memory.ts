@@ -35,6 +35,13 @@ export function createMemoryConsoleDb(
   deps: {
     /** A project's name, for the channel list's `projectName` sort and `q` (the real table joins `projects`). */
     projectName?: (projectId: string) => string | undefined;
+    /**
+     * The limit half of a channel delete, which the real repository runs in
+     * the same transaction (`createMemoryLimitsDb().channelsDeleted`).
+     */
+    channelsDeleted?: (ids: readonly string[], at: number) => void;
+    /** The `ON DELETE CASCADE` of rows naming a purged channel (limit requests and overrides). */
+    channelsPurged?: (ids: readonly string[]) => void;
   } = {},
 ): ConsoleDb & {
   channels: Map<string, ChannelRow>;
@@ -254,9 +261,10 @@ export function createMemoryConsoleDb(
         (a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id),
       );
     },
-    updateChannel: async (id, patch) => {
+    updateChannel: async (id, patch, expect) => {
       const c = channels.get(id);
       if (!c || c.deletedAt !== null) return false;
+      if (expect && c.expiresAt !== expect.expiresAt) return false;
       if (patch.name !== undefined && nameHeld(c.teamId, patch.name, id))
         throw conflictKey();
       channels.set(id, {
@@ -280,6 +288,25 @@ export function createMemoryConsoleDb(
       });
       return true;
     },
+    findChannelNamesByIds: async (ids) =>
+      [...new Set(ids)]
+        .flatMap((id) => {
+          const c = channels.get(id);
+          return c ? [{ id: c.id, name: c.name }] : [];
+        })
+        .sort(byId),
+    deleteChannel: async (id, at) => {
+      const c = channels.get(id);
+      if (!c || c.deletedAt !== null) return false;
+      channels.set(id, {
+        ...c,
+        deletedAt: at,
+        disabledAt: c.disabledAt ?? at,
+        secretJson: "{}",
+      });
+      deps.channelsDeleted?.([id], at);
+      return true;
+    },
     expireChannels: async (now, graceSec) => {
       const disabled: string[] = [];
       const deleted: ExpiredChannel[] = [];
@@ -299,6 +326,11 @@ export function createMemoryConsoleDb(
           });
         }
       }
+      if (deleted.length > 0)
+        deps.channelsDeleted?.(
+          deleted.map((d) => d.id),
+          now,
+        );
       return { disabled, deleted };
     },
     purgeChannels: async (now, retainSec) => {
@@ -306,6 +338,7 @@ export function createMemoryConsoleDb(
         .filter((c) => c.deletedAt !== null && c.deletedAt < now - retainSec)
         .map((c) => ({ id: c.id, projectId: c.projectId ?? null }));
       for (const r of rows) channels.delete(r.id);
+      if (rows.length > 0) deps.channelsPurged?.(rows.map((r) => r.id));
       return rows;
     },
     insertAudit: async (a) => {

@@ -82,6 +82,7 @@ import {
   run,
   translatePrismaError,
   type PrismaClient,
+  type Tx,
 } from "./prisma.js";
 import { decodeHistoryCursor, encodeHistoryCursor } from "./team.js";
 
@@ -515,11 +516,36 @@ export interface ConsoleDb {
   listChannels(
     filter?: ChannelFilter & ListQuery<ChannelSortKey> & { now?: number },
   ): Promise<ChannelRow[]>;
-  /** `false` when the channel is missing or deleted. */
-  updateChannel(id: string, patch: ChannelPatch): Promise<boolean>;
+  /**
+   * `{id, name}` for a page of ids, soft-deleted rows included (a limit
+   * request outlives its channel's delete by 30 days), by id ascending.
+   */
+  findChannelNamesByIds(
+    ids: readonly string[],
+  ): Promise<{ id: string; name: string }[]>;
+  /**
+   * `false` when the channel is missing or deleted, or when `expect` names an
+   * `expiresAt` the row no longer has (extend's guard against a lifetime
+   * grant that landed after its read).
+   */
+  updateChannel(
+    id: string,
+    patch: ChannelPatch,
+    expect?: { expiresAt: number },
+  ): Promise<boolean>;
+  /**
+   * Soft delete: `deleted_at`, `disabled_at` (kept when already set) and the
+   * secret wiped, and in the same transaction the channel's pending limit
+   * requests cancelled and its limit overrides dropped (docs/decisions.md
+   * *Limit requests* #2). `false` when the channel is missing or deleted.
+   */
+  deleteChannel(id: string, at: number): Promise<boolean>;
   /**
    * Lifecycle sweep: expired → disabled; disabled for `graceSec` → deleted with
-   * secrets wiped. Returns the affected ids for the audit log.
+   * secrets wiped, with the same limit cleanup as `deleteChannel`. The delete
+   * re-checks that the channel is still disabled, so a channel revived a
+   * moment earlier (extend, a lifetime grant) is left alone and not reported.
+   * Returns the affected ids for the audit log.
    */
   expireChannels(
     now: number,
@@ -645,6 +671,24 @@ function memberOrderBy(o: ListOrder<MemberSortKey>) {
     default:
       return [{ created_at: "asc" as const }, { id: "asc" as const }];
   }
+}
+
+/**
+ * The limit half of a channel delete (docs/decisions.md *Limit requests* #2):
+ * pending requests cancelled (by nobody: the delete did it) and overrides
+ * dropped, inside the caller's transaction and after its channel write — the
+ * lock order `limits.ts` states. The purge 30 days later cascades the rest.
+ */
+async function dropChannelLimits(
+  tx: Tx,
+  ids: string[],
+  at: number,
+): Promise<void> {
+  await tx.limit_requests.updateMany({
+    where: { channel_id: { in: ids }, status: "pending" },
+    data: { status: "cancelled", decided_at: at },
+  });
+  await tx.limit_overrides.deleteMany({ where: { channel_id: { in: ids } } });
 }
 
 export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
@@ -897,7 +941,7 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
             )
           : rows;
       }),
-    updateChannel: async (id, patch) => {
+    updateChannel: async (id, patch, expect) => {
       const data: Record<string, string | number | null> = {};
       if (patch.name !== undefined) data.name = patch.name;
       if (patch.config !== undefined)
@@ -911,12 +955,45 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
         return (await findChannelRow(id)) !== undefined;
       return run(async () => {
         const r = await prisma.channels.updateMany({
-          where: { id, deleted_at: null },
+          where: {
+            id,
+            deleted_at: null,
+            ...(expect ? { expires_at: expect.expiresAt } : {}),
+          },
           data,
         });
         return r.count > 0;
       });
     },
+    findChannelNamesByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : await prisma.channels.findMany({
+              where: { id: { in: [...ids] } },
+              select: { id: true, name: true },
+              orderBy: { id: "asc" },
+            }),
+      ),
+    deleteChannel: (id, at) =>
+      run(() =>
+        prisma.$transaction(
+          async (tx) => {
+            // Lock order (`limits.ts`): channel row, then its requests, then
+            // its overrides. One statement, so the kept `disabled_at` is the
+            // row's own at the moment of the delete, not an earlier read.
+            const n = await tx.$executeRaw`
+              UPDATE channels
+              SET deleted_at = ${at}, disabled_at = COALESCE(disabled_at, ${at}),
+                  secret_json = '{}'
+              WHERE id = ${id} AND deleted_at IS NULL`;
+            if (n === 0) return false;
+            await dropChannelLimits(tx, [id], at);
+            return true;
+          },
+          { isolationLevel: "ReadCommitted" },
+        ),
+      ),
     expireChannels: (now, graceSec) =>
       run(() =>
         prisma.$transaction(
@@ -937,8 +1014,8 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
                 where: disable,
                 data: { disabled_at: now },
               });
-            // `disabled_at + graceSec < now` has no Prisma operator; compare on
-            // the fetched value and update by id (single-writer cron, no race).
+            // `disabled_at + graceSec < now` has no Prisma operator, so the cutoff
+            // is computed here; the delete below repeats the whole condition.
             const cutoff = now - graceSec;
             const toDelete = (
               await tx.channels.findMany({
@@ -961,19 +1038,42 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
               teamId: r.team_id,
               projectId: r.project_id,
             }));
-            if (toDelete.length > 0)
+            let deleted: ExpiredChannel[] = [];
+            if (toDelete.length > 0) {
+              const ids = toDelete.map((r) => r.id);
+              // Re-checked: an extend or a lifetime grant between the read and
+              // this write cleared `disabled_at`, and that channel must live.
               await tx.channels.updateMany({
                 where: {
-                  id: { in: toDelete.map((r) => r.id) },
+                  id: { in: ids },
                   deleted_at: null,
+                  disabled_at: { not: null, lt: cutoff },
                 },
                 data: { deleted_at: now, secret_json: "{}" },
               });
-            return { disabled: toDisable, deleted: toDelete };
+              const done = new Set(
+                (
+                  await tx.channels.findMany({
+                    where: { id: { in: ids }, deleted_at: now },
+                    select: { id: true },
+                  })
+                ).map((r) => r.id),
+              );
+              deleted = toDelete.filter((r) => done.has(r.id));
+              if (deleted.length > 0)
+                await dropChannelLimits(
+                  tx,
+                  deleted.map((r) => r.id),
+                  now,
+                );
+            }
+            return { disabled: toDisable, deleted };
             // Daily sweep can touch many rows; give the interactive transaction
             // more than Prisma's 5s default (statements are capped at 5s each).
           },
-          { maxWait: 2000, timeout: 15000 },
+          // READ COMMITTED: the soft delete re-checks rows another writer may
+          // have revived since the read (`limits.ts` says why not REPEATABLE).
+          { maxWait: 2000, timeout: 15000, isolationLevel: "ReadCommitted" },
         ),
       ),
     purgeChannels: (now, retainSec) =>

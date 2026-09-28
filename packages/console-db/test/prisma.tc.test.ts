@@ -11,12 +11,13 @@ import {
   createLeaderboardDb,
   createStateDb,
   createSocialDb,
+  createLimitsDb,
   contractPreflight,
   toLobbyChannel,
   toQChannel,
   type ConsoleDb,
 } from "../src/index.js";
-import { assetsContract } from "./assets.test.js";
+import { assetsContract, assetUsageContract } from "./assets.test.js";
 import { catalogContract } from "./catalog.test.js";
 import { sitesContract } from "./sites.test.js";
 import { eventsContract } from "./events.test.js";
@@ -31,6 +32,7 @@ import { kvstoreContract } from "./kvstore.test.js";
 import { leaderboardContract } from "./leaderboard.test.js";
 import { stateContract } from "./state.test.js";
 import { socialContract } from "./social.test.js";
+import { limitsContract } from "./limits.test.js";
 import {
   dockerAvailable,
   resetTestDb,
@@ -125,6 +127,14 @@ describe.skipIf(!dockerAvailable())(
       );
     });
 
+    describe("asset usage contract", () => {
+      assetUsageContract(async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        return createAssetsDb(db.client);
+      });
+    });
+
     describe("sites contract", () => {
       sitesContract(
         async () => {
@@ -201,6 +211,164 @@ describe.skipIf(!dockerAvailable())(
         },
         { login },
       );
+    });
+
+    describe("limits contract", () => {
+      limitsContract(async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        await createAssetsDb(db.client).insertBundle({
+          id: "ab_1",
+          name: "maps",
+          teamId: "team_1",
+          projectId: "prj_1",
+          createdAt: 1,
+        });
+        for (const id of ["ch_1", "ch_2"])
+          await db.client.channels.create({
+            data: {
+              id,
+              kind: "lobby",
+              owner_id: "m1",
+              name: id,
+              config_json: "{}",
+              secret_json: "{}",
+              created_at: 1,
+              expires_at: 1000,
+              team_id: "team_1",
+              project_id: "prj_1",
+            },
+          });
+        const repo = createConsoleDb(db.client);
+        return {
+          limits: createLimitsDb(db.client),
+          deleteChannel: (id, at) => repo.deleteChannel(id, at),
+          extendIf: (id, expiresAt, expect) =>
+            repo.updateChannel(id, { expiresAt }, { expiresAt: expect }),
+          expireChannels: async (now, grace) =>
+            (await repo.expireChannels(now, grace)).deleted.map((d) => d.id),
+          disableChannel: async (id, at) => {
+            await db.client.channels.update({
+              where: { id },
+              data: { disabled_at: at },
+            });
+          },
+          channel: async (id) => {
+            const c = await db.client.channels.findUnique({ where: { id } });
+            if (!c) return undefined;
+            return {
+              expiresAt: Number(c.expires_at),
+              disabledAt: c.disabled_at === null ? null : Number(c.disabled_at),
+              deletedAt: c.deleted_at === null ? null : Number(c.deleted_at),
+            };
+          },
+          deleteBundle: async (id) => {
+            await createAssetsDb(db.client).deleteBundle(id);
+          },
+        };
+      });
+
+      it("a row names exactly one scope (CHECK constraint)", async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        await db.client.channels.create({
+          data: {
+            id: "ch_1",
+            kind: "lobby",
+            owner_id: "m1",
+            name: "ch_1",
+            config_json: "{}",
+            secret_json: "{}",
+            created_at: 1,
+            expires_at: 1000,
+            team_id: "team_1",
+            project_id: "prj_1",
+          },
+        });
+        const row = (over: Record<string, string | null>) =>
+          db.client.limit_requests.create({
+            data: {
+              id: `lr_${Object.keys(over).join("_")}`,
+              team_id: "team_1",
+              project_id: null,
+              bundle_id: null,
+              channel_id: null,
+              limit_key: "channel.lifetime",
+              reason: "r",
+              created_by: "m1",
+              created_at: 1,
+              ...over,
+            },
+          });
+        await expect(row({})).rejects.toThrow();
+        await expect(
+          row({ project_id: "prj_1", channel_id: "ch_1" }),
+        ).rejects.toThrow();
+        await expect(row({ channel_id: "ch_1" })).resolves.toBeDefined();
+      });
+
+      it("per-version and per-project totals read the covering index at 200,000 rows", async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        // 20 bundles × 10,000 files: the soft-limit ceiling of one project
+        // (docs/decisions.md *Limit requests* #1), plus 10,000 rows elsewhere.
+        await db.client.$executeRawUnsafe(
+          `insert into asset_bundles (id, name, team_id, project_id, created_at, updated_at)
+           select concat('ab_', seq), concat('b', seq), 'team_1',
+                  if(seq <= 20, 'prj_1', 'prj_2'), 1, 1 from seq_1_to_21`,
+        );
+        await db.client.$executeRawUnsafe(
+          `insert into asset_files (id, bundle_id, version, path, object_key, url, content_type, size, created_at)
+           select concat('af_', seq), concat('ab_', 1 + (seq mod 20)),
+                  concat('v', 1 + ((seq div 20) mod 50)), concat('p/', seq, '.json'),
+                  concat('assets/x/', seq), concat('https://x/', seq),
+                  'application/json', 100 + seq mod 1000, seq
+           from seq_1_to_200000`,
+        );
+        await db.client.$executeRawUnsafe(
+          `insert into asset_files (id, bundle_id, version, path, object_key, url, content_type, size, created_at)
+           select concat('bf_', seq), 'ab_21', 'v1', concat('p/', seq, '.json'),
+                  concat('assets/y/', seq), concat('https://y/', seq),
+                  'application/json', 10, seq from seq_1_to_10000`,
+        );
+        await db.client.$executeRawUnsafe(
+          "analyze table asset_files, asset_bundles",
+        );
+        const plan = async (sql: string) =>
+          (
+            await db.client.$queryRawUnsafe<
+              { table: string; key: string | null; Extra: string | null }[]
+            >(`explain ${sql}`)
+          ).map((r) => ({ table: r.table, key: r.key, extra: r.Extra ?? "" }));
+        // The statement `versionSummaries` sends through Prisma's groupBy.
+        const perVersion = await plan(
+          `select version, count(*), sum(size), max(size), min(created_at)
+           from asset_files where bundle_id = 'ab_3' group by version order by version`,
+        );
+        expect(perVersion).toHaveLength(1);
+        expect(perVersion[0]!.key).toBe("asset_files_version");
+        expect(perVersion[0]!.extra).toContain("Using index");
+        expect(perVersion[0]!.extra).not.toContain("filesort");
+        // `projectAssetUsage`'s join, verbatim.
+        const perProject = await plan(
+          `select count(*) as files, cast(coalesce(sum(f.size), 0) as signed) as bytes
+           from asset_bundles b join asset_files f on f.bundle_id = b.id
+           where b.project_id = 'prj_1'`,
+        );
+        const files = perProject.find((r) => r.table === "f");
+        expect(files?.key).toBe("asset_files_version");
+        expect(files?.extra).toContain("Using index");
+
+        const assets = createAssetsDb(db.client);
+        const v = await assets.versionSummaries("ab_3");
+        expect(v).toHaveLength(50);
+        expect(v.reduce((n, x) => n + x.files, 0)).toBe(10_000);
+        expect(await assets.projectAssetUsage("prj_1", 0)).toMatchObject({
+          bundles: 20,
+          files: 200_000,
+          inFlightBytes: 0,
+        });
+      }, 120_000);
     });
 
     describe("social contract", () => {

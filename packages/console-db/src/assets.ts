@@ -94,6 +94,29 @@ export interface AssetUploadRow {
   expiresAt: number;
 }
 
+/** One version's totals, answered from the covering index `asset_files_version`. */
+export interface AssetVersionSummary {
+  version: string;
+  files: number;
+  bytes: number;
+  /** The largest file in the version. */
+  largest: number;
+  /** When its first file was committed. */
+  createdAt: number;
+}
+
+/** A project's committed asset rows and the presigns still in flight. */
+export interface ProjectAssetUsage {
+  bundles: number;
+  files: number;
+  bytes: number;
+  /** Bytes reserved by pending, unexpired uploads (minus `exceptUploadId`). */
+  inFlightBytes: number;
+}
+
+export const ASSET_FILE_PAGE_DEFAULT = 200;
+export const ASSET_FILE_PAGE_MAX = 1000;
+
 export interface AssetUploadInput {
   id: string;
   bundleId: string;
@@ -152,11 +175,40 @@ export interface AssetsDb {
 
   insertFile(f: AssetFileInput): Promise<void>;
   findFile(id: string): Promise<AssetFileRow | undefined>;
-  /** Version ascending, then path ascending; `version` narrows. */
+  /**
+   * Version ascending, then path ascending; `version` narrows. Loads every
+   * row: only for paths bounded by one version's file cap or by a delete that
+   * must see every object. Pages go through `listFilesPage`, totals through
+   * `versionSummaries`/`projectAssetUsage`.
+   */
   listFiles(
     bundleId: string,
     filter?: { version?: string },
   ): Promise<AssetFileRow[]>;
+  /** Path ascending within one version; `after` is the previous page's last path. */
+  listFilesPage(
+    bundleId: string,
+    version: string,
+    page?: { after?: string; limit?: number },
+  ): Promise<{ rows: AssetFileRow[]; next: string | null }>;
+  /** The committed file at exactly this (version, path), case-sensitively. */
+  findFileByPath(
+    bundleId: string,
+    version: string,
+    path: string,
+  ): Promise<AssetFileRow | undefined>;
+  /** Per-version COUNT, SUM(size), MAX(size), MIN(created_at); version ascending. */
+  versionSummaries(bundleId: string): Promise<AssetVersionSummary[]>;
+  /**
+   * The project's bundle count, committed file rows and bytes, and the bytes
+   * of every pending, unexpired upload into its bundles except
+   * `exceptUploadId` (a commit must not count its own reservation).
+   */
+  projectAssetUsage(
+    projectId: string,
+    now: number,
+    exceptUploadId?: string,
+  ): Promise<ProjectAssetUsage>;
   /**
    * The bundle's newest version, by the time its first file was committed —
    * what "the exhibited version" means for a show entry (decision 5). Ordering
@@ -176,7 +228,7 @@ export interface AssetsDb {
    * these: presigns are granted before anything is committed, so a caller that
    * pipelines them would otherwise see a zero total every time.
    */
-  listLiveUploads(bundleId: string, now: number): Promise<AssetUploadRow[]>;
+  listInFlightUploads(bundleId: string, now: number): Promise<AssetUploadRow[]>;
   /** One query for many ids — the sweep resolves a whole listing page at once. */
   listUploadsByIds(ids: string[]): Promise<AssetUploadRow[]>;
   updateUpload(id: string, patch: AssetUploadPatch): Promise<boolean>;
@@ -261,6 +313,12 @@ const toUpload = (r: UploadModel): AssetUploadRow => ({
   createdAt: num(r.created_at),
   expiresAt: num(r.expires_at),
 });
+
+const filePageLimit = (n: number | undefined) =>
+  Math.min(
+    ASSET_FILE_PAGE_MAX,
+    Math.max(1, Math.floor(n ?? ASSET_FILE_PAGE_DEFAULT)),
+  );
 
 export function createAssetsDb(prisma: PrismaClient): AssetsDb {
   return {
@@ -370,6 +428,74 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         });
         return rows.map(toFile);
       }),
+    listFilesPage: (bundleId, version, page = {}) =>
+      run(async () => {
+        const limit = filePageLimit(page.limit);
+        const rows = await prisma.asset_files.findMany({
+          where: {
+            bundle_id: bundleId,
+            version,
+            ...(page.after !== undefined ? { path: { gt: page.after } } : {}),
+          },
+          orderBy: { path: "asc" },
+          take: limit + 1,
+        });
+        const out = rows.slice(0, limit).map(toFile);
+        return {
+          rows: out,
+          next: rows.length > limit ? out[out.length - 1]!.path : null,
+        };
+      }),
+    findFileByPath: (bundleId, version, path) =>
+      run(async () => {
+        const r = await prisma.asset_files.findFirst({
+          where: { bundle_id: bundleId, version, path },
+        });
+        return r ? toFile(r) : undefined;
+      }),
+    versionSummaries: (bundleId) =>
+      run(async () => {
+        const rows = await prisma.asset_files.groupBy({
+          by: ["version"],
+          where: { bundle_id: bundleId },
+          _count: { _all: true },
+          _sum: { size: true },
+          _max: { size: true },
+          _min: { created_at: true },
+          orderBy: { version: "asc" },
+        });
+        return rows.map((r) => ({
+          version: r.version,
+          files: r._count._all,
+          bytes: num(r._sum.size ?? 0),
+          largest: num(r._max.size ?? 0),
+          createdAt: num(r._min.created_at ?? 0),
+        }));
+      }),
+    projectAssetUsage: (projectId, now, exceptUploadId) =>
+      run(async () => {
+        const bundles = await prisma.asset_bundles.count({
+          where: { project_id: projectId },
+        });
+        // Joined by hand so the plan is the one `EXPLAIN` was checked against:
+        // `asset_bundles_project`, then the covering `asset_files_version`.
+        const [f] = await prisma.$queryRaw<
+          { files: bigint | number; bytes: bigint | number }[]
+        >`select count(*) as files, cast(coalesce(sum(f.size), 0) as signed) as bytes
+          from asset_bundles b join asset_files f on f.bundle_id = b.id
+          where b.project_id = ${projectId}`;
+        const [u] = await prisma.$queryRaw<{ bytes: bigint | number }[]>`
+          select cast(coalesce(sum(u.size), 0) as signed) as bytes
+          from asset_bundles b join asset_pending_uploads u on u.bundle_id = b.id
+          where b.project_id = ${projectId} and u.status = 'pending'
+            and u.expires_at >= ${now} and u.id <> ${exceptUploadId ?? ""}`;
+        return {
+          bundles,
+          files: num(f?.files ?? 0),
+          bytes: num(f?.bytes ?? 0),
+          inFlightBytes: num(u?.bytes ?? 0),
+        };
+      }),
     findNewestVersion: (bundleId) =>
       run(async () => {
         const r = await prisma.asset_files.findFirst({
@@ -421,7 +547,7 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
         });
         return r ? toUpload(r) : undefined;
       }),
-    listLiveUploads: (bundleId, now) =>
+    listInFlightUploads: (bundleId, now) =>
       run(async () => {
         const rows = await prisma.asset_pending_uploads.findMany({
           where: {
@@ -471,7 +597,11 @@ export function createAssetsDb(prisma: PrismaClient): AssetsDb {
 /** In-memory `AssetsDb` for tests: same contract as the Prisma repository. */
 export function createMemoryAssetsDb(
   memberExists: (id: string) => boolean = () => true,
-  deps: { loginOf?: (id: string) => string } = {},
+  deps: {
+    loginOf?: (id: string) => string;
+    /** The `ON DELETE CASCADE` of rows naming the bundle (limit requests and overrides). */
+    bundleDeleted?: (id: string) => void;
+  } = {},
 ): AssetsDb & {
   bundles: Map<string, AssetBundleRow>;
   files: Map<string, AssetFileRow>;
@@ -577,6 +707,7 @@ export function createMemoryAssetsDb(
       for (const [k, f] of [...files]) if (f.bundleId === id) files.delete(k);
       for (const [k, u] of [...uploads])
         if (u.bundleId === id) uploads.delete(k);
+      deps.bundleDeleted?.(id);
       return true;
     },
 
@@ -621,6 +752,74 @@ export function createMemoryAssetsDb(
         // `utf8mb4_bin`, so MariaDB sorts `MAP.json` before `map.json` and a
         // locale-aware sort here would quietly diverge from the real listing.
         .sort((a, b) => cmp(a.version, b.version) || cmp(a.path, b.path)),
+    listFilesPage: async (bundleId, version, page = {}) => {
+      const limit = filePageLimit(page.limit);
+      const all = [...files.values()]
+        .filter(
+          (f) =>
+            f.bundleId === bundleId &&
+            f.version === version &&
+            (page.after === undefined || cmp(f.path, page.after) > 0),
+        )
+        .sort((a, b) => cmp(a.path, b.path));
+      const out = all.slice(0, limit).map((f) => ({ ...f }));
+      return {
+        rows: out,
+        next: all.length > limit ? out[out.length - 1]!.path : null,
+      };
+    },
+    findFileByPath: async (bundleId, version, path) => {
+      const f = [...files.values()].find(
+        (x) =>
+          x.bundleId === bundleId && x.version === version && x.path === path,
+      );
+      return f && { ...f };
+    },
+    versionSummaries: async (bundleId) => {
+      const by = new Map<string, AssetVersionSummary>();
+      for (const f of files.values()) {
+        if (f.bundleId !== bundleId) continue;
+        const v = by.get(f.version);
+        if (v) {
+          v.files++;
+          v.bytes += f.size;
+          v.largest = Math.max(v.largest, f.size);
+          v.createdAt = Math.min(v.createdAt, f.createdAt);
+        } else
+          by.set(f.version, {
+            version: f.version,
+            files: 1,
+            bytes: f.size,
+            largest: f.size,
+            createdAt: f.createdAt,
+          });
+      }
+      return [...by.values()].sort((a, b) => cmp(a.version, b.version));
+    },
+    projectAssetUsage: async (projectId, now, exceptUploadId) => {
+      const ids = new Set(
+        [...bundles.values()]
+          .filter((b) => b.projectId === projectId)
+          .map((b) => b.id),
+      );
+      let n = 0;
+      let bytes = 0;
+      for (const f of files.values())
+        if (ids.has(f.bundleId)) {
+          n++;
+          bytes += f.size;
+        }
+      let inFlightBytes = 0;
+      for (const u of uploads.values())
+        if (
+          ids.has(u.bundleId) &&
+          u.status === "pending" &&
+          u.expiresAt >= now &&
+          u.id !== exceptUploadId
+        )
+          inFlightBytes += u.size;
+      return { bundles: ids.size, files: n, bytes, inFlightBytes };
+    },
     findNewestVersion: async (bundleId) =>
       [...files.values()]
         .filter((f) => f.bundleId === bundleId)
@@ -656,7 +855,7 @@ export function createMemoryAssetsDb(
       const u = uploads.get(id);
       return u && { ...u };
     },
-    listLiveUploads: async (bundleId, now) =>
+    listInFlightUploads: async (bundleId, now) =>
       [...uploads.values()]
         .filter(
           (u) =>

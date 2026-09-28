@@ -118,7 +118,14 @@ export type TeamHistoryAction =
   | "resource.delete"
   | "resource.expire"
   | "resource.rotate"
-  | "resource.credential";
+  | "resource.credential"
+  | "limit.request"
+  | "limit.cancel"
+  | "limit.approve"
+  | "limit.reject"
+  | "limit.override"
+  | "limit.revoke"
+  | "limit.expire";
 
 export interface TeamRow {
   id: string;
@@ -192,6 +199,8 @@ export interface TeamHistoryDetail {
   linkId?: string;
   /** Free-form for resource writes: id/kind labels only. */
   resource?: { kind: string; id: string; name?: string };
+  /** A limit request or override: the key and the value (`unlimited` for none). */
+  limit?: { key: string; value?: number | "unlimited"; requestId?: string };
 }
 
 export interface TeamHistoryRow {
@@ -2141,6 +2150,8 @@ export interface MemoryTeamDbDeps {
   /** Resource rows carrying `team_id` (with or without a project), for `deleteTeam`. */
   countTeamResources?: (teamId: string) => ProjectResourceCounts;
   newHistoryId?: (at: number) => string;
+  /** The `ON DELETE CASCADE` of rows naming the project (limit requests and overrides). */
+  projectDeleted?: (id: string) => void;
 }
 
 /**
@@ -2778,6 +2789,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
         if (c.channels + c.apps + c.bundles + c.sites + c.kv + c.lb > 0)
           throw conflict("project still has resources");
         projects.delete(id);
+        deps.projectDeleted?.(id);
         nextIssue.delete(id);
         for (const [k, v] of [...versions])
           if (v.projectId === id) {
