@@ -1,0 +1,4 @@
+upload a.png
+upload m.json
+prune z.png
+plan: 2 to upload, 0 to replace, 0 unchanged, 0 to mark stale, 1 to prune, 0 conflict(s)

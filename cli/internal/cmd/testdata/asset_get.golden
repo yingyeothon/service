@@ -1,5 +1,6 @@
 id:          ab_1
 name:        dungeon-maps
+mode:        versioned
 project:     dooroo/game
 description: MMO maps
 createdBy:   octo

@@ -1,0 +1,3 @@
+PATH    TYPE              BYTES  SHA-256       FLAGS          URL
+a.json  application/json  3      ca978112ca1b  -              https://dev-d.yyt.life/assets/ab_1/a.json
+m.json  application/json  3      62c66a7a5dd7  mutable,stale  https://dev-d.yyt.life/assets/ab_1/m.json

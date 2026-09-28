@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -20,6 +21,8 @@ type assetBundle struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
+	// "versioned" or "live", fixed at creation.
+	Mode        string  `json:"mode"`
 	TeamID      *string `json:"teamId"`
 	TeamName    *string `json:"teamName"`
 	ProjectID   *string `json:"projectId"`
@@ -41,15 +44,36 @@ type assetVersion struct {
 }
 
 type assetFile struct {
-	ID          string `json:"id"`
-	BundleID    string `json:"bundleId"`
-	Version     string `json:"version"`
-	Path        string `json:"path"`
-	URL         string `json:"url"`
-	ObjectKey   string `json:"objectKey"`
-	ContentType string `json:"contentType"`
-	Size        int64  `json:"size"`
-	CreatedAt   int64  `json:"createdAt"`
+	ID          string  `json:"id"`
+	BundleID    string  `json:"bundleId"`
+	Version     string  `json:"version"`
+	Path        string  `json:"path"`
+	URL         string  `json:"url"`
+	ObjectKey   string  `json:"objectKey"`
+	ContentType string  `json:"contentType"`
+	Size        int64   `json:"size"`
+	SHA256      *string `json:"sha256"`
+	Mutable     bool    `json:"mutable"`
+	StaleSince  *int64  `json:"staleSince"`
+	CreatedAt   int64   `json:"createdAt"`
+}
+
+// modeOf reads an older console's missing mode as what it was: versioned.
+func modeOf(mode string) string {
+	if mode == "" {
+		return "versioned"
+	}
+	return mode
+}
+
+// liveHint turns the console's refusal of a version on a live bundle into
+// the command that does work there.
+func liveHint(err error, bundle string) error {
+	var ae *api.Error
+	if errors.As(err, &ae) && ae.Status == http.StatusBadRequest && strings.Contains(ae.Message, "live bundle") {
+		return fmt.Errorf("%w (%s is a live bundle: use `yyt asset sync %s <dir>`)", err, bundle, bundle)
+	}
+	return err
 }
 
 // uploadAssetFile runs presign → PUT file → commit for one file of a bundle
@@ -69,14 +93,20 @@ func uploadAssetFile(ctx context.Context, cl *api.Client, bundle, version, path,
 func newAssets(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "asset",
-		Short: "Game asset bundles: immutable versioned files on the public CDN (a bundle belongs to a project)",
-		Long: "Game asset bundles: immutable versioned files on the public CDN.\n\n" +
-			"An asset object is public, cached forever and never overwritten: fixing a\n" +
-			"file means publishing a new version and pointing the lobby channel's\n" +
-			"--map-url at it (`yyt channels update <id> --map-url ...`).\n\n" +
+		Short: "Game asset bundles: files on the public CDN, versioned or live (a bundle belongs to a project)",
+		Long: "Game asset bundles: files on the public CDN.\n\n" +
+			"A versioned bundle (the default) keeps every file under a version: an\n" +
+			"object is public, cached forever and never overwritten, so fixing a file\n" +
+			"means publishing a new version and pointing the lobby channel's --map-url\n" +
+			"at it (`yyt channels update <id> --map-url ...`).\n\n" +
+			"A live bundle (`create --mode live`) has one namespace kept in step with a\n" +
+			"directory by `asset sync`: files are immutable unless matched by --mutable\n" +
+			"(a manifest, served no-cache and replaced in place), and every upload\n" +
+			"carries its SHA-256, so unchanged files are never sent again.\n\n" +
 			"<bundle> is an id (ab_…) or a name unique within the team; a name is looked\n" +
 			"up in the project context (--project, YYT_PROJECT, " + ContextFile + ",\n" +
-			"`yyt project use`). `create`, `upload` and `push` need an explicit context.",
+			"`yyt project use`). `create`, `upload`, `push` and `sync` need an explicit\n" +
+			"context.",
 	}
 	// bundleID resolves <bundle> (id or name); write=true refuses auto-selection.
 	bundleID := func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error) {
@@ -97,6 +127,9 @@ func newAssets(a *App) *cobra.Command {
 		newAssetVersionDelete(a, bundleID),
 		newAssetUpload(a, bundleID),
 		newAssetPush(a, bundleID),
+		newAssetRm(a, bundleID),
+		newAssetSync(a, bundleID),
+		newAssetDownload(a, bundleID),
 	)
 	return group(c)
 }
@@ -110,6 +143,7 @@ func (a *App) printBundle(b assetBundle) error {
 	pairs := [][2]string{
 		{"id", b.ID},
 		{"name", b.Name},
+		{"mode", modeOf(b.Mode)},
 		{"project", crumb(b.TeamName, b.ProjectName)},
 		{"description", output.Str(b.Description)},
 		{"createdBy", output.Str(b.CreatedBy)},
@@ -163,20 +197,23 @@ func newAssetList(a *App) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Bundles))
 			for _, b := range res.Bundles {
-				rows = append(rows, []string{b.ID, b.Name, crumb(b.TeamName, b.ProjectName), output.Str(b.Description), output.Time(b.UpdatedAt)})
+				rows = append(rows, []string{b.ID, b.Name, modeOf(b.Mode), crumb(b.TeamName, b.ProjectName), output.Str(b.Description), output.Time(b.UpdatedAt)})
 			}
-			return a.printer().Table([]string{"ID", "NAME", "TEAM/PROJECT", "DESCRIPTION", "UPDATED"}, rows)
+			return a.printer().Table([]string{"ID", "NAME", "MODE", "TEAM/PROJECT", "DESCRIPTION", "UPDATED"}, rows)
 		},
 	}
 }
 
 func newAssetCreate(a *App) *cobra.Command {
-	var description string
+	var description, mode string
 	c := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create an asset bundle in the project context (explicit)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if mode != "versioned" && mode != "live" {
+				return fmt.Errorf("--mode is versioned or live, not %q", mode)
+			}
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
 				return err
@@ -186,6 +223,11 @@ func newAssetCreate(a *App) *cobra.Command {
 				return err
 			}
 			body := map[string]any{"name": args[0]}
+			// Only when it is not the default: an older console's strict body
+			// refuses a key it does not know, and versioned is what it makes.
+			if mode == "live" {
+				body["mode"] = mode
+			}
 			if description != "" {
 				body["description"] = description
 			}
@@ -197,6 +239,7 @@ func newAssetCreate(a *App) *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&description, "description", "", "human-readable description")
+	c.Flags().StringVar(&mode, "mode", "versioned", "versioned (files under versions, never overwritten) or live (one namespace kept by `asset sync`); fixed at creation")
 	return c
 }
 
@@ -208,8 +251,75 @@ func newAssetUpdate(a *App, bundleID bundleResolver) *cobra.Command {
 	return newResourceUpdate(bundleID, "update <bundle>", "Rename a bundle or change its description (empty --description clears it)", "new bundle name (unique within the team)", "/assets/bundles", a.printBundle)
 }
 
+// deleteRounds bounds how often a delete is repeated after a 202: each round
+// deletes up to a few thousand objects, and a bundle holds at most 20,000.
+const deleteRounds = 50
+
+// repeatDelete sends DELETE until the console answers 204. A bundle or
+// version delete stops before the Lambda's deadline and answers 202 with its
+// progress; the deleted rows are gone, so the next round resumes.
+func (a *App) repeatDelete(ctx context.Context, cl *api.Client, path string) error {
+	total := 0
+	for round := 0; round < deleteRounds; round++ {
+		var p struct {
+			Deleted int `json:"deleted"`
+			Failed  int `json:"failed"`
+		}
+		status, err := cl.DoStatus(ctx, http.MethodDelete, path, nil, &p)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusAccepted {
+			return nil
+		}
+		total += p.Deleted
+		fmt.Fprintf(a.Err, "deleted %d object(s) so far; continuing\n", total)
+	}
+	return fmt.Errorf("still deleting after %d rounds (%d objects); run the command again", deleteRounds, total)
+}
+
 func newAssetDelete(a *App, bundleID bundleResolver) *cobra.Command {
-	return newResourceDelete(a, bundleID, "delete <bundle>", "Delete a bundle with every version and object it holds", "/assets/bundles")
+	// Not `rm`: `asset rm <bundle> <path...>` deletes files, and one missing
+	// argument must not turn that into deleting the whole bundle.
+	return &cobra.Command{
+		Use:     "delete <bundle>",
+		Aliases: []string{"remove"},
+		Short:   "Delete a bundle with every version and object it holds",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cc, id, err := bundleID(cmd, args[0], true)
+			if err != nil {
+				return err
+			}
+			if err := a.repeatDelete(cmd.Context(), cc.cl, "/assets/bundles/"+api.PathID(id)); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Out, "deleted %s\n", args[0])
+			return nil
+		},
+	}
+}
+
+// shortSHA is the first 12 hex digits, enough to tell files apart in a table.
+func shortSHA(sha *string) string {
+	if sha == nil || len(*sha) < 12 {
+		return output.Str(sha)
+	}
+	return (*sha)[:12]
+}
+
+func fileFlags(f assetFile) string {
+	var flags []string
+	if f.Mutable {
+		flags = append(flags, "mutable")
+	}
+	if f.StaleSince != nil {
+		flags = append(flags, "stale")
+	}
+	if len(flags) == 0 {
+		return "-"
+	}
+	return strings.Join(flags, ",")
 }
 
 func (a *App) printFiles(bundle, version string, files []assetFile) error {
@@ -218,49 +328,76 @@ func (a *App) printFiles(bundle, version string, files []assetFile) error {
 	}
 	rows := make([][]string, 0, len(files))
 	for _, f := range files {
-		rows = append(rows, []string{f.Path, f.ContentType, fmt.Sprint(f.Size), f.URL})
+		rows = append(rows, []string{f.Path, f.ContentType, fmt.Sprint(f.Size), shortSHA(f.SHA256), fileFlags(f), f.URL})
 	}
-	return a.printer().Table([]string{"PATH", "TYPE", "BYTES", "URL"}, rows)
+	return a.printer().Table([]string{"PATH", "TYPE", "BYTES", "SHA-256", "FLAGS", "URL"}, rows)
 }
+
+// listAssetFiles follows every page of a bundle's files: one version of a
+// versioned bundle (`version` set) or the whole namespace of a live one.
+// `do` is the caller's request function (sync rate-limits and retries it).
+// With `mustExist` a version that holds nothing is a 404 (the versions
+// route); without, it is an empty list (what a sync into a new version sees).
+func listAssetFiles(ctx context.Context, do apiCall, id, version string, mustExist bool) ([]assetFile, error) {
+	var files []assetFile
+	cursor := ""
+	for {
+		var res struct {
+			Files []assetFile `json:"files"`
+			Next  *string     `json:"next"`
+		}
+		var path string
+		switch {
+		case version != "" && mustExist:
+			path = "/assets/bundles/" + api.PathID(id) + "/versions/" + api.PathID(version) + "?limit=1000"
+		case version != "":
+			path = "/assets/bundles/" + api.PathID(id) + "/files?limit=1000&version=" + url.QueryEscape(version)
+		default:
+			path = "/assets/bundles/" + api.PathID(id) + "/files?limit=1000"
+		}
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		if err := do(ctx, http.MethodGet, path, nil, &res); err != nil {
+			return nil, err
+		}
+		files = append(files, res.Files...)
+		if res.Next == nil || *res.Next == "" || *res.Next == cursor {
+			return files, nil
+		}
+		cursor = *res.Next
+	}
+}
+
+// apiCall is the shape of api.Client.Do, so a caller can wrap it.
+type apiCall func(ctx context.Context, method, path string, in, out any) error
 
 func newAssetFiles(a *App, bundleID bundleResolver) *cobra.Command {
 	return &cobra.Command{
-		Use:     "files <bundle> <version>",
+		Use:     "files <bundle> [version]",
 		Aliases: []string{"version"},
-		Short:   "List the files of one version with their public URLs",
-		Args:    cobra.ExactArgs(2),
+		Short:   "List a version's files (or a live bundle's) with their public URLs",
+		Long: "List the files of one version of a versioned bundle, or every file of a\n" +
+			"live bundle (which takes no version), with their public URLs, SHA-256 and\n" +
+			"flags (mutable, stale).",
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], false)
 			if err != nil {
 				return err
 			}
-			// The route pages by path; a version holds at most the hard
-			// `asset.filesPerVersion` (5,000), so follow every page.
-			var bundle, version string
-			var files []assetFile
-			cursor := ""
-			for {
-				var res struct {
-					Bundle  string      `json:"bundle"`
-					Version string      `json:"version"`
-					Files   []assetFile `json:"files"`
-					Next    *string     `json:"next"`
-				}
-				path := "/assets/bundles/" + api.PathID(id) + "/versions/" + api.PathID(args[1]) + "?limit=1000"
-				if cursor != "" {
-					path += "&cursor=" + url.QueryEscape(cursor)
-				}
-				if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
-					return err
-				}
-				bundle, version = res.Bundle, res.Version
-				files = append(files, res.Files...)
-				if res.Next == nil || *res.Next == "" || *res.Next == cursor {
-					break
-				}
-				cursor = *res.Next
+			version := ""
+			if len(args) == 2 {
+				version = args[1]
 			}
-			return a.printFiles(bundle, version, files)
+			// The routes page by path; a version holds at most the hard
+			// `asset.filesPerVersion` (5,000) and a live bundle the hard
+			// `asset.filesPerBundle` (20,000), so follow every page.
+			files, err := listAssetFiles(cmd.Context(), cc.cl.Do, id, version, true)
+			if err != nil {
+				return err
+			}
+			return a.printFiles(args[0], version, files)
 		},
 	}
 }
@@ -270,9 +407,10 @@ func newAssetVersionDelete(a *App, bundleID bundleResolver) *cobra.Command {
 		Use:   "rm-version <bundle> <version>",
 		Short: "Delete one version's files and objects",
 		Long: "Delete one version's files and objects.\n\n" +
-			"Nothing checks whether a channel still points at this version: a client\n" +
-			"that cached the URL gets a 404 and cannot load the game at all. Re-point\n" +
-			"every lobby channel's --map-url first.",
+			"The console refuses while a lobby channel of the bundle's team still\n" +
+			"points its --map-url into the version: re-point those first. Anyone else\n" +
+			"who cached a URL of the version gets a 404 afterwards. A large version is\n" +
+			"deleted in rounds; the command repeats until the console says it is done.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], true)
@@ -280,7 +418,7 @@ func newAssetVersionDelete(a *App, bundleID bundleResolver) *cobra.Command {
 				return err
 			}
 			path := "/assets/bundles/" + api.PathID(id) + "/versions/" + api.PathID(args[1])
-			if err := cc.cl.Do(cmd.Context(), http.MethodDelete, path, nil, nil); err != nil {
+			if err := a.repeatDelete(cmd.Context(), cc.cl, path); err != nil {
 				return err
 			}
 			fmt.Fprintf(a.Out, "deleted %s/%s\n", args[0], args[1])
@@ -306,7 +444,7 @@ func newAssetUpload(a *App, bundleID bundleResolver) *cobra.Command {
 			}
 			f, err := uploadAssetFile(cmd.Context(), cc.cl, id, args[1], inBundle, args[2])
 			if err != nil {
-				return err
+				return liveHint(err, args[0])
 			}
 			return a.printFiles(args[0], args[1], []assetFile{*f})
 		},
@@ -341,6 +479,11 @@ func newAssetPush(a *App, bundleID bundleResolver) *cobra.Command {
 			for _, rel := range local {
 				f, err := uploadAssetFile(cmd.Context(), cl, id, version, rel, filepath.Join(dir, filepath.FromSlash(rel)))
 				if err != nil {
+					if len(uploaded) == 0 {
+						if hinted := liveHint(err, bundle); hinted != err {
+							return hinted
+						}
+					}
 					// Partial versions are harmless: nothing points at this
 					// version until a channel's --map-url does. Name what landed,
 					// and say how to retry — a published path is write-once, so

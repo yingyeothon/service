@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,8 @@ type Error struct {
 	Code    string
 	Message string
 	Details json.RawMessage
+	// RetryAfter is the response's Retry-After header, when it named seconds.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string {
@@ -62,17 +65,24 @@ func New(base, token string) *Client {
 // Do sends `in` as JSON (nil = no body) and decodes the JSON response into
 // `out` (nil = discard). 204 yields no decoding.
 func (c *Client) Do(ctx context.Context, method, path string, in, out any) error {
+	_, err := c.DoStatus(ctx, method, path, in, out)
+	return err
+}
+
+// DoStatus is Do that also returns the success status, for the routes whose
+// 2xx answers differ in meaning (202 "not done yet" vs 204 "done").
+func (c *Client) DoStatus(ctx context.Context, method, path string, in, out any) (int, error) {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, body)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "yyt-cli/"+Version)
@@ -84,15 +94,18 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer res.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if res.StatusCode >= 400 {
 		e := &Error{Status: res.StatusCode}
+		if sec, err := strconv.Atoi(strings.TrimSpace(res.Header.Get("Retry-After"))); err == nil && sec >= 0 {
+			e.RetryAfter = time.Duration(sec) * time.Second
+		}
 		var env struct {
 			Error struct {
 				Code    string          `json:"code"`
@@ -110,15 +123,15 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 			e.Code = "http_" + fmt.Sprint(res.StatusCode)
 			e.Message += " (is --api the console base URL?)"
 		}
-		return e
+		return 0, e
 	}
 	if out == nil || res.StatusCode == http.StatusNoContent || len(raw) == 0 {
-		return nil
+		return res.StatusCode, nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("decode %s %s: %w (is --api the console base URL?)", method, path, err)
+		return res.StatusCode, fmt.Errorf("decode %s %s: %w (is --api the console base URL?)", method, path, err)
 	}
-	return nil
+	return res.StatusCode, nil
 }
 
 // sanitize caps an opaque error body and strips control characters so a

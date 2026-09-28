@@ -183,8 +183,9 @@ func TestResourceDeleteAndUpdateDescription(t *testing.T) {
 		"DELETE /sites/st_1":          func(r recorded) (int, any) { deleted = append(deleted, r.Path); return 204, nil },
 		"GET /projects/prj_1/sites":   func(recorded) (int, any) { return 200, map[string]any{"sites": []any{sampleSite}} },
 	}, nil, nil, []any{sampleBundle}))
-	for _, tc := range []struct{ noun, arg string }{{"asset", "dungeon-maps"}, {"site", "game-web"}} {
-		out, _, err := run(t, f, tc.noun, "rm", tc.arg)
+	// `asset rm` deletes files of a live bundle; the bundle itself is `delete`.
+	for _, tc := range []struct{ noun, arg, verb string }{{"asset", "dungeon-maps", "delete"}, {"site", "game-web", "rm"}} {
+		out, _, err := run(t, f, tc.noun, tc.verb, tc.arg)
 		if err != nil || out != "deleted "+tc.arg+"\n" {
 			t.Fatalf("%s rm: %v %q", tc.noun, err, out)
 		}

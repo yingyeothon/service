@@ -108,7 +108,7 @@ func parseTags(pairs []string) (map[string]string, error) {
 func putPresigned(ctx context.Context, cl *api.Client, grant uploadGrant, body io.Reader, size int64) error {
 	req, err := http.NewRequestWithContext(ctx, grant.Method, grant.URL, body)
 	if err != nil {
-		return err
+		return redactURL(err)
 	}
 	req.ContentLength = size
 	for k, v := range grant.Headers {
@@ -121,13 +121,26 @@ func putPresigned(ctx context.Context, cl *api.Client, grant uploadGrant, body i
 	// The presigned PUT of a large binary can exceed the client's API timeout.
 	res, err := (&http.Client{Transport: httpClient.Transport}).Do(req)
 	if err != nil {
-		return fmt.Errorf("upload PUT failed: %w", err)
+		return fmt.Errorf("upload PUT failed: %w", redactURL(err))
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("upload PUT failed: HTTP %d", res.StatusCode)
+		return &httpStatusError{Op: "upload PUT", Status: res.StatusCode}
 	}
 	return nil
+}
+
+// redactURL blanks the URL a `*url.Error` would print: a presigned URL's query
+// is a temporary credential (`X-Amz-Credential`, `X-Amz-Signature`, a session
+// token) and `asset sync` prints its failures, `--json` included. The error
+// keeps its type, so the retry policy still sees a transport failure (the
+// same rule as `putObject`, which drops the wrapper instead).
+func redactURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		ue.URL = "<presigned URL>"
+	}
+	return err
 }
 
 // uploadFile runs presign → PUT file → commit for one local file. `presign`
