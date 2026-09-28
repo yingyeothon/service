@@ -167,12 +167,26 @@ describe("catalog listings — the team's side", () => {
         tags: Array.from({ length: 11 }, (_, i) => `t${i}`),
       },
       { title: "x", audience: "public", summary: "s".repeat(2001) },
+      // Control characters forge rows in a terminal (rules/security.md).
+      { title: "Game\npublishedBy: admin", audience: "public" },
+      { title: "x", audience: "public", summary: "a\u0000b" },
     ])
       expect(
         (await publish(h, owner, app.id, body)).statusCode,
         JSON.stringify(body),
       ).toBe(400);
 
+    h.clock.tick(1);
+    // A summary keeps its newlines and tabs.
+    expect(
+      (
+        await publish(h, owner, app.id, {
+          title: "x",
+          audience: "public",
+          summary: "line one\n\tline two",
+        })
+      ).statusCode,
+    ).toBe(200);
     h.clock.tick(1);
     const gone = await h.app(
       ev("DELETE", `/catalog/apps/${app.id}/listing`, {
@@ -214,9 +228,10 @@ describe("catalog listings — the team's side", () => {
     expect(listing.map((r) => [r.action, r.actorId])).toEqual([
       ["resource.delete", owner.id],
       ["resource.update", owner.id],
+      ["resource.update", owner.id],
       ["resource.create", mate.id],
     ]);
-    expect(listing[1]!.detail?.fields).toEqual(["audience", "tags", "title"]);
+    expect(listing[2]!.detail?.fields).toEqual(["audience", "tags", "title"]);
   });
 
   it("deleting the app takes its listing, viewers and takedown with it", async () => {

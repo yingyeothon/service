@@ -38,8 +38,20 @@ export const VIEWERS_PER_LISTING = 100;
 /** The browse and admin lists answer at most this many rows (Lambda's 6 MB body, one connection). */
 export const LISTINGS_PAGE_MAX = 200;
 
-const title = z.string().trim().min(1).max(100);
-const summary = z.string().trim().max(2000);
+// Served back to every reader and printed by the CLI: no control characters
+// in a title (a newline would forge a row in a terminal), and only newlines
+// and tabs in a summary (rules/security.md, the event force-close lesson).
+const title = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine((s) => !/\p{Cc}/u.test(s), "no control characters");
+const summary = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((s) => !/[^\P{Cc}\n\t]/u.test(s), "no control characters");
 const tag = z.string().regex(LISTING_TAG, "lowercase slug, 1-32 chars");
 const tags = z
   .array(tag)
