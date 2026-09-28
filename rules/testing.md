@@ -28,6 +28,7 @@
 ## A transaction across repositories is a hook in the fakes (2026-09-28)
 
 - The Prisma side of a channel delete cancels its limit requests in the same transaction because both tables are one database; the memory fakes are separate objects. `createMemoryConsoleDb({ channelsDeleted, channelsPurged })`, `createMemoryAssetsDb(…, { bundleDeleted })`, `createMemoryTeamDb({ projectDeleted })` and `createMemoryLimitsDb({ scopeExists, writeChannel })` take callbacks, and `test/helpers.ts` (and each contract's `make`) wires them to each other. A fake that skipped the hook would pass every route test while the cascade it stands for went untested; the shared contract (`packages/console-db/test/limits.test.ts`) runs the same deletes against both.
+- **A bulk fixture cleans up after itself, inside its own timeout.** The 200,000-row `asset_files` plan test passed locally, then failed CI in the _next_ contract: that contract's `resetTestDb` deleted the rows one statement at a time under coverage and ran past vitest's 5 s default (2026-09-28). The test now `truncate`s in a `finally`.
 - A route that notifies takes the publisher as an option (`notify`), and the harness records it (`h.mails`): the e-mail template is then asserted like any response, including what it must not contain (the member's reason).
 
 ## A cross-package signature change hides behind a stale `dist` (2026-09-09)

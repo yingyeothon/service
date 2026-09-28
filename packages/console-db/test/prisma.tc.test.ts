@@ -360,14 +360,21 @@ describe.skipIf(!dockerAvailable())(
         expect(files?.extra).toContain("Using index");
 
         const assets = createAssetsDb(db.client);
-        const v = await assets.versionSummaries("ab_3");
-        expect(v).toHaveLength(50);
-        expect(v.reduce((n, x) => n + x.files, 0)).toBe(10_000);
-        expect(await assets.projectAssetUsage("prj_1", 0)).toMatchObject({
-          bundles: 20,
-          files: 200_000,
-          inFlightBytes: 0,
-        });
+        try {
+          const v = await assets.versionSummaries("ab_3");
+          expect(v).toHaveLength(50);
+          expect(v.reduce((n, x) => n + x.files, 0)).toBe(10_000);
+          expect(await assets.projectAssetUsage("prj_1", 0)).toMatchObject({
+            bundles: 20,
+            files: 200_000,
+            inFlightBytes: 0,
+          });
+        } finally {
+          // Inside this test's own timeout: left behind, the next contract's
+          // `resetTestDb` deletes 210,000 rows one by one and times out on a
+          // slow runner (CI 2026-09-28). Nothing references `asset_files`.
+          await db.client.$executeRawUnsafe("truncate table asset_files");
+        }
       }, 120_000);
     });
 
