@@ -1,0 +1,9 @@
+id:        lr_01k
+team:      dooroo
+scope:     team team_1
+limit:     team.projects
+requested: 25
+status:    pending
+by:        octo
+created:   2025-08-24T01:46:40Z
+reason:    music packs

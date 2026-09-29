@@ -1,0 +1,4 @@
+LIMIT          USAGE  EFFECTIVE  SOFT  HARD  OVERRIDE
+team.projects  20     20         20    1000  -
+
+team.projects: at the limit: ask for 25 with `yyt limit request team.projects +5 --reason ...`

@@ -243,9 +243,10 @@ Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing
 ### Limits
 
 ```sh
-yyt limit list [--bundle b | --channel c]              # usage, effective, soft, hard, override; no flag = the project in context
-yyt limit request <limit> <value|unlimited> [--bundle b | --channel c] --reason "…"
+yyt limit list [--bundle b | --channel c | --scope team]   # usage, effective, soft, hard, override; no flag = the project in context
+yyt limit request <limit> <value|unlimited|+N> [--bundle b | --channel c] --reason "…"
                                                        # sizes in binary units (256MiB, 3GiB); channel.lifetime takes only `unlimited`
+yyt limit request team.projects +5 --reason "…"        # a `team.` limit is the team in context; +5 once every project slot is used
 yyt limit requests [--status s] [--cursor c] [--limit n]   # the team's requests, newest first
 yyt limit get <request-id>                             # reason, and once decided the grant and the admin's note
 yyt limit cancel <request-id>                          # the requester or a team owner; counts as a refusal for 7 days
@@ -253,11 +254,11 @@ yyt limit cancel <request-id>                          # the requester or a team
 yyt limit requests --all [--status pending]            # every team's; stderr says how many are pending
 yyt limit approve <request-id> [--value v] [--note n]
 yyt limit reject <request-id> --note "…"
-yyt limit set <limit> <value|unlimited> [--bundle b | --channel c] [--expires 7d] --note "…"
-yyt limit revoke <limit> [--bundle b | --channel c] --note "…"   # channel.lifetime: back to 28 days
+yyt limit set <limit> <value|unlimited> [--bundle b | --channel c | --scope team] [--expires 7d] --note "…"
+yyt limit revoke <limit> [--bundle b | --channel c | --scope team] --note "…"   # channel.lifetime: back to 28 days
 ```
 
-Every limit has a soft value every scope gets and a hard ceiling (`docs/decisions.md` _Limit requests_). One request per limit and scope may be pending, ten per team; a refused or cancelled one blocks the same limit for 7 days (exit 2, the error says when). A channel granted no expiry prints `expires: no expiry`, and `channels extend` refuses it.
+Every limit has a soft value every scope gets and a hard ceiling (`docs/decisions.md` _Limit requests_). One request per limit and scope may be pending, ten per team; a refused or cancelled one blocks the same limit for 7 days (exit 2, the error says when). A channel granted no expiry prints `expires: no expiry`, and `channels extend` refuses it. `team.projects` (20 per team, ceiling 1,000) is stepped: `list --scope team` says when it may be asked for, `+5` sends the server's next step (any other `+N` is `effective + N`, and the server refuses it), and `project create` at the limit prints the request to make. `+N` is a whole count and applies to count limits only; sizes take an absolute value.
 
 ## Smoke helpers
 

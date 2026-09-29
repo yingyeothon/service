@@ -1198,6 +1198,7 @@ export function createConsoleApp({
   const teamRoutes = createTeamRoutes({
     db,
     team,
+    limits,
     catalog,
     assets,
     sites,

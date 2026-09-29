@@ -40,6 +40,7 @@ const BUNDLE: LimitScope = { kind: "bundle", id: "ab_1" };
 const PROJECT: LimitScope = { kind: "project", id: "prj_1" };
 const CH1: LimitScope = { kind: "channel", id: "ch_1" };
 const CH2: LimitScope = { kind: "channel", id: "ch_2" };
+const TEAM: LimitScope = { kind: "team", id: "team_1" };
 
 const req = (
   id: string,
@@ -499,6 +500,64 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
     expect(await env.expireChannels(210, 50)).toEqual([]);
   });
 
+  it("a team is its own scope: request, approve, override, revoke", async () => {
+    const { limits } = await make();
+    await limits.createRequest(
+      req("lr_t1", { scope: TEAM, key: "team.projects", requestedValue: 25 }),
+      RULES,
+    );
+    // One pending per scope and key holds for the team scope too.
+    await expect(
+      limits.createRequest(
+        req("lr_t2", { scope: TEAM, key: "team.projects", requestedValue: 25 }),
+        RULES,
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(
+      (await limits.listRequests({ scope: TEAM })).rows.map((r) => r.id),
+    ).toEqual(["lr_t1"]);
+    expect(await limits.findRequest("lr_t1")).toMatchObject({
+      scope: TEAM,
+      key: "team.projects",
+      requestedValue: 25,
+    });
+    expect(await limits.approveRequest("lr_t1", grant({ value: 25 }))).toBe(
+      true,
+    );
+    expect(await limits.listOverrides([TEAM, PROJECT], 0)).toMatchObject([
+      { scope: TEAM, key: "team.projects", value: 25, requestId: "lr_t1" },
+    ]);
+    // A direct set replaces it (one override per team and key).
+    await limits.setOverride({
+      id: "lo_t2",
+      teamId: "team_1",
+      scope: TEAM,
+      key: "team.projects",
+      value: 30,
+      note: "n",
+      grantedBy: "m2",
+      grantedAt: 30,
+    });
+    expect(await limits.listOverrides([TEAM], 0)).toMatchObject([
+      { id: "lo_t2", value: 30 },
+    ]);
+    expect(await limits.revokeOverride(TEAM, "team.projects")).toMatchObject({
+      id: "lo_t2",
+    });
+    expect(await limits.listOverrides([TEAM], 0)).toEqual([]);
+    await expect(
+      limits.createRequest(
+        req("lr_t3", {
+          scope: { kind: "team", id: "team_nope" },
+          teamId: "team_nope",
+          key: "team.projects",
+          requestedValue: 25,
+        }),
+        RULES,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("a bundle delete cascades to its requests and overrides", async () => {
     const env = await make();
     const { limits } = env;
@@ -611,7 +670,9 @@ describe("memory limits repository", () => {
           ? db.channels.get(s.id)?.deletedAt === null
           : s.kind === "bundle"
             ? assets.bundles.has(s.id)
-            : s.id === "prj_1",
+            : s.kind === "team"
+              ? s.id === "team_1"
+              : s.id === "prj_1",
       writeChannel: (id, w) => {
         const c = db.channels.get(id);
         if (!c || c.deletedAt !== null) return false;

@@ -69,6 +69,8 @@ const LIMITS: LimitsView = {
       hard: 256 * MiB,
       effective: 8 * MiB,
       usage: 10,
+      step: null,
+      next: null,
       override: {
         value: 8 * MiB,
         expiresAt: null,
@@ -86,6 +88,8 @@ const LIMITS: LimitsView = {
       hard: 3072 * MiB,
       effective: 20 * MiB,
       usage: 4096,
+      step: null,
+      next: null,
       override: null,
     },
   ],

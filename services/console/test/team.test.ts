@@ -4,8 +4,8 @@ import {
   bumpVersion,
   JOIN_COOLDOWN_SEC,
   TEAMS_PER_MEMBER,
-  PROJECTS_PER_TEAM,
 } from "../src/team.js";
+import { LIMITS } from "../src/limits.js";
 import { ev, harness, NOW_SEC, parse, type Json } from "./helpers.js";
 
 type H = ReturnType<typeof harness>;
@@ -752,7 +752,7 @@ describe("projects", () => {
     );
     expect(parse(patch).description).toBe("md");
 
-    for (let i = 1; i < PROJECTS_PER_TEAM; i++)
+    for (let i = 1; i < LIMITS["team.projects"].soft; i++)
       await mkProject(h, member.cookie, team.id, `p${i}`);
     const over = await h.app(
       ev("POST", `/teams/${team.id}/projects`, {

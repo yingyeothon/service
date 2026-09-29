@@ -19,13 +19,17 @@ import (
 // Views mirror services/console/src/limits.ts. A value is a number or the
 // string "unlimited", so it stays raw JSON until printed.
 type limitRow struct {
-	Key       string         `json:"key"`
-	Unit      string         `json:"unit"`
-	Soft      any            `json:"soft"`
-	Hard      any            `json:"hard"`
-	Effective any            `json:"effective"`
-	Usage     *float64       `json:"usage"`
-	Override  *limitOverride `json:"override"`
+	Key       string   `json:"key"`
+	Unit      string   `json:"unit"`
+	Soft      any      `json:"soft"`
+	Hard      any      `json:"hard"`
+	Effective any      `json:"effective"`
+	Usage     *float64 `json:"usage"`
+	// A stepped key (team.projects): Next is the one value a request may
+	// carry now, nil while the limit is not reached or the key has no step.
+	Step     *int64         `json:"step"`
+	Next     *int64         `json:"next"`
+	Override *limitOverride `json:"override"`
 }
 
 type limitOverride struct {
@@ -140,28 +144,44 @@ func newLimits(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:     "limit",
 		Aliases: []string{"limits"},
-		Short:   "Asset and channel limits: see them, ask for more, and (admin) grant or refuse",
-		Long: "Asset and channel limits (docs/decisions.md \"Limit requests\").\n\n" +
+		Short:   "Team, asset and channel limits: see them, ask for more, and (admin) grant or refuse",
+		Long: "Team, asset and channel limits (docs/decisions.md \"Limit requests\").\n\n" +
 			"Every limit has a soft value every scope gets and a hard ceiling a platform\n" +
 			"admin may grant up to. A limit belongs to a bundle (--bundle), a channel\n" +
-			"(--channel) or, with neither, the project in context. Sizes take binary\n" +
-			"units (256MiB, 3GiB); a channel's lifetime takes only `unlimited`.",
+			"(--channel), the team in context (--scope team, or a `team.` limit) or,\n" +
+			"with none of these, the project in context. Sizes take binary units\n" +
+			"(256MiB, 3GiB); a channel's lifetime takes only `unlimited`; a stepped\n" +
+			"limit such as team.projects is asked for as `+5` once every slot is used.",
 	}
-	var bundle, channel string
+	var bundle, channel, scopeKind string
 	addScope := func(cmd *cobra.Command) {
 		cmd.Flags().StringVar(&bundle, "bundle", "", "an asset bundle (id or name in the project context)")
 		cmd.Flags().StringVar(&channel, "channel", "", "a channel (id or name in the project context)")
+		cmd.Flags().StringVar(&scopeKind, "scope", "", "team | project: the team or (default) the project in context")
 	}
-	// scopeOf resolves --bundle / --channel / the project context to `kind:id`.
-	scopeOf := func(cmd *cobra.Command, write bool) (*ctxClient, string, string, string, error) {
+	// scopeOf resolves --bundle / --channel / --scope team / the project
+	// context to `kind:id`. A `team.` limit key picks the team by itself.
+	scopeOf := func(cmd *cobra.Command, write bool, key string) (*ctxClient, string, string, string, error) {
 		cc, err := a.ctxClient(cmd)
 		if err != nil {
 			return nil, "", "", "", err
 		}
 		ctx := cmd.Context()
+		teamKey := strings.HasPrefix(key, "team.")
+		team := scopeKind == "team" || teamKey
 		switch {
-		case bundle != "" && channel != "":
-			return nil, "", "", "", errors.New("pass one of --bundle and --channel")
+		case scopeKind != "" && scopeKind != "team" && scopeKind != "project":
+			return nil, "", "", "", fmt.Errorf("--scope %q: want team or project", scopeKind)
+		case teamKey && scopeKind == "project":
+			return nil, "", "", "", fmt.Errorf("%s is a team limit: drop --scope project", key)
+		case bundle != "" && channel != "", team && (bundle != "" || channel != ""):
+			return nil, "", "", "", errors.New("pass one of --bundle, --channel and --scope team")
+		case team:
+			r, err := cc.team(ctx, write)
+			if err != nil {
+				return nil, "", "", "", err
+			}
+			return cc, "team", r.TeamID, "team:" + r.TeamID, nil
 		case bundle != "":
 			id, err := cc.bundle(ctx, bundle, write)
 			return cc, "bundle", id, "bundle:" + id, err
@@ -182,7 +202,7 @@ func newLimits(a *App) *cobra.Command {
 		Short:   "Show a scope's limits: usage, the effective value, soft and hard, and pending requests",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cc, _, _, scope, err := scopeOf(cmd, false)
+			cc, _, _, scope, err := scopeOf(cmd, false, "")
 			if err != nil {
 				return err
 			}
@@ -220,11 +240,23 @@ func newLimits(a *App) *cobra.Command {
 			if err := a.printer().Table([]string{"LIMIT", "USAGE", "EFFECTIVE", "SOFT", "HARD", "OVERRIDE"}, rows); err != nil {
 				return err
 			}
-			// Who raised what and why, which the table has no room for.
+			// Who raised what and why, which the table has no room for; and
+			// for a stepped limit, what may be asked for now.
 			var notes [][2]string
 			for _, l := range res.Limits {
 				if o := l.Override; o != nil {
 					notes = append(notes, [2]string{l.Key, fmt.Sprintf("by %s at %s: %s", output.Str(o.GrantedByLogin), output.Time(o.GrantedAt), o.Note)})
+				}
+				if l.Step != nil {
+					eff, _ := l.Effective.(float64)
+					switch {
+					case l.Next != nil:
+						notes = append(notes, [2]string{l.Key, fmt.Sprintf("at the limit: ask for %d with `yyt limit request %s +%d --reason ...`", *l.Next, l.Key, *l.Step)})
+					case l.Usage != nil && *l.Usage >= eff:
+						notes = append(notes, [2]string{l.Key, fmt.Sprintf("at the ceiling of %s", formatLimit(l.Unit, l.Hard))})
+					default:
+						notes = append(notes, [2]string{l.Key, fmt.Sprintf("raised %d at a time once every slot is used", *l.Step)})
+					}
 				}
 			}
 			if len(notes) > 0 {
@@ -244,20 +276,28 @@ func newLimits(a *App) *cobra.Command {
 
 	var reason string
 	request := &cobra.Command{
-		Use:   "request <limit> <value|unlimited>",
+		Use:   "request <limit> <value|unlimited|+N>",
 		Short: "Ask a platform admin for a higher limit (one pending per limit; 7 days after a refusal)",
 		Example: "  yyt limit request asset.fileBytes 64MiB --bundle music --reason \"48 kHz tracks\"\n" +
-			"  yyt limit request channel.lifetime unlimited --channel lobby --reason \"always-on demo\"",
+			"  yyt limit request channel.lifetime unlimited --channel lobby --reason \"always-on demo\"\n" +
+			"  yyt limit request team.projects +5 --reason \"one project per minigame\"",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(reason) == "" {
 				return errors.New("--reason is required: say what the limit is for")
 			}
-			value, err := parseLimitValue(args[1])
+			cc, _, _, scope, err := scopeOf(cmd, true, args[0])
 			if err != nil {
 				return err
 			}
-			cc, _, _, scope, err := scopeOf(cmd, true)
+			var value any
+			if n, ok := parseRelative(args[1]); ok {
+				// `+N` is relative to the effective value the server reports;
+				// for a stepped limit the server's `next` is what to send.
+				value, err = relativeValue(cmd, cc, scope, args[0], n)
+			} else {
+				value, err = parseLimitValue(args[1])
+			}
 			if err != nil {
 				return err
 			}
@@ -407,7 +447,7 @@ func newLimits(a *App) *cobra.Command {
 				}
 				body["expiresAt"] = time.Now().Add(d).Unix()
 			}
-			cc, kind, id, _, err := scopeOf(cmd, true)
+			cc, kind, id, _, err := scopeOf(cmd, true, args[0])
 			if err != nil {
 				return err
 			}
@@ -444,7 +484,7 @@ func newLimits(a *App) *cobra.Command {
 			if strings.TrimSpace(revokeNote) == "" {
 				return errors.New("--note is required")
 			}
-			cc, kind, id, scope, err := scopeOf(cmd, true)
+			cc, kind, id, scope, err := scopeOf(cmd, true, args[0])
 			if err != nil {
 				return err
 			}
@@ -525,6 +565,73 @@ func (a *App) printRequest(r limitRequest) error {
 	}
 	pairs = append(pairs, [2]string{"reason", r.Reason})
 	return a.printer().KV(pairs)
+}
+
+// parseRelative reads `+N` (a positive whole number) and reports whether the
+// argument had that form at all.
+func parseRelative(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "+") {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s[1:]), 10, 64)
+	if err != nil || n <= 0 {
+		return 0, true
+	}
+	return n, true
+}
+
+// relativeValue turns `+N` into the absolute value to send, for a count: the
+// server's `next` when the limit is stepped and N is its step, else effective + N.
+// The server still decides; a wrong step or an unreached limit is its 400.
+func relativeValue(cmd *cobra.Command, cc *ctxClient, scope, key string, n int64) (any, error) {
+	if n <= 0 {
+		return nil, errors.New("a relative value is +N with N above 0")
+	}
+	var res struct {
+		Limits []limitRow `json:"limits"`
+	}
+	if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/limits?scope="+url.QueryEscape(scope), nil, &res); err != nil {
+		return nil, err
+	}
+	for _, l := range res.Limits {
+		if l.Key != key {
+			continue
+		}
+		if l.Unit != "count" {
+			return nil, fmt.Errorf("%s takes an absolute value (%s): +N is for counts", key, l.Unit)
+		}
+		if l.Step != nil && l.Next != nil && *l.Step == n {
+			return *l.Next, nil
+		}
+		eff, ok := l.Effective.(float64)
+		if !ok {
+			return nil, fmt.Errorf("%s is %v: +N does not apply", key, l.Effective)
+		}
+		return int64(eff) + n, nil
+	}
+	return nil, fmt.Errorf("%s is not a limit of %s", key, scope)
+}
+
+// withLimitHint names the request to make when a create was refused by a
+// limit the caller may ask more of (`details.limit`, docs/decisions.md
+// *Limit requests*).
+func withLimitHint(err error, scopeFlag string) error {
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Status != http.StatusConflict {
+		return err
+	}
+	var d struct {
+		Limit string `json:"limit"`
+	}
+	if json.Unmarshal(ae.Details, &d) != nil || d.Limit == "" {
+		return err
+	}
+	value := "<value>"
+	if d.Limit == "team.projects" {
+		value = "+5"
+	}
+	return fmt.Errorf("%w (ask for more: yyt limit request %s %s%s --reason \"...\")", err, d.Limit, value, scopeFlag)
 }
 
 // withRetryAt adds the cooldown's end, as a time, to a 429 whose details

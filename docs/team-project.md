@@ -22,7 +22,7 @@ PATCH  /teams/{team}/members/{mid}    owner {role}; seatless admin only {role:"o
 DELETE /teams/{team}/members/{mid}    owner (kick) / self (leave, or withdraw a pending request)
 GET    /teams/{team}/history          team member  ?cursor&limit (cursor = (at, id))
 GET|POST /teams/{team}/discussions ; GET|PATCH|DELETE …/{id} ; POST …/{id}/comments ; PATCH|DELETE …/comments/{cid}
-GET|POST /teams/{team}/projects
+GET|POST /teams/{team}/projects                                   POST: 409 `details.limit=team.projects` at the team's project limit (`GET /limits?scope=team:{team}`, `POST /limit-requests`)
 GET    /teams/{team}/catalog/apps[?artifacts=summary&platform=]   every app of the team + projectId (permanent)
 GET    /catalog/apps[?artifacts=summary&platform=]                every app of every seated team + `teams` (every live seat); the console app's list (permanent)
 GET    /teams/{team}/issues?status=&limit=                        recent issues across the team's projects

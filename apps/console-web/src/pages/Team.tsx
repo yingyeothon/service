@@ -16,7 +16,12 @@ import { Crumbs } from "../components/Crumbs";
 import { DataTable, NameCell } from "../components/DataTable";
 import { FilterBar, TextFilter } from "../components/FilterBar";
 import { HistoryList } from "../components/HistoryList";
-import { cancelItem, RequestDetailsDrawer } from "../components/Limits";
+import {
+  cancelItem,
+  LimitsSection,
+  RequestDetailsDrawer,
+  useLimits,
+} from "../components/Limits";
 import { PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
 import { MdField } from "../components/MdField";
@@ -42,7 +47,13 @@ import {
   useTeamStanding,
   useInvalidateTeams,
 } from "../lib/team";
-import type { LimitRequest, Member, TeamDetail, TeamMember } from "../types";
+import type {
+  LimitRequest,
+  Member,
+  TeamDetail,
+  TeamMember,
+  TeamStanding,
+} from "../types";
 import { RequesterCell, ScopeCell, StatusCell } from "./LimitRequests";
 import { RotationNotice, type LeftState } from "./Teams";
 
@@ -240,7 +251,11 @@ export function TeamPage() {
           <Tabs.Tab value="history">History</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="projects" pt="lg">
-          <ProjectsTab team={team} canWrite={t.canWrite} />
+          <ProjectsTab
+            team={team}
+            canWrite={t.canWrite}
+            standing={t.standing}
+          />
         </Tabs.Panel>
         <Tabs.Panel value="members" pt="lg">
           <MembersTab team={team} owner={t.owner} onChanged={t.reload} />
@@ -342,11 +357,14 @@ function PendingNotice({ team }: { team: TeamDetail }) {
 function ProjectsTab({
   team,
   canWrite,
+  standing,
 }: {
   team: TeamDetail;
   canWrite: boolean;
+  standing: TeamStanding | undefined;
 }) {
   const lq = useListQuery({ scope: team.id });
+  const limits = useLimits("team", team.id);
   const list = useApiQuery(
     ["projects", team.id, lq.params],
     () => api.projects(team.id, lq.params),
@@ -370,86 +388,93 @@ function ProjectsTab({
     void nav(projectUrl(team.id, r.id));
   };
   return (
-    <Section
-      title="Projects"
-      actions={
-        canWrite && (
-          <Button variant="default" onClick={create.open}>
-            New project
-          </Button>
-        )
-      }
-    >
-      <FilterBar>
-        <TextFilter
-          value={lq.q}
-          onChange={lq.setQ}
-          placeholder="Name or description"
-        />
-      </FilterBar>
-      <DataTable
-        columns={[
-          { key: "name", label: "Project", sortKey: "name" },
-          { key: "desc", label: "Description", sortKey: "description" },
-          { key: "by", label: "Created by", sortKey: "createdBy" },
-          {
-            key: "updated",
-            label: "Updated",
-            sortKey: "updatedAt",
-            defaultOrder: "desc",
-          },
-        ]}
-        rows={list.data}
-        loading={list.loading}
-        fetching={list.fetching}
-        error={list.error}
-        sort={lq.sort}
-        onSort={lq.setSort}
-        rowKey={(p) => p.id}
-        minWidth={480}
-        empty={
-          lq.filtering
-            ? noMatch(lq.params.q ?? "")
-            : {
-                title: "No projects yet.",
-                hint: canWrite
-                  ? "A project holds channels, apps, bundles and sites."
-                  : undefined,
-              }
+    <Stack gap="xl">
+      <Section
+        title="Projects"
+        actions={
+          canWrite && (
+            <Button variant="default" onClick={create.open}>
+              New project
+            </Button>
+          )
         }
-        render={(p) => (
-          <>
-            <NameCell to={projectUrl(team.id, p.id)}>{p.name}</NameCell>
-            <Table.Td>
-              <Text size="sm" lineClamp={1}>
-                {p.description ?? "—"}
-              </Text>
-            </Table.Td>
-            <Table.Td>{p.createdBy ?? "—"}</Table.Td>
-            <Table.Td>{fmtTime(p.updatedAt)}</Table.Td>
-          </>
-        )}
-      />
-      <ResourceDrawer
-        opened={create.opened}
-        onClose={create.close}
-        title="New project"
-        submitLabel="Create project"
-        onSubmit={submit}
-        busy={act.busy}
-        disabled={!create.form.name.trim()}
-        error={create.opened ? act.error : null}
       >
-        <NameDescriptionFields
-          name={create.form.name}
-          description={create.form.description}
-          onName={(name) => create.patch({ name })}
-          onDescription={(description) => create.patch({ description })}
-          namePlaceholder="dungeon"
-          markdown
+        <FilterBar>
+          <TextFilter
+            value={lq.q}
+            onChange={lq.setQ}
+            placeholder="Name or description"
+          />
+        </FilterBar>
+        <DataTable
+          columns={[
+            { key: "name", label: "Project", sortKey: "name" },
+            { key: "desc", label: "Description", sortKey: "description" },
+            { key: "by", label: "Created by", sortKey: "createdBy" },
+            {
+              key: "updated",
+              label: "Updated",
+              sortKey: "updatedAt",
+              defaultOrder: "desc",
+            },
+          ]}
+          rows={list.data}
+          loading={list.loading}
+          fetching={list.fetching}
+          error={list.error}
+          sort={lq.sort}
+          onSort={lq.setSort}
+          rowKey={(p) => p.id}
+          minWidth={480}
+          empty={
+            lq.filtering
+              ? noMatch(lq.params.q ?? "")
+              : {
+                  title: "No projects yet.",
+                  hint: canWrite
+                    ? "A project holds channels, apps, bundles and sites."
+                    : undefined,
+                }
+          }
+          render={(p) => (
+            <>
+              <NameCell to={projectUrl(team.id, p.id)}>{p.name}</NameCell>
+              <Table.Td>
+                <Text size="sm" lineClamp={1}>
+                  {p.description ?? "—"}
+                </Text>
+              </Table.Td>
+              <Table.Td>{p.createdBy ?? "—"}</Table.Td>
+              <Table.Td>{fmtTime(p.updatedAt)}</Table.Td>
+            </>
+          )}
         />
-      </ResourceDrawer>
-    </Section>
+        <ResourceDrawer
+          opened={create.opened}
+          onClose={create.close}
+          title="New project"
+          submitLabel="Create project"
+          onSubmit={submit}
+          busy={act.busy}
+          disabled={!create.form.name.trim()}
+          error={create.opened ? act.error : null}
+        >
+          <NameDescriptionFields
+            name={create.form.name}
+            description={create.form.description}
+            onName={(name) => create.patch({ name })}
+            onDescription={(description) => create.patch({ description })}
+            namePlaceholder="dungeon"
+            markdown
+          />
+        </ResourceDrawer>
+      </Section>
+      <LimitsSection
+        limits={limits}
+        standing={standing}
+        description="Projects per team. Once every slot is used, a member may ask a platform admin for 5 more."
+      />
+    </Stack>
   );
 }
 

@@ -314,7 +314,7 @@ Where the platform binds first, and what binds it:
 | Frames                         | 16 KB inbound, 32 KB outbound; topic 16 KB                                                                                                | refused, not truncated                                         |
 | Document / kv value            | 64 KB per document, 10 000 documents per channel                                                                                          | refused, not trimmed                                           |
 | Leaderboard                    | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                                                                               | worst case `maxEntries × (1 + 2 × (retain + 1))` rows          |
-| Per-project and per-team scope | 5 teams/member, 20 projects/team, ~50 resources of each kind per project                                                                  | list scans stay bounded without an index                       |
+| Per-project and per-team scope | 5 teams/member, 20 projects/team (raised 5 at a time on request, up to 1,000), ~50 resources of each kind per project                     | list scans stay bounded without an index                       |
 | Asset storage                  | 2 MiB per file, 20 MiB per bundle, 400 MiB per project; an admin may grant up to 256 MiB per file, 3 GiB per bundle and 5 GiB per project | the CDN guard's lines; totals from a covering index, not scans |
 | Recorded writes                | 2/s per member                                                                                                                            | every team, event and show write takes the slot                |
 

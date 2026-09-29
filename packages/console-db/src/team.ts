@@ -2152,6 +2152,8 @@ export interface MemoryTeamDbDeps {
   newHistoryId?: (at: number) => string;
   /** The `ON DELETE CASCADE` of rows naming the project (limit requests and overrides). */
   projectDeleted?: (id: string) => void;
+  /** The cascades of deleting a team row (its team-scoped limit rows). */
+  teamDeleted?: (id: string) => void;
 }
 
 /**
@@ -2486,6 +2488,7 @@ export function createMemoryTeamDb(deps: MemoryTeamDbDeps = {}): TeamDb & {
       if (c.channels + c.apps + c.bundles + c.sites + c.kv + c.lb > 0)
         throw conflict("team still has resources");
       teams.delete(id);
+      deps.teamDeleted?.(id);
       for (const [k, m] of [...teamMembers])
         if (m.teamId === id) teamMembers.delete(k);
       for (let i = history.length - 1; i >= 0; i--)

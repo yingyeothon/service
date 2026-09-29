@@ -4,11 +4,14 @@
 // admin approves a smaller value → a real upload over the soft value lands →
 // revoke refuses again → reject/cancel start the 7-day cooldown → ten pending
 // per team → no expiry for a channel (extend refuses, revoke gives 28 days,
-// delete cancels a pending one) → the admin queue. Self-cleaning: the bundles
-// and channels it creates are deleted, which cascades their requests.
+// delete cancels a pending one) → the admin queue → the team's project limit
+// (`team.projects`: fill to 20, +5 request, approve, revoke). Self-cleaning:
+// the bundles, channels and projects it creates are deleted, which cascades
+// their requests.
 // Usage: scripts/smoke/limits.mjs <consoleBase> <debugKey>
-// Needs `--param debugHooks=1`. Sends up to three request e-mails to the
-// stage's alarm topic (the per-team cap; the counter is reset first).
+// Needs `--param debugHooks=1`. Files four requests but sends at most three
+// e-mails to the stage's alarm topic (the per-team cap; the counter is reset
+// first).
 import { ensureTeam, settle } from "./_team.mjs";
 import {
   asUser,
@@ -47,7 +50,7 @@ check(
   String(reset.status),
 );
 
-const created = { bundles: [], channels: [] };
+const created = { bundles: [], channels: [], projects: [] };
 const mkBundle = async (name) => {
   const r = await call(`/projects/${team.prjId}/assets/bundles`, {
     method: "POST",
@@ -216,6 +219,140 @@ try {
     ).status === 429,
   );
 
+  // Projects per team (`team.projects`, a stepped key, todo/48): the soft
+  // value refuses the 21st project and names the key; a request is refused
+  // below the limit, must be the next step at it, and an approval admits
+  // five more; the revoke refuses again and keeps every project.
+  await settle();
+  const teamScope = `team:${team.teamId}`;
+  // A run killed between the fill and `finally` leaves projects and maybe an
+  // override behind: clear both first so the checks below start from 1 / 20.
+  await call(`/admin/limit-overrides/team/${team.teamId}/team.projects`, {
+    method: "DELETE",
+    headers: as(admin),
+    body: { note: "smoke reset" },
+  });
+  for (const p of (
+    await call(`/teams/${team.teamId}/projects`, { headers: as(member) })
+  ).body?.projects ?? [])
+    if (p.name.startsWith("lim-")) {
+      await settle();
+      await call(`/projects/${p.id}`, {
+        method: "DELETE",
+        headers: as(member),
+      });
+    }
+  const teamRow = async () =>
+    (
+      await call(`/limits?scope=${teamScope}`, { headers: as(member) })
+    ).body?.limits?.find((l) => l.key === "team.projects");
+  const mkProject = async (name) => {
+    const r = await call(`/teams/${team.teamId}/projects`, {
+      method: "POST",
+      headers: as(member),
+      body: { name },
+    });
+    if (r.status === 201) created.projects.push(r.body?.id);
+    return r;
+  };
+  let row = await teamRow();
+  check(
+    "team.projects: soft 20, hard 1000, step 5",
+    row?.soft === 20 && row?.hard === 1000 && row?.step === 5,
+    JSON.stringify(row),
+  );
+  const have =
+    (await call(`/teams/${team.teamId}/projects`, { headers: as(member) })).body
+      ?.projects?.length ?? 0;
+  if (have < row?.effective) {
+    const early = await ask(as(member), {
+      scope: teamScope,
+      key: "team.projects",
+      value: row.effective + 5,
+    });
+    check(
+      "below the limit: a team.projects request is refused and says why",
+      early.status === 400 &&
+        early.body?.error?.details?.limit === "team.projects" &&
+        early.body?.error?.details?.usage === have,
+      `${early.status} ${early.text?.slice(0, 160)}`,
+    );
+    for (let i = have; i < row.effective; i++) {
+      const r = await mkProject(`lim-${stamp}-${i}`);
+      check(
+        `fill project ${i + 1}/${row.effective}`,
+        r.status === 201,
+        String(r.status),
+      );
+    }
+  }
+  const overProject = await mkProject(`lim-${stamp}-over`);
+  check(
+    "the project over the limit is refused naming team.projects",
+    overProject.status === 409 &&
+      overProject.body?.error?.details?.limit === "team.projects",
+    `${overProject.status} ${overProject.text?.slice(0, 160)}`,
+  );
+  row = await teamRow();
+  check(
+    "at the limit: usage = effective and next = effective + 5",
+    row?.usage === row?.effective && row?.next === row?.effective + 5,
+    JSON.stringify(row),
+  );
+  const wrongStep = await ask(as(member), {
+    scope: teamScope,
+    key: "team.projects",
+    value: row.effective + 10,
+  });
+  check(
+    "the wrong step is refused and the error names the next value",
+    wrongStep.status === 400 &&
+      wrongStep.body?.error?.details?.next === row.next,
+    `${wrongStep.status} ${wrongStep.text?.slice(0, 160)}`,
+  );
+  const tp = await ask(as(member), {
+    scope: teamScope,
+    key: "team.projects",
+    value: row.next,
+  });
+  check(
+    "ask for the next step",
+    tp.status === 201 && tp.body?.scope?.kind === "team",
+    `${tp.status} ${tp.text?.slice(0, 160)}`,
+  );
+  const tpOk = await call(`/admin/limit-requests/${tp.body?.id}/approve`, {
+    method: "POST",
+    headers: as(admin),
+    body: {},
+  });
+  check(
+    "the admin approves the step",
+    tpOk.status === 200 && tpOk.body?.decidedValue === row.next,
+    `${tpOk.status} ${tpOk.text?.slice(0, 160)}`,
+  );
+  const more = await mkProject(`lim-${stamp}-more`);
+  check(
+    "one more project fits after the approval",
+    more.status === 201,
+    String(more.status),
+  );
+  const rvTeam = await call(
+    `/admin/limit-overrides/team/${team.teamId}/team.projects`,
+    { method: "DELETE", headers: as(admin), body: { note: "smoke" } },
+  );
+  check(
+    "revoke the team override",
+    rvTeam.status === 204,
+    String(rvTeam.status),
+  );
+  const afterRevoke = await mkProject(`lim-${stamp}-after`);
+  check(
+    "refused again after the revoke; the stored projects stay",
+    afterRevoke.status === 409 &&
+      (await teamRow())?.usage === row.effective + 1,
+    String(afterRevoke.status),
+  );
+
   // Ten pending per team: fill it from fresh bundles, the eleventh is refused.
   const keys = [
     "asset.fileBytes",
@@ -379,6 +516,13 @@ try {
 } finally {
   for (const id of created.channels)
     await call(`/channels/${id}`, { method: "DELETE", headers: as(member) });
+  for (const id of created.projects.filter(Boolean)) {
+    const r = await call(`/projects/${id}`, {
+      method: "DELETE",
+      headers: as(member),
+    });
+    check(`delete project ${id}`, r.status === 204, String(r.status));
+  }
   for (const id of created.bundles.filter(Boolean)) {
     const r = await call(`/assets/bundles/${id}`, {
       method: "DELETE",

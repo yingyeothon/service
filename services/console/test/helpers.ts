@@ -108,7 +108,9 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
         ? db.channels.get(s.id)?.deletedAt === null
         : s.kind === "bundle"
           ? assets.bundles.has(s.id)
-          : teamDb.projects.has(s.id),
+          : s.kind === "team"
+            ? teamDb.teams.has(s.id)
+            : teamDb.projects.has(s.id),
     writeChannel: (id, w) => {
       const c = db.channels.get(id);
       if (!c || c.deletedAt !== null) return false;
@@ -169,6 +171,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     countTeamResources: (teamId) => countIn((r) => r.teamId === teamId),
     newHistoryId: historyId,
     projectDeleted: (id) => limits.scopeDeleted({ kind: "project", id }),
+    teamDeleted: (id) => limits.scopeDeleted({ kind: "team", id }),
   });
   const { agent, fetch } = mockAgent();
   const app = createConsoleApp({

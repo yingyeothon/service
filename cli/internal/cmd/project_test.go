@@ -49,6 +49,15 @@ func TestProjectListGetCreateUpdateDelete(t *testing.T) {
 	if _, _, err := run(t, f, "project", "create", "game", "--team", "dooroo", "--description", "d"); err != nil || body["name"] != "game" || body["description"] != "d" {
 		t.Fatalf("%v %v", err, body)
 	}
+	// Refused by the team's project limit: the error says how to ask for more.
+	full := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /teams/team_1/projects": func(recorded) (int, any) {
+			return 409, map[string]any{"error": map[string]any{"code": "conflict", "message": "too many projects (max 20)", "details": map[string]any{"limit": "team.projects", "value": 20}}}
+		},
+	}, nil, nil, nil))
+	if _, _, err := run(t, full, "project", "create", "more", "--team", "dooroo"); err == nil || !strings.Contains(err.Error(), `yyt limit request team.projects +5 --team dooroo --reason "..."`) {
+		t.Fatalf("limit hint: %v", err)
+	}
 	if _, _, err := run(t, f, "project", "update", "--name", "x"); err == nil || !strings.Contains(err.Error(), "no team context") {
 		t.Fatalf("err=%v", err)
 	}

@@ -19,6 +19,7 @@ const mockApi = {
   projects: vi.fn(),
   limitRequests: vi.fn(),
   cancelLimitRequest: vi.fn(),
+  limits: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -109,6 +110,38 @@ describe("TeamPage", () => {
     vi.mocked(mockApi.teamMembers).mockResolvedValue(MEMBERS);
     vi.mocked(mockApi.projects).mockResolvedValue([]);
     vi.mocked(mockApi.teams).mockResolvedValue([]);
+  });
+
+  it("shows the team's project limit under the projects with the request button", async () => {
+    vi.mocked(mockApi.limits).mockResolvedValue({
+      scope: { kind: "team", id: "team_1" },
+      teamId: "team_1",
+      limits: [
+        {
+          key: "team.projects",
+          unit: "count",
+          soft: 20,
+          hard: 1000,
+          effective: 20,
+          usage: 20,
+          step: 5,
+          next: 25,
+          override: null,
+        },
+      ],
+      pending: [],
+    });
+    mount("/teams/team_1");
+    expect(
+      await screen.findByRole("heading", { name: "Limits" }),
+    ).toBeInTheDocument();
+    expect(mockApi.limits).toHaveBeenCalledWith("team:team_1");
+    expect(
+      await screen.findByText("Projects", { selector: "td" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Request increase" }),
+    ).toBeInTheDocument();
   });
 
   it("renders the description as markdown and lets an owner approve a request", async () => {

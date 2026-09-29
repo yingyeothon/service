@@ -22,7 +22,8 @@ import {
  * `channels.ts`: team row → scope row (project, bundle or channel) → request
  * rows → override rows. A writer that inserts takes the team row first
  * (`rules/data.md`, one lock order); the channel deletes never take the team
- * row, so they cannot close a cycle with it.
+ * row, so they cannot close a cycle with it. For a team scope the team row
+ * *is* the scope row, so that step is the lock already held.
  *
  * Every transaction here runs READ COMMITTED: each one decides from what it
  * reads after taking its locks, so each read must see the latest committed
@@ -40,10 +41,15 @@ export const LIMIT_REQUEST_STATUSES = [
 ] as const;
 export type LimitRequestStatus = (typeof LIMIT_REQUEST_STATUSES)[number];
 
-export const LIMIT_SCOPE_KINDS = ["project", "bundle", "channel"] as const;
+export const LIMIT_SCOPE_KINDS = [
+  "project",
+  "bundle",
+  "channel",
+  "team",
+] as const;
 export type LimitScopeKind = (typeof LIMIT_SCOPE_KINDS)[number];
 
-/** A project, an asset bundle or a channel, by id. */
+/** A project, an asset bundle, a channel or the team itself, by id. */
 export interface LimitScope {
   kind: LimitScopeKind;
   id: string;
@@ -216,12 +222,15 @@ type ScopeColumns = {
   project_id: string | null;
   bundle_id: string | null;
   channel_id: string | null;
+  /** The team as its own scope (`m0026`); `team_id` holds the same id. */
+  scope_team_id: string | null;
 };
 
 const scopeData = (s: LimitScope): ScopeColumns => ({
   project_id: s.kind === "project" ? s.id : null,
   bundle_id: s.kind === "bundle" ? s.id : null,
   channel_id: s.kind === "channel" ? s.id : null,
+  scope_team_id: s.kind === "team" ? s.id : null,
 });
 
 /** Exactly one column is set (the CHECK constraint); anything else is a corrupt row. */
@@ -229,17 +238,24 @@ function scopeOf(r: ScopeColumns): LimitScope {
   if (r.project_id !== null) return { kind: "project", id: r.project_id };
   if (r.bundle_id !== null) return { kind: "bundle", id: r.bundle_id };
   if (r.channel_id !== null) return { kind: "channel", id: r.channel_id };
+  if (r.scope_team_id !== null) return { kind: "team", id: r.scope_team_id };
   throw new AppError("internal", "limit row without a scope");
 }
 
 const scopeWhere = (
   s: LimitScope,
-): { project_id: string } | { bundle_id: string } | { channel_id: string } =>
+):
+  | { project_id: string }
+  | { bundle_id: string }
+  | { channel_id: string }
+  | { scope_team_id: string } =>
   s.kind === "project"
     ? { project_id: s.id }
     : s.kind === "bundle"
       ? { bundle_id: s.id }
-      : { channel_id: s.id };
+      : s.kind === "channel"
+        ? { channel_id: s.id }
+        : { scope_team_id: s.id };
 
 const clampLimit = (n: number | undefined) =>
   Math.min(
@@ -303,6 +319,12 @@ const toOverride = (r: OverrideModel): LimitOverrideRow => ({
   expiresAt: nul(r.expires_at),
 });
 
+/** A team-scoped row names the owning team itself; anything else is a caller bug. */
+function checkTeamScope(scope: LimitScope, teamId: string): void {
+  if (scope.kind === "team" && scope.id.toLowerCase() !== teamId.toLowerCase())
+    throw new AppError("internal", "a team scope must be the owning team");
+}
+
 const cooldownError = (retryAt: number) =>
   new AppError(
     "rate_limited",
@@ -329,8 +351,10 @@ export function createLimitsDb(prisma: PrismaClient): LimitsDb {
    * Locks the scope's row after the team's (the lock order above), so a
    * request cannot be filed against a channel a concurrent delete is
    * removing: the foreign key alone would accept a soft-deleted channel.
+   * A team scope's row is the team row, locked by `lockTeamRow` just before.
    */
   async function lockScope(t: Tx, s: LimitScope): Promise<boolean> {
+    if (s.kind === "team") return true;
     const rows =
       s.kind === "channel"
         ? await t.$queryRaw<
@@ -416,6 +440,7 @@ export function createLimitsDb(prisma: PrismaClient): LimitsDb {
 
     createRequest: (r, rules) =>
       tx(async (t) => {
+        checkTeamScope(r.scope, r.teamId);
         if (!(await lockTeamRow(t, r.teamId)))
           throw new AppError("not_found", "team not found");
         if (!(await lockScope(t, r.scope))) throw scopeGone(r.scope);
@@ -560,6 +585,7 @@ export function createLimitsDb(prisma: PrismaClient): LimitsDb {
 
     setOverride: (o, channel) =>
       tx(async (t) => {
+        checkTeamScope(o.scope, o.teamId);
         if (!(await lockTeamRow(t, o.teamId)))
           throw new AppError("not_found", "team not found");
         if (!(await lockScope(t, o.scope))) throw scopeGone(o.scope);
@@ -762,6 +788,7 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
         .map(copyOvr),
 
     createRequest: async (r, rules) => {
+      checkTeamScope(r.scope, r.teamId);
       if (!scopeExists(r.scope)) throw scopeGone(r.scope);
       const same = [...requests.values()].filter(
         (x) => sameScope(x.scope, r.scope) && x.key === r.key,
@@ -879,6 +906,7 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
     },
 
     setOverride: async (o, channel) => {
+      checkTeamScope(o.scope, o.teamId);
       if (!scopeExists(o.scope)) throw scopeGone(o.scope);
       if (channel) {
         requireChannelScope(o.scope);

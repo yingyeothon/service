@@ -1224,7 +1224,7 @@ export interface KitConfig {
 
 // ---- limits (docs/decisions.md *Limit requests (soft/hard)*) --------------
 
-export type LimitScopeKind = "project" | "bundle" | "channel";
+export type LimitScopeKind = "project" | "bundle" | "channel" | "team";
 export type LimitUnit = "bytes" | "count" | "seconds";
 /** `unlimited` exists only where the hard value is (`channel.lifetime`). */
 export type LimitValue = number | "unlimited";
@@ -1257,6 +1257,13 @@ export interface LimitRow {
   effective: LimitValue;
   /** `null` where nothing is counted (`channel.lifetime`). */
   usage: number | null;
+  /**
+   * A stepped key (`team.projects`) is asked for only as `effective + step`,
+   * and only once the usage has reached the effective value: `next` is that
+   * one value while it may be asked for, else `null`. Both `null` elsewhere.
+   */
+  step: number | null;
+  next: number | null;
   override: LimitOverride | null;
 }
 

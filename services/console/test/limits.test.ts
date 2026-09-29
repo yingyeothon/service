@@ -6,6 +6,7 @@ import {
   effectiveLimit,
   formatLimitValue,
   LIMITS,
+  nextStepValue,
   runLimitSweep,
 } from "../src/limits.js";
 import { ev, harness, NOW_SEC, parse, type Team } from "./helpers.js";
@@ -76,6 +77,16 @@ async function upload(
 }
 
 describe("limit registry", () => {
+  it("a stepped key's next value is clamped to hard and null at it", () => {
+    expect(nextStepValue("team.projects", 20, 1)).toBeNull();
+    expect(nextStepValue("team.projects", 20, 20)).toBe(25);
+    expect(nextStepValue("team.projects", 20, 21)).toBe(25);
+    expect(nextStepValue("team.projects", 998, 998)).toBe(1000);
+    expect(nextStepValue("team.projects", 1000, 1000)).toBeNull();
+    expect(nextStepValue("team.projects", 20, null)).toBeNull();
+    expect(nextStepValue("asset.bundlesPerProject", 20, 20)).toBeNull();
+  });
+
   it("takes a number up to hard, and unlimited only where hard is", () => {
     expect(() => checkLimitValue("asset.fileBytes", 256 * MiB)).not.toThrow();
     expect(() => checkLimitValue("asset.fileBytes", 256 * MiB + 1)).toThrow(
@@ -141,6 +152,8 @@ describe("limit requests", () => {
       hard: 3 * 1024 * MiB,
       effective: 20 * MiB,
       usage: 1000,
+      step: null,
+      next: null,
       override: null,
     });
     expect(body.pending).toEqual([]);
@@ -152,7 +165,8 @@ describe("limit requests", () => {
     expect((await get(boss, `bundle:${b}`)).statusCode).toBe(200);
     expect((await get(bob, `bundle:${b}`)).statusCode).toBe(404);
     expect((await get(alice, "bundle")).statusCode).toBe(400);
-    expect((await get(alice, "team:x")).statusCode).toBe(400);
+    expect((await get(alice, "site:x")).statusCode).toBe(400);
+    expect((await get(alice, "team:x")).statusCode).toBe(404);
   });
 
   it("files a request, mails a fixed template without the reason, and approval raises the limit", async () => {
@@ -851,5 +865,277 @@ describe("limit requests", () => {
     expect(await sweep(1)).toEqual({ expired: 0, purged: 0, truncated: true });
     expect(await sweep()).toEqual({ expired: 0, purged: 1, truncated: false });
     expect(await h.limits.findRequest(r.id)).toBeUndefined();
+  });
+});
+
+describe("team.projects (a stepped, team-scoped limit)", () => {
+  const SOFT = LIMITS["team.projects"].soft;
+  const STEP = LIMITS["team.projects"].step;
+
+  async function fill(h: H, u: Team) {
+    // `h.team` made one project already; fill the rest of the soft value.
+    for (let i = 1; i < SOFT; i++) {
+      const r = await write(h)(
+        ev("POST", `/teams/${u.teamId}/projects`, {
+          headers: u.cookie,
+          body: { name: `p${i}` },
+        }),
+      );
+      expect(r.statusCode, r.body).toBe(201);
+    }
+  }
+  const create = (h: H, u: Team, name: string) =>
+    write(h)(
+      ev("POST", `/teams/${u.teamId}/projects`, {
+        headers: u.cookie,
+        body: { name },
+      }),
+    );
+  const limitsOf = async (
+    h: H,
+    u: { cookie: Record<string, string> },
+    teamId: string,
+  ) =>
+    parse(
+      await h.app(
+        ev("GET", "/limits", {
+          headers: u.cookie,
+          query: { scope: `team:${teamId}` },
+        }),
+      ),
+    );
+
+  it("is asked for only at the limit and only for the next step; approval admits five more", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const boss = await h.login("boss", "admin");
+    const teamScope = `team:${alice.teamId}`;
+
+    // Below the limit: the view says so and a request is refused.
+    let view = await limitsOf(h, alice, alice.teamId);
+    expect(view.scope).toEqual({ kind: "team", id: alice.teamId });
+    expect(view.limits).toEqual([
+      {
+        key: "team.projects",
+        unit: "count",
+        soft: SOFT,
+        hard: 1000,
+        effective: SOFT,
+        usage: 1,
+        step: STEP,
+        next: null,
+        override: null,
+      },
+    ]);
+    const early = await ask(h, alice, {
+      scope: teamScope,
+      key: "team.projects",
+      value: SOFT + STEP,
+    });
+    expect(early.statusCode, early.body).toBe(400);
+    expect(parse(early).error.message).toContain(
+      "ask once the limit is reached",
+    );
+    expect(parse(early).error.details).toEqual({
+      limit: "team.projects",
+      value: SOFT,
+      usage: 1,
+      next: null,
+    });
+
+    await fill(h, alice);
+    const over = await create(h, alice, "p-over");
+    expect(over.statusCode).toBe(409);
+    expect(parse(over).error.details).toEqual({
+      limit: "team.projects",
+      value: SOFT,
+    });
+    view = await limitsOf(h, alice, alice.teamId);
+    expect(view.limits[0]).toMatchObject({ usage: SOFT, next: SOFT + STEP });
+
+    // The wrong step, then the right one.
+    const wrong = await ask(h, alice, {
+      scope: teamScope,
+      key: "team.projects",
+      value: SOFT + 2 * STEP,
+    });
+    expect(wrong.statusCode, wrong.body).toBe(400);
+    expect(parse(wrong).error.message).toContain(`ask for ${SOFT + STEP}`);
+    const r = await ask(h, alice, {
+      scope: teamScope,
+      key: "team.projects",
+      value: SOFT + STEP,
+    });
+    expect(r.statusCode, r.body).toBe(201);
+    const req = parse<{ id: string }>(r);
+    expect(req).toMatchObject({
+      scope: { kind: "team", id: alice.teamId, name: "alice-team" },
+      key: "team.projects",
+      unit: "count",
+      hard: 1000,
+      requestedValue: SOFT + STEP,
+      status: "pending",
+    });
+    expect(h.mails).toHaveLength(1);
+    expect(h.mails[0]![1]).toContain(`scope: team ${alice.teamId}`);
+
+    // Listed for the team and in the admin queue; a seatless admin reads the view.
+    expect(
+      parse(
+        await h.app(
+          ev("GET", "/limits", {
+            headers: boss.cookie,
+            query: { scope: teamScope },
+          }),
+        ),
+      ).limits[0],
+    ).toMatchObject({ usage: SOFT, next: SOFT + STEP });
+    expect(
+      parse(
+        await h.app(
+          ev("GET", "/admin/limit-requests", {
+            headers: boss.cookie,
+            query: { status: "pending" },
+          }),
+        ),
+      ).requests.map((x: { id: string }) => x.id),
+    ).toEqual([req.id]);
+
+    const ok = await write(h)(
+      ev("POST", `/admin/limit-requests/${req.id}/approve`, {
+        headers: boss.cookie,
+        body: {},
+      }),
+    );
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(parse(ok)).toMatchObject({
+      status: "approved",
+      decidedValue: SOFT + STEP,
+    });
+    view = await limitsOf(h, alice, alice.teamId);
+    expect(view.limits[0]).toMatchObject({
+      effective: SOFT + STEP,
+      usage: SOFT,
+      next: null,
+      override: { value: SOFT + STEP, requestId: req.id },
+    });
+    for (let i = 0; i < STEP; i++)
+      expect((await create(h, alice, `q${i}`)).statusCode).toBe(201);
+    const again = await create(h, alice, "q-over");
+    expect(again.statusCode).toBe(409);
+    expect(parse(again).error.details).toEqual({
+      limit: "team.projects",
+      value: SOFT + STEP,
+    });
+    view = await limitsOf(h, alice, alice.teamId);
+    expect(view.limits[0]).toMatchObject({
+      usage: SOFT + STEP,
+      next: SOFT + 2 * STEP,
+    });
+
+    // Revoked: new projects meet the soft value again; the stored ones stay.
+    const gone = await write(h)(
+      ev(
+        "DELETE",
+        `/admin/limit-overrides/team/${alice.teamId}/team.projects`,
+        {
+          headers: boss.cookie,
+          body: { note: "back to default" },
+        },
+      ),
+    );
+    expect(gone.statusCode, gone.body).toBe(204);
+    view = await limitsOf(h, alice, alice.teamId);
+    expect(view.limits[0]).toMatchObject({
+      effective: SOFT,
+      usage: SOFT + STEP,
+      next: SOFT + STEP,
+      override: null,
+    });
+    expect((await create(h, alice, "q-after")).statusCode).toBe(409);
+    expect(
+      parse(
+        await h.app(
+          ev("GET", `/teams/${alice.teamId}/projects`, {
+            headers: alice.cookie,
+          }),
+        ),
+      ).projects,
+    ).toHaveLength(SOFT + STEP);
+  });
+
+  it("an admin sets the team's limit directly, and another team cannot read or ask", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const bob = await h.team("bob");
+    const boss = await h.login("boss", "admin");
+    const set = await write(h)(
+      ev("PUT", `/admin/limit-overrides/team/${alice.teamId}/team.projects`, {
+        headers: boss.cookie,
+        body: { value: 40, note: "contest" },
+      }),
+    );
+    expect(set.statusCode, set.body).toBe(200);
+    expect(parse(set)).toMatchObject({
+      scope: { kind: "team", id: alice.teamId },
+      key: "team.projects",
+      effective: 40,
+    });
+    // A team-scoped key on a project scope, and a project key on the team, are refused.
+    const cross = await ask(h, alice, {
+      scope: `project:${alice.prjId}`,
+      key: "team.projects",
+      value: 25,
+    });
+    expect(cross.statusCode).toBe(400);
+    const cross2 = await ask(h, alice, {
+      scope: `team:${alice.teamId}`,
+      key: "asset.bundlesPerProject",
+      value: 25,
+    });
+    expect(cross2.statusCode).toBe(400);
+    // Above the ceiling.
+    const tooHigh = await write(h)(
+      ev("PUT", `/admin/limit-overrides/team/${alice.teamId}/team.projects`, {
+        headers: boss.cookie,
+        body: { value: 1001, note: "no" },
+      }),
+    );
+    expect(tooHigh.statusCode).toBe(400);
+    const other = await h.app(
+      ev("GET", "/limits", {
+        headers: bob.cookie,
+        query: { scope: `team:${alice.teamId}` },
+      }),
+    );
+    expect(other.statusCode).toBe(404);
+    const otherAsk = await ask(h, bob, {
+      scope: `team:${alice.teamId}`,
+      key: "team.projects",
+      value: 45,
+    });
+    expect(otherAsk.statusCode).toBe(404);
+    const missing = await h.app(
+      ev("GET", "/limits", {
+        headers: boss.cookie,
+        query: { scope: "team:team_nope" },
+      }),
+    );
+    expect(missing.statusCode).toBe(404);
+
+    // Deleting the team (once empty) takes its override with it.
+    const delPrj = await write(h)(
+      ev("DELETE", `/projects/${alice.prjId}`, { headers: alice.cookie }),
+    );
+    expect(delPrj.statusCode, delPrj.body).toBe(204);
+    const delTeam = await write(h)(
+      ev("DELETE", `/teams/${alice.teamId}`, { headers: alice.cookie }),
+    );
+    expect(delTeam.statusCode, delTeam.body).toBe(204);
+    expect(
+      [...h.limits.overrides.values()].filter(
+        (o) => o.scope.kind === "team" && o.scope.id === alice.teamId,
+      ),
+    ).toEqual([]);
   });
 });

@@ -64,6 +64,8 @@ const limits = (expiresAt: number): LimitsView => {
         hard: "unlimited",
         effective: none ? "unlimited" : 2419200,
         usage: null,
+        step: null,
+        next: null,
         override: none
           ? {
               value: "unlimited",

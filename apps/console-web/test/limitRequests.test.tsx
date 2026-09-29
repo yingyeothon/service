@@ -92,6 +92,25 @@ describe("LimitRequestsPage", () => {
     );
   });
 
+  it("links a team-scoped request to the team", async () => {
+    vi.mocked(mockApi.adminLimitRequests).mockResolvedValue(
+      page([
+        request({
+          scope: { kind: "team", id: "team_1", name: "studio" },
+          key: "team.projects",
+          unit: "count",
+          hard: 1000,
+          requestedValue: 25,
+        }),
+      ]),
+    );
+    mount(<LimitRequestsPage />, { client: mockApi });
+    expect(await screen.findByText("Projects")).toBeInTheDocument();
+    expect(screen.getByText("25")).toBeInTheDocument();
+    const links = screen.getAllByRole("link", { name: "studio" });
+    for (const l of links) expect(l).toHaveAttribute("href", "/teams/team_1");
+  });
+
   it("lists the pending queue with its team, scope, limit and requester", async () => {
     mount(<LimitRequestsPage />, { client: mockApi });
     expect(

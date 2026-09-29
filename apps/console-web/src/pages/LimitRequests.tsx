@@ -64,6 +64,8 @@ function scopeUrl(r: LimitRequest): string {
       return `/channels/${encodeURIComponent(r.scope.id)}`;
     case "project":
       return projectUrl(r.teamId, r.scope.id, "assets");
+    case "team":
+      return teamUrl(r.teamId);
   }
 }
 

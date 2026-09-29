@@ -356,6 +356,7 @@ describe.skipIf(!dockerAvailable())(
               project_id: null,
               bundle_id: null,
               channel_id: null,
+              scope_team_id: null,
               limit_key: "channel.lifetime",
               reason: "r",
               created_by: "m1",
@@ -367,7 +368,68 @@ describe.skipIf(!dockerAvailable())(
         await expect(
           row({ project_id: "prj_1", channel_id: "ch_1" }),
         ).rejects.toThrow();
+        await expect(
+          row({ project_id: "prj_1", scope_team_id: "team_1" }),
+        ).rejects.toThrow();
         await expect(row({ channel_id: "ch_1" })).resolves.toBeDefined();
+        await expect(row({ scope_team_id: "team_1" })).resolves.toBeDefined();
+      });
+
+      it("deleting a team cascades to the rows scoped to it (m0026)", async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        await db.client.teams.create({
+          data: {
+            id: "team_2",
+            name: "t2",
+            created_by: "m1",
+            created_at: 1,
+            updated_at: 1,
+          },
+        });
+        const limits = createLimitsDb(db.client);
+        const scope = { kind: "team", id: "team_2" } as const;
+        await limits.createRequest(
+          {
+            id: "lr_team2",
+            teamId: "team_2",
+            scope,
+            key: "team.projects",
+            requestedValue: 25,
+            reason: "r",
+            createdBy: "m1",
+            createdAt: 1,
+          },
+          { cooldownSec: 1, maxPendingPerTeam: 3 },
+        );
+        await limits.setOverride({
+          id: "lo_team2",
+          teamId: "team_2",
+          scope,
+          key: "team.projects",
+          value: 25,
+          note: "n",
+          grantedBy: "m1",
+          grantedAt: 1,
+        });
+        // Second override for the same team and key: the unique index.
+        await expect(
+          db.client.limit_overrides.create({
+            data: {
+              id: "lo_team2_dup",
+              team_id: "team_2",
+              scope_team_id: "team_2",
+              limit_key: "team.projects",
+              value: 30,
+              note: "n",
+              granted_by: "m1",
+              granted_at: 1,
+            },
+          }),
+        ).rejects.toThrow();
+        await db.client.teams.delete({ where: { id: "team_2" } });
+        expect(await limits.findRequest("lr_team2")).toBeUndefined();
+        expect(await limits.listOverrides([scope], 0)).toEqual([]);
       });
 
       it("per-version and per-project totals read the covering index at 200,000 rows", async () => {

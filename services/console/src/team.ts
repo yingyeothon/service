@@ -21,6 +21,7 @@ import {
   type IssueRow,
   type KvStoreDb,
   type LeaderboardDb,
+  type LimitsDb,
   type MemberRow,
   type TeamDb,
   type TeamHistoryRow,
@@ -41,6 +42,7 @@ import {
 import { z } from "zod";
 import { listParams, listQuery, searchQuery } from "./list-query.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
+import { overLimit, resolveLimits } from "./limits.js";
 import { createTeamAccess, type Standing } from "./team-access.js";
 import { createWriteSlot } from "./write-slot.js";
 
@@ -49,7 +51,7 @@ import { createWriteSlot } from "./write-slot.js";
 /* ------------------------------------------------------------------ */
 
 export const TEAMS_PER_MEMBER = 5;
-export const PROJECTS_PER_TEAM = 20;
+// Projects per team is `team.projects` in the limit registry (`limits.ts`).
 export const PENDING_PER_TEAM = 50;
 export const DISCUSSIONS_PER_TEAM = 500;
 export const VERSIONS_PER_PROJECT = 500;
@@ -229,6 +231,7 @@ const SECRET_KINDS = new Set(["auth", "topic", "match"]);
 export interface TeamRoutesOptions {
   db: ConsoleDb;
   team: TeamDb;
+  limits: LimitsDb;
   catalog: CatalogDb;
   assets: AssetsDb;
   sites: SitesDb;
@@ -250,6 +253,7 @@ const noStore = (statusCode: number, body: unknown): HttpResult =>
 export function createTeamRoutes({
   db,
   team,
+  limits,
   catalog,
   assets,
   sites,
@@ -1040,10 +1044,21 @@ export function createTeamRoutes({
       handler: async (ctx) => {
         const a = await teamAccess(ctx, ctx.params.team!, { secret: true });
         await writeSlot(a.id);
-        if ((await team.countProjects(a.team.id)) >= PROJECTS_PER_TEAM)
-          throw new AppError(
+        // The soft value, or what an admin granted (`team.projects`); the
+        // 409 names the key so a client can offer `yyt limit request`.
+        const max = (
+          await resolveLimits(
+            limits,
+            [{ kind: "team", id: a.team.id }],
+            nowSec(clock),
+          )
+        )("team.projects");
+        if ((await team.countProjects(a.team.id)) >= max)
+          throw overLimit(
             "conflict",
-            `too many projects (max ${PROJECTS_PER_TEAM})`,
+            "team.projects",
+            max,
+            `too many projects (max ${max})`,
           );
         const id = `prj_${randomHex(4)}`;
         await team.createProject(

@@ -202,7 +202,11 @@ func newProject(a *App) *cobra.Command {
 				}
 				var p projectRow
 				if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/teams/"+api.PathID(r.TeamID)+"/projects", body, &p); err != nil {
-					return err
+					scopeFlag := ""
+					if a.teamFlag != "" {
+						scopeFlag = " --team " + a.teamFlag
+					}
+					return withLimitHint(err, scopeFlag)
 				}
 				return a.printProject(p)
 			},

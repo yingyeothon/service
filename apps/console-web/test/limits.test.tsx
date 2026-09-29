@@ -44,6 +44,8 @@ const BUNDLE: LimitsView = {
       hard: 256 * MiB,
       effective: 8 * MiB,
       usage: 3 * MiB,
+      step: null,
+      next: null,
       override: {
         value: 8 * MiB,
         expiresAt: 1_900_000_000,
@@ -61,6 +63,8 @@ const BUNDLE: LimitsView = {
       hard: 3072 * MiB,
       effective: 20 * MiB,
       usage: 25 * MiB,
+      step: null,
+      next: null,
       override: null,
     },
     {
@@ -70,6 +74,8 @@ const BUNDLE: LimitsView = {
       hard: 5000,
       effective: 200,
       usage: 12,
+      step: null,
+      next: null,
       override: null,
     },
   ],
@@ -110,6 +116,8 @@ const CHANNEL = (expiresAt: number, raised = false): LimitsView => ({
       hard: "unlimited",
       effective: raised ? "unlimited" : 2419200,
       usage: null,
+      step: null,
+      next: null,
       override: raised
         ? {
             value: "unlimited",
@@ -121,6 +129,25 @@ const CHANNEL = (expiresAt: number, raised = false): LimitsView => ({
             grantedAt: 0,
           }
         : null,
+    },
+  ],
+  pending: [],
+});
+
+const TEAM = (usage: number, effective = 20): LimitsView => ({
+  scope: { kind: "team", id: "team_1" },
+  teamId: "team_1",
+  limits: [
+    {
+      key: "team.projects",
+      unit: "count",
+      soft: 20,
+      hard: 1000,
+      effective,
+      usage,
+      step: 5,
+      next: usage >= effective ? effective + 5 : null,
+      override: null,
     },
   ],
   pending: [],
@@ -258,6 +285,59 @@ describe("LimitsSection", () => {
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(mockApi.limits).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks for a stepped limit's next step with nothing to type, and only at the limit", async () => {
+    vi.mocked(mockApi.requestLimit).mockResolvedValue(
+      request({
+        scope: { kind: "team", id: "team_1", name: "studio" },
+        key: "team.projects",
+        unit: "count",
+        hard: 1000,
+        requestedValue: 25,
+      }),
+    );
+    open(TEAM(20));
+    const s = await section();
+    expect(await within(s).findByText("Projects")).toBeInTheDocument();
+    await userEvent.click(
+      await within(s).findByRole("button", { name: "Request increase" }),
+    );
+    const drawer = await screen.findByRole("dialog");
+    expect(
+      within(drawer).queryByRole("textbox", { name: /^Value/ }),
+    ).toBeNull();
+    expect(within(drawer).getByText("25")).toBeInTheDocument();
+    expect(
+      within(drawer).getByText(/raised in steps of 5, up to 1,000/),
+    ).toBeInTheDocument();
+    await userEvent.type(
+      within(drawer).getByLabelText(/^Reason/),
+      "one project per minigame",
+    );
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Send request" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.requestLimit).toHaveBeenCalledWith({
+        scope: "team:team_1",
+        key: "team.projects",
+        value: 25,
+        reason: "one project per minigame",
+      }),
+    );
+  });
+
+  it("shows what unlocks a stepped request while the limit is not reached", async () => {
+    open(TEAM(12));
+    const s = await section();
+    expect(await within(s).findByText("Projects")).toBeInTheDocument();
+    expect(
+      within(s).queryByRole("button", { name: "Request increase" }),
+    ).toBeNull();
+    expect(
+      within(s).getByText("Ask for 5 more once all 20 are in use (12 now)."),
+    ).toBeInTheDocument();
   });
 
   it("asks for no expiry on a channel with no number to type", async () => {

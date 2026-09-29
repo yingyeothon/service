@@ -115,6 +115,97 @@ func TestLimitListAndRequest(t *testing.T) {
 	if got := f.reqs[len(f.reqs)-1].Body["scope"]; got != "project:prj_1" {
 		t.Errorf("project scope = %v", got)
 	}
+	if _, _, err := run(t, f, "limit", "request", "asset.projectBytes", "1GiB", "--scope", "org", "--reason", "r"); err == nil || !strings.Contains(err.Error(), "want team or project") {
+		t.Errorf("bad --scope: %v", err)
+	}
+	if _, _, err := run(t, f, "limit", "request", "asset.projectBytes", "1GiB", "--scope", "team", "--bundle", "maps", "--reason", "r"); err == nil || !strings.Contains(err.Error(), "pass one of") {
+		t.Errorf("scope team with bundle: %v", err)
+	}
+}
+
+func TestLimitTeamScopeAndSteps(t *testing.T) {
+	withProject(t)
+	teamRow := func(usage float64, next any) map[string]any {
+		return map[string]any{"key": "team.projects", "unit": "count", "soft": 20, "hard": 1000, "effective": 20, "usage": usage, "step": 5, "next": next, "override": nil}
+	}
+	teamRequest := map[string]any{}
+	for k, v := range sampleRequest {
+		teamRequest[k] = v
+	}
+	teamRequest["scope"] = map[string]any{"kind": "team", "id": "team_1", "name": "dooroo"}
+	teamRequest["key"], teamRequest["unit"], teamRequest["requestedValue"] = "team.projects", "count", 25
+	atLimit := true
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /limits": func(r recorded) (int, any) {
+			row := teamRow(12, nil)
+			if atLimit {
+				row = teamRow(20, 25)
+			}
+			return 200, map[string]any{"scope": map[string]any{"kind": "team", "id": "team_1"}, "teamId": "team_1", "limits": []any{row}, "pending": []any{}}
+		},
+		"POST /limit-requests": func(r recorded) (int, any) { return 201, teamRequest },
+		"PUT /admin/limit-overrides/team/team_1/team.projects": func(recorded) (int, any) {
+			return 200, map[string]any{"key": "team.projects", "unit": "count", "effective": 40}
+		},
+		"DELETE /admin/limit-overrides/team/team_1/team.projects": func(recorded) (int, any) { return 204, nil },
+	}, nil, nil, nil))
+
+	// `--scope team` reads the team's limits; the note says what to ask for.
+	out, _, err := run(t, f, "limit", "list", "--scope", "team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "limit_list_team", out)
+	if got := f.reqs[len(f.reqs)-1].Path; got != "/limits?scope=team%3Ateam_1" {
+		t.Errorf("list path = %s", got)
+	}
+	// A `team.` limit picks the team by itself; `+5` becomes the server's next.
+	out, _, err = run(t, f, "limit", "request", "team.projects", "+5", "--team", "dooroo", "--reason", "one per minigame")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "limit_request_team", out)
+	body := f.reqs[len(f.reqs)-1].Body
+	if body["scope"] != "team:team_1" || body["key"] != "team.projects" || body["value"] != float64(25) || body["reason"] != "one per minigame" {
+		t.Errorf("request body = %v", body)
+	}
+	// Not the step: effective + N, and the server decides.
+	if _, _, err := run(t, f, "limit", "request", "team.projects", "+10", "--team", "dooroo", "--reason", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[len(f.reqs)-1].Body["value"]; got != float64(30) {
+		t.Errorf("+10 value = %v", got)
+	}
+	// An absolute value still goes through as typed.
+	if _, _, err := run(t, f, "limit", "request", "team.projects", "25", "--team", "dooroo", "--reason", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[len(f.reqs)-1].Body["value"]; got != float64(25) {
+		t.Errorf("absolute value = %v", got)
+	}
+	// Below the limit there is no next: +5 is effective + 5 (the server answers 400).
+	atLimit = false
+	if _, _, err := run(t, f, "limit", "request", "team.projects", "+5", "--team", "dooroo", "--reason", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[len(f.reqs)-1].Body["value"]; got != float64(25) {
+		t.Errorf("below-limit +5 value = %v", got)
+	}
+	for _, bad := range []string{"+0", "+x", "+-3"} {
+		if _, _, err := run(t, f, "limit", "request", "team.projects", bad, "--team", "dooroo", "--reason", "r"); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	// Admin verbs on the team scope.
+	if _, _, err := run(t, f, "limit", "set", "team.projects", "40", "--team", "dooroo", "--note", "contest"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[len(f.reqs)-1].Path; got != "/admin/limit-overrides/team/team_1/team.projects" {
+		t.Errorf("set path = %s", got)
+	}
+	if out, _, err := run(t, f, "limit", "revoke", "team.projects", "--team", "dooroo", "--note", "over"); err != nil || out != "revoked team.projects on team:team_1\n" {
+		t.Errorf("revoke = %q, %v", out, err)
+	}
 }
 
 func TestLimitAdminVerbs(t *testing.T) {

@@ -9,6 +9,7 @@ import {
 } from "@yyt/core";
 import {
   LIMIT_REQUEST_STATUSES,
+  LIMIT_SCOPE_KINDS,
   type AssetsDb,
   type ChannelLifetimeWrite,
   type ConsoleDb,
@@ -31,7 +32,7 @@ import { z } from "zod";
 import { CHANNEL_MAX_AHEAD_SEC } from "./channels.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import type { ResourceHistory } from "./resources.js";
-import type { ProjectAccess, TeamAccessHelpers } from "./team-access.js";
+import type { TeamAccess, TeamAccessHelpers } from "./team-access.js";
 
 /*
  * Limit requests (docs/decisions.md *Limit requests (soft/hard)*). A cap is
@@ -54,6 +55,12 @@ export interface LimitSpec {
   unit: LimitUnit;
   soft: number;
   hard: LimitValue;
+  /**
+   * A stepped key is asked for only as `effective + step`, and only while
+   * the usage has reached the effective value (docs/decisions.md *Limit
+   * requests* #2). Absent: any value above the effective one, up to hard.
+   */
+  step?: number;
 }
 
 /** docs/decisions.md *Limit requests* #1, verbatim. */
@@ -112,6 +119,14 @@ export const LIMITS = {
     unit: "seconds",
     soft: CHANNEL_MAX_AHEAD_SEC,
     hard: "unlimited",
+  },
+  // Projects per team; raised five at a time once every slot is used.
+  "team.projects": {
+    scope: "team",
+    unit: "count",
+    soft: 20,
+    hard: 1000,
+    step: 5,
   },
 } as const satisfies Record<string, LimitSpec>;
 
@@ -189,6 +204,26 @@ export async function resolveLimits(
   };
 }
 
+/**
+ * The one value a stepped key may be asked for now — `effective + step` while
+ * the usage has reached the effective value and the step fits under hard —
+ * else `null`; always `null` for a key without a step.
+ */
+export function nextStepValue(
+  key: LimitKey,
+  effective: LimitValue,
+  usage: number | null,
+): number | null {
+  const spec: LimitSpec = LIMITS[key];
+  if (spec.step === undefined || effective === "unlimited" || usage === null)
+    return null;
+  if (usage < effective) return null;
+  // The last step is clamped to hard, so every value up to hard is reachable.
+  if (spec.hard !== "unlimited" && effective >= spec.hard) return null;
+  const next = effective + spec.step;
+  return spec.hard !== "unlimited" ? Math.min(next, spec.hard) : next;
+}
+
 /** A refused write, naming the key so a client can offer `yyt limit request`. */
 export function overLimit(
   status: "bad_request" | "conflict",
@@ -209,14 +244,13 @@ export const scopeParam = z
     const id = s.slice(i + 1);
     if (
       i <= 0 ||
-      !(["project", "bundle", "channel"] as const).includes(
-        kind as LimitScopeKind,
-      ) ||
+      !LIMIT_SCOPE_KINDS.includes(kind as LimitScopeKind) ||
       !/^[A-Za-z0-9_-]{1,64}$/.test(id)
     ) {
       ctx.addIssue({
         code: "custom",
-        message: "scope is project:<id>, bundle:<id> or channel:<id>",
+        message:
+          "scope is project:<id>, bundle:<id>, channel:<id> or team:<id>",
       });
       return z.NEVER;
     }
@@ -350,12 +384,16 @@ export function createLimitRoutes({
     ctx: RouteContext,
     scope: LimitScope,
     write: boolean,
-  ): Promise<ProjectAccess & { scope: LimitScope; expiresAt?: number }> {
+  ): Promise<TeamAccess & { scope: LimitScope; expiresAt?: number }> {
     const opts = write ? { secret: true } : {};
     // The id is rebuilt from the row: ids sit on a case-insensitive
     // collation, so `AB_1…` finds `ab_1…`, and what is stored, audited and
     // mailed must be the row's own spelling.
     switch (scope.kind) {
+      case "team": {
+        const a = await teamAccess(ctx, scope.id, opts);
+        return { ...a, scope: { kind: "team", id: a.team.id } };
+      }
       case "project": {
         const a = await projectAccess(ctx, scope.id, opts);
         return { ...a, scope: { kind: "project", id: a.project.id } };
@@ -386,8 +424,10 @@ export function createLimitRoutes({
   /** Current usage per key, for the limits view; `null` where nothing is counted. */
   async function usageOf(
     scope: LimitScope,
-    projectId: string,
+    a: TeamAccess,
   ): Promise<Partial<Record<LimitKey, number>>> {
+    if (scope.kind === "team")
+      return { "team.projects": await team.countProjects(a.team.id) };
     if (scope.kind === "bundle") {
       const v = await assets.versionSummaries(scope.id);
       return {
@@ -399,7 +439,7 @@ export function createLimitRoutes({
       };
     }
     if (scope.kind === "project") {
-      const u = await assets.projectAssetUsage(projectId, nowSec(clock));
+      const u = await assets.projectAssetUsage(scope.id, nowSec(clock));
       return {
         "asset.projectBytes": u.bytes,
         "asset.bundlesPerProject": u.bundles,
@@ -458,7 +498,12 @@ export function createLimitRoutes({
     const channels = await ask(ofKind("channel"), (ids) =>
       db.findChannelNamesByIds(ids),
     );
-    const names = { project: projects, bundle: bundles, channel: channels };
+    const names = {
+      project: projects,
+      bundle: bundles,
+      channel: channels,
+      team: teams,
+    };
     const login = (id: string | null) =>
       id === null ? null : (members.get(id.toLowerCase())?.githubLogin ?? null);
     return rows.map((r) => ({
@@ -586,6 +631,11 @@ export function createLimitRoutes({
     scope: LimitScope,
   ): Promise<{ teamId: string; scope: LimitScope }> {
     const gone = () => new AppError("not_found", `${scope.kind} not found`);
+    if (scope.kind === "team") {
+      const t = await team.findTeam(scope.id);
+      if (!t) throw gone();
+      return { teamId: t.id, scope: { kind: "team", id: t.id } };
+    }
     if (scope.kind === "project") {
       const p = await team.findProject(scope.id);
       if (!p) throw gone();
@@ -627,7 +677,7 @@ export function createLimitRoutes({
         const scope = a.scope;
         const now = nowSec(clock);
         const overrides = await limits.listOverrides([scope], now);
-        const usage = await usageOf(scope, a.project.id);
+        const usage = await usageOf(scope, a);
         const loginOf = await granters(overrides);
         const pending = await limits.listRequests({
           scope,
@@ -642,13 +692,19 @@ export function createLimitRoutes({
           limits: LIMIT_KEYS.filter((k) => LIMITS[k].scope === scope.kind).map(
             (key) => {
               const o = overrides.find((x) => x.key === key);
+              const effective = effectiveLimit(key, o);
+              const used = usage[key] ?? null;
+              const spec: LimitSpec = LIMITS[key];
               return {
                 key,
-                unit: LIMITS[key].unit,
-                soft: LIMITS[key].soft,
-                hard: LIMITS[key].hard,
-                effective: effectiveLimit(key, o),
-                usage: usage[key] ?? null,
+                unit: spec.unit,
+                soft: spec.soft,
+                hard: spec.hard,
+                effective,
+                usage: used,
+                // A stepped key: the only value a request may carry now.
+                step: spec.step ?? null,
+                next: nextStepValue(key, effective, used),
                 override: o ? overrideView(o, loginOf(o)) : null,
               };
             },
@@ -688,6 +744,30 @@ export function createLimitRoutes({
               "bad_request",
               `${key} is already ${current}; ask for more`,
             );
+          const spec: LimitSpec = LIMITS[key];
+          if (spec.step !== undefined && current !== "unlimited") {
+            // A stepped key (#2): only once every slot is used, and only
+            // for the next step, so the queue holds no speculative asks.
+            const used = (await usageOf(scope, a))[key] ?? 0;
+            const next = nextStepValue(key, current, used);
+            const details = { limit: key, value: current, usage: used, next };
+            if (used < current)
+              throw new AppError(
+                "bad_request",
+                `${key}: the team uses ${used} of ${current}; ask once the limit is reached`,
+                { details },
+              );
+            if (next === null)
+              throw new AppError("bad_request", `${key} is at its ceiling`, {
+                details,
+              });
+            if (value !== next)
+              throw new AppError(
+                "bad_request",
+                `${key} is raised in steps of ${spec.step}: ask for ${next}`,
+                { details },
+              );
+          }
         }
         const id = `lr_${ulid(now * 1000).toLowerCase()}`;
         await limits.createRequest(
@@ -993,9 +1073,7 @@ function scopeOfParams(ctx: RouteContext): LimitScope {
   const kind = ctx.params.kind!;
   const id = ctx.params.id!;
   if (
-    !(["project", "bundle", "channel"] as const).includes(
-      kind as LimitScopeKind,
-    ) ||
+    !LIMIT_SCOPE_KINDS.includes(kind as LimitScopeKind) ||
     !/^[A-Za-z0-9_-]{1,64}$/.test(id)
   )
     throw new AppError("not_found", "no such scope");

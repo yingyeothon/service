@@ -136,6 +136,7 @@ export function LimitValueField({
   description,
   error,
   label = "Value",
+  fixed,
 }: {
   unit: LimitUnit;
   amount: Amount;
@@ -145,14 +146,16 @@ export function LimitValueField({
   description?: ReactNode;
   error?: string | null;
   label?: string;
+  /** A value the member cannot change (a stepped key's next step). */
+  fixed?: string;
 }) {
-  if (unit === "seconds")
+  if (unit === "seconds" || fixed !== undefined)
     return (
       <Stack gap={4}>
         <Text size="sm" fw={500}>
           {label}
         </Text>
-        <Text size="sm">No expiry</Text>
+        <Text size="sm">{fixed ?? "No expiry"}</Text>
         {description && (
           <Text size="sm" c="dimmed">
             {description}
@@ -406,15 +409,33 @@ export function LimitsSection({
   const pendingKeys = new Set(view?.pending.map((r) => r.key) ?? []);
   const requestable = (view?.limits ?? []).filter((l) => {
     if (pendingKeys.has(l.key) || l.effective === "unlimited") return false;
+    // A stepped key: the server says whether the next step may be asked for.
+    if (l.step !== null) return l.next !== null;
     // The channel row is the truth for no expiry (the server answers 409).
     if (l.hard === "unlimited")
       return !(view?.expiresAt !== undefined && isNoExpiry(view.expiresAt));
     return l.effective < l.hard;
   });
 
+  // A stepped key below its limit: say what unlocks the request.
+  const stepped = view?.limits.find(
+    (l) =>
+      l.step !== null &&
+      l.next === null &&
+      !pendingKeys.has(l.key) &&
+      typeof l.effective === "number" &&
+      l.usage !== null,
+  );
+  const stepHint =
+    stepped && typeof stepped.effective === "number" && stepped.usage !== null
+      ? stepped.usage < stepped.effective
+        ? `Ask for ${stepped.step} more once all ${stepped.effective} are in use (${stepped.usage} now).`
+        : `At the ceiling of ${fmtLimit(stepped.unit, stepped.hard)}.`
+      : null;
+
   const fresh = (row: LimitRow | undefined): RequestForm => ({
     key: row?.key ?? "",
-    amount: "",
+    amount: row?.next ?? "",
     byteUnit: defaultByteUnit(row?.effective ?? 0),
     reason: "",
   });
@@ -566,11 +587,17 @@ export function LimitsSection({
       }
       actions={
         canWrite &&
-        requestable.length > 0 && (
+        (requestable.length > 0 ? (
           <Button variant="default" onClick={openDrawer}>
             Request increase
           </Button>
-        )
+        ) : (
+          stepHint && (
+            <Text size="sm" c="dimmed">
+              {stepHint}
+            </Text>
+          )
+        ))
       }
     >
       {act.error && <Notice kind="error">{act.error}</Notice>}
@@ -754,10 +781,13 @@ export function LimitsSection({
             byteUnit={f.byteUnit}
             onAmount={(amount) => drawer.patch({ amount })}
             onByteUnit={(byteUnit) => drawer.patch({ byteUnit })}
+            fixed={row.next !== null ? fmtLimit(row.unit, row.next) : undefined}
             description={
               row.unit === "seconds"
                 ? "The channel stops expiring once a platform admin approves."
-                : `Now ${fmtLimit(row.unit, row.effective)}; the ceiling is ${fmtLimit(row.unit, row.hard)}.`
+                : row.next !== null
+                  ? `${row.step} more than the current ${fmtLimit(row.unit, row.effective)}; this limit is raised in steps of ${row.step}, up to ${fmtLimit(row.unit, row.hard)}.`
+                  : `Now ${fmtLimit(row.unit, row.effective)}; the ceiling is ${fmtLimit(row.unit, row.hard)}.`
             }
             error={f.amount === "" ? null : valueProblem}
           />
