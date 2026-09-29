@@ -1,8 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NAV_ITEMS, navMinRole } from "../src/navigation";
-import { ROUTES } from "../src/routes";
+
+// Pins the chunk split: the route table must not pull `qrcode` in statically
+// (the `/app-login` page is the only user and is loaded lazily). It guards
+// `routes.tsx` only — a static import of the page from elsewhere would
+// re-bundle `qrcode` without failing here; the `$$typeof` check still holds.
+const { qrLoaded } = vi.hoisted(() => ({ qrLoaded: vi.fn() }));
+vi.mock("qrcode", () => {
+  qrLoaded();
+  return { default: {} };
+});
+const { ROUTES } = await import("../src/routes");
 
 describe("routes", () => {
+  it("loads the QR page lazily", () => {
+    expect(qrLoaded).not.toHaveBeenCalled();
+    const el = ROUTES.find((r) => r.path === "/app-login")?.element;
+    expect((el?.type as { $$typeof?: symbol } | undefined)?.$$typeof).toBe(
+      Symbol.for("react.lazy"),
+    );
+  });
+
   it("guards every non-public route with an existing navigation item", () => {
     for (const r of ROUTES) {
       if (r.guard === null) continue;

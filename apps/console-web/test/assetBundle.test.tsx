@@ -153,20 +153,39 @@ describe("AssetBundlePage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("v1")).toBeInTheDocument();
     expect(screen.getByText("assets/ab_1/")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Show files" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show files of v1" }),
+    );
     await waitFor(() =>
       expect(mockApi.assetVersion).toHaveBeenCalledWith("ab_1", "v1", {
         cursor: undefined,
       }),
     );
-    expect(await screen.findByText("maps/a.json")).toBeInTheDocument();
-    for (const col of ["Path", "Type", "URL"])
+    // The files open in a read-only drawer, not below the table.
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Files of v1" }),
+    ).toBeInTheDocument();
+    expect(
+      (await within(dialog).findAllByText("maps/a.json")).length,
+    ).toBeGreaterThan(0);
+    for (const col of ["Path", "Size", "URL"])
       expect(
-        screen.getByRole("columnheader", { name: col }),
+        within(dialog).getByRole("columnheader", { name: col }),
       ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Hide files" }),
-    ).toBeInTheDocument();
+      within(dialog).getByRole("link", { name: "Open maps/a.json" }),
+    ).toHaveAttribute("href", expect.stringContaining("maps/a.json"));
+    // The URL is clipped in the row and folds open where it can be copied.
+    const urlToggle = within(dialog).getByRole("button", {
+      name: "https://cdn.example/assets/ab_1/v1/maps/a.json",
+    });
+    await userEvent.click(urlToggle);
+    expect(urlToggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      await within(dialog).findByRole("group", { name: "URL of maps/a.json" }),
+    ).toHaveTextContent("https://cdn.example/assets/ab_1/v1/maps/a.json");
+    expect(screen.queryByRole("button", { name: "Hide files" })).toBeNull();
   });
 
   it("pages a version's files with Load more", async () => {
@@ -187,16 +206,20 @@ describe("AssetBundlePage", () => {
       });
     open();
     await userEvent.click(
-      await screen.findByRole("button", { name: "Show files" }),
+      await screen.findByRole("button", { name: "Show files of v1" }),
     );
-    expect(await screen.findByText("maps/a.json")).toBeInTheDocument();
+    expect((await screen.findAllByText("maps/a.json")).length).toBeGreaterThan(
+      0,
+    );
     await userEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect(await screen.findByText("maps/b.json")).toBeInTheDocument();
+    expect((await screen.findAllByText("maps/b.json")).length).toBeGreaterThan(
+      0,
+    );
     expect(mockApi.assetVersion).toHaveBeenLastCalledWith("ab_1", "v1", {
       cursor: "maps/a.json",
     });
     // Both pages stay; the last one had no cursor, so the button goes.
-    expect(screen.getByText("maps/a.json")).toBeInTheDocument();
+    expect(screen.getAllByText("maps/a.json").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 

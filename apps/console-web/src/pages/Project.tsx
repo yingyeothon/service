@@ -10,7 +10,13 @@ import {
   Text,
   TextInput,
 } from "@mantine/core";
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useId,
+  useState,
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+} from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
@@ -110,6 +116,18 @@ export function ProjectPage() {
     name: project?.name ?? "",
     description: project?.description ?? "",
   }));
+  // Same rule as the team page: a bookmarked `/settings` opens the edit
+  // drawer for a writer and lands on the first tab; unknown tabs land there.
+  // `canWrite` comes from the team query, a separate request: wait for it,
+  // or a project that answers first would redirect without the drawer.
+  const ready = !!project && t.standing !== undefined;
+  const writer = t.canWrite;
+  const openEdit = edit.open;
+  useEffect(() => {
+    if (!ready || TABS.includes(tab)) return;
+    if (tab === "settings" && writer) openEdit();
+    void nav(projectUrl(teamId, prj), { replace: true });
+  }, [ready, writer, tab, teamId, prj, nav, openEdit]);
 
   if (p.error)
     return (

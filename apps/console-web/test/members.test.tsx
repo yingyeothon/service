@@ -127,8 +127,22 @@ describe("MembersPage", () => {
     });
     mount(<MembersPage />, { client: mockApi });
     await screen.findByText("carol");
-    await userEvent.type(screen.getByLabelText("Catalog app id"), "ca_1");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(
+      screen.getByText("Not set: the downloads route answers 503."),
+    ).toBeInTheDocument();
+    // The form lives in an edit drawer; nothing to type into until it opens.
+    expect(screen.queryByLabelText("Catalog app id")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog");
+    // Nothing set yet, so there is nothing to clear.
+    expect(
+      within(dialog).queryByRole("button", { name: "Clear installer app" }),
+    ).toBeNull();
+    await userEvent.type(
+      within(dialog).getByLabelText("Catalog app id"),
+      "ca_1",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(mockApi.setInstallerApp).toHaveBeenCalledWith("ca_1"),
     );
@@ -137,6 +151,46 @@ describe("MembersPage", () => {
       "href",
       "/teams/team_1",
     );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("clears the installer app from the drawer's danger zone after a confirm", async () => {
+    vi.mocked(mockApi.installerApp).mockResolvedValue({
+      appId: "ca_1",
+      appName: "console",
+      teamId: "team_1",
+      teamName: "ops",
+      trusted: true,
+      updatedAt: 1,
+    });
+    vi.mocked(mockApi.setInstallerApp).mockResolvedValue({
+      appId: null,
+      appName: null,
+      teamId: null,
+      teamName: null,
+      trusted: false,
+      updatedAt: 2,
+    });
+    mount(<MembersPage />, { client: mockApi });
+    await screen.findByText("carol");
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByLabelText("Catalog app id")).toHaveValue("ca_1");
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Clear installer app" }),
+    );
+    const modal = (await screen.findByText("Clear the installer app?")).closest(
+      '[role="dialog"]',
+    ) as HTMLElement;
+    await userEvent.click(
+      within(modal).getByRole("button", { name: "Clear installer app" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.setInstallerApp).toHaveBeenCalledWith(null),
+    );
+    expect(
+      await screen.findByText("Not set: the downloads route answers 503."),
+    ).toBeInTheDocument();
   });
 
   it("looks up a site name and releases it with a reason", async () => {

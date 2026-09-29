@@ -8,7 +8,7 @@ import {
   Text,
   TextInput,
 } from "@mantine/core";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
@@ -79,6 +79,18 @@ export function TeamPage() {
     name: team?.name ?? "",
     description: team?.description ?? "",
   }));
+  // The Settings tab folded into the edit drawer (2026-09-02); a bookmarked
+  // `/settings` opens that drawer for an owner and lands on the first tab
+  // instead of silently showing it. Any other unknown tab lands there too.
+  // A pending member keeps the URL: the page shows the pending notice only.
+  const ready = !!team && team.role !== "pending";
+  const owner = t.owner;
+  const openEdit = edit.open;
+  useEffect(() => {
+    if (!ready || TABS.includes(tab)) return;
+    if (tab === "settings" && owner) openEdit();
+    void nav(teamUrl(teamId), { replace: true });
+  }, [ready, owner, tab, teamId, nav, openEdit]);
 
   if (t.error)
     return (

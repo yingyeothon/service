@@ -1,6 +1,6 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Route, Routes } from "react-router";
+import { Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type { LimitRequest, TeamDetail, TeamMember } from "../src/types";
@@ -76,13 +76,21 @@ const MEMBERS: TeamMember[] = [
   },
 ];
 
+/** Prints the pathname so a test can pin where a redirect landed. */
+function LocationProbe() {
+  return <div data-testid="location">{useLocation().pathname}</div>;
+}
+
 function mount(path: string) {
   return mountWith(
-    <Routes>
-      <Route path="/teams" element={<TeamsPage />} />
-      <Route path="/teams/:team" element={<TeamPage />} />
-      <Route path="/teams/:team/:tab" element={<TeamPage />} />
-    </Routes>,
+    <>
+      <Routes>
+        <Route path="/teams" element={<TeamsPage />} />
+        <Route path="/teams/:team" element={<TeamPage />} />
+        <Route path="/teams/:team/:tab" element={<TeamPage />} />
+      </Routes>
+      <LocationProbe />
+    </>,
     { client: mockApi, path },
   );
 }
@@ -110,6 +118,44 @@ describe("TeamPage", () => {
     vi.mocked(mockApi.teamMembers).mockResolvedValue(MEMBERS);
     vi.mocked(mockApi.projects).mockResolvedValue([]);
     vi.mocked(mockApi.teams).mockResolvedValue([]);
+  });
+
+  it("opens the edit drawer for an owner's bookmarked /settings and lands on the first tab", async () => {
+    mount("/teams/team_1/settings");
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Edit team" }),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByDisplayValue("studio")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Projects" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        /^\/teams\/team_1$/,
+      ),
+    );
+  });
+
+  it("sends a member's /settings and an unknown tab to the first tab without a drawer", async () => {
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "member" });
+    mount("/teams/team_1/settings");
+    expect(
+      await screen.findByRole("tab", { name: "Projects" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    cleanup();
+    mount("/teams/team_1/nope");
+    expect(
+      await screen.findByRole("tab", { name: "Projects" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        /^\/teams\/team_1$/,
+      ),
+    );
   });
 
   it("shows the team's project limit under the projects with the request button", async () => {

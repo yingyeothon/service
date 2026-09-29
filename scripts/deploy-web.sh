@@ -24,7 +24,9 @@ DIST_DIR="apps/console-web/dist"
 # release is picked up on the next navigation. Source maps stay out of prod.
 # No --delete: the previous index.html keeps being served until the
 # invalidation lands, and already-open tabs lazy-load old chunks, so stale
-# hashed files stay (they are tiny); prune by hand if the bucket ever matters.
+# hashed files stay (they are tiny). Pruning them by hand breaks every open
+# tab's next lazy chunk (`todo/51`): do it only right after an invalidation,
+# and expect those tabs to show the reload notice.
 MAP_ARGS=(); [ "$STAGE" = "prod" ] && MAP_ARGS=(--exclude "*.map")
 aws s3 sync "$DIST_DIR/assets" "s3://${BUCKET}/ui/assets" \
   --cache-control "public, max-age=31536000, immutable" "${MAP_ARGS[@]}"

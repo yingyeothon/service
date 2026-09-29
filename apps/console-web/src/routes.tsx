@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { lazy, type ReactElement } from "react";
 import { Navigate } from "react-router";
 import { AssetBundlePage } from "./pages/AssetBundle";
 import { CatalogAppPage } from "./pages/CatalogApp";
@@ -22,11 +22,16 @@ import { SitePage } from "./pages/Site";
 import { TeamPage } from "./pages/Team";
 import { TeamsPage } from "./pages/Teams";
 import { TokensPage } from "./pages/Tokens";
-import { AppLoginPage } from "./pages/AppLogin";
 import { AuditPage } from "./pages/Audit";
 import { ShowDetailPage } from "./pages/ShowDetail";
 import { ShowEntryPage } from "./pages/ShowEntry";
 import { ShowsPage } from "./pages/Shows";
+
+// The QR page is the only user of `qrcode`; a dynamic import keeps that
+// library in its own chunk. `App` renders the routes under one Suspense.
+const AppLoginPage = lazy(() =>
+  import("./pages/AppLogin").then((m) => ({ default: m.AppLoginPage })),
+);
 
 export interface AppRoute {
   path: string;

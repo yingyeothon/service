@@ -5,6 +5,7 @@ import { api } from "../api";
 import { useAuth } from "../auth";
 import { DataTable } from "../components/DataTable";
 import { PageHeader } from "../components/PageHeader";
+import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { RowMenu, type RowMenuItem } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { Badge, Notice } from "../components/ui";
@@ -26,40 +27,46 @@ export function InstallerAppSection() {
     api.installerApp(),
   );
   const act = useAction();
-  const confirm = useConfirm();
-  const [appId, setAppId] = useState("");
+  const s = setting.data;
+  const edit = useDrawerForm(() => ({ appId: s?.appId ?? "" }));
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    const r = await act.run(() => api.setInstallerApp(appId.trim() || null));
+    const appId = edit.form.appId.trim();
+    if (!appId) return;
+    const r = await act.run(() => api.setInstallerApp(appId));
     if (!r) return;
     setting.set(r);
-    setAppId("");
+    edit.close();
     notify.saved("installer app");
   };
   const clear = async () => {
-    const ok = await confirm({
-      title: "Clear the installer app?",
-      message: "The downloads route answers 503 until another app is set.",
-      confirmLabel: "Clear installer app",
-      danger: true,
-    });
-    if (!ok.ok) return;
     const r = await act.run(() => api.setInstallerApp(null));
-    if (r) {
-      setting.set(r);
-      notify.done("Installer app cleared");
-    }
+    if (!r) return;
+    setting.set(r);
+    edit.close();
+    notify.done("Installer app cleared");
   };
-  const s = setting.data;
   return (
     <Section
       title="Installer app"
       description="The catalog app whose builds the device installer downloads. Its team must be admin-locked."
+      actions={
+        <Button
+          variant="default"
+          disabled={!s}
+          onClick={() => {
+            act.clear();
+            edit.open();
+          }}
+        >
+          Edit
+        </Button>
+      }
     >
       {setting.error && <Notice kind="error">{setting.error}</Notice>}
-      {act.error && <Notice kind="error">{act.error}</Notice>}
+      {!edit.opened && act.error && <Notice kind="error">{act.error}</Notice>}
       {s && (
-        <Text size="sm" mb="sm">
+        <Text size="sm">
           {s.appId ? (
             <>
               <strong>{s.appName ?? s.appId}</strong> (<code>{s.appId}</code>)
@@ -81,35 +88,39 @@ export function InstallerAppSection() {
           )}
         </Text>
       )}
-      <form onSubmit={(e) => void save(e)}>
-        <Group align="end" wrap="wrap">
-          <TextInput
-            label="Catalog app id"
-            placeholder="ca_…"
-            value={appId}
-            onChange={(e) => setAppId(e.target.value)}
-            maxLength={64}
-            autoComplete="off"
-            spellCheck={false}
-          />
-          <Button
-            type="submit"
-            variant="default"
-            disabled={act.busy || !appId.trim()}
-          >
-            Save
-          </Button>
-          {s?.appId && (
-            <Button
-              variant="default"
-              disabled={act.busy}
-              onClick={() => void clear()}
-            >
-              Clear
-            </Button>
-          )}
-        </Group>
-      </form>
+      <ResourceDrawer
+        opened={edit.opened}
+        onClose={edit.close}
+        title="Edit installer app"
+        submitLabel="Save"
+        onSubmit={save}
+        busy={act.busy}
+        disabled={!edit.form.appId.trim()}
+        error={edit.opened ? act.error : null}
+        danger={
+          s?.appId
+            ? {
+                label: "Clear installer app",
+                description:
+                  "The downloads route answers 503 until another app is set.",
+                confirmTitle: "Clear the installer app?",
+                onConfirm: clear,
+                disabled: act.busy,
+              }
+            : undefined
+        }
+      >
+        <TextInput
+          label="Catalog app id"
+          placeholder="ca_…"
+          value={edit.form.appId}
+          onChange={(e) => edit.patch({ appId: e.target.value })}
+          maxLength={64}
+          autoComplete="off"
+          spellCheck={false}
+          data-autofocus
+        />
+      </ResourceDrawer>
     </Section>
   );
 }

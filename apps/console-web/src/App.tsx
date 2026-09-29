@@ -1,7 +1,9 @@
 import { Button } from "@mantine/core";
+import { Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router";
 import { api } from "./api";
 import { hasRole, useAuth } from "./auth";
+import { ChunkBoundary } from "./components/ChunkBoundary";
 import { AppShellLayout, currentPath } from "./components/layout";
 import { PageSkeleton } from "./components/Loading";
 import { Notice } from "./components/ui";
@@ -57,22 +59,28 @@ export function App() {
           </Button>
         </Notice>
       )}
-      <Routes>
-        {ROUTES.map((r) => (
-          <Route
-            key={r.path}
-            path={r.path}
-            element={
-              r.guard === null ? (
-                r.element
-              ) : (
-                <RequireRole min={navMinRole(r.guard)}>{r.element}</RequireRole>
-              )
-            }
-          />
-        ))}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <ChunkBoundary>
+        <Suspense fallback={<PageSkeleton />}>
+          <Routes>
+            {ROUTES.map((r) => (
+              <Route
+                key={r.path}
+                path={r.path}
+                element={
+                  r.guard === null ? (
+                    r.element
+                  ) : (
+                    <RequireRole min={navMinRole(r.guard)}>
+                      {r.element}
+                    </RequireRole>
+                  )
+                }
+              />
+            ))}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
+      </ChunkBoundary>
     </AppShellLayout>
   );
 }

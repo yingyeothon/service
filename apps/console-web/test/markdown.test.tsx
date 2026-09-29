@@ -1,13 +1,16 @@
 import { MantineProvider } from "@mantine/core";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Markdown } from "../src/components/Markdown";
+import MarkdownBody from "../src/components/MarkdownBody";
 import { theme } from "../src/theme";
+
+// The synchronous cases render the body directly; the lazy wrapper around
+// it is pinned in `markdownLazy.test.tsx`.
 
 function md(text: string) {
   return render(
     <MantineProvider theme={theme} forceColorScheme="light">
-      <Markdown text={text} />
+      <MarkdownBody text={text} />
     </MantineProvider>,
   ).container;
 }
@@ -119,9 +122,5 @@ describe("Markdown", () => {
   it("prefixes heading ids so they cannot clobber DOM globals", () => {
     const c = md('<a id="location">x</a>\n\n# location');
     expect(c.querySelector("#location")).toBeNull();
-  });
-
-  it("renders nothing for a blank body", () => {
-    expect(md("  \n ").querySelector(".markdown")).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { IconExternalLink } from "@tabler/icons-react";
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Clipped } from "../components/Clipped";
@@ -167,6 +167,33 @@ function PublishSection({
   );
 }
 
+/**
+ * The path cell both file tables share: the path clipped at `width`, folding
+ * open on tap, with the open-in-new-tab anchor before it (24 px target).
+ */
+function FilePathCell({ file: f, width }: { file: AssetFile; width: number }) {
+  return (
+    <Table.Td>
+      <Clipped
+        text={f.path}
+        width={width}
+        what={`Full path of ${f.path}`}
+        prefix={
+          <Anchor
+            href={f.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Open ${f.path}`}
+            style={{ display: "inline-flex", padding: 4 }}
+          >
+            <IconExternalLink size={16} aria-hidden="true" />
+          </Anchor>
+        }
+      />
+    </Table.Td>
+  );
+}
+
 /** One version's files, a page at a time (`GET …/versions/{v}?cursor=`). */
 function VersionFiles({
   bundle,
@@ -185,7 +212,6 @@ function VersionFiles({
       <DataTable
         columns={[
           { key: "path", label: "Path" },
-          { key: "type", label: "Type" },
           { key: "size", label: "Size", align: "right" },
           { key: "url", label: "URL" },
         ]}
@@ -193,21 +219,19 @@ function VersionFiles({
         loading={files.loading}
         error={files.error}
         rowKey={(f) => f.id}
-        minWidth={640}
+        // Fits the `lg` drawer's 588 px body at 1080 (measured 2026-09-29):
+        // 200 + 60 + 180 plus six 16 px paddings; the type went, it is the
+        // extension's, and the URL folds open to be copied.
+        minWidth={520}
         empty={{ title: "No files in this version." }}
         render={(f) => (
           <>
-            <Table.Td>
-              <Code>{f.path}</Code>
-            </Table.Td>
-            <Table.Td>{f.contentType}</Table.Td>
-            <Table.Td style={{ textAlign: "right" }}>
+            <FilePathCell file={f} width={200} />
+            <Table.Td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
               {fmtSize(f.size)}
             </Table.Td>
             <Table.Td>
-              <Anchor href={f.url} size="sm" style={{ wordBreak: "break-all" }}>
-                {f.url}
-              </Anchor>
+              <Clipped text={f.url} width={180} what={`URL of ${f.path}`} />
             </Table.Td>
           </>
         )}
@@ -280,24 +304,7 @@ function LiveFiles({
         }}
         render={(f) => (
           <>
-            <Table.Td>
-              <Clipped
-                text={f.path}
-                width={240}
-                what={`Full path of ${f.path}`}
-                prefix={
-                  <Anchor
-                    href={f.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label={`Open ${f.path}`}
-                    style={{ display: "inline-flex", paddingBlock: 4 }}
-                  >
-                    <IconExternalLink size={16} aria-hidden="true" />
-                  </Anchor>
-                }
-              />
-            </Table.Td>
+            <FilePathCell file={f} width={240} />
             <Table.Td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
               {fmtSize(f.size)}
             </Table.Td>
@@ -370,6 +377,11 @@ export function AssetBundlePage() {
   const limits = useLimits("bundle", id);
   const act = useAction();
   const [open, setOpen] = useState<string | null>(null);
+  // What the files drawer shows: the last opened version, kept through the
+  // close transition so the drawer does not slide out empty.
+  const shownRef = useRef<string | null>(null);
+  if (open !== null) shownRef.current = open;
+  const shown = shownRef.current;
   /** Files deleted so far by a delete that is still repeating (202s). */
   const [progress, setProgress] = useState<number | null>(null);
   const b = bundle.data;
@@ -580,12 +592,11 @@ export function AssetBundlePage() {
                     size="compact-sm"
                     variant="subtle"
                     color="ink"
-                    onClick={() =>
-                      setOpen(open === v.version ? null : v.version)
-                    }
-                    aria-expanded={open === v.version}
+                    aria-haspopup="dialog"
+                    aria-label={`Show files of ${v.version}`}
+                    onClick={() => setOpen(v.version)}
                   >
-                    {open === v.version ? "Hide files" : "Show files"}
+                    Show files
                   </Button>
                 </Table.Td>
               </>
@@ -615,16 +626,17 @@ export function AssetBundlePage() {
                 : undefined
             }
           />
-          {open && (
-            <div style={{ marginTop: 16 }}>
-              <Text size="sm" fw={500} mb="xs">
-                Files of {open}
-              </Text>
-              <VersionFiles bundle={id} version={open} />
-            </div>
-          )}
         </Section>
       )}
+      <ResourceDrawer
+        opened={open !== null}
+        onClose={() => setOpen(null)}
+        title={`Files of ${shown}`}
+        size="lg"
+        hideFooter
+      >
+        {shown && <VersionFiles bundle={id} version={shown} />}
+      </ResourceDrawer>
       {b.teamId !== null && (
         <LimitsSection
           limits={limits}

@@ -38,6 +38,10 @@ export default defineConfig(({ mode }) => {
               "@mantine/notifications",
               "@tanstack/react-query",
             ],
+            // Both reached only through dynamic imports (`Markdown`, the
+            // `/app-login` route); the names keep their cache keys stable.
+            markdown: ["react-markdown", "remark-gfm", "rehype-sanitize"],
+            qr: ["qrcode"],
           },
         },
       },

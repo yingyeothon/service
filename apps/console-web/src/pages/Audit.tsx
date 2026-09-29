@@ -1,10 +1,10 @@
-import { Button, Code, Table, TextInput } from "@mantine/core";
-import { useEffect, useState, type FormEvent } from "react";
+import { Button, Code, Table, Text, TextInput } from "@mantine/core";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api";
 import { DataTable } from "../components/DataTable";
 import { FilterBar } from "../components/FilterBar";
 import { PageHeader } from "../components/PageHeader";
-import { Section } from "../components/Section";
+import { ResourceDrawer } from "../components/ResourceDrawer";
 import { Notice } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { useAction } from "../lib/query";
@@ -27,6 +27,10 @@ export function AuditPage() {
   const [actor, setActor] = useState("");
   const [target, setTarget] = useState("");
   const [open, setOpen] = useState<AuditDetail | null>(null);
+  // The last opened row, kept through the drawer's close transition.
+  const shownRef = useRef<AuditDetail | null>(null);
+  if (open !== null) shownRef.current = open;
+  const shown = shownRef.current;
   const [applied, setApplied] = useState(0);
 
   /**
@@ -121,6 +125,8 @@ export function AuditPage() {
                 size="compact-sm"
                 variant="subtle"
                 color="ink"
+                aria-haspopup="dialog"
+                aria-label={`Detail of ${r.action} ${fmtTime(r.at)}`}
                 onClick={() =>
                   void (async () => {
                     const d = await act.run(() => api.auditRow(r.id));
@@ -144,26 +150,29 @@ export function AuditPage() {
           Load more
         </Button>
       )}
-      {open && (
-        <Section
-          title={open.action}
-          description={`${open.actor ?? "system"} · ${fmtTime(open.at)}`}
-          actions={
-            <Button variant="default" onClick={() => setOpen(null)}>
-              Close
-            </Button>
-          }
-        >
-          {open.detailTruncated && (
-            <Notice kind="warn">
-              Shortened: this row is larger than the detail view returns.
-            </Notice>
-          )}
-          <Code block style={{ whiteSpace: "pre-wrap" }}>
-            {open.detail ?? "(no detail)"}
-          </Code>
-        </Section>
-      )}
+      <ResourceDrawer
+        opened={open !== null}
+        onClose={() => setOpen(null)}
+        title={shown?.action ?? ""}
+        size="lg"
+        hideFooter
+      >
+        {shown && (
+          <>
+            <Text size="sm" c="dimmed">
+              {shown.actor ?? "system"} · {fmtTime(shown.at)}
+            </Text>
+            {shown.detailTruncated && (
+              <Notice kind="warn">
+                Shortened: this row is larger than the detail view returns.
+              </Notice>
+            )}
+            <Code block style={{ whiteSpace: "pre-wrap" }}>
+              {shown.detail ?? "(no detail)"}
+            </Code>
+          </>
+        )}
+      </ResourceDrawer>
     </>
   );
 }

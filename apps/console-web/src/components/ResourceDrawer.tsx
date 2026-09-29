@@ -7,7 +7,13 @@ import {
   Stack,
   Text,
 } from "@mantine/core";
-import { useCallback, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useConfirm, type ConfirmOptions } from "../lib/confirm";
 import { Notice } from "./ui";
 
@@ -184,10 +190,15 @@ export function ResourceDrawer({
 export function useDrawerForm<T>(initial: () => T) {
   const [opened, setOpened] = useState(false);
   const [form, setForm] = useState<T>(initial);
+  // Pages pass a fresh arrow every render; reading it through a ref keeps
+  // `open` stable so an effect may depend on it without re-running each
+  // render, while `open()` still seeds from the latest values.
+  const initialRef = useRef(initial);
+  initialRef.current = initial;
   const open = useCallback(() => {
-    setForm(initial());
+    setForm(initialRef.current());
     setOpened(true);
-  }, [initial]);
+  }, []);
   const close = useCallback(() => setOpened(false), []);
   const patch = useCallback(
     (p: Partial<T>) => setForm((f) => ({ ...f, ...p })),

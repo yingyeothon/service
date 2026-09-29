@@ -75,7 +75,9 @@ describe("DiscussionPage", () => {
     expect(
       await screen.findByRole("heading", { name: "Jam date" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("May", { selector: "strong" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("May", { selector: "strong" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("fine")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "studio" })).toHaveAttribute(
       "href",

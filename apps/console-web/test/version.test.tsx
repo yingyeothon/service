@@ -183,7 +183,7 @@ describe("VersionPage", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "1.2.3" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("crash")).toBeInTheDocument(); // the note, rendered
+    expect(await screen.findByText("crash")).toBeInTheDocument(); // the note, rendered
     // An artifact link names its app, version and build and goes to the app
     // page; two ABIs of one deploy are two distinguishable rows.
     expect(

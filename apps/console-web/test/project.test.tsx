@@ -1,6 +1,6 @@
-import { screen, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Route, Routes } from "react-router";
+import { Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type {
@@ -84,15 +84,27 @@ const ISSUE: IssueDetail = {
   comments: [],
 };
 
+/** Prints the pathname so a test can pin where a redirect landed. */
+function LocationProbe() {
+  return <div data-testid="location">{useLocation().pathname}</div>;
+}
+
 function mount(path: string) {
   return mountWith(
-    <Routes>
-      <Route path="/teams/:team/projects/:prj/:tab" element={<ProjectPage />} />
-      <Route
-        path="/teams/:team/projects/:prj/issues/:n"
-        element={<IssuePage />}
-      />
-    </Routes>,
+    <>
+      <Routes>
+        <Route path="/teams/:team/projects/:prj" element={<ProjectPage />} />
+        <Route
+          path="/teams/:team/projects/:prj/:tab"
+          element={<ProjectPage />}
+        />
+        <Route
+          path="/teams/:team/projects/:prj/issues/:n"
+          element={<IssuePage />}
+        />
+      </Routes>
+      <LocationProbe />
+    </>,
     { client: mockApi, path },
   );
 }
@@ -111,6 +123,49 @@ describe("ProjectPage", () => {
     vi.mocked(mockApi.versions).mockResolvedValue([V1]);
     vi.mocked(mockApi.issues).mockResolvedValue([ISSUE]);
     vi.mocked(mockApi.issue).mockResolvedValue(ISSUE);
+  });
+
+  it("opens the edit drawer for a writer's bookmarked /settings and lands on the first tab", async () => {
+    // The team standing arrives after the project: the redirect must wait
+    // for it, or the drawer would be skipped.
+    vi.mocked(mockApi.team).mockImplementation(
+      () => new Promise((r) => setTimeout(() => r(TEAM), 50)),
+    );
+    mount("/teams/team_1/projects/prj_1/settings");
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Edit project" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Channels" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        /^\/teams\/team_1\/projects\/prj_1$/,
+      ),
+    );
+  });
+
+  it("sends a seatless admin's /settings and an unknown tab to the first tab without a drawer", async () => {
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+    mount("/teams/team_1/projects/prj_1/settings");
+    expect(
+      await screen.findByRole("tab", { name: "Channels" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    cleanup();
+    vi.mocked(mockApi.team).mockResolvedValue(TEAM);
+    mount("/teams/team_1/projects/prj_1/nope");
+    expect(
+      await screen.findByRole("tab", { name: "Channels" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        /^\/teams\/team_1\/projects\/prj_1$/,
+      ),
+    );
   });
 
   it("bumps a version and reloads the list", async () => {
@@ -186,7 +241,7 @@ describe("IssuePage", () => {
     await screen.findByText("#1 Crash on start");
     expect(container.querySelector("script")).toBeNull();
     expect(
-      screen.getByRole("link", { name: "repro" }).getAttribute("rel"),
+      (await screen.findByRole("link", { name: "repro" })).getAttribute("rel"),
     ).toContain("noopener");
     await userEvent.click(
       await screen.findByRole("button", { name: "More actions" }),
