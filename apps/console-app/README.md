@@ -9,7 +9,7 @@ caller may read (`GET /catalog/listings?platform=android`). A project opens with
 extend a channel by 7 days) — the console's project page on a phone. It talks
 only to the console API.
 
-- Sign in: **QR only**. The console SPA's _App login_ page mints an API token
+- Sign in: **QR, or the web → app handoff**. The console SPA's _App login_ page mints an API token
   and renders `{"type":"yyt_api_key","apiKey":"yyt_…","server":"<origin>"}`;
   the app scans it, probes the key with `GET /me` (pending members are
   refused) and saves it as a **profile** (server + key + login) in secure
@@ -17,6 +17,18 @@ only to the console API.
   app-bar avatar switches, adds (scan another QR) or removes them. The app
   ships no server address at all — the QR carries it. A 401 drops the
   active profile (the token was revoked).
+- Handoff (2026-09-29, `todo/49`): the SPA's **Open app** button (Home
+  installer card, App login) launches this package through a Chrome
+  `intent://` URL whose target is `https://<console>/app-open?code=hoff_…`
+  (`android/app/src/main/AndroidManifest.xml`, `autoVerify` against the
+  console's `/.well-known/assetlinks.json`). `lib/auth/app_handoff.dart`
+  re-validates the URL (allowlisted hosts only — the activity is exported),
+  `main.dart` asks before continuing (the host is named), then
+  `POST /auth/app-handoff/exchange` turns the 120 s single-use code into a
+  `yyt_` token and `AuthState.addProfile` takes it from there. Needs Flutter ≥ 3.44 / Dart ≥ 3.12 (`app_links`). On-device
+  checks: Chrome and Samsung Internet, cold and warm start, one task in
+  Recents, the Installer fallback with the app uninstalled,
+  `adb shell pm get-app-links life.yyt.console` once the fingerprint is in SSM.
 - Apps: one request, `GET /catalog/apps?artifacts=summary&platform=android`
   (2026-09-27): every app of every team the caller is seated in, each with
   its newest Android artifact and `applicationIds`, plus `teams` — the

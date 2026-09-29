@@ -62,6 +62,9 @@
 
 ## Console app (`apps/console-app`, Flutter)
 
+- **The `yyt` CLI's default profile on this machine is prod** (2026-09-29, `todo/49`): a catalog upload meant for dev verification went to the prod catalog because the command had no `--profile dev`. Every dev-side CLI call in a session passes `--profile dev` explicitly; a local variable named `…Token = create…(` also trips the gitleaks `yyt-env-credential` rule — name it `tokenMinter`.
+- **Never run `dart format` over `lib`/`test` wholesale** (2026-09-29, `todo/49`): the local Dart 3.13 formatter re-flows ternaries and argument lists differently from the style the tree was committed in, so a blanket run dirtied 40 unrelated files and one hunk inside a file the task did touch. Format only the files you wrote (`dart format <paths>`), and diff a touched file for hunks you did not write before committing.
+
 - One `ProjectsApi` per `ProjectScreen`, captured with its server and token and passed to every tab and pushed screen (`rules/security.md`, one profile per request chain). A profile switch pops every route, so nothing outlives the profile it was built for.
 - When a console route the app uses changes shape, `lib/projects/*_models.dart`, `projects_api.dart` and the screen change in the same commit; new response fields are read as optional (an older console omits them), and a PATCH sends only the keys the user changed — the server bodies are `.strict()`, so an unchanged key an older console does not know would be a 400.
 - Channel config forms mirror `apps/console-web/src/lib/channelForm.ts` (fields, defaults, how the config is **rebuilt**): the server schemas are strict, so echoing a stored config's unknown keys back is not "preserving" them, it is a 400. Auth configs are a partial patch (blank `clientSecret` = omit the key).

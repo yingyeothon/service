@@ -110,6 +110,10 @@ class AuthConfig {
   ) => '${appListingViewersUrlOf(base, appId)}/${Uri.encodeComponent(login)}';
   static String installerDownloadsUrlOf(String base) =>
       '$base/catalog/installer/downloads';
+  static String appHandoffExchangeUrlOf(String base) =>
+      '$base/auth/app-handoff/exchange';
+  static String tokenUrlOf(String base, String tokenId) =>
+      '$base/tokens/${Uri.encodeComponent(tokenId)}';
   static String appArtifactsUrlOf(String base, String appId) =>
       '$base/catalog/apps/${Uri.encodeComponent(appId)}/artifacts';
 

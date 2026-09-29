@@ -10,8 +10,9 @@
 # console only (optional): redis-acl-{user,password} — the account that mints per-channel
 #   participant Redis credentials (todo/16 §B). Absent = those routes answer 503.
 # Stage-wide keys (uploaded only when set): DEBUG_KEY (dev only; generated when absent), SESSION_SECRET,
-#   and GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET/ADMIN_GITHUB_LOGINS — taken from the shell environment, else from
-#   local/env/console.<stage>.env (console owns the operator OAuth app).
+#   GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET/ADMIN_GITHUB_LOGINS and ANDROID_CERT_SHA256 (the console app's
+#   release-signing fingerprint for /.well-known/assetlinks.json) — taken from the shell environment, else
+#   from local/env/console.<stage>.env (console owns the operator OAuth app).
 # Stage-wide, gateway (todo/14): gateway-token is generated when absent and kept across re-runs
 #   (GATEWAY_TOKEN=... rotates it), and written to local/deploy/gateway-token.<stage>.
 #   gateway-ws-url is NOT touched here — it is a public domain, set by hand as a plain String
@@ -181,7 +182,7 @@ if [ -f "$CONSOLE_ENV" ]; then
     done
   fi
 fi
-for var in GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET ADMIN_GITHUB_LOGINS; do
+for var in GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET ADMIN_GITHUB_LOGINS ANDROID_CERT_SHA256; do
   if [ -z "${!var:-}" ] && [ -f "$CONSOLE_ENV" ]; then
     declare "$var=$(envval "$CONSOLE_ENV" "$var")"
   fi
@@ -193,6 +194,9 @@ put github-client-id "${GITHUB_CLIENT_ID:-}"
 put github-client-secret "${GITHUB_CLIENT_SECRET:-}"
 put admin-github-logins "${ADMIN_GITHUB_LOGINS:-}"
 put session-secret "${SESSION_SECRET:-}"
+# Console app release-signing certificate SHA-256 (`keytool -list -v`, AA:BB:… form,
+# comma separated when more than one), served on /.well-known/assetlinks.json.
+put android-cert-sha256 "${ANDROID_CERT_SHA256:-}"
 
 # Realtime gateway (todo/14): the console checks GATEWAY_TOKEN on
 # GET /gw/channels/{id}. Generated once per stage and kept across re-runs, the

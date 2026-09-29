@@ -288,6 +288,9 @@ export function createApiClient({
     createToken: (name: string) =>
       post<ApiToken & { token: string }>("/tokens", { name }),
     revokeToken: (id: string) => del(`/tokens/${enc(id)}`),
+    /** A 120 s single-use code the 잉여톤 app exchanges for a token (todo/49). */
+    createAppHandoff: () =>
+      post<{ code: string; expiresInSec: number }>("/auth/app-handoff"),
 
     // ---- teams -------------------------------------------------------------
     teams: (scope?: "mine" | "all", p: ListParams = {}) =>

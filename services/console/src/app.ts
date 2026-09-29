@@ -88,6 +88,8 @@ import {
 } from "./channel-doc-key.js";
 import { deleteChannelSocial } from "./social.js";
 import { createWriteSlot } from "./write-slot.js";
+import { createTokenMinter } from "./api-token.js";
+import { createAppHandoffRoutes } from "./app-handoff.js";
 import { createGatewayRoutes } from "./gateway.js";
 import { createTeamRoutes } from "./team.js";
 import { createTeamAccess } from "./team-access.js";
@@ -186,6 +188,12 @@ export interface ConsoleAppOptions {
   clock?: Clock;
   logger?: Logger;
   extraRoutes?: AnyRoute[];
+  /**
+   * Release-signing certificate SHA-256 fingerprints served on
+   * `/.well-known/assetlinks.json` (`ANDROID_APP_CERT_SHA256`, comma
+   * separated). Empty: the route answers 404 and App Links stay unverified.
+   */
+  androidCertFingerprints?: string[];
 }
 
 const NEXT_PATH = /^\/[^/\\][^\\]{0,255}$|^\/$/;
@@ -249,6 +257,7 @@ export function createConsoleApp({
   redisEndpoint = { host: "", port: 6379 },
   state,
   stage,
+  androidCertFingerprints = [],
 }: ConsoleAppOptions): (event: HttpEvent) => Promise<HttpResult> {
   const base = baseUrl.replace(/\/+$/, "");
   const web = webUrl.replace(/\/+$/, "");
@@ -284,6 +293,8 @@ export function createConsoleApp({
       });
     }
   }
+
+  const tokenMinter = createTokenMinter({ db, clock, audit });
 
   /** Login landing: upsert the member and grant bootstrap admins. */
   async function signIn(user: {
@@ -552,20 +563,15 @@ export function createConsoleApp({
         }
         await kv.del(key);
         const { memberId, role } = await signIn(r.user);
-        if ((await db.listApiTokens(memberId)).length >= 20)
-          throw new AppError("conflict", "too many tokens (max 20)");
-        const token = `yyt_${randomHex(24)}`;
-        const tokenId = `tok_${randomHex(8)}`;
-        const now = nowSec(clock);
-        const name = ctx.body.tokenName ?? "device login";
-        await db.insertApiToken({
+        const {
+          token,
           id: tokenId,
-          memberId,
-          tokenHash: sha256Hex(token),
           name,
-          createdAt: now,
+        } = await tokenMinter({
+          memberId,
+          name: ctx.body.tokenName ?? "device login",
+          via: "device",
         });
-        await audit(memberId, "token.create", tokenId, { via: "device" });
         logger.info("device login", { memberId, role });
         return {
           statusCode: 201,
@@ -743,19 +749,10 @@ export function createConsoleApp({
         // Tokens are tied to the member's role at use time, so `pending` may
         // hold one (the CLI then sees 403s until approval).
         const id = requireRole(ctx, "pending");
-        if ((await db.listApiTokens(id.subject)).length >= 20)
-          throw new AppError("conflict", "too many tokens (max 20)");
-        const token = `yyt_${randomHex(24)}`;
-        const tokenId = `tok_${randomHex(8)}`;
-        const now = nowSec(clock);
-        await db.insertApiToken({
-          id: tokenId,
+        const t = await tokenMinter({
           memberId: id.subject,
-          tokenHash: sha256Hex(token),
           name: ctx.body.name,
-          createdAt: now,
         });
-        await audit(id.subject, "token.create", tokenId);
         return {
           statusCode: 201,
           headers: {
@@ -763,10 +760,10 @@ export function createConsoleApp({
             "cache-control": "no-store",
           },
           body: JSON.stringify({
-            id: tokenId,
-            name: ctx.body.name,
-            createdAt: now,
-            token,
+            id: t.id,
+            name: t.name,
+            createdAt: t.createdAt,
+            token: t.token,
           }),
         } satisfies HttpResult;
       },
@@ -1209,6 +1206,17 @@ export function createConsoleApp({
     audit,
   });
 
+  const appHandoffRoutes = createAppHandoffRoutes({
+    kv,
+    db,
+    clock,
+    writeSlot: createWriteSlot({ kv, clock }),
+    mint: tokenMinter,
+    logger,
+    webUrl: web,
+    androidCertFingerprints,
+  });
+
   const listingRoutes = createListingRoutes({
     listings,
     catalog,
@@ -1240,6 +1248,7 @@ export function createConsoleApp({
     routes: [
       ...routes,
       ...memberRoutes,
+      ...appHandoffRoutes,
       ...eventRoutes,
       ...showRoutes,
       ...teamRoutes,

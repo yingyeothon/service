@@ -1,10 +1,11 @@
 import { Anchor, Badge, Button, Card, Group, Table, Text } from "@mantine/core";
 import { IconDownload } from "@tabler/icons-react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { api, ApiError } from "../api";
 import { DataTable } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
+import { OpenAppButton } from "../components/OpenAppButton";
 import { Notice } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import { useApiQuery } from "../lib/query";
@@ -78,6 +79,7 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
             Download installer
             {latest.version ? ` v${latest.version}` : ""}
           </Button>
+          <OpenAppButton />
           {compact && (
             <Anchor component={Link} to="/installer" size="sm">
               All builds
@@ -92,12 +94,22 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
 export function InstallerPage() {
   const list = useInstallerDownloads();
   const downloads = list.data?.downloads;
+  const [params] = useSearchParams();
+  // Where "Open app" lands on a phone without the app (lib/appHandoff.ts).
+  const appMissing = params.get("app") === "missing";
   return (
     <>
       <PageHeader
         title="Installer"
         description="Every published build of the device installer, newest first."
       />
+      {appMissing && (
+        <Notice kind="warn">
+          This phone has no 잉여톤 app that can take a sign-in from the web
+          (none installed, or older than 1.6.0). Install or update from the APK
+          below, then tap <strong>Open app</strong> again.
+        </Notice>
+      )}
       {list.error && <Notice kind="error">{list.error}</Notice>}
       {list.data?.untrusted && (
         <Notice kind="warn">

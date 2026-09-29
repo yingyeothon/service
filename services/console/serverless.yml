@@ -153,6 +153,11 @@ provider:
     # Shared secret the gateway presents on GET /gw/channels/{id}; empty until
     # the gateway ships, and the route answers 503 while it is.
     GATEWAY_TOKEN: ${ssm:${self:custom.stageSsm}/gateway-token, ""}
+    # SHA-256 fingerprint(s) of the console app's release signing certificate,
+    # served on /.well-known/assetlinks.json so Android verifies the app's
+    # https://console…/app-open link (todo/49). Not a secret, but an identifier
+    # of the owner's keystore, so it lives in SSM; empty answers 404.
+    ANDROID_APP_CERT_SHA256: ${ssm:${self:custom.stageSsm}/android-cert-sha256, ""}
     # Where the gateway probe publishes its down/recovered edges (no CloudWatch
     # alarm involved). Empty means the probe logs and notifies nobody.
     ALARM_TOPIC_ARN: ${self:custom.alarmTopic}

@@ -444,6 +444,11 @@ class AuthDiagnosticLogger {
       RegExp(r'(yyt_[0-9a-f]{48}|cata_[0-9a-fA-F]{64})'),
       (match) => '${match.group(0)!.substring(0, 8)}...(redacted)',
     );
+    // Web → app handoff codes (todo/49): a 120 s claim on a token.
+    result = result.replaceAllMapped(
+      RegExp(r'hoff_[0-9a-f]{32}'),
+      (match) => 'hoff_...(redacted)',
+    );
     result = result.replaceAllMapped(
       RegExp(r'(Bearer\s+)\S+'),
       (match) => '${match.group(1)}***',
@@ -463,7 +468,7 @@ class AuthDiagnosticLogger {
     // `secret: …`, `"apiKey":"…"`, `clientSecret=…` (JSON or a Dart map).
     result = result.replaceAllMapped(
       RegExp(
-        r"""(\b(?:secret|apiKey|clientSecret)\b["']?\s*[:=]\s*["']?)[^"',}\s]+""",
+        r"""(\b(?:secret|apiKey|clientSecret|code)\b["']?\s*[:=]\s*["']?)[^"',}\s]+""",
       ),
       (match) => '${match.group(1)}***',
     );

@@ -99,4 +99,17 @@ void main() {
     expect(AuthDiagnosticLogger.redact(hex.substring(1)), hex.substring(1));
     expect(AuthDiagnosticLogger.redact('${hex}0'), '${hex}0');
   });
+
+  test('redacts a web → app handoff code and a code field', () {
+    const code = 'hoff_0123456789abcdef0123456789abcdef';
+    final out = AuthDiagnosticLogger.redact(
+      'uri=https://c/app-open?code=$code {"code":"$code"}',
+    );
+    expect(out, isNot(contains(code)));
+    // A bare code (no `code=` key in front) is caught by the hoff_ rule.
+    expect(
+      AuthDiagnosticLogger.redact('link $code'),
+      'link hoff_...(redacted)',
+    );
+  });
 }

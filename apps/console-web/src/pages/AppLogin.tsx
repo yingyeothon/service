@@ -4,9 +4,11 @@ import QRCode from "qrcode";
 import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
+import { OpenAppButton } from "../components/OpenAppButton";
 import { PageHeader } from "../components/PageHeader";
 import { Section } from "../components/Section";
 import { Notice } from "../components/ui";
+import { isAndroidBrowser } from "../lib/appHandoff";
 import { useAction } from "../lib/query";
 
 /** The payload the 잉여톤 app's QR scanner accepts (apps/console-app). */
@@ -47,7 +49,9 @@ export function AppLoginPage() {
             <Anchor component={Link} to="/installer">
               Installer
             </Anchor>
-            .
+            . Opened on an Android phone without a usable camera, this page also
+            offers <strong>Open app</strong>, which signs the app in from this
+            browser session instead.
           </>
         }
       />
@@ -84,6 +88,11 @@ export function AppLoginPage() {
           </Button>
         )}
       </Section>
+      {isAndroidBrowser() && (
+        <Section title="This phone">
+          <OpenAppButton />
+        </Section>
+      )}
     </>
   );
 }

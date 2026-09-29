@@ -26,6 +26,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Web → app sign-in handoff (todo/49): the console SPA's "Open app"
+                 launches this package with https://<console>/app-open?code=…
+                 through a Chrome intent URL; autoVerify also lets a plain link
+                 from another app open here once the console serves
+                 /.well-known/assetlinks.json. The Dart side re-checks the host:
+                 an exported activity receives whatever URL an app sends it. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="console.yyt.life" />
+                <data android:host="console-dev.yyt.life" />
+                <data android:path="/app-open" />
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

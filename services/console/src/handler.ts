@@ -205,6 +205,12 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       .filter(Boolean),
     // Empty until the gateway ships: `GET /gw/channels/{id}` then answers 503.
     gatewayToken: process.env.GATEWAY_TOKEN ?? "",
+    // Empty until the owner uploads the app's signing fingerprint (SSM
+    // `android-cert-sha256`): `/.well-known/assetlinks.json` then answers 404.
+    androidCertFingerprints: (process.env.ANDROID_APP_CERT_SHA256 ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   };
   const {
     stage,
