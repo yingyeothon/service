@@ -63,6 +63,14 @@ class _ChannelServer {
     calls.add(req.url.hasQuery ? '$call?${req.url.query}' : call);
     if (req.body.isNotEmpty) bodies[call] = jsonDecode(req.body);
     final path = req.url.path;
+    if (path == '/limits') {
+      return jsonResponse({
+        'scope': {'kind': 'channel', 'id': req.url.queryParameters['scope']?.split(':').last},
+        'teamId': 'team_1',
+        'limits': <Object>[],
+        'pending': <Object>[],
+      });
+    }
     if (path == '/projects/prj_1/channels') {
       if (req.method == 'GET') {
         final kind = req.url.queryParameters['kind'];

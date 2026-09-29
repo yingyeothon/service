@@ -35,6 +35,13 @@ Map<String, dynamic> _issue(String project, int n, int updatedAt) => {
 http.Client _client(List<String> calls) => MockClient((req) async {
   calls.add('${req.url.path}${req.url.hasQuery ? '?${req.url.query}' : ''}');
   switch (req.url.path) {
+    case '/limits':
+      return _json({
+        'scope': {'kind': 'team', 'id': 'team_a'},
+        'teamId': 'team_a',
+        'limits': <Object>[],
+        'pending': <Object>[],
+      });
     case '/teams':
       return _json({
         'teams': [
@@ -150,9 +157,15 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
 
     // Opening beta loads its feed and is remembered.
+    // Opening a team loads its feed and, since the limits card sits in the
+    // accordion (todo/54), its limits — nothing for a team still closed.
+    calls.clear();
     await tester.tap(find.text('beta'));
     await tester.pumpAndSettle();
-    expect(calls.last, '/teams/team_b/issues?limit=5');
+    expect(calls, [
+      '/teams/team_b/issues?limit=5',
+      '/limits?scope=team%3Ateam_b',
+    ]);
     expect(find.text('third'), findsOneWidget);
     expect(store.state, {'team_b': true});
     // An empty feed shows the message without a "더보기" that leads nowhere.

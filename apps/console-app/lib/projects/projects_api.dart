@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:yyt_console/auth/auth_config.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
 import 'package:yyt_console/listing/listing_models.dart';
+import 'package:yyt_console/projects/limit_models.dart';
 import 'package:yyt_console/projects/channel_models.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/projects/site_models.dart';
@@ -38,6 +39,28 @@ class ApiException implements Exception {
       for (final n in list)
         if (n is Map && n['name'] is String) n['name'] as String,
     ];
+  }
+
+  /// `details.{limit, value, usage, next}` of a refused write or a refused
+  /// limit request (docs/decisions.md *Limit requests* #2); `null` otherwise.
+  Map<String, Object?>? get limitDetails {
+    final d = details;
+    if (d is! Map || d['limit'] is! String) return null;
+    return {
+      'limit': d['limit'],
+      'value': d['value'],
+      'usage': d['usage'],
+      'next': d['next'],
+    };
+  }
+
+  /// `details.retryAt` of a 429 (the 7-day cooldown), as a UTC instant.
+  DateTime? get retryAt {
+    final d = details;
+    final at = d is Map ? d['retryAt'] : null;
+    return at is num
+        ? DateTime.fromMillisecondsSinceEpoch(at.toInt() * 1000, isUtc: true)
+        : null;
   }
 
   /// `path → message` from a validation list; the first message per path.
@@ -341,6 +364,63 @@ class ProjectsApi {
       rethrow;
     }
   }
+
+  // ---- limits (docs/decisions.md *Limit requests (soft/hard)*) -------------
+
+  /// `GET /limits?scope=<kind>:<id>`: the scope's rows and pending requests.
+  Future<LimitsView> getLimits(String kind, String id) async =>
+      LimitsView.fromJson(
+        await _get(AuthConfig.limitsUrlOf(baseUrl, '$kind:$id')),
+      );
+
+  /// `POST /limit-requests`; [value] `null` asks for unlimited. A stepped key
+  /// below its limit, or any value but `next`, is a 400 whose
+  /// [ApiException.limitDetails] say why; a cooldown is a 429 with
+  /// [ApiException.retryAt].
+  Future<LimitRequest> createLimitRequest({
+    required String kind,
+    required String id,
+    required String key,
+    required int? value,
+    required String reason,
+  }) async => LimitRequest.fromJson(
+    _object(
+      await _post(AuthConfig.limitRequestsUrlOf(baseUrl), {
+        'scope': '$kind:$id',
+        'key': key,
+        'value': limitValueWire(value),
+        'reason': reason,
+      }),
+    ),
+  );
+
+  /// The team's requests, newest first (one page). No screen lists them yet;
+  /// the card shows a scope's pending ones from `getLimits`.
+  Future<List<LimitRequest>> listLimitRequests(
+    String teamId, {
+    String? status,
+  }) async {
+    final q = {'team': teamId, if (status != null) 'status': status};
+    final url = Uri.parse(
+      AuthConfig.limitRequestsUrlOf(baseUrl),
+    ).replace(queryParameters: q).toString();
+    final body = await _get(url);
+    return [
+      for (final r in (body['requests'] as List?) ?? const [])
+        if (r is Map<String, dynamic>) LimitRequest.fromJson(r),
+    ];
+  }
+
+  /// The requester, while still seated, or a team owner cancels a pending one.
+  Future<LimitRequest> cancelLimitRequest(String id) async =>
+      LimitRequest.fromJson(
+        _object(
+          await _post(
+            '${AuthConfig.limitRequestUrlOf(baseUrl, id)}/cancel',
+            null,
+          ),
+        ),
+      );
 
   /// Publish (201) or edit (200) the listing; a takedown answers 409 with
   /// `details.reason` `taken_down` when no listing row exists.

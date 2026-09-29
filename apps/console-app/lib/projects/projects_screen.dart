@@ -3,6 +3,7 @@ import 'package:yyt_console/auth/auth_state.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
 import 'package:yyt_console/projects/discussions_screen.dart';
 import 'package:yyt_console/projects/issue_detail_screen.dart';
+import 'package:yyt_console/projects/limits_section.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/profile_menu.dart';
 import 'package:yyt_console/projects/project_screen.dart';
@@ -79,8 +80,14 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     await widget.expansionStore.write(next);
   }
 
+  /// Counts the loads, so a refresh reaches the limits cards.
+  int _reloads = 0;
+
   Future<void> _load() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _reloads += 1;
+    });
     try {
       _expanded ??= await widget.expansionStore.read();
       final teams =
@@ -368,6 +375,18 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                       onTap: () => _openProject(team, project),
                     ),
                   ),
+              // After the list it serves (`team.projects`). Built only while
+              // the tile is open: no `/limits` per collapsed team; a refresh
+              // re-reads it through the token.
+              LimitsSection(
+                api: _api,
+                scopeKind: 'team',
+                scopeId: team.id,
+                team: team,
+                currentLogin: widget.authState.username,
+                onUnauthorized: () => widget.authState.invalidate(_api.token),
+                reloadToken: _reloads,
+              ),
             ],
           ],
         ),

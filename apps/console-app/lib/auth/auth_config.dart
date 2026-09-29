@@ -99,6 +99,11 @@ class AuthConfig {
       '$base/channels/${Uri.encodeComponent(channelId)}';
   static String channelExtendUrlOf(String base, String channelId) =>
       '${channelUrlOf(base, channelId)}/extend';
+  static String limitsUrlOf(String base, String scope) =>
+      '$base/limits?scope=${Uri.encodeQueryComponent(scope)}';
+  static String limitRequestsUrlOf(String base) => '$base/limit-requests';
+  static String limitRequestUrlOf(String base, String id) =>
+      '${limitRequestsUrlOf(base)}/${Uri.encodeComponent(id)}';
   static String appListingUrlOf(String base, String appId) =>
       '${catalogAppsUrlOf(base)}/${Uri.encodeComponent(appId)}/listing';
   static String appListingViewersUrlOf(String base, String appId) =>

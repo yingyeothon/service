@@ -7,6 +7,7 @@ import 'package:yyt_console/format_time.dart';
 import 'package:yyt_console/projects/channel_form_screen.dart';
 import 'package:yyt_console/projects/channel_models.dart';
 import 'package:yyt_console/projects/channels_tab.dart' show channelStatusTone;
+import 'package:yyt_console/projects/limits_section.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/projects/resource_widgets.dart';
@@ -44,6 +45,9 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
   String? _error;
   bool _acting = false;
 
+  /// Counts the loads, so a pull-to-refresh reaches the limits card.
+  int _reloads = 0;
+
   ProjectsApi get _api => widget.api;
 
   @override
@@ -57,6 +61,7 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
       final channel = await _api.getChannel(widget.channelId);
       if (!mounted) return;
       setState(() {
+        _reloads += 1;
         _channel = channel;
         _error = null;
       });
@@ -241,6 +246,17 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
         SectionCard(
           title: '엔드포인트',
           children: [CopyRow(label: '채널 ID', value: c.id), ..._kindDetails(c)],
+        ),
+        LimitsSection(
+          api: _api,
+          scopeKind: 'channel',
+          scopeId: c.id,
+          team: widget.team,
+          currentLogin: widget.authState.username,
+          onUnauthorized: _unauthorized,
+          // A refresh or an extend re-reads the card (the lifetime row
+          // shows the expiry).
+          reloadToken: (c.expiresAt, _reloads),
         ),
         Card(
           margin: const EdgeInsets.only(bottom: 10),

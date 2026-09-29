@@ -32,6 +32,15 @@ only to the console API.
   checks: Chrome and Samsung Internet, cold and warm start, one task in
   Recents, the Installer fallback with the app uninstalled,
   `adb shell pm get-app-links life.yyt.console` once the fingerprint is in SSM.
+- Limits (2026-09-29, `todo/54`, 1.6.2): a **한도** card on the channel detail
+  screen and in each team's accordion (`lib/projects/limits_section.dart`,
+  `GET /limits?scope=channel:<id>` / `team:<id>`): usage, the effective value
+  and the ceiling per key, the grant chip, the pending requests with cancel
+  for the requester or an owner, and a request dialog for a seated member
+  (`POST /limit-requests`; a stepped key such as `team.projects` is fixed to
+  `next`, a lifetime to "no expiry", sizes take `256MiB`/`3GiB`). The
+  registry stays on the server — every row carries its unit and values.
+  Against a console without `/limits` the card shows a hint, never an error.
 - Apps: one request, `GET /catalog/apps?artifacts=summary&platform=android`
   (2026-09-27): every app of every team the caller is seated in, each with
   its newest Android artifact and `applicationIds`, plus `teams` — the
@@ -164,7 +173,7 @@ only to the console API.
 
    ```sh
    (cd ../../cli && go build -o yyt ./cmd/yyt)
-   ../../cli/yyt --team platform --project console catalog artifact upload console \
+   ../../cli/yyt --profile dev --team platform --project console catalog artifact upload console \
      build/app/outputs/flutter-apk/app-release.apk --platform android \
      --version <pubspec version> --tag build_type=release \
      --tag application_id=life.yyt.console --tag title=잉여톤
@@ -212,7 +221,7 @@ one widget tree whether it shows or not: swapping the tab body for a
 The installer is distributed through the catalog itself:
 
 ```sh
-yyt --team platform --project console catalog artifact upload console \
+yyt --profile dev --team platform --project console catalog artifact upload console \
   build/app/outputs/flutter-apk/app-release.apk \
   --platform android --version <pubspec version> \
   --tag build_type=release --tag application_id=life.yyt.console --tag title=잉여톤
