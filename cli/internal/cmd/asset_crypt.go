@@ -113,8 +113,9 @@ func saveEncDigest(bundleID string, key assetcrypt.Key, ad string, d encDigest) 
 	if err != nil {
 		return
 	}
-	if _, err := tmp.Write(b); err != nil || tmp.Close() != nil {
-		os.Remove(tmp.Name())
+	_, werr := tmp.Write(b)
+	if cerr := tmp.Close(); werr != nil || cerr != nil {
+		os.Remove(tmp.Name()) // closed first: Windows cannot delete an open file
 		return
 	}
 	_ = os.Rename(tmp.Name(), p)
@@ -332,7 +333,13 @@ func fetchEncryptedOnce(ctx context.Context, hc *http.Client, key assetcrypt.Key
 		if err != nil {
 			return err
 		}
-		defer os.Remove(tmp.Name())
+		// Close before removing: an error return below leaves the handle
+		// open, and Windows refuses to delete an open file (the .part then
+		// outlived a corrupt download; caught by CI on windows-latest).
+		defer func() {
+			_ = tmp.Close() // no-op after the success path's Close
+			_ = os.Remove(tmp.Name())
+		}()
 		w = tmp
 	}
 	// Segment by segment from the stream: one segment in memory at a time,
