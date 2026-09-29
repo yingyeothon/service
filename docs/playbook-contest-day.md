@@ -5,7 +5,7 @@ Verified end to end on `dev` with `sample-dungeon` from [`yingyeothon/examples`]
 ## 0. Before the day (organizer)
 
 - `prod` stacks deployed (launch checklist: `local/owner-checklist.md`), console reachable, members approved.
-- CDN guard thresholds (`docs/decisions.md` _CDN cost guard and emergency stops_) checked against the expected audience: a trip disables every site (`g`, `*.g`) or every asset (`d`) of the stage. Expecting a crowd on one big build: deploy with `--param cdnGuardScale=4` (or `cdnGuardMode=alert`) first. Each host trips on its own: with `g` off, sites still load at `{slug}.g.yyt.life`, and the other way round.
+- CDN guard thresholds (`docs/decisions.md` _CDN cost guard and emergency stops_) checked against the expected audience: a trip disables every site (`g`, `*.g`) or every asset (`d`) of the stage. Expecting a crowd on one big build: deploy with `--param cdnGuardScaleArtifact=4` (the asset host alone; `cdnGuardScale=4` raises every host, `cdnGuardMode=alert` announces only) first. Each host trips on its own: with `g` off, sites still load at `{slug}.g.yyt.life`, and the other way round.
 - tslib built and available (`~/git/yyt.life/tslib`, `pnpm build`) or published to npm.
 - Each team has: a console login, the `yyt` CLI, an AWS account/profile for their own stack, Serverless Framework v4 CLI (`npm i -g serverless`, logged in), a Redis they own (any Redis 6+; ACL user optional).
 - Each team registers a GitHub OAuth app (any placeholder callback URL for now) and keeps its client id/secret; the real callback is set in step 1.

@@ -370,6 +370,12 @@ functions:
       # (a contest day that expects a spike); scale multiplies every threshold.
       CDN_GUARD_MODE: ${param:cdnGuardMode, "enforce"}
       CDN_GUARD_SCALE: ${param:cdnGuardScale, "1"}
+      # One distribution's own factor, multiplied on top of CDN_GUARD_SCALE
+      # (a crowd on one big build raises `artifact` alone, todo/54).
+      CDN_GUARD_SCALE_ARTIFACT: ${param:cdnGuardScaleArtifact, "1"}
+      CDN_GUARD_SCALE_PATH_HOST: ${param:cdnGuardScalePathHost, "1"}
+      CDN_GUARD_SCALE_SITE_HOST: ${param:cdnGuardScaleSiteHost, "1"}
+      CDN_GUARD_SCALE_CONSOLE: ${param:cdnGuardScaleConsole, "1"}
       # The guard needs none of the provider's secrets.
       MYSQL_PASSWORD: ""
       REDIS_ACL_USER: ""

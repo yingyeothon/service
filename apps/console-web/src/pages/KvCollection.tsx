@@ -16,6 +16,7 @@ import { Clipped } from "../components/Clipped";
 import { Crumbs } from "../components/Crumbs";
 import { DataTable, NumCell } from "../components/DataTable";
 import { FilterBar, TextFilter } from "../components/FilterBar";
+import { LimitsSection, useLimits } from "../components/Limits";
 import { PageSkeleton } from "../components/Loading";
 import { NameDescriptionFields } from "../components/NameDescriptionFields";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
@@ -29,7 +30,13 @@ import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
-import type { KvCollection, KvEntry, KvEntryQuery, KvScope } from "../types";
+import type {
+  KvCollection,
+  KvEntry,
+  KvEntryQuery,
+  KvScope,
+  LimitsView,
+} from "../types";
 
 /*
  * A kv collection is a project resource (`docs/decisions.md` *Key-value store
@@ -183,6 +190,7 @@ export function KvCollectionPage() {
   const q = useApiQuery(["kv", id], () => api.kv(id));
   const col = q.data;
   const standing = useTeamStanding(col?.teamId);
+  const limits = useLimits("collection", id);
   const act = useAction();
   const confirm = useConfirm();
   const edit = useDrawerForm<{
@@ -251,6 +259,12 @@ export function KvCollectionPage() {
   const showValues =
     !col.encrypted && !standing.loading && standing.standing !== "admin";
 
+  // What a cap may be set to: the collection's effective limit
+  // (`kv.maxEntries`, `kv.maxEntriesPerOwner`), or what it already holds when
+  // that is higher (grandfathered) — the server's rule, mirrored so the
+  // drawer refuses before the request. Until the limits load, the hard caps.
+  const ceilings = capCeilings(limits.data, col);
+
   const save = async (e: FormEvent) => {
     e.preventDefault();
     const body: {
@@ -265,8 +279,8 @@ export function KvCollectionPage() {
     if (desc !== (col.description ?? "")) body.description = desc || null;
     const { maxEntries, maxEntriesPerOwner } = edit.form;
     if (
-      !capOk(maxEntries, KV_MAX_ENTRIES_HARD) ||
-      !capOk(maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD)
+      !capOk(maxEntries, ceilings.maxEntries) ||
+      !capOk(maxEntriesPerOwner, ceilings.maxEntriesPerOwner)
     )
       return;
     if (maxEntries !== col.maxEntries) body.maxEntries = maxEntries;
@@ -622,6 +636,11 @@ export function KvCollectionPage() {
           </Group>
         )}
       </Section>
+      <LimitsSection
+        limits={limits}
+        standing={standing.standing}
+        description="How high this collection's caps may be set. The usage is the cap it holds now; a team member may ask a platform admin for a higher ceiling, and a cap set above a ceiling that was lowered stays as it is."
+      />
       <ResourceDrawer
         opened={edit.opened}
         onClose={edit.close}
@@ -631,8 +650,8 @@ export function KvCollectionPage() {
         busy={act.busy}
         disabled={
           !edit.form.name.trim() ||
-          !capOk(edit.form.maxEntries, KV_MAX_ENTRIES_HARD) ||
-          !capOk(edit.form.maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD)
+          !capOk(edit.form.maxEntries, ceilings.maxEntries) ||
+          !capOk(edit.form.maxEntriesPerOwner, ceilings.maxEntriesPerOwner)
         }
         error={edit.opened ? act.error : null}
         danger={{
@@ -662,6 +681,7 @@ export function KvCollectionPage() {
           maxEntries={edit.form.maxEntries}
           maxEntriesPerOwner={edit.form.maxEntriesPerOwner}
           userNamespace={userNs}
+          ceilings={ceilings}
           onChange={(p) => edit.patch(p)}
         />
       </ResourceDrawer>
@@ -749,16 +769,73 @@ export type CapValue = number | string;
 export const capOk = (v: CapValue, hard: number): v is number =>
   typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= hard;
 
+/** The most each cap may be set to (docs/decisions.md *Limit requests* #1, `kv.*`). */
+export interface CapCeilings {
+  maxEntries: number;
+  maxEntriesPerOwner: number;
+}
+
+/** The soft values: what a collection that does not exist yet may be created with. */
+export const CAP_CEILINGS_ON_CREATE: CapCeilings = {
+  maxEntries: KV_MAX_ENTRIES_DEFAULT,
+  maxEntriesPerOwner: KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
+};
+
+const effectiveOf = (view: LimitsView | undefined, key: string) => {
+  const v = view?.limits.find((l) => l.key === key)?.effective;
+  return typeof v === "number" ? v : undefined;
+};
+
+/**
+ * The edit drawer's ceilings: the effective limit or the stored cap,
+ * whichever is higher (lowering is always allowed); the hard caps while the
+ * limits have not loaded (or failed to), so the drawer never refuses what
+ * the server takes — in that state the server's own refusal is the check.
+ */
+export function capCeilings(
+  view: LimitsView | undefined,
+  col: Pick<KvCollection, "maxEntries" | "maxEntriesPerOwner"> | undefined,
+): CapCeilings {
+  const e1 = effectiveOf(view, "kv.maxEntries");
+  const e2 = effectiveOf(view, "kv.maxEntriesPerOwner");
+  return {
+    maxEntries:
+      e1 === undefined
+        ? KV_MAX_ENTRIES_HARD
+        : Math.max(e1, col?.maxEntries ?? 0),
+    maxEntriesPerOwner:
+      e2 === undefined
+        ? KV_MAX_ENTRIES_PER_OWNER_HARD
+        : Math.max(e2, col?.maxEntriesPerOwner ?? 0),
+  };
+}
+
+/**
+ * "1–N (ask for more under Limits)" on the collection's page; on create the
+ * collection does not exist yet, so the raise comes afterwards.
+ */
+const capRange = (top: number, hard: number, creating: boolean) =>
+  top < hard
+    ? creating
+      ? `1–${top}; raise it on the collection's page afterwards`
+      : `1–${top} (ask for more under Limits)`
+    : `1–${hard}`;
+
 /** The two caps, shared by the create drawer (Project tab) and the edit drawer. */
 export function CapFields({
   maxEntries,
   maxEntriesPerOwner,
   userNamespace,
+  ceilings,
+  creating = false,
   onChange,
 }: {
   maxEntries: CapValue;
   maxEntriesPerOwner: CapValue;
   userNamespace: boolean;
+  ceilings: CapCeilings;
+  /** The create drawer: the ceilings are the soft values and the raise comes later. */
+  creating?: boolean;
   onChange: (p: {
     maxEntries?: CapValue;
     maxEntriesPerOwner?: CapValue;
@@ -768,11 +845,11 @@ export function CapFields({
     <>
       <NumberInput
         label="Max entries"
-        description={`1–${KV_MAX_ENTRIES_HARD}, counted on create; expired rows are purged first.`}
+        description={`${capRange(ceilings.maxEntries, KV_MAX_ENTRIES_HARD, creating)}, counted on create; expired rows are purged first.`}
         value={maxEntries}
         onChange={(v) => onChange({ maxEntries: v })}
         min={1}
-        max={KV_MAX_ENTRIES_HARD}
+        max={ceilings.maxEntries}
         clampBehavior="none"
         allowDecimal={false}
         allowNegative={false}
@@ -782,13 +859,13 @@ export function CapFields({
         label="Max entries per owner"
         description={
           userNamespace
-            ? `1–${KV_MAX_ENTRIES_PER_OWNER_HARD}; bounds a player writing its own namespace.`
-            : `1–${KV_MAX_ENTRIES_PER_OWNER_HARD}; only applies when the write scope is user.`
+            ? `${capRange(ceilings.maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD, creating)}; bounds a player writing its own namespace.`
+            : `${capRange(ceilings.maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD, creating)}; only applies when the write scope is user.`
         }
         value={maxEntriesPerOwner}
         onChange={(v) => onChange({ maxEntriesPerOwner: v })}
         min={1}
-        max={KV_MAX_ENTRIES_PER_OWNER_HARD}
+        max={ceilings.maxEntriesPerOwner}
         clampBehavior="none"
         allowDecimal={false}
         allowNegative={false}

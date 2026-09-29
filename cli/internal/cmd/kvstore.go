@@ -264,8 +264,8 @@ func newKvCreate(a *App) *cobra.Command {
 	f.StringVar(&writeScope, "write", "", "write scope: team | server | project | user")
 	f.BoolVar(&encrypted, "encrypted", false, "encrypt values at rest with a key only the state stack holds (values then bypass the console)")
 	f.StringVar(&description, "description", "", "human-readable description")
-	f.IntVar(&maxEntries, "max-entries", 0, "entries the collection may hold (default 10000, at most 100000)")
-	f.IntVar(&maxEntriesPerOwner, "max-entries-per-owner", 0, "entries one player may hold in its namespace (default 100, at most 1000)")
+	f.IntVar(&maxEntries, "max-entries", 0, "entries the collection may hold (default and ceiling on create 10000; ask for more with `yyt limit request kv.maxEntries --collection`)")
+	f.IntVar(&maxEntriesPerOwner, "max-entries-per-owner", 0, "entries one player may hold in its namespace (default and ceiling on create 100)")
 	_ = c.MarkFlagRequired("read")
 	_ = c.MarkFlagRequired("write")
 	return c
@@ -309,8 +309,8 @@ func newKvUpdate(a *App, kvID idResolver) *cobra.Command {
 	f := c.Flags()
 	f.StringVar(&name, "name", "", "new collection name (unique within the team)")
 	f.StringVar(&description, "description", "", "new description (empty clears it)")
-	f.IntVar(&maxEntries, "max-entries", 0, "new cap on entries (1..100000)")
-	f.IntVar(&maxEntriesPerOwner, "max-entries-per-owner", 0, "new cap on one player's entries (1..1000)")
+	f.IntVar(&maxEntries, "max-entries", 0, "new cap on entries (up to the collection's ceiling: `yyt limit list --collection`)")
+	f.IntVar(&maxEntriesPerOwner, "max-entries-per-owner", 0, "new cap on one player's entries (up to the collection's ceiling)")
 	return c
 }
 

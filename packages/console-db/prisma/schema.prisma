@@ -1034,6 +1034,8 @@ model kv_collections {
   projects              projects     @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_project_fk")
   kv_entries            kv_entries[]
   kv_keys               kv_keys?
+  limit_requests        limit_requests[]
+  limit_overrides       limit_overrides[]
 
   @@unique([team_id, name], map: "kv_collections_team_name")
   @@index([owner_id], map: "kv_collections_owner")
@@ -1290,6 +1292,8 @@ model limit_requests {
   channel_id      String?               @db.VarChar(64)
   /// The team itself as the scope (`team.projects`); `team_id` holds the same id.
   scope_team_id   String?               @db.VarChar(64)
+  /// A kv collection as the scope (`kv.maxEntries`, `kv.maxEntriesPerOwner`, m0027).
+  collection_id   String?               @db.VarChar(64)
   limit_key       String                @db.VarChar(64)
   /// Null asks for unlimited.
   requested_value BigInt?
@@ -1306,6 +1310,7 @@ model limit_requests {
   asset_bundles   asset_bundles?        @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_bundle_fk")
   channels        channels?             @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_channel_fk")
   scope_team      teams?                @relation("limit_request_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_team_fk")
+  kv_collections  kv_collections?       @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_collection_fk")
   creator         members               @relation("limit_request_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_creator_fk")
   decider         members?              @relation("limit_request_decider", fields: [decided_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_decider_fk")
   limit_overrides limit_overrides[]
@@ -1314,6 +1319,7 @@ model limit_requests {
   @@index([bundle_id, limit_key, status], map: "limit_requests_bundle")
   @@index([channel_id, limit_key, status], map: "limit_requests_channel")
   @@index([scope_team_id, limit_key, status], map: "limit_requests_scope_team")
+  @@index([collection_id, limit_key, status], map: "limit_requests_scope_collection")
   @@index([team_id, status, id], map: "limit_requests_team")
   @@index([status, id], map: "limit_requests_status")
   @@index([created_by], map: "limit_requests_creator")
@@ -1330,6 +1336,8 @@ model limit_overrides {
   channel_id     String?         @db.VarChar(64)
   /// The team itself as the scope (`team.projects`); `team_id` holds the same id.
   scope_team_id  String?         @db.VarChar(64)
+  /// A kv collection as the scope (m0027).
+  collection_id  String?         @db.VarChar(64)
   limit_key      String          @db.VarChar(64)
   /// Null is unlimited.
   value          BigInt?
@@ -1343,6 +1351,7 @@ model limit_overrides {
   asset_bundles  asset_bundles?  @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_bundle_fk")
   channels       channels?       @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_channel_fk")
   scope_team     teams?          @relation("limit_override_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_team_fk")
+  kv_collections kv_collections? @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_collection_fk")
   limit_requests limit_requests? @relation(fields: [request_id], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "limit_overrides_request_fk")
   members        members         @relation(fields: [granted_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_overrides_granter_fk")
 
@@ -1350,6 +1359,7 @@ model limit_overrides {
   @@unique([bundle_id, limit_key], map: "limit_overrides_bundle")
   @@unique([channel_id, limit_key], map: "limit_overrides_channel")
   @@unique([scope_team_id, limit_key], map: "limit_overrides_scope_team")
+  @@unique([collection_id, limit_key], map: "limit_overrides_scope_collection")
   @@index([team_id], map: "limit_overrides_team")
   @@index([expires_at], map: "limit_overrides_expires")
   @@index([request_id], map: "limit_overrides_request")

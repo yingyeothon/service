@@ -8,9 +8,14 @@ import {
   type Logger,
 } from "@yyt/core";
 import {
+  KV_MAX_ENTRIES_DEFAULT,
+  KV_MAX_ENTRIES_HARD,
+  KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
+  KV_MAX_ENTRIES_PER_OWNER_HARD,
   LIMIT_REQUEST_STATUSES,
   LIMIT_SCOPE_KINDS,
   type AssetsDb,
+  type KvStoreDb,
   type ChannelLifetimeWrite,
   type ConsoleDb,
   type LimitOverrideRow,
@@ -127,6 +132,29 @@ export const LIMITS = {
     soft: 20,
     hard: 1000,
     step: 5,
+  },
+  // Ceilings on the caps a member sets on one kv collection (todo/54): the
+  // usage shown is the cap the collection holds, and a value above the
+  // effective one needs a grant on that collection. Grandfathered: a cap
+  // stored above the effective value stays valid and may be kept or lowered.
+  "kv.maxEntries": {
+    scope: "collection",
+    unit: "count",
+    soft: KV_MAX_ENTRIES_DEFAULT,
+    hard: KV_MAX_ENTRIES_HARD,
+  },
+  "kv.maxEntriesPerOwner": {
+    scope: "collection",
+    unit: "count",
+    soft: KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
+    hard: KV_MAX_ENTRIES_PER_OWNER_HARD,
+  },
+  // Collections per project, the former `KV_COLLECTIONS_PER_PROJECT`.
+  "kv.collections": {
+    scope: "project",
+    unit: "count",
+    soft: 20,
+    hard: 100,
   },
 } as const satisfies Record<string, LimitSpec>;
 
@@ -250,7 +278,7 @@ export const scopeParam = z
       ctx.addIssue({
         code: "custom",
         message:
-          "scope is project:<id>, bundle:<id>, channel:<id> or team:<id>",
+          "scope is project:<id>, bundle:<id>, channel:<id>, team:<id> or collection:<id>",
       });
       return z.NEVER;
     }
@@ -308,6 +336,10 @@ export interface LimitRoutesOptions {
   db: ConsoleDb;
   team: TeamDb;
   assets: AssetsDb;
+  kvstore: Pick<
+    KvStoreDb,
+    "findCollection" | "countCollections" | "findCollectionNamesByIds"
+  >;
   access: Pick<
     TeamAccessHelpers,
     "teamAccess" | "projectAccess" | "projectResource"
@@ -361,6 +393,7 @@ export function createLimitRoutes({
   db,
   team,
   assets,
+  kvstore,
   access,
   history,
   kv,
@@ -418,6 +451,15 @@ export function createLimitRoutes({
           expiresAt: a.row.expiresAt,
         };
       }
+      case "collection": {
+        // A soft-deleted collection is refused here already.
+        const a = await projectResource(
+          ctx,
+          { kind: "kv", id: scope.id },
+          opts,
+        );
+        return { ...a, scope: { kind: "collection", id: a.row.id } };
+      }
     }
   }
 
@@ -443,7 +485,20 @@ export function createLimitRoutes({
       return {
         "asset.projectBytes": u.bytes,
         "asset.bundlesPerProject": u.bundles,
+        "kv.collections": await kvstore.countCollections(scope.id),
       };
+    }
+    if (scope.kind === "collection") {
+      // The usage of a ceiling is the cap the member set under it; a cap
+      // above the effective value (grandfathered, or after a revoke) reads
+      // as "over its limit", exactly as #4 describes.
+      const c = await kvstore.findCollection(scope.id);
+      return c
+        ? {
+            "kv.maxEntries": c.maxEntries,
+            "kv.maxEntriesPerOwner": c.maxEntriesPerOwner,
+          }
+        : {};
     }
     return {};
   }
@@ -498,11 +553,15 @@ export function createLimitRoutes({
     const channels = await ask(ofKind("channel"), (ids) =>
       db.findChannelNamesByIds(ids),
     );
+    const collections = await ask(ofKind("collection"), (ids) =>
+      kvstore.findCollectionNamesByIds(ids),
+    );
     const names = {
       project: projects,
       bundle: bundles,
       channel: channels,
       team: teams,
+      collection: collections,
     };
     const login = (id: string | null) =>
       id === null ? null : (members.get(id.toLowerCase())?.githubLogin ?? null);
@@ -645,6 +704,12 @@ export function createLimitRoutes({
       const b = await assets.findBundle(scope.id);
       if (!b?.teamId) throw gone();
       return { teamId: b.teamId, scope: { kind: "bundle", id: b.id } };
+    }
+    if (scope.kind === "collection") {
+      const k = await kvstore.findCollection(scope.id);
+      // A soft-deleted collection is no scope (its overrides were dropped).
+      if (!k || k.deletedAt !== null) throw gone();
+      return { teamId: k.teamId, scope: { kind: "collection", id: k.id } };
     }
     const c = await db.findChannelRow(scope.id);
     if (!c?.teamId) throw gone();

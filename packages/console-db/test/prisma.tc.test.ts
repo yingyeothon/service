@@ -38,7 +38,7 @@ import { kvstoreContract } from "./kvstore.test.js";
 import { leaderboardContract } from "./leaderboard.test.js";
 import { stateContract } from "./state.test.js";
 import { socialContract } from "./social.test.js";
-import { limitsContract } from "./limits.test.js";
+import { KV_COLLECTION, limitsContract } from "./limits.test.js";
 import {
   dockerAvailable,
   resetTestDb,
@@ -287,6 +287,7 @@ describe.skipIf(!dockerAvailable())(
           projectId: "prj_1",
           createdAt: 1,
         });
+        await createKvStoreDb(db.client).insertCollection(KV_COLLECTION);
         for (const id of ["ch_1", "ch_2"])
           await db.client.channels.create({
             data: {
@@ -328,6 +329,8 @@ describe.skipIf(!dockerAvailable())(
           deleteBundle: async (id) => {
             await createAssetsDb(db.client).deleteBundle(id);
           },
+          deleteCollection: (id, at) =>
+            createKvStoreDb(db.client).softDeleteCollection(id, at),
         };
       });
 

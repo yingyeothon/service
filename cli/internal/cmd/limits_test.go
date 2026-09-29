@@ -77,6 +77,9 @@ func TestLimitListAndRequest(t *testing.T) {
 			}
 		},
 		"POST /limit-requests": func(r recorded) (int, any) { return 201, sampleRequest },
+		"GET /projects/prj_1/kv": func(recorded) (int, any) {
+			return 200, map[string]any{"collections": []any{map[string]any{"id": "kv_1", "name": "saves"}}}
+		},
 	}, nil, nil, []any{limitBundle}))
 	out, _, err := run(t, f, "limit", "list", "--bundle", "maps")
 	if err != nil {
@@ -117,6 +120,22 @@ func TestLimitListAndRequest(t *testing.T) {
 	}
 	if _, _, err := run(t, f, "limit", "request", "asset.projectBytes", "1GiB", "--scope", "org", "--reason", "r"); err == nil || !strings.Contains(err.Error(), "want team or project") {
 		t.Errorf("bad --scope: %v", err)
+	}
+	// --collection resolves a kv collection by name in the project context (todo/54).
+	if _, _, err := run(t, f, "limit", "list", "--collection", "saves"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[len(f.reqs)-1].Path; got != "/limits?scope=collection%3Akv_1" {
+		t.Errorf("collection list path = %s", got)
+	}
+	if _, _, err := run(t, f, "limit", "request", "kv.maxEntries", "50000", "--collection", "kv_1", "--reason", "more saves"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[len(f.reqs)-1].Body; got["scope"] != "collection:kv_1" || got["key"] != "kv.maxEntries" || got["value"] != float64(50000) {
+		t.Errorf("collection request body = %v", got)
+	}
+	if _, _, err := run(t, f, "limit", "list", "--collection", "saves", "--bundle", "maps"); err == nil || !strings.Contains(err.Error(), "pass one of") {
+		t.Errorf("two scopes: %v", err)
 	}
 	if _, _, err := run(t, f, "limit", "request", "asset.projectBytes", "1GiB", "--scope", "team", "--bundle", "maps", "--reason", "r"); err == nil || !strings.Contains(err.Error(), "pass one of") {
 		t.Errorf("scope team with bundle: %v", err)

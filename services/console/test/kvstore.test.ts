@@ -1,8 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call */
 import { describe, expect, it } from "vitest";
 import { nullLogger } from "@yyt/core";
 import {
-  KV_COLLECTIONS_PER_PROJECT,
   KV_MAX_ENTRIES_DEFAULT,
   KV_MAX_ENTRIES_HARD,
   KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
@@ -11,6 +10,7 @@ import {
 } from "@yyt/console-db";
 import { runKvStoreSweep } from "../src/expire.js";
 import { KV_DRAIN_MAX_BATCHES } from "../src/kvstore.js";
+import { LIMITS } from "../src/limits.js";
 import { channelDocBlock } from "../src/channel-doc-key.js";
 import { deleteChannelKvEntries } from "../src/kvstore.js";
 import { ev, harness, NOW_SEC, parse, URLS, type Team } from "./helpers.js";
@@ -185,6 +185,25 @@ describe("kv collections", () => {
       (await bad({ maxEntriesPerOwner: KV_MAX_ENTRIES_PER_OWNER_HARD + 1 }))
         .statusCode,
     ).toBe(400);
+    // Above the soft value on create: refused with the limit key, since a
+    // collection that does not exist yet cannot hold a grant (todo/54).
+    const overSoft = await bad({ maxEntries: KV_MAX_ENTRIES_DEFAULT + 1 });
+    expect(overSoft.statusCode).toBe(400);
+    expect(parse(overSoft).error.details).toEqual({
+      limit: "kv.maxEntries",
+      value: KV_MAX_ENTRIES_DEFAULT,
+    });
+    expect(overSoft.body).toMatch(/ask for more under Limits/);
+    expect(
+      parse(
+        await bad({
+          maxEntriesPerOwner: KV_MAX_ENTRIES_PER_OWNER_DEFAULT + 1,
+        }),
+      ).error.details,
+    ).toEqual({
+      limit: "kv.maxEntriesPerOwner",
+      value: KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
+    });
     // Names shaped like an id, on either prefix.
     expect((await bad({ name: "kv_01h" })).statusCode).toBe(400);
 
@@ -213,32 +232,214 @@ describe("kv collections", () => {
     expect(typo.statusCode).toBe(400);
     expect(typo.body).toMatch(/unrecognized key/);
     slot(h);
-    // A cap edit is ranged against the hard cap like a create.
+    // A cap edit is ranged against the collection's effective ceiling like a
+    // create; above it the refusal names the key.
+    const patchCap = async (body: Record<string, unknown>) => {
+      slot(h);
+      return h.app(ev("PATCH", `/kv/${c.id}`, { headers: alice.cookie, body }));
+    };
+    expect(
+      (await patchCap({ maxEntries: KV_MAX_ENTRIES_HARD + 1 })).statusCode,
+    ).toBe(400);
+    const over = await patchCap({ maxEntries: KV_MAX_ENTRIES_DEFAULT + 1 });
+    expect(over.statusCode).toBe(400);
+    expect(parse(over).error.details).toEqual({
+      limit: "kv.maxEntries",
+      value: KV_MAX_ENTRIES_DEFAULT,
+    });
+    expect((await patchCap({ maxEntries: 5000 })).statusCode).toBe(200);
+  });
+
+  it("a granted collection ceiling admits a higher cap, a revoke keeps the stored one (grandfathered) and only lowering stays open", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const boss = await h.login("boss", "admin");
+    const c = await mkCollection(h, alice);
+    const patchCap = async (body: Record<string, unknown>) => {
+      slot(h);
+      return h.app(ev("PATCH", `/kv/${c.id}`, { headers: alice.cookie, body }));
+    };
+    const grant = async (value: number | null) => {
+      slot(h);
+      return h.app(
+        value === null
+          ? ev(
+              "DELETE",
+              `/admin/limit-overrides/collection/${c.id}/kv.maxEntries`,
+              {
+                headers: boss.cookie,
+                body: { note: "n" },
+              },
+            )
+          : ev(
+              "PUT",
+              `/admin/limit-overrides/collection/${c.id}/kv.maxEntries`,
+              {
+                headers: boss.cookie,
+                body: { value, note: "n" },
+              },
+            ),
+      );
+    };
+    expect((await grant(50_000)).statusCode).toBe(200);
+    expect((await patchCap({ maxEntries: 50_000 })).statusCode).toBe(200);
+    expect((await patchCap({ maxEntries: 50_001 })).statusCode).toBe(400);
+    // The limits view shows the cap the member set as the usage of the ceiling.
+    const view = parse(
+      await h.app(
+        ev("GET", "/limits", {
+          headers: alice.cookie,
+          query: { scope: `collection:${c.id}` },
+        }),
+      ),
+    );
+    expect(view.limits.map((l: { key: string }) => l.key)).toEqual([
+      "kv.maxEntries",
+      "kv.maxEntriesPerOwner",
+    ]);
+    expect(view.limits[0]).toMatchObject({
+      key: "kv.maxEntries",
+      soft: KV_MAX_ENTRIES_DEFAULT,
+      hard: KV_MAX_ENTRIES_HARD,
+      effective: 50_000,
+      usage: 50_000,
+    });
+    expect((await grant(null)).statusCode).toBe(204);
+    // Revoked: the stored 50,000 stays valid (never deletes), 50,001 does not,
+    // and the row may keep or lower its cap.
+    expect((await patchCap({ name: "renamed" })).statusCode).toBe(200);
+    expect((await patchCap({ maxEntries: 50_000 })).statusCode).toBe(200);
+    expect(parse(await patchCap({ maxEntries: 50_001 })).error.details).toEqual(
+      { limit: "kv.maxEntries", value: 50_000 },
+    );
+    expect((await patchCap({ maxEntries: 100 })).statusCode).toBe(200);
+    // Lowered below the effective value, the ceiling is the soft value again.
+    expect(parse(await patchCap({ maxEntries: 50_000 })).error.details).toEqual(
+      { limit: "kv.maxEntries", value: KV_MAX_ENTRIES_DEFAULT },
+    );
+  });
+
+  it("caps collections per project through the registry (kv.collections) and names the key", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const boss = await h.login("boss", "admin");
+    const soft = LIMITS["kv.collections"].soft;
+    for (let i = 0; i < soft; i++)
+      await mkCollection(h, alice, { name: `c${i}` });
+    const more = async (name: string) => {
+      slot(h);
+      return h.app(
+        ev("POST", `/projects/${alice.prjId}/kv`, {
+          headers: alice.cookie,
+          body: { name, readScope: "project", writeScope: "team" },
+        }),
+      );
+    };
+    const r = await more("one-more");
+    expect(r.statusCode).toBe(409);
+    expect(parse(r).error.details).toEqual({
+      limit: "kv.collections",
+      value: soft,
+    });
+    const view = parse(
+      await h.app(
+        ev("GET", "/limits", {
+          headers: alice.cookie,
+          query: { scope: `project:${alice.prjId}` },
+        }),
+      ),
+    );
+    expect(view.limits).toContainEqual(
+      expect.objectContaining({
+        key: "kv.collections",
+        usage: soft,
+        effective: soft,
+        hard: 100,
+      }),
+    );
+    slot(h);
     expect(
       (
         await h.app(
-          ev("PATCH", `/kv/${c.id}`, {
+          ev(
+            "PUT",
+            `/admin/limit-overrides/project/${alice.prjId}/kv.collections`,
+            {
+              headers: boss.cookie,
+              body: { value: soft + 1, note: "n" },
+            },
+          ),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect((await more("one-more")).statusCode).toBe(201);
+    expect((await more("two-more")).statusCode).toBe(409);
+  });
+
+  it("deleting a collection cancels its pending limit request and drops its override", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const boss = await h.login("boss", "admin");
+    const c = await mkCollection(h, alice);
+    slot(h);
+    const asked = await h.app(
+      ev("POST", "/limit-requests", {
+        headers: alice.cookie,
+        body: {
+          scope: `collection:${c.id}`,
+          key: "kv.maxEntries",
+          value: 20_000,
+          reason: "more saves",
+        },
+      }),
+    );
+    expect(asked.statusCode, asked.body).toBe(201);
+    slot(h);
+    expect(
+      (
+        await h.app(
+          ev(
+            "PUT",
+            `/admin/limit-overrides/collection/${c.id}/kv.maxEntriesPerOwner`,
+            {
+              headers: boss.cookie,
+              body: { value: 500, note: "n" },
+            },
+          ),
+        )
+      ).statusCode,
+    ).toBe(200);
+    slot(h);
+    expect(
+      (await h.app(ev("DELETE", `/kv/${c.id}`, { headers: alice.cookie })))
+        .statusCode,
+    ).toBe(204);
+    // The soft delete cancelled the request and dropped the override; an
+    // empty collection is then purged inline, and the FK cascade takes the
+    // request row with it (a bundle delete's behaviour) — so it is gone.
+    expect(
+      (
+        await h.app(
+          ev("GET", `/limit-requests/${parse(asked).id}`, {
             headers: alice.cookie,
-            body: { maxEntries: KV_MAX_ENTRIES_HARD + 1 },
           }),
         )
       ).statusCode,
-    ).toBe(400);
-  });
-
-  it("caps collections per project", async () => {
-    const h = harness();
-    const alice = await h.team("alice");
-    for (let i = 0; i < KV_COLLECTIONS_PER_PROJECT; i++)
-      await mkCollection(h, alice, { name: `c${i}` });
+    ).toBe(404);
+    expect(h.limits.requests.size).toBe(0);
+    expect(h.limits.overrides.size).toBe(0);
+    // A deleted collection is no scope: 404 like any deleted resource.
     slot(h);
-    const r = await h.app(
-      ev("POST", `/projects/${alice.prjId}/kv`, {
-        headers: alice.cookie,
-        body: { name: "one-more", readScope: "project", writeScope: "team" },
-      }),
-    );
-    expect(r.statusCode).toBe(409);
+    expect(
+      (
+        await h.app(
+          ev("GET", "/limits", {
+            headers: alice.cookie,
+            query: { scope: `collection:${c.id}` },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
   });
 
   it("refuses an encrypted collection on a stage with no state stack", async () => {

@@ -46,10 +46,11 @@ export const LIMIT_SCOPE_KINDS = [
   "bundle",
   "channel",
   "team",
+  "collection",
 ] as const;
 export type LimitScopeKind = (typeof LIMIT_SCOPE_KINDS)[number];
 
-/** A project, an asset bundle, a channel or the team itself, by id. */
+/** A project, an asset bundle, a channel, the team itself or a kv collection, by id. */
 export interface LimitScope {
   kind: LimitScopeKind;
   id: string;
@@ -224,6 +225,8 @@ type ScopeColumns = {
   channel_id: string | null;
   /** The team as its own scope (`m0026`); `team_id` holds the same id. */
   scope_team_id: string | null;
+  /** A kv collection as the scope (`m0027`). */
+  collection_id: string | null;
 };
 
 const scopeData = (s: LimitScope): ScopeColumns => ({
@@ -231,6 +234,7 @@ const scopeData = (s: LimitScope): ScopeColumns => ({
   bundle_id: s.kind === "bundle" ? s.id : null,
   channel_id: s.kind === "channel" ? s.id : null,
   scope_team_id: s.kind === "team" ? s.id : null,
+  collection_id: s.kind === "collection" ? s.id : null,
 });
 
 /** Exactly one column is set (the CHECK constraint); anything else is a corrupt row. */
@@ -239,6 +243,8 @@ function scopeOf(r: ScopeColumns): LimitScope {
   if (r.bundle_id !== null) return { kind: "bundle", id: r.bundle_id };
   if (r.channel_id !== null) return { kind: "channel", id: r.channel_id };
   if (r.scope_team_id !== null) return { kind: "team", id: r.scope_team_id };
+  if (r.collection_id !== null)
+    return { kind: "collection", id: r.collection_id };
   throw new AppError("internal", "limit row without a scope");
 }
 
@@ -248,14 +254,17 @@ const scopeWhere = (
   | { project_id: string }
   | { bundle_id: string }
   | { channel_id: string }
-  | { scope_team_id: string } =>
+  | { scope_team_id: string }
+  | { collection_id: string } =>
   s.kind === "project"
     ? { project_id: s.id }
     : s.kind === "bundle"
       ? { bundle_id: s.id }
       : s.kind === "channel"
         ? { channel_id: s.id }
-        : { scope_team_id: s.id };
+        : s.kind === "team"
+          ? { scope_team_id: s.id }
+          : { collection_id: s.id };
 
 const clampLimit = (n: number | undefined) =>
   Math.min(
@@ -360,13 +369,17 @@ export function createLimitsDb(prisma: PrismaClient): LimitsDb {
         ? await t.$queryRaw<
             { id: string }[]
           >`SELECT id FROM channels WHERE id = ${s.id} AND deleted_at IS NULL FOR UPDATE`
-        : s.kind === "bundle"
+        : s.kind === "collection"
           ? await t.$queryRaw<
               { id: string }[]
-            >`SELECT id FROM asset_bundles WHERE id = ${s.id} FOR UPDATE`
-          : await t.$queryRaw<
-              { id: string }[]
-            >`SELECT id FROM projects WHERE id = ${s.id} FOR UPDATE`;
+            >`SELECT id FROM kv_collections WHERE id = ${s.id} AND deleted_at IS NULL FOR UPDATE`
+          : s.kind === "bundle"
+            ? await t.$queryRaw<
+                { id: string }[]
+              >`SELECT id FROM asset_bundles WHERE id = ${s.id} FOR UPDATE`
+            : await t.$queryRaw<
+                { id: string }[]
+              >`SELECT id FROM projects WHERE id = ${s.id} FOR UPDATE`;
     return rows.length > 0;
   }
 
@@ -692,7 +705,9 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
    * pending requests cancelled, overrides dropped, in the caller's step.
    */
   channelsDeleted(ids: readonly string[], at: number): void;
-  /** The cascades of deleting a scope row (bundle, project, purged channel). */
+  /** The collection soft delete's half (`KvStoreDb.softDeleteCollection`), the same shape. */
+  collectionsDeleted(ids: readonly string[], at: number): void;
+  /** The cascades of deleting a scope row (bundle, project, purged channel or collection). */
   scopeDeleted(scope: LimitScope): void;
 } {
   const requests = new Map<string, LimitRequestRow>();
@@ -767,6 +782,26 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
       for (const o of [...overrides.values()])
         if (
           o.scope.kind === "channel" &&
+          ids.some((id) => sameId(id, o.scope.id))
+        )
+          overrides.delete(o.id);
+    },
+    collectionsDeleted: (ids, at) => {
+      for (const r of [...requests.values()])
+        if (
+          r.status === "pending" &&
+          r.scope.kind === "collection" &&
+          ids.some((id) => sameId(id, r.scope.id))
+        )
+          requests.set(r.id, {
+            ...r,
+            status: "cancelled",
+            decidedAt: at,
+            decidedBy: null,
+          });
+      for (const o of [...overrides.values()])
+        if (
+          o.scope.kind === "collection" &&
           ids.some((id) => sameId(id, o.scope.id))
         )
           overrides.delete(o.id);

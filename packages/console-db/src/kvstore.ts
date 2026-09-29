@@ -58,8 +58,6 @@ export const KV_COLLECTION_SORT_KEYS = [
 ] as const;
 export type KvCollectionSortKey = (typeof KV_COLLECTION_SORT_KEYS)[number];
 
-/** Collections one project may hold; counted on create only. */
-export const KV_COLLECTIONS_PER_PROJECT = 20;
 /**
  * Largest value a single entry may carry, in bytes **as sent** -- the doc
  * store's byte-exact rule (`MAX_DOC_BODY_BYTES`). The column is `MEDIUMTEXT`,
@@ -358,22 +356,49 @@ export function checkKvName(name: string): void {
     );
 }
 
-/** Both caps, ranged; shared by create and edit so an edit cannot widen past the hard cap. */
+/**
+ * Both caps, ranged; shared by create and edit so an edit cannot widen past
+ * the ceiling. The repositories range against the hard values (the table's
+ * invariant); the console route passes the collection's effective ceilings
+ * (docs/decisions.md *Limit requests* #1, `kv.maxEntries` /
+ * `kv.maxEntriesPerOwner`, todo/54), which are at most the hard values and
+ * never below what the row already holds. A refusal under a ceiling below
+ * hard names the limit key (`details.limit`), so a client can offer a request.
+ */
 export function checkKvCaps(
   maxEntries: number,
   maxEntriesPerOwner: number,
+  ceilings: { maxEntries: number; maxEntriesPerOwner: number } = {
+    maxEntries: KV_MAX_ENTRIES_HARD,
+    maxEntriesPerOwner: KV_MAX_ENTRIES_PER_OWNER_HARD,
+  },
 ): void {
-  const ranged = (v: number, hard: number) =>
-    Number.isInteger(v) && v >= 1 && v <= hard;
-  if (!ranged(maxEntries, KV_MAX_ENTRIES_HARD))
-    throw new AppError(
+  // The ceilings are taken as given, not clamped to hard: the route passes
+  // `max(effective, stored)`, and a value stored under an earlier, higher
+  // hard value must stay writable (a rename re-ranges both caps) — it can
+  // only be kept or lowered, never raised past what it holds.
+  const ranged = (v: number, top: number) =>
+    Number.isInteger(v) && v >= 1 && v <= top;
+  const refuse = (field: string, key: string, top: number, hard: number) =>
+    new AppError(
       "bad_request",
-      `maxEntries must be 1..${KV_MAX_ENTRIES_HARD}`,
+      `${field} must be 1..${top}` +
+        (top < hard ? " (ask for more under Limits)" : ""),
+      top < hard ? { details: { limit: key, value: top } } : undefined,
     );
-  if (!ranged(maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD))
-    throw new AppError(
-      "bad_request",
-      `maxEntriesPerOwner must be 1..${KV_MAX_ENTRIES_PER_OWNER_HARD}`,
+  if (!ranged(maxEntries, ceilings.maxEntries))
+    throw refuse(
+      "maxEntries",
+      "kv.maxEntries",
+      ceilings.maxEntries,
+      KV_MAX_ENTRIES_HARD,
+    );
+  if (!ranged(maxEntriesPerOwner, ceilings.maxEntriesPerOwner))
+    throw refuse(
+      "maxEntriesPerOwner",
+      "kv.maxEntriesPerOwner",
+      ceilings.maxEntriesPerOwner,
+      KV_MAX_ENTRIES_PER_OWNER_HARD,
     );
 }
 
@@ -587,6 +612,10 @@ export interface KvStoreDb {
   insertCollection(input: KvCollectionInput): Promise<void>;
   /** Soft-deleted rows come back too; callers decide what `deletedAt` means to them. */
   findCollection(id: string): Promise<KvCollectionRow | undefined>;
+  /** Names for a limit request list, live or deleted rows alike (a deleted one carries its id). */
+  findCollectionNamesByIds(
+    ids: readonly string[],
+  ): Promise<{ id: string; name: string }[]>;
   /** Case-insensitively, like the `(team_id, name)` unique index. */
   findCollectionByName(
     teamId: string,
@@ -609,6 +638,11 @@ export interface KvStoreDb {
     at: number,
   ): Promise<boolean>;
   /** Takes the delete claim and frees the name in one statement. */
+  /**
+   * Takes the delete claim and, in the same transaction, cancels the
+   * collection's pending limit requests and drops its overrides (the channel
+   * delete's rule, docs/decisions.md *Limit requests* #2).
+   */
   softDeleteCollection(id: string, at: number): Promise<boolean>;
   /** The sweep's queue: rows whose claim is taken, oldest first. */
   listDeletedCollections(limit: number): Promise<KvCollectionMeta[]>;
@@ -984,6 +1018,16 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
       }),
 
     findCollection: (id) => run(() => findRow(id)),
+    findCollectionNamesByIds: (ids) =>
+      run(async () =>
+        ids.length === 0
+          ? []
+          : await prisma.kv_collections.findMany({
+              where: { id: { in: [...ids] } },
+              select: { id: true, name: true },
+              orderBy: { id: "asc" },
+            }),
+      ),
 
     findCollectionByName: (teamId, name) =>
       run(async () => {
@@ -1080,15 +1124,31 @@ export function createKvStoreDb(prisma: PrismaClient): KvStoreDb {
       }),
 
     softDeleteCollection: (id, at) =>
-      run(async () => {
-        const r = await prisma.kv_collections.updateMany({
-          where: { id, deleted_at: null },
-          // The name is freed in the same statement that takes the claim: the
-          // row parks on its own id, a shape `checkKvName` forbids a name.
-          data: { deleted_at: at, name: id, updated_at: at },
-        });
-        return r.count > 0;
-      }),
+      run(() =>
+        prisma.$transaction(
+          async (tx) => {
+            // Lock order (`limits.ts`): the collection row, then its
+            // requests, then its overrides — the channel delete's order.
+            const r = await tx.kv_collections.updateMany({
+              where: { id, deleted_at: null },
+              // The name is freed in the same statement that takes the
+              // claim: the row parks on its own id, a shape `checkKvName`
+              // forbids a name.
+              data: { deleted_at: at, name: id, updated_at: at },
+            });
+            if (r.count === 0) return false;
+            await tx.limit_requests.updateMany({
+              where: { collection_id: id, status: "pending" },
+              data: { status: "cancelled", decided_at: at },
+            });
+            await tx.limit_overrides.deleteMany({
+              where: { collection_id: id },
+            });
+            return true;
+          },
+          { isolationLevel: "ReadCommitted" },
+        ),
+      ),
 
     listDeletedCollections: (limit) =>
       run(async () => {
@@ -1450,6 +1510,13 @@ export interface MemoryKvStoreDeps {
   memberExists?: (id: string) => boolean;
   /** A member's GitHub login, for the `createdBy` sort (the table joins it). */
   loginOf?: (id: string) => string;
+  /**
+   * The limit rows' half of a soft delete (pending requests cancelled,
+   * overrides dropped), run in the same step: `createMemoryLimitsDb().collectionsDeleted`.
+   */
+  collectionsDeleted?: (ids: readonly string[], at: number) => void;
+  /** The `ON DELETE CASCADE` of the limit rows naming a purged collection. */
+  collectionsPurged?: (ids: readonly string[]) => void;
 }
 
 /**
@@ -1527,6 +1594,13 @@ export function createMemoryKvStoreDb(
         updatedAt: i.at,
       });
     },
+
+    findCollectionNamesByIds: async (ids) =>
+      ids
+        .map((id) => collections.get(id))
+        .filter((c): c is KvCollectionRow => c !== undefined)
+        .map((c) => ({ id: c.id, name: c.name }))
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
 
     findCollection: async (id) => {
       const c = collections.get(id);
@@ -1612,6 +1686,7 @@ export function createMemoryKvStoreDb(
       const c = collections.get(id);
       if (!c || c.deletedAt !== null) return false;
       collections.set(id, { ...c, deletedAt: at, name: id, updatedAt: at });
+      deps.collectionsDeleted?.([id], at);
       return true;
     },
 
@@ -1647,6 +1722,7 @@ export function createMemoryKvStoreDb(
       collections.delete(id);
       // FK cascade.
       keys.delete(id);
+      deps.collectionsPurged?.([id]);
       return true;
     },
 

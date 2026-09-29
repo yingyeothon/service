@@ -107,11 +107,13 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     scopeExists: (s) =>
       s.kind === "channel"
         ? db.channels.get(s.id)?.deletedAt === null
-        : s.kind === "bundle"
-          ? assets.bundles.has(s.id)
-          : s.kind === "team"
-            ? teamDb.teams.has(s.id)
-            : teamDb.projects.has(s.id),
+        : s.kind === "collection"
+          ? kvstore.collections.get(s.id)?.deletedAt === null
+          : s.kind === "bundle"
+            ? assets.bundles.has(s.id)
+            : s.kind === "team"
+              ? teamDb.teams.has(s.id)
+              : teamDb.projects.has(s.id),
     writeChannel: (id, w) => {
       const c = db.channels.get(id);
       if (!c || c.deletedAt !== null) return false;
@@ -141,6 +143,12 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     projectExists: (id) => teamDb.projects.has(id),
     memberExists: (id) => db.members.has(id),
     loginOf,
+    // The limit half of a collection's soft delete, in the same step, and
+    // the FK cascade of its purge (inline for an empty collection).
+    collectionsDeleted: (ids, at) => limits.collectionsDeleted(ids, at),
+    collectionsPurged: (ids) => {
+      for (const id of ids) limits.scopeDeleted({ kind: "collection", id });
+    },
   });
   const leaderboards = createMemoryLeaderboardDb({
     teamExists: (id) => teamDb.teams.has(id),

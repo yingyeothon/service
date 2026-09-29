@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createMemoryAssetsDb,
   createMemoryConsoleDb,
+  createMemoryKvStoreDb,
   createMemoryLimitsDb,
   type ChannelRow,
   type LimitRequestInput,
@@ -29,11 +30,30 @@ export interface LimitsEnv {
     | undefined
   >;
   deleteBundle(id: string): Promise<void>;
+  /** `KvStoreDb.softDeleteCollection` over the same store (the limit half rides along). */
+  deleteCollection(id: string, at: number): Promise<boolean>;
 }
+
+/** The kv collection every `make` seeds beside the bundle (`kv_1`, the defaults). */
+export const KV_COLLECTION = {
+  id: "kv_1",
+  teamId: "team_1",
+  projectId: "prj_1",
+  name: "saves",
+  description: null,
+  readScope: "project" as const,
+  writeScope: "user" as const,
+  encrypted: false,
+  maxEntries: 10_000,
+  maxEntriesPerOwner: 100,
+  ownerId: null,
+  at: 1,
+};
 
 /**
  * Seeded by every `make`: team `team_1` with project `prj_1`, bundle `ab_1`
- * in it, channels `ch_1` and `ch_2` (expiring at 1000), members m1–m3.
+ * and kv collection `kv_1` in it, channels `ch_1` and `ch_2` (expiring at
+ * 1000), members m1–m3.
  */
 export const RULES = { cooldownSec: 100, maxPendingPerTeam: 3 };
 const BUNDLE: LimitScope = { kind: "bundle", id: "ab_1" };
@@ -41,6 +61,7 @@ const PROJECT: LimitScope = { kind: "project", id: "prj_1" };
 const CH1: LimitScope = { kind: "channel", id: "ch_1" };
 const CH2: LimitScope = { kind: "channel", id: "ch_2" };
 const TEAM: LimitScope = { kind: "team", id: "team_1" };
+const COLLECTION: LimitScope = { kind: "collection", id: "kv_1" };
 
 const req = (
   id: string,
@@ -577,6 +598,37 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
     expect(await limits.listOverrides([BUNDLE], 0)).toEqual([]);
   });
 
+  it("a collection soft delete cancels its pending request, drops its override and refuses new ones", async () => {
+    const env = await make();
+    const { limits } = env;
+    await limits.createRequest(
+      req("lr_01", { scope: COLLECTION, key: "kv.maxEntries" }),
+      RULES,
+    );
+    await limits.setOverride({
+      id: "lo_1",
+      teamId: "team_1",
+      scope: COLLECTION,
+      key: "kv.maxEntriesPerOwner",
+      value: 500,
+      note: "n",
+      grantedBy: "m2",
+      grantedAt: 1,
+    });
+    expect(await limits.listOverrides([COLLECTION], 0)).toHaveLength(1);
+    expect(await env.deleteCollection("kv_1", 7)).toBe(true);
+    expect((await limits.findRequest("lr_01"))?.status).toBe("cancelled");
+    expect((await limits.findRequest("lr_01"))?.decidedAt).toBe(7);
+    expect(await limits.listOverrides([COLLECTION], 0)).toEqual([]);
+    // The row is still there (a soft delete), but the scope is gone for limits.
+    await expect(
+      limits.createRequest(
+        req("lr_02", { scope: COLLECTION, key: "kv.maxEntries" }),
+        RULES,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("the sweep deletes expired overrides in batches and purges old decisions", async () => {
     const { limits } = await make();
     const base = {
@@ -663,16 +715,21 @@ describe("memory limits repository", () => {
     const assets = createMemoryAssetsDb(undefined, {
       bundleDeleted: (id) => limits.scopeDeleted({ kind: "bundle", id }),
     });
+    const kvstore = createMemoryKvStoreDb({
+      collectionsDeleted: (ids, at) => limits.collectionsDeleted(ids, at),
+    });
     // The hooks above only run after `limits` exists.
     const limits = createMemoryLimitsDb({
       scopeExists: (s) =>
         s.kind === "channel"
           ? db.channels.get(s.id)?.deletedAt === null
-          : s.kind === "bundle"
-            ? assets.bundles.has(s.id)
-            : s.kind === "team"
-              ? s.id === "team_1"
-              : s.id === "prj_1",
+          : s.kind === "collection"
+            ? kvstore.collections.get(s.id)?.deletedAt === null
+            : s.kind === "bundle"
+              ? assets.bundles.has(s.id)
+              : s.kind === "team"
+                ? s.id === "team_1"
+                : s.id === "prj_1",
       writeChannel: (id, w) => {
         const c = db.channels.get(id);
         if (!c || c.deletedAt !== null) return false;
@@ -691,6 +748,7 @@ describe("memory limits repository", () => {
       projectId: "prj_1",
       createdAt: 1,
     });
+    await kvstore.insertCollection(KV_COLLECTION);
     for (const id of ["ch_1", "ch_2"])
       db.channels.set(id, {
         id,
@@ -727,6 +785,7 @@ describe("memory limits repository", () => {
       deleteBundle: async (id) => {
         await assets.deleteBundle(id);
       },
+      deleteCollection: (id, at) => kvstore.softDeleteCollection(id, at),
     };
   });
 });

@@ -71,14 +71,13 @@ import {
 } from "./usage-digest.js";
 import {
   CDN_GUARD_RUN_KEY,
-  DEFAULT_CDN_GUARD_THRESHOLDS,
   cdnDistributionsFromEnv,
   cdnGuardDebugFromEvent,
+  cdnGuardScalesFromEnv,
   cdnGuardTargets,
   createCloudFrontControl,
   runCdnGuard,
   runCdnGuardWatch,
-  scaleCdnThresholds,
   type CdnControl,
   type CdnGuardMemory,
 } from "./cdn-guard.js";
@@ -703,14 +702,13 @@ export const cdnGuard = async (event?: unknown): Promise<void> => {
     });
     const r = await runCdnGuard({
       stage,
+      // Each target carries its own lines: the global scale times its
+      // label's `CDN_GUARD_SCALE_<LABEL>` (both default to 1).
       targets: cdnGuardTargets(
         cdnDistributionsFromEnv(process.env),
         process.env.CDN_GUARD_CONSOLE,
         process.env.CDN_GUARD_MODE,
-      ),
-      thresholds: scaleCdnThresholds(
-        DEFAULT_CDN_GUARD_THRESHOLDS,
-        process.env.CDN_GUARD_SCALE,
+        cdnGuardScalesFromEnv(process.env),
       ),
       metrics: guardMetrics,
       control: guardControl,

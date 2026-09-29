@@ -1,7 +1,6 @@
 import { AppError, nowSec, ulid, type Clock, type Logger } from "@yyt/core";
 import {
   KV_COLLECTION_SORT_KEYS,
-  KV_COLLECTIONS_PER_PROJECT,
   KV_LIST_LIMIT_MAX,
   KV_MAX_ENTRIES_DEFAULT,
   KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
@@ -21,11 +20,13 @@ import {
   type KvCollectionRow,
   type KvEntryRow,
   type KvStoreDb,
+  type LimitsDb,
 } from "@yyt/console-db";
 import { defineRoute, json, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
 import { ORDERS, listParams, searchQuery } from "./list-query.js";
 import type { ConsoleIdentity } from "./identity.js";
+import { LIMITS, overLimit, resolveLimits } from "./limits.js";
 import type { CrumbResolver, ResourceHistory } from "./resources.js";
 import { resourceName } from "./team.js";
 import type { ResourceAccess, TeamAccessHelpers } from "./team-access.js";
@@ -146,6 +147,8 @@ const ownerQuery = z
 
 export interface KvStoreRoutesOptions {
   kvstore: KvStoreDb;
+  /** The ceilings on a collection's caps and the collections per project (`kv.*` keys). */
+  limits: Pick<LimitsDb, "listOverrides">;
   access: Pick<
     TeamAccessHelpers,
     "projectAccess" | "projectResource" | "memberTeamIds"
@@ -173,6 +176,7 @@ export interface KvStoreRoutesOptions {
 
 export function createKvStoreRoutes({
   kvstore,
+  limits,
   access,
   crumbs,
   history,
@@ -453,7 +457,12 @@ export function createKvStoreRoutes({
         const maxEntries = ctx.body.maxEntries ?? KV_MAX_ENTRIES_DEFAULT;
         const maxEntriesPerOwner =
           ctx.body.maxEntriesPerOwner ?? KV_MAX_ENTRIES_PER_OWNER_DEFAULT;
-        checkKvCaps(maxEntries, maxEntriesPerOwner);
+        // A collection that does not exist yet can hold no override: its
+        // caps are ranged against the soft values; a grant comes after.
+        checkKvCaps(maxEntries, maxEntriesPerOwner, {
+          maxEntries: LIMITS["kv.maxEntries"].soft,
+          maxEntriesPerOwner: LIMITS["kv.maxEntriesPerOwner"].soft,
+        });
         // The DEK is minted by the state stack on the collection's first
         // write. Without one, an encrypted collection could never hold a
         // value — the same 503 the doc key answers on such a stage.
@@ -463,13 +472,18 @@ export function createKvStoreRoutes({
             "document storage is not configured; an encrypted collection needs the state stack",
             { details: { reason: "state_not_configured" } },
           );
-        if (
-          (await kvstore.countCollections(a.project.id)) >=
-          KV_COLLECTIONS_PER_PROJECT
-        )
-          throw new AppError(
+        const limit = await resolveLimits(
+          limits,
+          [{ kind: "project", id: a.project.id }],
+          now(),
+        );
+        const maxCollections = limit("kv.collections");
+        if ((await kvstore.countCollections(a.project.id)) >= maxCollections)
+          throw overLimit(
             "conflict",
-            `at most ${KV_COLLECTIONS_PER_PROJECT} kv collections per project`,
+            "kv.collections",
+            maxCollections,
+            `at most ${maxCollections} kv collections per project`,
           );
         await requireFreeName(a.team.id, ctx.body.name);
         const at = now();
@@ -551,10 +565,24 @@ export function createKvStoreRoutes({
         if (ctx.body.maxEntriesPerOwner !== undefined)
           patch.maxEntriesPerOwner = ctx.body.maxEntriesPerOwner;
         // Both caps are ranged together, so lowering one cannot smuggle the
-        // other past its hard cap on the way through.
+        // other past its ceiling on the way through. The ceiling is the
+        // collection's effective limit, or what the row already holds when
+        // that is higher (grandfathered): lowering is always allowed.
+        const limit = await resolveLimits(
+          limits,
+          [{ kind: "collection", id: row.id }],
+          now(),
+        );
         checkKvCaps(
           patch.maxEntries ?? row.maxEntries,
           patch.maxEntriesPerOwner ?? row.maxEntriesPerOwner,
+          {
+            maxEntries: Math.max(limit("kv.maxEntries"), row.maxEntries),
+            maxEntriesPerOwner: Math.max(
+              limit("kv.maxEntriesPerOwner"),
+              row.maxEntriesPerOwner,
+            ),
+          },
         );
         if (!(await kvstore.updateCollection(row.id, patch, now())))
           throw new AppError("not_found", "collection not found");

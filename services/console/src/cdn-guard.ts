@@ -70,10 +70,10 @@ export const DEFAULT_CDN_GUARD_THRESHOLDS: CdnGuardThresholds = {
 /** Every line times `raw` (a positive number; anything else is 1). */
 export function scaleCdnThresholds(
   t: CdnGuardThresholds,
-  raw: string | undefined,
+  raw: string | number | undefined,
 ): CdnGuardThresholds {
-  const k = Number(raw);
-  if (!Number.isFinite(k) || k <= 0 || k === 1) return t;
+  const k = parseCdnScale(raw);
+  if (k === 1) return t;
   const out = { ...t };
   for (const m of MEASURES)
     out[m] = { warn: t[m].warn * k, trip: t[m].trip * k };
@@ -111,6 +111,42 @@ export interface CdnDistribution {
 export interface CdnTarget extends CdnDistribution {
   /** `alert`: announced past a trip threshold, never disabled. */
   mode: "disable" | "alert";
+  /**
+   * This distribution's lines (`todo/54`, 2026-09-29): the defaults times
+   * `scale`, the global `CDN_GUARD_SCALE` times this label's own
+   * `CDN_GUARD_SCALE_<LABEL>`. Absent: the run's shared thresholds.
+   */
+  thresholds?: CdnGuardThresholds;
+  scale?: number;
+}
+
+/** The environment key of a label's own scale (`path-host` → `PATH_HOST`). */
+export const CDN_SCALE_ENV: Record<CdnLabel, string> = {
+  artifact: "CDN_GUARD_SCALE_ARTIFACT",
+  "path-host": "CDN_GUARD_SCALE_PATH_HOST",
+  "site-host": "CDN_GUARD_SCALE_SITE_HOST",
+  console: "CDN_GUARD_SCALE_CONSOLE",
+};
+
+/** A positive finite number, else 1 (unset, blank, `abc`, `0`, `-1`). */
+export function parseCdnScale(raw: string | number | undefined): number {
+  const k = Number(raw);
+  return Number.isFinite(k) && k > 0 ? k : 1;
+}
+
+/**
+ * The factor each label's lines are multiplied by: the global scale times
+ * the label's own. Both default to 1; a label's factor below 1 lowers its
+ * lines (allowed — a distribution that should trip sooner than the rest).
+ */
+export function cdnGuardScalesFromEnv(
+  env: Record<string, string | undefined>,
+): Record<CdnLabel, number> {
+  const global = parseCdnScale(env.CDN_GUARD_SCALE);
+  const out = {} as Record<CdnLabel, number>;
+  for (const label of CDN_LABELS)
+    out[label] = global * parseCdnScale(env[CDN_SCALE_ENV[label]]);
+  return out;
 }
 
 function hostOf(url: string | undefined): string {
@@ -168,14 +204,23 @@ export function cdnGuardTargets(
   distributions: CdnDistribution[],
   consoleMode: string | undefined,
   guardMode?: string,
+  scales?: Partial<Record<CdnLabel, number>>,
+  base: CdnGuardThresholds = DEFAULT_CDN_GUARD_THRESHOLDS,
 ): CdnTarget[] {
   return distributions
     .filter((d) => !(d.label === "console" && consoleMode === "off"))
-    .map((d) => ({
-      ...d,
-      mode:
-        d.label === "console" || guardMode === "alert" ? "alert" : "disable",
-    }));
+    .map((d) => {
+      const scale = parseCdnScale(scales?.[d.label]);
+      return {
+        ...d,
+        mode:
+          d.label === "console" || guardMode === "alert" ? "alert" : "disable",
+        scale,
+        // Only a scaled label carries its own lines: an unscaled one keeps
+        // following the run's `thresholds` option (tests and the debug hook).
+        ...(scale === 1 ? {} : { thresholds: scaleCdnThresholds(base, scale) }),
+      };
+    });
 }
 
 /** What the guard needs from CloudFront; a fake in tests. */
@@ -401,6 +446,10 @@ function measureLine(
   }
 }
 
+/** One line naming the factor the lines carry, so a notice explains its numbers. */
+const scaleLine = (tg: CdnTarget) =>
+  `Thresholds at ×${tg.scale ?? 1} (CDN_GUARD_SCALE × ${CDN_SCALE_ENV[tg.label]}).`;
+
 const RUNBOOK =
   "Runbook: rules/deployment.md → CDN emergency. Bytes: find the hot object in the CloudFront popular-objects report (sort by total bytes) and quarantine it with scripts/cdn-quarantine.sh. Requests: a flood has no single object — keep the distribution off until it stops.";
 
@@ -578,6 +627,7 @@ export function decideCdn(i: CdnDecideInput): CdnDecision {
       ...alerts.map(
         (m) => `- ${measureLine(m, ev.reading, i.thresholds, "trip")}`,
       ),
+      scaleLine(tg),
       tg.label === "console"
         ? `It also carries the console API. Switch it off by hand only if the spike is the CDN itself: scripts/cdn-switch.sh ${i.stage} console off --apply.`
         : `To stop it by hand: scripts/cdn-switch.sh ${i.stage} ${tg.label} off --apply.`,
@@ -594,6 +644,7 @@ export function decideCdn(i: CdnDecideInput): CdnDecision {
       ...warns.map(
         (m) => `- ${measureLine(m, ev.reading, i.thresholds, "warn")}`,
       ),
+      scaleLine(tg),
       RUNBOOK,
     ]);
   }
@@ -644,6 +695,7 @@ export function settleCdnDisable(
               ? `${name} would be disabled now (dry run; nothing was changed).`
               : `${name} was disabled at ${iso(now)}: every object behind it is unreachable until it is enabled again.`,
             ...measures,
+            scaleLine(tg),
             `The guard never re-enables a distribution. Once the cause is contained: ${switchOn(i.stage, tg)}; the guard re-arms when it sees it enabled.`,
             RUNBOOK,
           ].join("\n"),
@@ -671,6 +723,7 @@ export function settleCdnDisable(
           message: [
             `${name} crossed a trip threshold and was already switched off when the guard went to disable it.`,
             ...measures,
+            scaleLine(tg),
             `The guard re-arms when it is enabled again: ${switchOn(i.stage, tg)}.`,
           ].join("\n"),
           at: now,
@@ -691,6 +744,7 @@ export function settleCdnDisable(
               message: [
                 `${name} crossed a trip threshold but could not be disabled (${outcome.error}; the full error is in the cdnGuard log).`,
                 ...measures,
+                scaleLine(tg),
                 `The guard retries every run. To stop it by hand: scripts/cdn-switch.sh ${i.stage} ${tg.label} off --apply.`,
                 RUNBOOK,
               ].join("\n"),
@@ -794,6 +848,7 @@ export interface CdnGuardOptions {
   notify?: (subject: string, message: string) => Promise<void>;
   memory?: CdnGuardMemory;
   debug?: CdnGuardDebug;
+  /** The lines of a target that carries none of its own (an unscaled label). */
   thresholds?: CdnGuardThresholds;
   failuresToBlind?: number;
   clock?: Clock;
@@ -834,7 +889,10 @@ export async function runCdnGuard({
   logger,
 }: CdnGuardOptions): Promise<CdnGuardSummary> {
   const now = nowSec(clock);
-  const thresholds = withDebugThresholds(base, debug);
+  // A target's own lines (its label's scale) first, the run's shared ones
+  // otherwise; the dev debug override sits on top of either.
+  const thresholdsOf = (tg: CdnTarget) =>
+    withDebugThresholds(tg.thresholds ?? base, debug);
   const dryRun = debug?.dryRun === true;
   const targets = debug ? all.filter((t) => t.label === debug.label) : all;
   let stateless = false;
@@ -910,7 +968,7 @@ export async function runCdnGuard({
     const input: CdnDecideInput = {
       stage,
       target: tg,
-      thresholds,
+      thresholds: thresholdsOf(tg),
       prev,
       nowSec: now,
       buckets,

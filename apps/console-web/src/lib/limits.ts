@@ -27,6 +27,9 @@ export const LIMIT_LABELS: Record<string, string> = {
   "asset.bundlesPerProject": "Bundles",
   "channel.lifetime": "Lifetime",
   "team.projects": "Projects",
+  "kv.maxEntries": "Entries cap",
+  "kv.maxEntriesPerOwner": "Entries per owner cap",
+  "kv.collections": "Collections",
 };
 
 export const limitLabel = (key: string): string => LIMIT_LABELS[key] ?? key;

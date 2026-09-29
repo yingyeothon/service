@@ -1240,7 +1240,8 @@ export interface KitConfig {
 
 // ---- limits (docs/decisions.md *Limit requests (soft/hard)*) --------------
 
-export type LimitScopeKind = "project" | "bundle" | "channel" | "team";
+export type LimitScopeKind =
+  "project" | "bundle" | "channel" | "team" | "collection";
 export type LimitUnit = "bytes" | "count" | "seconds";
 /** `unlimited` exists only where the hard value is (`channel.lifetime`). */
 export type LimitValue = number | "unlimited";

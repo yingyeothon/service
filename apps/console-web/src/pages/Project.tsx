@@ -68,14 +68,13 @@ import {
 import { ExpiresCell } from "./Channels";
 import { ISSUE_TONE } from "./Issue";
 import {
+  CAP_CEILINGS_ON_CREATE,
   CapFields,
   capOk,
   type CapValue,
   KV_IMMUTABLE_NOTE,
   KV_MAX_ENTRIES_DEFAULT,
   KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
-  KV_MAX_ENTRIES_HARD,
-  KV_MAX_ENTRIES_PER_OWNER_HARD,
   KV_MAIL_WARNING,
   KV_PUBLIC_PROFILE_WARNING,
   KV_SCOPE_LABEL,
@@ -812,7 +811,7 @@ function AssetsTab({
       <LimitsSection
         limits={limits}
         standing={standing}
-        description="What the project's bundles may hold together. A team member may ask a platform admin for more, up to the ceiling."
+        description="What the project may hold: its asset bundles together, and how many kv collections. A team member may ask a platform admin for more, up to the ceiling."
       />
     </>
   );
@@ -941,15 +940,18 @@ function KvTab({
   }));
   const f = drawer.form;
   const shape = kvShapeProblem(f.readScope, f.writeScope, f.encrypted);
+  // A collection that does not exist yet can hold no grant: the caps are
+  // ranged against the soft values, a higher ceiling is asked for on the
+  // collection's page afterwards.
   const capsOk =
-    capOk(f.maxEntries, KV_MAX_ENTRIES_HARD) &&
-    capOk(f.maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD);
+    capOk(f.maxEntries, CAP_CEILINGS_ON_CREATE.maxEntries) &&
+    capOk(f.maxEntriesPerOwner, CAP_CEILINGS_ON_CREATE.maxEntriesPerOwner);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const { maxEntries, maxEntriesPerOwner } = f;
     if (
-      !capOk(maxEntries, KV_MAX_ENTRIES_HARD) ||
-      !capOk(maxEntriesPerOwner, KV_MAX_ENTRIES_PER_OWNER_HARD)
+      !capOk(maxEntries, CAP_CEILINGS_ON_CREATE.maxEntries) ||
+      !capOk(maxEntriesPerOwner, CAP_CEILINGS_ON_CREATE.maxEntriesPerOwner)
     )
       return;
     const description = f.description.trim();
@@ -988,7 +990,7 @@ function KvTab({
   return (
     <Section
       title="Key-value"
-      description="Small JSON values a game reads and writes through the KV API: announcements, per-player progress, public profiles. A collection's scopes say who may read and write; a user write scope gives every player a namespace of its own."
+      description="Small JSON values a game reads and writes through the KV API: announcements, per-player progress, public profiles. A collection's scopes say who may read and write; a user write scope gives every player a namespace of its own. Collections per project are a limit (Assets › Limits); each collection's cap ceilings are on its own page."
       actions={
         canWrite && (
           <Button variant="default" onClick={drawer.open}>
@@ -1086,6 +1088,8 @@ function KvTab({
         <CapFields
           maxEntries={f.maxEntries}
           maxEntriesPerOwner={f.maxEntriesPerOwner}
+          ceilings={CAP_CEILINGS_ON_CREATE}
+          creating
           // Either scope being `user` makes the namespace (`isKvPerOwner`), and
           // on the mail shape this cap is the load-bearing one — it bounds the
           // inbox and the sender both.

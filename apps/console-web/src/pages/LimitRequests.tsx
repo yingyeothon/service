@@ -29,6 +29,7 @@ import {
 import { notify } from "../lib/notify";
 import { useAction } from "../lib/query";
 import { projectUrl, teamUrl } from "../lib/team";
+import { kvUrl } from "./KvCollection";
 import {
   LIMIT_REQUEST_STATUSES,
   type LimitRequest,
@@ -66,6 +67,8 @@ function scopeUrl(r: LimitRequest): string {
       return projectUrl(r.teamId, r.scope.id, "assets");
     case "team":
       return teamUrl(r.teamId);
+    case "collection":
+      return kvUrl(r.scope.id);
   }
 }
 

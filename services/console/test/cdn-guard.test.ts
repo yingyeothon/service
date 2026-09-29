@@ -15,6 +15,7 @@ import {
   DEFAULT_CDN_GUARD_THRESHOLDS,
   cdnDistributionsFromEnv,
   cdnGuardDebugFromEvent,
+  cdnGuardScalesFromEnv,
   cdnGuardStateKey,
   cdnGuardTargets,
   cdnReadFrom,
@@ -22,6 +23,7 @@ import {
   evaluateCdn,
   runCdnGuard,
   runCdnGuardWatch,
+  parseCdnScale,
   scaleCdnThresholds,
   utcMidnight,
   type CdnControl,
@@ -729,6 +731,113 @@ describe("scaleCdnThresholds", () => {
     });
     for (const raw of [undefined, "", "abc", "0", "-1", "1"])
       expect(scaleCdnThresholds(T, raw)).toBe(T);
+    expect(scaleCdnThresholds(T, 0.5).requests5m).toEqual({
+      trip: 1_000_000,
+      warn: 250_000,
+    });
+  });
+});
+
+describe("per-label scales", () => {
+  it("multiplies the global scale by each label's own, and reads junk as 1", () => {
+    for (const raw of [undefined, "", "abc", "0", "-1"])
+      expect(parseCdnScale(raw)).toBe(1);
+    expect(parseCdnScale("2.5")).toBe(2.5);
+    expect(
+      cdnGuardScalesFromEnv({
+        CDN_GUARD_SCALE: "2",
+        CDN_GUARD_SCALE_ARTIFACT: "3",
+        CDN_GUARD_SCALE_PATH_HOST: "abc",
+        CDN_GUARD_SCALE_CONSOLE: "0.5",
+      }),
+    ).toEqual({ artifact: 6, "path-host": 2, "site-host": 2, console: 1 });
+    expect(cdnGuardScalesFromEnv({})).toEqual({
+      artifact: 1,
+      "path-host": 1,
+      "site-host": 1,
+      console: 1,
+    });
+  });
+
+  it("gives every target its own thresholds; without scales they are the defaults", () => {
+    const d = cdnDistributionsFromEnv(env);
+    const plain = cdnGuardTargets(d, undefined);
+    for (const t of plain) {
+      expect(t.scale).toBe(1);
+      // Unscaled: no lines of its own, the run's `thresholds` option applies.
+      expect(t.thresholds).toBeUndefined();
+    }
+    const scaled = cdnGuardTargets(d, undefined, undefined, { artifact: 4 });
+    const art = scaled.find((t) => t.label === "artifact")!;
+    expect(art.scale).toBe(4);
+    expect(art.thresholds!.bytes5m).toEqual({
+      trip: 40 * GIB,
+      warn: 10 * GIB,
+    });
+    expect(
+      scaled.find((t) => t.label === "path-host")!.thresholds,
+    ).toBeUndefined();
+  });
+
+  it("the same reading trips the label at ×1 and not the one at ×4, and the mail names the factor", async () => {
+    const s = setup({
+      targets: cdnGuardTargets(
+        cdnDistributionsFromEnv(env),
+        undefined,
+        undefined,
+        {
+          artifact: 4,
+        },
+      ),
+    });
+    s.buckets.DA = [bucket(NOW - 300, 11 * GIB)];
+    s.buckets.DP = [bucket(NOW - 300, 11 * GIB)];
+    await s.run();
+    // At ×4 the artifact trip line is 40 GiB and its warning line 10 GiB:
+    // the same 11 GiB is a warning there and a trip on the path host.
+    expect(s.disables).toEqual(["DP:dev-g.yyt.life"]);
+    expect(s.sent.map((m) => m.subject).sort()).toEqual([
+      "[yyt console dev] CDN DISABLED: path-host (dev-g.yyt.life)",
+      "[yyt console dev] CDN warning: artifact (dev-d.yyt.life)",
+    ]);
+    const disabled = s.sent.find((m) => m.subject.includes("DISABLED"))!;
+    expect(disabled.message).toContain(
+      "Thresholds at ×1 (CDN_GUARD_SCALE × CDN_GUARD_SCALE_PATH_HOST).",
+    );
+    const warned = s.sent.find((m) => m.subject.includes("warning"))!;
+    expect(warned.message).toContain("11.0 GiB (warn at 10.0 GiB)");
+    expect(warned.message).toContain(
+      "Thresholds at ×4 (CDN_GUARD_SCALE × CDN_GUARD_SCALE_ARTIFACT).",
+    );
+    expect((await s.state("artifact"))?.mode).not.toBe("tripped");
+    s.advance(300);
+    s.buckets.DA = [bucket(NOW, 41 * GIB)];
+    await s.run();
+    expect(s.disables).toEqual(["DP:dev-g.yyt.life", "DA:dev-d.yyt.life"]);
+    expect(s.sent.at(-1)!.message).toContain("41.0 GiB (trip at 40.0 GiB)");
+    expect(s.sent.at(-1)!.message).toContain(
+      "Thresholds at ×4 (CDN_GUARD_SCALE × CDN_GUARD_SCALE_ARTIFACT).",
+    );
+  });
+
+  it("the dev debug override sits on top of a label's own thresholds", async () => {
+    const s = setup({
+      targets: cdnGuardTargets(
+        cdnDistributionsFromEnv(env),
+        undefined,
+        undefined,
+        {
+          "site-host": 4,
+        },
+      ),
+    });
+    s.buckets.DS = [bucket(NOW - 300, 11 * GIB)];
+    // ×4 alone would not trip; the debug payload lowers one line to zero.
+    await s.run({
+      debug: { label: "site-host", thresholds: { bytes5m: { trip: 0 } } },
+    });
+    expect(s.disables).toEqual(["DS:*.dev-g.yyt.life"]);
+    expect(s.sent[0]!.message).toContain("Thresholds at ×4");
   });
 });
 

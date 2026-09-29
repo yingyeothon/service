@@ -269,8 +269,9 @@ Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing
 ### Limits
 
 ```sh
-yyt limit list [--bundle b | --channel c | --scope team]   # usage, effective, soft, hard, override; no flag = the project in context
-yyt limit request <limit> <value|unlimited|+N> [--bundle b | --channel c] --reason "…"
+yyt limit list [--bundle b | --channel c | --collection k | --scope team]   # usage, effective, soft, hard, override; no flag = the project in context
+yyt limit request <limit> <value|unlimited|+N> [--bundle b | --channel c | --collection k] --reason "…"
+yyt limit request kv.maxEntries 50000 --collection saves --reason "…"   # a collection's cap ceiling; its usage is the cap set now
                                                        # sizes in binary units (256MiB, 3GiB); channel.lifetime takes only `unlimited`
 yyt limit request team.projects +5 --reason "…"        # a `team.` limit is the team in context; +5 once every project slot is used
 yyt limit requests [--status s] [--cursor c] [--limit n]   # the team's requests, newest first

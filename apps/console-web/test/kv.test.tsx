@@ -18,6 +18,7 @@ const mockApi = {
   loginUrl: vi.fn(() => "/auth/github/start"),
   setUnauthorizedHandler: vi.fn(),
   team: vi.fn(),
+  limits: vi.fn(),
   kv: vi.fn(),
   updateKv: vi.fn(),
   deleteKv: vi.fn(),
@@ -110,7 +111,10 @@ function open(col = COL) {
 }
 
 const headers = () =>
-  screen.getAllByRole("columnheader").map((h) => h.textContent);
+  // The entries table is the first; the Limits section below has one too.
+  within(screen.getAllByRole("table")[0]!)
+    .getAllByRole("columnheader")
+    .map((h) => h.textContent);
 // `Collapse` keeps the fold's copy of a cell's text mounted (display:none),
 // so a text query sees two nodes per clipped cell: the first is the cell.
 const rowOf = (text: string) => screen.getAllByText(text)[0]!.closest("tr")!;
@@ -125,8 +129,40 @@ const cells = (tr: HTMLElement) =>
         within(c).queryAllByRole("button")[0]?.textContent ?? c.textContent,
     );
 
+/** The collection's limits view: the caps are the usage of their ceilings. */
+const LIMITS = {
+  scope: { kind: "collection" as const, id: "kv_1" },
+  teamId: "team_1",
+  limits: [
+    {
+      key: "kv.maxEntries",
+      unit: "count" as const,
+      soft: 10000,
+      hard: 100000,
+      effective: 10000,
+      usage: 10000,
+      step: null,
+      next: null,
+      override: null,
+    },
+    {
+      key: "kv.maxEntriesPerOwner",
+      unit: "count" as const,
+      soft: 100,
+      hard: 1000,
+      effective: 100,
+      usage: 100,
+      step: null,
+      next: null,
+      override: null,
+    },
+  ],
+  pending: [],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(mockApi.limits).mockResolvedValue(LIMITS);
   vi.mocked(mockApi.me).mockResolvedValue({
     id: "u1",
     login: "alice",

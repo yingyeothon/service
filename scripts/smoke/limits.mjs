@@ -5,7 +5,9 @@
 // revoke refuses again → reject/cancel start the 7-day cooldown → ten pending
 // per team → no expiry for a channel (extend refuses, revoke gives 28 days,
 // delete cancels a pending one) → the admin queue → the team's project limit
-// (`team.projects`: fill to 20, +5 request, approve, revoke). Self-cleaning:
+// (`team.projects`: fill to 20, +5 request, approve, revoke) → a kv
+// collection's cap ceiling (`kv.maxEntries`, todo/54: over-soft refused,
+// grant admits it, revoke keeps it, delete cancels). Self-cleaning:
 // the bundles, channels and projects it creates are deleted, which cascades
 // their requests.
 // Usage: scripts/smoke/limits.mjs <consoleBase> <debugKey>
@@ -50,7 +52,7 @@ check(
   String(reset.status),
 );
 
-const created = { bundles: [], channels: [], projects: [] };
+const created = { bundles: [], channels: [], projects: [], collections: [] };
 const mkBundle = async (name) => {
   const r = await call(`/projects/${team.prjId}/assets/bundles`, {
     method: "POST",
@@ -513,7 +515,110 @@ try {
     listed.body?.requests?.find((r) => r.id === pend.body?.id)?.status ===
       "cancelled",
   );
+  // A kv collection's cap ceiling (`kv.maxEntries`, todo/54): the caps a
+  // member sets are ranged against the collection's effective limit; a
+  // grant raises it, a revoke never lowers what is stored, a delete
+  // cancels the pending request and drops the override.
+  await settle();
+  const col = await call(`/projects/${team.prjId}/kv`, {
+    method: "POST",
+    headers: as(member),
+    body: { name: `lim-${stamp}`, readScope: "project", writeScope: "team" },
+  });
+  check("create a kv collection", col.status === 201, String(col.status));
+  created.collections.push(col.body?.id);
+  const colId = col.body?.id;
+  const colScope = `collection:${colId}`;
+  const setCap = (maxEntries) =>
+    call(`/kv/${colId}`, {
+      method: "PATCH",
+      headers: as(member),
+      body: { maxEntries },
+    });
+  const colRow = async () =>
+    (
+      await call(`/limits?scope=${colScope}`, { headers: as(member) })
+    ).body?.limits?.find((l) => l.key === "kv.maxEntries");
+  let crow = await colRow();
+  check(
+    "kv.maxEntries: soft 10000, hard 100000, usage = the stored cap",
+    crow?.soft === 10000 && crow?.hard === 100000 && crow?.usage === 10000,
+    JSON.stringify(crow),
+  );
+  const overCap = await setCap(50000);
+  check(
+    "a cap above the ceiling is refused and names kv.maxEntries",
+    overCap.status === 400 &&
+      overCap.body?.error?.details?.limit === "kv.maxEntries" &&
+      overCap.body?.error?.details?.value === 10000,
+    `${overCap.status} ${overCap.text?.slice(0, 160)}`,
+  );
+  const colReq = await ask(as(member), {
+    scope: colScope,
+    key: "kv.maxEntries",
+    value: 50000,
+  });
+  check(
+    "ask for a higher ceiling on the collection",
+    colReq.status === 201 && colReq.body?.scope?.kind === "collection",
+    `${colReq.status} ${colReq.text?.slice(0, 160)}`,
+  );
+  const colOk = await call(`/admin/limit-requests/${colReq.body?.id}/approve`, {
+    method: "POST",
+    headers: as(admin),
+    body: {},
+  });
+  check("the admin approves it", colOk.status === 200, String(colOk.status));
+  check("the cap now fits", (await setCap(50000)).status === 200);
+  crow = await colRow();
+  check(
+    "usage follows the stored cap, effective the grant",
+    crow?.usage === 50000 && crow?.effective === 50000,
+    JSON.stringify(crow),
+  );
+  const colRevoke = await call(
+    `/admin/limit-overrides/collection/${colId}/kv.maxEntries`,
+    { method: "DELETE", headers: as(admin), body: { note: "smoke revoke" } },
+  );
+  check("revoke the grant", colRevoke.status === 204, String(colRevoke.status));
+  check(
+    "the stored cap stays valid after the revoke (grandfathered)",
+    (await setCap(50000)).status === 200,
+  );
+  check(
+    "but not one above it",
+    (await setCap(50001)).body?.error?.details?.value === 50000,
+  );
+  check("and lowering is always open", (await setCap(100)).status === 200);
+  const colPending = await ask(as(member), {
+    scope: colScope,
+    key: "kv.maxEntriesPerOwner",
+    value: 500,
+  });
+  check("a second request, left pending", colPending.status === 201);
+  const colDel = await call(`/kv/${colId}`, {
+    method: "DELETE",
+    headers: as(member),
+  });
+  check("delete the collection", colDel.status === 204, String(colDel.status));
+  if (colDel.status === 204) created.collections.pop();
+  // An empty collection is purged inline right after its soft delete, and
+  // the FK cascade takes the (already cancelled) request row with it — the
+  // same as a bundle delete; a draining collection keeps it as `cancelled`.
+  const colRow2 = await call(`/kv/${colId}`, { headers: as(member) });
+  const colGone = await call(`/limit-requests/${colPending.body?.id}`, {
+    headers: as(member),
+  });
+  check(
+    "the delete took its pending request with it",
+    colRow2.status === 404
+      ? colGone.status === 404
+      : colGone.body?.status === "cancelled",
+    `collection ${colRow2.status}, request ${colGone.status} ${colGone.text?.slice(0, 120)}`,
+  );
 } finally {
+  for (const id of created.collections.filter(Boolean))
+    await call(`/kv/${id}`, { method: "DELETE", headers: as(member) });
   for (const id of created.channels)
     await call(`/channels/${id}`, { method: "DELETE", headers: as(member) });
   for (const id of created.projects.filter(Boolean)) {

@@ -1144,6 +1144,7 @@ export function createConsoleApp({
 
   const kvStoreRoutes = createKvStoreRoutes({
     kvstore,
+    limits,
     access,
     crumbs,
     history,
@@ -1171,6 +1172,7 @@ export function createConsoleApp({
     db,
     team,
     assets,
+    kvstore,
     access,
     history,
     kv,

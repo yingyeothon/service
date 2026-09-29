@@ -148,19 +148,22 @@ func newLimits(a *App) *cobra.Command {
 		Long: "Team, asset and channel limits (docs/decisions.md \"Limit requests\").\n\n" +
 			"Every limit has a soft value every scope gets and a hard ceiling a platform\n" +
 			"admin may grant up to. A limit belongs to a bundle (--bundle), a channel\n" +
-			"(--channel), the team in context (--scope team, or a `team.` limit) or,\n" +
-			"with none of these, the project in context. Sizes take binary units\n" +
+			"(--channel), a kv collection (--collection), the team in context\n" +
+			"(--scope team, or a `team.` limit) or, with none of these, the project\n" +
+			"in context. Sizes take binary units\n" +
 			"(256MiB, 3GiB); a channel's lifetime takes only `unlimited`; a stepped\n" +
 			"limit such as team.projects is asked for as `+5` once every slot is used.",
 	}
-	var bundle, channel, scopeKind string
+	var bundle, channel, collection, scopeKind string
 	addScope := func(cmd *cobra.Command) {
 		cmd.Flags().StringVar(&bundle, "bundle", "", "an asset bundle (id or name in the project context)")
 		cmd.Flags().StringVar(&channel, "channel", "", "a channel (id or name in the project context)")
+		cmd.Flags().StringVar(&collection, "collection", "", "a kv collection (id or name in the project context)")
 		cmd.Flags().StringVar(&scopeKind, "scope", "", "team | project: the team or (default) the project in context")
 	}
-	// scopeOf resolves --bundle / --channel / --scope team / the project
-	// context to `kind:id`. A `team.` limit key picks the team by itself.
+	// scopeOf resolves --bundle / --channel / --collection / --scope team /
+	// the project context to `kind:id`. A `team.` limit key picks the team
+	// by itself.
 	scopeOf := func(cmd *cobra.Command, write bool, key string) (*ctxClient, string, string, string, error) {
 		cc, err := a.ctxClient(cmd)
 		if err != nil {
@@ -174,8 +177,9 @@ func newLimits(a *App) *cobra.Command {
 			return nil, "", "", "", fmt.Errorf("--scope %q: want team or project", scopeKind)
 		case teamKey && scopeKind == "project":
 			return nil, "", "", "", fmt.Errorf("%s is a team limit: drop --scope project", key)
-		case bundle != "" && channel != "", team && (bundle != "" || channel != ""):
-			return nil, "", "", "", errors.New("pass one of --bundle, --channel and --scope team")
+		case (bundle != "" && channel != "") || (bundle != "" && collection != "") || (channel != "" && collection != ""),
+			team && (bundle != "" || channel != "" || collection != ""):
+			return nil, "", "", "", errors.New("pass one of --bundle, --channel, --collection and --scope team")
 		case team:
 			r, err := cc.team(ctx, write)
 			if err != nil {
@@ -188,6 +192,9 @@ func newLimits(a *App) *cobra.Command {
 		case channel != "":
 			id, err := cc.channel(ctx, channel, write)
 			return cc, "channel", id, "channel:" + id, err
+		case collection != "":
+			id, err := cc.kv(ctx, collection, write)
+			return cc, "collection", id, "collection:" + id, err
 		}
 		r, err := cc.project(ctx, write)
 		if err != nil {
