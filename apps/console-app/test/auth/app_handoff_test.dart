@@ -26,12 +26,27 @@ void main() {
       );
     });
 
+    test('accepts the custom scheme the SPA intent URL targets', () {
+      final l = AppHandoffLink.tryParse(
+        Uri.parse('yytconsole://console-dev.yyt.life/app-open?code=$code'),
+      );
+      expect(l, isNotNull);
+      expect(l!.server, 'https://console-dev.yyt.life');
+      expect(l.code, code);
+      expect(
+        AppHandoffLink.tryParse(
+          Uri.parse('yytconsole://evil.example/app-open?code=$code'),
+        ),
+        isNull,
+      );
+    });
+
     test('ignores anything an exported activity might be handed', () {
       final bad = <String>[
         'https://evil.example/app-open?code=$code',
         'https://console.yyt.life.evil.example/app-open?code=$code',
         'http://console.yyt.life/app-open?code=$code',
-        'yytconsole://console.yyt.life/app-open?code=$code',
+        'yytconsole2://console.yyt.life/app-open?code=$code',
         'https://console.yyt.life/ui/app-open?code=$code',
         'https://console.yyt.life/app-open/?code=$code',
         'https://console.yyt.life:8443/app-open?code=$code',

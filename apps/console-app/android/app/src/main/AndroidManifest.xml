@@ -27,11 +27,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!-- Web → app sign-in handoff (todo/49): the console SPA's "Open app"
-                 launches this package with https://<console>/app-open?code=…
-                 through a Chrome intent URL; autoVerify also lets a plain link
-                 from another app open here once the console serves
-                 /.well-known/assetlinks.json. The Dart side re-checks the host:
-                 an exported activity receives whatever URL an app sends it. -->
+                 launches this package with yytconsole://<console>/app-open?code=…
+                 through a Chrome intent URL. A custom scheme is routed by this
+                 filter alone: an https target reaches the app only once Android
+                 12+ has verified the App Link, and a phone that installed the
+                 app before assetlinks.json was served never re-verifies. The
+                 Dart side re-checks scheme and host: an exported activity
+                 receives whatever URL an app sends it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="yytconsole" />
+                <data android:host="console.yyt.life" />
+                <data android:host="console-dev.yyt.life" />
+                <data android:path="/app-open" />
+            </intent-filter>
+            <!-- The same link as a verified App Link (autoVerify against the
+                 console's /.well-known/assetlinks.json), so a plain https link
+                 from another app can open here too. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

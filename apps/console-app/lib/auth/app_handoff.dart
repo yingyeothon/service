@@ -8,7 +8,10 @@ import 'auth_config.dart';
 /// Web → app sign-in handoff (todo/49).
 ///
 /// The console SPA's "Open app" button launches this app through a Chrome
-/// `intent://` URL whose target is `https://<console host>/app-open?code=…`.
+/// `intent://` URL whose target is `yytconsole://<console host>/app-open?code=…`
+/// (the custom scheme is routed without App Links verification, which an
+/// `https` target needs on Android 12+; a verified `https` link is accepted
+/// too).
 /// The code is a 120-second single-use claim the app exchanges for a
 /// `yyt_` token at `POST /auth/app-handoff/exchange`; the profile is then
 /// added exactly as a scanned QR would be.
@@ -23,6 +26,9 @@ class AppHandoffLink {
     'console.yyt.life',
     'console-dev.yyt.life',
   ];
+
+  /// The custom scheme the SPA's intent URL targets (`AndroidManifest.xml`).
+  static const String customScheme = 'yytconsole';
   static final RegExp _codePattern = RegExp(r'^hoff_[0-9a-f]{32}$');
 
   /// `https://<host>` of the console that issued the code.
@@ -31,12 +37,13 @@ class AppHandoffLink {
 
   const AppHandoffLink({required this.server, required this.code});
 
-  /// Null for anything that is not `https://<allowed host>/app-open?code=…`.
+  /// Null for anything that is not `yytconsole://<allowed host>/app-open?code=…`
+  /// or its `https` App Link twin. The server is always `https://<host>`.
   static AppHandoffLink? tryParse(
     Uri uri, {
     List<String> hosts = consoleHosts,
   }) {
-    if (uri.scheme != 'https') return null;
+    if (uri.scheme != 'https' && uri.scheme != customScheme) return null;
     if (uri.userInfo.isNotEmpty || uri.hasPort) return null;
     if (!hosts.contains(uri.host.toLowerCase())) return null;
     if (uri.path != '/app-open') return null;

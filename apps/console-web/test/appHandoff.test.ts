@@ -48,7 +48,7 @@ describe("appOpenIntentUrl", () => {
     const url = appOpenIntentUrl(origin, code);
     expect(url).toBe(
       `intent://console-dev.yyt.life/app-open?code=${code}` +
-        "#Intent;scheme=https;package=life.yyt.console;" +
+        "#Intent;scheme=yytconsole;package=life.yyt.console;" +
         "S.browser_fallback_url=https%3A%2F%2Fconsole-dev.yyt.life%2Fui%2Finstaller%3Fapp%3Dmissing;end",
     );
     const fallback = decodeURIComponent(

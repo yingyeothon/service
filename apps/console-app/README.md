@@ -19,9 +19,12 @@ only to the console API.
   active profile (the token was revoked).
 - Handoff (2026-09-29, `todo/49`): the SPA's **Open app** button (Home
   installer card, App login) launches this package through a Chrome
-  `intent://` URL whose target is `https://<console>/app-open?code=hoff_…`
-  (`android/app/src/main/AndroidManifest.xml`, `autoVerify` against the
-  console's `/.well-known/assetlinks.json`). `lib/auth/app_handoff.dart`
+  `intent://` URL whose target is `yytconsole://<console>/app-open?code=hoff_…`
+  (`android/app/src/main/AndroidManifest.xml`; since 1.6.1 a custom scheme,
+  because Android 12+ hands an `https` target to the browser unless the App
+  Link is verified, and a phone that installed the app before the console
+  served `/.well-known/assetlinks.json` never re-verifies — the `https`
+  `autoVerify` filter remains for plain links). `lib/auth/app_handoff.dart`
   re-validates the URL (allowlisted hosts only — the activity is exported),
   `main.dart` asks before continuing (the host is named), then
   `POST /auth/app-handoff/exchange` turns the 120 s single-use code into a

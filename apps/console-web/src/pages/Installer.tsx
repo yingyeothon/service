@@ -106,7 +106,7 @@ export function InstallerPage() {
       {appMissing && (
         <Notice kind="warn">
           This phone has no 잉여톤 app that can take a sign-in from the web
-          (none installed, or older than 1.6.0). Install or update from the APK
+          (none installed, or older than 1.6.1). Install or update from the APK
           below, then tap <strong>Open app</strong> again.
         </Notice>
       )}
