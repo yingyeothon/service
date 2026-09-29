@@ -269,6 +269,9 @@ func newWhoami(a *App) *cobra.Command {
 				if cfg.Profile != "" {
 					out["profile"] = cfg.Profile
 				}
+				if p, err := config.Path(); err == nil {
+					out["config"] = p
+				}
 				if spec.Team != "" {
 					out["team"], out["teamSource"] = spec.Team, spec.TeamSource
 				}
@@ -287,8 +290,10 @@ func newWhoami(a *App) *cobra.Command {
 				}
 				return v + " (from " + src + ")"
 			}
+			cfgPath, _ := config.Path()
 			return a.printer().KV([][2]string{
 				{"id", m.ID}, {"login", m.Login}, {"role", m.Role}, {"profile", prof}, {"api", cl.Base},
+				{"config", cfgPath},
 				{"team", withSource(spec.Team, spec.TeamSource)}, {"project", withSource(spec.Project, spec.ProjectSource)},
 			})
 		},

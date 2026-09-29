@@ -88,7 +88,8 @@ type uploadState struct {
 }
 
 // uploadStatePath is `$YYT_CACHE/uploads/<bundle>/<sha256>.json`, the cache
-// directory defaulting to the user's (`~/.cache/yyt` on Linux). Both ids
+// directory defaulting to the user's (`~/.cache/yyt` on Linux,
+// `~/Library/Caches/yyt` on macOS, `%LocalAppData%\yyt` on Windows). Both ids
 // are hex/underscore, so they are safe path segments.
 func uploadStatePath(bundleID, sha string) (string, error) {
 	dir, err := cacheDir()

@@ -17,11 +17,29 @@ import { Section } from "../components/Section";
 import { CopyField, Notice } from "../components/ui";
 import { InstallerDownloadCard } from "./Installer";
 
-const CLI_INSTALL_CMD =
+const CLI_INSTALL_SH =
   "curl -fsSL https://raw.githubusercontent.com/yingyeothon/service/main/cli/install.sh | sh";
+const CLI_INSTALL_PS1 =
+  "irm https://raw.githubusercontent.com/yingyeothon/service/main/cli/install.ps1 | iex";
+const CLI_RELEASES_URL =
+  "https://github.com/yingyeothon/service/releases?q=cli%2Fv&expanded=true";
+const CLI_GO_INSTALL =
+  "go install github.com/yingyeothon/service/cli/cmd/yyt@latest";
 
-/** The one-line `yyt` CLI install command. */
+/** True on a Windows browser: that command line goes first. */
+export function isWindowsBrowser(nav: Partial<Navigator> = navigator): boolean {
+  const ua = nav as { userAgentData?: { platform?: string } };
+  const platform = ua.userAgentData?.platform ?? nav.platform ?? "";
+  return /^win/i.test(platform);
+}
+
+/** The one-line `yyt` CLI install command per OS. */
 export function CliInstallCard() {
+  const lines = [
+    { label: "macOS / Linux", value: CLI_INSTALL_SH },
+    { label: "Windows (PowerShell)", value: CLI_INSTALL_PS1 },
+  ];
+  if (isWindowsBrowser()) lines.reverse();
   return (
     <Card padding="md" mb="md">
       <Text fw={500}>yyt CLI</Text>
@@ -37,7 +55,18 @@ export function CliInstallCard() {
         </Anchor>
         .
       </Text>
-      <CopyField label="Install" value={CLI_INSTALL_CMD} />
+      {lines.map((l) => (
+        <CopyField key={l.label} label={l.label} value={l.value} />
+      ))}
+      <Text size="xs" c="dimmed" mt="xs">
+        Or <Code style={{ overflowWrap: "anywhere" }}>{CLI_GO_INSTALL}</Code>,
+        or download an archive from{" "}
+        <Anchor href={CLI_RELEASES_URL} target="_blank" rel="noreferrer">
+          GitHub Releases
+        </Anchor>{" "}
+        (linux, macOS, Windows × amd64, arm64). <Code>yyt self update</Code>{" "}
+        keeps it current.
+      </Text>
     </Card>
   );
 }

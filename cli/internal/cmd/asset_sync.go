@@ -558,13 +558,15 @@ func newAssetSync(a *App, bundleID bundleResolver) *cobra.Command {
 			"whose bytes changed is a conflict, reported before anything is sent.\n\n" +
 			"A file over 64 MiB goes up in 32 MiB parts, in parallel, and a run that\n" +
 			"dies is resumed by the next one (the upload id is kept under the user\n" +
-			"cache directory, $YYT_CACHE or ~/.cache/yyt, for the day S3 holds it);\n" +
+			"cache directory, $YYT_CACHE or the OS one: ~/.cache/yyt on Linux,\n" +
+			"~/Library/Caches/yyt on macOS, %LocalAppData%\\yyt on Windows, for the\n" +
+			"day S3 holds it);\n" +
 			"`asset upload` and `asset push` take such files too but start over.\n\n" +
 			"--version syncs one version of a versioned bundle (no --mutable, no\n" +
 			"--prune): files already in the version must match.\n\n" +
 			"An encrypted bundle is encrypted here: the key is fetched from the console\n" +
 			"(audited) and kept in memory; a file that must be sent is encrypted into a\n" +
-			"temporary directory under the cache directory ($YYT_CACHE or ~/.cache/yyt;\n" +
+			"temporary directory under the same cache directory ($YYT_CACHE or the OS one;\n" +
 			"yyt-enc v1, read twice so a file that changes meanwhile is refused), and\n" +
 			"sizes and SHA-256s are the ciphertext's. The ciphertext digest of each\n" +
 			"plaintext is remembered there too, so an unchanged file is compared without\n" +

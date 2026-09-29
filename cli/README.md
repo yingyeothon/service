@@ -4,19 +4,42 @@ Single Go binary that drives the console API (`https://console.yyt.life`): teams
 
 ## Install
 
-Prebuilt binaries (linux/darwin/windows × amd64/arm64) are attached to GitHub Releases tagged `cli/v*`:
+Prebuilt binaries (linux/darwin/windows × amd64/arm64) are attached to GitHub Releases tagged `cli/v*`; both install scripts verify the archive against the release's `checksums.txt`.
 
 ```sh
+# macOS / Linux: /usr/local/bin when writable, else ~/.local/bin (BINDIR overrides)
 curl -fsSL https://raw.githubusercontent.com/yingyeothon/service/main/cli/install.sh | sh
-# or: go install github.com/yingyeothon/service/cli/cmd/yyt@latest   (pin: YYT_VERSION=v1.2.0 for the script)
 ```
+
+```powershell
+# Windows (PowerShell 5.1+ / pwsh): %LOCALAPPDATA%\Programs\yyt, added to the user PATH (YYT_BINDIR overrides)
+irm https://raw.githubusercontent.com/yingyeothon/service/main/cli/install.ps1 | iex
+```
+
+`YYT_VERSION=v1.2.0` (PowerShell: `$env:YYT_VERSION = 'v1.2.0'`) pins a release for either script. Alternatives: `go install github.com/yingyeothon/service/cli/cmd/yyt@latest`, or unpack `yyt_<ver>_<os>_<arch>.tar.gz|zip` from the [releases page](https://github.com/yingyeothon/service/releases?q=cli%2Fv&expanded=true) and put `yyt` on your PATH yourself.
+
+Per-OS notes:
+
+- **macOS**: the binaries are ad-hoc signed by the Go toolchain, not notarized. `curl`/`install.sh` downloads carry no quarantine flag; an archive saved by a browser does, and Gatekeeper then refuses the binary until `xattr -d com.apple.quarantine yyt`.
+- **Windows**: `install.ps1` and `yyt self update` move a running `yyt.exe` to `yyt.exe.old` before replacing it (removed on the next run). A browser-downloaded `.exe` may trip SmartScreen (unsigned); the script path does not. Git Bash users run the PowerShell line — `install.sh` refuses `mingw*`/`msys*` and says so.
+- **Linux**: nothing special; `install.sh` needs `curl`, `tar` and `sha256sum` (or `shasum`).
+
+Files the CLI writes (`YYT_CONFIG` / `YYT_CACHE` relocate them; `yyt login` and `yyt whoami` print the config path):
+
+| OS      | config (tokens, profiles)                   | cache (upload resume state, encryption digests) |
+| ------- | ------------------------------------------- | ----------------------------------------------- |
+| Linux   | `~/.config/yyt/config.json`                 | `~/.cache/yyt`                                  |
+| macOS   | `~/Library/Application Support/yyt/config.json` | `~/Library/Caches/yyt`                      |
+| Windows | `%AppData%\yyt\config.json`                  | `%LocalAppData%\yyt`                            |
+
+The config file is written with mode 0600 (its directory 0700) where the OS has permission bits; on Windows it relies on the user profile's default ACL.
 
 `yyt self version` prints the installed version; `yyt self update` fetches the newest `cli/v*` GitHub release for this OS/arch, verifies it against the release's `checksums.txt`, and swaps the running binary in place (Windows: the running `yyt.exe` is moved to `yyt.exe.old` first and removed on the next run). `--check` only reports and exits **7** when an update exists (0 = up to date), `--version 1.2.0` pins a release even if older, `--json` prints `{current, latest, updateAvailable}`. A `dev` build or a `go install …@main` pseudo-version counts as older than every release (`go install …@latest` carries the release version and compares normally); the file that gets replaced is the resolved executable path, so a package-manager install should be updated through that manager instead. Set `GITHUB_TOKEN`/`GH_TOKEN` when the unauthenticated GitHub API rate limit (60/h per address) bites. Neither command touches the console API or the config file.
 
 ## Login
 
 1. Sign in to the console with GitHub, go to _account > API tokens_, create a token (`yyt_…`; shown once).
-2. `yyt login` (token on stdin: `yyt login < token.txt` or an interactive prompt) or `yyt login --token yyt_…` verifies it against `/me` and stores it in `~/.config/yyt/config.json` (mode 0600). `--api https://console-dev.yyt.life` targets another stage.
+2. `yyt login` (token on stdin: `yyt login < token.txt` or an interactive prompt) or `yyt login --token yyt_…` verifies it against `/me` and stores it in the config file (`~/.config/yyt/config.json` on Linux; see the table under _Install_ for macOS and Windows). `--api https://console-dev.yyt.life` targets another stage.
 3. `yyt whoami`, `yyt logout` (the token stays valid until `yyt tokens revoke <id>`).
 
 `YYT_TOKEN` / `YYT_API` environment variables and the `--token` / `--api` flags override the file (useful in CI). `YYT_CONFIG` relocates the file.
@@ -188,8 +211,9 @@ yyt asset rm-version <bundle> <version>
 `asset create --mode live` makes a live bundle (one namespace, files compared by
 SHA-256, `--mutable` manifests replaced in place); `sync` mirrors a directory
 into it. A file over 64 MiB goes up in 32 MiB parts and a `sync` that dies is
-resumed by the next one (the upload id is kept under `$YYT_CACHE`, default
-`~/.cache/yyt`, for the day S3 holds the upload); `upload` and `push` take such
+resumed by the next one (the upload id is kept under `$YYT_CACHE`, default the
+OS cache directory — `~/.cache/yyt` on Linux, see _Install_ — for the day S3
+holds the upload); `upload` and `push` take such
 files too but start over.
 
 ### Key-value collections
@@ -277,4 +301,4 @@ cd cli && go test ./... && go build ./cmd/yyt
 go test ./internal/cmd -update   # refresh golden files after an intentional output change
 ```
 
-Release: tag `cli/vX.Y.Z` on `main`; `.github/workflows/cli-release.yml` runs `cli/scripts/build-release.sh` and publishes the archives + `checksums.txt` (creating the release, or uploading into one already created from the GitHub web UI for that tag).
+Release: tag `cli/vX.Y.Z` on `main`; `.github/workflows/cli-release.yml` runs `cli/scripts/build-release.sh` and publishes the archives + `checksums.txt` (creating the release, or uploading into one already created from the GitHub web UI for that tag). CI runs `go test` on ubuntu, macOS and Windows runners, so a permission-bit or path-separator assumption fails before it ships; `.yyt.json`'s world-writable-directory guard is Unix-only (Windows reports `0777` for every directory), so on a shared Windows host do not run mutating commands from a directory tree other users can write to, or pass `--team`/`--project` (they layer above the file; `yyt whoami` prints where the context came from).

@@ -1,5 +1,6 @@
 {
   "api": "<api>",
+  "config": "<config>",
   "id": "m_1",
   "login": "octo",
   "role": "member",

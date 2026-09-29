@@ -174,12 +174,17 @@ func TestWhoamiTableAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out = strings.ReplaceAll(out, f.srv.URL, "<api>")
+	cfgPath := os.Getenv("YYT_CONFIG")
+	out = strings.ReplaceAll(strings.ReplaceAll(out, f.srv.URL, "<api>"), cfgPath, "<config>")
 	golden(t, "whoami", out)
 	out, _, err = run(t, f, "whoami", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// run() picks a fresh config path per call; JSON escapes a Windows
+	// path's backslashes, so replace the encoded form.
+	enc, _ := json.Marshal(os.Getenv("YYT_CONFIG"))
+	out = strings.ReplaceAll(out, string(enc[1:len(enc)-1]), "<config>")
 	out = strings.ReplaceAll(out, f.srv.URL, "<api>")
 	golden(t, "whoami_json", out)
 }

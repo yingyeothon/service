@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -70,7 +71,9 @@ func findContextFile(start string) (contextFile, string) {
 		p := filepath.Join(dir, ContextFile)
 		// A world-writable directory (/tmp on a shared host) is not a place
 		// to take a deploy target from: anyone could have planted the file.
-		if st, err := os.Stat(dir); err == nil && st.Mode().Perm()&0o002 != 0 {
+		// Windows has no such bit (Go reports 0777 for every writable
+		// directory), so the check would end the search at the first step.
+		if dirWorldWritable(dir) {
 			return contextFile{}, ""
 		}
 		if b, err := os.ReadFile(p); err == nil {
@@ -79,7 +82,7 @@ func findContextFile(start string) (contextFile, string) {
 				return cf, p
 			}
 		}
-		if dir == home {
+		if sameDir(dir, home) {
 			return contextFile{}, ""
 		}
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
@@ -91,6 +94,29 @@ func findContextFile(start string) (contextFile, string) {
 		}
 		dir = parent
 	}
+}
+
+// dirWorldWritable reports the POSIX o+w bit; always false on Windows, where
+// Go synthesizes permission bits and the guard has no meaning.
+func dirWorldWritable(dir string) bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	st, err := os.Stat(dir)
+	return err == nil && st.Mode().Perm()&0o002 != 0
+}
+
+// sameDir compares two cleaned paths; case-insensitively on Windows, where
+// %USERPROFILE% and the cwd may differ only in case.
+func sameDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // contextSpec layers the sources. `start` is where the .yyt.json search

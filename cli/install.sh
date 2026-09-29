@@ -1,5 +1,6 @@
 #!/bin/sh
-# Installs the latest `yyt` release binary into $BINDIR (default /usr/local/bin or ~/.local/bin).
+# Installs the latest `yyt` release binary into $BINDIR (default /usr/local/bin or ~/.local/bin)
+# on Linux and macOS. Windows: cli/install.ps1.
 # Usage: curl -fsSL https://raw.githubusercontent.com/yingyeothon/service/main/cli/install.sh | sh
 set -eu
 REPO=yingyeothon/service
@@ -10,10 +11,20 @@ case "$arch" in
   arm64|aarch64) arch=arm64 ;;
   *) echo "unsupported arch: $arch" >&2; exit 1 ;;
 esac
-case "$os" in linux|darwin) ;; *) echo "unsupported os: $os (download from GitHub Releases)" >&2; exit 1 ;; esac
-# YYT_VERSION=v1.2.0 pins a release; otherwise the newest cli/v* release is used.
+case "$os" in
+  linux|darwin) ;;
+  mingw*|msys*|cygwin*) echo "on Windows run in PowerShell: irm https://raw.githubusercontent.com/yingyeothon/service/main/cli/install.ps1 | iex" >&2; exit 1 ;;
+  *) echo "unsupported os: $os (download from GitHub Releases)" >&2; exit 1 ;;
+esac
+# YYT_VERSION=v1.2.0 pins a release; otherwise the newest published cli/v*
+# release is used (drafts and prereleases skipped, like `yyt self update`).
+# Each release object is one JSON block; `"draft":false` and `"prerelease":false`
+# are looked up inside the block that carries the tag.
 tag=${YYT_VERSION:-$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=100" \
-  | grep -o '"tag_name": *"cli/v[^"]*"' | head -1 | sed 's/.*"cli\/\(v[^"]*\)"/\1/')}
+  | tr -d '\n' | sed 's/},[[:space:]]*{/}\
+{/g' \
+  | grep '"tag_name": *"cli/v' | grep '"draft": *false' | grep '"prerelease": *false' \
+  | head -1 | sed 's/.*"tag_name": *"cli\/\(v[^"]*\)".*/\1/')}
 [ -n "$tag" ] || { echo "no cli/v* release found" >&2; exit 1; }
 ver=${tag#v}
 url="https://github.com/$REPO/releases/download/cli%2F$tag/yyt_${ver}_${os}_${arch}.tar.gz"

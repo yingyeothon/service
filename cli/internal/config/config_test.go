@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -66,8 +67,7 @@ func TestSaveLoadRemoveProfiles(t *testing.T) {
 	if err := SaveProfile("dev", Profile{API: "https://x", Token: "yyt_abc"}); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := os.Stat(p)
-	if st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("perm %o", st.Mode().Perm())
 	}
 	f, _ = LoadFile()
@@ -116,8 +116,7 @@ func TestLegacyFlatMigration(t *testing.T) {
 	if _, ok := doc["profiles"]; !ok {
 		t.Fatalf("not migrated: %s", b)
 	}
-	st, _ := os.Stat(p)
-	if st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("perm %o", st.Mode().Perm())
 	}
 	c, err := Resolve("", "", "")

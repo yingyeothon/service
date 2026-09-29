@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -22,11 +23,28 @@ func TestIsID(t *testing.T) {
 	}
 }
 
+// setHome points os.UserHomeDir at dir on every OS (HOME on Unix,
+// USERPROFILE on Windows).
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
+func TestSameDir(t *testing.T) {
+	if !sameDir("/a/b/", "/a/b") || sameDir("", "") || sameDir("/a", "/b") {
+		t.Fatal("clean + compare")
+	}
+	if got := sameDir("/A/b", "/a/b"); got != (runtime.GOOS == "windows") {
+		t.Fatalf("case folding %v", got)
+	}
+}
+
 // findContextFile walks up from the start directory, stops at a git root or
 // $HOME, and ignores unreadable/malformed files.
 func TestFindContextFile(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("HOME", root) // never walk above the sandbox
+	setHome(t, root) // never walk above the sandbox
 	repo := filepath.Join(root, "repo")
 	deep := filepath.Join(repo, "apps", "game")
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
@@ -51,13 +69,16 @@ func TestFindContextFile(t *testing.T) {
 	if cf, _ := findContextFile(deep); cf.Team != "dooroo" {
 		t.Fatalf("malformed file must be skipped, got %+v", cf)
 	}
-	// A world-writable directory ends the search before its file is read.
-	shared := filepath.Join(root, "shared")
-	_ = os.MkdirAll(shared, 0o777)
-	_ = os.Chmod(shared, 0o777)
-	_ = os.WriteFile(filepath.Join(shared, ContextFile), []byte(`{"team":"planted"}`), 0o644)
-	if cf, p := findContextFile(shared); p != "" {
-		t.Fatalf("world-writable dir must be skipped, got %+v", cf)
+	// A world-writable directory ends the search before its file is read
+	// (no such bit on Windows, where every directory would look shared).
+	if runtime.GOOS != "windows" {
+		shared := filepath.Join(root, "shared")
+		_ = os.MkdirAll(shared, 0o777)
+		_ = os.Chmod(shared, 0o777)
+		_ = os.WriteFile(filepath.Join(shared, ContextFile), []byte(`{"team":"planted"}`), 0o644)
+		if cf, p := findContextFile(shared); p != "" {
+			t.Fatalf("world-writable dir must be skipped, got %+v", cf)
+		}
 	}
 	// A nearer valid file wins; a file path as start uses its directory.
 	_ = os.WriteFile(filepath.Join(deep, ContextFile), []byte(`{"project":"other"}`), 0o644)
@@ -70,7 +91,7 @@ func TestFindContextFile(t *testing.T) {
 // contextSpec layers flag > env > .yyt.json > profile, per field.
 func TestContextSpecLayering(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setHome(t, dir)
 	_ = os.WriteFile(filepath.Join(dir, ContextFile), []byte(`{"team":"file-team","project":"file-prj"}`), 0o644)
 	cfg := config.Config{Team: "team_prof", Project: "prj_prof"}
 

@@ -1,2 +1,6 @@
 # Generated conformance vectors (`go test ./internal/assetcrypt -update` in cli/): a regeneration is not a diff to read.
 docs/asset-encryption-vectors.json -diff
+# The CLI ships for Windows and its CI runs there: keep every text file LF so
+# the golden files match what `yyt` prints, and so `install.sh` piped to `sh`
+# and `install.ps1` never carry CR (Git for Windows defaults to autocrlf=true).
+* text=auto eol=lf

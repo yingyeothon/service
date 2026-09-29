@@ -6,7 +6,7 @@
 
 1. Decide whether the change needs only a `dev` redeploy (default for every task) or a `prod` release.
 2. `prod` is deployed only when the user asks; confirm which stacks are affected before running.
-3. CLI releases: tag `cli/vX.Y.Z` → GitHub Actions + goreleaser build the GitHub Release. Decide patch vs minor bump with the user when not obvious.
+3. CLI releases: tag `cli/vX.Y.Z` on `main` → `.github/workflows/cli-release.yml` runs `cli/scripts/build-release.sh` (linux/darwin/windows × amd64/arm64) and publishes the GitHub Release; `install.sh`, `install.ps1` and `yyt self update` all read that asset layout (`rules/workflow.md` _Go CLI_). Decide patch vs minor bump with the user when not obvious.
 4. After deploying, run the smoke commands from the area's todo doc and verify the uploaded artifact/endpoint.
 
 ## Conventions

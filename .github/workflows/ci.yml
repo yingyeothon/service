@@ -26,19 +26,31 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm coverage
   go:
-    runs-on: ubuntu-latest
+    # The CLI ships for linux/macOS/Windows, so its tests run on all three.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - id: cli
-        run: echo "present=$([ -f cli/go.mod ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - if: steps.cli.outputs.present == 'true'
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: cli/go.mod
-      - if: steps.cli.outputs.present == 'true'
+          cache-dependency-path: cli/go.sum
+      - shell: bash
         run: cd cli && go vet ./... && go test ./... && go build ./...
-      - if: steps.cli.outputs.present == 'true'
+      - if: runner.os == 'Linux'
         run: cli/scripts/build-release.sh 0.0.0-ci
+      # Both hosts: the script must parse under Windows PowerShell 5.1 too.
+      - if: runner.os == 'Windows'
+        name: Parse install.ps1 (pwsh)
+        shell: pwsh
+        run: "[scriptblock]::Create((Get-Content -Raw cli/install.ps1)) | Out-Null"
+      - if: runner.os == 'Windows'
+        name: Parse install.ps1 (Windows PowerShell 5.1)
+        shell: powershell
+        run: "[scriptblock]::Create((Get-Content -Raw cli/install.ps1)) | Out-Null"
   gateway:
     runs-on: ubuntu-latest
     steps:

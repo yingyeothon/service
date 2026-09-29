@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -671,10 +672,14 @@ func siteZipOf(path string, exclude []string) ([]byte, error) {
 	}
 	rels = slices.DeleteFunc(rels, func(rel string) bool {
 		for _, g := range exclude {
-			if ok, _ := filepath.Match(g, rel); ok {
+			// rel is slash-separated on every OS, so match with path, not
+			// filepath (on Windows filepath.Match treats `\` as a separator);
+			// a Windows-style `build\*` pattern is normalised the same way.
+			g = filepath.ToSlash(g)
+			if ok, _ := slashpath.Match(g, rel); ok {
 				return true
 			}
-			if ok, _ := filepath.Match(g, rel[strings.LastIndex(rel, "/")+1:]); ok {
+			if ok, _ := slashpath.Match(g, slashpath.Base(rel)); ok {
 				return true
 			}
 		}

@@ -21,4 +21,7 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
   rm -rf "$work"
   echo "built $name"
 done
-(cd dist && sha256sum -- *.tar.gz *.zip > checksums.txt)
+# `<hex>  <asset>` lines (what selfupdate, install.sh and install.ps1 parse);
+# macOS has no sha256sum, and `shasum -a 256` prints the same format.
+if command -v sha256sum >/dev/null 2>&1; then sum=sha256sum; else sum="shasum -a 256"; fi
+(cd dist && $sum -- *.tar.gz *.zip > checksums.txt)

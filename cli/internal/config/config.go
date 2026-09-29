@@ -1,5 +1,8 @@
 // Package config stores CLI logins (console base URL + API token) per profile
-// in ~/.config/yyt/config.json with 0600 permissions.
+// in <user config dir>/yyt/config.json: ~/.config/yyt on Linux,
+// ~/Library/Application Support/yyt on macOS, %AppData%\yyt on Windows
+// (YYT_CONFIG overrides). The file is 0600 where permission bits exist; on
+// Windows the profile's default ACL protects it.
 //
 // File schema: {"profiles":{"<name>":{"api","token"}},"default":"<name>"}.
 // A legacy flat file {"api","token"} is migrated to the "default" profile on
