@@ -405,7 +405,7 @@ Public CDN cost grows with viewer traffic and nothing bounded it: any site, asse
 
 ## Limit requests (soft/hard) — added 2026-09-28
 
-Status: decided and built 2026-09-28 (`todo/46` P1); live on dev and prod 2026-09-28. Settled by the owner on 2026-09-28 (`todo/46`, from a proposal of 2026-09-27). A cap stops being one constant: every member gets its **soft** value, and a platform admin may grant a scope more, up to a **hard** ceiling, on request. `team.projects` (a team as its own scope, a stepped key) was decided and built 2026-09-29 (`todo/48`, migration `m0026_team_limit_scope`).
+Status: decided and built 2026-09-28 (`todo/46` P1); live on dev and prod 2026-09-28. Settled by the owner on 2026-09-28 (`todo/46`, from a proposal of 2026-09-27). A cap stops being one constant: every member gets its **soft** value, and a platform admin may grant a scope more, up to a **hard** ceiling, on request. `team.projects` (a team as its own scope, a stepped key) was decided and built 2026-09-29 and is live on dev and prod the same day (`todo/48`, migration `m0026_team_limit_scope`, `cli/v0.13.0`).
 
 1. **Registry.** One code table (`services/console/src/limits.ts`) lists every key with its scope, unit, soft and hard value; changing a hard value is a code and decisions change. The effective limit is an unexpired override, else the soft value. An override is validated against hard, `unlimited` exists only where hard is unlimited, and a key is accepted only for its own scope kind. A key may carry a **step**: it is then asked for only as `effective + step`, and only once the usage has reached the effective value (#2).
 
