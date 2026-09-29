@@ -10,9 +10,11 @@ import { fileURLToPath } from "node:url";
 export function loadItEnv(
   service: string,
   stage: string,
+  // The repository root; the default holds only while this file sits at
+  // `packages/testing/src/`.
+  root = join(dirname(fileURLToPath(import.meta.url)), "../../.."),
 ): Record<string, string> | undefined {
   if (process.env.YYT_IT !== "1") return undefined;
-  const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
   const file = join(root, "local/env", `${service}.${stage}.env`);
   if (!existsSync(file)) return undefined;
   const env: Record<string, string> = {};

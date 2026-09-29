@@ -1,9 +1,6 @@
-import { MantineProvider } from "@mantine/core";
-import { ModalsProvider } from "@mantine/modals";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type { EventDetail, Role } from "../src/types";
@@ -28,8 +25,7 @@ vi.mock("../src/api", () => ({
 }));
 
 const { EventDetailPage } = await import("../src/pages/EventDetail");
-const { theme } = await import("../src/theme");
-const { AuthProvider } = await import("../src/auth");
+const { mount: mountWith } = await import("./wrap");
 
 const HOUR = 3600;
 /** A running vote with two candidates; the later one leads 2–0. */
@@ -88,23 +84,11 @@ const CLOSED_ON_TALLY = {
 } as unknown as EventDetail;
 
 function mount() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <MantineProvider theme={theme} forceColorScheme="light">
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/events/ev_1"]}>
-          <AuthProvider client={mockApi}>
-            <ModalsProvider>
-              <Routes>
-                <Route path="/events/:id" element={<EventDetailPage />} />
-              </Routes>
-            </ModalsProvider>
-          </AuthProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    </MantineProvider>,
+  return mountWith(
+    <Routes>
+      <Route path="/events/:id" element={<EventDetailPage />} />
+    </Routes>,
+    { client: mockApi, path: "/events/ev_1" },
   );
 }
 

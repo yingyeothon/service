@@ -1,0 +1,28 @@
+{
+  "name": "@yyt/testing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Test-only helpers shared by the stacks and packages: fakes, event builders, fixtures (consumed from source, never bundled)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "echo '@yyt/testing is consumed from source'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@yyt/console-db": "workspace:*",
+    "@yyt/http": "workspace:*",
+    "@yyt/jwt": "workspace:*",
+    "@yyt/ws": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "vitest": "^3.2.4"
+  }
+}

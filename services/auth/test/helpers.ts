@@ -1,5 +1,6 @@
 import { MockAgent, fetch as undiciFetch } from "undici";
 import type { HttpEvent, HttpResult } from "@yyt/http";
+import { fakeClock, httpEvent, NOW_SEC, SECRET } from "@yyt/testing";
 import { createMemoryKv } from "@yyt/redis";
 import { exportJWK, generateKeyPair, SignJWT, createLocalJWKSet } from "jose";
 import { createAuthApp, type AuthAppOptions } from "../src/app.js";
@@ -9,16 +10,8 @@ import {
   createGoogleProvider,
 } from "../src/providers/index.js";
 
-export const SECRET =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 export const BASE = "https://auth-dev.yyt.life";
-export const NOW_MS = 1_700_000_000_000;
-export const NOW_SEC = NOW_MS / 1000;
-
-export function fakeClock(ms = NOW_MS) {
-  let t = ms;
-  return { now: () => t, tick: (d: number) => (t += d) };
-}
+export { fakeClock, NOW_MS, NOW_SEC, SECRET } from "@yyt/testing";
 
 export function channel(
   over: Partial<Omit<AuthChannel, "config">> & {
@@ -132,7 +125,7 @@ export async function harness(
   return { app, kv, clock, store, agent, google };
 }
 
-export function ev(
+export const ev = (
   method: string,
   path: string,
   o: {
@@ -140,40 +133,7 @@ export function ev(
     body?: unknown;
     headers?: Record<string, string>;
   } = {},
-): HttpEvent {
-  const qs = o.query ? new URLSearchParams(o.query).toString() : "";
-  return {
-    version: "2.0",
-    routeKey: "$default",
-    rawPath: path,
-    rawQueryString: qs,
-    headers: {
-      ...(o.body !== undefined ? { "content-type": "application/json" } : {}),
-      ...o.headers,
-    },
-    queryStringParameters: o.query,
-    requestContext: {
-      accountId: "1",
-      apiId: "a",
-      domainName: "auth-dev.yyt.life",
-      domainPrefix: "auth-dev",
-      http: {
-        method,
-        path,
-        protocol: "HTTP/1.1",
-        sourceIp: "127.0.0.1",
-        userAgent: "vitest",
-      },
-      requestId: "req-1",
-      routeKey: "$default",
-      stage: "$default",
-      time: "",
-      timeEpoch: NOW_MS,
-    },
-    body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
-    isBase64Encoded: false,
-  };
-}
+): HttpEvent => httpEvent(method, path, { ...o, domain: "auth-dev.yyt.life" });
 
 export function parse<T = Record<string, unknown>>(r: HttpResult): T {
   return JSON.parse(r.body ?? "null") as T;

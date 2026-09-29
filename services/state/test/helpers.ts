@@ -11,21 +11,18 @@ import {
 } from "@yyt/console-db";
 import type { Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
-import { signChannelToken } from "@yyt/jwt";
+import { fakeClock, jwt as jwtOf, NOW_MS, seedAuthChannel } from "@yyt/testing";
 import { createStateApp } from "../src/app.js";
 import { createChannelStore } from "../src/channels.js";
 import { createKvCrypto, type KvCrypto } from "../src/kvstore-crypto.js";
 
-export const SECRET =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+export { fakeClock, NOW_MS, NOW_SEC, SECRET } from "@yyt/testing";
 export const CHANNEL = "auth_a";
 export const OTHER_CHANNEL = "auth_b";
 export const AUDIENCE = "game-a";
 /** Shaped like `newDocKey` output; the fixed random tail keeps failures readable. */
 export const API_KEY = `yds.${CHANNEL}.${"a".repeat(64)}`;
 export const OTHER_KEY = `yds.${OTHER_CHANNEL}.${"b".repeat(64)}`;
-export const NOW_MS = 1_700_000_000_000;
-export const NOW_SEC = NOW_MS / 1000;
 export const OWNER = "0123456789abcdef0123456789abcdef";
 export const OTHER_OWNER = "fedcba9876543210fedcba9876543210";
 export const PROJECT = "prj_1";
@@ -54,29 +51,6 @@ export function recordingLogger(): Logger & {
   };
 }
 
-export function fakeClock(ms = NOW_MS) {
-  let t = ms;
-  return { now: () => t, tick: (d: number) => (t += d) };
-}
-
-const authChannel = (id: string, apiKey: string | undefined) => ({
-  id,
-  kind: "auth" as const,
-  ownerId: "m1",
-  teamId: "team_1",
-  projectId: "prj_1",
-  name: id,
-  config: {
-    audience: AUDIENCE,
-    tokenTtlSec: 3600,
-    redirectAllowlist: [],
-    providers: {},
-  },
-  secret: { secret: SECRET, providers: {}, ...(apiKey ? { apiKey } : {}) },
-  createdAt: NOW_SEC,
-  expiresAt: NOW_SEC + 86400,
-});
-
 export type Harness = Awaited<ReturnType<typeof build>>;
 
 export async function build(
@@ -95,17 +69,17 @@ export async function build(
 ) {
   const clock = fakeClock();
   const db = createMemoryConsoleDb();
-  await db.upsertMember({
-    id: "m1",
-    githubId: 1,
-    githubLogin: "o",
-    role: "admin",
-    createdAt: NOW_SEC,
+  // Both channels are named by their id here, and carry the doc key.
+  await seedAuthChannel(db, {
+    id: CHANNEL,
+    name: CHANNEL,
+    ...(over.keyless ? {} : { apiKey: API_KEY }),
   });
-  await db.insertChannel(
-    authChannel(CHANNEL, over.keyless ? undefined : API_KEY),
-  );
-  await db.insertChannel(authChannel(OTHER_CHANNEL, OTHER_KEY));
+  await seedAuthChannel(db, {
+    id: OTHER_CHANNEL,
+    name: OTHER_CHANNEL,
+    apiKey: OTHER_KEY,
+  });
   const state = over.state ?? createMemoryStateDb();
   const kvstore = over.kvstore ?? createMemoryKvStoreDb();
   const leaderboards = over.leaderboards ?? createMemoryLeaderboardDb();
@@ -136,20 +110,10 @@ export async function build(
   return { clock, db, state, kvstore, leaderboards, social, crypto, app };
 }
 
-export async function jwt(
+export const jwt = (
   userId: string,
   over: { channelId?: string; secret?: string; audience?: string } = {},
-) {
-  const { token } = await signChannelToken({
-    secret: over.secret ?? SECRET,
-    channelId: over.channelId ?? CHANNEL,
-    audience: over.audience ?? AUDIENCE,
-    userId,
-    ttlSec: 3600,
-    clock: fakeClock(),
-  });
-  return token;
-}
+) => jwtOf(userId, over);
 
 export interface Req {
   method: string;

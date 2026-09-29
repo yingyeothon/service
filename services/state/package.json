@@ -16,6 +16,7 @@
     "@yyt/jwt": "workspace:*"
   },
   "devDependencies": {
+    "@yyt/testing": "workspace:*",
     "esbuild": "^0.25.9",
     "serverless-domain-manager": "^8.0.0",
     "serverless-esbuild": "^1.55.0"

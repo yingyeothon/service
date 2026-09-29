@@ -8,7 +8,7 @@ import {
   mysqlOptionsFromEnv,
   type PrismaClient,
 } from "../src/index.js";
-import { loadItEnv } from "./itEnv.js";
+import { loadItEnv } from "@yyt/testing";
 
 const env = loadItEnv("console", "dev");
 const reader = loadItEnv("auth", "dev");

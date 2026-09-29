@@ -1,7 +1,4 @@
-import { MantineProvider } from "@mantine/core";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 
@@ -37,25 +34,9 @@ vi.mock("../src/api", () => ({
 }));
 
 const { App } = await import("../src/App");
-const { theme } = await import("../src/theme");
-const { AuthProvider } = await import("../src/auth");
+const { mount: mountWith } = await import("./wrap");
 
-function mount(path: string) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <MantineProvider theme={theme} forceColorScheme="light">
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[path]}>
-          <AuthProvider client={mockApi}>
-            <App />
-          </AuthProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    </MantineProvider>,
-  );
-}
+const mount = (path: string) => mountWith(<App />, { client: mockApi, path });
 
 describe("App", () => {
   beforeEach(() => {

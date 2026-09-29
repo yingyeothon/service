@@ -1,67 +1,37 @@
 import { createMemoryConsoleDb } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
-import { signChannelToken } from "@yyt/jwt";
 import { createMemoryKv } from "@yyt/redis";
-import { createPoster, type PosterTransport } from "@yyt/ws";
+import {
+  authorizerEvent as authorizerEventOf,
+  fakeClock,
+  fakeTransport,
+  jwt as jwtOf,
+  NOW_SEC,
+  seedAuthChannel,
+  wsEvent as wsEventOf,
+} from "@yyt/testing";
+import { createPoster } from "@yyt/ws";
 import type {
   APIGatewayProxyWebsocketEventV2,
   APIGatewayRequestAuthorizerEvent,
 } from "aws-lambda";
-import { vi } from "vitest";
 import { createTopicApp, MAX_FRAME_BYTES } from "../src/app.js";
 import { createChannelStore } from "../src/channels.js";
 import { createTopicHttp } from "../src/http.js";
 import { createTopicStore } from "../src/topics.js";
 
-export const SECRET =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 export const API_KEY =
   "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 export const OTHER_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdee";
-export const NOW_MS = 1_700_000_000_000;
-export const NOW_SEC = NOW_MS / 1000;
 export const WS_BASE = "wss://topic-ws-test.yyt.life";
-
-export function fakeClock(ms = NOW_MS) {
-  let t = ms;
-  return { now: () => t, tick: (d: number) => (t += d) };
-}
-
-export interface Sent {
-  id: string;
-  msg: Record<string, unknown>;
-}
-
-/** Records posts; `gone` ids answer 410 on post/probe; `pending` ids are "not yet connected". */
-export function fakeTransport(
-  gone: string[] = [],
-  pending = new Set<string>(),
-) {
-  const sent: Sent[] = [];
-  const closed: string[] = [];
-  const transport: PosterTransport = {
-    post: vi.fn(async (id: string, data: Uint8Array) => {
-      if (gone.includes(id) || pending.has(id)) {
-        const e = new Error("gone") as Error & { name: string };
-        e.name = "GoneException";
-        throw e;
-      }
-      sent.push({
-        id,
-        msg: JSON.parse(Buffer.from(data).toString("utf8")) as Record<
-          string,
-          unknown
-        >,
-      });
-    }),
-    disconnect: vi.fn(async (id: string) => {
-      closed.push(id);
-    }),
-    probe: vi.fn(async (id: string) => !gone.includes(id) && !pending.has(id)),
-  };
-  return { transport, sent, closed, pending };
-}
+export {
+  fakeClock,
+  fakeTransport,
+  NOW_MS,
+  NOW_SEC,
+  SECRET,
+} from "@yyt/testing";
 
 export type Harness = ReturnType<typeof build>;
 
@@ -70,30 +40,7 @@ export function build(over: { gone?: string[] } = {}) {
   const db = createMemoryConsoleDb();
   const kv = createMemoryKv({ prefix: "topic:test:", clock });
   const seed = async () => {
-    await db.upsertMember({
-      id: "m1",
-      githubId: 1,
-      githubLogin: "o",
-      role: "admin",
-      createdAt: NOW_SEC,
-    });
-    await db.insertChannel({
-      id: "auth_a",
-      kind: "auth",
-      ownerId: "m1",
-      teamId: "team_1",
-      projectId: "prj_1",
-      name: "a",
-      config: {
-        audience: "game-a",
-        tokenTtlSec: 3600,
-        redirectAllowlist: [],
-        providers: {},
-      },
-      secret: { secret: SECRET, providers: {} },
-      createdAt: NOW_SEC,
-      expiresAt: NOW_SEC + 86400,
-    });
+    await seedAuthChannel(db);
     await db.insertChannel({
       id: "topic_a",
       kind: "topic",
@@ -160,76 +107,29 @@ export function build(over: { gone?: string[] } = {}) {
   };
 }
 
-export async function jwt(userId: string, clock = fakeClock()) {
-  const { token } = await signChannelToken({
-    secret: SECRET,
-    channelId: "auth_a",
-    audience: "game-a",
-    userId,
-    ttlSec: 3600,
-    clock,
-  });
-  return token;
-}
+export const jwt = (userId: string, clock = fakeClock()) =>
+  jwtOf(userId, { clock });
 
-export function authorizerEvent(
+export const authorizerEvent = (
   over: { topic?: string; protocol?: string } = {},
-): APIGatewayRequestAuthorizerEvent {
-  return {
-    type: "REQUEST",
-    methodArn: "arn:aws:execute-api:r:a:id/dev/$connect",
-    resource: "$connect",
-    path: "/",
-    httpMethod: "GET",
-    headers:
-      over.protocol === undefined
-        ? {}
-        : { "Sec-WebSocket-Protocol": over.protocol },
-    multiValueHeaders: {},
-    pathParameters: null,
-    queryStringParameters:
-      over.topic === undefined ? null : { topic: over.topic },
-    multiValueQueryStringParameters: null,
-    stageVariables: null,
-    requestContext: {} as APIGatewayRequestAuthorizerEvent["requestContext"],
-  };
-}
+): APIGatewayRequestAuthorizerEvent =>
+  authorizerEventOf({
+    ...(over.topic === undefined ? {} : { query: { topic: over.topic } }),
+    ...(over.protocol === undefined ? {} : { protocol: over.protocol }),
+  });
 
-export function wsEvent(
+export const wsEvent = (
   routeKey: "$connect" | "$disconnect" | "$default",
   connectionId: string,
   over: { userId?: string; topicId?: string; body?: string } = {},
-): APIGatewayProxyWebsocketEventV2 {
-  const authorizer =
-    over.userId === undefined
+): APIGatewayProxyWebsocketEventV2 =>
+  wsEventOf(routeKey, connectionId, {
+    ...(over.userId === undefined
       ? {}
-      : { authorizer: { userId: over.userId, topicId: over.topicId } };
-  return {
-    requestContext: {
-      routeKey,
-      messageId: "m",
-      eventType:
-        routeKey === "$connect"
-          ? "CONNECT"
-          : routeKey === "$disconnect"
-            ? "DISCONNECT"
-            : "MESSAGE",
-      extendedRequestId: "x",
-      requestTime: "",
-      messageDirection: "IN",
-      stage: "dev",
-      connectedAt: 0,
-      requestTimeEpoch: 0,
-      requestId: "r",
-      domainName: "topic-ws-dev.yyt.life",
-      connectionId,
-      apiId: "id",
-      ...authorizer,
-    },
-    body: over.body,
-    isBase64Encoded: false,
-  } as unknown as APIGatewayProxyWebsocketEventV2;
-}
+      : { authorizer: { userId: over.userId, topicId: over.topicId } }),
+    ...(over.body === undefined ? {} : { body: over.body }),
+    domainName: "topic-ws-dev.yyt.life",
+  });
 
 /** Connects `userId` on `connId` through `$connect` like API Gateway would (socket pending during the handler). */
 export async function join(

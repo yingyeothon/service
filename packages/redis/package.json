@@ -23,6 +23,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"
   },
+  "devDependencies": {
+    "@yyt/testing": "workspace:*"
+  },
   "dependencies": {
     "@yyt/core": "workspace:*",
     "ioredis": "^6.0.0"

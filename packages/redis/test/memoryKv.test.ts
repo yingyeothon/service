@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { createMemoryKv, kvContractTests } from "../src/index.js";
 import { createRedisKv, redisOptionsFromEnv, type Kv } from "../src/index.js";
-import { loadItEnv } from "./itEnv.js";
+import { loadItEnv } from "@yyt/testing";
 
 describe("createMemoryKv contract", () => {
   let now = 0;

@@ -16,6 +16,7 @@ import {
   createMemoryStateDb,
 } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
+import { httpEvent, NOW_MS, NOW_SEC } from "@yyt/testing";
 import { createMemoryAclAdmin, createMemoryKv } from "@yyt/redis";
 import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
@@ -42,9 +43,9 @@ export const SITE_CDN = "https://dev-g.yyt.life";
 export const SITE_HOST = "dev-g.yyt.life";
 /** Never the real host: the stateful box's address is a guarded identifier. */
 export const REDIS_ENDPOINT = { host: "redis.example", port: 6379 };
-export const NOW_MS = 1_700_000_000_000;
-export const NOW_SEC = NOW_MS / 1000;
+export { NOW_MS, NOW_SEC } from "@yyt/testing";
 
+/** This suite's clock ticks **seconds** (the `team()` fixture spends 100-s slots); the shared one ticks ms. */
 export function fakeClock(ms = NOW_MS) {
   let t = ms;
   return { now: () => t, tick: (sec: number) => (t += sec * 1000) };
@@ -347,7 +348,7 @@ export function cookieOf(r: HttpResult, name: string): string {
   return c.split(";")[0]!.slice(name.length + 1);
 }
 
-export function ev(
+export const ev = (
   method: string,
   path: string,
   o: {
@@ -355,40 +356,8 @@ export function ev(
     body?: unknown;
     headers?: Record<string, string>;
   } = {},
-): HttpEvent {
-  const qs = o.query ? new URLSearchParams(o.query).toString() : "";
-  return {
-    version: "2.0",
-    routeKey: "$default",
-    rawPath: path,
-    rawQueryString: qs,
-    headers: {
-      ...(o.body !== undefined ? { "content-type": "application/json" } : {}),
-      ...o.headers,
-    },
-    queryStringParameters: o.query,
-    requestContext: {
-      accountId: "1",
-      apiId: "a",
-      domainName: "console-dev.yyt.life",
-      domainPrefix: "console-dev",
-      http: {
-        method,
-        path,
-        protocol: "HTTP/1.1",
-        sourceIp: "127.0.0.1",
-        userAgent: "vitest",
-      },
-      requestId: "req-1",
-      routeKey: "$default",
-      stage: "$default",
-      time: "",
-      timeEpoch: NOW_MS,
-    },
-    body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
-    isBase64Encoded: false,
-  };
-}
+): HttpEvent =>
+  httpEvent(method, path, { ...o, domain: "console-dev.yyt.life" });
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /** Loosely typed JSON for assertions; tests index freely into responses. */

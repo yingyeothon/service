@@ -29,6 +29,7 @@
     "@yyt/core": "workspace:*"
   },
   "devDependencies": {
+    "@yyt/testing": "workspace:*",
     "prisma": "7.2.0",
     "testcontainers": "^12.1.0"
   }

@@ -2,7 +2,7 @@
   "name": "@yyt/service-auth",
   "version": "0.0.0",
   "private": true,
-  "description": "auth.yyt.life \u2014 per-channel OAuth login (GitHub/Google) issuing HS256 channel JWTs",
+  "description": "auth.yyt.life — per-channel OAuth login (GitHub/Google) issuing HS256 channel JWTs",
   "type": "module",
   "scripts": {
     "build": "echo 'bundled by serverless-esbuild at deploy time'",
@@ -19,6 +19,7 @@
     "zod": "^4.1.5"
   },
   "devDependencies": {
+    "@yyt/testing": "workspace:*",
     "esbuild": "^0.25.9",
     "serverless-domain-manager": "^8.0.0",
     "serverless-esbuild": "^1.55.0"

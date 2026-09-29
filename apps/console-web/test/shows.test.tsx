@@ -1,9 +1,6 @@
-import { MantineProvider } from "@mantine/core";
-import { ModalsProvider } from "@mantine/modals";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type { EventDetail, ShowDetail, ShowEntry } from "../src/types";
@@ -44,8 +41,7 @@ const { ShowEntryPage } = await import("../src/pages/ShowEntry");
 const { AuditPage } = await import("../src/pages/Audit");
 const { ShowDetailPage } = await import("../src/pages/ShowDetail");
 const { EventDetailPage } = await import("../src/pages/EventDetail");
-const { theme } = await import("../src/theme");
-const { AuthProvider } = await import("../src/auth");
+const { mount: mountWith } = await import("./wrap");
 
 const SHOW: ShowDetail = {
   id: "sh_1",
@@ -110,30 +106,15 @@ const EVENT = {
 } as unknown as EventDetail;
 
 function mount(path: string) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return render(
-    <MantineProvider theme={theme} forceColorScheme="light">
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[path]}>
-          <AuthProvider client={mockApi}>
-            <ModalsProvider>
-              <Routes>
-                <Route path="/shows" element={<ShowsPage />} />
-                <Route path="/shows/:id" element={<ShowDetailPage />} />
-                <Route
-                  path="/shows/:id/entries/:eid"
-                  element={<ShowEntryPage />}
-                />
-                <Route path="/audit" element={<AuditPage />} />
-                <Route path="/events/:id" element={<EventDetailPage />} />
-              </Routes>
-            </ModalsProvider>
-          </AuthProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    </MantineProvider>,
+  return mountWith(
+    <Routes>
+      <Route path="/shows" element={<ShowsPage />} />
+      <Route path="/shows/:id" element={<ShowDetailPage />} />
+      <Route path="/shows/:id/entries/:eid" element={<ShowEntryPage />} />
+      <Route path="/audit" element={<AuditPage />} />
+      <Route path="/events/:id" element={<EventDetailPage />} />
+    </Routes>,
+    { client: mockApi, path },
   );
 }
 
