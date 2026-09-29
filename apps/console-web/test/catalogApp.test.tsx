@@ -168,7 +168,12 @@ describe("CatalogAppPage", () => {
       }),
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(await screen.findByText("named members")).toBeInTheDocument();
+    // The same word as the browse page's audience column (`AUDIENCE_LABEL`).
+    expect(
+      within(
+        (await screen.findByText("Who may install it")).closest("tr")!,
+      ).getByText("members"),
+    ).toBeInTheDocument();
     expect(
       await screen.findByText(
         "Nobody is named yet, so nobody outside the team can install it.",

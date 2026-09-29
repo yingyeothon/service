@@ -1,6 +1,5 @@
 import {
   IconApps,
-  IconBuildingStore,
   IconCalendarEvent,
   IconClipboardList,
   IconDatabase,
@@ -57,7 +56,8 @@ export const NAV_ITEMS: NavItem[] = [
   // and what a `member_only` one hides is the show, not the menu entry.
   { path: "/shows", label: "Shows", icon: IconPhotoStar, minRole: null },
   // Public for the same reason: the browse page shows what the visitor may
-  // read (docs/decisions.md *Catalog listings* #5).
+  // read (docs/decisions.md *Catalog listings* #5); a platform admin sees
+  // every listing there, with takedown in the row menu (#8) — no admin page.
   { path: "/listings", label: "Apps", icon: IconApps, minRole: null },
   { path: "/teams", label: "Teams", icon: IconUsersGroup, minRole: "member" },
   {
@@ -122,12 +122,6 @@ export const NAV_ITEMS: NavItem[] = [
     icon: IconGauge,
     minRole: "admin",
     badge: "pendingLimitRequests",
-  },
-  {
-    path: "/admin/listings",
-    label: "Listings",
-    icon: IconBuildingStore,
-    minRole: "admin",
   },
   // Visible rather than hidden: `hidden` marks a path that guards routes
   // reached from elsewhere, and `test/routes.test.tsx` pins that list.

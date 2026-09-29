@@ -69,16 +69,14 @@ describe("routes", () => {
     expect(NAV_ITEMS.find((i) => i.path === "/shows")?.minRole).toBeNull();
   });
 
-  it("keeps the listing browse page public and the admin list admin-only", () => {
+  it("keeps the listing browse page public, and it is the only listing page", () => {
     const byPath = new Map(ROUTES.map((r) => [r.path, r.guard]));
     expect(byPath.has("/listings")).toBe(true);
     expect(byPath.get("/listings")).toBeNull();
     expect(NAV_ITEMS.find((i) => i.path === "/listings")?.minRole).toBeNull();
-    expect(byPath.get("/admin/listings")).toBe("/admin/listings");
-    expect(navMinRole("/admin/listings")).toBe("admin");
-    expect(
-      NAV_ITEMS.find((i) => i.path === "/admin/listings")?.hidden,
-    ).toBeUndefined();
+    // The admin's takedown lives in that page's row menu (decision #8).
+    expect(byPath.has("/admin/listings")).toBe(false);
+    expect(NAV_ITEMS.some((i) => i.path === "/admin/listings")).toBe(false);
   });
 
   it("keeps the limit request queue admin-only and in the menu", () => {

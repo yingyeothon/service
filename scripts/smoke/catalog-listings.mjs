@@ -288,9 +288,26 @@ const adminList = await call(`/admin/catalog/listings?tag=${tag}`, {
   headers: as(admin),
 });
 check(
-  "admin list shows it with the takedown detail",
-  adminList.status === 200 && find(adminList)?.takedown?.reason === "smoke",
+  "admin list shows it with the takedown detail and the builds (the one browse page)",
+  adminList.status === 200 &&
+    find(adminList)?.takedown?.reason === "smoke" &&
+    Array.isArray(find(adminList)?.artifacts) &&
+    find(adminList).artifacts.length > 0 &&
+    !JSON.stringify(find(adminList)).includes("objectKey"),
   adminList.text.slice(0, 200),
+);
+check(
+  "admin list narrows by platform like the browse",
+  find(
+    await call(`/admin/catalog/listings?tag=${tag}&platform=bin`, {
+      headers: as(admin),
+    }),
+  ) !== undefined &&
+    find(
+      await call(`/admin/catalog/listings?tag=${tag}&platform=ios`, {
+        headers: as(admin),
+      }),
+    ) === undefined,
 );
 check(
   "the team may unpublish while taken down",

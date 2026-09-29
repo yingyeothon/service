@@ -782,6 +782,7 @@ export function createApiClient({
       get<{ listings: PublicListing[] }>(`/catalog/listings${qs(p)}`).then(
         (r) => r.listings,
       ),
+    /** Admin only: every listing, taken-down ones with the detail, same filters as the browse. */
     adminCatalogListings: (p: ListingListParams = {}) =>
       get<{ listings: AdminCatalogListing[] }>(
         `/admin/catalog/listings${qs(p)}`,

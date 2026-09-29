@@ -22,7 +22,6 @@ vi.mock("../src/api", () => ({
 }));
 
 const { ListingsPage } = await import("../src/pages/Listings");
-const { AdminListingsPage } = await import("../src/pages/AdminListings");
 const { mount } = await import("./wrap");
 
 const ROW: PublicListing = {
@@ -103,6 +102,8 @@ describe("ListingsPage", () => {
       ).getByText("A short one."),
     ).toBeVisible();
     expect(screen.getByText("studio")).toBeInTheDocument();
+    // No app link for a reader: the app page is a 404 to them.
+    expect(screen.queryByRole("link", { name: "my-game" })).toBeNull();
     expect(screen.getByText("everyone")).toBeInTheDocument();
     expect(screen.getAllByText("rpg, co-op").length).toBeGreaterThan(0);
     // The first download is inline (the CDN file); the rest fold out, and an
@@ -121,6 +122,11 @@ describe("ListingsPage", () => {
       ).getByRole("link", { name: "ios 1.4.1 of My Game" }),
     ).toHaveAttribute("href", expect.stringMatching(/^itms-services:/));
     expect(vi.mocked(mockApi.catalogListings)).toHaveBeenLastCalledWith({});
+    // No admin affordance for a visitor: no row menu, no admin route.
+    expect(
+      screen.queryByRole("button", { name: "Actions for My Game" }),
+    ).toBeNull();
+    expect(mockApi.adminCatalogListings).not.toHaveBeenCalled();
   });
 
   it("hands search, platform and sort to the server", async () => {
@@ -186,6 +192,9 @@ const ADMIN_ROW: AdminCatalogListing = {
   updatedAt: 0,
   takenDown: false,
   takedown: null,
+  artifacts: [ROW.artifacts[0]!],
+  latestArtifact: ROW.artifacts[0]!,
+  applicationIds: [],
 };
 
 async function rowAction(name: string, verb: string) {
@@ -195,7 +204,7 @@ async function rowAction(name: string, verb: string) {
   await userEvent.click(await screen.findByRole("menuitem", { name: verb }));
 }
 
-describe("AdminListingsPage", () => {
+describe("ListingsPage as a platform admin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(mockApi.me).mockResolvedValue({
@@ -206,7 +215,7 @@ describe("AdminListingsPage", () => {
     });
   });
 
-  it("takes a listing down with a reason and clears it again", async () => {
+  it("reads the admin list in the same columns, opens the app, takes a listing down with a reason and clears it again", async () => {
     vi.mocked(mockApi.adminCatalogListings).mockResolvedValue([ADMIN_ROW]);
     vi.mocked(mockApi.takedownCatalogListing).mockImplementation(
       async (appId, reason) => {
@@ -224,17 +233,49 @@ describe("AdminListingsPage", () => {
     });
     mount(
       <Routes>
-        <Route path="/admin/listings" element={<AdminListingsPage />} />
+        <Route path="/listings" element={<ListingsPage />} />
       </Routes>,
-      { client: mockApi, path: "/admin/listings" },
+      { client: mockApi, path: "/listings" },
     );
-    expect(await screen.findByText("My Game")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "my-game" })).toHaveAttribute(
-      "href",
-      "/catalog/apps/ca_1",
-    );
-    expect(screen.getByText("live")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Apps" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/a members row is visible to the readers/),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "My Game" }),
+    ).toBeInTheDocument();
+    // The public page's six columns plus the menu column, no Status or App.
+    expect(
+      screen.getAllByRole("columnheader").map((h) => h.textContent),
+    ).toEqual([
+      "Title",
+      "Team",
+      "Who may install",
+      "Tags",
+      "Downloads",
+      "Published",
+      "Actions",
+    ]);
     expect(screen.getByText("members")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "android 1.4.2 of My Game" }),
+    ).toHaveAttribute("href", "https://cdn.example/a.apk");
+    expect(mockApi.catalogListings).not.toHaveBeenCalled();
+    // The app's name and page live in the title fold, for the admin only.
+    await userEvent.click(screen.getByRole("button", { name: "My Game" }));
+    expect(
+      within(
+        await screen.findByRole("group", { name: "About My Game" }),
+      ).getByRole("link", { name: "my-game" }),
+    ).toHaveAttribute("href", "/catalog/apps/ca_1");
+    const menu = screen.getByRole("button", { name: "Actions for My Game" });
+    await userEvent.click(menu);
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Take down",
+    ]);
+    await userEvent.keyboard("{Escape}");
 
     await rowAction("My Game", "Take down");
     const dialog = await screen.findByRole("dialog");
@@ -251,16 +292,18 @@ describe("AdminListingsPage", () => {
         "not ok",
       ),
     );
+    // The takedown stands in for the audience: nobody may install it.
     expect(await screen.findByText("taken down")).toBeInTheDocument();
-    // The reason folds out under the status; it is not hover-only.
+    expect(screen.queryByText("members")).toBeNull();
+    // The reason folds out under it; it is not hover-only.
     await userEvent.click(
       screen.getByRole("button", { name: "by root, takedown of My Game" }),
     );
-    expect(
-      within(
-        await screen.findByRole("group", { name: "Takedown of My Game" }),
-      ).getByText("not ok"),
-    ).toBeVisible();
+    const fold = await screen.findByRole("group", {
+      name: "Takedown of My Game",
+    });
+    expect(within(fold).getByText("not ok")).toBeVisible();
+    expect(within(fold).getByText(/was members/)).toBeVisible();
 
     await rowAction("My Game", "Clear takedown");
     await userEvent.click(
@@ -271,14 +314,14 @@ describe("AdminListingsPage", () => {
     await waitFor(() =>
       expect(mockApi.restoreCatalogListing).toHaveBeenCalledWith("ca_1"),
     );
-    expect(await screen.findByText("live")).toBeInTheDocument();
+    expect(await screen.findByText("members")).toBeInTheDocument();
   });
 
-  it("searches on the server", async () => {
+  it("hands search and platform to the admin route", async () => {
     vi.mocked(mockApi.adminCatalogListings).mockResolvedValue([]);
-    mount(<AdminListingsPage />, { client: mockApi, path: "/admin/listings" });
+    mount(<ListingsPage />, { client: mockApi, path: "/listings" });
     expect(
-      await screen.findByText("Nothing is published."),
+      await screen.findByText("Nothing is published yet."),
     ).toBeInTheDocument();
     await userEvent.type(screen.getByRole("searchbox"), "bad");
     await waitFor(() =>
@@ -287,5 +330,25 @@ describe("AdminListingsPage", () => {
       }),
     );
     expect(await screen.findByText("No rows match “bad”.")).toBeInTheDocument();
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Platform" }),
+      "ios",
+    );
+    await waitFor(() =>
+      expect(vi.mocked(mockApi.adminCatalogListings)).toHaveBeenLastCalledWith({
+        q: "bad",
+        platform: "ios",
+      }),
+    );
+    // A platform with no match is a no-match state too, not "nothing yet".
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await waitFor(() =>
+      expect(vi.mocked(mockApi.adminCatalogListings)).toHaveBeenLastCalledWith({
+        platform: "ios",
+      }),
+    );
+    expect(await screen.findByText("No rows match “”.")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing is published yet.")).toBeNull();
+    expect(mockApi.catalogListings).not.toHaveBeenCalled();
   });
 });

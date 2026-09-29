@@ -217,7 +217,7 @@ export function ListingSection({
                 <Table.Th w={160}>Who may install it</Table.Th>
                 <Table.Td>
                   <Badge tone={l.audience === "public" ? "ok" : "neutral"}>
-                    {l.audience === "public" ? "everyone" : "named members"}
+                    {AUDIENCE_LABEL[l.audience]}
                   </Badge>
                 </Table.Td>
               </Table.Tr>

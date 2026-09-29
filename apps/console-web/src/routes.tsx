@@ -1,6 +1,5 @@
 import type { ReactElement } from "react";
 import { Navigate } from "react-router";
-import { AdminListingsPage } from "./pages/AdminListings";
 import { AssetBundlePage } from "./pages/AssetBundle";
 import { CatalogAppPage } from "./pages/CatalogApp";
 import { ChannelDetailPage } from "./pages/ChannelDetail";
@@ -56,14 +55,11 @@ export const ROUTES: AppRoute[] = [
     element: <ShowEntryPage />,
   },
   // Public like `/shows`: a `public` listing is readable by anonymous
-  // visitors; what a `members` one hides is the row, not the page.
+  // visitors; what a `members` one hides is the row, not the page. The
+  // platform admin's takedown lives on the same page (row menu), so there
+  // is no `/admin/listings`.
   { path: "/listings", guard: null, element: <ListingsPage /> },
   { path: "/audit", guard: "/audit", element: <AuditPage /> },
-  {
-    path: "/admin/listings",
-    guard: "/admin/listings",
-    element: <AdminListingsPage />,
-  },
   {
     path: "/admin/limit-requests",
     guard: "/admin/limit-requests",

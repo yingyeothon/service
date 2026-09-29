@@ -447,6 +447,63 @@ describe("catalog listings — reading", () => {
       "Another",
       "Public Game",
     ]);
+
+    // The admin list is a superset of the public row (decision #8): every
+    // listing whatever its audience, the team's view, and the same builds and
+    // `platform` narrowing — the console's one browse page relies on it.
+    const admin = await h.login("Boss", "admin", 9124);
+    const adminList = async (query: Record<string, string> = {}) => {
+      const r = await h.app(
+        ev("GET", "/admin/catalog/listings", {
+          headers: admin.cookie,
+          query,
+        }),
+      );
+      expect(r.statusCode, r.body).toBe(200);
+      return parse(r).listings as Row[];
+    };
+    const all = await adminList();
+    expect(all.map((r) => r.title)).toEqual([
+      "Bare",
+      "Another",
+      "Members Game",
+      "Public Game",
+    ]);
+    expect(all[3]).toEqual({
+      appId: pub.id,
+      appName: "pub",
+      teamId: owner.teamId,
+      teamName: "owner-team",
+      title: "Public Game",
+      summary: "100% fun",
+      tags: ["rpg"],
+      audience: "public",
+      publishedBy: "owner",
+      publishedAt: NOW_SEC + 6,
+      updatedAt: NOW_SEC + 6,
+      takenDown: false,
+      takedown: null,
+      artifacts: [
+        expect.objectContaining({ id: "p_a2", platform: "android" }),
+        expect.objectContaining({ id: "p_i1", platform: "ios" }),
+      ],
+      latestArtifact: expect.objectContaining({ id: "p_a2" }) as unknown,
+      applicationIds: ["p.release", "p.ios", "p.debug"],
+    });
+    expect(JSON.stringify(all)).not.toMatch(/objectKey/);
+    const adminIos = await adminList({ platform: "ios" });
+    expect(adminIos.map((r) => r.title)).toEqual([
+      "Members Game",
+      "Public Game",
+    ]);
+    expect((adminIos[1]!.artifacts as Row[]).map((a) => a.id)).toEqual([
+      "p_i1",
+    ]);
+    expect(
+      (await adminList({ platform: "android", sort: "title" })).map(
+        (r) => r.title,
+      ),
+    ).toEqual(["Another", "Members Game", "Public Game"]);
   });
 
   it("a named viewer reads the listing and its newest artifacts, and nothing else of the app", async () => {
@@ -784,6 +841,36 @@ describe("catalog listings — platform admin takedown", () => {
       }) as unknown,
     });
     expect((await takedown("POST")).statusCode).toBe(409);
+    // The response's listing and the admin list carry the builds of a
+    // taken-down row too, and `platform` narrows it like a live one.
+    expect(
+      ((parse(down).listing as Row).artifacts as Row[]).map((a) => a.id),
+    ).toEqual(["d_a2", "d_i1"]);
+    const adminList = async (query: Record<string, string> = {}) =>
+      (
+        parse(
+          await h.app(
+            ev("GET", "/admin/catalog/listings", {
+              headers: admin.cookie,
+              query,
+            }),
+          ),
+        ).listings as Row[]
+      ).map((r) => r.title);
+    expect(await adminList({ platform: "ios" })).toEqual(["Bad"]);
+    expect(await adminList({ platform: "osx" })).toEqual([]);
+    // A reason is text for a screen and a terminal: no control characters
+    // (validated before the handler, so no clock tick and no state change).
+    expect(
+      (
+        await h.app(
+          ev("POST", `/admin/catalog/listings/${app.id}/takedown`, {
+            headers: admin.cookie,
+            body: { reason: "bad\u0007bell" },
+          }),
+        )
+      ).statusCode,
+    ).toBe(400);
     // A takedown on an app that has no listing (yet, or any more) is allowed
     // ahead of a republish; it clears the same way.
     const bare = await makeApp(h, owner, "bare");

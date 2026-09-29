@@ -593,8 +593,15 @@ export interface CatalogListingTakedown {
   reason: string | null;
 }
 
-/** The admin list's row: the listing plus who took it down and why. */
-export interface AdminCatalogListing extends CatalogListing {
+/**
+ * The admin list's row (decision #8): the team's view plus who took it down
+ * and why, plus the same builds as the public row — the one browse page
+ * shows an admin every listing with the download column everyone sees.
+ */
+export interface AdminCatalogListing
+  extends
+    CatalogListing,
+    Pick<PublicListing, "artifacts" | "latestArtifact" | "applicationIds"> {
   takedown: CatalogListingTakedown | null;
 }
 
@@ -620,6 +627,15 @@ export interface PublicListing {
   latestArtifact: Omit<CatalogArtifact, "objectKey"> | null;
   applicationIds: string[];
 }
+
+/**
+ * What the browse page renders: the public row, or the admin's superset of
+ * it. `takenDown` set (even `false`) marks an admin row; the admin-only ids
+ * (`teamId`, `publishedBy`) are left out so the shared page cannot render
+ * them by accident.
+ */
+export type BrowseListing = PublicListing &
+  Partial<Pick<AdminCatalogListing, "takenDown" | "takedown">>;
 
 export interface ListingListParams extends ListParams {
   tag?: string;

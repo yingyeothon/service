@@ -70,15 +70,26 @@ export const listingPutBody = z
 export const viewerBody = z
   .object({ login: z.string().trim().min(1).max(100) })
   .strict();
+// The reason is served back to the admin list and kept in the audit log:
+// newlines and tabs only, like a summary.
 export const takedownBody = z
-  .object({ reason: z.string().trim().max(500).optional() })
+  .object({
+    reason: z
+      .string()
+      .trim()
+      .max(500)
+      .refine((s) => !/[^\P{Cc}\n\t]/u.test(s), "no control characters")
+      .optional(),
+  })
   .strict();
 
-const adminListingsQuery = searchQuery(LISTING_SORT_KEYS)
-  .extend({ tag: tag.optional() })
-  .passthrough();
-const listingsQuery = adminListingsQuery
-  .extend({ platform: z.enum(CATALOG_PLATFORMS).optional() })
+// One schema for the browse and the admin list: `platform` keeps the
+// listings that have an artifact of it, and both lists carry artifacts.
+const listingsQuery = searchQuery(LISTING_SORT_KEYS)
+  .extend({
+    tag: tag.optional(),
+    platform: z.enum(CATALOG_PLATFORMS).optional(),
+  })
   .passthrough();
 
 export interface ListingRoutesOptions {
@@ -199,22 +210,6 @@ export function createListingRoutes({
   }
   const listingView = async (r: ListingRow) => (await listingViews([r]))[0]!;
 
-  /** The admin list adds who took a listing down, when and why. */
-  async function adminViews(rows: ListingRow[]) {
-    const l = await lookups(
-      rows,
-      rows.flatMap((r) => [r.publishedBy, r.takedown?.by ?? null]),
-    );
-    const views = await listingViews(rows);
-    return views.map((v, i) => {
-      const t = rows[i]!.takedown;
-      return {
-        ...v,
-        takedown: t ? { by: l.login(t.by), at: t.at, reason: t.reason } : null,
-      };
-    });
-  }
-
   /** The artifact as a reader sees it: the CDN link, never the storage key. */
   const publicArtifact = ({
     objectKey: _objectKey,
@@ -222,13 +217,13 @@ export function createListingRoutes({
   }: ReturnType<typeof artifactView>) => a;
 
   /**
-   * The public row (decision #5): the listing, its team's name and the
-   * newest artifact per platform, plus the `withSummary` pair the console
-   * app's list already understands. `platform` keeps only the listings that
-   * have an artifact of it.
+   * What every list row carries about the app's builds: the newest artifact
+   * per platform plus the `withSummary` pair the console app's list already
+   * understands. With `platform`, only the listings that have an artifact of
+   * it are kept — the rows come back filtered.
    */
-  async function publicViews(
-    rows: ListingRow[],
+  async function withArtifacts<R extends ListingRow>(
+    rows: R[],
     platform: CatalogPlatform | undefined,
   ) {
     const ids = rows.map((r) => r.appId);
@@ -246,27 +241,69 @@ export function createListingRoutes({
         (s) => [s.appId, s],
       ),
     );
-    const l = await lookups(rows, []);
     return rows
       .filter((r) => !platform || per.has(r.appId))
       .map((r) => {
         const s = summary.get(r.appId);
-        // No team id and no storage key: a reader gets names and CDN links.
         return {
-          appId: r.appId,
-          appName: r.appName,
-          teamName: l.teamName(r.teamId),
-          title: r.title,
-          summary: r.summary,
-          tags: r.tags,
-          audience: r.audience,
-          publishedAt: r.publishedAt,
-          updatedAt: r.updatedAt,
+          row: r,
           artifacts: (per.get(r.appId) ?? []).map(publicArtifact),
           latestArtifact: s ? publicArtifact(artifactView(s.latest)) : null,
           applicationIds: s?.applicationIds ?? [],
         };
       });
+  }
+
+  /**
+   * The public row (decision #5): the listing, its team's name and the
+   * builds. No team id and no storage key: a reader gets names and CDN links.
+   */
+  async function publicViews(
+    rows: ListingRow[],
+    platform: CatalogPlatform | undefined,
+  ) {
+    const kept = await withArtifacts(rows, platform);
+    const l = await lookups(rows, []);
+    return kept.map(({ row: r, ...builds }) => ({
+      appId: r.appId,
+      appName: r.appName,
+      teamName: l.teamName(r.teamId),
+      title: r.title,
+      summary: r.summary,
+      tags: r.tags,
+      audience: r.audience,
+      publishedAt: r.publishedAt,
+      updatedAt: r.updatedAt,
+      ...builds,
+    }));
+  }
+
+  /**
+   * The admin row (decision #8) is a superset of the public one: the team's
+   * view plus who took a listing down, when and why, plus the builds — the
+   * console's one browse page shows an admin every listing with the same
+   * download column everyone else sees.
+   */
+  async function adminViews(
+    rows: ListingRow[],
+    platform: CatalogPlatform | undefined,
+  ) {
+    const kept = await withArtifacts(rows, platform);
+    const keptRows = kept.map((k) => k.row);
+    const l = await lookups(
+      keptRows,
+      keptRows.flatMap((r) => [r.publishedBy, r.takedown?.by ?? null]),
+    );
+    const views = await listingViews(keptRows);
+    return views.map((v, i) => {
+      const { row, ...builds } = kept[i]!;
+      const t = row.takedown;
+      return {
+        ...v,
+        takedown: t ? { by: l.login(t.by), at: t.at, reason: t.reason } : null,
+        ...builds,
+      };
+    });
   }
 
   /**
@@ -484,7 +521,7 @@ export function createListingRoutes({
       method: "GET",
       path: "/admin/catalog/listings",
       auth: true,
-      query: adminListingsQuery,
+      query: listingsQuery,
       handler: async (ctx) => {
         requireRole(ctx, "admin");
         const rows = await listings.listListings({
@@ -493,7 +530,9 @@ export function createListingRoutes({
           includeTakenDown: true,
           limit: LISTINGS_PAGE_MAX,
         });
-        return noStore({ listings: await adminViews(rows) });
+        return noStore({
+          listings: await adminViews(rows, ctx.query.platform),
+        });
       },
     }),
     defineRoute({
@@ -528,7 +567,7 @@ export function createListingRoutes({
             at: nowSec(clock),
             reason: ctx.body.reason ?? null,
           },
-          listing: row ? (await adminViews([row]))[0] : null,
+          listing: row ? (await adminViews([row], undefined))[0] : null,
         });
       },
     }),

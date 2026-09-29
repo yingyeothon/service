@@ -42,19 +42,37 @@ export interface AsyncState<T> {
  * mutation response replaces the query data. `keepPrevious` keeps the last
  * rows on screen while a key change (a sort, a search) refetches — the
  * answer to "a filter in the key flashes the skeleton" — and `fetching`
- * says so.
+ * says so. As a predicate over the previous key it keeps them only across
+ * the key changes it names (a sort, not a sign-out: the browse page must
+ * not paint one reader's rows as another's placeholder).
  */
+/** `keepPreviousData` gated on the previous key (the typing is TanStack's). */
+const keepPreviousIf = (pred: (prevKey: QueryKey) => boolean) =>
+  ((prev: unknown, prevQuery: { queryKey: QueryKey } | undefined) =>
+    prevQuery && pred(prevQuery.queryKey)
+      ? prev
+      : undefined) as unknown as typeof keepPreviousData;
+
 export function useApiQuery<T>(
   key: QueryKey,
   fn: () => Promise<T>,
-  opts: { enabled?: boolean; keepPrevious?: boolean } = {},
+  opts: {
+    enabled?: boolean;
+    keepPrevious?: boolean | ((prevKey: QueryKey) => boolean);
+  } = {},
 ): AsyncState<T> {
   const client = useQueryClient();
+  const keep = opts.keepPrevious;
   const q = useQuery({
     queryKey: key,
     queryFn: fn,
     enabled: opts.enabled,
-    placeholderData: opts.keepPrevious ? keepPreviousData : undefined,
+    placeholderData:
+      keep === undefined || keep === false
+        ? undefined
+        : keep === true
+          ? keepPreviousData
+          : keepPreviousIf(keep),
   });
   const reload = useCallback(async () => {
     await q.refetch();
