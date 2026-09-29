@@ -112,5 +112,6 @@ export function useAction() {
     },
     [],
   );
-  return { busy, error, run, clear: () => setError(null) };
+  const clear = useCallback(() => setError(null), []);
+  return { busy, error, run, clear };
 }

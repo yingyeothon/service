@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/yingyeothon/service/cli/internal/api"
@@ -37,6 +38,54 @@ type versionLink struct {
 	BundleID     *string `json:"bundleId"`
 	AssetVersion *string `json:"assetVersion"`
 	CreatedAt    int64   `json:"createdAt"`
+	// What the link points at, resolved by the server (`linkViews`); `null`
+	// once the artifact or bundle is gone, which the label then says.
+	Artifact   *versionLinkArtifact `json:"artifact"`
+	BundleName *string              `json:"bundleName"`
+}
+
+type versionLinkArtifact struct {
+	AppID     string  `json:"appId"`
+	AppName   string  `json:"appName"`
+	Platform  string  `json:"platform"`
+	Version   *string `json:"version"`
+	ABI       *string `json:"abi"`
+	BuildType *string `json:"buildType"`
+	URL       string  `json:"url"`
+	CreatedAt int64   `json:"createdAt"`
+}
+
+// linkTarget names a link the way the console's version page does: the app,
+// version, ABI and build type of an artifact, or `bundle @ version` — never a
+// bare id while the target still exists.
+func linkTarget(l versionLink) string {
+	if l.Kind == "artifact" {
+		a := l.Artifact
+		if a == nil {
+			return "artifact " + output.Str(l.ArtifactID)
+		}
+		parts := []string{a.AppName}
+		for _, p := range []*string{a.Version, a.ABI, a.BuildType} {
+			if p != nil && *p != "" {
+				parts = append(parts, *p)
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	bundle := output.Str(l.BundleID)
+	if l.BundleName != nil {
+		bundle = *l.BundleName
+	}
+	return bundle + " @ " + output.Str(l.AssetVersion)
+}
+
+// linkID is the raw target id the table carried before the label existed
+// (`art_1`, `ab_1@v3`): what a script greps for.
+func linkID(l versionLink) string {
+	if l.Kind == "asset_version" {
+		return output.Str(l.BundleID) + "@" + output.Str(l.AssetVersion)
+	}
+	return output.Str(l.ArtifactID)
 }
 
 type issue struct {
@@ -94,14 +143,10 @@ func (a *App) printVersion(v projectVersion) error {
 	}
 	rows := make([][]string, 0, len(v.Links))
 	for _, l := range v.Links {
-		target := output.Str(l.ArtifactID)
-		if l.Kind == "asset_version" {
-			target = output.Str(l.BundleID) + "@" + output.Str(l.AssetVersion)
-		}
-		rows = append(rows, []string{l.ID, l.Kind, target, output.Time(l.CreatedAt)})
+		rows = append(rows, []string{l.ID, l.Kind, linkTarget(l), linkID(l), output.Time(l.CreatedAt)})
 	}
 	fmt.Fprintln(a.Out)
-	return a.printer().Table([]string{"LINK", "KIND", "TARGET", "CREATED"}, rows)
+	return a.printer().Table([]string{"LINK", "KIND", "TARGET", "ID", "CREATED"}, rows)
 }
 
 func (a *App) printIssue(i issue) error {
@@ -610,19 +655,33 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 		return cc, r, p + "/" + n, nil
 	}
 	{
-		var status string
+		var status, version string
 		list := &cobra.Command{
-			Use:     "list [--status open|closed]",
+			Use:     "list [--status open|closed] [--version <id|name>]",
 			Aliases: []string{"ls"},
 			Short:   "List issues (open ones by default)",
+			Long:    "List issues. --version keeps the ones filed against one version (id or name, `+build` stripped like create; a name the project does not have is an error, never created).",
 			Args:    cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				cc, _, p, err := base(cmd, false)
+				cc, r, p, err := base(cmd, false)
 				if err != nil {
 					return err
 				}
+				q := url.Values{}
 				if status != "" {
-					p += "?status=" + url.QueryEscape(status)
+					q.Set("status", status)
+				}
+				if version != "" {
+					// The same spelling create accepts (`1.0.7+8` → `1.0.7`), but
+					// through the read-only resolver: a filter never creates.
+					id, err := cc.version(cmd.Context(), r.ProjectID, versionNameArg(version))
+					if err != nil {
+						return err
+					}
+					q.Set("versionId", id)
+				}
+				if len(q) > 0 {
+					p += "?" + q.Encode()
 				}
 				var res struct {
 					Issues []issue `json:"issues"`
@@ -641,6 +700,7 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 			},
 		}
 		list.Flags().StringVar(&status, "status", "", "open|closed (server default: open)")
+		list.Flags().StringVar(&version, "version", "", "only issues against this version (id or exact name)")
 		c.AddCommand(list)
 	}
 	{

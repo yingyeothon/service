@@ -83,8 +83,14 @@ func TestProjectVersions(t *testing.T) {
 		detail[k] = v
 	}
 	detail["links"] = []any{
-		map[string]any{"id": "lnk_1", "versionId": "ver_1", "kind": "artifact", "artifactId": "art_1", "bundleId": nil, "assetVersion": nil, "createdAt": 1756000200},
-		map[string]any{"id": "lnk_2", "versionId": "ver_1", "kind": "asset_version", "artifactId": nil, "bundleId": "ab_1", "assetVersion": "v3", "createdAt": 1756000300},
+		// The server resolves what a link points at; the table names it and keeps the raw id beside it.
+		map[string]any{"id": "lnk_1", "versionId": "ver_1", "kind": "artifact", "artifactId": "art_1", "bundleId": nil, "assetVersion": nil, "createdAt": 1756000200,
+			"artifact": map[string]any{"appId": "ca_1", "appName": "game", "platform": "android", "version": "1.0.0+1", "abi": "arm64-v8a", "buildType": "release", "url": "https://d.example/a.apk", "createdAt": 1756000150}, "bundleName": nil},
+		map[string]any{"id": "lnk_2", "versionId": "ver_1", "kind": "asset_version", "artifactId": nil, "bundleId": "ab_1", "assetVersion": "v3", "createdAt": 1756000300,
+			"artifact": nil, "bundleName": "dungeon-maps"},
+		// A vanished artifact keeps its id as the label.
+		map[string]any{"id": "lnk_3", "versionId": "ver_1", "kind": "artifact", "artifactId": "art_gone", "bundleId": nil, "assetVersion": nil, "createdAt": 1756000400,
+			"artifact": nil, "bundleName": nil},
 	}
 	record := func(status int, resp any) func(recorded) (int, any) {
 		return func(r recorded) (int, any) { body, lastPath = r.Body, r.Path; return status, resp }
@@ -176,6 +182,9 @@ func TestProjectIssues(t *testing.T) {
 			if strings.Contains(r.Path, "status=closed") {
 				return 200, map[string]any{"issues": []any{closed}}
 			}
+			if strings.Contains(r.Path, "versionId=ver_1") {
+				return 200, map[string]any{"issues": []any{open}}
+			}
 			return 200, map[string]any{"issues": []any{open}}
 		},
 		"GET /projects/prj_1/versions": func(recorded) (int, any) {
@@ -209,6 +218,26 @@ func TestProjectIssues(t *testing.T) {
 	golden(t, "project_issue_list", out)
 	if _, _, err := run(t, f, "project", "issue", "ls", "--status", "closed"); err != nil || lastPath != "/projects/prj_1/issues?status=closed" {
 		t.Fatalf("%v %s", err, lastPath)
+	}
+	// --version takes an id as it is, resolves an exact name, and refuses an unknown name without creating it.
+	if _, _, err := run(t, f, "project", "issue", "ls", "--version", "ver_1"); err != nil || lastPath != "/projects/prj_1/issues?versionId=ver_1" {
+		t.Fatalf("%v %s", err, lastPath)
+	}
+	if _, _, err := run(t, f, "project", "issue", "ls", "--version", "1.0.0"); err != nil || lastPath != "/projects/prj_1/issues?versionId=ver_1" {
+		t.Fatalf("%v %s", err, lastPath)
+	}
+	if _, _, err := run(t, f, "project", "issue", "ls", "--status", "closed", "--version", "1.0.0"); err != nil || lastPath != "/projects/prj_1/issues?status=closed&versionId=ver_1" {
+		t.Fatalf("%v %s", err, lastPath)
+	}
+	// The build suffix is stripped the way create strips it, so a script may pass the pubspec version to both.
+	if _, _, err := run(t, f, "project", "issue", "ls", "--version", "1.0.0+8"); err != nil || lastPath != "/projects/prj_1/issues?versionId=ver_1" {
+		t.Fatalf("%v %s", err, lastPath)
+	}
+	if _, _, err := run(t, f, "project", "issue", "ls", "--version", "9.9.9"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(versionPosts) != 0 {
+		t.Fatalf("a list filter must never create a version: %v", versionPosts)
 	}
 	out, _, err = run(t, f, "project", "issue", "get", "1")
 	if err != nil {

@@ -3,6 +3,10 @@ import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
+import {
+  IssueCreateDrawer,
+  newIssueDraft,
+} from "../components/IssueCreateDrawer";
 import { DataTable, NameCell, NumCell } from "../components/DataTable";
 import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
 import { PageSkeleton } from "../components/Loading";
@@ -54,6 +58,12 @@ export function VersionPage() {
   const v = q.data;
   const edit = useDrawerForm(() => ({ note: v?.note ?? "" }));
   const canWrite = t.canWrite;
+  // For the New issue drawer's version picker; asked early so the preset
+  // shows its name the moment the drawer opens.
+  const versions = useApiQuery(["versions", prj], () => api.versions(prj), {
+    enabled: canWrite,
+  });
+  const create = useDrawerForm(() => newIssueDraft(ver));
 
   const crumbs = (
     <Crumbs
@@ -91,6 +101,7 @@ export function VersionPage() {
     }
   };
 
+  // `New issue` is the page's one filled verb; `Edit` stays the first white one.
   const actions: HeaderAction[] = canWrite
     ? [
         {
@@ -100,6 +111,7 @@ export function VersionPage() {
             edit.open();
           },
         },
+        { label: "New issue", primary: true, onClick: create.open },
       ]
     : [];
 
@@ -139,6 +151,12 @@ export function VersionPage() {
             onChanged={q.reload}
           />
           <IssuesSection teamId={teamId} prj={prj} ver={ver} />
+          <IssueCreateDrawer
+            projectId={prj}
+            teamId={teamId}
+            versions={versions.data ?? []}
+            state={create}
+          />
           <ResourceDrawer
             opened={edit.opened}
             onClose={edit.close}

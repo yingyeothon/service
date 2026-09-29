@@ -14,7 +14,7 @@ import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { teamUrl, useTeamStanding } from "../lib/team";
-import { DiscussionFields } from "./Team";
+import { DiscussionFields } from "../components/IssueFields";
 
 export function DiscussionPage() {
   const { team: teamId = "", id = "" } = useParams();

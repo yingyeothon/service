@@ -88,8 +88,9 @@ yyt project ls | create <name> [--description md] | get|update|delete [project] 
 yyt project version ls | create <name> [--note md|@file] | bump [patch|minor|major] | get|update|rm <version>
 yyt project version link <version> --artifact <art-id> | --bundle <bundle> --asset-version <v>
 yyt project version unlink <version> <link-id>
-yyt project issue ls [--status open|closed] | create <title> [--body …] [--version v] | get|update|close|reopen <n>
-  # issue --version: id or name (`+build` stripped); a missing name is created, `created version …` on stderr
+yyt project issue ls [--status open|closed] [--version v] | create <title> [--body …] [--version v] | get|update|close|reopen <n>
+  # issue --version: id or name (`+build` stripped by create, update and ls alike); create makes a missing name (`created version …` on stderr), ls refuses it
+  # version get: TARGET names the app/version/abi/build or `bundle @ v`; ID keeps the raw `art_…`/`ab_…@v` for scripts; --json links carry `artifact`/`bundleName`
 yyt project issue comment add <n> --body … | update <n> <cid> --body … | rm <n> <cid>
 ```
 

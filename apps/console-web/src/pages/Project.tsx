@@ -20,6 +20,10 @@ import {
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { Crumbs } from "../components/Crumbs";
+import {
+  IssueCreateDrawer,
+  newIssueDraft,
+} from "../components/IssueCreateDrawer";
 import { LimitsSection, useLimits } from "../components/Limits";
 import {
   DataTable,
@@ -62,7 +66,7 @@ import {
   type Version,
 } from "../types";
 import { ExpiresCell } from "./Channels";
-import { ISSUE_TONE, VersionSelect } from "./Issue";
+import { ISSUE_TONE } from "./Issue";
 import {
   CapFields,
   capOk,
@@ -91,7 +95,6 @@ import {
   retainOk,
 } from "./Leaderboard";
 import { SITE_SHARED_ORIGIN_WARNING, sitePrimaryUrl } from "./Site";
-import { DiscussionFields } from "./Team";
 
 const TABS = [
   "channels",
@@ -1599,30 +1602,9 @@ function IssuesTab({
   const versions = useApiQuery(["versions", project.id], () =>
     api.versions(project.id),
   );
-  const act = useAction();
-  const nav = useNavigate();
-  const create = useDrawerForm(() => ({
-    title: "",
-    bodyMd: "",
-    versionId: null as string | null,
-  }));
+  const create = useDrawerForm(() => newIssueDraft());
   const versionName = (id: string | null) =>
     id ? (versions.data?.find((v) => v.id === id)?.name ?? id) : "—";
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    const r = await act.run(() =>
-      api.createIssue(project.id, {
-        title: create.form.title.trim(),
-        bodyMd: create.form.bodyMd,
-        versionId: create.form.versionId,
-      }),
-    );
-    if (!r) return;
-    create.close();
-    notify.created("issue");
-    void nav(issueUrl(project.teamId, project.id, r.number));
-  };
 
   return (
     <Section
@@ -1648,7 +1630,6 @@ function IssuesTab({
         />
         <TextFilter value={lq.q} onChange={lq.setQ} placeholder="Title" />
       </FilterBar>
-      {act.error && !create.opened && <Notice kind="error">{act.error}</Notice>}
       <DataTable
         columns={[
           {
@@ -1708,31 +1689,12 @@ function IssuesTab({
           </>
         )}
       />
-      <ResourceDrawer
-        opened={create.opened}
-        onClose={create.close}
-        title="New issue"
-        submitLabel="Open issue"
-        onSubmit={submit}
-        busy={act.busy}
-        disabled={!create.form.title.trim()}
-        error={create.opened ? act.error : null}
-        size="lg"
-      >
-        <DiscussionFields
-          title={create.form.title}
-          bodyMd={create.form.bodyMd}
-          onChange={(p) => create.patch(p)}
-          bodyLabel="Description"
-          extra={
-            <VersionSelect
-              versions={versions.data ?? []}
-              value={create.form.versionId}
-              onChange={(versionId) => create.patch({ versionId })}
-            />
-          }
-        />
-      </ResourceDrawer>
+      <IssueCreateDrawer
+        projectId={project.id}
+        teamId={project.teamId}
+        versions={versions.data ?? []}
+        state={create}
+      />
     </Section>
   );
 }

@@ -8,11 +8,12 @@ import {
   Text,
   TextInput,
 } from "@mantine/core";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Crumbs } from "../components/Crumbs";
+import { DiscussionFields } from "../components/IssueFields";
 import { DataTable, NameCell } from "../components/DataTable";
 import { FilterBar, TextFilter } from "../components/FilterBar";
 import { HistoryList } from "../components/HistoryList";
@@ -24,7 +25,6 @@ import {
 } from "../components/Limits";
 import { PageSkeleton } from "../components/Loading";
 import { Markdown } from "../components/Markdown";
-import { MdField } from "../components/MdField";
 import { NameDescriptionFields } from "../components/NameDescriptionFields";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
@@ -898,41 +898,6 @@ function DiscussionsTab({
         />
       </ResourceDrawer>
     </Section>
-  );
-}
-
-/** Title + markdown body: a discussion or an issue draft. */
-export function DiscussionFields({
-  title,
-  bodyMd,
-  onChange,
-  bodyLabel = "Body",
-  extra,
-}: {
-  title: string;
-  bodyMd: string;
-  onChange: (p: { title?: string; bodyMd?: string }) => void;
-  bodyLabel?: string;
-  extra?: ReactNode;
-}) {
-  return (
-    <Stack gap="md">
-      <TextInput
-        label="Title"
-        value={title}
-        onChange={(e) => onChange({ title: e.currentTarget.value })}
-        required
-        maxLength={200}
-        autoComplete="off"
-        data-autofocus
-      />
-      {extra}
-      <MdField
-        label={bodyLabel}
-        value={bodyMd}
-        onChange={(bodyMd) => onChange({ bodyMd })}
-      />
-    </Stack>
   );
 }
 

@@ -23,6 +23,8 @@ const mockApi = {
   addVersionLink: vi.fn(),
   removeVersionLink: vi.fn(),
   issues: vi.fn(),
+  versions: vi.fn(),
+  createIssue: vi.fn(),
   projectCatalogApps: vi.fn(),
   projectAssetBundles: vi.fn(),
   catalogArtifacts: vi.fn(),
@@ -156,6 +158,10 @@ function mount(path = "/teams/team_1/projects/prj_1/versions/ver_1") {
         path="/teams/:team/projects/:prj/:tab"
         element={<h1>project tab</h1>}
       />
+      <Route
+        path="/teams/:team/projects/:prj/issues/:n"
+        element={<h1>issue page</h1>}
+      />
     </Routes>,
     { client: mockApi, path },
   );
@@ -174,8 +180,48 @@ describe("VersionPage", () => {
     vi.mocked(mockApi.project).mockResolvedValue(PROJECT);
     vi.mocked(mockApi.version).mockResolvedValue(VERSION);
     vi.mocked(mockApi.issues).mockResolvedValue([ISSUE]);
+    vi.mocked(mockApi.versions).mockResolvedValue([
+      { id: "ver_1", name: "1.2.3" } as never,
+      { id: "ver_2", name: "1.2.4" } as never,
+    ]);
     vi.mocked(mockApi.projectCatalogApps).mockResolvedValue([]);
     vi.mocked(mockApi.projectAssetBundles).mockResolvedValue([]);
+  });
+
+  it("opens a new issue against this version from the header", async () => {
+    vi.mocked(mockApi.createIssue).mockResolvedValue({ ...ISSUE, number: 7 });
+    mount();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "New issue" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "New issue" }),
+    ).toBeInTheDocument();
+    // Preset to the page's version, still changeable.
+    expect(within(dialog).getByLabelText("Version")).toHaveValue("ver_1");
+    await userEvent.type(within(dialog).getByLabelText(/^Title/), "Crash");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Open issue" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.createIssue).toHaveBeenCalledWith("prj_1", {
+        title: "Crash",
+        bodyMd: "",
+        versionId: "ver_1",
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "issue page" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides New issue from a seatless admin", async () => {
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+    mount();
+    await screen.findByRole("heading", { level: 1, name: "1.2.3" });
+    expect(screen.queryByRole("button", { name: "New issue" })).toBeNull();
+    expect(mockApi.versions).not.toHaveBeenCalled();
   });
 
   it("names its links and lists the issues the server filtered by version", async () => {

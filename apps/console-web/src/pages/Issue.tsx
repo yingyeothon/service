@@ -1,4 +1,4 @@
-import { Anchor, Box, NativeSelect, Text } from "@mantine/core";
+import { Anchor, Box, Text } from "@mantine/core";
 import { type FormEvent } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../api";
@@ -14,35 +14,9 @@ import { fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import { useTeamStanding, versionUrl } from "../lib/team";
-import type { Version } from "../types";
-import { DiscussionFields } from "./Team";
+import { DiscussionFields, VersionSelect } from "../components/IssueFields";
 
 export const ISSUE_TONE = { open: "ok", closed: "neutral" } as const;
-
-/** Version picker shared by the issue form and the issue page. */
-export function VersionSelect({
-  versions,
-  value,
-  onChange,
-  label = "Version",
-}: {
-  versions: Version[];
-  value: string | null;
-  onChange: (v: string | null) => void;
-  label?: string;
-}) {
-  return (
-    <NativeSelect
-      label={label}
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value || null)}
-      data={[
-        { value: "", label: "— none —" },
-        ...versions.map((v) => ({ value: v.id, label: v.name })),
-      ]}
-    />
-  );
-}
 
 export function IssuePage() {
   const { team: teamId = "", prj = "", n: nRaw = "" } = useParams();
