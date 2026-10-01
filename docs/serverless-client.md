@@ -62,7 +62,7 @@ below, but the trust model is the limit, not the API.
 ## What does not work without a server
 
 - **A client cannot create a topic.** `POST /t` takes the channel apiKey only,
-  and the topic HTTP stack has no CORS (only the state stack enables it). The
+  and the topic HTTP stack has no CORS (only the state and auth stacks enable it). The
   "host announces a fresh topic URL" design is therefore impossible, and the
   `lobby` party is the replacement — `docs/decisions.md` already calls a
   chat-only lobby "a better topic". Adding client-created topics was

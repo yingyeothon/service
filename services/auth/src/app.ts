@@ -325,5 +325,10 @@ export function createAuthApp({
     ...extraRoutes,
   ];
 
-  return createHttpHandler({ routes, logger });
+  // A browser build (Unity WebGL, a web game) calls config/token/verify with
+  // `fetch`, so the routes carry CORS like the state stack's. `*` without
+  // credentials: the credential is a provider token in the body or a bearer
+  // header, never a cookie — the nonce cookie belongs to the redirect flow,
+  // which is a navigation, and stays unreadable to cross-origin scripts.
+  return createHttpHandler({ routes, logger, cors: { origins: ["*"] } });
 }

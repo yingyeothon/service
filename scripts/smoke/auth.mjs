@@ -32,13 +32,20 @@ const ch = seeded.body.channelId;
 const cfg = await json(await fetch(`${base}/c/${ch}/.well-known/config`));
 console.log("config", cfg.status, cfg.body);
 
-const minted = await json(
-  await fetch(`${base}/debug/token`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-debug-key": debugKey },
-    body: JSON.stringify({ channelId: ch, userId: "smoke-user" }),
-  }),
-);
+// `/debug/token` stands in for `POST /c/{ch}/token` (no provider round trip
+// from a script): it is a POST with a JSON body, which is what the `cors`
+// check below needs to see reflected. A browser could not send `x-debug-key`.
+const mintRes = await fetch(`${base}/debug/token`, {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-debug-key": debugKey,
+    origin: "https://game.example",
+  },
+  body: JSON.stringify({ channelId: ch, userId: "smoke-user" }),
+});
+const mintAcao = mintRes.headers.get("access-control-allow-origin");
+const minted = await json(mintRes);
 console.log("mint", minted.status, minted.body?.userId);
 
 // The salted derivation, which no provider round trip can reach from a script:
@@ -92,4 +99,48 @@ const start = await fetch(
 console.log("start (github not configured → 400 html expected)", start.status);
 const missing = await fetch(`${base}/c/nope/.well-known/config`);
 console.log("unknown channel", missing.status);
-process.exit(verified.status === 200 && missing.status === 404 ? 0 : 1);
+
+// A browser build (Unity WebGL, a web game) reaches config/token/verify with
+// `fetch`, so the stack must answer the preflight and mark every response —
+// refusals included — for the caller's origin, and never with credentials
+// (`docs/decisions.md` §auth, 2026-10-01). API Gateway → Lambda has no edge
+// cache, so node is an honest oracle here, unlike the artifact CDN.
+const origin = "https://game.example";
+const preflight = await fetch(`${base}/c/${ch}/token`, {
+  method: "OPTIONS",
+  headers: {
+    origin,
+    "access-control-request-method": "POST",
+    "access-control-request-headers": "content-type",
+  },
+});
+const corsGet = await fetch(`${base}/c/${ch}/.well-known/config`, {
+  headers: { origin },
+});
+const corsDenied = await fetch(`${base}/c/${ch}/verify`, {
+  headers: { origin, authorization: "Bearer nope" },
+});
+const corsOk =
+  preflight.status === 204 &&
+  preflight.headers.get("access-control-allow-origin") === origin &&
+  (preflight.headers.get("access-control-allow-headers") ?? "").includes(
+    "authorization",
+  ) &&
+  preflight.headers.get("access-control-allow-credentials") === null &&
+  corsGet.headers.get("access-control-allow-origin") === origin &&
+  mintAcao === origin &&
+  corsDenied.status === 401 &&
+  corsDenied.headers.get("access-control-allow-origin") === origin;
+console.log(
+  "cors",
+  preflight.status,
+  preflight.headers.get("access-control-allow-origin"),
+  preflight.headers.get("access-control-allow-headers"),
+  corsGet.headers.get("access-control-allow-origin"),
+  mintAcao,
+  corsDenied.headers.get("access-control-allow-origin"),
+  corsOk ? "ok" : "FAIL",
+);
+process.exit(
+  verified.status === 200 && missing.status === 404 && corsOk ? 0 : 1,
+);

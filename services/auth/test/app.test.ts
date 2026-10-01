@@ -570,3 +570,93 @@ describe("GET /c/{ch}/verify", () => {
     ).toBe(401);
   });
 });
+
+describe("CORS", () => {
+  const origin = "https://game.example";
+
+  it("answers a preflight for a browser build and allows the headers it sends", async () => {
+    const h = await harness();
+    const r = await h.app(
+      ev("OPTIONS", `/c/${CH}/token`, {
+        headers: {
+          origin,
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type",
+        },
+      }),
+    );
+    expect(r.statusCode).toBe(204);
+    expect(r.headers?.["access-control-allow-origin"]).toBe(origin);
+    expect(r.headers?.["access-control-allow-headers"]).toContain(
+      "authorization",
+    );
+    expect(r.headers?.["access-control-allow-headers"]).toContain(
+      "content-type",
+    );
+    // `*` must never come with credentials: the nonce cookie stays out of reach.
+    expect(r.headers?.["access-control-allow-credentials"]).toBeUndefined();
+  });
+
+  it("marks config, verify and error responses for any origin", async () => {
+    const h = await harness();
+    const cfg = await h.app(
+      ev("GET", `/c/${CH}/.well-known/config`, { headers: { origin } }),
+    );
+    expect(cfg.statusCode).toBe(200);
+    expect(cfg.headers?.["access-control-allow-origin"]).toBe(origin);
+    expect(cfg.headers?.vary).toBe("Origin");
+
+    const denied = await h.app(
+      ev("GET", `/c/${CH}/verify`, {
+        headers: { origin, authorization: "Bearer nope" },
+      }),
+    );
+    expect(denied.statusCode).toBe(401);
+    expect(denied.headers?.["access-control-allow-origin"]).toBe(origin);
+
+    const missing = await h.app(
+      ev("GET", "/c/nope/.well-known/config", { headers: { origin } }),
+    );
+    expect(missing.statusCode).toBe(404);
+    expect(missing.headers?.["access-control-allow-origin"]).toBe(origin);
+  });
+
+  it("marks a token POST for the origin even when the body is refused", async () => {
+    const h = await harness();
+    const r = await h.app(
+      ev("POST", `/c/${CH}/token`, {
+        headers: { origin, "content-type": "application/json" },
+        body: { provider: "github" },
+      }),
+    );
+    expect(r.statusCode).toBe(400);
+    expect(r.headers?.["access-control-allow-origin"]).toBe(origin);
+  });
+
+  it("keeps the debug key out of the allowed request headers", async () => {
+    // The dev-only `/debug/*` routes share the handler's CORS policy; what
+    // keeps them unreachable from a web page is that a preflight never allows
+    // `x-debug-key`. Adding it here would hand the hooks to any origin.
+    const h = await harness();
+    const r = await h.app(
+      ev("OPTIONS", "/debug/token", {
+        headers: {
+          origin,
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "x-debug-key",
+        },
+      }),
+    );
+    expect(r.statusCode).toBe(204);
+    expect(r.headers?.["access-control-allow-headers"]).not.toContain(
+      "x-debug-key",
+    );
+  });
+
+  it("adds nothing without an Origin header", async () => {
+    const h = await harness();
+    const r = await h.app(ev("GET", `/c/${CH}/.well-known/config`));
+    expect(r.statusCode).toBe(200);
+    expect(r.headers?.["access-control-allow-origin"]).toBeUndefined();
+  });
+});

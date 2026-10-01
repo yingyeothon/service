@@ -203,10 +203,13 @@ to one auth channel. `GET /time` — the platform clock, the only unauthenticate
 is what makes a client-only one-shot claim (a daily reward) independent of the device
 clock.
 
-**A browser reaches the state stack and nothing else**: only that stack sets CORS, with
-`Access-Control-Expose-Headers: ETag` so a client can read the version it must send back.
-The topic HTTP API has no CORS and `POST /t` takes an apiKey, which is exactly why a
-client cannot create a topic and the `lobby` party is the replacement.
+**A browser reaches the state and auth stacks and nothing else**: those two set CORS (`*`,
+no credentials — the credential is always an explicit header or body field), the state stack
+with `Access-Control-Expose-Headers: ETag` so a client can read the version it must send back,
+the auth stack since 2026-10-01 so a browser build can call `/.well-known/config`, `/token` and
+`/verify` and not only the redirect flow. The topic HTTP API has no CORS and `POST /t` takes
+an apiKey, which is exactly why a client cannot create a topic and the `lobby` party is the
+replacement.
 
 ### Distribution and project operations
 

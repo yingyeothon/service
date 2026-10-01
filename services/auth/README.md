@@ -15,6 +15,7 @@ Per-channel OAuth (GitHub/Google) login issuing HS256 channel JWTs. Contract: `d
 Unknown channel → 404; expired/disabled → 410. Browser routes (`/start`, `/callback`) render minimal HTML on error.
 
 - `/start` sets a `__Host-yyt_auth_nonce` cookie (10 min) and stores its hash in `state`; `/callback` requires the same browser's cookie (login-CSRF protection). `state` is single-use.
+- CORS is open (`*`) with no credentials, like the state stack (`docs/decisions.md` §auth, 2026-10-01): a browser build calls `/.well-known/config`, `/token` and `/verify` with `fetch`; the nonce cookie is reachable only through the `/start` → `/callback` navigation. `OPTIONS` on any route answers 204. The dev-only `/debug/*` routes share the policy but stay unreachable from a page: `x-debug-key` is not an allowed request header, so a browser's preflight refuses it.
 - `redirect` allowlist: exact origin + path-prefix at a `/` boundary; entries must be absolute URLs.
 - GitHub tokens are checked with `POST /applications/{clientId}/token` so only tokens issued to this channel's OAuth app are accepted; Google id_tokens are pinned via `aud = clientId`.
 
