@@ -14,15 +14,10 @@ export default defineConfig({
       include: ["packages/*/src/**", "services/*/src/**"],
       exclude: ["packages/*/src/generated/**"],
       thresholds: {
-        // Aggregated per glob. `perFile: true` inside this object is NOT read
-        // by vitest 3 (only a top-level `thresholds.perFile` is), so the bar
-        // has always been the package aggregate; hoisting it (2026-09-29,
-        // `todo/53`) exposed five files below 80 % (`redis/aclAdmin`,
-        // `redis/memoryAclAdmin`, `core/docKey`, `core/channel`, `ws/poster`)
-        // — a backlog item, not a test-only dedup's. Hoist it once those are
-        // covered.
+        // Per file, not per package: vitest 3 reads `perFile` only here at the
+        // top level; inside a glob object it is ignored (`rules/testing.md`).
+        perFile: true,
         "packages/*/src/**": {
-          perFile: true,
           lines: 80,
           functions: 80,
           statements: 80,

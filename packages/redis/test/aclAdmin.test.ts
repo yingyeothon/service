@@ -4,6 +4,7 @@ import {
   createMemoryAclAdmin,
   createRedisAclAdmin,
   parseServerMemory,
+  redisAclMissing,
   redisAclOptionsFromEnv,
   type RedisAclCommands,
 } from "../src/index.js";
@@ -156,6 +157,9 @@ describe("createRedisAclAdmin", () => {
     const c = fakeClient(() => ["default", "game_dev_q_1", "svc_x"]);
     expect(await admin(c).list()).toEqual(["default", "game_dev_q_1", "svc_x"]);
     expect(c.calls[0]).toEqual(["ACL", "USERS"]);
+    // A reply that is not an array (RESP oddity, proxy) is an empty sweep,
+    // never a throw that would stop the daily reconcile.
+    expect(await admin(fakeClient(() => "OK")).list()).toEqual([]);
   });
 
   it("guards the username on revoke and exists, not only on issue", async () => {
@@ -177,10 +181,88 @@ describe("createRedisAclAdmin", () => {
       [{}, false],
       [["flags", []], true],
       [{ flags: [] }, true],
+      // A bulk-string rendering of the user is still a user.
+      ["flags on", true],
     ] as const) {
       const c = fakeClient(() => reply);
       expect(await admin(c).exists(GRANT.username)).toBe(want);
     }
+  });
+
+  it("persists on the retry when the first ACL SAVE failed", async () => {
+    let saves = 0;
+    const c = fakeClient((args) => {
+      if (args[0] !== "SAVE") return "OK";
+      if (++saves === 1) throw new Error("ERR aclfile busy");
+      return "OK";
+    });
+    const r = await admin(c).issue(GRANT);
+    expect(r.persisted).toBe(true);
+    expect(saves).toBe(2);
+  });
+
+  it("reads instance memory from one INFO call", async () => {
+    const c = fakeClient(
+      () =>
+        "# Memory\r\nused_memory:42\r\nmaxmemory:100\r\n# Stats\r\nevicted_keys:3\r\n",
+    );
+    expect(await admin(c).serverMemory()).toEqual({
+      usedBytes: 42,
+      maxBytes: 100,
+      evictedKeys: 3,
+    });
+    expect(c.calls[0]).toEqual(["INFO", "memory", "stats"]);
+  });
+
+  it("counts keys across SCAN pages and groups them", async () => {
+    const pages: Record<string, [string, string[]]> = {
+      "0": ["7", ["game:dev:a:1", "game:dev:a:2", "other"]],
+      "7": ["0", ["game:dev:b:1"]],
+    };
+    const c = fakeClient((args) => pages[args[0]!]);
+    const r = await admin(c).countKeys("game:dev:*", (k) =>
+      k.startsWith("game:dev:") ? k.split(":")[2]! : null,
+    );
+    expect(c.calls[0]).toEqual([
+      "SCAN",
+      "0",
+      "MATCH",
+      "game:dev:*",
+      "COUNT",
+      "500",
+    ]);
+    expect(c.calls[1]![1]).toBe("7");
+    expect([...r.counts]).toEqual([
+      ["a", 2],
+      ["b", 1],
+    ]);
+    // `other` was scanned but discarded by `group`.
+    expect(r.scanned).toBe(4);
+    expect(r.truncated).toBe(false);
+  });
+
+  it("stops the scan at the round cap and says the counts understate", async () => {
+    // A cursor that never returns to 0 (rehashing can do this): the daily
+    // report must not become an unbounded loop on the shared instance.
+    const c = fakeClient(() => ["1", ["game:dev:a:1"]]);
+    const r = await admin(c).countKeys("game:dev:*", () => "a");
+    expect(r.truncated).toBe(true);
+    // `SCAN_MAX_ROUNDS` in `src/aclAdmin.ts`: 200 rounds of COUNT 500.
+    expect(c.calls.length).toBe(200);
+    expect(r.counts.get("a")).toBe(200);
+  });
+
+  it("quits the client on close", async () => {
+    let quits = 0;
+    const c: RedisAclCommands = {
+      call: async () => "OK",
+      quit: async () => {
+        quits++;
+        return "OK";
+      },
+    };
+    await admin(c).close();
+    expect(quits).toBe(1);
   });
 
   it("never lets a failing command's message out (it carries the password)", async () => {
@@ -200,6 +282,25 @@ describe("createRedisAclAdmin", () => {
     });
     expect(dump).not.toContain("s3cret");
     expect(dump).toContain("redis ERR");
+  });
+});
+
+describe("redisAclMissing", () => {
+  it("names exactly the half of the issuer credential that is absent", () => {
+    expect(redisAclMissing({})).toEqual([
+      "REDIS_ACL_USER",
+      "REDIS_ACL_PASSWORD",
+    ]);
+    expect(redisAclMissing({ REDIS_ACL_USER: "u" })).toEqual([
+      "REDIS_ACL_PASSWORD",
+    ]);
+    expect(redisAclMissing({ REDIS_ACL_PASSWORD: "" })).toEqual([
+      "REDIS_ACL_USER",
+      "REDIS_ACL_PASSWORD",
+    ]);
+    expect(
+      redisAclMissing({ REDIS_ACL_USER: "u", REDIS_ACL_PASSWORD: "p" }),
+    ).toEqual([]);
   });
 });
 
@@ -272,6 +373,60 @@ describe("createMemoryAclAdmin", () => {
     // The user really is gone despite the throw — a fake that rolled it back
     // would make "a failed revoke leaves the credential" green and wrong.
     expect(a.users.size).toBe(0);
+  });
+});
+
+describe("createMemoryAclAdmin usage report", () => {
+  it("lists held users and orphan fixtures, and fails list on demand", async () => {
+    const a = createMemoryAclAdmin();
+    await a.issue(GRANT);
+    a.extraUsers.add("game_dev_orphan");
+    expect(await a.list()).toEqual([GRANT.username, "game_dev_orphan"]);
+    // An orphan fixture is revocable like a real account.
+    expect(await a.revoke("game_dev_orphan")).toBe(true);
+    a.failNext("list");
+    await expect(a.list()).rejects.toThrow();
+    expect(await a.list()).toEqual([GRANT.username]);
+  });
+
+  it("reports the memory it is told to and counts keys with Redis glob semantics", async () => {
+    const a = createMemoryAclAdmin();
+    a.memory = { usedBytes: 5, maxBytes: 10, evictedKeys: 1 };
+    expect(await a.serverMemory()).toEqual({
+      usedBytes: 5,
+      maxBytes: 10,
+      evictedKeys: 1,
+    });
+    for (const k of [
+      "game:dev:a:1",
+      "game:dev:a:2",
+      "game:dev:b:1",
+      // A regex-special character in a key: `.` must not match `x`.
+      "game:dev:c.1:x",
+      "game:devx:a:1",
+      "other:dev:a:1",
+    ])
+      a.keys.add(k);
+    const r = await a.countKeys("game:dev:*", (k) =>
+      k.startsWith("game:dev:c") ? null : k.split(":")[2]!,
+    );
+    expect([...r.counts]).toEqual([
+      ["a", 2],
+      ["b", 1],
+    ]);
+    expect(r.scanned).toBe(4);
+    expect(r.truncated).toBe(false);
+    // The glob is anchored and literal apart from `*`.
+    expect((await a.countKeys("game:dev:c.1:x", () => "c")).scanned).toBe(1);
+    expect((await a.countKeys("game:dev:cx1:x", () => "c")).scanned).toBe(0);
+  });
+
+  it("fails countKeys on demand and closes without effect", async () => {
+    const a = createMemoryAclAdmin();
+    a.failNext("countKeys");
+    await expect(a.countKeys("*", () => "x")).rejects.toThrow();
+    expect((await a.countKeys("*", () => "x")).scanned).toBe(0);
+    await a.close();
   });
 });
 

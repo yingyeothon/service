@@ -22,7 +22,7 @@ pnpm -r build && pnpm test
 ## Workflow per change
 
 1. Read `docs/decisions.md`; if the change conflicts with it, update the doc in the same commit.
-2. Write tests first or alongside (`vitest`; fakes for Redis/MySQL, no Docker). Coverage gates: 80% lines / 70% branches per package.
+2. Write tests first or alongside (`vitest`; fakes for Redis/MySQL, no Docker). Coverage gates: 80% lines / 70% branches per file under `packages/*/src/**` (`pnpm coverage` needs Docker for the MariaDB suites; `pnpm test` does not).
 3. Verify on `dev` (`scripts/deploy.sh <service> dev`, `scripts/smoke/*`). `prod` only on explicit request.
 4. Pass `pnpm lint && pnpm format:check && pnpm typecheck && pnpm test`.
 5. Record reusable lessons in `rules/*.md`.

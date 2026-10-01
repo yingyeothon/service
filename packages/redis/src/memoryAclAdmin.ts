@@ -97,8 +97,8 @@ export function createMemoryAclAdmin(): MemoryAclAdmin {
     serverMemory: async () => admin.memory,
     countKeys: async (match, group) => {
       before("countKeys");
-      // Mirrors the glob Redis actually applies, so a test cannot pass with a
-      // match string the real SCAN would reject.
+      // `*` with everything else literal and anchored — the subset of the
+      // Redis glob the callers use; `?` and `[…]` are not handled.
       const re = new RegExp(`^${match.split("*").map(escapeRe).join(".*")}$`);
       const counts = new Map<string, number>();
       let scanned = 0;
