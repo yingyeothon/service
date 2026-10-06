@@ -32,8 +32,11 @@ import (
 const ContextFile = ".yyt.json"
 
 // idLike mirrors console's ID_LIKE: a string in `{prefix}_…` shape is an id,
-// never a name (names in that shape are rejected server-side).
-var idLike = regexp.MustCompile(`^(?i)(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|m|tok|dbg|up)_`)
+// never a name (names in that shape are rejected server-side). Kept in step
+// with the two copies in services/console/src (channels.ts, team.ts); `push`
+// joined all three on 2026-10-06, after both stages were checked for a stored
+// name starting with `push_`.
+var idLike = regexp.MustCompile(`^(?i)(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|push|m|tok|dbg|up)_`)
 
 // IsID reports whether s is addressed as an id rather than a name.
 func IsID(s string) bool { return idLike.MatchString(s) }
@@ -428,7 +431,20 @@ func (c *ctxClient) resource(ctx context.Context, kind, listPath, key, arg strin
 }
 
 func (c *ctxClient) channel(ctx context.Context, arg string, write bool) (string, error) {
-	return c.resource(ctx, "channel", "/channels", "channels", arg, write)
+	return c.channelOfKind(ctx, arg, "", write)
+}
+
+// channelOfKind is `channel` narrowed to one kind ("" = any): another kind's
+// id is refused before any request, and a name only matches that kind.
+func (c *ctxClient) channelOfKind(ctx context.Context, arg, kind string, write bool) (string, error) {
+	listPath := "/channels"
+	if kind != "" {
+		if IsID(arg) && !strings.HasPrefix(strings.ToLower(arg), kind+"_") {
+			return "", fmt.Errorf("%s is not a %s channel: use `yyt channels …`", arg, kind)
+		}
+		listPath += "?kind=" + kind
+	}
+	return c.resource(ctx, "channel", listPath, "channels", arg, write)
 }
 
 // app turns an app id-or-name into an id. App names are unique within the

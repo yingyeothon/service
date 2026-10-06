@@ -417,21 +417,27 @@ export function LimitsSection({
     return l.effective < l.hard;
   });
 
-  // A stepped key below its limit: say what unlocks the request.
-  const stepped = view?.limits.find(
-    (l) =>
-      l.step !== null &&
-      l.next === null &&
-      !pendingKeys.has(l.key) &&
-      typeof l.effective === "number" &&
-      l.usage !== null,
-  );
-  const stepHint =
-    stepped && typeof stepped.effective === "number" && stepped.usage !== null
-      ? stepped.usage < stepped.effective
-        ? `Ask for ${stepped.step} more once all ${stepped.effective} are in use (${stepped.usage} now).`
-        : `At the ceiling of ${fmtLimit(stepped.unit, stepped.hard)}.`
-      : null;
+  // Stepped keys that cannot be asked for now: say what unlocks each. A
+  // scope with several (a team's projects and push apps) names them.
+  const steppedCount = (view?.limits ?? []).filter(
+    (l) => l.step !== null,
+  ).length;
+  const stepHints = (view?.limits ?? []).flatMap((l) => {
+    if (
+      l.step === null ||
+      l.next !== null ||
+      pendingKeys.has(l.key) ||
+      typeof l.effective !== "number" ||
+      l.usage === null
+    )
+      return [];
+    const name = steppedCount > 1 ? `${limitLabel(l.key)}: ` : "";
+    const text =
+      l.usage < l.effective
+        ? `${name ? "ask" : "Ask"} for ${l.step} more once all ${l.effective} are in use (${l.usage} now).`
+        : `${name ? "at" : "At"} the ceiling of ${fmtLimit(l.unit, l.hard)}.`;
+    return [{ key: l.key, text: `${name}${text}` }];
+  });
 
   const fresh = (row: LimitRow | undefined): RequestForm => ({
     key: row?.key ?? "",
@@ -592,10 +598,14 @@ export function LimitsSection({
             Request increase
           </Button>
         ) : (
-          stepHint && (
-            <Text size="sm" c="dimmed">
-              {stepHint}
-            </Text>
+          stepHints.length > 0 && (
+            <Stack gap={2}>
+              {stepHints.map((h) => (
+                <Text key={h.key} size="sm" c="dimmed">
+                  {h.text}
+                </Text>
+              ))}
+            </Stack>
           )
         ))
       }

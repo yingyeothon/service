@@ -484,7 +484,7 @@ function ProjectsTab({
       <LimitsSection
         limits={limits}
         standing={standing}
-        description="Projects per team. Once every slot is used, a member may ask a platform admin for 5 more."
+        description="Projects, and push apps on the platform sender, per team. Once every slot of one is in use, a member may ask a platform admin for the next step: 5 more projects, 1 more push app."
       />
     </Stack>
   );

@@ -6,9 +6,13 @@ import type {
   LbBoardUsage,
   LeaderboardDb,
   LimitsDb,
+  PushChannelUsage,
+  PushDb,
+  PushSendStats,
   SocialChannelUsage,
   SocialDb,
 } from "@yyt/console-db";
+import { PUSH_APPS_PER_PROJECT, pushDay } from "@yyt/console-db";
 import type { Kv } from "@yyt/redis";
 import {
   CloudWatchClient,
@@ -17,6 +21,7 @@ import {
   type GetMetricStatisticsCommandOutput,
 } from "@aws-sdk/client-cloudwatch";
 import { REDIS_CHANNEL_KEY_WARN, type RedisUsageReport } from "./expire.js";
+import type { PushSlotFinding, PushSweepResult } from "./push-sweep.js";
 
 /**
  * Daily usage digest (`docs/decisions.md` *Realtime gateway* → Monitoring →
@@ -63,6 +68,10 @@ const KV_TOP_COLLECTIONS = 5;
 const LB_TOP_BOARDS = 5;
 /** Channels named in the social line; the axis with no cap is the channel. */
 const SOCIAL_TOP_CHANNELS = 5;
+/** Channels named in the push line. */
+const PUSH_TOP_CHANNELS = 5;
+/** Channels whose failed sends of the previous day are named. */
+const PUSH_TOP_FAILURES = 5;
 export const DEFAULT_THRESHOLDS: UsageThresholds = {
   /** Past this share of `maxmemory`, `allkeys-lru` is about to evict someone else's data. */
   redisMemoryRatio: 0.8,
@@ -101,6 +110,13 @@ export const DEFAULT_THRESHOLDS: UsageThresholds = {
    * expired requests pile up (`rules/data.md`).
    */
   socialBytes: GIB / 8,
+  // Registrations left over every open slot of the pool. Growing the pool
+  // is an owner action (a new Firebase project), so the warning has to come
+  // while there is still room: a quarter of one project.
+  pushFreeApps: 5,
+  // Device tokens of one channel: at most 5 per player, so this is a channel
+  // of some 20,000 players -- a size worth knowing about, not a cap.
+  pushChannelTokens: 100_000,
 };
 
 export interface UsageThresholds {
@@ -111,6 +127,8 @@ export interface UsageThresholds {
   kvBytes: number;
   lbBytes: number;
   socialBytes: number;
+  pushFreeApps: number;
+  pushChannelTokens: number;
 }
 
 export interface BucketSize {
@@ -188,6 +206,20 @@ export interface UsageDigestOptions {
   leaderboards?: Pick<LeaderboardDb, "scoresTableBytes" | "topBoards">;
   /** Social profiles and relations; omitted leaves the social lines out. */
   social?: Pick<SocialDb, "socialTableBytes" | "topSocialChannels">;
+  /**
+   * Push: device tokens per channel, registrations per pool slot, the
+   * previous UTC day's send failures per channel and what today's
+   * reconciliation found (docs/decisions.md *Push notifications* #8).
+   * Omitted leaves the push lines out.
+   */
+  push?: {
+    db: Pick<
+      PushDb,
+      "topPushChannels" | "countAppsBySlot" | "listPool" | "topSendFailures"
+    >;
+    /** The sweep that ran before this digest; absent when it failed. */
+    sweep?: PushSweepResult;
+  };
   /** Limit requests; omitted leaves the pending-request line out. */
   limits?: Pick<LimitsDb, "countPending">;
   /** Asset uploads; omitted leaves the stuck-completion line out. */
@@ -229,6 +261,18 @@ export interface UsageDigestResult {
   kv?: { tableBytes?: number; top: KvCollectionUsage[] };
   lb?: { tableBytes?: number; top: LbBoardUsage[] };
   social?: { tableBytes?: number; top: SocialChannelUsage[] };
+  push?: {
+    /** Channels holding the most device tokens. */
+    top: PushChannelUsage[];
+    /** Registrations per slot that holds any or was ever closed. */
+    slots: { slot: string; apps: number; closed: boolean }[];
+    /** Today's reconciliation per provisioned slot; absent without a pool. */
+    reconcile?: PushSlotFinding[];
+    /** Device tokens the sweep deleted today. */
+    swept?: { channels: number; stale: number };
+    /** The previous UTC day's channels with failed sends, most failures first. */
+    sendFailures: PushSendStats[];
+  };
   /** Every warning found today, announced or not. */
   warnings: UsageWarning[];
   /** The subset that went into the notification (empty when nothing is new or there is no topic). */
@@ -273,6 +317,7 @@ export async function runUsageDigest({
   kvstore,
   leaderboards,
   social,
+  push,
   limits,
   assets,
   kv,
@@ -563,6 +608,147 @@ export async function runUsageDigest({
       });
   }
 
+  if (push) {
+    const top = await attempt("push-top", () =>
+      push.db.topPushChannels(PUSH_TOP_CHANNELS),
+    );
+    const slots = await attempt("push-slots", async () => {
+      const apps = new Map(
+        (await push.db.countAppsBySlot()).map((u) => [u.slot, u.apps]),
+      );
+      const rows = new Map(
+        (await push.db.listPool()).map((r) => [r.slot, r.closedAt !== null]),
+      );
+      return [...new Set([...apps.keys(), ...rows.keys()])]
+        .sort()
+        .map((slot) => ({
+          slot,
+          apps: apps.get(slot) ?? 0,
+          closed: rows.get(slot) ?? false,
+        }));
+    });
+    // The previous complete UTC day, not today: the cron runs at 18:00 UTC,
+    // and a day is only complete once it is over.
+    const yesterday = pushDay(nowSec(clock)) - 1;
+    const sendFailures = await attempt("push-send", () =>
+      push.db.topSendFailures(yesterday, PUSH_TOP_FAILURES),
+    );
+    const reconcile = push.sweep?.reconcile?.slots;
+    result.push = {
+      top: top ?? [],
+      slots: slots ?? [],
+      ...(reconcile ? { reconcile } : {}),
+      ...(push.sweep ? { swept: push.sweep.tokens } : {}),
+      sendFailures: sendFailures ?? [],
+    };
+    // The day is part of the kind, so each day's failures are announced once
+    // (a rerun of the cron does not repeat them) and a channel failing again
+    // tomorrow is announced again. Counts only.
+    for (const f of sendFailures ?? [])
+      warnings.push({
+        kind: `push:send:failed:${f.channelId}:${f.day}`,
+        type: "level",
+        text: `push channel ${f.channelId}: ${f.failed} user(s) not reached over ${f.calls} send call(s) yesterday (${f.sent} reached, ${f.noToken} without a token, ${f.unregistered} dead token(s) dropped)`,
+      });
+    for (const c of top ?? [])
+      if (c.tokens > t.pushChannelTokens)
+        warnings.push({
+          kind: `push:tokens:${c.channelId}`,
+          type: "level",
+          text: `push channel ${c.channelId} holds ${c.tokens} device tokens`,
+        });
+    // Room left in the pool, over the slots SSM provisions (the ones the
+    // reconciliation visited); unknown without it, and then not guessed.
+    if (reconcile && slots) {
+      const usage = new Map(slots.map((x) => [x.slot, x]));
+      const free = reconcile
+        .filter((f) => !(usage.get(f.slot)?.closed ?? false))
+        .reduce(
+          (n, f) =>
+            n +
+            Math.max(0, PUSH_APPS_PER_PROJECT - (usage.get(f.slot)?.apps ?? 0)),
+          0,
+        );
+      if (free <= t.pushFreeApps)
+        warnings.push({
+          kind: "push:pool:low",
+          type: "level",
+          text: `the push pool has ${free} registration(s) left over its open slots (${reconcile.length} provisioned); adding a Firebase project is the only way to grow it`,
+        });
+    }
+    for (const f of reconcile ?? []) {
+      // The count is part of the kind: an app registered by hand stays an
+      // orphan for good and is announced once, a new one is announced again.
+      if (f.orphans > 0)
+        warnings.push({
+          kind: `push:orphans:${f.slot}:${f.orphans}`,
+          type: "level",
+          text: `push slot ${f.slot}: ${f.orphans} Firebase app(s) no push channel claims (an app added by hand is never deleted automatically)`,
+        });
+      if (f.removed > 0)
+        warnings.push({
+          kind: `push:removed:${f.slot}`,
+          type: "delta",
+          text: `push slot ${f.slot}: ${f.removed} platform-registered Firebase app(s) without a claim were removed (left by a failed registration)`,
+        });
+      if (f.missing > 0)
+        warnings.push({
+          kind: `push:missing:${f.slot}:${f.missing}`,
+          type: "level",
+          text: `push slot ${f.slot}: ${f.missing} push channel(s) whose Firebase app is gone or was never registered`,
+        });
+      if (f.foreign > 0)
+        warnings.push({
+          kind: `push:foreign:${f.slot}:${f.foreign}`,
+          type: "level",
+          text: `push slot ${f.slot}: ${f.foreign} push channel(s) claim a package that Firebase lists under an app the platform did not register`,
+        });
+      if (f.unread)
+        warnings.push({
+          kind: `push:unread:${f.slot}`,
+          type: "level",
+          text: `push slot ${f.slot}: Firebase's app list was not read (no answer, or the sweep ran out of time); the slot is unreconciled until the next run`,
+        });
+      if (f.autoClosed)
+        warnings.push({
+          kind: `push:autoclose:${f.slot}`,
+          type: "delta",
+          text: `push slot ${f.slot} was closed to new registrations: Firebase lists ${f.firebaseApps ?? "?"} apps of its fixed 30 (${f.pendingDeletion ?? 0} pending deletion)`,
+        });
+    }
+    const pool = push.sweep?.pool;
+    if (pool?.unreadable)
+      warnings.push({
+        kind: "push:pool:unreadable",
+        type: "level",
+        text: "the push pool could not be read from SSM; no slot was reconciled and no registration can be released until it can",
+      });
+    for (const s of pool?.skipped ?? [])
+      warnings.push({
+        kind: `push:pool:skipped:${s.slot}`,
+        type: "level",
+        text: `push pool: the parameter "${s.slot}" is not served (${s.reason}); fix or remove it`,
+      });
+    for (const u of pool?.unprovisioned ?? [])
+      warnings.push({
+        kind: `push:slot:unprovisioned:${u.slot}`,
+        type: "level",
+        text: `push slot ${u.slot}: ${u.claims} registration(s) name a slot the pool does not return; their channels cannot send, and nothing there is released or reconciled until its parameter is back`,
+      });
+    for (const p of push.sweep?.failed ?? [])
+      warnings.push({
+        kind: `push:sweep:failed:${p}`,
+        type: "delta",
+        text: `the push sweep's ${p} phase failed; see the "push sweep phase failed" log line`,
+      });
+    if (push.sweep?.reconcile?.truncated || push.sweep?.truncated)
+      warnings.push({
+        kind: "push:sweep:truncated",
+        type: "delta",
+        text: "the push sweep ran out of budget; the rest waits for tomorrow's run",
+      });
+  }
+
   logger.info("usage digest", {
     stage,
     redis: result.redis,
@@ -571,6 +757,7 @@ export async function runUsageDigest({
     kv: result.kv,
     lb: result.lb,
     social: result.social,
+    push: result.push,
     warnings: warnings.length,
     errors,
   });

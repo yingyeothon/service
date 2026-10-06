@@ -1,5 +1,5 @@
 export type Role = "admin" | "member" | "pending";
-export type ChannelKind = "auth" | "topic" | "match" | "lobby" | "q";
+export type ChannelKind = "auth" | "topic" | "match" | "lobby" | "q" | "push";
 /** Kinds served by the self-hosted realtime gateway; neither carries a secret. */
 export const GATEWAY_KINDS = ["lobby", "q"] as const;
 export type ChannelStatus = "active" | "expired" | "disabled";
@@ -370,11 +370,45 @@ export interface ChannelDocKey {
   apiKey?: string;
 }
 
+export type PushSender = "platform" | "team";
+
+/**
+ * A push channel's config as the API returns it. `packageName` and `sender`
+ * are fixed at creation; the team's service-account key is write-only.
+ */
+export interface PushConfig {
+  authChannelId: string;
+  packageName: string;
+  sender: PushSender;
+}
+
+/** One Firebase project of the stage's pool, named by its label only. */
+export interface PushPoolSlot {
+  slot: string;
+  /** `false`: rows still name the slot, but the stage no longer provisions it. */
+  provisioned: boolean;
+  closed: boolean;
+  /** A member id, or `auto:…` when the platform closed it on its own. */
+  closedBy: string | null;
+  closedByLogin: string | null;
+  closedAt: number | null;
+  apps: number;
+  capacity: number;
+}
+
+/** `GET /admin/push/pool`. */
+export interface PushPoolView {
+  /** `false`: no Firebase project is provisioned on this stage. */
+  configured: boolean;
+  slots: PushPoolSlot[];
+}
+
 export interface Channel extends ResourceCrumbs {
   id: string;
   kind: ChannelKind;
   name: string;
-  config: AuthConfig | TopicConfig | MatchConfig | LobbyConfig | QConfig;
+  config:
+    AuthConfig | TopicConfig | MatchConfig | LobbyConfig | QConfig | PushConfig;
   createdAt: number;
   expiresAt: number;
   disabledAt: number | null;
@@ -387,12 +421,17 @@ export interface Channel extends ResourceCrumbs {
   callbackUrls?: Record<string, string>;
   /** Absent when the state stack is not deployed on this stage. */
   docUrl?: string;
-  // topic
+  // topic; push (the state stack's base, absent while it is not deployed)
   apiBase?: string;
   // topic / match / lobby / q
   wsUrl?: string;
   // q
   redis?: GatewayRedis;
+  // push
+  /** The platform registration exists: `google-services.json` can be downloaded. */
+  registered?: boolean;
+  /** The team's own Firebase project, once a team sender key is registered. */
+  teamProject?: string;
   // shown once on create / rotate
   secret?: string;
   apiKey?: string;

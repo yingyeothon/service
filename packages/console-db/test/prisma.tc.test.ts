@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { AppError } from "@yyt/core";
 import {
   createAssetsDb,
   createCatalogDb,
@@ -11,6 +12,7 @@ import {
   createLeaderboardDb,
   createStateDb,
   createSocialDb,
+  createPushDb,
   createLimitsDb,
   createListingsDb,
   contractPreflight,
@@ -38,6 +40,13 @@ import { kvstoreContract } from "./kvstore.test.js";
 import { leaderboardContract } from "./leaderboard.test.js";
 import { stateContract } from "./state.test.js";
 import { socialContract } from "./social.test.js";
+import {
+  pushContract,
+  pushStatsContract,
+  type PushHarness,
+} from "./push.test.js";
+import { pushTokenHash } from "../src/push.js";
+import type { PrismaClient } from "../src/prisma.js";
 import { KV_COLLECTION, limitsContract } from "./limits.test.js";
 import {
   dockerAvailable,
@@ -513,6 +522,289 @@ describe.skipIf(!dockerAvailable())(
         // carry no foreign key, deliberately (`m0019_social`).
         return createSocialDb(db.client);
       });
+    });
+
+    describe("push contract", () => {
+      // The races need two transactions open at once, and `db.client` holds
+      // one connection: the peer repository runs on a second one.
+      let peer: PrismaClient | undefined;
+      const harness = async (): Promise<PushHarness> => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        peer ??= db.connect();
+        const repo = createConsoleDb(db.client);
+        return {
+          db: createPushDb(db.client),
+          peer: createPushDb(peer),
+          seedChannel: async (id, teamId = "team_1", kind = "push") => {
+            const projectId = teamId === "team_1" ? "prj_1" : `prj_${teamId}`;
+            if (teamId !== "team_1") {
+              await db.client.teams.upsert({
+                where: { id: teamId },
+                update: {},
+                create: {
+                  id: teamId,
+                  name: teamId,
+                  created_by: "m1",
+                  created_at: 1,
+                  updated_at: 1,
+                },
+              });
+              await db.client.projects.upsert({
+                where: { id: projectId },
+                update: {},
+                create: {
+                  id: projectId,
+                  team_id: teamId,
+                  name: "game",
+                  created_by: "m1",
+                  created_at: 1,
+                  updated_at: 1,
+                },
+              });
+            }
+            await repo.insertChannel({
+              id,
+              kind,
+              ownerId: "m1",
+              teamId,
+              projectId,
+              name: id,
+              config: {},
+              secret: {},
+              createdAt: 1,
+              expiresAt: 2_000_000,
+            });
+          },
+          deleteChannel: async (id) => {
+            await repo.deleteChannel(id, 1_000_000);
+          },
+          purgeChannel: async (id) => {
+            await db.client.channels.delete({ where: { id } });
+          },
+        };
+      };
+      pushContract(harness);
+      pushStatsContract(harness);
+
+      it("ties `platform_package` to the sender (CHECK constraint)", async () => {
+        const h = await harness();
+        await h.seedChannel("push_1");
+        const insert = (sender: string, name: string | null) =>
+          db.client.$executeRaw`
+            INSERT INTO push_apps
+              (channel_id, team_id, package_name, platform_package, sender, slot, created_at)
+            VALUES ('push_1', 'team_1', 'com.example.game', ${name}, ${sender},
+                    ${sender === "platform" ? "p1" : null}, 1)`;
+        // A platform row without the name would escape the unique index; a
+        // team row with it would squat the name; another name is neither.
+        await expect(insert("platform", null)).rejects.toThrow();
+        await expect(insert("platform", "com.example.other")).rejects.toThrow();
+        await expect(insert("team", "com.example.game")).rejects.toThrow();
+        await expect(insert("platform", "com.example.game")).resolves.toBe(1);
+      });
+
+      it("survives a token registration racing a delete by hash and the stale sweep", async () => {
+        // The deadlock a review reproduced (2026-10-06): the registration
+        // locked the user's rows through `push_tokens_user` and then the
+        // primary key, a delete by hash the other way round. Every statement
+        // now starts at the primary key, and a victim is retried once.
+        const h = await harness();
+        const third = createPushDb(db.connect());
+        const user = "0".repeat(31) + "1";
+        const tok = (i: number) => `tok-${i}:APA91b-zz`;
+        const put = (i: number) =>
+          h.db.putToken({
+            channelId: "push_1",
+            userId: user,
+            token: tok(i),
+            firebaseProject: "p",
+            platform: "android",
+            at: 100 + i,
+          });
+        let n = 0;
+        for (let i = 0; i < 5; i++) await put(n++);
+        const failures: string[] = [];
+        for (let round = 0; round < 150; round++) {
+          const victim = tok(n - 3);
+          const settled = await Promise.allSettled([
+            put(n++),
+            h.peer.deleteTokenByHash("push_1", pushTokenHash(victim)),
+            third.sweepStaleTokens(100 + n - 3, 1000),
+          ]);
+          for (const r of settled)
+            if (r.status === "rejected")
+              failures.push(String((r.reason as Error).message));
+          await put(n++);
+          await put(n++);
+        }
+        expect(failures).toEqual([]);
+        expect(
+          (await h.db.listTokensForUsers("push_1", [user])).length,
+        ).toBeLessThanOrEqual(5);
+      }, 120_000);
+
+      it("ties a slot to the platform sender (CHECK constraint)", async () => {
+        const h = await harness();
+        await h.seedChannel("push_1");
+        // Prisma does not model CHECK, so only a raw insert notices it gone.
+        const insert = (sender: string, slot: string | null) =>
+          db.client.$executeRaw`
+            INSERT INTO push_apps
+              (channel_id, team_id, package_name, sender, slot, created_at)
+            VALUES ('push_1', 'team_1', 'com.example.game', ${sender}, ${slot}, 1)`;
+        await expect(insert("platform", null)).rejects.toThrow();
+        await expect(insert("team", "p1")).rejects.toThrow();
+        await expect(insert("team", null)).resolves.toBe(1);
+      });
+
+      it("keeps `user_id` binary and every other text column on the default", async () => {
+        const cols = await db.client.$queryRaw<
+          { name: string; collation: string }[]
+        >`
+          select concat(table_name, '.', column_name) as name,
+                 collation_name as collation
+          from information_schema.columns
+          where table_schema = database()
+            and table_name in
+              ('push_apps', 'push_pool', 'push_tokens', 'push_send_stats')
+            and collation_name is not null`;
+        const odd = cols
+          .filter((c) => c.collation !== "utf8mb4_unicode_ci")
+          .map((c) => `${c.name} ${c.collation}`);
+        expect(odd).toEqual(["push_tokens.user_id utf8mb4_bin"]);
+      });
+
+      it("reads a send's tokens and the sweep through their indexes at 60,000 rows", async () => {
+        await resetTestDb(db.client);
+        // 4 channels x 3,000 users x 5 tokens, half of them stale.
+        await db.client.$executeRawUnsafe(
+          `insert into push_tokens
+             (token_hash, channel_id, user_id, token, firebase_project, platform, created_at, updated_at)
+           select sha2(seq, 256), concat('push_', seq mod 4),
+                  lower(lpad(hex(seq div 20), 32, '0')), concat('fcm-token-', seq),
+                  'example-project', 'android', seq, seq
+           from seq_0_to_59999`,
+        );
+        await db.client.$executeRawUnsafe("analyze table push_tokens");
+        const plan = async (sql: string) =>
+          (
+            await db.client.$queryRawUnsafe<
+              {
+                type: string;
+                key: string | null;
+                rows: bigint | number | null;
+                Extra: string | null;
+              }[]
+            >(`explain ${sql}`)
+          ).map((r) => ({
+            type: r.type,
+            key: r.key,
+            rows: Number(r.rows ?? 0),
+            extra: r.Extra ?? "",
+          }));
+        const users = Array.from({ length: 500 }, (_, i) =>
+          i.toString(16).padStart(32, "0"),
+        );
+        const repo = createPushDb(db.client);
+        try {
+          // The statement `listTokensForUsers` sends through `findMany`.
+          const send = await plan(
+            `select token_hash, user_id, token, firebase_project, updated_at
+             from push_tokens where channel_id = 'push_1'
+               and user_id in (${users.map((u) => `'${u}'`).join(", ")})`,
+          );
+          expect(send).toHaveLength(1);
+          expect(send[0]!.key).toBe("push_tokens_user");
+          expect(send[0]!.type).toBe("range");
+          expect(send[0]!.rows).toBeLessThan(10_000);
+          // One user's rows: the cap's read.
+          const one = await plan(
+            `select token_hash, updated_at from push_tokens
+             where channel_id = 'push_1' and user_id = '${users[3]}'`,
+          );
+          expect(one[0]!.key).toBe("push_tokens_user");
+          expect(one[0]!.type).toBe("ref");
+          const sweep = await plan(
+            "delete from push_tokens where updated_at < 100 limit 1000",
+          );
+          expect(sweep[0]!.key).toBe("push_tokens_stale");
+          expect(sweep[0]!.type).toBe("range");
+          const purge = await plan(
+            "delete from push_tokens where channel_id = 'push_1' limit 1000",
+          );
+          // `channel_id` leads the primary key too; either is a range.
+          expect(["PRIMARY", "push_tokens_user"]).toContain(purge[0]!.key);
+          expect(purge[0]!.type).not.toBe("ALL");
+          // A delete by hash is a primary-key lookup.
+          const byHash = await plan(
+            `delete from push_tokens
+             where channel_id = 'push_1' and token_hash = '${"0".repeat(64)}'`,
+          );
+          expect(byHash[0]!.key).toBe("PRIMARY");
+
+          const got = await repo.listTokensForUsers("push_1", users);
+          // `seq mod 4 = 1` and `seq div 20 < 500`: 5 of each user's 20 rows.
+          expect(got).toHaveLength(2_500);
+          expect(new Set(got.map((t) => t.userId)).size).toBe(500);
+          expect(await repo.sweepStaleTokens(30_000, 1_000)).toBe(1_000);
+          expect(await repo.deleteChannelTokens("push_1", 2_000)).toBe(2_000);
+          expect((await repo.topPushChannels(1))[0]).toEqual({
+            channelId: "push_0",
+            tokens: 14_750,
+          });
+        } finally {
+          // Inside this test's own timeout (the `asset_files` lesson).
+          await db.client.$executeRawUnsafe("truncate table push_tokens");
+        }
+      }, 120_000);
+    });
+
+    describe("push send stats plans", () => {
+      it("reads a day's failures and the retention through `push_send_stats_day`", async () => {
+        await resetTestDb(db.client);
+        // 400 channels x 30 days, one in ten rows with failures.
+        await db.client.$executeRawUnsafe(
+          `insert into push_send_stats
+             (channel_id, day, calls, sent, no_token, failed, unregistered, updated_at)
+           select concat('push_', seq div 30), 20000 + (seq mod 30), 1, 1, 0,
+                  if(seq mod 10 = 0, seq mod 7 + 1, 0), 0, 1
+           from seq_0_to_11999`,
+        );
+        await db.client.$executeRawUnsafe("analyze table push_send_stats");
+        const plan = async (sql: string) =>
+          (
+            await db.client.$queryRawUnsafe<
+              { type: string; key: string | null }[]
+            >(`explain ${sql}`)
+          )[0]!;
+        try {
+          const top = await plan(
+            `select channel_id, day, calls, sent, no_token, failed, unregistered
+             from push_send_stats where day = 20010 and failed > 0
+             order by failed desc, channel_id asc limit 5`,
+          );
+          expect(top.key).toBe("push_send_stats_day");
+          expect(top.type).toBe("range");
+          const old = await plan(
+            "delete from push_send_stats where day < 20003 limit 1000",
+          );
+          expect(old.key).toBe("push_send_stats_day");
+          expect(old.type).toBe("range");
+          const purge = await plan(
+            "delete from push_send_stats where channel_id = 'push_7' limit 1000",
+          );
+          expect(purge.key).toBe("PRIMARY");
+          const repo = createPushDb(db.client);
+          expect(await repo.topSendFailures(20_010, 5)).toHaveLength(5);
+          expect(await repo.sweepSendStats(20_003, 1_000)).toBe(1_000);
+          // 30 days less the two (or, by index order, three) just swept.
+          const own = await repo.deleteChannelSendStats("push_7", 1_000);
+          expect([27, 28]).toContain(own);
+        } finally {
+          await db.client.$executeRawUnsafe("truncate table push_send_stats");
+        }
+      }, 120_000);
     });
 
     describe("team contract", () => {
@@ -1107,6 +1399,60 @@ describe.skipIf(!dockerAvailable())(
         expect((await repo.findChannelRow("t1"))?.name).toBe("renamed");
       });
 
+      it("editChannel merges under the row lock, so two writers both land", async () => {
+        const repo = createConsoleDb(db.client);
+        const other = createConsoleDb(db.connect());
+        await repo.insertChannel({
+          ...channel("push_e"),
+          kind: "push",
+          config: { packageName: "com.example.game" },
+          secret: { apiKey: "k0" },
+        });
+        // Each adds one field to the blob it reads; with a plain update the
+        // later writer would erase the earlier one's.
+        const add = (r: typeof repo, field: string) =>
+          r.editChannel("push_e", (row) => ({
+            config: {
+              ...(JSON.parse(row.configJson) as Record<string, unknown>),
+              [field]: 1,
+            },
+          }));
+        await Promise.all([
+          add(repo, "a"),
+          add(other, "b"),
+          add(repo, "c"),
+          add(other, "d"),
+        ]);
+        const after = await repo.findChannelRow("push_e");
+        expect(JSON.parse(after!.configJson)).toEqual({
+          packageName: "com.example.game",
+          a: 1,
+          b: 1,
+          c: 1,
+          d: 1,
+        });
+        expect(JSON.parse(after!.secretJson)).toEqual({ apiKey: "k0" });
+        // `undefined` changes nothing and still answers the row; a throw
+        // rolls back; a missing or deleted channel is `undefined`.
+        expect((await repo.editChannel("push_e", () => undefined))?.id).toBe(
+          "push_e",
+        );
+        await expect(
+          repo.editChannel("push_e", () => {
+            throw new AppError("conflict", "no");
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+        expect(
+          (await repo.editChannel("push_e", () => ({ name: "renamed-e" })))
+            ?.name,
+        ).toBe("renamed-e");
+        expect(await repo.editChannel("nope", () => ({}))).toBeUndefined();
+        await repo.deleteChannel("push_e", 9);
+        expect(
+          await repo.editChannel("push_e", () => ({ name: "x" })),
+        ).toBeUndefined();
+      });
+
       it("stores the gateway kinds the enum migration added", async () => {
         const repo = await fresh();
         // The ENUM is the only thing that can reject these, and it lives in
@@ -1130,6 +1476,26 @@ describe.skipIf(!dockerAvailable())(
         const q = await repo.findChannelRow("q1");
         expect(toQChannel(q!)?.config.authChannelId).toBe("a");
         expect(toLobbyChannel(q!)).toBeUndefined();
+        // `push` is the value `m0028_push` appended.
+        await repo.insertChannel({
+          ...channel("p1"),
+          kind: "push",
+          config: {
+            authChannelId: "a",
+            packageName: "com.example.game",
+            sender: "platform",
+          },
+          secret: { apiKey: "k0-secret-zz" },
+        });
+        const push = await repo.findPushChannel("p1");
+        expect(push?.config.packageName).toBe("com.example.game");
+        expect(push?.secret.apiKey).toBe("k0-secret-zz");
+        expect(push?.teamId).toBe("team_1");
+        expect(await repo.findPushChannel("l1")).toBeUndefined();
+        expect(await repo.findMatchChannel("p1")).toBeUndefined();
+        expect(
+          (await repo.listChannels({ kind: "push" })).map((c) => c.id),
+        ).toEqual(["p1"]);
         // They are not topic/match/auth channels, whichever way you ask.
         expect(await repo.findTopicChannel("l1")).toBeUndefined();
         expect(await repo.findMatchChannel("q1")).toBeUndefined();
@@ -1177,6 +1543,34 @@ describe.skipIf(!dockerAvailable())(
           await db.client.channels.findUnique({ where: { id: "c1" } }),
         ).toBeNull();
         await repo.insertChannel(channel("c3", { name: "C1" }));
+      });
+
+      it("removeChannel hard-deletes a live row and cascades its push claim", async () => {
+        const repo = await fresh();
+        const push = createPushDb(db.client);
+        await repo.insertChannel({ ...channel("push_r"), kind: "push" });
+        expect(
+          await push.claimApp({
+            channelId: "push_r",
+            packageName: "com.example.rollback",
+            sender: "team",
+            at: 5,
+          }),
+        ).toEqual({ ok: true, slot: null });
+        expect(await repo.removeChannel("push_r")).toBe(true);
+        expect(
+          await db.client.channels.findUnique({ where: { id: "push_r" } }),
+        ).toBeNull();
+        expect(await push.findApp("push_r")).toBeUndefined();
+        // The name and the package are free at once.
+        await repo.insertChannel({ ...channel("push_r"), kind: "push" });
+        expect(await repo.removeChannel("nope")).toBe(false);
+        // A soft-deleted row is the purge's, not this method's.
+        await repo.deleteChannel("push_r", 9);
+        expect(await repo.removeChannel("push_r")).toBe(false);
+        expect(
+          await db.client.channels.findUnique({ where: { id: "push_r" } }),
+        ).not.toBeNull();
       });
     });
   },

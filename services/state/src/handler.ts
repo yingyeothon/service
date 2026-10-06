@@ -3,16 +3,24 @@ import {
   createKvStoreDb,
   createLeaderboardDb,
   createPrismaClient,
+  createPushDb,
   createSocialDb,
   createStateDb,
   mysqlOptionsFromEnv,
   type ConsoleDb,
   type KvStoreDb,
   type LeaderboardDb,
+  type PushDb,
   type SocialDb,
   type StateDb,
 } from "@yyt/console-db";
 import { createJsonLogger, requireEnv, systemClock } from "@yyt/core";
+import {
+  createPushPool,
+  ssmSlotLoader,
+  type PushPool,
+  type SlotLoader,
+} from "@yyt/push";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { createStateApp } from "./app.js";
 import { createChannelStore } from "./channels.js";
@@ -28,6 +36,7 @@ interface Deps {
   kvstore: KvStoreDb;
   leaderboards: LeaderboardDb;
   social: SocialDb;
+  push: PushDb;
 }
 
 let deps: Promise<Deps> | undefined;
@@ -50,6 +59,7 @@ function getDeps(): Promise<Deps> {
       kvstore: createKvStoreDb(raw),
       leaderboards: createLeaderboardDb(raw),
       social: createSocialDb(raw),
+      push: createPushDb(raw),
     };
   })();
   // A failed cold start must retry on the next invocation, not cache the rejection.
@@ -85,15 +95,57 @@ function buildCrypto(): KvCrypto | undefined {
   }
 }
 
+/**
+ * The stage's pool of Firebase projects: every SecureString under
+ * `PUSH_SSM_PATH`, read on the first push request and cached per container.
+ *
+ * Not `requireEnv`, for the reason `buildCrypto` states: a stage without the
+ * variable or without a parameter has an empty pool, `/push/*` answers 503
+ * "push not configured", and nothing else in the stack notices.
+ *
+ * The SSM client is built -- and its SDK module imported -- on the first
+ * load, so a cold start that serves `/s/*` or `/kv/*` never pays for it. Its
+ * bounds are tighter than the console's: the token routes run on `api`, whose
+ * timeout is 10 s. Two attempts of at most 1 s to connect and 3 s to answer
+ * end inside it, so an SSM that does not respond is a 503 and not a "Task
+ * timed out".
+ */
+function buildPushPool(): PushPool {
+  const path = process.env.PUSH_SSM_PATH;
+  if (!path) logger.error("push pool unavailable", { reason: "no_path" });
+  let loader: SlotLoader | undefined;
+  const loadSlots: SlotLoader = async () => {
+    if (!path) return [];
+    if (!loader) {
+      const { SSMClient } = await import("@aws-sdk/client-ssm");
+      loader = ssmSlotLoader({
+        path,
+        client: new SSMClient({
+          maxAttempts: 2,
+          requestHandler: { requestTimeout: 3000, connectionTimeout: 1000 },
+        }),
+      });
+    }
+    return loader();
+  };
+  return createPushPool({
+    loadSlots,
+    fetch,
+    clock: systemClock,
+    logger,
+  });
+}
+
 async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
   requireEnv(process.env, "STAGE");
-  const { db, state, kvstore, leaderboards, social } = await getDeps();
+  const { db, state, kvstore, leaderboards, social, push } = await getDeps();
   const clock = systemClock;
   return createStateApp({
     state,
     kvstore,
     leaderboards,
     social,
+    push: { db: push, channels: db, pool: buildPushPool() },
     channels: createChannelStore({ db, clock }),
     crypto: buildCrypto(),
     clock,

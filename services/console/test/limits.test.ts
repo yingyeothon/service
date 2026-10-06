@@ -927,6 +927,17 @@ describe("team.projects (a stepped, team-scoped limit)", () => {
         next: null,
         override: null,
       },
+      {
+        key: "push.appsPerTeam",
+        unit: "count",
+        soft: 2,
+        hard: 5,
+        effective: 2,
+        usage: 0,
+        step: 1,
+        next: null,
+        override: null,
+      },
     ]);
     const early = await ask(h, alice, {
       scope: teamScope,

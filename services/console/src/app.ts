@@ -31,7 +31,10 @@ import type {
   TeamDb,
   StateDb,
   ListingsDb,
+  PushChannelConfig,
+  PushDb,
 } from "@yyt/console-db";
+import type { PushPool } from "@yyt/push";
 import {
   createHttpHandler,
   defineRoute,
@@ -87,6 +90,13 @@ import {
   deleteChannelDocs,
 } from "./channel-doc-key.js";
 import { deleteChannelSocial } from "./social.js";
+import {
+  createPushRegistrar,
+  createPushRoutes,
+  drainPushSendStats,
+  drainPushTokens,
+  releasePushApp,
+} from "./push.js";
 import { createWriteSlot } from "./write-slot.js";
 import { createTokenMinter } from "./api-token.js";
 import { createAppHandoffRoutes } from "./app-handoff.js";
@@ -134,6 +144,16 @@ export interface ConsoleAppOptions {
   social: SocialDb;
   /** Limit requests and overrides (docs/decisions.md *Limit requests*). */
   limits: LimitsDb;
+  /**
+   * Push registrations, pool slots and device tokens. Omit on a stage
+   * without the tables: a push channel then cannot be created (503).
+   */
+  push?: PushDb;
+  /**
+   * The stage's Firebase projects (SSM `push/fcm/`). Omit when the stage
+   * names no path: platform-sender push channels answer 503.
+   */
+  pushPool?: PushPool;
   /**
    * Publishes one e-mail per new limit request to the stage's alarm topic;
    * omit when the stage has none. Bounded (a short timeout, one attempt): it
@@ -209,13 +229,15 @@ const deviceTokenBody = z
   .strict();
 const channelsQuery = searchQuery(CHANNEL_SORT_KEYS)
   .extend({
-    kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional(),
+    kind: z.enum(["auth", "topic", "match", "lobby", "q", "push"]).optional(),
     /** admin only: `all` lists every team's channels. */
     scope: z.enum(["mine", "all"]).optional(),
   })
   .passthrough();
 const projectChannelsQuery = searchQuery(CHANNEL_SORT_KEYS)
-  .extend({ kind: z.enum(["auth", "topic", "match", "lobby", "q"]).optional() })
+  .extend({
+    kind: z.enum(["auth", "topic", "match", "lobby", "q", "push"]).optional(),
+  })
   .passthrough();
 const membersQuery = listQuery(MEMBER_SORT_KEYS).passthrough();
 const tokensQuery = listQuery(TOKEN_SORT_KEYS).passthrough();
@@ -236,6 +258,8 @@ export function createConsoleApp({
   leaderboards,
   social,
   limits,
+  push,
+  pushPool,
   notify,
   posters,
   artifacts,
@@ -441,6 +465,16 @@ export function createConsoleApp({
     // The file's own URL is what is stored: the delete guard matches it.
     c.mapUrl = await requireMapFile(assets, teamId, url);
   }
+
+  const pushDeps = { push, pool: pushPool, stage, logger, clock };
+  const pushRegistrar = createPushRegistrar({
+    ...pushDeps,
+    db,
+    limits,
+    clock,
+    audit,
+  });
+  const writeSlot = createWriteSlot({ kv, clock });
 
   const routes: AnyRoute[] = [
     // ---- login -------------------------------------------------------
@@ -846,6 +880,14 @@ export function createConsoleApp({
         if (kind !== "auth")
           await requireAuthChannel(a.project.id, split.config);
         await requireMapUrl(a.team.id, split.config, undefined);
+        if (kind === "push") {
+          // Every push create spends a claim transaction and, on the
+          // platform sender, Firebase Management calls against a project
+          // quota every team shares.
+          await writeSlot(a.id);
+          // An unprovisioned stage is refused before any row is written.
+          await pushRegistrar.preflight(split.config as PushChannelConfig);
+        }
         const now = nowSec(clock);
         const channelId = newChannelId(kind);
         await db.insertChannel({
@@ -860,11 +902,25 @@ export function createConsoleApp({
           createdAt: now,
           expiresAt: now + CHANNEL_TTL_SEC,
         });
+        // The row first, then the claim and Firebase (docs/decisions.md
+        // *Push notifications* #4); a failure removes the row again and is
+        // the caller's answer, so nothing below runs for it.
+        const registered =
+          kind === "push"
+            ? await pushRegistrar.register(
+                { id: channelId, teamId: a.team.id },
+                split.config as PushChannelConfig,
+              )
+            : undefined;
         const row = await db.findChannelRow(channelId);
         if (!row) throw new AppError("unavailable", "channel vanished");
         await audit(a.id.subject, "channel.create", channelId, {
           kind,
           projectId: a.project.id,
+          // The slot label, never the project behind it.
+          ...(registered
+            ? { sender: registered.sender, slot: registered.slot ?? null }
+            : {}),
         });
         await channelHistory(row, a.id.subject, "resource.create");
         const shown =
@@ -924,7 +980,34 @@ export function createConsoleApp({
           patch.config = split.config;
           patch.secret = split.secret;
         }
-        if (!(await db.updateChannel(row.id, patch)))
+        let after: ChannelRow | undefined;
+        if (row.kind === "push" && ctx.body.config !== undefined) {
+          // A push channel's blobs have several writers (the registration,
+          // the sender key, the rotation, the reconciliation), so the merge
+          // is redone on the row as it is under its lock, and the secret is
+          // not written at all (`ConsoleDb.editChannel`).
+          const input = ctx.body.config;
+          after = await db.editChannel(row.id, (cur) => {
+            const c = JSON.parse(cur.configJson) as PushChannelConfig;
+            // A registration still under way owns the config: a merge now
+            // would be over a row without its slot and app id.
+            if (
+              c.sender === "platform" &&
+              (c.slot === undefined || c.firebaseAppId === undefined)
+            )
+              throw new AppError(
+                "conflict",
+                "the channel's registration is not finished",
+                { details: { reason: "not_registered" } },
+              );
+            return {
+              ...(patch.name !== undefined ? { name: patch.name } : {}),
+              config: patchChannel(cur, input, channelOptions).config,
+            };
+          });
+          if (!after) throw new AppError("not_found", "channel not found");
+          delete patch.secret;
+        } else if (!(await db.updateChannel(row.id, patch)))
           throw new AppError("not_found", "channel not found");
         await audit(id.subject, "channel.update", row.id, {
           fields: Object.keys(patch),
@@ -935,7 +1018,7 @@ export function createConsoleApp({
           "resource.update",
           Object.keys(patch),
         );
-        const after = await db.findChannelRow(row.id);
+        after ??= await db.findChannelRow(row.id);
         return after && view(after);
       },
     }),
@@ -986,8 +1069,17 @@ export function createConsoleApp({
           { kind: "channel", id: ctx.params.id! },
           { secret: true },
         );
-        const { secret, shown } = rotateSecret(row);
-        await db.updateChannel(row.id, { secret });
+        let { secret, shown } = rotateSecret(row);
+        if (row.kind === "push") {
+          // The blob also holds the team's sender key: the new apiKey is
+          // merged into the secret as it is under the row lock, so a key set
+          // since this request's read is not rotated away.
+          const after = await db.editChannel(row.id, (cur) => {
+            ({ secret, shown } = rotateSecret(cur));
+            return { secret };
+          });
+          if (!after) throw new AppError("not_found", "channel not found");
+        } else await db.updateChannel(row.id, { secret });
         await audit(id.subject, "channel.rotate", row.id);
         await channelHistory(row, id.subject, "resource.rotate");
         return {
@@ -1040,6 +1132,15 @@ export function createConsoleApp({
         // (`docs/decisions.md` *Serverless clients* #9).
         if (row.kind === "auth")
           await deleteChannelSocial(social, row.id, logger);
+        // A push channel gives back its Firebase app and its claim (the
+        // package name, the team's count) and drops its device tokens. All
+        // best-effort: what Firebase did not confirm keeps its claim, and
+        // the daily sweep retries it and takes the tokens left here.
+        if (row.kind === "push") {
+          await releasePushApp(pushDeps, row.id);
+          await drainPushTokens(push, row.id, logger);
+          await drainPushSendStats(push, row.id, logger);
+        }
         await audit(id.subject, "channel.delete", row.id);
         await channelHistory(row, id.subject, "resource.delete");
         return undefined;
@@ -1167,12 +1268,24 @@ export function createConsoleApp({
     audit,
   });
 
+  const pushRoutes = createPushRoutes({
+    ...pushDeps,
+    access,
+    db,
+    view,
+    writeSlot,
+    clock,
+    audit,
+    history,
+  });
+
   const limitRoutes = createLimitRoutes({
     limits,
     db,
     team,
     assets,
     kvstore,
+    push,
     access,
     history,
     kv,
@@ -1264,6 +1377,7 @@ export function createConsoleApp({
       ...limitRoutes,
       ...channelRedisRoutes,
       ...channelDocKeyRoutes,
+      ...pushRoutes,
       ...gatewayRoutes,
     ],
     identity: createIdentityResolver({

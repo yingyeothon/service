@@ -57,6 +57,74 @@ describe("api client", () => {
     expect(fetch.mock.calls[0]![1]).toMatchObject({ method: "DELETE" });
   });
 
+  it("downloads google-services.json as a blob, named by the response", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response('{"project_info":{}}', {
+          status: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "content-disposition":
+              'attachment; filename="google-services.json"',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+      .mockResolvedValueOnce(
+        jsonRes(409, {
+          error: {
+            code: "conflict",
+            message: "the channel has no platform registration",
+            details: { reason: "not_registered" },
+          },
+        }),
+      );
+    const api = createApiClient({ fetch });
+    const file = await api.channelGoogleServices("push/1");
+    expect(file.filename).toBe("google-services.json");
+    // jsdom's Blob has no `text()`; the size says the body arrived whole.
+    expect(file.blob.size).toBe('{"project_info":{}}'.length);
+    expect(fetch.mock.calls[0]![0]).toBe(
+      "/channels/push%2F1/google-services.json",
+    );
+    expect(fetch.mock.calls[0]![1]).toMatchObject({
+      method: "GET",
+      credentials: "same-origin",
+    });
+    // No header: the route's own name.
+    expect((await api.channelGoogleServices("push_1")).filename).toBe(
+      "google-services.json",
+    );
+    await expect(api.channelGoogleServices("push_1")).rejects.toMatchObject({
+      status: 409,
+      details: { reason: "not_registered" },
+    });
+  });
+
+  it("addresses the sender key and the push pool routes", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(jsonRes(200, {})));
+    const api = createApiClient({ fetch });
+    await api.setChannelSenderKey("push_1", "{}");
+    await api.removeChannelSenderKey("push_1");
+    await api.pushPool();
+    await api.setPushSlotClosed("p1", true);
+    await api.setPushSlotClosed("p1", false);
+    expect(
+      fetch.mock.calls.map(([url, init]) => `${init?.method} ${url as string}`),
+    ).toEqual([
+      "PUT /channels/push_1/sender-key",
+      "DELETE /channels/push_1/sender-key",
+      "GET /admin/push/pool",
+      "POST /admin/push/pool/p1/close",
+      "POST /admin/push/pool/p1/open",
+    ]);
+    expect(fetch.mock.calls[0]![1]?.body).toBe('{"serviceAccount":"{}"}');
+    expect(fetch.mock.calls[1]![1]?.body).toBeUndefined();
+  });
+
   it("uploads a poster via presign → PUT → commit", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

@@ -1,0 +1,33 @@
+{
+  "name": "@yyt/push",
+  "version": "0.0.0",
+  "private": true,
+  "description": "FCM HTTP v1 sender, Firebase Management client and the per-stage project pool (node:crypto + fetch, no firebase-admin), with fakes",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@yyt/testing": "workspace:*"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ssm": "^3.864.0",
+    "@yyt/core": "workspace:*"
+  }
+}

@@ -58,6 +58,125 @@ describe("serverless.yml invariants", () => {
     });
   }
 
+  it("state: the targeted send has a function of its own", () => {
+    // Owner decision 2026-10-06: `POST /push/{channelId}/send` may run for
+    // 20 s and more, so it must not hold the containers every player route
+    // shares. `api` keeps the provider's 10 s; `pushSend` is the only
+    // function with the long timeout, capped at two containers.
+    const doc = parse(
+      readFileSync(join(root, "services/state/serverless.yml"), "utf8"),
+      { logLevel: "silent" },
+    ) as {
+      provider: { timeout: number };
+      functions: Record<
+        string,
+        {
+          handler: string;
+          reservedConcurrency: number;
+          timeout?: number;
+          events: { httpApi: unknown }[];
+        }
+      >;
+      resources: {
+        Resources: Record<
+          string,
+          { Type: string; Properties: Record<string, unknown> }
+        >;
+      };
+    };
+    const { api, pushSend } = doc.functions;
+    expect(Object.keys(doc.functions).sort()).toEqual(["api", "pushSend"]);
+    expect(doc.provider.timeout).toBe(10);
+    expect(api!.timeout).toBeUndefined();
+    expect(api!.events).toEqual([{ httpApi: "*" }]);
+    expect(pushSend!.handler).toBe(api!.handler);
+    expect(pushSend!.reservedConcurrency).toBe(2);
+    // Under API Gateway's 29 s, above the 20 s send + 3 s cleanup budgets.
+    expect(pushSend!.timeout).toBe(28);
+    expect(pushSend!.events).toEqual([
+      { httpApi: { method: "POST", path: "/push/{channelId}/send" } },
+    ]);
+    // One MariaDB connection per container: this stack's share of the
+    // budget in `rules/data.md` (8 of the 57 reserved against the host's 60).
+    expect(api!.reservedConcurrency + pushSend!.reservedConcurrency).toBe(8);
+
+    // No new alarm: both functions' failure lines feed the one metric the
+    // stack's single alarm watches.
+    const resources = Object.entries(doc.resources.Resources);
+    const alarms = resources.filter(
+      ([, r]) => r.Type === "AWS::CloudWatch::Alarm",
+    );
+    expect(alarms.map(([name]) => name)).toEqual(["ApiErrorsAlarm"]);
+    const filters = resources.filter(
+      ([, r]) => r.Type === "AWS::Logs::MetricFilter",
+    );
+    expect(filters.map(([name]) => name).sort()).toEqual([
+      "ApiFailureMetric",
+      "PushSendFailureMetric",
+    ]);
+    const metric = (r: { Properties: Record<string, unknown> }) =>
+      (
+        r.Properties.MetricTransformations as {
+          MetricNamespace: string;
+          MetricName: string;
+        }[]
+      ).map((t) => `${t.MetricNamespace}/${t.MetricName}`);
+    expect(metric(filters[1]![1])).toEqual(metric(filters[0]![1]));
+    expect(metric(filters[0]![1])).toEqual([
+      `${String(alarms[0]![1].Properties.Namespace)}/${String(alarms[0]![1].Properties.MetricName)}`,
+    ]);
+    expect(filters.map(([, r]) => r.Properties.FilterPattern)).toEqual([
+      filters[0]![1].Properties.FilterPattern,
+      filters[0]![1].Properties.FilterPattern,
+    ]);
+    expect(String(filters[1]![1].Properties.LogGroupName)).toMatch(
+      /-pushSend$/,
+    );
+  });
+
+  it("the MariaDB connection budget stays inside the host's limit", () => {
+    // `rules/data.md`, *Connection budget*: one connection per container,
+    // so the reservations of every function that opens MariaDB add up to the
+    // worst case of one stage, against `max_connections=60`. Functions that
+    // hold Redis only are listed here and nowhere else.
+    const noMariaDb = new Set(["console/gatewayProbe", "console/cdnGuard"]);
+    const perStack: Record<string, number> = {};
+    for (const file of files) {
+      const stack = file.slice(root.length + 1).split("/")[1]!;
+      const doc = parse(readFileSync(file, "utf8"), { logLevel: "silent" }) as {
+        functions?: Record<string, { reservedConcurrency: number }>;
+      };
+      for (const [name, fn] of Object.entries(doc.functions ?? {}))
+        if (!noMariaDb.has(`${stack}/${name}`))
+          perStack[stack] = (perStack[stack] ?? 0) + fn.reservedConcurrency;
+    }
+    expect(perStack).toEqual({
+      auth: 10,
+      console: 12,
+      match: 18,
+      state: 8,
+      topic: 9,
+    });
+    const total = Object.values(perStack).reduce((a, b) => a + b, 0);
+    expect(total).toBe(57);
+    expect(total).toBeLessThanOrEqual(60);
+  });
+
+  it("state: the SSM SDK is loaded by the first push request, not at cold start", () => {
+    // `@aws-sdk/*` is external to the bundle, so a static import is a module
+    // load on every cold start of `/s/*` and `/kv/*` too.
+    for (const file of [
+      "services/state/src/handler.ts",
+      "packages/push/src/ssm.ts",
+    ]) {
+      const src = readFileSync(join(root, file), "utf8");
+      expect(src, file).not.toMatch(
+        /^import\s+(?!type\b)[^;]*from "@aws-sdk\/client-ssm";/m,
+      );
+      expect(src, file).toContain('await import("@aws-sdk/client-ssm")');
+    }
+  });
+
   it("state: every SSM environment value has a default", () => {
     const yml = readFileSync(
       join(root, "services/state/serverless.yml"),
@@ -342,8 +461,21 @@ describe("serverless.yml invariants", () => {
     ])
       expect(guardEnv[k], k).toBe("");
     expect(Object.keys(doc.functions.expire?.environment ?? {}).sort()).toEqual(
-      ["SITE_HOST_DISTRIBUTION_ID", "WEB_DISTRIBUTION_ID"],
+      ["PUSH_SSM_PATH", "SITE_HOST_DISTRIBUTION_ID", "WEB_DISTRIBUTION_ID"],
     );
+    // The push pool's path reaches `api` and `expire` only, and the role
+    // reads nothing else from the parameter store.
+    expect(doc.provider.environment.PUSH_SSM_PATH).toBeUndefined();
+    expect(guardEnv.PUSH_SSM_PATH).toBeUndefined();
+    expect(doc.functions.api?.environment).toHaveProperty("PUSH_SSM_PATH");
+    const ssm = JSON.stringify(
+      doc.provider.iam.role.statements.filter((st: unknown) =>
+        JSON.stringify(st).includes("ssm:"),
+      ),
+    );
+    expect(ssm).toContain("ssm:GetParametersByPath");
+    expect(ssm).not.toMatch(/ssm:(\*|GetParameter"|GetParameters")/);
+    expect(ssm).toContain("/push/fcm");
     expect(doc.provider.environment.SITE_HOST_DISTRIBUTION_ID).toBeUndefined();
     expect(doc.provider.environment.WEB_DISTRIBUTION_ID).toBeUndefined();
   });

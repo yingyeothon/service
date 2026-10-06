@@ -44,6 +44,7 @@ import { Badge, CopyField, CopyText, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
 import { fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
+import { channelDeleteNote } from "../lib/push";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { issueUrl, projectUrl, useTeamStanding, versionUrl } from "../lib/team";
@@ -407,7 +408,7 @@ function ChannelsTab({
         empty={{
           title: "No channels yet.",
           hint: canWrite
-            ? "An auth channel comes first; topic, match, lobby and q channels hang off it."
+            ? "An auth channel comes first; topic, match, lobby, q and push channels hang off it."
             : undefined,
         }}
         render={(c) => (
@@ -448,8 +449,7 @@ function ChannelsTab({
                       onClick: () => remove(c.id),
                       confirm: {
                         title: `Delete ${c.name}?`,
-                        message:
-                          "Sockets on it are closed and its credentials stop working.",
+                        message: channelDeleteNote(c.kind),
                         confirmLabel: "Delete channel",
                         danger: true,
                       },

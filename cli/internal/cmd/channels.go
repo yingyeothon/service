@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,6 +39,11 @@ type channel struct {
 	CallbackURLs map[string]string `json:"callbackUrls,omitempty"`
 	APIBase      string            `json:"apiBase,omitempty"`
 	WsURL        string            `json:"wsUrl,omitempty"`
+	// `push` only. Registered says the platform registration exists, so
+	// `yyt push channel config` has a file to fetch; TeamProject is the
+	// Firebase project of the team's own sender key, never the key.
+	Registered  *bool  `json:"registered,omitempty"`
+	TeamProject string `json:"teamProject,omitempty"`
 	// `q` only: Redis names derived from the channel id. They must match the
 	// participant's tslib configuration and their scoped ACL exactly, so the
 	// CLI prints them verbatim rather than reformatting them.
@@ -138,6 +144,12 @@ type configFlags struct {
 	mapURL      string
 	maxPeers    int
 	aoiRange    int
+	// push
+	packageName    string
+	sender         string
+	serviceAccount string
+	// app is where `--service-account -` finds stdin.
+	app *App
 }
 
 // lobbyObjectFlags are the flags that land inside a nested lobby config
@@ -184,6 +196,25 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.IntVar(&f.maxPeers, "aoi-max-peers", 0, "lobby: deprecated alias of --max-peers")
 	_ = fl.MarkDeprecated("aoi-max-peers", "use --max-peers; the cap applies with or without a view range")
 	fl.IntVar(&f.aoiRange, "aoi-range", 0, "lobby: area-of-interest view range in tiles on both axes, 1..256 (default none = whole zone; 0 on update removes it)")
+	fl.StringVar(&f.packageName, "package", "", "push: Android application id, e.g. com.example.game (fixed at creation)")
+	fl.StringVar(&f.sender, "sender", "", "push: platform|team (default platform; fixed at creation)")
+	fl.StringVar(&f.serviceAccount, "service-account", "", "push: the team's Firebase service-account key file, or - for stdin (create with --sender team only)")
+}
+
+// bindPush registers only what a push channel takes (`yyt push channel
+// create|update`); `build` reads the same fields either way. `--auth` is the
+// short spelling of the generic `--auth-channel`.
+func (f *configFlags) bindPush(c *cobra.Command, create bool) {
+	fl := c.Flags()
+	fl.StringVar(&f.authChannel, "auth", "", "the auth channel (id or name) whose player JWTs may register tokens")
+	fl.StringVar(&f.authChannel, "auth-channel", "", "same as --auth")
+	_ = fl.MarkHidden("auth-channel")
+	if !create {
+		return
+	}
+	fl.StringVar(&f.packageName, "package", "", "Android application id, e.g. com.example.game (fixed at creation)")
+	fl.StringVar(&f.sender, "sender", "", "platform|team (default platform; fixed at creation)")
+	fl.StringVar(&f.serviceAccount, "service-account", "", "the team's Firebase service-account key file, or - for stdin (--sender team only)")
 }
 
 // build turns the flags into the JSON `config` for the given kind. For PATCH
@@ -383,34 +414,97 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 		if !patch && m["authChannelId"] == nil {
 			return nil, errors.New("--auth-channel is required for q channels")
 		}
+	case "push":
+		if set("auth") && set("auth-channel") {
+			return nil, errors.New("--auth-channel is an alias of --auth; give one")
+		}
+		if set("auth-channel") || set("auth") {
+			m["authChannelId"] = f.authChannel
+		}
+		if patch {
+			// The registration and every stored token are bound to both.
+			if set("package") || set("sender") {
+				return nil, errors.New("--package and --sender are fixed at creation: make a new push channel")
+			}
+			if set("service-account") {
+				return nil, errors.New("--service-account is for create: use `yyt push channel sender-key set <channel> --service-account <file>`")
+			}
+			break
+		}
+		if set("package") {
+			m["packageName"] = f.packageName
+		}
+		if set("sender") {
+			if f.sender != "platform" && f.sender != "team" {
+				return nil, fmt.Errorf("--sender must be platform|team (got %q)", f.sender)
+			}
+			m["sender"] = f.sender
+		}
+		for k, fl := range map[string]string{"authChannelId": "--auth-channel", "packageName": "--package"} {
+			if m[k] == nil {
+				return nil, fmt.Errorf("%s is required for push channels", fl)
+			}
+		}
+		switch {
+		case f.sender == "team" && !set("service-account"):
+			return nil, errors.New("--sender team needs --service-account <file|-> (the key of your own Firebase project)")
+		case f.sender != "team" && set("service-account"):
+			return nil, errors.New("--service-account needs --sender team (a platform channel gains a key with `yyt push channel sender-key set`)")
+		case set("service-account"):
+			var in io.Reader
+			if f.app != nil {
+				in = f.app.In
+			}
+			key, err := readServiceAccount(f.serviceAccount, in)
+			if err != nil {
+				return nil, err
+			}
+			m["teamServiceAccount"] = key
+		}
 	default:
-		return nil, fmt.Errorf("unknown kind %q (auth|topic|match|lobby|q)", kind)
+		return nil, fmt.Errorf("unknown kind %q (%s)", kind, channelKindList)
 	}
 	return m, nil
 }
 
-var channelKinds = map[string]bool{"auth": true, "topic": true, "match": true, "lobby": true, "q": true}
+var channelKinds = map[string]bool{"auth": true, "topic": true, "match": true, "lobby": true, "q": true, "push": true}
+
+const channelKindList = "auth|topic|match|lobby|q|push"
 
 func newChannels(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "channels",
-		Short: "Manage auth/topic/match/lobby/q channels (a channel belongs to a project)",
-		Long: "Manage auth/topic/match/lobby/q channels. A channel belongs to a project.\n\n" +
+		Short: "Manage auth/topic/match/lobby/q/push channels (a channel belongs to a project)",
+		Long: "Manage auth/topic/match/lobby/q/push channels. A channel belongs to a project.\n\n" +
 			"<channel> is an id (auth_…, match_…) or a name unique within the team; a name\n" +
 			"is looked up in the project context (--project, YYT_PROJECT, " + ContextFile + ",\n" +
-			"`yyt project use`). `create` needs an explicit project context.",
+			"`yyt project use`). `create` needs an explicit project context.\n\n" +
+			"A push channel is the same resource under `yyt push channel …`, which adds\n" +
+			"what only that kind has (google-services.json, the team sender key).",
 	}
+	a.addChannelCommands(c, "")
+	return group(c)
+}
 
-	// channelID resolves <channel> (id or name). write=true refuses to
-	// auto-select the project a name is looked up in.
-	channelID := func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error) {
+// channelResolver resolves <channel> (id or name), of one kind when `kind` is
+// set. write=true refuses to auto-select the project a name is looked up in.
+func (a *App) channelResolver(kind string) channelResolver {
+	return func(cmd *cobra.Command, arg string, write bool) (*ctxClient, string, error) {
 		cc, err := a.ctxClient(cmd)
 		if err != nil {
 			return nil, "", err
 		}
-		id, err := cc.channel(cmd.Context(), arg, write)
+		id, err := cc.channelOfKind(cmd.Context(), arg, kind, write)
 		return cc, id, err
 	}
+}
+
+// addChannelCommands hangs the channel verbs on `c`. `fixedKind` is "" for
+// `yyt channels` and a kind for a family that manages one (`yyt push
+// channel`): the same routes and the same code, minus `--kind` and the flags
+// of the other kinds.
+func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
+	channelID := a.channelResolver(fixedKind)
 
 	var kind, scope string
 	var chList *listOpts
@@ -420,8 +514,11 @@ func newChannels(a *App) *cobra.Command {
 		Short:   "List the channels of the project in context, or of every team you sit in (admins: --scope all)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if fixedKind != "" {
+				kind = fixedKind
+			}
 			if kind != "" && !channelKinds[kind] {
-				return fmt.Errorf("--kind must be auth|topic|match|lobby|q (got %q)", kind)
+				return fmt.Errorf("--kind must be %s (got %q)", channelKindList, kind)
 			}
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -463,18 +560,23 @@ func newChannels(a *App) *cobra.Command {
 			return a.printer().Table([]string{"ID", "KIND", "NAME", "STATUS", "EXPIRES", "TEAM/PROJECT"}, rows)
 		},
 	}
-	list.Flags().StringVar(&kind, "kind", "", "filter: auth|topic|match|lobby|q")
+	if fixedKind == "" {
+		list.Flags().StringVar(&kind, "kind", "", "filter: "+channelKindList)
+	}
 	list.Flags().StringVar(&scope, "scope", "", "mine (default) | all (admin; ignores the project context)")
 	chList = addListFlags(list, channelSortKeys, "channel or project name")
 	c.AddCommand(list)
 
-	var cf configFlags
+	cf := configFlags{app: a}
 	var ckind, cname string
 	create := &cobra.Command{
-		Use:   "create --kind <auth|topic|match|lobby|q> --name <name> [config flags]",
+		Use:   "create --kind <" + channelKindList + "> --name <name> [config flags]",
 		Short: "Create a channel in the project context (explicit); the secret/apiKey is printed once",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if fixedKind != "" {
+				ckind = fixedKind
+			}
 			if cf.raw == "" && channelKinds[ckind] {
 				if err := rejectForeignFlags(cmd, ckind); err != nil {
 					return err
@@ -498,16 +600,25 @@ func newChannels(a *App) *cobra.Command {
 			var ch channel
 			body := map[string]any{"kind": ckind, "name": cname, "config": cfg}
 			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/projects/"+api.PathID(r.ProjectID)+"/channels", body, &ch); err != nil {
+				if ckind == "push" {
+					return withPushHint(err, a.teamScopeFlag(r))
+				}
 				return err
 			}
 			return a.showChannel(ch, true)
 		},
 	}
-	create.Flags().StringVar(&ckind, "kind", "", "auth|topic|match|lobby|q")
 	create.Flags().StringVar(&cname, "name", "", "display name")
-	_ = create.MarkFlagRequired("kind")
 	_ = create.MarkFlagRequired("name")
-	cf.bind(create)
+	if fixedKind == "push" {
+		create.Use = "create --name <name> --auth <auth channel> --package <com.example.app> [--sender platform|team] [--service-account <file|->]"
+		create.Short = "Create a push channel in the project context (explicit); the apiKey is printed once"
+		cf.bindPush(create, true)
+	} else {
+		create.Flags().StringVar(&ckind, "kind", "", channelKindList)
+		_ = create.MarkFlagRequired("kind")
+		cf.bind(create)
+	}
 	c.AddCommand(create)
 
 	c.AddCommand(&cobra.Command{
@@ -527,7 +638,7 @@ func newChannels(a *App) *cobra.Command {
 		},
 	})
 
-	var pf configFlags
+	pf := configFlags{app: a}
 	var pname string
 	update := &cobra.Command{
 		Use:   "update <channel> [--name ...] [config flags]",
@@ -595,13 +706,23 @@ func newChannels(a *App) *cobra.Command {
 			}
 			var ch channel
 			if err := cl.Do(cmd.Context(), http.MethodPatch, "/channels/"+api.PathID(id), body, &ch); err != nil {
+				// A push id says its kind (`newChannelId`), so no read is needed.
+				if fixedKind == "push" || strings.HasPrefix(id, "push_") {
+					return withPushHint(err, "", pushUpdateHints)
+				}
 				return err
 			}
 			return a.showChannel(ch, false)
 		},
 	}
 	update.Flags().StringVar(&pname, "name", "", "new display name")
-	pf.bind(update)
+	if fixedKind == "push" {
+		update.Use = "update <channel> [--name ...] [--auth <auth channel>]"
+		update.Short = "Update the name and/or the auth channel (the package and the sender are fixed at creation)"
+		pf.bindPush(update, false)
+	} else {
+		pf.bind(update)
+	}
 	c.AddCommand(update)
 
 	// postAction is a bodiless POST on the channel that answers with the channel.
@@ -624,9 +745,13 @@ func newChannels(a *App) *cobra.Command {
 		}
 	}
 	c.AddCommand(postAction("extend <channel>", "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel. A channel with no expiry (`yyt limit request channel.lifetime unlimited`) refuses", "/extend", false))
-	c.AddCommand(postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (owner only); the new value is printed once", "/rotate-secret", true))
-	c.AddCommand(a.channelRedisUserCmd(channelID))
-	c.AddCommand(a.channelDocKeyCmd(channelID))
+	rotate := postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (owner only); the new value is printed once", "/rotate-secret", true)
+	rotate.Aliases = []string{"rotate"}
+	c.AddCommand(rotate)
+	if fixedKind == "" {
+		c.AddCommand(a.channelRedisUserCmd(channelID))
+		c.AddCommand(a.channelDocKeyCmd(channelID))
+	}
 	c.AddCommand(&cobra.Command{
 		Use:     "delete <channel>",
 		Aliases: []string{"rm"},
@@ -647,7 +772,6 @@ func newChannels(a *App) *cobra.Command {
 			return nil
 		},
 	})
-	return group(c)
 }
 
 // kindConfigFlags is the config flags each kind understands. `update` uses the
@@ -668,6 +792,8 @@ var kindConfigFlags = func() map[string][]string {
 			"max-peers", "aoi-max-peers",
 		},
 		"q": {"auth-channel"},
+		// `auth` exists only under `yyt push channel` (bindPush).
+		"push": {"auth", "auth-channel", "package", "sender", "service-account"},
 	}
 	for n := range lobbyCapFlags {
 		m["lobby"] = append(m["lobby"], n)
@@ -968,6 +1094,16 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 	}
 	if ch.WsURL != "" {
 		pairs = append(pairs, [2]string{"wsUrl", ch.WsURL})
+	}
+	if ch.Registered != nil {
+		reg := "true (yyt push channel config " + ch.ID + ")"
+		if !*ch.Registered {
+			reg = "false (no platform registration: google-services.json comes from your own Firebase project)"
+		}
+		pairs = append(pairs, [2]string{"registered", reg})
+	}
+	if ch.TeamProject != "" {
+		pairs = append(pairs, [2]string{"teamProject", ch.TeamProject})
 	}
 	if len(ch.Config) > 0 {
 		pairs = append(pairs, [2]string{"config", string(ch.Config)})

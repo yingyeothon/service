@@ -57,6 +57,42 @@ describe("createMemoryConsoleDb contract", () => {
     expect(() => db.patchChannel("zz", {})).toThrow(/no channel/);
   });
 
+  it("round-trips a push channel, the team key in the secret only", async () => {
+    const db = await fresh();
+    await db.insertChannel({
+      ...channel,
+      id: "push_1",
+      kind: "push",
+      name: "push",
+      config: {
+        authChannelId: "ch_a",
+        packageName: "com.example.game",
+        sender: "platform",
+        slot: "p1",
+      },
+      secret: { apiKey: "k0-secret-zz", teamServiceAccount: "{}" },
+    });
+    const p = await db.findPushChannel("push_1");
+    expect(p).toMatchObject({
+      id: "push_1",
+      teamId: "team_1",
+      projectId: "prj_1",
+      config: { packageName: "com.example.game", sender: "platform" },
+      secret: { apiKey: "k0-secret-zz", teamServiceAccount: "{}" },
+    });
+    expect(JSON.stringify(p?.config)).not.toContain("k0-secret-zz");
+    expect(await db.findAuthChannel("push_1")).toBeUndefined();
+    await db.insertChannel(channel);
+    expect(await db.findPushChannel("ch_a")).toBeUndefined();
+    expect(await db.findPushChannel("nope")).toBeUndefined();
+    expect((await db.listChannels({ kind: "push" })).map((c) => c.id)).toEqual([
+      "push_1",
+    ]);
+    // A soft delete wipes the secret and hides the channel.
+    await db.deleteChannel("push_1", 5);
+    expect(await db.findPushChannel("push_1")).toBeUndefined();
+  });
+
   it("rejects duplicate ids and unknown owners like MySQL would", async () => {
     const db = await fresh();
     await db.insertChannel(channel);

@@ -12,6 +12,7 @@ import {
   createSocialDb,
   createSitesDb,
   createLimitsDb,
+  createPushDb,
   createStateDb,
   mysqlOptionsFromEnv,
   type AssetsDb,
@@ -22,6 +23,7 @@ import {
   type LeaderboardDb,
   type LimitsDb,
   type ListingsDb,
+  type PushDb,
   type SocialDb,
   type ShowsDb,
   type SitesDb,
@@ -64,6 +66,7 @@ import {
 import { runEventSweep } from "./events.js";
 import { runShowSweep } from "./shows.js";
 import { runLimitSweep } from "./limits.js";
+import { runPushSweep, type PushSweepResult } from "./push-sweep.js";
 import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 import {
   createCloudWatchUsageMetrics,
@@ -85,6 +88,8 @@ import { CloudFrontClient } from "@aws-sdk/client-cloudfront";
 import { S3Client } from "@aws-sdk/client-s3";
 import { createGithubLogin } from "./github.js";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
+import { SSMClient } from "@aws-sdk/client-ssm";
+import { createPushPool, ssmSlotLoader, type PushPool } from "@yyt/push";
 import { historyId } from "./team.js";
 import { createResourceHistory } from "./resources.js";
 import { createS3PosterStore } from "./poster.js";
@@ -117,6 +122,8 @@ interface Deps {
   kvstore: KvStoreDb;
   leaderboards: LeaderboardDb;
   social: SocialDb;
+  /** Push registrations, pool slots and device tokens. */
+  push: PushDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
   kv: Kv;
@@ -163,6 +170,7 @@ function getDeps(): Promise<Deps> {
       kvstore: createKvStoreDb(raw),
       leaderboards: createLeaderboardDb(raw),
       social: createSocialDb(raw),
+      push: createPushDb(raw),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
@@ -225,12 +233,16 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     kvstore,
     leaderboards,
     social,
+    push,
     state,
     kv,
     redisAcl,
     redisEndpoint,
   } = await getDeps();
   const clock = systemClock;
+  const pushPool = pushPoolFromEnv();
+  if (!pushPool)
+    logger.warn("PUSH_SSM_PATH is empty: platform push is disabled", { stage });
   const siteStore = siteStoreFromEnv();
   if (!siteStore)
     logger.warn("SITE_BUCKET/POSTER_BUCKET is empty: site deploy is disabled", {
@@ -309,6 +321,8 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     leaderboards,
     social,
     limits,
+    push,
+    pushPool,
     // Inside a request: one attempt, a short timeout (the cron's publisher
     // retries and waits longer, which a member's click should not).
     notify: alarmNotify({ attempts: 1, timeoutMs: 3000 }),
@@ -339,6 +353,31 @@ export const handler = async (event: HttpEvent): Promise<HttpResult> => {
   app ??= await buildApp();
   return app(event);
 };
+
+let pushPool: PushPool | undefined;
+
+/**
+ * The stage's pool of Firebase projects: every SecureString under
+ * `PUSH_SSM_PATH`, read at first use and cached per container
+ * (`createPushPool`). `undefined` on a function without the variable. An
+ * empty path is a stage with no project yet, which the pool itself answers.
+ */
+function pushPoolFromEnv(): PushPool | undefined {
+  const path = process.env.PUSH_SSM_PATH ?? "";
+  if (!path) return undefined;
+  pushPool ??= createPushPool({
+    loadSlots: ssmSlotLoader({
+      path,
+      client: new SSMClient({
+        maxAttempts: 2,
+        requestHandler: { requestTimeout: 5000, connectionTimeout: 3000 },
+      }),
+    }),
+    fetch,
+    logger,
+  });
+  return pushPool;
+}
 
 function artifactStoreFromEnv(): ArtifactStore | undefined {
   const bucket = process.env.ARTIFACT_BUCKET ?? "";
@@ -431,6 +470,7 @@ export const expire = async (): Promise<void> => {
     kvstore,
     leaderboards,
     social,
+    push,
     state,
     redisAcl,
     kv,
@@ -446,6 +486,11 @@ export const expire = async (): Promise<void> => {
   const failures: unknown[] = [];
   /** Channels this run finished with; the kv sweep takes their players' entries. */
   let deletedAuthChannels: { id: string; projectId: string | null }[] = [];
+  /** Push channels the expiry deleted, and every purged id: their tokens go. */
+  let deletedPushChannels: { id: string }[] = [];
+  let purgedChannels: { id: string }[] = [];
+  /** What the push sweep found, for the digest that follows it. */
+  let pushSweep: PushSweepResult | undefined;
   for (const step of [
     async () => {
       const { deleted, purged } = await runExpire({ db, state, team, logger });
@@ -462,6 +507,8 @@ export const expire = async (): Promise<void> => {
           .map((d) => ({ id: d.id, projectId: d.projectId })),
         ...purged,
       ];
+      deletedPushChannels = deleted.filter((d) => d.kind === "push");
+      purgedChannels = purged;
       // Hard-deleted channels take their participant credential with them.
       // Only `q` channels ever had one, and each revoke costs a round trip
       // (≈4s against an unreachable Redis), so the kind test is what keeps
@@ -475,6 +522,39 @@ export const expire = async (): Promise<void> => {
     // whatever the best-effort revokes above dropped, so it must still run
     // when they throw.
     () => runRedisAclReconcile({ admin: redisAcl, db, stage, logger }),
+    // Before the digest, which reports what this found: dead push channels
+    // give back their registration and tokens, stale tokens go, and every
+    // pool slot is reconciled against Firebase's app list.
+    async () => {
+      pushSweep = await runPushSweep({
+        push,
+        pool: pushPoolFromEnv(),
+        stage,
+        db,
+        deleted: deletedPushChannels,
+        purged: purgedChannels,
+        // Best-effort like the API's audit: the slot change already happened.
+        audit: async (actorId, action, target, detail) => {
+          try {
+            await db.insertAudit({
+              id: ulid(),
+              actorId,
+              action,
+              target,
+              at: nowSec(systemClock),
+              detail,
+            });
+          } catch (e) {
+            logger.error("audit write failed", {
+              action,
+              target,
+              message: e instanceof Error ? e.message : String(e),
+            });
+          }
+        },
+        logger,
+      });
+    },
     // Redis has no per-account memory quota, so this is the whole defence:
     // see who is growing before `allkeys-lru` starts evicting someone else.
     // The digest turns that report plus the S3/CloudFront metrics into one
@@ -489,6 +569,7 @@ export const expire = async (): Promise<void> => {
         kvstore,
         leaderboards,
         social,
+        push: { db: push, sweep: pushSweep },
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
         distributions: cdnDistributionsFromEnv(process.env, {

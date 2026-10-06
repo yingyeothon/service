@@ -10,6 +10,7 @@ import { RowMenu } from "../components/RowMenu";
 import { Badge, Notice } from "../components/ui";
 import { fmtRelative, fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
+import { channelDeleteNote } from "../lib/push";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl } from "../lib/team";
@@ -94,6 +95,7 @@ export function ChannelsPage() {
             { value: "match", label: "match" },
             { value: "lobby", label: "lobby" },
             { value: "q", label: "q" },
+            { value: "push", label: "push" },
           ]}
           onChange={(v) => setKind(v as ChannelKind | "")}
         />
@@ -196,8 +198,7 @@ export function ChannelsPage() {
                 onClick: () => remove(c.id),
                 confirm: {
                   title: `Delete ${c.name}?`,
-                  message:
-                    "Sockets on it are closed and its credentials stop working.",
+                  message: channelDeleteNote(c.kind),
                   confirmLabel: "Delete channel",
                   danger: true,
                 },

@@ -23,6 +23,7 @@ import {
   type LimitScope,
   type LimitScopeKind,
   type LimitsDb,
+  type PushDb,
   type TeamDb,
   type TeamHistoryAction,
 } from "@yyt/console-db";
@@ -148,6 +149,18 @@ export const LIMITS = {
     unit: "count",
     soft: KV_MAX_ENTRIES_PER_OWNER_DEFAULT,
     hard: KV_MAX_ENTRIES_PER_OWNER_HARD,
+  },
+  // A team's push channels on the platform sender, over the whole pool of
+  // Firebase projects (docs/decisions.md *Push notifications* #4). Enforced
+  // inside `PushDb.claimApp`; this table supplies the effective value. The
+  // 20 registrations one project takes are `PUSH_APPS_PER_PROJECT`, a
+  // constant no request raises.
+  "push.appsPerTeam": {
+    scope: "team",
+    unit: "count",
+    soft: 2,
+    hard: 5,
+    step: 1,
   },
   // Collections per project, the former `KV_COLLECTIONS_PER_PROJECT`.
   "kv.collections": {
@@ -340,6 +353,8 @@ export interface LimitRoutesOptions {
     KvStoreDb,
     "findCollection" | "countCollections" | "findCollectionNamesByIds"
   >;
+  /** The usage of `push.appsPerTeam`; absent on a stage without push. */
+  push?: Pick<PushDb, "countTeamApps">;
   access: Pick<
     TeamAccessHelpers,
     "teamAccess" | "projectAccess" | "projectResource"
@@ -394,6 +409,7 @@ export function createLimitRoutes({
   team,
   assets,
   kvstore,
+  push,
   access,
   history,
   kv,
@@ -469,7 +485,14 @@ export function createLimitRoutes({
     a: TeamAccess,
   ): Promise<Partial<Record<LimitKey, number>>> {
     if (scope.kind === "team")
-      return { "team.projects": await team.countProjects(a.team.id) };
+      return {
+        "team.projects": await team.countProjects(a.team.id),
+        // Uncounted on a stage without the push tables: the key then shows
+        // no usage and, being stepped, takes no request.
+        ...(push
+          ? { "push.appsPerTeam": await push.countTeamApps(a.team.id) }
+          : {}),
+      };
     if (scope.kind === "bundle") {
       const v = await assets.versionSummaries(scope.id);
       return {

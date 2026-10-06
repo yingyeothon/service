@@ -340,6 +340,105 @@ describe("LimitsSection", () => {
     ).toBeInTheDocument();
   });
 
+  // A team has two stepped keys since push: each hint names its limit.
+  const TEAM_PUSH = (projects: number, apps: number): LimitsView => ({
+    ...TEAM(projects),
+    limits: [
+      ...TEAM(projects).limits,
+      {
+        key: "push.appsPerTeam",
+        unit: "count",
+        soft: 2,
+        hard: 5,
+        effective: 2,
+        usage: apps,
+        step: 1,
+        next: apps >= 2 ? 3 : null,
+        override: null,
+      },
+    ],
+  });
+
+  it("names each stepped limit when a scope has two", async () => {
+    open(TEAM_PUSH(12, 1));
+    const s = await section();
+    expect(await within(s).findByText("Push apps")).toBeInTheDocument();
+    expect(
+      within(s).queryByRole("button", { name: "Request increase" }),
+    ).toBeNull();
+    expect(
+      within(s).getByText(
+        "Projects: ask for 5 more once all 20 are in use (12 now).",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(s).getByText(
+        "Push apps: ask for 1 more once all 2 are in use (1 now).",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("asks for one more push app once both are in use, and for nothing else", async () => {
+    vi.mocked(mockApi.requestLimit).mockResolvedValue(
+      request({
+        scope: { kind: "team", id: "team_1", name: "studio" },
+        key: "push.appsPerTeam",
+        unit: "count",
+        hard: 5,
+        requestedValue: 3,
+      }),
+    );
+    open(TEAM_PUSH(12, 2));
+    const s = await section();
+    await userEvent.click(
+      await within(s).findByRole("button", { name: "Request increase" }),
+    );
+    const drawer = await screen.findByRole("dialog");
+    // Projects are not at their limit, so they are not on offer.
+    expect(
+      within(drawer)
+        .getAllByRole<HTMLOptionElement>("option")
+        .map((o) => o.textContent),
+    ).toEqual(["Push apps"]);
+    expect(within(drawer).getByText("3")).toBeInTheDocument();
+    expect(
+      within(drawer).getByText(
+        /1 more than the current 2; this limit is raised in steps of 1, up to 5/,
+      ),
+    ).toBeInTheDocument();
+    await userEvent.type(
+      within(drawer).getByLabelText(/^Reason/),
+      "a demo app",
+    );
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Send request" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.requestLimit).toHaveBeenCalledWith({
+        scope: "team:team_1",
+        key: "push.appsPerTeam",
+        value: 3,
+        reason: "a demo app",
+      }),
+    );
+  });
+
+  it("switches the stepped value with the limit when both may be asked for", async () => {
+    open(TEAM_PUSH(20, 2));
+    const s = await section();
+    await userEvent.click(
+      await within(s).findByRole("button", { name: "Request increase" }),
+    );
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByText("25")).toBeInTheDocument();
+    await userEvent.selectOptions(
+      within(drawer).getByLabelText("Limit"),
+      "push.appsPerTeam",
+    );
+    expect(await within(drawer).findByText("3")).toBeInTheDocument();
+    expect(within(drawer).queryByText("25")).toBeNull();
+  });
+
   it("asks for no expiry on a channel with no number to type", async () => {
     vi.mocked(mockApi.requestLimit).mockResolvedValue(
       request({

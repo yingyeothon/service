@@ -9,8 +9,10 @@ import {
 import {
   checkDocBody,
   MAX_DOC_BODY_BYTES,
+  type ConsoleDb,
   type KvStoreDb,
   type LeaderboardDb,
+  type PushDb,
   type SocialDb,
   type StateDb,
   type StateDocRow,
@@ -25,6 +27,7 @@ import {
   type Identity,
   type RouteContext,
 } from "@yyt/http";
+import type { PushPool } from "@yyt/push";
 import {
   callerFromIdentity,
   type Caller,
@@ -33,6 +36,7 @@ import {
 import { NO_STORE, checkOwnerId, etag, parseIfMatch, rawBody } from "./http.js";
 import { createKvStoreRoutes } from "./kvstore.js";
 import { createLeaderboardRoutes } from "./leaderboard.js";
+import { createPushRoutes } from "./push.js";
 import { createSocialRoutes } from "./social.js";
 import type { KvCrypto } from "./kvstore-crypto.js";
 
@@ -60,6 +64,20 @@ export interface StateAppOptions {
   leaderboards: LeaderboardDb;
   /** The profiles and relations served under `/social/*`, beside the other three. */
   social: SocialDb;
+  /**
+   * Device tokens and the targeted send under `/push/*`. The three travel
+   * together: the token table, the push channel rows and the stage's pool of
+   * Firebase projects (empty on a stage that has none: 503 on those routes).
+   */
+  push: {
+    db: PushDb;
+    channels: Pick<ConsoleDb, "findPushChannel">;
+    pool: PushPool;
+    /** Test seam; default `PUSH_SEND_BUDGET_MS`. */
+    sendBudgetMs?: number;
+    /** Test seam; default `PUSH_CLEANUP_BUDGET_MS`. */
+    cleanupBudgetMs?: number;
+  };
   channels: ChannelStore;
   /** `undefined` when the stage has no usable `KV_KEK`; only `/kv/*` suffers. */
   crypto?: KvCrypto;
@@ -119,6 +137,7 @@ export function createStateApp({
   kvstore,
   leaderboards,
   social,
+  push,
   channels,
   crypto,
   clock = systemClock,
@@ -277,6 +296,15 @@ export function createStateApp({
       ...createKvStoreRoutes({ kvstore, crypto, clock, logger }),
       ...createLeaderboardRoutes({ leaderboards, clock, logger }),
       ...createSocialRoutes({ social, clock, logger }),
+      ...createPushRoutes({
+        push: push.db,
+        channels: push.channels,
+        pool: push.pool,
+        sendBudgetMs: push.sendBudgetMs,
+        cleanupBudgetMs: push.cleanupBudgetMs,
+        clock,
+        logger,
+      }),
       ...extraRoutes,
     ],
     maxBodyBytes: MAX_REQUEST_BYTES,

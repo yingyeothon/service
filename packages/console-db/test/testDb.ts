@@ -18,6 +18,12 @@ export function dockerAvailable(): boolean {
 
 export interface TestDb {
   client: PrismaClient;
+  /**
+   * A second client on its own connection, for the contracts that race two
+   * transactions: `client` holds one connection, so two calls on it only ever
+   * run one after the other. Closed by `stop`.
+   */
+  connect(): PrismaClient;
   stop(): Promise<void>;
 }
 
@@ -43,15 +49,19 @@ export async function startTestDb(
     })
     .withExposedPorts(3306)
     .start();
-  const adapter = new PrismaMariaDb({
-    host: container.getHost(),
-    port: container.getMappedPort(3306),
-    user: "root",
-    password: "test",
-    database: "yyt_test",
-    connectionLimit: 1,
-  });
-  const client = new PrismaClient({ adapter });
+  const connect = () =>
+    new PrismaClient({
+      adapter: new PrismaMariaDb({
+        host: container.getHost(),
+        port: container.getMappedPort(3306),
+        user: "root",
+        password: "test",
+        database: "yyt_test",
+        connectionLimit: 1,
+      }),
+    });
+  const client = connect();
+  const peers: PrismaClient[] = [];
   // Wait for the server to accept queries, then apply migrations.
   for (let i = 0; ; i++) {
     try {
@@ -84,7 +94,13 @@ export async function startTestDb(
   }
   return {
     client,
+    connect: () => {
+      const peer = connect();
+      peers.push(peer);
+      return peer;
+    },
     stop: async () => {
+      for (const peer of peers) await peer.$disconnect();
       await client.$disconnect();
       await container.stop();
     },

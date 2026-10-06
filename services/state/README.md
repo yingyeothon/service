@@ -133,6 +133,22 @@ All three 503s are `AppError`s, so the **Lambda invocation succeeds** and a Lamb
 - Without the state account's grant on `social_profiles` and `social_relations` (`SELECT, INSERT, UPDATE, DELETE`), **every** `/social/*` route answers `503 database error` while `/s/*`, `/kv/*` and `/lb/*` keep working. That is the designed gate, and the reason `scripts/smoke/social.mjs` spends each privilege once.
 - Logs carry the route pattern and the channel only: no owner id, no display name, no avatar.
 
+## Push routes
+
+**Device tokens and the targeted send of one push channel** (`docs/decisions.md` _Push notifications (Android, FCM)_ #5–#7). The credentials are not the doc store's: a token route takes the player JWT of the push channel's **auth channel**, the send route takes the **push channel's own apiKey**.
+
+| Route                            | Credential     | Does                                                                                            |
+| -------------------------------- | -------------- | ----------------------------------------------------------------------------------------------- |
+| `PUT /push/{channelId}/token`    | player JWT     | `{"token", "project"?}` → `204`; the user is the token's `sub`, at most 5 tokens per user       |
+| `DELETE /push/{channelId}/token` | player JWT     | `{"token"}` → `204`, idempotent, the caller's own row only                                      |
+| `POST /push/{channelId}/send`    | channel apiKey | `{"userIds": [≤500], "data"?, "notification"?, "priority"?, "ttlSec"?, "collapseKey"?}` → `200` |
+
+- **`project`** is the Firebase project id in the app's `google-services.json`. Optional while the channel accepts one project; **required** once a team key is registered beside the platform registration (`400 push_project_required`). A project the channel does not accept is `400 push_project_refused`; the accepted ids are never named. A channel with no registration yet answers `409 push_not_registered`.
+- **A send answers per user**, never per device: `{"results": [{"userId", "status": "sent" | "no-token" | "failed", "reason"?}], "sent", "noToken", "failed"}`. `sent` means FCM accepted the message for at least one device. `reason` (on `failed` only) is `budget` (the call ran out of time — send those ids again), `unavailable` (FCM quota or outage — later), `rejected` (a retry changes nothing) or `unregistered` (every device was gone; the tokens are deleted). No device token, Firebase project id or FCM message id leaves this stack.
+- **The message is validated once, up front**: `data` and `notification` together at most 4096 bytes as JSON, string values, no key FCM reserves (`from`, `notification`, `message_type`, `google.*`, `gcm.*`), `ttlSec` 0…2,419,200.
+- **One call sends for at most 20 s** (`PUSH_SEND_BUDGET_MS`): 500 users × 5 devices is 2,500 messages, sent 500 at a time, 20 in parallel. The route has a function of its own for that (`pushSend`: `timeout` 28, two reserved containers), so a slow send never holds the containers of the other routes; a third concurrent send is throttled. After the last message the call adds its counts to `push_send_stats` (one row per channel and UTC day, best effort — a failure is logged as `push send stats failed` and the send still answers) and deletes the dead tokens it met, in this channel only.
+- **`503`** — `push not configured` (no Firebase project under the stage's `PUSH_SSM_PATH`), `push sender unavailable` (FCM refused the platform key, or the pool lost the channel's slot; logged by slot label), or `database error` until the state account holds `SELECT, INSERT, UPDATE, DELETE` on `push_tokens` (it also needs `SELECT, INSERT, UPDATE` on `push_send_stats`, whose absence fails no request). `/s/*`, `/kv/*`, `/lb/*` and `/social/*` keep working through all three.
+
 ## Document versions
 
 These rules are the doc store's; a kv entry's conditional headers are optional and are described above.

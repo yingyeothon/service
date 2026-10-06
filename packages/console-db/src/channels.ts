@@ -22,6 +22,7 @@ export const CHANNEL_KINDS = [
   "match",
   "lobby",
   "q",
+  "push",
 ] as const satisfies readonly ChannelKind[];
 
 export const CHANNEL_STATUSES = ["active", "expired", "disabled"] as const;
@@ -85,6 +86,7 @@ import {
   type Tx,
 } from "./prisma.js";
 import { decodeHistoryCursor, encodeHistoryCursor } from "./team.js";
+import type { PushSender } from "./push.js";
 
 export interface OAuthAppPublic {
   clientId: string;
@@ -206,6 +208,39 @@ export interface ApiKeySecret {
   apiKey: string;
 }
 
+/**
+ * `config_json` of a push channel (docs/decisions.md *Push notifications
+ * (Android, FCM)* #3; console validates and writes it).
+ */
+export interface PushChannelConfig {
+  authChannelId: string;
+  /** Android package name, unique per stage (`push_apps_package`). */
+  packageName: string;
+  sender: PushSender;
+  /**
+   * The pool slot the package was registered in (a label, never a Firebase
+   * project id). Absent until the platform registration succeeded, and for
+   * good on a `team`-sender channel.
+   */
+  slot?: string;
+  /** The Firebase app id the registration returned; absent until it succeeded. */
+  firebaseAppId?: string;
+  /** Firebase project id of the registered team-owned service account. */
+  teamProject?: string;
+}
+
+/**
+ * `secret_json` of a push channel. `teamServiceAccount` is the team's own
+ * Firebase service-account key, stored like an auth channel's provider
+ * secrets: it is part of no view type and leaves the platform through no
+ * route or log line.
+ */
+export interface PushChannelSecret {
+  apiKey: string;
+  /** The service-account JSON, as the string that was uploaded or parsed. */
+  teamServiceAccount?: string | Record<string, unknown>;
+}
+
 /** `config_json` of a topic channel (console validates and writes it). */
 export interface TopicChannelConfig {
   authChannelId: string;
@@ -227,6 +262,19 @@ export interface MatchChannel {
   ownerId: string;
   config: MatchChannelConfig;
   secret: ApiKeySecret;
+  expiresAt: number;
+  disabledAt: number | null;
+}
+
+export interface PushChannel {
+  id: string;
+  name: string;
+  ownerId: string;
+  /** Null only for rows created before migration `6_org_project` was mapped. */
+  teamId: string | null;
+  projectId: string | null;
+  config: PushChannelConfig;
+  secret: PushChannelSecret;
   expiresAt: number;
   disabledAt: number | null;
 }
@@ -456,6 +504,8 @@ export interface ConsoleDb {
   findMatchChannel(id: string): Promise<MatchChannel | undefined>;
   /** Same contract as `findAuthChannel` for topic channels. */
   findTopicChannel(id: string): Promise<TopicChannel | undefined>;
+  /** Same contract as `findAuthChannel` for push channels. */
+  findPushChannel(id: string): Promise<PushChannel | undefined>;
   /** Writer-side (console, and dev-only debug seeding). `AppError("conflict")` on a duplicate id. */
   insertChannel(c: InsertChannelInput): Promise<void>;
   /**
@@ -534,12 +584,36 @@ export interface ConsoleDb {
     expect?: { expiresAt: number },
   ): Promise<boolean>;
   /**
+   * A read-modify-write of one live channel under its row lock, in one
+   * transaction: `edit` sees the row as it is once the lock is held and
+   * returns what to change (`undefined` = nothing). It is the one way a push
+   * channel's `config_json`/`secret_json` is written after its insert -- the
+   * registration, the sender key, the apiKey rotation, a PATCH and the
+   * reconciliation each merge into the blobs, and with a plain
+   * `updateChannel` the later writer erased the earlier one's fields.
+   *
+   * `edit` must be synchronous and may throw (the transaction rolls back and
+   * the error propagates). Resolves to the row after the edit, or `undefined`
+   * when the channel is missing or deleted.
+   */
+  editChannel(
+    id: string,
+    edit: (row: ChannelRow) => ChannelPatch | undefined,
+  ): Promise<ChannelRow | undefined>;
+  /**
    * Soft delete: `deleted_at`, `disabled_at` (kept when already set) and the
    * secret wiped, and in the same transaction the channel's pending limit
    * requests cancelled and its limit overrides dropped (docs/decisions.md
    * *Limit requests* #2). `false` when the channel is missing or deleted.
    */
   deleteChannel(id: string, at: number): Promise<boolean>;
+  /**
+   * Hard delete of a live row, for rolling back a create whose second step
+   * failed (a push channel's registration): the name is free at once, and the
+   * foreign keys cascade whatever the row gathered (`push_apps`, limit rows).
+   * A soft-deleted row is left to `purgeChannels`. `false` when nothing went.
+   */
+  removeChannel(id: string): Promise<boolean>;
   /**
    * Lifecycle sweep: expired → disabled; disabled for `graceSec` → deleted with
    * secrets wiped, with the same limit cleanup as `deleteChannel`. The delete
@@ -609,6 +683,37 @@ export function toTopicChannel(row: ChannelRow): TopicChannel | undefined {
     ownerId: row.ownerId,
     config: JSON.parse(row.configJson) as TopicChannelConfig,
     secret: JSON.parse(row.secretJson) as ApiKeySecret,
+    expiresAt: row.expiresAt,
+    disabledAt: row.disabledAt,
+  };
+}
+
+/** A `ChannelPatch` as the columns it sets. */
+function patchData(
+  patch: ChannelPatch,
+): Record<string, string | number | null> {
+  const data: Record<string, string | number | null> = {};
+  if (patch.name !== undefined) data.name = patch.name;
+  if (patch.config !== undefined)
+    data.config_json = JSON.stringify(patch.config);
+  if (patch.secret !== undefined)
+    data.secret_json = JSON.stringify(patch.secret);
+  if (patch.expiresAt !== undefined) data.expires_at = patch.expiresAt;
+  if (patch.disabledAt !== undefined) data.disabled_at = patch.disabledAt;
+  if (patch.deletedAt !== undefined) data.deleted_at = patch.deletedAt;
+  return data;
+}
+
+export function toPushChannel(row: ChannelRow): PushChannel | undefined {
+  if (row.kind !== "push") return undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    ownerId: row.ownerId,
+    teamId: row.teamId,
+    projectId: row.projectId,
+    config: JSON.parse(row.configJson) as PushChannelConfig,
+    secret: JSON.parse(row.secretJson) as PushChannelSecret,
     expiresAt: row.expiresAt,
     disabledAt: row.disabledAt,
   };
@@ -942,15 +1047,7 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
           : rows;
       }),
     updateChannel: async (id, patch, expect) => {
-      const data: Record<string, string | number | null> = {};
-      if (patch.name !== undefined) data.name = patch.name;
-      if (patch.config !== undefined)
-        data.config_json = JSON.stringify(patch.config);
-      if (patch.secret !== undefined)
-        data.secret_json = JSON.stringify(patch.secret);
-      if (patch.expiresAt !== undefined) data.expires_at = patch.expiresAt;
-      if (patch.disabledAt !== undefined) data.disabled_at = patch.disabledAt;
-      if (patch.deletedAt !== undefined) data.deleted_at = patch.deletedAt;
+      const data = patchData(patch);
       if (Object.keys(data).length === 0)
         return (await findChannelRow(id)) !== undefined;
       return run(async () => {
@@ -965,6 +1062,25 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
         return r.count > 0;
       });
     },
+    editChannel: (id, edit) =>
+      run(() =>
+        prisma.$transaction(
+          async (tx) => {
+            const live = await tx.$queryRaw<{ id: string }[]>`
+              SELECT id FROM channels
+              WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE`;
+            if (live.length === 0) return undefined;
+            const cur = await tx.channels.findUnique({ where: { id } });
+            if (!cur) return undefined;
+            const row = toRow(cur);
+            const patch = edit(row);
+            const data = patch === undefined ? {} : patchData(patch);
+            if (Object.keys(data).length === 0) return row;
+            return toRow(await tx.channels.update({ where: { id }, data }));
+          },
+          { isolationLevel: "ReadCommitted" },
+        ),
+      ),
     findChannelNamesByIds: (ids) =>
       run(async () =>
         ids.length === 0
@@ -994,6 +1110,13 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
           { isolationLevel: "ReadCommitted" },
         ),
       ),
+    removeChannel: (id) =>
+      run(async () => {
+        const { count } = await prisma.channels.deleteMany({
+          where: { id, deleted_at: null },
+        });
+        return count > 0;
+      }),
     expireChannels: (now, graceSec) =>
       run(() =>
         prisma.$transaction(
@@ -1179,6 +1302,10 @@ export function createConsoleDb(prisma: PrismaClient): ConsoleDb {
     findTopicChannel: async (id) => {
       const row = await findChannelRow(id);
       return row && toTopicChannel(row);
+    },
+    findPushChannel: async (id) => {
+      const row = await findChannelRow(id);
+      return row && toPushChannel(row);
     },
     insertChannel: (c) =>
       run(async () => {

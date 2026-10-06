@@ -105,8 +105,8 @@ Every resource command maps 1:1 to a console route; `--json` prints the response
 ```
 yyt members list | approve <id> | promote <id> | demote <id>        # admin
 yyt tokens list | create --name <n> | revoke <id>
-yyt channels list [--kind auth|topic|match|lobby|q] [--scope all]   # project context → that project; none → every team you sit in
-yyt channels get|extend|rotate-secret|delete <channel>               # id or name (name → project context)
+yyt channels list [--kind auth|topic|match|lobby|q|push] [--scope all]   # project context → that project; none → every team you sit in
+yyt channels get|extend|rotate-secret|delete <channel>               # id or name (name → project context); `rotate` = `rotate-secret`
 yyt channels create --kind auth  --name n --audience aud [--token-ttl 86400] [--redirect https://…]… \
                     [--github-client-id id --github-client-secret s] [--google-client-id id --google-client-secret s]
 yyt channels create --kind topic --name n --auth-channel <auth-id|name>
@@ -122,6 +122,16 @@ yyt channels create --kind lobby --name n --auth-channel <auth-id> \
 yyt channels create --kind q     --name n --auth-channel <auth-id>   # prefixes are derived; `get` prints them
 yyt channels update <channel> [--name n] [same config flags; only the given ones change — --config replaces the whole config]
 yyt channels create … --config '{…}' | --config @file.json        # raw config instead of flags
+yyt channels create --kind push  --name n --auth-channel <auth-id|name> --package com.example.game   # same as `yyt push channel create`
+
+yyt push channel create --name n --auth <auth-id|name> --package com.example.game \
+                        [--sender platform|team] [--service-account <file|->]   # apiKey printed once; the key file only with --sender team
+yyt push channel ls | get|extend|rotate|delete <channel>         # `yyt channels …` with the kind fixed
+yyt push channel update <channel> [--name n] [--auth <auth-id|name>]   # the package and the sender are fixed at creation
+yyt push channel config <channel> [-o <file>|-] [--force]        # google-services.json; default ./google-services.json, kept unless --force
+yyt push channel sender-key set <channel> --service-account <file|->   # the team's own Firebase project as a second sender
+yyt push channel sender-key rm <channel>                         # refused on a --sender team channel
+yyt push pool [ls] | close <slot> | open <slot>                  # platform admin: registration slots (p1, p2, …)
 
 yyt events list | get <id>                                       # anonymous: waiting/opened/closed; members: + voting/cancelled + own drafts
 yyt events create <title> --place p [--place-url url] --hours N --vote-until <when> --option <when>... [--body @f]  # member draft (max 3)
@@ -266,6 +276,18 @@ yyt lb clear <lb> <period>                             # empty one bucket (a per
 
 Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing/ambiguous context), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending platform member or team seat, or the action needs an owner/admin), `5` not found (including a team/project/resource name that does not resolve), `6` context missing or ambiguous (no request was made).
 
+### Push notifications
+
+A push channel is a channel of kind `push`: `yyt push channel create|ls|get|update|extend|rotate|delete` are the `yyt channels` commands with the kind fixed (same routes, same output), and `yyt push channel` adds what only that kind has. It registers one Android application id with the platform's Firebase sender; `config` downloads the `google-services.json` the app embeds (`registered: true` in `get` says there is one). `create` and `rotate` print the `apiKey` once. `get` prints `apiBase`: the app registers its FCM token there with a player JWT of the channel's auth channel (`PUT|DELETE /push/{channel}/token`) and a game server sends with the apiKey (`POST /push/{channel}/send`).
+
+**There is no `yyt push send`.** Sending is authenticated by the channel apiKey, and the CLI holds a console token only; like the KV, leaderboard and document APIs, it prints the endpoint and leaves the call to the game server.
+
+`--sender team` makes the team's own Firebase project the only sender (the service-account key file is required and the channel has no platform registration, so `config` refuses); `sender-key set` adds such a key to a platform channel as a second sender. The key is read from a file or stdin (`-`), is never printed, and no route returns it — `get` shows only `teamProject`.
+
+A `push_…` argument is always an id: a channel name may not have that shape. A refused create says what to do: `package_taken` (the application id belongs to another platform-sender channel on the stage; `--sender team` is not bound by it), `service_account` (which field of the key file failed), `push.appsPerTeam` (the limit request to make), `push_pool_full` / `push_not_configured` (a platform admin's `yyt push pool`), `firebase_unavailable` (retry). `update` with `--auth` answers `not_registered` while a platform registration is unfinished (`--name` alone is not refused), and `create`, `sender-key` and every `config` download take the per-member write slot (429: run it again).
+
+`yyt push pool close <slot>` on a slot the platform closed itself (`CLOSED BY auto:firebase-limit`) takes the closure over: it prints `closed`, and the daily sweep no longer reopens the slot.
+
 ### Limits
 
 ```sh
@@ -285,7 +307,7 @@ yyt limit set <limit> <value|unlimited> [--bundle b | --channel c | --scope team
 yyt limit revoke <limit> [--bundle b | --channel c | --scope team] --note "…"   # channel.lifetime: back to 28 days
 ```
 
-Every limit has a soft value every scope gets and a hard ceiling (`docs/decisions.md` _Limit requests_). One request per limit and scope may be pending, ten per team; a refused or cancelled one blocks the same limit for 7 days (exit 2, the error says when). A channel granted no expiry prints `expires: no expiry`, and `channels extend` refuses it. `team.projects` (20 per team, ceiling 1,000) is stepped: `list --scope team` says when it may be asked for, `+5` sends the server's next step (any other `+N` is `effective + N`, and the server refuses it), and `project create` at the limit prints the request to make. `+N` is a whole count and applies to count limits only; sizes take an absolute value.
+Every limit has a soft value every scope gets and a hard ceiling (`docs/decisions.md` _Limit requests_). One request per limit and scope may be pending, ten per team; a refused or cancelled one blocks the same limit for 7 days (exit 2, the error says when). A channel granted no expiry prints `expires: no expiry`, and `channels extend` refuses it. `push.appsPerTeam` (2 per team, ceiling 5, step 1) is a team limit like `team.projects` and is asked for as `+1`; `push channel create` at the limit prints the request to make. `team.projects` (20 per team, ceiling 1,000) is stepped: `list --scope team` says when it may be asked for, `+5` sends the server's next step (any other `+N` is `effective + N`, and the server refuses it), and `project create` at the limit prints the request to make. `+N` is a whole count and applies to count limits only; sizes take an absolute value.
 
 ## Smoke helpers
 

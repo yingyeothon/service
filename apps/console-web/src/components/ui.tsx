@@ -229,6 +229,8 @@ function CopyButton({
         variant="default"
         aria-label={aria}
         onClick={() => void copy()}
+        // Beside a long value the button must not be the flex item that gives.
+        style={{ flexShrink: 0 }}
       >
         {text}
       </Button>

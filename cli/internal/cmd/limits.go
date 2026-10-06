@@ -149,7 +149,7 @@ func newLimits(a *App) *cobra.Command {
 			"Every limit has a soft value every scope gets and a hard ceiling a platform\n" +
 			"admin may grant up to. A limit belongs to a bundle (--bundle), a channel\n" +
 			"(--channel), a kv collection (--collection), the team in context\n" +
-			"(--scope team, or a `team.` limit) or, with none of these, the project\n" +
+			"(--scope team, a `team.` limit or push.appsPerTeam) or, with none of these, the project\n" +
 			"in context. Sizes take binary units\n" +
 			"(256MiB, 3GiB); a channel's lifetime takes only `unlimited`; a stepped\n" +
 			"limit such as team.projects is asked for as `+5` once every slot is used.",
@@ -170,7 +170,7 @@ func newLimits(a *App) *cobra.Command {
 			return nil, "", "", "", err
 		}
 		ctx := cmd.Context()
-		teamKey := strings.HasPrefix(key, "team.")
+		teamKey := isTeamLimit(key)
 		team := scopeKind == "team" || teamKey
 		switch {
 		case scopeKind != "" && scopeKind != "team" && scopeKind != "project":
@@ -620,6 +620,13 @@ func relativeValue(cmd *cobra.Command, cc *ctxClient, scope, key string, n int64
 	return nil, fmt.Errorf("%s is not a limit of %s", key, scope)
 }
 
+// isTeamLimit reports whether a limit key belongs to the team, which is what
+// lets `limit request <key>` pick the team scope without `--scope team`.
+// `push.appsPerTeam` is the one team key outside the `team.` namespace.
+func isTeamLimit(key string) bool {
+	return strings.HasPrefix(key, "team.") || key == "push.appsPerTeam"
+}
+
 // withLimitHint names the request to make when a create was refused by a
 // limit the caller may ask more of (`details.limit`, docs/decisions.md
 // *Limit requests*).
@@ -635,8 +642,11 @@ func withLimitHint(err error, scopeFlag string) error {
 		return err
 	}
 	value := "<value>"
-	if d.Limit == "team.projects" {
+	switch d.Limit {
+	case "team.projects":
 		value = "+5"
+	case "push.appsPerTeam":
+		value = "+1"
 	}
 	return fmt.Errorf("%w (ask for more: yyt limit request %s %s%s --reason \"...\")", err, d.Limit, value, scopeFlag)
 }

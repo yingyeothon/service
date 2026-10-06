@@ -63,6 +63,9 @@ custom:
     prod: g.yyt.life
   ssm: /yyt-service/${self:custom.stage}/console
   stageSsm: /yyt-service/${self:custom.stage}
+  # One SecureString per Firebase project of the push pool (the last name
+  # segment is the slot label); docs/decisions.md *Push notifications* #2.
+  pushSsmPath: /yyt-service/${self:custom.stage}/push/fcm/
   esbuild:
     bundle: true
     minify: false
@@ -276,6 +279,27 @@ provider:
           Condition:
             StringEquals:
               kms:ViaService: s3.${aws:region}.amazonaws.com
+        # The push pool: `GetParametersByPath` on the stage's `push/fcm/` path
+        # and nothing else in the parameter store. The role is shared by
+        # every function but `cdnGuard`; only `api` and `expire` are told the
+        # path. Both spellings of the path, since the action is authorised
+        # against the path itself and the parameters under it.
+        - Effect: Allow
+          Action: ssm:GetParametersByPath
+          Resource:
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/yyt-service/${self:custom.stage}/push/fcm
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/yyt-service/${self:custom.stage}/push/fcm/*
+        # Decrypting those SecureStrings: through SSM only, and only for a
+        # parameter under that path (SSM passes the parameter's ARN as the
+        # encryption context).
+        - Effect: Allow
+          Action: kms:Decrypt
+          Resource: arn:aws:kms:${aws:region}:${aws:accountId}:key/*
+          Condition:
+            StringEquals:
+              kms:ViaService: ssm.${aws:region}.amazonaws.com
+            StringLike:
+              kms:EncryptionContext:PARAMETER_ARN: arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/yyt-service/${self:custom.stage}/push/fcm/*
         # Daily usage digest reads the S3 storage and CloudFront traffic
         # metrics (reads only; no new alarm — 10-alarm free-tier cap).
         - Effect: Allow
@@ -304,6 +328,13 @@ functions:
     # (docs/decisions.md *Live and encrypted asset bundles* #4).
     environment:
       ASSET_KEK: ${ssm:${self:custom.ssm}/asset-kek, ""}
+      # The stage's pool of Firebase projects: one SecureString per slot under
+      # this path, read at run time (never resolved into the template, so a
+      # service-account key is in no CloudFormation parameter and a new slot
+      # needs no deploy). Set on `api` and `expire` only; a path holding no
+      # parameter is a stage with no project yet, and platform push answers
+      # 503.
+      PUSH_SSM_PATH: ${self:custom.pushSsmPath}
     # Memory buys CPU for the invoke phase; the Prisma query compiler is
     # CPU-bound (measured sizes and costs: rules/serverless-aws.md).
     memorySize: 1024
@@ -320,6 +351,8 @@ functions:
     # The digest's traffic lines for this stack's own two distributions. Set
     # here, not on the provider, so `api` does not depend on them.
     environment:
+      # The daily push reconciliation lists each slot's Firebase apps.
+      PUSH_SSM_PATH: ${self:custom.pushSsmPath}
       SITE_HOST_DISTRIBUTION_ID:
         !If [HasSiteHost, !Ref SiteHostDistribution, ""]
       WEB_DISTRIBUTION_ID: !Ref WebDistribution

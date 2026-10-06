@@ -91,6 +91,7 @@ import type {
   PosterUpload,
   Project,
   ProjectDetail,
+  PushPoolView,
   RemoveMemberResult,
   Team,
   TeamDetail,
@@ -180,6 +181,31 @@ export function createApiClient({
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
+  }
+
+  /**
+   * An authenticated GET of a file the API serves as an attachment. The body
+   * comes back as a blob and the name from `content-disposition`; errors are
+   * the same `ApiError` as every other call.
+   */
+  async function download(
+    path: string,
+    fallbackName: string,
+  ): Promise<{ blob: Blob; filename: string }> {
+    const res = await fetchImpl(`${base}${path}`, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) {
+      const err = await parseError(res);
+      if (err.status === 401) handler?.();
+      throw err;
+    }
+    const named = /filename="([^"\\/]+)"/.exec(
+      res.headers.get("content-disposition") ?? "",
+    );
+    return { blob: await res.blob(), filename: named?.[1] ?? fallbackName };
   }
 
   const get = <T>(path: string) => call<T>("GET", path);
@@ -457,6 +483,29 @@ export function createApiClient({
     rotateChannelSecret: (id: string) =>
       post<Channel>(`/channels/${enc(id)}/rotate-secret`),
     deleteChannel: (id: string) => del(`/channels/${enc(id)}`),
+    // ---- push channels (docs/decisions.md *Push notifications*) ------------
+    /**
+     * Registers or rotates the team's sender key. `serviceAccount` is the
+     * key file's text; the answer is the channel view, never the key.
+     */
+    setChannelSenderKey: (id: string, serviceAccount: string) =>
+      put<Channel>(`/channels/${enc(id)}/sender-key`, { serviceAccount }),
+    /** 409 on a team-sender channel: the key is its only sender. */
+    removeChannelSenderKey: (id: string) =>
+      del<{ removed: boolean }>(`/channels/${enc(id)}/sender-key`),
+    /** The platform registration's client config; 409 while not registered. */
+    channelGoogleServices: (id: string) =>
+      download(
+        `/channels/${enc(id)}/google-services.json`,
+        "google-services.json",
+      ),
+    /** Platform admin: the stage's pool of Firebase projects, by slot label. */
+    pushPool: () => get<PushPoolView>("/admin/push/pool"),
+    /** Platform admin: `changed` is `false` when the slot already was. */
+    setPushSlotClosed: (slot: string, closed: boolean) =>
+      post<{ slot: string; closed: boolean; changed: boolean }>(
+        `/admin/push/pool/${enc(slot)}/${closed ? "close" : "open"}`,
+      ),
     channelRedisUser: (id: string) =>
       get<ChannelRedisUser>(`/channels/${enc(id)}/redis-user`),
     issueChannelRedisUser: (id: string) =>

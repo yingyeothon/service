@@ -2,15 +2,18 @@ import {
   createMemoryConsoleDb,
   createMemoryKvStoreDb,
   createMemoryLeaderboardDb,
+  createMemoryPushDb,
   createMemorySocialDb,
   createMemoryStateDb,
   type KvStoreDb,
   type LeaderboardDb,
+  type PushDb,
   type SocialDb,
   type StateDb,
 } from "@yyt/console-db";
 import type { Logger } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
+import { createFakeGoogle, createFakePushPool } from "@yyt/push";
 import { fakeClock, jwt as jwtOf, NOW_MS, seedAuthChannel } from "@yyt/testing";
 import { createStateApp } from "../src/app.js";
 import { createChannelStore } from "../src/channels.js";
@@ -59,6 +62,11 @@ export async function build(
     kvstore?: KvStoreDb;
     leaderboards?: LeaderboardDb;
     social?: SocialDb;
+    push?: PushDb;
+    /** Firebase projects in the stage's pool; 0 is a stage without push. */
+    pushSlots?: number;
+    pushSendBudgetMs?: number;
+    pushCleanupBudgetMs?: number;
     keyless?: boolean;
     /** Every auth channel reads back with `projectId: null`, like a row from before `6_org_project`. */
     projectless?: boolean;
@@ -84,6 +92,14 @@ export async function build(
   const kvstore = over.kvstore ?? createMemoryKvStoreDb();
   const leaderboards = over.leaderboards ?? createMemoryLeaderboardDb();
   const social = over.social ?? createMemorySocialDb();
+  const push = over.push ?? createMemoryPushDb();
+  // One clock for the app and the fake: the pool's retries advance it, which
+  // is how a send runs out of budget in a test.
+  const fcm = createFakePushPool({
+    slots: over.pushSlots ?? 1,
+    google: createFakeGoogle({ clock }),
+    logger: over.logger,
+  });
   const crypto =
     over.crypto === false ? undefined : (over.crypto ?? createKvCrypto(KEK));
   const app = createStateApp({
@@ -91,6 +107,13 @@ export async function build(
     kvstore,
     leaderboards,
     social,
+    push: {
+      db: push,
+      channels: db,
+      pool: fcm.pool,
+      sendBudgetMs: over.pushSendBudgetMs,
+      cleanupBudgetMs: over.pushCleanupBudgetMs,
+    },
     channels: createChannelStore({
       db: over.projectless
         ? {
@@ -107,7 +130,18 @@ export async function build(
     clock,
     logger: over.logger,
   });
-  return { clock, db, state, kvstore, leaderboards, social, crypto, app };
+  return {
+    clock,
+    db,
+    state,
+    kvstore,
+    leaderboards,
+    social,
+    push,
+    fcm,
+    crypto,
+    app,
+  };
 }
 
 export const jwt = (

@@ -1,0 +1,10 @@
+id:         push_0123456789abcdef
+kind:       push
+name:       alerts
+status:     active
+project:    dooroo/game
+created:    2025-08-24T01:46:40Z
+expires:    2025-08-31T01:46:40Z
+apiBase:    https://state.example
+registered: true (yyt push channel config push_0123456789abcdef)
+config:     {"authChannelId":"auth_0123","packageName":"com.example.game","sender":"platform"}

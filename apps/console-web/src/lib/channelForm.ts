@@ -4,9 +4,12 @@ import type {
   ChannelKind,
   LobbyConfig,
   MatchConfig,
+  PushConfig,
+  PushSender,
   SayScope,
   TopicConfig,
 } from "../types";
+import { packageNameProblem, serviceAccountProblem } from "./push";
 
 export const SAY_SCOPES: readonly SayScope[] = ["zone", "party", "user"];
 
@@ -42,6 +45,11 @@ export interface ChannelFormState {
   maxPeers: string;
   /** Empty = no area-of-interest box (the whole zone is in range). */
   aoiRange: string;
+  /** push: fixed at creation. */
+  packageName: string;
+  pushSender: PushSender;
+  /** push, sender `team`: write-only, sent on create and never read back. */
+  teamServiceAccount: string;
 }
 
 export const emptyForm: ChannelFormState = {
@@ -73,6 +81,9 @@ export const emptyForm: ChannelFormState = {
   mapUrl: "",
   maxPeers: "64",
   aoiRange: "",
+  packageName: "",
+  pushSender: "platform",
+  teamServiceAccount: "",
 };
 
 /** Pre-fills the form from an existing channel (secrets are never returned, so they stay blank). */
@@ -113,6 +124,15 @@ export function formFromChannel(ch: Channel): ChannelFormState {
       // A row saved before the cap moved to the top level keeps it in `aoi`.
       maxPeers: String(c.maxPeers ?? c.aoi?.maxPeers ?? 64),
       aoiRange: c.aoi ? String(c.aoi.range) : "",
+    };
+  }
+  if (ch.kind === "push") {
+    const c = ch.config as PushConfig;
+    return {
+      ...f,
+      authChannelId: c.authChannelId,
+      packageName: c.packageName,
+      pushSender: c.sender,
     };
   }
   const c = ch.config as MatchConfig;
@@ -226,6 +246,28 @@ export function buildConfig(
       maxPeers: int(f.maxPeers, "visible peers"),
       ...aoi,
     } satisfies LobbyConfig;
+  }
+  if (kind === "push") {
+    // `packageName` and `sender` are fixed at creation, and the team key has
+    // its own route: an edit sends the one field that may change.
+    if (mode === "patch") return { authChannelId: f.authChannelId };
+    const packageName = f.packageName.trim();
+    const problem = packageNameProblem(packageName);
+    if (problem) throw new Error(`Package name: ${problem}`);
+    if (f.pushSender === "platform")
+      return {
+        authChannelId: f.authChannelId,
+        packageName,
+        sender: "platform",
+      } satisfies PushConfig;
+    const keyProblem = serviceAccountProblem(f.teamServiceAccount);
+    if (keyProblem) throw new Error(keyProblem);
+    return {
+      authChannelId: f.authChannelId,
+      packageName,
+      sender: "team",
+      teamServiceAccount: f.teamServiceAccount.trim(),
+    };
   }
   // A blank field drops the key rather than sending `""`: the match PATCH is a
   // full replace, so an absent key is what clears a callback and turns the

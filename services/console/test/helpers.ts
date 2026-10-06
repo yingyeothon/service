@@ -10,6 +10,7 @@ import {
   createMemoryKvStoreDb,
   createMemoryLeaderboardDb,
   createMemoryLimitsDb,
+  createMemoryPushDb,
   createMemorySocialDb,
   createMemorySitesDb,
   createMemoryTeamDb,
@@ -18,6 +19,7 @@ import {
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { httpEvent, NOW_MS, NOW_SEC } from "@yyt/testing";
 import { createMemoryAclAdmin, createMemoryKv } from "@yyt/redis";
+import { createFakePushPool } from "@yyt/push";
 import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
@@ -72,8 +74,14 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     channelsDeleted: (ids, at) => limits.channelsDeleted(ids, at),
     channelsPurged: (ids) => {
       for (const id of ids) limits.scopeDeleted({ kind: "channel", id });
+      // `push_apps_channel_fk` cascades too.
+      push.channelsPurged(ids);
     },
   });
+  // A claim reads its channel's row for the team, like the real transaction.
+  const push = createMemoryPushDb({ channel: (id) => db.channels.get(id) });
+  /** One fake Firebase project (`p1`); `over.pushPool` replaces the pool. */
+  const fcm = createFakePushPool();
   // The `createdBy`/`login` sorts join `members.github_login` on the real DB.
   const loginOf = (id: string) => db.members.get(id)?.githubLogin ?? id;
   const events = createMemoryEventsDb(
@@ -200,6 +208,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     leaderboards,
     social,
     limits,
+    push,
+    pushPool: fcm.pool,
     notify: async (subject, message) => {
       mails.push([subject, message]);
     },
@@ -333,6 +343,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     leaderboards,
     social,
     limits,
+    push,
+    fcm,
     mails,
     teamDb,
     posters,

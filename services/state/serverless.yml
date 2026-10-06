@@ -25,6 +25,13 @@ custom:
   domain: doc${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
   # Per-service credentials uploaded by scripts/bootstrap-ssm.sh from local/env/*.env.
   ssm: /yyt-service/${self:custom.stage}/state
+  # The stage's pool of Firebase projects: one SecureString per slot (`p1`,
+  # `p2`, …) holding a service-account key, put there by the owner and shared
+  # with the console stack. Read at **runtime** (`GetParametersByPath`), never
+  # resolved into the template: the pool grows without a deploy, and a key
+  # must not sit in a Lambda environment. Without a leading slash on purpose,
+  # so the IAM resource below can append it to `parameter/`.
+  pushSsm: yyt-service/${self:custom.stage}/push/fcm
   esbuild:
     bundle: true
     minify: false
@@ -94,6 +101,30 @@ provider:
     # private ops repo beside the state account, because losing it loses every
     # encrypted value for good.
     KV_KEK: ${ssm:${self:custom.ssm}/kv-kek, ""}
+    # A path, not a value. A stage with nothing under it has no push: `/push/*`
+    # answers 503 "push not configured" and the rest of the stack is untouched.
+    PUSH_SSM_PATH: /${self:custom.pushSsm}/
+  iam:
+    role:
+      statements:
+        # The push pool. `GetParametersByPath` is authorized against the path
+        # itself, and the parameters under it are what it returns.
+        - Effect: Allow
+          Action: ssm:GetParametersByPath
+          Resource:
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
+        # SecureString decryption, only as SSM performs it for those
+        # parameters: the service condition keeps the key from being used
+        # directly, the encryption context from decrypting any other path.
+        - Effect: Allow
+          Action: kms:Decrypt
+          Resource: arn:aws:kms:${aws:region}:${aws:accountId}:key/*
+          Condition:
+            StringEquals:
+              kms:ViaService: ssm.${aws:region}.amazonaws.com
+            StringLike:
+              kms:EncryptionContext:PARAMETER_ARN: arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
 
 functions:
   api:
@@ -102,8 +133,28 @@ functions:
     # allows ~60 MySQL connections across every stack, so the reservation is
     # this stack's share of that budget — see the table in rules/data.md.
     reservedConcurrency: 6
+    # No `timeout` of its own: the provider's 10 s. Every route here is
+    # bounded by the database's 5 s statement limit; the one slow route has
+    # its own function below.
     events:
       - httpApi: "*"
+  # `POST /push/{channelId}/send` alone (owner decision 2026-10-06): it spends
+  # up to 20 s on FCM plus 2 s on bookkeeping (`PUSH_SEND_BUDGET_MS`,
+  # `PUSH_CLEANUP_BUDGET_MS`), under API Gateway's 29 s. On `api` a handful of
+  # slow sends would hold every container the players' token and document
+  # routes need; here they can only hold these two. The specific route wins
+  # over `api`'s catch-all. Same handler and bundle: the app routes by path.
+  #
+  # Two containers are two more MariaDB connections: state is 8 of the
+  # budget in rules/data.md (57 of the host's 60 over all five stacks).
+  pushSend:
+    handler: src/handler.handler
+    reservedConcurrency: 2
+    timeout: 28
+    events:
+      - httpApi:
+          method: POST
+          path: /push/{channelId}/send
 
 package:
   individually: true
@@ -147,6 +198,22 @@ resources:
       DependsOn: ApiLogGroup
       Properties:
         LogGroupName: /aws/lambda/${self:service}-${self:custom.stage}-api
+        FilterPattern: '?"request failed" ?"unhandled error" ?"Task timed out" ?"Runtime."'
+        MetricTransformations:
+          - MetricNamespace: yyt/state
+            MetricName: ${self:custom.stage}-api-failures
+            MetricValue: "1"
+            DefaultValue: 0
+    # The same filter on the send function's log group, feeding the **same**
+    # metric: `pushSend` runs the handler `api` runs, so its 5xx exits are the
+    # same four lines, and the one alarm below covers both functions. A
+    # metric filter is not an alarm -- the 10-alarm budget is unchanged.
+    PushSendFailureMetric:
+      Condition: IsProd
+      Type: AWS::Logs::MetricFilter
+      DependsOn: PushSendLogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${self:custom.stage}-pushSend
         FilterPattern: '?"request failed" ?"unhandled error" ?"Task timed out" ?"Runtime."'
         MetricTransformations:
           - MetricNamespace: yyt/state

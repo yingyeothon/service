@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AppError } from "@yyt/core";
 import { createMemoryConsoleDb, type ConsoleDb } from "../src/index.js";
 
 const member = {
@@ -22,6 +23,24 @@ const channel = (id: string, over: Partial<{ expiresAt: number }> = {}) => ({
 });
 
 describe("memory console db: members/tokens/channels/audit", () => {
+  it("removeChannel hard-deletes a live row only, and runs the cascade hook", async () => {
+    const purged: string[] = [];
+    const db = createMemoryConsoleDb({
+      channelsPurged: (ids) => purged.push(...ids),
+    });
+    await db.upsertMember(member);
+    await db.insertChannel(channel("c1"));
+    expect(await db.removeChannel("c1")).toBe(true);
+    expect(db.channels.has("c1")).toBe(false);
+    expect(purged).toEqual(["c1"]);
+    // The name is free at once.
+    await db.insertChannel(channel("c1"));
+    expect(await db.removeChannel("nope")).toBe(false);
+    await db.deleteChannel("c1", 5);
+    expect(await db.removeChannel("c1")).toBe(false);
+    expect(db.channels.has("c1")).toBe(true);
+  });
+
   it("member roles and approval", async () => {
     const db = createMemoryConsoleDb();
     await db.upsertMember(member);
@@ -123,6 +142,18 @@ describe("memory console db: members/tokens/channels/audit", () => {
     });
     expect(await db.updateChannel("c1", {})).toBe(true);
     expect(await db.updateChannel("zz", { name: "x" })).toBe(false);
+    // `editChannel`: the same writes as one read-modify-write.
+    const edited = await db.editChannel("c1", (row) => ({
+      config: { ...(JSON.parse(row.configJson) as object), edited: true },
+    }));
+    expect(JSON.parse(edited!.configJson)).toMatchObject({ edited: true });
+    expect((await db.editChannel("c1", () => undefined))?.id).toBe("c1");
+    expect(await db.editChannel("zz", () => ({ name: "x" }))).toBeUndefined();
+    await expect(
+      db.editChannel("c1", () => {
+        throw new AppError("conflict", "no");
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
     // sweep: c1 disabled at 40 → deleted after grace; c2/c3 expire at 100
     const r1 = await db.expireChannels(101, 30);
     expect(r1).toEqual({

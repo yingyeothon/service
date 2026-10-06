@@ -14,6 +14,7 @@ import {
   checkAuditFilter,
   toAuthChannel,
   toMatchChannel,
+  toPushChannel,
   toTopicChannel,
   type ApiTokenRow,
   type AuditInput,
@@ -107,6 +108,10 @@ export function createMemoryConsoleDb(
     findTopicChannel: async (id) => {
       const row = await findChannelRow(id);
       return row && toTopicChannel(row);
+    },
+    findPushChannel: async (id) => {
+      const row = await findChannelRow(id);
+      return row && toPushChannel(row);
     },
     insertChannel: async (c) => {
       if (channels.has(c.id)) throw conflictKey();
@@ -288,6 +293,37 @@ export function createMemoryConsoleDb(
       });
       return true;
     },
+    // Synchronous between the read and the write, which is the fake's row
+    // lock: nothing can interleave inside one call.
+    editChannel: async (id, edit) => {
+      const c = channels.get(id);
+      if (!c || c.deletedAt !== null) return undefined;
+      const patch = edit({ ...c });
+      if (patch === undefined) return { ...c };
+      if (patch.name !== undefined && nameHeld(c.teamId, patch.name, id))
+        throw conflictKey();
+      const next = {
+        ...c,
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.config !== undefined
+          ? { configJson: JSON.stringify(patch.config) }
+          : {}),
+        ...(patch.secret !== undefined
+          ? { secretJson: JSON.stringify(patch.secret) }
+          : {}),
+        ...(patch.expiresAt !== undefined
+          ? { expiresAt: patch.expiresAt }
+          : {}),
+        ...(patch.disabledAt !== undefined
+          ? { disabledAt: patch.disabledAt }
+          : {}),
+        ...(patch.deletedAt !== undefined
+          ? { deletedAt: patch.deletedAt }
+          : {}),
+      };
+      channels.set(id, next);
+      return { ...next };
+    },
     findChannelNamesByIds: async (ids) =>
       [...new Set(ids)]
         .flatMap((id) => {
@@ -305,6 +341,13 @@ export function createMemoryConsoleDb(
         secretJson: "{}",
       });
       deps.channelsDeleted?.([id], at);
+      return true;
+    },
+    removeChannel: async (id) => {
+      const c = channels.get(id);
+      if (!c || c.deletedAt !== null) return false;
+      channels.delete(id);
+      deps.channelsPurged?.([id]);
       return true;
     },
     expireChannels: async (now, graceSec) => {

@@ -8,6 +8,14 @@ import {
 } from "@mantine/core";
 import type { Channel, ChannelKind, SayScope } from "../types";
 import { SAY_SCOPES, type ChannelFormState } from "../lib/channelForm";
+import { PACKAGE_NAME_HINT, PACKAGE_NAME_MAX } from "../lib/push";
+import { ServiceAccountField } from "./ServiceAccountField";
+
+/** A refusal that belongs to one push field, shown under it. */
+export interface ChannelFieldErrors {
+  packageName?: string | null;
+  serviceAccount?: string | null;
+}
 
 interface Props {
   kind: ChannelKind;
@@ -17,6 +25,7 @@ interface Props {
   authChannels: Channel[];
   /** Editing an existing auth channel: provider secrets may be left blank to keep them. */
   editing?: boolean;
+  errors?: ChannelFieldErrors;
 }
 
 export function ChannelForm({
@@ -25,6 +34,7 @@ export function ChannelForm({
   onChange,
   authChannels,
   editing,
+  errors,
 }: Props) {
   const set = <K extends keyof ChannelFormState>(
     k: K,
@@ -34,7 +44,11 @@ export function ChannelForm({
   const authSelect = (
     <NativeSelect
       label="Auth channel"
-      description="Players connect with JWTs issued by this auth channel."
+      description={
+        kind === "push"
+          ? "Devices register their tokens with JWTs issued by this auth channel; a message is addressed to its user ids."
+          : "Players connect with JWTs issued by this auth channel."
+      }
       value={form.authChannelId}
       onChange={(e) => set("authChannelId", e.target.value)}
       required
@@ -252,6 +266,67 @@ export function ChannelForm({
             onChange={(e) => set("aoiRange", e.target.value)}
             disabled={!form.capPos}
           />
+        </>
+      )}
+      {kind === "push" && (
+        <>
+          {authSelect}
+          <TextInput
+            label="Package name"
+            description={
+              editing
+                ? "Fixed at creation: the registration and every device token are bound to it."
+                : PACKAGE_NAME_HINT
+            }
+            value={form.packageName}
+            onChange={(e) => set("packageName", e.target.value)}
+            error={errors?.packageName ?? undefined}
+            disabled={editing}
+            required
+            maxLength={PACKAGE_NAME_MAX}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder="com.example.game"
+          />
+          <NativeSelect
+            label="Sender"
+            description={
+              editing
+                ? "Fixed at creation."
+                : "Who sends the messages. The platform sender needs nothing from you and counts toward the team's push apps limit."
+            }
+            value={form.pushSender}
+            onChange={(e) =>
+              set("pushSender", e.target.value as "platform" | "team")
+            }
+            disabled={editing}
+            data={[
+              {
+                value: "platform",
+                label: "platform — the platform's Firebase project",
+              },
+              {
+                value: "team",
+                label: "team — your own Firebase project and key",
+              },
+            ]}
+          />
+          {!editing && form.pushSender === "team" && (
+            <ServiceAccountField
+              value={form.teamServiceAccount}
+              onChange={(v) => set("teamServiceAccount", v)}
+              error={errors?.serviceAccount}
+              description="A service-account key of your Firebase project with the Firebase Cloud Messaging API enabled. The app ships with that project's own google-services.json."
+            />
+          )}
+          {!editing && form.pushSender === "platform" && (
+            <Text size="sm" c="dimmed">
+              The package is registered in a Firebase project of the platform;
+              its google-services.json is downloaded from the channel page after
+              it is created.
+            </Text>
+          )}
         </>
       )}
       {kind === "match" && (

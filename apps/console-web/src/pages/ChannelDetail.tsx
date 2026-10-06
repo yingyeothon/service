@@ -7,6 +7,7 @@ import { Crumbs } from "../components/Crumbs";
 import { LimitsSection, useLimits } from "../components/Limits";
 import { Loading, PageSkeleton } from "../components/Loading";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
+import { PushDetails, PushSenderKeyCard } from "../components/PushChannel";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import { ResourceDrawer } from "../components/ResourceDrawer";
 import { Section } from "../components/Section";
@@ -21,6 +22,7 @@ import { buildConfig, emptyForm, formFromChannel } from "../lib/channelForm";
 import { useConfirm } from "../lib/confirm";
 import { errorMessage, fmtRelative, fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
+import { channelDeleteNote, pushProblem } from "../lib/push";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl, useTeamStanding } from "../lib/team";
 import { GATEWAY_KINDS } from "../types";
@@ -107,9 +109,20 @@ export function ChannelDetailPage() {
       setLocalError(errorMessage(err));
       return;
     }
-    const r = await act.run(() =>
-      api.updateChannel(c.id, { name: form.name.trim(), config }),
-    );
+    const r = await act.run(async () => {
+      try {
+        return await api.updateChannel(c.id, {
+          name: form.name.trim(),
+          config,
+        });
+      } catch (err) {
+        if (c.kind !== "push") throw err;
+        // A registration still under way and the write slot get their own
+        // sentence; anything else keeps the server's.
+        const p = pushProblem(err, "update");
+        throw p.at === "platform" ? new Error(p.message) : err;
+      }
+    });
     if (r) {
       ch.set(r);
       setEditing(false);
@@ -155,7 +168,7 @@ export function ChannelDetailPage() {
   const removeFromMenu = async () => {
     const ok = await confirm({
       title: `Delete ${c.name}?`,
-      message: "Sockets on it are closed and its credentials stop working.",
+      message: channelDeleteNote(c.kind),
       confirmLabel: "Delete channel",
       danger: true,
     });
@@ -247,8 +260,17 @@ export function ChannelDetailPage() {
         {c.kind === "match" && <MatchDetails c={c} />}
         {c.kind === "lobby" && <LobbyDetails c={c} />}
         {c.kind === "q" && <QDetails c={c} />}
+        {c.kind === "push" && <PushDetails c={c} />}
       </Section>
 
+      {c.kind === "push" && (
+        <PushSenderKeyCard
+          channel={c}
+          owner={owner}
+          onChanged={ch.set}
+          onReload={ch.reload}
+        />
+      )}
       {c.kind === "q" && <QRedisUserCard channel={c} owner={owner} />}
       {c.kind === "auth" && c.docUrl && (
         <AuthDocKeyCard channel={c} owner={owner} />
@@ -275,8 +297,7 @@ export function ChannelDetailPage() {
           owner
             ? {
                 label: "Delete channel",
-                description:
-                  "Sockets on it are closed and its credentials stop working.",
+                description: channelDeleteNote(c.kind),
                 onConfirm: remove,
                 disabled: act.busy,
               }

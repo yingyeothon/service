@@ -1,0 +1,5 @@
+SLOT  STATE          APPS   CLOSED BY  CLOSED AT
+p1    closed         20/20  octo       2025-08-24T01:46:40Z
+p2    open           3/20   -          -
+p3    closed         12/20  system     2025-08-24T01:48:20Z
+p9    unprovisioned  1/20   -          -

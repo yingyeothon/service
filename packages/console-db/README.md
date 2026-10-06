@@ -9,6 +9,7 @@ Console-owned MySQL (MariaDB) schema and repositories. console migrates and writ
 - `migrateConsoleDb(db, steps?)` — `schema_migrations` table + `GET_LOCK`; **console only**.
 - `createConsoleDb(db)` → `ConsoleDb` (`findChannelRow/findAuthChannel/insertChannel/upsertMember`). `upsertMember` returns the id that owns the GitHub user — use it for foreign keys.
 - `createMemoryConsoleDb()` — test fake with the same contract plus `patchChannel`.
+- `createPushDb(prisma)` → `PushDb` (`m0028_push`): the registration claim (`claimApp`, one transaction for the stage-wide package name among `platform` claims, the team cap and the pool slot), pool slots (`closeSlot`/`openSlot`), device tokens keyed per channel (`putToken`, `listTokensForUsers`, bounded deletes) and the per-channel daily send counters (`addSendStats`, `topSendFailures`, bounded deletes). `ConsoleDb.editChannel` is the row-locked read-modify-write every writer of a push channel's config and secret goes through. The caps and grammars both stacks share are constants of this module. `createMemoryPushDb({channel})` is the fake. No method returns a token to anything but the platform's sender; rules in `rules/data.md` _Push_.
 
 ## Tests
 

@@ -1,10 +1,20 @@
 import { AppError, randomHex, type ChannelKind } from "@yyt/core";
 import {
   channelStatus,
+  PUSH_PACKAGE_NAME,
+  PUSH_PACKAGE_NAME_MAX,
+  PUSH_SENDERS,
   type AuthChannelConfig,
   type AuthChannelSecret,
   type ChannelRow,
+  type PushChannelConfig,
+  type PushChannelSecret,
 } from "@yyt/console-db";
+import {
+  parseServiceAccount,
+  SERVICE_ACCOUNT_MAX_CHARS,
+  ServiceAccountError,
+} from "@yyt/push";
 import { z } from "zod";
 
 /** Public base URLs of the sibling stacks, used to render callback/ws URLs. */
@@ -55,9 +65,12 @@ const ID = /^[a-z0-9_-]{3,40}$/;
  * (`local/owner-checklist.md`). A stored name is not re-validated, so an
  * existing one would keep working everywhere except `yyt`, which would read it
  * as a board id.
+ *
+ * `push` (2026-10-06) went in the same way, with the `push` channel kind:
+ * both stages were checked that day and no stored name starts with `push_`.
  */
 const ID_LIKE =
-  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|push|m|tok|dbg|up)_/i;
 const name = z
   .string()
   .trim()
@@ -337,6 +350,71 @@ const lobbyConfig = z
  */
 const qConfig = z.object({ authChannelId }).strict();
 
+/**
+ * A Firebase service-account key as a client sends it: the downloaded file's
+ * text, or the same JSON inlined as an object.
+ */
+export const serviceAccountIn = z.union([
+  z.string().min(1).max(SERVICE_ACCOUNT_MAX_CHARS),
+  z.record(z.string(), z.unknown()),
+]);
+
+/**
+ * Validates a team's service-account key and returns the text to store and
+ * the project it belongs to. The refusal names the field that failed and
+ * nothing of the key (`parseServiceAccount`); `token_uri` is pinned to
+ * Google's endpoint there, so a stored key cannot aim a signed assertion at
+ * another host.
+ */
+export function readServiceAccount(input: z.infer<typeof serviceAccountIn>): {
+  json: string;
+  projectId: string;
+} {
+  const json = typeof input === "string" ? input : JSON.stringify(input);
+  try {
+    return { json, projectId: parseServiceAccount(json).projectId };
+  } catch (e) {
+    const reason = e instanceof ServiceAccountError ? e.reason : "not_json";
+    throw new AppError("bad_request", `invalid service account: ${reason}`, {
+      details: { reason: "service_account", field: reason },
+    });
+  }
+}
+
+const packageName = z
+  .string()
+  .max(PUSH_PACKAGE_NAME_MAX)
+  .regex(
+    PUSH_PACKAGE_NAME,
+    "packageName must be an Android application id such as com.example.game",
+  );
+/**
+ * A push channel (`docs/decisions.md` *Push notifications (Android, FCM)*
+ * #3). `teamServiceAccount` is accepted with `sender: "team"` only and goes
+ * to `secret_json`; a platform channel gains a team key through
+ * `PUT /channels/{id}/sender-key`.
+ */
+const pushConfig = z
+  .object({
+    authChannelId,
+    packageName,
+    sender: z.enum(PUSH_SENDERS).default("platform"),
+    teamServiceAccount: serviceAccountIn.optional(),
+  })
+  .strict();
+/**
+ * `packageName` and `sender` are fixed at creation: the registration and
+ * every stored token are bound to them. Both are accepted on a PATCH so a
+ * client may send back what it read, and refused when they differ.
+ */
+const pushConfigPatch = z
+  .object({
+    authChannelId,
+    packageName: z.string().max(PUSH_PACKAGE_NAME_MAX).optional(),
+    sender: z.string().max(16).optional(),
+  })
+  .strict();
+
 /** Channel kinds served by the self-hosted gateway; neither carries a secret. */
 export const GATEWAY_KINDS = ["lobby", "q"] as const;
 export type GatewayKind = (typeof GATEWAY_KINDS)[number];
@@ -401,7 +479,7 @@ export function gatewayRedis(channelId: string, stage: string): GatewayRedis {
 
 export const createBody = z
   .object({
-    kind: z.enum(["auth", "topic", "match", "lobby", "q"]),
+    kind: z.enum(["auth", "topic", "match", "lobby", "q", "push"]),
     name,
     config: z.unknown(),
   })
@@ -414,6 +492,7 @@ export type TopicConfig = z.infer<typeof topicConfig>;
 export type MatchConfig = z.infer<typeof matchConfig>;
 export type LobbyConfig = z.infer<typeof lobbyConfig>;
 export type QConfig = z.infer<typeof qConfig>;
+export type PushConfigIn = z.infer<typeof pushConfig>;
 export interface ApiKeySecret {
   apiKey: string;
 }
@@ -490,6 +569,40 @@ export function buildChannel(
         : parse(qConfig, input);
     return { config, secret: {} };
   }
+  if (kind === "push") {
+    const c = parse(pushConfig, input);
+    const base = {
+      authChannelId: c.authChannelId,
+      packageName: c.packageName,
+      sender: c.sender,
+    } satisfies PushChannelConfig;
+    const apiKey = randomHex(32);
+    if (c.sender === "platform") {
+      if (c.teamServiceAccount !== undefined)
+        throw new AppError(
+          "bad_request",
+          'teamServiceAccount belongs to sender "team"; a platform channel takes a team key through PUT /channels/{id}/sender-key',
+        );
+      // `slot` and `firebaseAppId` are written once the registration succeeded.
+      return { config: base, secret: { apiKey } satisfies PushChannelSecret };
+    }
+    if (c.teamServiceAccount === undefined)
+      throw new AppError(
+        "bad_request",
+        'teamServiceAccount is required for sender "team"',
+      );
+    const account = readServiceAccount(c.teamServiceAccount);
+    return {
+      config: {
+        ...base,
+        teamProject: account.projectId,
+      } satisfies PushChannelConfig,
+      secret: {
+        apiKey,
+        teamServiceAccount: account.json,
+      } satisfies PushChannelSecret,
+    };
+  }
   const config =
     kind === "topic" ? parse(topicConfig, input) : parse(matchConfig, input);
   return { config, secret: { apiKey: randomHex(32) } satisfies ApiKeySecret };
@@ -550,6 +663,25 @@ export function patchChannel(
       config: withMapUrl(parse(lobbyConfig, input), opts),
       secret: storedSecret,
     };
+  if (row.kind === "push") {
+    // Merged over the stored config: `slot`, `firebaseAppId` and
+    // `teamProject` are the platform's own and no request body sets them.
+    const cur = JSON.parse(row.configJson) as PushChannelConfig;
+    const p = parse(pushConfigPatch, input);
+    for (const field of ["packageName", "sender"] as const)
+      if (p[field] !== undefined && p[field] !== cur[field])
+        throw new AppError(
+          "bad_request",
+          `${field} cannot be changed after creation`,
+        );
+    return {
+      config: {
+        ...cur,
+        authChannelId: p.authChannelId,
+      } satisfies PushChannelConfig,
+      secret: storedSecret,
+    };
+  }
   const schema =
     row.kind === "topic"
       ? topicConfig
@@ -591,6 +723,16 @@ export function rotateSecret(row: ChannelRow): {
       `a ${row.kind} channel has no secret to rotate`,
     );
   const apiKey = randomHex(32);
+  // A push channel's blob also holds the team's sender key, which a rotation
+  // of the apiKey must not drop.
+  if (row.kind === "push")
+    return {
+      secret: {
+        ...(JSON.parse(row.secretJson) as PushChannelSecret),
+        apiKey,
+      },
+      shown: { apiKey },
+    };
   return { secret: { apiKey }, shown: { apiKey } };
 }
 
@@ -668,6 +810,29 @@ export function channelView(
     // game's own entry API. The prefixes are derived, never stored, so they are
     // rendered here rather than read back out of `config`.
     return { ...base, ...wsUrl, redis: gatewayRedis(row.id, stage) };
+  }
+  if (row.kind === "push") {
+    const c = config as unknown as PushChannelConfig;
+    // The state stack serves `/push/*`; no base until it exists on the stage.
+    const api = trim(urls.doc ?? "");
+    return {
+      ...base,
+      // Not the stored config: the slot and the Firebase app id are the
+      // platform's bookkeeping, and the client reads the Firebase project
+      // from the `google-services.json` it embeds.
+      config: {
+        authChannelId: c.authChannelId,
+        packageName: c.packageName,
+        sender: c.sender,
+      },
+      // The platform registration exists, so its config can be downloaded.
+      registered: typeof c.firebaseAppId === "string",
+      // The team's own project, once a team key is registered; never the key.
+      ...(typeof c.teamProject === "string"
+        ? { teamProject: c.teamProject }
+        : {}),
+      ...(api === "" ? {} : { apiBase: api }),
+    };
   }
   const ws = trim(urls.match).replace(/^http/, "ws");
   return { ...base, wsUrl: `${ws}/?channel=${id}` };

@@ -1,5 +1,6 @@
 import {
   IconApps,
+  IconBellRinging,
   IconCalendarEvent,
   IconClipboardList,
   IconDatabase,
@@ -122,6 +123,12 @@ export const NAV_ITEMS: NavItem[] = [
     icon: IconGauge,
     minRole: "admin",
     badge: "pendingLimitRequests",
+  },
+  {
+    path: "/admin/push-pool",
+    label: "Push pool",
+    icon: IconBellRinging,
+    minRole: "admin",
   },
   // Visible rather than hidden: `hidden` marks a path that guards routes
   // reached from elsewhere, and `test/routes.test.tsx` pins that list.

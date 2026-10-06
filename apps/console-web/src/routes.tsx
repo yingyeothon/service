@@ -18,6 +18,7 @@ import { ListingsPage } from "./pages/Listings";
 import { VersionPage } from "./pages/Version";
 import { MembersPage } from "./pages/Members";
 import { ProjectPage } from "./pages/Project";
+import { PushPoolPage } from "./pages/PushPool";
 import { SitePage } from "./pages/Site";
 import { TeamPage } from "./pages/Team";
 import { TeamsPage } from "./pages/Teams";
@@ -69,6 +70,11 @@ export const ROUTES: AppRoute[] = [
     path: "/admin/limit-requests",
     guard: "/admin/limit-requests",
     element: <LimitRequestsPage />,
+  },
+  {
+    path: "/admin/push-pool",
+    guard: "/admin/push-pool",
+    element: <PushPoolPage />,
   },
   { path: "/teams", guard: "/teams", element: <TeamsPage /> },
   { path: "/teams/:team", guard: "/teams", element: <TeamPage /> },

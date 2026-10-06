@@ -291,6 +291,7 @@ model channels {
   state_docs      state_docs[]
   limit_requests  limit_requests[]
   limit_overrides limit_overrides[]
+  push_apps       push_apps?
 
   @@unique([team_id, name], map: "channels_team_name")
   @@index([kind, owner_id], map: "channels_kind_owner")
@@ -478,6 +479,7 @@ enum channels_kind {
   match
   lobby
   q
+  push
 }
 
 enum catalog_artifacts_platform {
@@ -1371,4 +1373,100 @@ enum limit_requests_status {
   approved
   rejected
   cancelled
+}
+
+/// The registration claim of a push channel (migration `m0028_push`,
+/// docs/decisions.md *Push notifications (Android, FCM)* #4). One row per
+/// push channel; `PushDb.claimApp` writes it in one transaction, which is what
+/// makes the stage-wide package name, the 20 registrations per slot and
+/// `push.appsPerTeam` hold under concurrency.
+///
+/// `slot` is the pool label (`p1`, ...), never a Firebase project id, and is
+/// NULL exactly for a `team`-sender row; `platform_package` equals
+/// `package_name` for a `platform` row and is NULL for a `team` row -- two
+/// CHECKs in the migration, which this schema file cannot express.
+model push_apps {
+  channel_id       String           @id @db.VarChar(64)
+  team_id          String           @db.VarChar(64)
+  /// Database default collation: case-variants of one name collide.
+  package_name     String           @db.VarChar(255)
+  /// The name again for a `platform` claim, NULL for a `team` one: the unique
+  /// index covers platform claims only, so a team sender cannot squat a name.
+  platform_package String?          @unique(map: "push_apps_package") @db.VarChar(255)
+  sender           push_apps_sender
+  slot             String?          @db.VarChar(32)
+  /// Null until Firebase answered the registration.
+  firebase_app_id  String?          @db.VarChar(255)
+  created_at       BigInt
+  /// The safety net: the purge of a channel row drops a claim nobody released.
+  channels         channels         @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "push_apps_channel_fk")
+
+  @@index([slot], map: "push_apps_slot")
+  @@index([team_id, sender], map: "push_apps_team")
+}
+
+/// A pool slot closed to new registrations, by an operator or by the platform
+/// itself (`closed_by` = `auto:firebase-limit`). A slot with no row is open; a
+/// claim materialises the rows it locks.
+model push_pool {
+  slot       String  @id @db.VarChar(32)
+  closed_at  BigInt?
+  closed_by  String? @db.VarChar(64)
+  updated_at BigInt
+}
+
+/// One row per device token per channel, keyed on the channel and the token's
+/// sha256: registering a token in one channel never touches another channel's
+/// row, and inside a channel a token registered by another user moves.
+///
+/// Deliberately **no foreign key** to `channels`, like `social_profiles`: the
+/// console deletes a dying channel's tokens explicitly, in bounded batches.
+///
+/// `user_id` is `utf8mb4_bin` in the migration, which this schema file cannot
+/// express (`channel_id` keeps the database default so it matches `channels`).
+model push_tokens {
+  channel_id       String @db.VarChar(64)
+  token_hash       String @db.VarChar(64)
+  user_id          String @db.VarChar(64)
+  token            String @db.VarChar(4096)
+  /// The Firebase project that issued the token; it is sent with that
+  /// project's credentials and no other.
+  firebase_project String @db.VarChar(64)
+  /// A VARCHAR, not an enum: a reader's generated client must never throw on
+  /// a value added later.
+  platform         String @db.VarChar(16)
+  created_at       BigInt
+  updated_at       BigInt
+
+  @@id([channel_id, token_hash])
+  /// A send's lookup, a user's own rows and the per-user cap.
+  @@index([channel_id, user_id, updated_at], map: "push_tokens_user")
+  /// The 60-day sweep, which is global, so `updated_at` leads.
+  @@index([updated_at], map: "push_tokens_stale")
+}
+
+/// What the targeted send did per channel and UTC day (`day` = unix seconds /
+/// 86400, floored). The state stack upserts one send call's counts; the
+/// console digest reads yesterday's failures and drops rows older than 30
+/// days. No foreign key, like `push_tokens`.
+model push_send_stats {
+  channel_id   String @db.VarChar(64)
+  day          Int
+  calls        BigInt
+  sent         BigInt
+  no_token     BigInt
+  failed       BigInt
+  unregistered BigInt
+  updated_at   BigInt
+
+  @@id([channel_id, day])
+  /// Both readers are global: the digest's top failures of a day and the
+  /// retention delete, so `day` leads.
+  @@index([day, failed], map: "push_send_stats_day")
+}
+
+// Appended to only; multi-line with no comment inside (`test/enumOrder.test.ts`).
+enum push_apps_sender {
+  platform
+  team
 }
