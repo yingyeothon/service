@@ -457,12 +457,21 @@ async function stateHalf(id, apiKey, project, authId, otherAuthId) {
     api(`/push/${id}/token`, { method: "PUT", headers: bearer(jwt), body });
   const del = (jwt, body) =>
     api(`/push/${id}/token`, { method: "DELETE", headers: bearer(jwt), body });
-  const send = (key, body) =>
-    api(`/push/${id}/send`, {
-      method: "POST",
-      headers: key ? bearer(key) : {},
-      body,
-    });
+  // The send function is capped at 2 concurrent per stage, and a burst can
+  // meet Lambda's throttle: API Gateway then answers a 503 that is not the
+  // handler's (no `error.code`). A caller retries it; so does this.
+  const send = async (key, body) => {
+    for (let attempt = 0; ; attempt++) {
+      const res = await api(`/push/${id}/send`, {
+        method: "POST",
+        headers: key ? bearer(key) : {},
+        body,
+      });
+      if (res.status !== 503 || res.body?.error?.code || attempt === 3)
+        return res;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  };
   const data = { kind: "smoke", stamp };
 
   /* --- token PUT: the grant's INSERT, and the gate --- */
