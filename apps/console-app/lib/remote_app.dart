@@ -22,6 +22,10 @@ class RemoteApp {
   /// into the project (docs/decisions.md *Catalog listings* #4).
   final bool shared;
 
+  /// The FCM topic the server announces this app's new Android builds on;
+  /// `null` from a console that predates it. Never built on the device.
+  final String? topic;
+
   RemoteApp({
     required this.id,
     required this.name,
@@ -31,6 +35,7 @@ class RemoteApp {
     List<String>? applicationIds,
     this.home,
     this.shared = false,
+    this.topic,
   }) : applicationIds = applicationIds ?? const <String>[];
 
   Map<String, dynamic> toJson() {
@@ -45,10 +50,9 @@ class RemoteApp {
 
   String get version => latestArtifact.version;
   String get apkUrl => latestArtifact.url;
-  String get applicationId =>
-      latestArtifact.applicationId.isNotEmpty
-          ? latestArtifact.applicationId
-          : package;
+  String get applicationId => latestArtifact.applicationId.isNotEmpty
+      ? latestArtifact.applicationId
+      : package;
 
   /// applicationIds to probe for installation, latest artifact's id first.
   List<String> get installCheckApplicationIds {

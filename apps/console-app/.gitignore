@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Firebase defines for --dart-define-from-file (README, Build): the real file
+# lives in the repo's gitignored local/; only the example is tracked.
+/firebase*.json
+!/firebase.example.json
+
+# Never tracked: the Firebase config reaches a build through the defines only.
+/android/app/google-services.json
+**/google-services.json

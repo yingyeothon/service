@@ -158,6 +158,8 @@ only to the console API.
   `ApiException` with `details`, `reason` (`details.reason`) and
   `fieldErrors` (a 400's `[{path,message}]`); the Korean message is chosen by
   reason, then code, then status.
+- Update notices (`todo/56` P3, 1.6.3, docs/push.md _Console app_): see
+  _Update notices_ below.
 - Pre-release builds (`life.yyt.catalog`, the legacy vendor id before it) are
   abandoned; install this package fresh. The launcher icon is
   `assets/icon.png` (`dart run flutter_launcher_icons`).
@@ -166,9 +168,37 @@ only to the console API.
 
 1. Bump the patch version in `pubspec.yaml` (`version: x.y.z+build`, both
    numbers).
-2. `flutter analyze && flutter test && flutter build apk --release`
+2. `flutter analyze && flutter test`, then build with the Firebase defines
    (`android/key.properties` must be present — the release keystore lives with
-   the operator, outside the repo).
+   the operator, outside the repo; the define file is what switches update
+   notices on, see _Build_). The same APK goes to both catalogs.
+
+   ```sh
+   flutter build apk --release \
+     --dart-define-from-file=../../local/console-app/firebase.prod.json
+   ```
+
+   Then check the APK, before any upload. A build without the define file
+   compiles, signs and runs with notices off, so a forgotten flag is silent.
+   The sender id is read from the gitignored file into a variable and only
+   counted — never echo it or paste it anywhere tracked:
+
+   ```sh
+   apk=build/app/outputs/flutter-apk/app-release.apk
+   sender=$(jq -r '.FIREBASE_SENDER_ID // empty' ../../local/console-app/firebase.prod.json)
+   # Built with the config: a count above 0 (0 = built without the file).
+   [ -n "$sender" ] && unzip -p "$apk" lib/arm64-v8a/libapp.so | strings | grep -cF -- "$sender"
+   # Signed with the release key, not the debug fallback: CN=yyt.life.
+   "$ANDROID_HOME"/build-tools/*/apksigner verify --print-certs "$apk" | grep 'certificate DN'
+   # The version of step 1.
+   "$ANDROID_HOME"/build-tools/*/aapt dump badging "$apk" | grep -o "version[A-Za-z]*='[^']*'"
+   ```
+
+   (With several build-tools versions installed, name one instead of `*`.)
+   Do not rebuild without the flag afterwards: the APK that passed is the one
+   to upload. On a device, the profile menu's last line says the same thing:
+   `알림: 켜짐`, or `알림: 꺼짐(빌드에 설정 없음)` for a build without the file.
+
 3. Upload with the repo-built CLI, to dev then prod:
 
    ```sh
@@ -197,6 +227,74 @@ flutter build apk --release
 Release signing reads `android/key.properties` (gitignored); the release
 keystore and that file live outside the repo with the operator. Without it the
 release build falls back to the debug key for local checks.
+
+Update notices need the Firebase app's four values at build time. They are
+not in the repo — no `google-services.json`, no Google Services Gradle
+plugin:
+
+```sh
+# keys: firebase.example.json; the real file is gitignored (repo local/)
+flutter build apk --release \
+  --dart-define-from-file=../../local/console-app/firebase.prod.json
+```
+
+Without the flag (CI, a contributor, `flutter test`) the build is the same app
+with push switched off: Firebase is never initialised, nothing is asked of the
+user and nothing is stored. A partial file counts as none.
+
+## Update notices
+
+A new Android build of a catalog app installed on this device arrives as a
+notification (docs/push.md _Console app_). **Prod only**: the app is
+registered in one Firebase project, the prod pool's first; signed in to dev it
+receives nothing.
+
+- `lib/push/push_service.dart` is the whole feature behind one class;
+  `PushMessaging` is its transport interface (Firebase in
+  `firebase_push_messaging.dart`, a fake in tests), `PushConfig` reads the
+  defines.
+- Topics: every app view carries the server's `topic`. After a list loads
+  (the app tab, and the browse tab once visited), the app follows the topic
+  of each app that is **installed** and drops the ones no list reports
+  installed any more. The followed set is kept in secure storage
+  (`push_topics`), so a launch sends only the difference. Removing or
+  switching the profile unsubscribes everything. Only names shaped
+  `yyt.catalog.<stage>.<appId>` are followed; anything else a server names
+  is ignored.
+- Unconfirmed operations: the FCM SDK keeps a failed or timed-out (15 s)
+  request queued and may complete it later. So every topic is recorded as
+  _pending_ before its call and stays known until the transport confirms a
+  subscribe (it becomes followed) or an unsubscribe (it is forgotten);
+  sign-out, a profile switch and an uninstall unsubscribe followed and
+  pending topics alike, and whatever is left is retried by the next load or
+  launch.
+- Browse tab: when an earlier launch followed an app through it, the launch
+  reads the listings once after the app list (before the self-update check,
+  so still one request at a time) — an app removed in Android settings stops
+  being followed without a visit to the tab. A launch that follows nothing
+  there sends no such request.
+- Self-heal: on an FCM token refresh, and once every 7 days, nothing counts
+  as confirmed and the wanted topics are subscribed again (a no-op when they
+  still are), so a restored or reset installation converges.
+- Permission (Android 13+): asked once, the first time a loaded list has an
+  installed app to follow — never at launch, on the sign-in screen, or
+  against a console that names no topic. The flag (`push_permission_asked`)
+  is written when the prompt returns, so an answer is not asked again while
+  a prompt the app was killed under is; topics are followed either way, so
+  an open app still shows notices.
+- Build state: the profile menu ends with `알림: 켜짐` or
+  `알림: 꺼짐(빌드에 설정 없음)` (`PushConfig.fromBuild.isComplete`).
+- Background / closed: Android shows the notification (channel _앱 업데이트_,
+  created in `MainActivity`). The title is the app's name for a publicly
+  listed app and `앱 업데이트` otherwise; the body is the version. A tap opens
+  that app's detail screen — after the first list load on a cold start
+  (`getInitialMessage`), reading the lists again when the loaded one does not
+  show the announced version yet.
+- Foreground: a SnackBar (`<name> 새 버전 <version>`, action _보기_) and a
+  reload of the app tab; no local-notification plugin.
+- Dropped silently: a message whose `data.kind` is not `catalog`, or whose
+  topic is not one the active profile's server named for that app (another
+  stage, another profile, an app not followed).
 
 ## Self-update
 

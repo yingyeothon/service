@@ -2,7 +2,7 @@
 
 Design of record: `docs/decisions.md` _Push notifications (Android, FCM)_ (2026-10-06). This page is the client contract and the operator's reference. Route-level detail of the state half is in `services/state/README.md` (_Push routes_).
 
-**Status.** Built 2026-10-06, not deployed on any stage: the `push` channel kind and its console routes, the device-token routes and the targeted send on the state stack, migration `m0028_push`, the daily sweep. The console SPA and `yyt push …` are built too (_Console SPA and CLI_ below); the routes are what they call. Built 2026-10-06 on the server side, not deployed: campaigns and the broadcast (_Campaigns_ below) — migration `m0029_push_campaigns`, the console routes and the `pushJob` worker; the SPA and the CLI do not call them yet. Decided and **not built**: the console app's notifications (_Not built yet_ below).
+**Status.** Built 2026-10-06, not deployed on any stage: the `push` channel kind and its console routes, the device-token routes and the targeted send on the state stack, migration `m0028_push`, the daily sweep. The console SPA and `yyt push …` are built too (_Console SPA and CLI_ below); the routes are what they call. Built 2026-10-06 on the server side, not deployed: campaigns and the broadcast (_Campaigns_ below) — migration `m0029_push_campaigns`, the console routes and the `pushJob` worker; the SPA and the CLI do not call them yet. Built 2026-10-06, not deployed and not released: the console app's update notices (_Console app_ below) — the console's topic message on a catalog upload and the app's subscriptions; no receipt on a real device has been observed yet.
 
 ## What a push channel is
 
@@ -475,6 +475,44 @@ One FCM message to the channel's **topic**, so the cost is one request whatever 
 - **A refused platform key** ends the job (`sender_unavailable`) with the batch's remaining users `failed` / `unavailable`; it is not retried. A refused **team** key fails that project's users (`rejected`) and the platform project's tokens are still sent.
 - **Recovery.** A run that hits a database or bucket error gives its job back, counts an attempt and throws; Lambda retries the event after 1 and 2 minutes. A job whose lease ran out unreleased (its worker was killed) counts an attempt too. A batch that moves the cursor clears the count; five failed runs in a row end the job `failed` / `stalled` (`done` when every row had been processed). When nothing is runnable but an unfinished job sits behind a lease, the invocation **waits for that lease** (at most four sleeps, inside its time box) and claims the job, or hands the wait to its next invocation — a killed worker's job resumes about five minutes later without anyone asking. A status read of a job nobody worked on for a minute kicks the worker (once a minute per job), every submit kicks it, and the daily sweep kicks it and fails anything unfinished after three days (`expired`).
 
+## Console app
+
+The console app (`apps/console-app`) tells its user when an app **installed on that device** gets a new Android build (`docs/decisions.md` _Push notifications_ #10). It is the platform's own use of a topic: no push channel, no device token, no table.
+
+- **Prod only.** The console app is one binary that talks to either stage by server URL, and an app receives FCM from one Firebase project. It is registered — by hand, once — in the **first slot of the prod pool** (`p1`). Uploads to the prod catalog notify; an app signed in to dev gets nothing. The dev console still sends (one request to a topic of the dev pool's first project, which no install listens to).
+- **Topic: `yyt.catalog.{stage}.{appId}`** (`catalogAppTopic` in `@yyt/push`). The server derives it and hands it out as `topic` in every view of a catalog app: `GET /catalog/apps` (with and without `artifacts=summary`, the `access: "listing"` rows included), `/teams/{team}/catalog/apps`, `/projects/{prj}/catalog/apps`, `GET|POST|PATCH /catalog/apps/{app}`, and each row of `GET /catalog/listings` (anonymous readers too). A client never builds the name. The field is there whether or not the stage has a pool.
+- **Send.** When `POST /catalog/uploads/{id}/commit` commits an **Android** artifact, the console sends one message through the pool's first slot in natural label order, beside the Slack notice:
+
+  ```json
+  {
+    "topic": "yyt.catalog.prod.ca_…",
+    "priority": "high",
+    "ttl": "86400s",
+    "collapse_key": "ca_…",
+    "notification": {
+      "title": "<app name> | 앱 업데이트",
+      "body": "새 버전 <version>"
+    },
+    "data": {
+      "kind": "catalog",
+      "appId": "ca_…",
+      "version": "<version tag>",
+      "platform": "android"
+    }
+  }
+  ```
+
+  Other platforms (`ios`, `bin`, …) send nothing: the console app installs APKs only. A repeated commit of the same upload sends nothing. `collapse_key` is the catalog app id: several Android artifacts of one release, or two commits racing, reach a device that was offline as the newest notice only.
+
+- **Best effort, bounded.** The notice and the Slack hook run together and the commit waits at most 3 s for the notice (pool load and send included). No pool, an empty pool, a missing slot, an FCM refusal or a timeout never fails the upload; a failure is one `catalog push failed` warning with the slot label and a result code (`unavailable:server`, `auth:forbidden`, `budget`, …), no project id. One request per commit, never retried. It is not counted in `push_send_stats` and raises no alarm.
+- **What the message may say.** A topic is not private (_Broadcast_): whoever holds the console app's Firebase config — public, it is inside the APK — can subscribe to any topic name, and so can every team app registered in the same pool project. So the message carries the app's **name only while a `public` listing shows it** (no takedown); for every other app the title is the fixed `앱 업데이트` and the message is the app id and the version tag. Residual, accepted: someone who already knows a private app's id learns that a build was uploaded and its version string. Nothing in the message grants anything — the app re-reads the catalog with its own token, and a reader without access still gets 404.
+- **A topic message is not authenticated to the app.** Only the console, with the first project's key, sends to `yyt.catalog.*` (a team's broadcast is pinned to `yyt.push.{channelId}`). The app still treats a message as a hint: it opens a screen from its own list, never from the message.
+- **The app** (`apps/console-app/lib/push/`, README _Update notices_): subscribes to the `topic` of each catalog app installed on the device once a list has loaded, unsubscribes when the app is gone from the device or the list, and drops every topic when the profile changes or the user signs out. It follows only names shaped `yyt.catalog.<stage>.<appId>`. A topic is recorded as pending before each FCM call and forgotten only on a confirmed unsubscribe, because the SDK may complete a failed or timed-out request later; on a token refresh and every 7 days the wanted topics are subscribed again. It asks for the Android 13+ notification permission once, the first time there is an installed app to follow. A foreground message is a SnackBar; a tapped notification opens that app's detail screen. A message whose `data.kind` is not `catalog`, or whose topic is not one the current profile's server named for that app, is dropped.
+- **Build.** The Firebase config is not in the repo: no `google-services.json`, no Google Services Gradle plugin. A release is built with `--dart-define-from-file` pointing at a gitignored JSON (`apps/console-app/firebase.example.json` shows the keys); a build without it has push switched off and is otherwise identical.
+- **Operator.** Registering the console app by hand leaves that slot at `orphans: 1` in the digest (_Daily sweep and digest_): the display name must not start with `yyt-push:`. Its package name is not claimed in `push_apps`; nobody else can register it in that project because Firebase refuses a duplicate package.
+  - **The console app listens only in the first slot's project.** Removing `p1`'s parameter, or breaking its key, silences every install while sends still report success: the pool then serves the next slot first, the notice goes to that project's topic, and no console app is subscribed there. The only sign is a `catalog push slot skipped` warning per commit (`code: "slot_skipped"`, the left-out label and the one used; logged when the pool skipped a label that sorts before the slot used) next to the pool's own `push pool slot skipped` and the digest's `push:pool:skipped:{label}`. A parameter that was deleted outright is not "skipped" and logs nothing here — never delete or rename `p1` on prod.
+  - **The first notice after a cold start can be lost.** The 3 s budget covers the pool load (SSM), the OAuth token and the send; on a cold container that can run out (`code: "budget"`), and the notice is not retried. The next commit on the same container is well inside the budget.
+
 ## What push does not do
 
 - **iOS.** APNs needs each team's Apple key; out of scope.
@@ -572,11 +610,11 @@ Further digest warnings:
 
 The digest line itself carries the five channels with the most tokens, each slot's registration count and the previous day's send failures. Warnings are announced once per level, so an orphan count that does not change is mailed once.
 
-- **An app registered by hand is one orphan for good.** The console app is to be added to the first slot's project by hand; from then on that slot reports `orphans: 1`, announced once. It occupies one of Firebase's 30 and none of the platform's 20.
+- **An app registered by hand is one orphan for good.** The console app was added to the first slot's project of the prod pool by hand (2026-10-06, _Console app_); from then on that slot reports `orphans: 1`, announced once. It occupies one of Firebase's 30 and none of the platform's 20.
 - **The marker.** Every app the platform registers is named `yyt-push:{stage}:{channelId}`, and a stage adopts and removes only apps carrying its own `yyt-push:{stage}:` prefix; another stage's apps in the same project are counted as orphans and never touched. A hand-registered app must not use a display name starting with `yyt-push:`: it would be treated as the platform's, and removed by the reconciliation when no claim names it.
 - **Callers of `send` should retry on 503** (and 429), with a backoff: the function is capped at 2 concurrent invocations per stage, so a third send at the same moment is throttled and not queued. The exception is a 503 `push sender unavailable`, which is the operator's to fix and may have sent some messages already.
 - **Send counters.** Every send adds its counts to one row per channel and UTC day, best effort: a failed write is logged (`push send stats failed`) and the send still answers. Rows are kept 30 days. Each send also writes one `push send` line to the `pushSend` function's log group with counts only (`sent`, `noToken`, `failed`, per-outcome `outcomes`, `deleted`, `ms`).
-- Other lines worth a filter: `push sender refused` and `push slot missing` (state, error, by slot label), `push registration failed`, `push app removal failed` and `push rollback left a firebase app` (console), `push pool load failed`.
+- Other lines worth a filter: `catalog push slot skipped` and `catalog push failed` (console, warn; _Console app_), `push sender refused` and `push slot missing` (state, error, by slot label), `push registration failed`, `push app removal failed` and `push rollback left a firebase app` (console), `push pool load failed`.
 
 ### Campaign worker, storage and upkeep
 
@@ -615,5 +653,5 @@ Decided in `docs/decisions.md`, tracked in the machine-local backlog:
 
 - **Deferred-match hook** (_Match: deferred mode_ #5) — built 2026-10-06 on the match stack, not deployed: a deferred match channel naming a `pushChannelId` sends each affected member a high-priority data-only `{channelId, matchId, state}` (`services/match/README.md` _Deferred mode_). It reads `push_tokens` and deletes nothing: a token FCM reports unregistered is left to the next targeted send and the 60-day sweep. Its sends are not in `push_send_stats`; each writes one `match push` log line. Bound (_Match: deferred mode_ #7): `proposed`/`expired` messages to one user on one channel are at least 10 s apart (dropped, counted as `outcomes.spaced`, never queued), and a player who declined or let a window close cannot queue again for `acceptTimeoutSec`.
 - **Campaigns and broadcast** (#7b, #7c, #9) — the server side is built (_Campaigns_): not deployed, and neither the console SPA nor `yyt push template|job|broadcast` exists yet.
-- **Console app notifications** (#10): the app joining the first pool project and one topic per installed catalog app.
+- **Console app notifications** (#10) — built 2026-10-06 (_Console app_), not deployed, the app not released; receipt on a real device (background, foreground, cold-start tap) is unverified.
 - **Client libraries**: no `push` package exists in tslib, csharplib or flutterlib; an app calls the two token routes directly and subscribes to the channel's topic itself (_Broadcast_).

@@ -21,6 +21,8 @@ class UpdaterApp extends StatefulWidget {
     required this.authState,
     this.client,
     this.onFirstLoadDone,
+    this.onAppsLoaded,
+    this.reload,
   });
 
   final AuthState authState;
@@ -30,6 +32,12 @@ class UpdaterApp extends StatefulWidget {
 
   /// Called once, when the first list load has ended — loaded or failed.
   final VoidCallback? onFirstLoadDone;
+
+  /// Called after every successful load with the list and its install state.
+  final ValueChanged<List<AppInfo>>? onAppsLoaded;
+
+  /// Reloads the list when it notifies (an update notice arrived).
+  final Listenable? reload;
 
   @override
   State<UpdaterApp> createState() => _UpdaterAppState();
@@ -53,10 +61,12 @@ class _UpdaterAppState extends State<UpdaterApp> {
     checkUpdates();
     _checkPendingSelfUpdate();
     _searchController.addListener(_onSearchChanged);
+    widget.reload?.addListener(checkUpdates);
   }
 
   @override
   void dispose() {
+    widget.reload?.removeListener(checkUpdates);
     _debounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
@@ -85,6 +95,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
     final token = widget.authState.token;
     final client = widget.client;
     final onFirstLoadDone = widget.onFirstLoadDone;
+    final onAppsLoaded = widget.onAppsLoaded;
     try {
       final infos = await loadAppInfo(
         ({String? token}) => fetchRemoteApps(token: token, client: client),
@@ -98,6 +109,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
         apps = infos;
         errorMessage = null;
       });
+      onAppsLoaded?.call(infos);
     } on UnauthorizedException {
       // Keyed by the token this load used: the user may have switched
       // profiles meanwhile, and the revoked one is what must go.
@@ -156,14 +168,13 @@ class _UpdaterAppState extends State<UpdaterApp> {
         actions: [
           IconButton(
             tooltip: '새로고침',
-            icon:
-                _refreshing
-                    ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : const Icon(Icons.refresh_rounded),
+            icon: _refreshing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
             onPressed: _refreshing ? null : checkUpdates,
           ),
           ProfileMenuButton(authState: widget.authState),
@@ -230,12 +241,12 @@ class _UpdaterAppState extends State<UpdaterApp> {
         app.package: resolveAppInstallState(app.version, app.installedVersion),
     };
     final filteredApps = _filterApps(apps!);
-    final updateCount =
-        states.values.where((state) => state == AppInstallState.old).length;
-    final installedCount =
-        states.values
-            .where((state) => state != AppInstallState.notInstalled)
-            .length;
+    final updateCount = states.values
+        .where((state) => state == AppInstallState.old)
+        .length;
+    final installedCount = states.values
+        .where((state) => state != AppInstallState.notInstalled)
+        .length;
 
     return RefreshIndicator(
       onRefresh: checkUpdates,
@@ -256,13 +267,12 @@ class _UpdaterAppState extends State<UpdaterApp> {
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search_rounded),
               hintText: '앱 이름, 버전, 메모 검색',
-              suffixIcon:
-                  _searchQuery.isEmpty
-                      ? null
-                      : IconButton(
-                        onPressed: _searchController.clear,
-                        icon: const Icon(Icons.close_rounded),
-                      ),
+              suffixIcon: _searchQuery.isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: _searchController.clear,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
             ),
           ),
           const SizedBox(height: 10),
@@ -338,9 +348,15 @@ class _SummaryStrip extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Expanded(child: _MetricTile(label: '전체 앱', value: '$totalApps')),
-          Expanded(child: _MetricTile(label: '업데이트 필요', value: '$updateCount')),
-          Expanded(child: _MetricTile(label: '설치됨', value: '$installedCount')),
+          Expanded(
+            child: _MetricTile(label: '전체 앱', value: '$totalApps'),
+          ),
+          Expanded(
+            child: _MetricTile(label: '업데이트 필요', value: '$updateCount'),
+          ),
+          Expanded(
+            child: _MetricTile(label: '설치됨', value: '$installedCount'),
+          ),
         ],
       ),
     );

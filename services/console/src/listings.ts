@@ -17,6 +17,7 @@ import {
 } from "@yyt/console-db";
 import { defineRoute, json, type AnyRoute, type RouteContext } from "@yyt/http";
 import { z } from "zod";
+import { catalogTopicOf } from "./catalog-push.js";
 import { artifactView } from "./catalog.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import { listParams, searchQuery } from "./list-query.js";
@@ -108,6 +109,8 @@ export interface ListingRoutesOptions {
     target: string | null,
     detail?: unknown,
   ) => Promise<void>;
+  /** Names the per-app FCM topic (`catalog-push.ts`). */
+  stage: string;
 }
 
 /** What a listing's own routes (team and admin) show. */
@@ -137,6 +140,7 @@ export function createListingRoutes({
   writeSlot,
   clock,
   audit,
+  stage,
 }: ListingRoutesOptions): AnyRoute[] {
   const { projectResource, memberTeamIds } = access;
   const identityOf = (ctx: RouteContext) =>
@@ -267,6 +271,9 @@ export function createListingRoutes({
     return kept.map(({ row: r, ...builds }) => ({
       appId: r.appId,
       appName: r.appName,
+      // What the console app subscribes to once the app is installed: the
+      // only view of the app a reader without a seat ever gets.
+      topic: catalogTopicOf(stage, r.appId),
       teamName: l.teamName(r.teamId),
       title: r.title,
       summary: r.summary,

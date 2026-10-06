@@ -30,6 +30,8 @@ export {
   type SendResult,
 } from "./fcm.js";
 export {
+  catalogAppTopic,
+  CATALOG_TOPIC_PREFIX,
   isReservedPushDataKey,
   pushChannelTopic,
   pushDataFailure,

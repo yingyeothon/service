@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  catalogAppTopic,
+  CATALOG_TOPIC_PREFIX,
   isReservedPushDataKey,
   pushChannelTopic,
   pushDataFailure,
@@ -57,5 +59,22 @@ describe("push payload rules", () => {
     expect(pushChannelTopic("a-b_C9")).toBe("yyt.push.a-b_C9");
     for (const bad of ["", "a/b", "a b", "x".repeat(65), "ch.1", "%2f"])
       expect(() => pushChannelTopic(bad)).toThrow("invalid push channel id");
+  });
+
+  it("derives a catalog app's topic from the stage and the app id only", () => {
+    expect(catalogAppTopic("dev", "ca_0123abcd")).toBe(
+      `${CATALOG_TOPIC_PREFIX}dev.ca_0123abcd`,
+    );
+    expect(catalogAppTopic("prod", "ca_0123abcd")).toBe(
+      "yyt.catalog.prod.ca_0123abcd",
+    );
+    // Inside FCM's topic grammar, and distinct from a push channel's topic.
+    expect(catalogAppTopic("prod", "a-b_C9")).toMatch(/^[a-zA-Z0-9\-_.~%]+$/);
+    for (const bad of ["", "a/b", "a b", "x".repeat(65), "ca.1", "%2f"])
+      expect(() => catalogAppTopic("dev", bad)).toThrow(
+        "invalid catalog app id",
+      );
+    for (const bad of ["", "Dev", "a.b", "a/b", "x".repeat(33)])
+      expect(() => catalogAppTopic(bad, "ca_1")).toThrow("invalid stage");
   });
 });

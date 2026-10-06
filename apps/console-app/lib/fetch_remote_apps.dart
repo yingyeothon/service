@@ -50,10 +50,9 @@ Future<List<RemoteApp>> fetchRemoteApps({
     // A console older than the flattened summary ignores the query and sends
     // no `teams`: list per team, as app builds up to 1.5.3 do. Remove once
     // every stage runs the flattened summary (todo/43).
-    final appMaps =
-        body.containsKey('teams')
-            ? _withSeats(body['apps'], body['teams'])
-            : await _perTeamApps(get, base);
+    final appMaps = body.containsKey('teams')
+        ? _withSeats(body['apps'], body['teams'])
+        : await _perTeamApps(get, base);
     final results = [
       for (final appJson in appMaps)
         if (_toRemoteApp(appJson) case final app?) app,
@@ -177,14 +176,19 @@ Future<List<ArtifactInfo>> fetchAppArtifacts({
 
   final body =
       jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-  final artifacts =
-      (body['artifacts'] as List<dynamic>)
-          .map((item) => ArtifactInfo.fromJson(item as Map<String, dynamic>))
-          .toList();
+  final artifacts = (body['artifacts'] as List<dynamic>)
+      .map((item) => ArtifactInfo.fromJson(item as Map<String, dynamic>))
+      .toList();
 
   artifacts.sort((a, b) => b.createdAt.compareTo(a.createdAt));
   return artifacts;
 }
+
+/// The update-notice topic of an app or listing row, as the server named it.
+String? _topicOf(Map<String, dynamic> row) => switch (row['topic']) {
+  final String t when t.isNotEmpty => t,
+  _ => null,
+};
 
 /// Builds an app from the `artifacts=summary` view; apps without an Android
 /// artifact are skipped.
@@ -212,8 +216,8 @@ RemoteApp? _toRemoteApp(Map<String, dynamic> appJson) {
   // A listing row shows under the title its team chose, like the browse tab.
   final title =
       shared && listing is Map<String, dynamic> && listing['title'] is String
-          ? listing['title'] as String
-          : name;
+      ? listing['title'] as String
+      : name;
   return RemoteApp(
     id: id,
     name: title,
@@ -225,6 +229,7 @@ RemoteApp? _toRemoteApp(Map<String, dynamic> appJson) {
     // A listing row carries no project crumb, so `home` is null by
     // construction; the flag is what the card's badge reads.
     shared: shared,
+    topic: _topicOf(appJson),
   );
 }
 
@@ -276,11 +281,9 @@ RemoteApp? _toListedApp(Map<String, dynamic> row) {
   final latestJson = row['latestArtifact'];
   final latest = artifacts.cast<ArtifactInfo?>().firstWhere(
     (a) => a!.platform.toLowerCase() == 'android',
-    orElse:
-        () =>
-            latestJson is Map<String, dynamic>
-                ? ArtifactInfo.fromJson(latestJson)
-                : null,
+    orElse: () => latestJson is Map<String, dynamic>
+        ? ArtifactInfo.fromJson(latestJson)
+        : null,
   );
   if (latest == null || latest.platform.toLowerCase() != 'android') {
     return null;
@@ -291,12 +294,11 @@ RemoteApp? _toListedApp(Map<String, dynamic> row) {
   ];
   // The public row carries no `path`: the install checks key on the
   // application ids the artifacts declare, falling back to the app's name.
-  final package =
-      latest.applicationId.isNotEmpty
-          ? latest.applicationId
-          : applicationIds.isNotEmpty
-          ? applicationIds.first
-          : (row['appName'] as String?) ?? id;
+  final package = latest.applicationId.isNotEmpty
+      ? latest.applicationId
+      : applicationIds.isNotEmpty
+      ? applicationIds.first
+      : (row['appName'] as String?) ?? id;
   return RemoteApp(
     id: id,
     name: title,
@@ -305,5 +307,6 @@ RemoteApp? _toListedApp(Map<String, dynamic> row) {
     latestArtifact: latest,
     applicationIds: applicationIds,
     shared: true,
+    topic: _topicOf(row),
   );
 }

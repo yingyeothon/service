@@ -70,3 +70,22 @@ export function pushChannelTopic(channelId: string): string {
     throw new Error("invalid push channel id");
   return `${PUSH_TOPIC_PREFIX}${channelId}`;
 }
+
+/** The fixed part of {@link catalogAppTopic}. */
+export const CATALOG_TOPIC_PREFIX = "yyt.catalog.";
+const TOPIC_STAGE = /^[a-z0-9-]{1,32}$/;
+const TOPIC_APP_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * The FCM topic of a catalog app on one stage: what a committed artifact is
+ * announced on and what the console app subscribes to for an app installed on
+ * the device (`docs/push.md` *Console app*). The server derives it and hands
+ * it out in the app views; a client never builds it. The stage is part of the
+ * name because one build of the console app talks to either stage. Throws
+ * for a stage or an id no topic can be made of.
+ */
+export function catalogAppTopic(stage: string, appId: string): string {
+  if (!TOPIC_STAGE.test(stage)) throw new Error("invalid stage");
+  if (!TOPIC_APP_ID.test(appId)) throw new Error("invalid catalog app id");
+  return `${CATALOG_TOPIC_PREFIX}${stage}.${appId}`;
+}

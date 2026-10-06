@@ -43,6 +43,8 @@ import {
   type ResourceHistory,
   asUploadOwner,
 } from "./resources.js";
+import type { PushPool } from "@yyt/push";
+import { catalogTopicOf, notifyCatalogTopic } from "./catalog-push.js";
 import { notifyNewArtifact } from "./slack.js";
 import { createVersionLinker } from "./version-link.js";
 
@@ -275,6 +277,10 @@ export interface CatalogRoutesOptions {
   ) => Promise<void>;
   /** Injectable for tests; Slack webhooks only. */
   fetchFn?: typeof fetch;
+  /** Names the per-app FCM topic (`catalog-push.ts`). */
+  stage: string;
+  /** Omit on a stage without push: a commit then announces nothing. */
+  pushPool?: PushPool;
 }
 
 export function createCatalogRoutes({
@@ -290,6 +296,8 @@ export function createCatalogRoutes({
   logger,
   audit,
   fetchFn,
+  stage,
+  pushPool,
 }: CatalogRoutesOptions): AnyRoute[] {
   const { teamAccess, projectAccess, projectResource, memberSeats } = access;
   const versions = createVersionLinker({ team, clock, logger });
@@ -385,6 +393,12 @@ export function createCatalogRoutes({
 
   // ---- views ---------------------------------------------------------------
 
+  /**
+   * The FCM topic a new Android artifact is announced on. Every reader of an
+   * app view gets it, so the console app never builds the name.
+   */
+  const topicOf = (appId: string) => catalogTopicOf(stage, appId);
+
   async function appViews(rows: CatalogAppRow[]) {
     const crumb = await crumbs(rows);
     return rows.map((a) => ({
@@ -395,6 +409,7 @@ export function createCatalogRoutes({
       ...crumb(a),
       createdAt: a.createdAt,
       updatedAt: a.updatedAt,
+      topic: topicOf(a.id),
       // Slack settings and retention stay behind /settings (members only).
     }));
   }
@@ -514,6 +529,7 @@ export function createCatalogRoutes({
             ...crumb(a),
             createdAt: a.createdAt,
             updatedAt: a.updatedAt,
+            topic: topicOf(a.id),
             access: "team" as const,
           })),
           ...named.map((a) => ({
@@ -524,6 +540,7 @@ export function createCatalogRoutes({
             ...crumb(a),
             createdAt: a.createdAt,
             updatedAt: a.updatedAt,
+            topic: topicOf(a.id),
             access: a.access,
             listing: a.listing,
           })),
@@ -878,7 +895,19 @@ export function createCatalogRoutes({
           appId: app.id,
           ...(version ? { versionId: version.id } : {}),
         });
-        await notifyNewArtifact({ app, artifact: a, fetchFn, logger });
+        // Both notices are best effort and bounded; together, so the commit
+        // waits for the slower one, not for their sum.
+        await Promise.all([
+          notifyNewArtifact({ app, artifact: a, fetchFn, logger }),
+          notifyCatalogTopic({
+            pool: pushPool,
+            stage,
+            app,
+            artifact: a,
+            listings,
+            logger,
+          }),
+        ]);
         return { ...artifactView(a), version };
       },
     },

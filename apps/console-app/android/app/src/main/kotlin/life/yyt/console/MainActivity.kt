@@ -1,5 +1,7 @@
 package life.yyt.console
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
@@ -28,8 +30,22 @@ class MainActivity : FlutterActivity() {
     // must run after the user has switched to the app they paste into.
     private val clipHandler = Handler(Looper.getMainLooper())
 
+    // The channel AndroidManifest.xml names as FCM's default. Creating an
+    // existing channel is a no-op, and the user's own settings win.
+    private fun ensureUpdateChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        getSystemService(NotificationManager::class.java)?.createNotificationChannel(
+            NotificationChannel(
+                "catalog_updates",
+                "앱 업데이트",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply { description = "설치한 앱의 새 버전 알림" },
+        )
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        ensureUpdateChannel()
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler {
             call, result ->

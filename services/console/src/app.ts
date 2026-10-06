@@ -1415,6 +1415,7 @@ export function createConsoleApp({
     writeSlot: createWriteSlot({ kv, clock }),
     clock,
     audit,
+    stage,
   });
 
   const catalogRoutes = createCatalogRoutes({
@@ -1430,6 +1431,8 @@ export function createConsoleApp({
     logger,
     audit,
     fetchFn: slackFetch,
+    stage,
+    pushPool,
   });
 
   return createHttpHandler({

@@ -9,6 +9,8 @@ import 'package:yyt_console/auth/auth_diagnostics.dart';
 import 'package:yyt_console/auth/auth_state.dart';
 import 'package:yyt_console/login_screen.dart';
 import 'package:yyt_console/home_shell.dart';
+import 'package:yyt_console/push/firebase_push_messaging.dart';
+import 'package:yyt_console/push/push_service.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -34,7 +36,23 @@ void main() {
 
   runZonedGuarded(
     () {
-      runApp(const CatalogApp());
+      // Push is on only in a build that carries the Firebase defines
+      // (README *Build*); without them `connectFirebasePush` answers null
+      // and the service does nothing.
+      runApp(
+        CatalogApp(
+          push: PushService(
+            connect: connectFirebasePush,
+            // The type only: an error's text may quote a topic or the config.
+            onError: (scope, error, stackTrace) =>
+                AuthDiagnosticLogger.logUiFailure(
+                  scope: scope,
+                  error: StateError('${error.runtimeType}'),
+                  stackTrace: stackTrace,
+                ),
+          ),
+        ),
+      );
     },
     (Object error, StackTrace stackTrace) {
       AuthDiagnosticLogger.logUnhandled(
@@ -47,7 +65,10 @@ void main() {
 }
 
 class CatalogApp extends StatefulWidget {
-  const CatalogApp({super.key});
+  const CatalogApp({super.key, this.push});
+
+  /// Update notices; `null` in tests.
+  final PushService? push;
 
   @override
   State<CatalogApp> createState() => _CatalogAppState();
@@ -67,6 +88,10 @@ class _CatalogAppState extends State<CatalogApp> {
     _authState = AuthState();
     _authState.addListener(_onAuthStateChanged);
     _handoffs = AppHandoffQueue(_handleHandoff);
+    // Connects and reads the notification that started the app, if one did;
+    // nothing is asked of the user here (the permission prompt waits for an
+    // installed app, see PushService.sync).
+    widget.push?.start();
     // Web → app sign-in links (todo/49). The stream carries the launch link
     // too; the queue holds it until the saved profiles are loaded.
     _links = AppLinks().uriLinkStream.listen(
@@ -93,6 +118,7 @@ class _CatalogAppState extends State<CatalogApp> {
     _links?.cancel();
     _authState.removeListener(_onAuthStateChanged);
     _authState.dispose();
+    widget.push?.dispose();
     super.dispose();
   }
 
@@ -103,7 +129,11 @@ class _CatalogAppState extends State<CatalogApp> {
       _shownProfileId = _authState.activeProfile?.id;
       _navigatorKey.currentState?.popUntil((route) => route.isFirst);
     }
-    if (_authState.loaded) _handoffs.ready();
+    if (_authState.loaded) {
+      _handoffs.ready();
+      // Topics belong to a profile: signing out or switching drops them.
+      widget.push?.setScope(_authState.activeProfile?.id);
+    }
     setState(() {});
   }
 
@@ -204,16 +234,16 @@ class _CatalogAppState extends State<CatalogApp> {
       navigatorKey: _navigatorKey,
       scaffoldMessengerKey: _messengerKey,
       theme: buildCatalogTheme(),
-      home:
-          !_authState.loaded
-              ? const Scaffold(body: Center(child: CircularProgressIndicator()))
-              : _authState.isLoggedIn
-              // Keyed by profile so every screen reloads with the new token.
-              ? HomeShell(
-                key: ValueKey(_authState.activeProfile!.id),
-                authState: _authState,
-              )
-              : LoginScreen(authState: _authState),
+      home: !_authState.loaded
+          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : _authState.isLoggedIn
+          // Keyed by profile so every screen reloads with the new token.
+          ? HomeShell(
+              key: ValueKey(_authState.activeProfile!.id),
+              authState: _authState,
+              push: widget.push,
+            )
+          : LoginScreen(authState: _authState),
     );
   }
 }

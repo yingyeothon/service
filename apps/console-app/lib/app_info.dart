@@ -17,6 +17,9 @@ class AppInfo {
   /// Shared with this member through a listing, not through a team seat.
   final bool shared;
 
+  /// See [RemoteApp.topic].
+  final String? topic;
+
   AppInfo({
     required this.id,
     required this.name,
@@ -27,18 +30,17 @@ class AppInfo {
     required this.needsUpdate,
     this.home,
     this.shared = false,
+    this.topic,
   });
 
   String get version => latestArtifact.version;
   String get apkUrl => latestArtifact.url;
   Map<String, String> get tags => latestArtifact.tags;
-  String get releaseNote =>
-      latestArtifact.changelog.isNotEmpty
-          ? latestArtifact.changelog
-          : description;
+  String get releaseNote => latestArtifact.changelog.isNotEmpty
+      ? latestArtifact.changelog
+      : description;
   String get buildType => latestArtifact.buildType;
-  String get applicationId =>
-      latestArtifact.applicationId.isNotEmpty
-          ? latestArtifact.applicationId
-          : package;
+  String get applicationId => latestArtifact.applicationId.isNotEmpty
+      ? latestArtifact.applicationId
+      : package;
 }

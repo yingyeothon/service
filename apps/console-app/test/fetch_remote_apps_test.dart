@@ -341,10 +341,10 @@ void main() {
       // An older console, so the fallback's requests are covered too.
       return req.url.path == '/teams'
           ? _json({
-            'teams': [
-              {'id': 'team_a', 'name': 'a', 'role': 'owner'},
-            ],
-          })
+              'teams': [
+                {'id': 'team_a', 'name': 'a', 'role': 'owner'},
+              ],
+            })
           : _json({'apps': []});
     });
     final load = fetchRemoteApps(
@@ -355,5 +355,55 @@ void main() {
     AuthConfig.setServerUrl('two.example'); // a profile switch mid-flight
     expect(await load, isEmpty);
     expect(hosts, ['one.example', 'one.example', 'one.example']);
+  });
+
+  test('the update-notice topic is the server\'s, on both lists; an older '
+      'console sends none', () async {
+    final client = MockClient((req) async {
+      if (req.url.path == '/catalog/listings') {
+        return _json({
+          'listings': [
+            {
+              'appId': 'l1',
+              'title': 'Listed',
+              'topic': 'yyt.catalog.prod.l1',
+              'artifacts': [_artifact('la', '1.0.0', 5)],
+            },
+            {
+              'appId': 'l2',
+              'title': 'Old',
+              'artifacts': [_artifact('lb', '1.0.0', 4)],
+            },
+          ],
+        });
+      }
+      return _json({
+        'teams': [],
+        'apps': [
+          {
+            ..._app('one', 't1', latest: _artifact('a1', '1.0.0', 3)),
+            'topic': 'yyt.catalog.prod.one',
+          },
+          {
+            ..._app('two', 't1', latest: _artifact('a2', '1.0.0', 2)),
+            'topic': '',
+          },
+          {
+            ..._app('three', 't1', latest: _artifact('a3', '1.0.0', 1)),
+            'topic': 7,
+          },
+        ],
+      });
+    });
+    final apps = await fetchRemoteApps(token: 'tok', client: client);
+    expect(
+      {for (final a in apps) a.id: a.topic},
+      {'one': 'yyt.catalog.prod.one', 'two': null, 'three': null},
+    );
+    final listed = await fetchPublicListings(token: 'tok', client: client);
+    expect(
+      {for (final a in listed) a.id: a.topic},
+      {'l1': 'yyt.catalog.prod.l1', 'l2': null},
+    );
   });
 }

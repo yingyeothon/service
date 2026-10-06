@@ -18,10 +18,18 @@ import 'package:http/http.dart' as http;
 /// launch stays one request; refreshed by pull, the button, and after an
 /// install like the app tab.
 class BrowseScreen extends StatefulWidget {
-  const BrowseScreen({super.key, required this.authState, this.client});
+  const BrowseScreen({
+    super.key,
+    required this.authState,
+    this.client,
+    this.onAppsLoaded,
+  });
 
   final AuthState authState;
   final http.Client? client;
+
+  /// Called after every successful load with the list and its install state.
+  final ValueChanged<List<AppInfo>>? onAppsLoaded;
 
   @override
   State<BrowseScreen> createState() => _BrowseScreenState();
@@ -64,6 +72,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (mounted) setState(() => _refreshing = true);
     final token = widget.authState.token;
     final client = widget.client;
+    final onAppsLoaded = widget.onAppsLoaded;
     try {
       final infos = await loadAppInfo(
         ({String? token}) => fetchPublicListings(token: token, client: client),
@@ -75,6 +84,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
         apps = infos;
         errorMessage = null;
       });
+      onAppsLoaded?.call(infos);
     } on UnauthorizedException {
       if (mounted) await widget.authState.invalidate(token);
       return;
@@ -99,14 +109,13 @@ class _BrowseScreenState extends State<BrowseScreen> {
         actions: [
           IconButton(
             tooltip: '새로고침',
-            icon:
-                _refreshing
-                    ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : const Icon(Icons.refresh_rounded),
+            icon: _refreshing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
             onPressed: _refreshing ? null : load,
           ),
           ProfileMenuButton(authState: widget.authState),
@@ -174,13 +183,12 @@ class _BrowseScreenState extends State<BrowseScreen> {
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search_rounded),
               hintText: '제목, 요약, 버전 검색',
-              suffixIcon:
-                  _searchQuery.isEmpty
-                      ? null
-                      : IconButton(
-                        onPressed: _searchController.clear,
-                        icon: const Icon(Icons.close_rounded),
-                      ),
+              suffixIcon: _searchQuery.isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: _searchController.clear,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
             ),
           ),
           const SizedBox(height: 10),

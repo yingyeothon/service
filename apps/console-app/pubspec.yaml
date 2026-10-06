@@ -1,13 +1,15 @@
 name: yyt_console
 description: 잉여톤 — yyt console companion app (catalog installer, project issues, sites and channels)
 publish_to: "none"
-version: 1.6.2+28
+version: 1.6.3+29
 environment:
   sdk: ^3.12.0
 
 dependencies:
   app_links: ^7.2.1
   dio: ^5.8.0+1
+  firebase_core: ^4.15.0
+  firebase_messaging: ^16.7.0
   flutter:
     sdk: flutter
   flutter_secure_storage: ^9.0.0

@@ -355,6 +355,7 @@ describe("catalog listings — reading", () => {
     expect(rows[2]).toEqual({
       appId: pub.id,
       appName: "pub",
+      topic: `yyt.catalog.dev.${pub.id}`,
       teamName: "owner-team",
       title: "Public Game",
       summary: "100% fun",
@@ -588,6 +589,7 @@ describe("catalog listings — reading", () => {
     expect(apps[1]).toEqual({
       id: app.id,
       name: "shared",
+      topic: `yyt.catalog.dev.${app.id}`,
       path: "life.yyt.shared",
       description: null,
       teamId: owner.teamId,

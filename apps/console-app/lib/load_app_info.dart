@@ -27,6 +27,7 @@ Future<List<AppInfo>> loadAppInfo(
         needsUpdate: checkIfNeedToUpdate(remoteApp.version, installedVersion),
         home: remoteApp.home,
         shared: remoteApp.shared,
+        topic: remoteApp.topic,
       );
     }),
   );
