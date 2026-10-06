@@ -285,22 +285,23 @@ The rules that generalize, each earned from a specific failure:
 
 ## 6. Deliberate absences
 
-| Capability    | Absent                                                 | Status   | Why                                                                                    |
-| ------------- | ------------------------------------------------------ | -------- | -------------------------------------------------------------------------------------- |
-| Identity      | guest/device sign-in, account linking, refresh         | gap      | every player needs a GitHub or Google account through the team's own OAuth app         |
-| Storage       | queries, secondary indexes, joins                      | gap      | every store is primary-key addressed; console list search is an un-indexed scan        |
-| Storage       | change feeds / client listeners                        | gap      | nothing on a store notifies anyone; the relay is not attached to storage               |
-| Storage       | managed datastores (DynamoDB, RDS)                     | refused  | self-hosted MariaDB + Redis is the settled decision at this traffic                    |
-| Durability    | replication, a documented RPO in this repo             | gap      | one box; backup/restore lives in the private ops repo                                  |
-| Realtime      | horizontal scale, multi-region                         | deferred | one process; replication is not built **yet**, and the ceiling is not reached          |
-| Realtime      | message history / replay in `topic`                    | refused  | rooms are ≤ 20 min and stateless; a party or a document is the durable thing           |
-| Authority     | server-authoritative simulation, forgery-proof results | deferred | authority is the game's Lambda or the host client; quorum attestation is designed only |
-| Authorization | per-user or per-resource ACLs on project resources     | refused  | permission is team membership; the catalog's per-app grid was removed on purpose       |
-| Multi-tenancy | per-tenant quotas or isolation                         | deferred | shared Redis with `allkeys-lru`; the answer today is observation and revocation        |
-| Web hosting   | per-site origins (`{slug}.g.yyt.life`)                 | live     | every site gets one; the path URL keeps the shared origin and its documented rule      |
-| SDK           | engine plugins; a shipped purpose-shaped kit           | deferred | wire packages exist; the kit is designed, waves A–C unstarted in the client repos      |
-| Contest ops   | judging, scoring, prizes, submission deadlines         | gap      | a gallery records what was built; ranking it is not modelled                           |
-| Platform      | push notifications, email, payments                    | refused  | out of scope for a contest platform                                                    |
+| Capability    | Absent                                                 | Status   | Why                                                                                               |
+| ------------- | ------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------- |
+| Identity      | guest/device sign-in, account linking, refresh         | gap      | every player needs a GitHub or Google account through the team's own OAuth app                    |
+| Storage       | queries, secondary indexes, joins                      | gap      | every store is primary-key addressed; console list search is an un-indexed scan                   |
+| Storage       | change feeds / client listeners                        | gap      | nothing on a store notifies anyone; the relay is not attached to storage                          |
+| Storage       | managed datastores (DynamoDB, RDS)                     | refused  | self-hosted MariaDB + Redis is the settled decision at this traffic                               |
+| Durability    | replication, a documented RPO in this repo             | gap      | one box; backup/restore lives in the private ops repo                                             |
+| Realtime      | horizontal scale, multi-region                         | deferred | one process; replication is not built **yet**, and the ceiling is not reached                     |
+| Realtime      | message history / replay in `topic`                    | refused  | rooms are ≤ 20 min and stateless; a party or a document is the durable thing                      |
+| Authority     | server-authoritative simulation, forgery-proof results | deferred | authority is the game's Lambda or the host client; quorum attestation is designed only            |
+| Authorization | per-user or per-resource ACLs on project resources     | refused  | permission is team membership; the catalog's per-app grid was removed on purpose                  |
+| Multi-tenancy | per-tenant quotas or isolation                         | deferred | shared Redis with `allkeys-lru`; the answer today is observation and revocation                   |
+| Web hosting   | per-site origins (`{slug}.g.yyt.life`)                 | live     | every site gets one; the path URL keeps the shared origin and its documented rule                 |
+| SDK           | engine plugins; a shipped purpose-shaped kit           | deferred | wire packages exist; the kit is designed, waves A–C unstarted in the client repos                 |
+| Contest ops   | judging, scoring, prizes, submission deadlines         | gap      | a gallery records what was built; ranking it is not modelled                                      |
+| Platform      | email, payments                                        | refused  | out of scope for a contest platform                                                               |
+| Platform      | push notifications (Android)                           | deferred | decided 2026-10-06 (FCM through one platform-owned Firebase project), not built; iOS out of scope |
 
 ## 7. Ceilings
 
