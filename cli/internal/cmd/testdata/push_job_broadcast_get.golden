@@ -1,0 +1,14 @@
+id:       pj_03
+kind:     broadcast
+status:   done
+key:      k3
+template: -
+title:    "Hi {{name}}"
+body:     "Season {{season}} is open"
+data:     {"screen":"season"}
+options:  {"priority":"high"}
+author:   m_1
+created:  2025-08-24T01:46:40Z
+started:  2025-08-24T01:46:42Z
+finished: 2025-08-24T01:48:20Z
+projects: 1 accepted of 2

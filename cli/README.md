@@ -136,6 +136,14 @@ yyt push channel config <channel> [-o <file>|-] [--force]        # google-servic
 yyt push channel sender-key set <channel> --service-account <file|->   # the team's own Firebase project as a second sender
 yyt push channel sender-key rm <channel>                         # refused on a --sender team channel
 yyt push pool [ls] | close <slot> | open <slot>                  # platform admin: registration slots (p1, p2, …)
+yyt push template ls <channel> | get|rm <channel> <template>      # <template>: id (pt_…) or name; get prints the variables = CSV columns
+yyt push template create <channel> --name n [--title t] [--body b] [--data k=v …] [--file template.json]
+yyt push template update <channel> <template> [--name n] [--title t] [--body b] [--data k=v … | --clear-data] [--file template.json]
+yyt push job submit <channel> --template <id|name> --csv users.csv [--dry-run] [--wait [--timeout 30m]] \
+                    [--idempotency-key K] [--priority high|normal] [--ttl sec] [--collapse-key s]
+yyt push job ls <channel> [--limit n] [--cursor c] | get|cancel <channel> <job>
+yyt push job report <channel> <job> [-o <file>|-] [--force] [--url]   # default ./push-report-<job>.csv, kept unless --force
+yyt push broadcast <channel> (--template <id|name> | --title t [--body b] [--data k=v …]) [--idempotency-key K] [--wait]
 
 yyt events list | get <id>                                       # anonymous: waiting/opened/closed; members: + voting/cancelled + own drafts
 yyt events create <title> --place p [--place-url url] --hours N --vote-until <when> --option <when>... [--body @f]  # member draft (max 3)
@@ -284,13 +292,31 @@ Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing
 
 A push channel is a channel of kind `push`: `yyt push channel create|ls|get|update|extend|rotate|delete` are the `yyt channels` commands with the kind fixed (same routes, same output), and `yyt push channel` adds what only that kind has. It registers one Android application id with the platform's Firebase sender; `config` downloads the `google-services.json` the app embeds (`registered: true` in `get` says there is one). `create` and `rotate` print the `apiKey` once. `get` prints `apiBase`: the app registers its FCM token there with a player JWT of the channel's auth channel (`PUT|DELETE /push/{channel}/token`) and a game server sends with the apiKey (`POST /push/{channel}/send`).
 
-**There is no `yyt push send`.** Sending is authenticated by the channel apiKey, and the CLI holds a console token only; like the KV, leaderboard and document APIs, it prints the endpoint and leaves the call to the game server.
+**There is no `yyt push send`** (a targeted send). Sending is authenticated by the channel apiKey, and the CLI holds a console token only; like the KV, leaderboard and document APIs, it prints the endpoint and leaves the call to the game server.
 
 `--sender team` makes the team's own Firebase project the only sender (the service-account key file is required and the channel has no platform registration, so `config` refuses); `sender-key set` adds such a key to a platform channel as a second sender. The key is read from a file or stdin (`-`), is never printed, and no route returns it — `get` shows only `teamProject`.
 
 A `push_…` argument is always an id: a channel name may not have that shape. A refused create says what to do: `package_taken` (the application id belongs to another platform-sender channel on the stage; `--sender team` is not bound by it), `service_account` (which field of the key file failed), `push.appsPerTeam` (the limit request to make), `push_pool_full` / `push_not_configured` (a platform admin's `yyt push pool`), `firebase_unavailable` (retry). `update` with `--auth` answers `not_registered` while a platform registration is unfinished (`--name` alone is not refused), and `create`, `sender-key` and every `config` download take the per-member write slot (429: run it again).
 
 `yyt push pool close <slot>` on a slot the platform closed itself (`CLOSED BY auto:firebase-limit`) takes the closure over: it prints `closed`, and the daily sweep no longer reopens the slot.
+
+**Campaigns** (`docs/push.md` _Campaigns_). A template is a message with `{{variables}}` in its title, body and data values (`--file` takes `{name, title, body, data}`, e.g. an edited `template get --json`; flags beside it win; `--data` replaces the whole data set). `job submit` sends one template to the users a recipient CSV lists — a `userId` column plus one column per variable:
+
+```sh
+yyt push template create alerts --name welcome --title "Hi {{name}}" --body "Season 2 is open" --data screen=season
+yyt push job submit alerts --template welcome --csv users.csv --dry-run --wait   # counts only, sends nothing
+yyt push job submit alerts --template welcome --csv users.csv --wait             # exit 1 when the job failed
+yyt push job report alerts pj_…                                                  # userId,status,reason per row, for 7 days
+```
+
+- Before any request `submit` reads the CSV header and refuses a file without `userId`, with a column that reads like a device token (`token`, `fcm_token`, `registrationId`, …), with an invalid or repeated column name, or without a column for a variable of the template. Rows are judged by the job; the server's reader is the one that counts.
+- **Idempotency.** Without `--idempotency-key`, the key is `cli-<hash of the template id and the file's SHA-256>-send|-dry`, printed on stderr. Running the same command again answers the job it made the first time and submits nothing twice (stderr says `replayed`); that holds for a dry run too, whose numbers are then the earlier ones. To run the same file again pass a new `--idempotency-key`. The options are not part of the derived key: the same file with another `--priority`/`--ttl`/`--collapse-key` is refused (`idempotency_key_reused`). The job a key holds is read by the key (`GET …/push/jobs?idempotencyKey=`) and asked for again with that job's own upload, so nothing is uploaded; with a key you gave, the file is not compared with the earlier one. (The upload id is part of what a key stands for: the same file uploaded anew under a held key would be `idempotency_key_reused`, which is why the held upload is reused.)
+- A dry run and the job after it share one upload of the same file (a channel holds 20 pending uploads; one stops counting when its jobs have finished, and each is removed two days after it was made). An upload whose submit was refused before a job existed, or whose PUT failed, is deleted again (best effort). The upload URL is never printed.
+- `--wait` polls every 3 s until `done` or `failed`, prints progress on stderr and the job on stdout, and fails when the job failed; `--timeout` (30 m) ends the wait, not the job. `job get` on a failed job says why (`csv_invalid` with the line, `recipients_over_limit` with the limit request to make, …). A `job cancel` that arrives during the last batch stops nothing: the job ends `done`, shown as `done (finished before the cancel took effect)`.
+- `job ls` shows resolved users in `SENT` for a dry run. `job report --url` prints the five-minute download link instead of fetching it; nothing else prints it. A report row's `status` is `sent`, `no-token`, `unregistered`, `failed` (`unavailable` or `rejected`), `skipped` or, in a dry run, `resolved`. A skipped row's `reason` is `duplicate`, `missing-variable`, `invalid-user`, `too-large` or `invalid-value` (the row's value would put a control character into the message); the last three make up the job's `invalid` count.
+- `broadcast` sends one literal message (or a template without variables) to every app install subscribed to the channel's topic. **It does not ask for confirmation** — no `yyt` command prompts. Its derived key covers the message, the options and the UTC day, so the same broadcast run twice on one day is sent once; a new `--idempotency-key` sends it again. It is a job (`job get|ls`), counts against `push.jobsPerDay`, and has no dry run and no report. **A broadcast is not confidential**: anyone who holds the app can subscribe to the topic, so it carries no secret, no personal data and nothing that grants something (a code, a reward). Private content goes through a campaign (`job submit`), which addresses the users a CSV lists.
+- Limits are the channel's: `yyt limit list --channel <channel>` shows `push.recipientsPerJob` (rows per file) and `push.jobsPerDay` (jobs per UTC day; dry runs are not counted and have a daily cap of their own, which the refusal names). A refused submit prints the request to make, e.g. `yyt limit request push.jobsPerDay <value> --channel push_… --reason "…"`.
+- A game server runs the same job routes (not the templates) with the channel apiKey as Bearer under `/push-api/{channelId}/…` on the console API host. There a channel id that does not exist answers 401, like a wrong key (not 404), and an expired or disabled channel 410. The CLI holds a console token and has no apiKey mode.
 
 ### Limits
 
@@ -300,6 +326,7 @@ yyt limit request <limit> <value|unlimited|+N> [--bundle b | --channel c | --col
 yyt limit request kv.maxEntries 50000 --collection saves --reason "…"   # a collection's cap ceiling; its usage is the cap set now
                                                        # sizes in binary units (256MiB, 3GiB); channel.lifetime takes only `unlimited`
 yyt limit request team.projects +5 --reason "…"        # a `team.` limit is the team in context; +5 once every project slot is used
+yyt limit request push.jobsPerDay 30 --channel alerts --reason "…"   # push.jobsPerDay and push.recipientsPerJob need --channel (a push channel)
 yyt limit requests [--status s] [--cursor c] [--limit n]   # the team's requests, newest first
 yyt limit get <request-id>                             # reason, and once decided the grant and the admin's note
 yyt limit cancel <request-id>                          # the requester or a team owner; counts as a refusal for 7 days

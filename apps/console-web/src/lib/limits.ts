@@ -28,6 +28,8 @@ export const LIMIT_LABELS: Record<string, string> = {
   "channel.lifetime": "Lifetime",
   "team.projects": "Projects",
   "push.appsPerTeam": "Push apps",
+  "push.recipientsPerJob": "Recipients per job",
+  "push.jobsPerDay": "Jobs per day",
   "kv.maxEntries": "Entries cap",
   "kv.maxEntriesPerOwner": "Entries per owner cap",
   "kv.collections": "Collections",

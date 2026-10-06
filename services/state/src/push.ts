@@ -28,6 +28,10 @@ import {
   type RouteContext,
 } from "@yyt/http";
 import {
+  pushDataFailure,
+  pushPayloadBytes,
+  PUSH_DATA_KEYS_MAX,
+  PUSH_PAYLOAD_MAX_BYTES,
   SEND_MANY_BUDGET_MS,
   SEND_MANY_MAX,
   ServiceAccountError,
@@ -77,22 +81,15 @@ export const PUSH_CLEANUP_BUDGET_MS = 2_000;
 /** Below this much budget a chunk is not started. */
 const PUSH_SEND_MIN_MS = 100;
 
-/**
- * FCM refuses a message whose data and notification exceed 4096 bytes. It is
- * measured here as the UTF-8 length of the JSON of both, which counts the
- * quotes and braces too: stricter than FCM, never looser.
- */
-export const PUSH_PAYLOAD_MAX_BYTES = 4096;
-export const PUSH_DATA_KEYS_MAX = 64;
+// The payload rules live in `@yyt/push` (`payload.ts`), shared with the
+// console's campaigns so both refuse the same messages.
+export { PUSH_DATA_KEYS_MAX, PUSH_PAYLOAD_MAX_BYTES };
 export const PUSH_COLLAPSE_KEY_MAX = 64;
 /** FCM keeps a message for an offline device at most 28 days. */
 export const PUSH_TTL_MAX_SEC = 28 * 24 * 3600;
 
 /** A Firebase project id, as `google-services.json` spells it. */
 const FIREBASE_PROJECT = /^[a-z0-9][a-z0-9-]{0,63}$/;
-// Data keys FCM reserves; a message carrying one is refused per recipient.
-const RESERVED_DATA_KEY =
-  /^(?:from|notification|message_type|google\..*|gcm\..*)$/;
 
 export interface PushRoutesOptions {
   push: PushDb;
@@ -181,16 +178,15 @@ function parseSendBody(raw: unknown): SendBody {
 
   const message: SendBody["message"] = {};
   if (body.data !== undefined) {
-    if (!isRecord(body.data)) throw bad("data must be an object of strings");
-    const entries = Object.entries(body.data);
-    if (entries.length > PUSH_DATA_KEYS_MAX)
+    const failure = pushDataFailure(body.data);
+    if (failure === "not_object")
+      throw bad("data must be an object of strings");
+    if (failure === "too_many_keys")
       throw bad(`data holds at most ${PUSH_DATA_KEYS_MAX} keys`);
-    for (const [k, v] of entries) {
-      if (typeof v !== "string") throw bad("data values must be strings");
-      if (k === "" || RESERVED_DATA_KEY.test(k))
-        throw bad("data holds a key FCM reserves");
-    }
-    if (entries.length > 0) message.data = body.data as Record<string, string>;
+    if (failure === "not_string") throw bad("data values must be strings");
+    if (failure === "reserved_key") throw bad("data holds a key FCM reserves");
+    const data = body.data as Record<string, string>;
+    if (Object.keys(data).length > 0) message.data = data;
   }
   if (body.notification !== undefined) {
     const n = strictBody(body.notification, ["title", "body"]);
@@ -202,10 +198,7 @@ function parseSendBody(raw: unknown): SendBody {
   }
   if (!message.data && !message.notification)
     throw bad("data or notification is required");
-  const bytes = Buffer.byteLength(
-    JSON.stringify({ data: message.data, notification: message.notification }),
-  );
-  if (bytes > PUSH_PAYLOAD_MAX_BYTES)
+  if (pushPayloadBytes(message) > PUSH_PAYLOAD_MAX_BYTES)
     throw bad(
       `data and notification exceed ${PUSH_PAYLOAD_MAX_BYTES} bytes`,
       "push_payload_too_large",

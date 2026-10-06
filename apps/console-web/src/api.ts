@@ -91,7 +91,17 @@ import type {
   PosterUpload,
   Project,
   ProjectDetail,
+  PushBroadcastInput,
+  PushJob,
+  PushJobInput,
+  PushJobPage,
+  PushJobSubmitResult,
   PushPoolView,
+  PushReportLink,
+  PushTemplate,
+  PushTemplateInput,
+  PushTemplateList,
+  PushUploadGrant,
   RemoveMemberResult,
   Team,
   TeamDetail,
@@ -498,6 +508,51 @@ export function createApiClient({
       download(
         `/channels/${enc(id)}/google-services.json`,
         "google-services.json",
+      ),
+    // ---- push campaigns (docs/push.md *Campaigns*) -------------------------
+    pushTemplates: (id: string) =>
+      get<PushTemplateList>(`/channels/${enc(id)}/push/templates`),
+    createPushTemplate: (id: string, body: PushTemplateInput) =>
+      post<PushTemplate>(`/channels/${enc(id)}/push/templates`, body),
+    /** The message is checked as a whole; only the keys given change. */
+    updatePushTemplate: (
+      id: string,
+      templateId: string,
+      body: Partial<PushTemplateInput>,
+    ) =>
+      patch<PushTemplate>(
+        `/channels/${enc(id)}/push/templates/${enc(templateId)}`,
+        body,
+      ),
+    deletePushTemplate: (id: string, templateId: string) =>
+      del(`/channels/${enc(id)}/push/templates/${enc(templateId)}`),
+    /** Where a recipient CSV of exactly `size` bytes is PUT. */
+    createPushUpload: (id: string, size: number) =>
+      post<PushUploadGrant>(`/channels/${enc(id)}/push/uploads`, { size }),
+    /** 204; 404 when it is gone, 409 `upload_in_use` while an unfinished job reads it. */
+    deletePushUpload: (id: string, uploadId: string) =>
+      del(`/channels/${enc(id)}/push/uploads/${enc(uploadId)}`),
+    /** The browser PUT of the CSV; both signed headers go up verbatim. */
+    putPushUpload: (grant: PushUploadGrant, file: File) =>
+      putToGrant(grant, file, "recipient CSV"),
+    /** 202 for a new job, 200 `created: false` for a replayed key. */
+    submitPushJob: (id: string, body: PushJobInput) =>
+      post<PushJobSubmitResult>(`/channels/${enc(id)}/push/jobs`, body),
+    pushBroadcast: (id: string, body: PushBroadcastInput) =>
+      post<PushJobSubmitResult>(`/channels/${enc(id)}/push/broadcast`, body),
+    pushJobs: (id: string, cursor?: string) =>
+      get<PushJobPage>(`/channels/${enc(id)}/push/jobs${qs({ cursor })}`),
+    pushJob: (id: string, jobId: string) =>
+      get<{ job: PushJob }>(
+        `/channels/${enc(id)}/push/jobs/${enc(jobId)}`,
+      ).then((r) => r.job),
+    cancelPushJob: (id: string, jobId: string) =>
+      post<{ job: PushJob }>(
+        `/channels/${enc(id)}/push/jobs/${enc(jobId)}/cancel`,
+      ).then((r) => r.job),
+    pushJobReport: (id: string, jobId: string) =>
+      get<PushReportLink>(
+        `/channels/${enc(id)}/push/jobs/${enc(jobId)}/report`,
       ),
     /** Platform admin: the stage's pool of Firebase projects, by slot label. */
     pushPool: () => get<PushPoolView>("/admin/push/pool"),

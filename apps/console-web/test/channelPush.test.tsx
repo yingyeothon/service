@@ -21,6 +21,8 @@ const mockApi = {
   setChannelSenderKey: vi.fn(),
   removeChannelSenderKey: vi.fn(),
   channelGoogleServices: vi.fn(),
+  pushTemplates: vi.fn(),
+  pushJobs: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -95,6 +97,11 @@ describe("push channel page", () => {
     });
     vi.mocked(mockApi.channel).mockResolvedValue(CHANNEL);
     vi.mocked(mockApi.projectChannels).mockResolvedValue([]);
+    vi.mocked(mockApi.pushTemplates).mockResolvedValue({
+      templates: [],
+      max: 20,
+    });
+    vi.mocked(mockApi.pushJobs).mockResolvedValue({ jobs: [], next: null });
     vi.mocked(mockApi.limits).mockResolvedValue({
       scope: { kind: "channel", id: "push_9" },
       teamId: "team_1",

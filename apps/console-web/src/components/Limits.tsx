@@ -587,6 +587,7 @@ export function LimitsSection({
   return (
     <Section
       title="Limits"
+      id="limits"
       description={
         description ??
         "Every scope starts at the default. A team member may ask a platform admin for more, up to the ceiling."

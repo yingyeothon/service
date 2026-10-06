@@ -17,6 +17,7 @@ import {
   ServiceAccountError,
 } from "@yyt/push";
 import { z } from "zod";
+import { pushTopicOf } from "./push-send.js";
 
 /** Public base URLs of the sibling stacks, used to render callback/ws URLs. */
 export interface ServiceUrls {
@@ -931,6 +932,7 @@ export function channelView(
   }
   if (row.kind === "push") {
     const c = config as unknown as PushChannelConfig;
+    const topic = pushTopicOf(row.id);
     // The state stack serves `/push/*`; no base until it exists on the stage.
     const api = trim(urls.doc ?? "");
     return {
@@ -945,6 +947,9 @@ export function channelView(
       },
       // The platform registration exists, so its config can be downloaded.
       registered: typeof c.firebaseAppId === "string",
+      // The FCM topic a broadcast goes to; the app subscribes to it once its
+      // token is registered (`docs/push.md` *Broadcast*).
+      ...(topic === undefined ? {} : { topic }),
       // The team's own project, once a team key is registered; never the key.
       ...(typeof c.teamProject === "string"
         ? { teamProject: c.teamProject }

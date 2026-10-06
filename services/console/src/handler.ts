@@ -13,6 +13,7 @@ import {
   createSitesDb,
   createLimitsDb,
   createPushDb,
+  createPushJobsDb,
   createStateDb,
   mysqlOptionsFromEnv,
   type AssetsDb,
@@ -24,6 +25,7 @@ import {
   type LimitsDb,
   type ListingsDb,
   type PushDb,
+  type PushJobsDb,
   type SocialDb,
   type ShowsDb,
   type SitesDb,
@@ -67,6 +69,9 @@ import { runEventSweep } from "./events.js";
 import { runShowSweep } from "./shows.js";
 import { runLimitSweep } from "./limits.js";
 import { runPushSweep, type PushSweepResult } from "./push-sweep.js";
+import { runPushJobSweep, type PushJobSweepResult } from "./push-job-sweep.js";
+import { createS3PushJobStore, type PushJobStore } from "./push-job-store.js";
+import { runPushJobs } from "./push-worker.js";
 import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 import {
   createCloudWatchUsageMetrics,
@@ -124,6 +129,8 @@ interface Deps {
   social: SocialDb;
   /** Push registrations, pool slots and device tokens. */
   push: PushDb;
+  /** Push campaigns: templates, uploads, jobs. */
+  pushJobs: PushJobsDb;
   /** Console's own handle on the state service's table; the state stack owns the routes. */
   state: StateDb;
   kv: Kv;
@@ -171,6 +178,7 @@ function getDeps(): Promise<Deps> {
       leaderboards: createLeaderboardDb(raw),
       social: createSocialDb(raw),
       push: createPushDb(raw),
+      pushJobs: createPushJobsDb(raw),
       state: createStateDb(raw),
       kv: createRedisKv(redis),
       redisAcl: acl ? createRedisAclAdmin({ ...acl, logger }) : undefined,
@@ -236,6 +244,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     leaderboards,
     social,
     push,
+    pushJobs,
     state,
     kv,
     redisAcl,
@@ -325,6 +334,9 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     limits,
     push,
     pushPool,
+    pushJobs,
+    pushJobStore: pushJobStoreFromEnv(),
+    pushJobInvoke: pushJobInvokerFromEnv(),
     // Inside a request: one attempt, a short timeout (the cron's publisher
     // retries and waits longer, which a member's click should not).
     notify: alarmNotify({ attempts: 1, timeoutMs: 3000 }),
@@ -417,6 +429,67 @@ function siteInvokerFromEnv():
   };
 }
 
+/** Recipient CSVs and reports live in the private poster bucket. */
+function pushJobStoreFromEnv(): PushJobStore | undefined {
+  const bucket = process.env.POSTER_BUCKET ?? "";
+  return bucket ? createS3PushJobStore({ bucket }) : undefined;
+}
+
+/**
+ * Fire-and-forget invoke of `pushJob`. The event carries nothing: the worker
+ * takes whatever `push_jobs` holds, so every kick is the same kick.
+ */
+function pushJobInvokerFromEnv(): (() => Promise<void>) | undefined {
+  const fn = process.env.PUSH_JOB_FUNCTION ?? "";
+  if (!fn) return undefined;
+  return async () => {
+    lambda ??= new LambdaClient({});
+    await lambda.send(
+      new InvokeCommand({
+        FunctionName: fn,
+        InvocationType: "Event",
+        Payload: Buffer.from("{}"),
+      }),
+    );
+  };
+}
+
+/**
+ * The campaign worker: drains `push_jobs` for one time box, then invokes
+ * itself while runnable work is left (`push-worker.ts`). It throws only for
+ * an infrastructure error, which Lambda's own retry of the event answers;
+ * the job it held was given back first.
+ */
+export const pushJob = async (
+  _event: unknown,
+  context?: { getRemainingTimeInMillis?: () => number },
+): Promise<void> => {
+  const store = pushJobStoreFromEnv();
+  if (!store) {
+    logger.error("push job worker invoked without a bucket");
+    return;
+  }
+  const { db, limits, push, pushJobs } = await getDeps();
+  const run = await runPushJobs({
+    jobs: pushJobs,
+    push,
+    channels: db,
+    limits,
+    pool: pushPoolFromEnv(),
+    store,
+    logger,
+    remainingMs: context?.getRemainingTimeInMillis?.bind(context),
+  });
+  logger.info("push job worker", { ...run });
+  if (!run.more) return;
+  const invoke = pushJobInvokerFromEnv();
+  if (!invoke) {
+    logger.error("push job worker cannot continue: PUSH_JOB_FUNCTION is empty");
+    return;
+  }
+  await invoke();
+};
+
 /**
  * Async worker: one deploy per event. Never throws (`runSiteDeploy` ends every
  * path in a status write); a malformed event is logged and dropped, since a
@@ -473,6 +546,7 @@ export const expire = async (): Promise<void> => {
     leaderboards,
     social,
     push,
+    pushJobs,
     state,
     redisAcl,
     kv,
@@ -493,6 +567,7 @@ export const expire = async (): Promise<void> => {
   let purgedChannels: { id: string }[] = [];
   /** What the push sweep found, for the digest that follows it. */
   let pushSweep: PushSweepResult | undefined;
+  let pushJobSweep: PushJobSweepResult | undefined;
   for (const step of [
     async () => {
       const { deleted, purged } = await runExpire({ db, state, team, logger });
@@ -557,6 +632,18 @@ export const expire = async (): Promise<void> => {
         logger,
       });
     },
+    // Campaign rows and objects of dead channels, uploads and jobs past
+    // their retention, and the kick for jobs no worker is on.
+    async () => {
+      pushJobSweep = await runPushJobSweep({
+        jobs: pushJobs,
+        store: pushJobStoreFromEnv(),
+        invoke: pushJobInvokerFromEnv(),
+        deleted: deletedPushChannels,
+        purged: purgedChannels,
+        logger,
+      });
+    },
     // Redis has no per-account memory quota, so this is the whole defence:
     // see who is growing before `allkeys-lru` starts evicting someone else.
     // The digest turns that report plus the S3/CloudFront metrics into one
@@ -571,7 +658,12 @@ export const expire = async (): Promise<void> => {
         kvstore,
         leaderboards,
         social,
-        push: { db: push, sweep: pushSweep },
+        push: {
+          db: push,
+          sweep: pushSweep,
+          jobs: pushJobs,
+          jobSweep: pushJobSweep,
+        },
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
         distributions: cdnDistributionsFromEnv(process.env, {

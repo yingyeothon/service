@@ -13,6 +13,7 @@ import {
   createStateDb,
   createSocialDb,
   createPushDb,
+  createPushJobsDb,
   createLimitsDb,
   createListingsDb,
   contractPreflight,
@@ -46,6 +47,7 @@ import {
   type PushHarness,
 } from "./push.test.js";
 import { pushTokenHash } from "../src/push.js";
+import { pushJobsContract, type PushJobsHarness } from "./pushJobs.test.js";
 import type { PrismaClient } from "../src/prisma.js";
 import { KV_COLLECTION, limitsContract } from "./limits.test.js";
 import {
@@ -521,6 +523,172 @@ describe.skipIf(!dockerAvailable())(
         // No parent rows to seed: `social_profiles` and `social_relations`
         // carry no foreign key, deliberately (`m0019_social`).
         return createSocialDb(db.client);
+      });
+    });
+
+    describe("push jobs contract", () => {
+      let peer: PrismaClient | undefined;
+      const harness = async (): Promise<PushJobsHarness> => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        peer ??= db.connect();
+        const repo = createConsoleDb(db.client);
+        return {
+          db: createPushJobsDb(db.client),
+          peer: createPushJobsDb(peer),
+          seedChannel: async (id, kind = "push") => {
+            await repo.insertChannel({
+              id,
+              kind,
+              ownerId: "m1",
+              teamId: "team_1",
+              projectId: "prj_1",
+              name: id,
+              config: {},
+              secret: {},
+              createdAt: 1,
+              expiresAt: 2_000_000,
+            });
+          },
+          deleteChannel: async (id) => {
+            await repo.deleteChannel(id, 1_000_000);
+          },
+          purgeChannel: async (id) => {
+            await db.client.channels.delete({ where: { id } });
+          },
+        };
+      };
+      pushJobsContract(harness);
+
+      const insertJob = (o: {
+        kind?: string;
+        status?: string;
+        uploadId?: string | null;
+      }) =>
+        db.client.$executeRaw`
+          INSERT INTO push_jobs
+            (id, channel_id, kind, dry_run, idempotency_key, params_hash,
+             title, body, data_json, options_json, upload_id, day, status,
+             cancel_requested, cursor_row, resolved, sent, no_token,
+             unregistered, failed, duplicates, missing, invalid, attempts,
+             lease_until, author, created_at, updated_at)
+          VALUES ('pj_x', 'push_1', ${o.kind ?? "campaign"}, 0, 'k', 'h',
+             't', '', '{}', '{}',
+             ${o.uploadId === undefined ? "pu_1" : o.uploadId}, 1,
+             ${o.status ?? "queued"}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+             'm1', 1, 1)`;
+
+      it("holds `kind`, `status` and the upload rule with CHECK constraints", async () => {
+        await harness();
+        await expect(insertJob({ kind: "other" })).rejects.toThrow();
+        await expect(insertJob({ status: "canceled" })).rejects.toThrow();
+        // A campaign without an upload, and a broadcast with one.
+        await expect(insertJob({ uploadId: null })).rejects.toThrow();
+        await expect(insertJob({ kind: "broadcast" })).rejects.toThrow();
+        // No foreign key: the row needs no channel, upload or template.
+        expect(await insertJob({})).toBe(1);
+        await db.client.push_jobs.deleteMany({});
+        expect(await insertJob({ kind: "broadcast", uploadId: null })).toBe(1);
+      });
+
+      it("keeps every text column of the three tables on the default collation", async () => {
+        const cols = await db.client.$queryRaw<
+          { name: string; collation: string }[]
+        >`
+          select concat(table_name, '.', column_name) as name,
+                 collation_name as collation
+          from information_schema.columns
+          where table_schema = database()
+            and table_name in ('push_templates', 'push_uploads', 'push_jobs')
+            and collation_name is not null`;
+        expect(cols.length).toBeGreaterThan(10);
+        expect(
+          cols.filter((c) => c.collation !== "utf8mb4_unicode_ci"),
+        ).toEqual([]);
+      });
+
+      it("reads the queue, the daily count and the sweeps through their indexes at 40,000 rows", async () => {
+        await resetTestDb(db.client);
+        // 40 channels x 1,000 jobs over 50 days; one in ten unfinished.
+        await db.client.$executeRawUnsafe(
+          `insert into push_jobs
+             (id, channel_id, kind, dry_run, idempotency_key, params_hash,
+              title, body, data_json, options_json, upload_id, day, status,
+              cancel_requested, cursor_row, resolved, sent, no_token,
+              unregistered, failed, duplicates, missing, invalid, attempts,
+              lease_until, author, created_at, finished_at, updated_at)
+           select concat('pj_', seq), concat('push_', seq mod 40), 'campaign',
+                  seq mod 7 = 0, concat('k', seq), 'h', 't', '', '{}', '{}',
+                  concat('pu_', seq), seq mod 50,
+                  if(seq mod 10 = 0, 'queued', 'done'),
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  if(seq mod 20 = 0, 5000000, 0), 'm1', seq,
+                  if(seq mod 10 = 0, null, seq), seq
+           from seq_0_to_39999`,
+        );
+        await db.client.$executeRawUnsafe("analyze table push_jobs");
+        const plan = async (sql: string) =>
+          (
+            await db.client.$queryRawUnsafe<
+              {
+                type: string;
+                key: string | null;
+                rows: bigint | number | null;
+              }[]
+            >(`explain ${sql}`)
+          ).map((r) => ({
+            type: r.type,
+            key: r.key,
+            rows: Number(r.rows ?? 0),
+          }));
+        const list = await plan(
+          `select id from push_jobs where channel_id = 'push_3'
+           order by created_at desc, id desc limit 21`,
+        );
+        expect(list[0]!.key).toBe("push_jobs_channel");
+        const count = await plan(
+          `select count(*) from push_jobs
+           where day = 7 and channel_id = 'push_3' and dry_run = 0`,
+        );
+        expect(count[0]!.key).toBe("push_jobs_day");
+        expect(count[0]!.type).toBe("ref");
+        expect(count[0]!.rows).toBeLessThan(500);
+        const queue = await plan(
+          `select id from push_jobs
+           where status in ('queued', 'running') and lease_until <= 100
+           order by lease_until, created_at, id limit 1`,
+        );
+        expect(queue[0]!.key).toBe("push_jobs_runnable");
+        expect(queue[0]!.type).toBe("range");
+        const retention = await plan(
+          "delete from push_jobs where finished_at < 100 limit 500",
+        );
+        expect(retention[0]!.key).toBe("push_jobs_finished");
+        const key = await plan(
+          `select id from push_jobs
+           where channel_id = 'push_3' and idempotency_key = 'k3'`,
+        );
+        expect(key[0]!.key).toBe("push_jobs_idem");
+        const busy = await plan(
+          `select upload_id from push_jobs
+           where upload_id in ('pu_1', 'pu_2') and status in ('queued', 'running')`,
+        );
+        expect(busy[0]!.key).toBe("push_jobs_upload");
+        // The repository agrees with the plans it was written for.
+        const repo = createPushJobsDb(db.client);
+        expect(await repo.countJobsOfDay("push_7", 7)).toBe(
+          // seq = 7 mod 40 and 7 mod 50 -> seq = 7 mod 200; dry runs out.
+          Array.from({ length: 200 }, (_, i) => 7 + 200 * i).filter(
+            (seq) => seq % 7 !== 0,
+          ).length,
+        );
+        const claim = await repo.claimJob({
+          owner: "w",
+          now: 100,
+          leaseSec: 60,
+        });
+        // Runnable: `queued` with `lease_until` 0, i.e. seq mod 20 = 10.
+        expect(claim?.job.id).toBe("pj_10");
       });
     });
 

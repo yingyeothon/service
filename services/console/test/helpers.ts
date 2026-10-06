@@ -11,6 +11,7 @@ import {
   createMemoryLeaderboardDb,
   createMemoryLimitsDb,
   createMemoryPushDb,
+  createMemoryPushJobsDb,
   createMemorySocialDb,
   createMemorySitesDb,
   createMemoryTeamDb,
@@ -24,6 +25,7 @@ import { createConsoleApp, type ConsoleAppOptions } from "../src/app.js";
 import { createGithubLogin } from "../src/github.js";
 import { createMemoryArtifactStore } from "../src/artifact-store.js";
 import { createMemoryPosterStore } from "../src/poster.js";
+import { createMemoryPushJobStore } from "../src/push-job-store.js";
 import { createMemorySiteStore } from "../src/site-store.js";
 import { historyId } from "../src/team.js";
 import { SESSION_COOKIE } from "../src/session.js";
@@ -77,10 +79,18 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
       for (const id of ids) limits.scopeDeleted({ kind: "channel", id });
       // `push_apps_channel_fk` cascades too.
       push.channelsPurged(ids);
+      pushJobs.channelsPurged(ids);
     },
   });
   // A claim reads its channel's row for the team, like the real transaction.
   const push = createMemoryPushDb({ channel: (id) => db.channels.get(id) });
+  const pushJobs = createMemoryPushJobsDb({
+    channel: (id) => db.channels.get(id),
+  });
+  /** Recipient CSVs and reports of push campaigns. */
+  const pushStore = createMemoryPushJobStore();
+  /** One entry per kick of the campaign worker. */
+  const pushKicks: number[] = [];
   /** One fake Firebase project (`p1`); `over.pushPool` replaces the pool. */
   const fcm = createFakePushPool();
   // The `createdBy`/`login` sorts join `members.github_login` on the real DB.
@@ -211,6 +221,11 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     limits,
     push,
     pushPool: fcm.pool,
+    pushJobs,
+    pushJobStore: pushStore.store,
+    pushJobInvoke: async () => {
+      pushKicks.push(clock.now());
+    },
     notify: async (subject, message) => {
       mails.push([subject, message]);
     },
@@ -345,6 +360,9 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     social,
     limits,
     push,
+    pushJobs,
+    pushStore,
+    pushKicks,
     fcm,
     mails,
     teamDb,

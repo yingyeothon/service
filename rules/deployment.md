@@ -174,3 +174,10 @@
 - The match deploy creates a second custom domain, **`match-api.yyt.life` / `match-api-dev.yyt.life`** (HTTP API; `customDomain.http`, `autoDomain`), beside the WebSocket one, plus the `http` function (3 containers, taken from `ws` and `authorizer`: the stack stays at 18). The dev debug routes move to that host. Console reads the base from its `matchApi` URL setting; empty means a deferred channel's view omits `ticketUrl`.
 - The match account needs `SELECT` on `push_tokens` for the push hook (owner grant); without it pushes are skipped and matches are unaffected.
 - **Rollback precondition.** Before rolling match back past this bundle, disable (or delete) every deferred channel: the older bundle treats them as live. Their Redis state (`dq:`, `du:`, `dp:`, `dps:`, `dr:`, `dactive`, `dcd:`, `dpn:`, `dkick:`) expires on its own. Rolling console back alone needs nothing: the rows keep their `mode`, and the older console's PATCH would drop it — do not edit a deferred channel through an older console.
+
+## Push campaigns rollout (`todo/56` P2, 2026-10-06)
+
+- Per stage: **`deploy.sh console <stage>` and nothing else.** It applies `m0029_push_campaigns` (three new tables, pure expand), adds the `pushJob` function, cuts `api` from 10 to 9 reserved containers and adds two lifecycle rules to the stack's private bucket. No grant (the tables are console's alone), no other stack, no script for the bucket.
+- Then `scripts/smoke/push-campaign.mjs <docBase> <debugKey> <authBase> <consoleBase>` on dev. It needs the push foundation deployed (the P0 order above) and uses the state stack only to register two made-up tokens; without the state grant it runs in "grant missing" mode and expects `no-token` instead of `unregistered`.
+- **Rollback** past `m0029_push_campaigns` needs no data step: no older bundle reads the tables. Jobs left `queued` never run; uploads and reports expire by lifecycle.
+- First deploy checks: the `pushJob` function exists with `ReservedConcurrentExecutions` 1 and `RecursiveLoop` `Allow`; `api` shows 9; `aws s3api get-bucket-lifecycle-configuration` on the stack's private bucket lists `push-uploads` and `push-reports`.

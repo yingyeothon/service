@@ -4,6 +4,7 @@ import {
   isNoExpiry,
   nowSec,
   ulid,
+  type ChannelKind,
   type Clock,
   type Logger,
 } from "@yyt/core";
@@ -14,6 +15,7 @@ import {
   KV_MAX_ENTRIES_PER_OWNER_HARD,
   LIMIT_REQUEST_STATUSES,
   LIMIT_SCOPE_KINDS,
+  pushDay,
   type AssetsDb,
   type KvStoreDb,
   type ChannelLifetimeWrite,
@@ -24,6 +26,7 @@ import {
   type LimitScopeKind,
   type LimitsDb,
   type PushDb,
+  type PushJobsDb,
   type TeamDb,
   type TeamHistoryAction,
 } from "@yyt/console-db";
@@ -67,6 +70,11 @@ export interface LimitSpec {
    * requests* #2). Absent: any value above the effective one, up to hard.
    */
   step?: number;
+  /**
+   * A channel-scope key that exists for one kind of channel only: it is
+   * listed, requested and granted for no other kind. Absent: every channel.
+   */
+  channelKind?: ChannelKind;
 }
 
 /** docs/decisions.md *Limit requests* #1, verbatim. */
@@ -161,6 +169,26 @@ export const LIMITS = {
     soft: 2,
     hard: 5,
     step: 1,
+  },
+  // Rows one campaign job may read from its CSV (docs/decisions.md *Push
+  // notifications* #9). Counted by the worker's first pass, before anything
+  // is sent: a longer file fails the job (`recipients_over_limit`).
+  "push.recipientsPerJob": {
+    scope: "channel",
+    channelKind: "push",
+    unit: "count",
+    soft: 10_000,
+    hard: 100_000,
+  },
+  // Campaign and broadcast jobs a push channel may submit per UTC day; a dry
+  // run does not count. Claimed inside `PushJobsDb.submitJob`, under the
+  // channel row's lock.
+  "push.jobsPerDay": {
+    scope: "channel",
+    channelKind: "push",
+    unit: "count",
+    soft: 10,
+    hard: 100,
   },
   // Collections per project, the former `KV_COLLECTIONS_PER_PROJECT`.
   "kv.collections": {
@@ -355,6 +383,8 @@ export interface LimitRoutesOptions {
   >;
   /** The usage of `push.appsPerTeam`; absent on a stage without push. */
   push?: Pick<PushDb, "countTeamApps">;
+  /** The usage of `push.jobsPerDay`; absent on a stage without push. */
+  pushJobs?: Pick<PushJobsDb, "countJobsOfDay">;
   access: Pick<
     TeamAccessHelpers,
     "teamAccess" | "projectAccess" | "projectResource"
@@ -410,6 +440,7 @@ export function createLimitRoutes({
   assets,
   kvstore,
   push,
+  pushJobs,
   access,
   history,
   kv,
@@ -433,7 +464,13 @@ export function createLimitRoutes({
     ctx: RouteContext,
     scope: LimitScope,
     write: boolean,
-  ): Promise<TeamAccess & { scope: LimitScope; expiresAt?: number }> {
+  ): Promise<
+    TeamAccess & {
+      scope: LimitScope;
+      expiresAt?: number;
+      channelKind?: ChannelKind;
+    }
+  > {
     const opts = write ? { secret: true } : {};
     // The id is rebuilt from the row: ids sit on a case-insensitive
     // collation, so `AB_1…` finds `ab_1…`, and what is stored, audited and
@@ -465,6 +502,7 @@ export function createLimitRoutes({
           ...a,
           scope: { kind: "channel", id: a.row.id },
           expiresAt: a.row.expiresAt,
+          channelKind: a.row.kind,
         };
       }
       case "collection": {
@@ -482,8 +520,18 @@ export function createLimitRoutes({
   /** Current usage per key, for the limits view; `null` where nothing is counted. */
   async function usageOf(
     scope: LimitScope,
-    a: TeamAccess,
+    a: TeamAccess & { channelKind?: ChannelKind },
   ): Promise<Partial<Record<LimitKey, number>>> {
+    if (scope.kind === "channel")
+      // `push.recipientsPerJob` bounds one job, so it has no running usage.
+      return a.channelKind === "push" && pushJobs
+        ? {
+            "push.jobsPerDay": await pushJobs.countJobsOfDay(
+              scope.id,
+              pushDay(nowSec(clock)),
+            ),
+          }
+        : {};
     if (scope.kind === "team")
       return {
         "team.projects": await team.countProjects(a.team.id),
@@ -709,9 +757,11 @@ export function createLimitRoutes({
   }
 
   /** The scope row for an admin write: its team, and whether a channel is alive. */
-  async function scopeRow(
-    scope: LimitScope,
-  ): Promise<{ teamId: string; scope: LimitScope }> {
+  async function scopeRow(scope: LimitScope): Promise<{
+    teamId: string;
+    scope: LimitScope;
+    channelKind?: ChannelKind;
+  }> {
     const gone = () => new AppError("not_found", `${scope.kind} not found`);
     if (scope.kind === "team") {
       const t = await team.findTeam(scope.id);
@@ -736,7 +786,11 @@ export function createLimitRoutes({
     }
     const c = await db.findChannelRow(scope.id);
     if (!c?.teamId) throw gone();
-    return { teamId: c.teamId, scope: { kind: "channel", id: c.id } };
+    return {
+      teamId: c.teamId,
+      scope: { kind: "channel", id: c.id },
+      channelKind: c.kind,
+    };
   }
 
   /** The channel write a `channel.lifetime` grant makes (#7): no expiry, revived. */
@@ -744,6 +798,20 @@ export function createLimitRoutes({
     expiresAt: CHANNEL_NO_EXPIRY_SEC,
     revive: true,
   };
+
+  /** Whether `key` exists for a scope of this channel kind (any other scope: yes). */
+  const appliesTo = (key: LimitKey, channelKind?: ChannelKind): boolean => {
+    const spec: LimitSpec = LIMITS[key];
+    return spec.channelKind === undefined || spec.channelKind === channelKind;
+  };
+  function requireKind(key: LimitKey, channelKind?: ChannelKind): void {
+    const spec: LimitSpec = LIMITS[key];
+    if (!appliesTo(key, channelKind))
+      throw new AppError(
+        "bad_request",
+        `${key} is a limit of a ${spec.channelKind} channel`,
+      );
+  }
 
   function keyFor(scope: LimitScope, raw: string): LimitKey {
     if (!isLimitKey(raw) || LIMITS[raw].scope !== scope.kind)
@@ -777,26 +845,27 @@ export function createLimitRoutes({
           scope: { ...scope },
           teamId: a.team.id,
           ...(a.expiresAt !== undefined ? { expiresAt: a.expiresAt } : {}),
-          limits: LIMIT_KEYS.filter((k) => LIMITS[k].scope === scope.kind).map(
-            (key) => {
-              const o = overrides.find((x) => x.key === key);
-              const effective = effectiveLimit(key, o);
-              const used = usage[key] ?? null;
-              const spec: LimitSpec = LIMITS[key];
-              return {
-                key,
-                unit: spec.unit,
-                soft: spec.soft,
-                hard: spec.hard,
-                effective,
-                usage: used,
-                // A stepped key: the only value a request may carry now.
-                step: spec.step ?? null,
-                next: nextStepValue(key, effective, used),
-                override: o ? overrideView(o, loginOf(o)) : null,
-              };
-            },
-          ),
+          limits: LIMIT_KEYS.filter(
+            (k) =>
+              LIMITS[k].scope === scope.kind && appliesTo(k, a.channelKind),
+          ).map((key) => {
+            const o = overrides.find((x) => x.key === key);
+            const effective = effectiveLimit(key, o);
+            const used = usage[key] ?? null;
+            const spec: LimitSpec = LIMITS[key];
+            return {
+              key,
+              unit: spec.unit,
+              soft: spec.soft,
+              hard: spec.hard,
+              effective,
+              usage: used,
+              // A stepped key: the only value a request may carry now.
+              step: spec.step ?? null,
+              next: nextStepValue(key, effective, used),
+              override: o ? overrideView(o, loginOf(o)) : null,
+            };
+          }),
           pending: await requestViews(pending.rows),
         });
       },
@@ -811,6 +880,7 @@ export function createLimitRoutes({
         const a = await scopeAccess(ctx, ctx.body.scope, true);
         const scope = a.scope;
         const key = keyFor(scope, ctx.body.key);
+        requireKind(key, a.channelKind);
         checkLimitValue(key, value);
         await writeSlot(a.id);
         const now = nowSec(clock);
@@ -1073,6 +1143,7 @@ export function createLimitRoutes({
         if (expiresAt !== undefined && expiresAt <= at)
           throw new AppError("bad_request", "expiresAt is in the past");
         const row = await scopeRow(scopeOfParams(ctx));
+        requireKind(key, row.channelKind);
         const scope = row.scope;
         await writeSlot(admin);
         const id = `lo_${ulid(at * 1000).toLowerCase()}`;

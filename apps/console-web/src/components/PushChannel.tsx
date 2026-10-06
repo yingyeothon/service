@@ -106,6 +106,16 @@ export function PushDetails({ c }: { c: Channel }) {
           routes do not exist here yet.
         </Text>
       )}
+      {c.topic !== undefined && (
+        <>
+          <CopyField label="Broadcast topic" value={c.topic} />
+          <Text size="sm" c="dimmed">
+            After its token is registered the app subscribes to this topic (
+            <Code>FirebaseMessaging.subscribeToTopic</Code>) and unsubscribes on
+            sign-out; a device that never subscribed receives no broadcast.
+          </Text>
+        </>
+      )}
     </>
   );
 }

@@ -444,9 +444,131 @@ export interface Channel extends ResourceCrumbs {
   registered?: boolean;
   /** The team's own Firebase project, once a team sender key is registered. */
   teamProject?: string;
+  /** The FCM topic a broadcast goes to; the app subscribes to it. */
+  topic?: string;
   // shown once on create / rotate
   secret?: string;
   apiKey?: string;
+}
+
+// ---- push campaigns (docs/push.md *Campaigns*) ------------------------------
+
+/** The text of a template or a job; `title: ""` is a data-only message. */
+export interface PushMessageText {
+  title: string;
+  body: string;
+  data: Record<string, string>;
+}
+
+export interface PushTemplate extends PushMessageText {
+  id: string;
+  channelId: string;
+  name: string;
+  /** The `{{variables}}` the message names: the CSV columns a job needs. */
+  variables: string[];
+  createdBy: string;
+  createdByLogin: string | null;
+  updatedBy: string;
+  updatedByLogin: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** `GET /channels/{id}/push/templates`. */
+export interface PushTemplateList {
+  templates: PushTemplate[];
+  max: number;
+}
+
+export type PushTemplateInput = { name: string } & PushMessageText;
+
+/** The targeted send's delivery options, shared by jobs and broadcasts. */
+export interface PushJobOptions {
+  priority?: "high" | "normal";
+  ttlSec?: number;
+  collapseKey?: string;
+}
+
+/** `POST /channels/{id}/push/uploads`: where the recipient CSV is PUT. */
+export interface PushUploadGrant {
+  uploadId: string;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  expiresAt: number;
+  usableUntil: number;
+  maxBytes: number;
+}
+
+export type PushJobStatus = "queued" | "running" | "done" | "failed";
+
+/** A campaign or broadcast job. Counts are per row (user); no token is in it. */
+export interface PushJob {
+  id: string;
+  channelId: string;
+  kind: "campaign" | "broadcast";
+  dryRun: boolean;
+  status: PushJobStatus;
+  error: string | null;
+  /** `null` unless `status` is `failed`. */
+  errorDetails: Record<string, unknown> | null;
+  /** With `status: "done"`: the cancel arrived during the last batch and stopped nothing. */
+  cancelRequested: boolean;
+  idempotencyKey: string;
+  templateId: string | null;
+  uploadId: string | null;
+  message: PushMessageText;
+  options: PushJobOptions;
+  /** A member id, or `apikey`. */
+  author: string;
+  /** Rows of the CSV (a broadcast: Firebase projects); `null` until counted. */
+  total: number | null;
+  processed: number;
+  counts: {
+    resolved: number;
+    sent: number;
+    noToken: number;
+    unregistered: number;
+    failed: number;
+    skipped: number;
+    duplicates: number;
+    missingVariables: number;
+    invalid: number;
+  };
+  report: { available: boolean; expiresAt: number } | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
+/** `created: false` is the replay of an idempotency key. */
+export interface PushJobSubmitResult {
+  job: PushJob;
+  created: boolean;
+}
+
+export interface PushJobPage {
+  jobs: PushJob[];
+  next: string | null;
+}
+
+export interface PushJobInput extends PushJobOptions {
+  templateId: string;
+  uploadId: string;
+  idempotencyKey: string;
+  dryRun?: boolean;
+}
+
+/** A template without variables, or an inline message. */
+export type PushBroadcastInput = PushJobOptions & {
+  idempotencyKey: string;
+} & ({ templateId: string } | Partial<PushMessageText>);
+
+/** `GET …/jobs/{jobId}/report`: a presigned GET of the report CSV. */
+export interface PushReportLink {
+  url: string;
+  expiresAt: number;
+  reportExpiresAt: number;
 }
 
 // ---- events -----------------------------------------------------------------

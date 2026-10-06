@@ -10,6 +10,7 @@ import { Crumbs } from "../components/Crumbs";
 import { LimitsSection, useLimits } from "../components/Limits";
 import { Loading, PageSkeleton } from "../components/Loading";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
+import { PushCampaigns } from "../components/PushCampaigns";
 import { PushDetails, PushSenderKeyCard } from "../components/PushChannel";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import { ResourceDrawer } from "../components/ResourceDrawer";
@@ -309,6 +310,13 @@ export function ChannelDetailPage() {
           onReload={ch.reload}
         />
       )}
+      {c.kind === "push" && (
+        <PushCampaigns
+          channel={c}
+          owner={owner}
+          onCounted={() => void limits.reload()}
+        />
+      )}
       {c.kind === "q" && <QRedisUserCard channel={c} owner={owner} />}
       {c.kind === "auth" && c.docUrl && (
         <AuthDocKeyCard channel={c} owner={owner} />
@@ -318,7 +326,11 @@ export function ChannelDetailPage() {
           limits={limits}
           standing={standing.standing}
           onChanged={ch.reload}
-          description="Extend keeps a channel alive up to 28 days ahead. A team member may ask a platform admin for no expiry."
+          description={
+            c.kind === "push"
+              ? "Extend keeps a channel alive up to 28 days ahead. A team member may ask a platform admin for no expiry, more recipients per job or more jobs per day (a broadcast counts as one, a dry run does not; the count resets at 00:00 UTC)."
+              : "Extend keeps a channel alive up to 28 days ahead. A team member may ask a platform admin for no expiry."
+          }
         />
       )}
 

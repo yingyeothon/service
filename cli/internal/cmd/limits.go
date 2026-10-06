@@ -152,7 +152,9 @@ func newLimits(a *App) *cobra.Command {
 			"(--scope team, a `team.` limit or push.appsPerTeam) or, with none of these, the project\n" +
 			"in context. Sizes take binary units\n" +
 			"(256MiB, 3GiB); a channel's lifetime takes only `unlimited`; a stepped\n" +
-			"limit such as team.projects is asked for as `+5` once every slot is used.",
+			"limit such as team.projects is asked for as `+5` once every slot is used.\n" +
+			"push.recipientsPerJob and push.jobsPerDay belong to a push channel\n" +
+			"(--channel), unlike push.appsPerTeam.",
 	}
 	var bundle, channel, collection, scopeKind string
 	addScope := func(cmd *cobra.Command) {
@@ -177,6 +179,8 @@ func newLimits(a *App) *cobra.Command {
 			return nil, "", "", "", fmt.Errorf("--scope %q: want team or project", scopeKind)
 		case teamKey && scopeKind == "project":
 			return nil, "", "", "", fmt.Errorf("%s is a team limit: drop --scope project", key)
+		case isPushChannelLimit(key) && channel == "":
+			return nil, "", "", "", fmt.Errorf("%s is a limit of a push channel: pass --channel <push channel>", key)
 		case (bundle != "" && channel != "") || (bundle != "" && collection != "") || (channel != "" && collection != ""),
 			team && (bundle != "" || channel != "" || collection != ""):
 			return nil, "", "", "", errors.New("pass one of --bundle, --channel, --collection and --scope team")
@@ -287,7 +291,8 @@ func newLimits(a *App) *cobra.Command {
 		Short: "Ask a platform admin for a higher limit (one pending per limit; 7 days after a refusal)",
 		Example: "  yyt limit request asset.fileBytes 64MiB --bundle music --reason \"48 kHz tracks\"\n" +
 			"  yyt limit request channel.lifetime unlimited --channel lobby --reason \"always-on demo\"\n" +
-			"  yyt limit request team.projects +5 --reason \"one project per minigame\"",
+			"  yyt limit request team.projects +5 --reason \"one project per minigame\"\n" +
+			"  yyt limit request push.jobsPerDay 30 --channel alerts --reason \"launch week\"",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(reason) == "" {
@@ -625,6 +630,12 @@ func relativeValue(cmd *cobra.Command, cc *ctxClient, scope, key string, n int64
 // `push.appsPerTeam` is the one team key outside the `team.` namespace.
 func isTeamLimit(key string) bool {
 	return strings.HasPrefix(key, "team.") || key == "push.appsPerTeam"
+}
+
+// isPushChannelLimit reports a `push.` key whose scope is a push channel, not
+// the team: the campaign limits (`channelKind: "push"` in console's registry).
+func isPushChannelLimit(key string) bool {
+	return key == "push.recipientsPerJob" || key == "push.jobsPerDay"
 }
 
 // withLimitHint names the request to make when a create was refused by a

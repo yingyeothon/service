@@ -8,6 +8,8 @@ import type {
   LimitsDb,
   PushChannelUsage,
   PushDb,
+  PushJobDayStats,
+  PushJobsDb,
   PushSendStats,
   SocialChannelUsage,
   SocialDb,
@@ -21,6 +23,7 @@ import {
   type GetMetricStatisticsCommandOutput,
 } from "@aws-sdk/client-cloudwatch";
 import { REDIS_CHANNEL_KEY_WARN, type RedisUsageReport } from "./expire.js";
+import type { PushJobSweepResult } from "./push-job-sweep.js";
 import type { PushSlotFinding, PushSweepResult } from "./push-sweep.js";
 
 /**
@@ -219,6 +222,10 @@ export interface UsageDigestOptions {
     >;
     /** The sweep that ran before this digest; absent when it failed. */
     sweep?: PushSweepResult;
+    /** Campaign jobs of the previous UTC day; absent leaves the job lines out. */
+    jobs?: Pick<PushJobsDb, "jobStatsOfDay">;
+    /** The campaign sweep that ran before this digest. */
+    jobSweep?: PushJobSweepResult;
   };
   /** Limit requests; omitted leaves the pending-request line out. */
   limits?: Pick<LimitsDb, "countPending">;
@@ -272,6 +279,8 @@ export interface UsageDigestResult {
     swept?: { channels: number; stale: number };
     /** The previous UTC day's channels with failed sends, most failures first. */
     sendFailures: PushSendStats[];
+    /** The previous UTC day's campaign and broadcast jobs per channel, most failed first. */
+    jobs?: PushJobDayStats[];
   };
   /** Every warning found today, announced or not. */
   warnings: UsageWarning[];
@@ -633,6 +642,12 @@ export async function runUsageDigest({
     const sendFailures = await attempt("push-send", () =>
       push.db.topSendFailures(yesterday, PUSH_TOP_FAILURES),
     );
+    const jobDb = push.jobs;
+    const jobStats = jobDb
+      ? await attempt("push-jobs", () =>
+          jobDb.jobStatsOfDay(yesterday, PUSH_TOP_FAILURES),
+        )
+      : undefined;
     const reconcile = push.sweep?.reconcile?.slots;
     result.push = {
       top: top ?? [],
@@ -640,7 +655,37 @@ export async function runUsageDigest({
       ...(reconcile ? { reconcile } : {}),
       ...(push.sweep ? { swept: push.sweep.tokens } : {}),
       sendFailures: sendFailures ?? [],
+      ...(jobStats ? { jobs: jobStats } : {}),
     };
+    // As the send failures: the day is in the kind, so each is said once.
+    for (const j of jobStats ?? [])
+      if (j.failed > 0)
+        warnings.push({
+          kind: `push:jobs:failed:${j.channelId}:${yesterday}`,
+          type: "level",
+          text: `push channel ${j.channelId}: ${j.failed} of ${j.jobs} campaign job(s) failed yesterday`,
+        });
+    for (const p of push.jobSweep?.failed ?? [])
+      warnings.push({
+        kind: `push:jobs:sweep:failed:${p}`,
+        type: "delta",
+        text: `the push job sweep's ${p} phase failed; see the "push job sweep phase failed" log line`,
+      });
+    // A worker that cannot run has no alarm of its own; these two say so.
+    // Both carry the count, and `daily` repeats every day it is still true.
+    const jobSweep = push.jobSweep;
+    if (jobSweep && jobSweep.expired > 0)
+      warnings.push({
+        kind: `push:jobs:expired:${jobSweep.expired}`,
+        type: "daily",
+        text: `${jobSweep.expired} push job(s) were failed as expired: no worker finished them in three days; see the pushJob function's log`,
+      });
+    if (jobSweep && jobSweep.stale > 0)
+      warnings.push({
+        kind: `push:jobs:stale:${jobSweep.stale}`,
+        type: "daily",
+        text: `${jobSweep.stale} push job(s) have been runnable for over an hour and no worker claimed them; the pushJob function may be failing (see its log)`,
+      });
     // The day is part of the kind, so each day's failures are announced once
     // (a rerun of the cron does not repeat them) and a channel failing again
     // tomorrow is announced again. Counts only.

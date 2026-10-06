@@ -178,6 +178,16 @@ export function saveBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** Starts the browser's download of a presigned, attachment-disposed URL. */
+export function openDownload(url: string): void {
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 /** What deleting a channel of `kind` takes with it (confirm modals, the danger zone). */
 export const channelDeleteNote = (kind: string): string =>
   kind === "push"

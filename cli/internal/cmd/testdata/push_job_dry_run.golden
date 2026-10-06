@@ -1,0 +1,17 @@
+id:       pj_01
+kind:     campaign (dry run)
+status:   done
+key:      launch-1
+template: pt_01
+title:    "Hi {{name}}"
+body:     "Season {{season}} is open"
+data:     {"screen":"season"}
+author:   m_1
+created:  2025-08-24T01:46:40Z
+started:  2025-08-24T01:46:42Z
+finished: 2025-08-24T01:48:20Z
+rows:     3 of 3
+resolved: 1 (users holding a token: a real job starts from these)
+noToken:  1
+skipped:  1 (duplicates 1, missing variables 0, invalid 0)
+report:   until 2025-08-31T01:48:20Z (yyt push job report push_0123456789abcdef pj_01)

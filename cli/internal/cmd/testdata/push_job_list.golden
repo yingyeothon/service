@@ -1,0 +1,4 @@
+ID     KIND                STATUS           ROWS  SENT  FAILED  CREATED               KEY
+pj_03  broadcast           done             2     1     1       2025-08-24T01:46:40Z  k3
+pj_02  campaign            failed:canceled  10    0     0       2025-08-24T01:46:40Z  k2
+pj_01  campaign (dry run)  done             1200  1180  6       2025-08-24T01:46:40Z  launch-1

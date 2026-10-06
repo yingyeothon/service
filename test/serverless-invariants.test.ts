@@ -162,6 +162,108 @@ describe("serverless.yml invariants", () => {
     expect(total).toBeLessThanOrEqual(60);
   });
 
+  it("console: the campaign worker is one container taken from `api`, with the pool path, its own invoke and the bucket rules", () => {
+    const doc = parse(
+      readFileSync(join(root, "services/console/serverless.yml"), "utf8"),
+      { logLevel: "silent" },
+    ) as {
+      provider: {
+        environment: Record<string, unknown>;
+        iam: { role: { statements: unknown[] } };
+      };
+      functions: Record<
+        string,
+        {
+          reservedConcurrency: number;
+          timeout?: number;
+          maximumRetryAttempts?: number;
+          environment?: Record<string, unknown>;
+          events?: unknown[];
+        }
+      >;
+      resources: {
+        extensions: Record<string, { Properties: Record<string, unknown> }>;
+        Resources: {
+          PosterBucket: {
+            Properties: {
+              LifecycleConfiguration: {
+                Rules: {
+                  Id: string;
+                  Status: string;
+                  Prefix?: string;
+                  ExpirationInDays?: number;
+                }[];
+              };
+            };
+          };
+        };
+      };
+    };
+    const { api, expire, siteDeploy, pushJob } = doc.functions;
+    // One worker container: it is the pace of every campaign of the stage.
+    // Its MariaDB connection is the one `api` gave up (10 -> 9), so the
+    // console's share stays 12 and the host total 57 (`rules/data.md`).
+    expect(pushJob!.reservedConcurrency).toBe(1);
+    expect(api!.reservedConcurrency).toBe(9);
+    expect(
+      api!.reservedConcurrency +
+        expire!.reservedConcurrency +
+        siteDeploy!.reservedConcurrency +
+        pushJob!.reservedConcurrency,
+    ).toBe(12);
+    // Invoked asynchronously only: no HTTP route, no schedule.
+    expect(pushJob!.events).toBeUndefined();
+    // The worker claims no job after 420 s and a batch sends for at most
+    // 60 s (`services/console/src/push-worker.ts`): 600 s leaves two minutes.
+    expect(pushJob!.timeout).toBe(600);
+    // Lambda retries a run that died; the job was given back first.
+    expect(pushJob!.maximumRetryAttempts).toBe(2);
+    // It invokes itself on purpose; loop detection would cut the chain.
+    expect(
+      doc.resources.extensions.PushJobLambdaFunction!.Properties.RecursiveLoop,
+    ).toBe("Allow");
+    expect(doc.provider.environment.PUSH_JOB_FUNCTION).toBe(
+      "${self:service}-${self:custom.stage}-pushJob",
+    );
+    const invoke = doc.provider.iam.role.statements.filter((st) =>
+      JSON.stringify(st).includes("lambda:InvokeFunction"),
+    );
+    expect(JSON.stringify(invoke)).toContain(
+      "function:${self:service}-${self:custom.stage}-pushJob",
+    );
+    // No wildcard: the role invokes its own two workers and nothing else.
+    expect(JSON.stringify(invoke)).not.toMatch(/function:\*/);
+    // The pool's path: the three functions that talk to Firebase, no other.
+    for (const [name, fn] of Object.entries(doc.functions))
+      expect(fn.environment?.PUSH_SSM_PATH !== undefined, name).toBe(
+        ["api", "expire", "pushJob"].includes(name),
+      );
+    // Uploads and reports expire by lifecycle, whatever the sweep missed. A
+    // report is offered 7 days, so its rule must not fire before the 8th;
+    // an upload may be named for 1 day and read for 3 more (the job age
+    // cap, after which the sweep fails the job `expired`), so its rule must
+    // not fire before the 6th: the sweep always wins.
+    const rules = Object.fromEntries(
+      doc.resources.Resources.PosterBucket.Properties.LifecycleConfiguration.Rules.map(
+        (r) => [r.Id, r],
+      ),
+    );
+    expect(rules["push-uploads"]).toMatchObject({
+      Status: "Enabled",
+      Prefix: "push-uploads/",
+      ExpirationInDays: 6,
+    });
+    expect(rules["push-reports"]).toMatchObject({
+      Status: "Enabled",
+      Prefix: "push-reports/",
+      ExpirationInDays: 8,
+    });
+    // The role reaches both prefixes of the private bucket, by prefix.
+    const s3 = JSON.stringify(doc.provider.iam.role.statements);
+    expect(s3).toContain("/push-uploads/*");
+    expect(s3).toContain("/push-reports/*");
+  });
+
   it("match: the ticket API has its own function inside the stack's 18", () => {
     // `docs/decisions.md` *Match: deferred mode*: the HTTP routes took their
     // containers from `ws` and `authorizer`; the stack's share of the MariaDB
@@ -546,8 +648,8 @@ describe("serverless.yml invariants", () => {
     expect(Object.keys(doc.functions.expire?.environment ?? {}).sort()).toEqual(
       ["PUSH_SSM_PATH", "SITE_HOST_DISTRIBUTION_ID", "WEB_DISTRIBUTION_ID"],
     );
-    // The push pool's path reaches `api` and `expire` only, and the role
-    // reads nothing else from the parameter store.
+    // The push pool's path reaches `api`, `expire` and `pushJob` only, and
+    // the role reads nothing else from the parameter store.
     expect(doc.provider.environment.PUSH_SSM_PATH).toBeUndefined();
     expect(guardEnv.PUSH_SSM_PATH).toBeUndefined();
     expect(doc.functions.api?.environment).toHaveProperty("PUSH_SSM_PATH");

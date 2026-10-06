@@ -2,7 +2,7 @@
 
 Design of record: `docs/decisions.md` _Push notifications (Android, FCM)_ (2026-10-06). This page is the client contract and the operator's reference. Route-level detail of the state half is in `services/state/README.md` (_Push routes_).
 
-**Status.** Built 2026-10-06, not deployed on any stage: the `push` channel kind and its console routes, the device-token routes and the targeted send on the state stack, migration `m0028_push`, the daily sweep. The console SPA and `yyt push …` are built too (_Console SPA and CLI_ below); the routes are what they call. Decided and **not built**: the deferred-match hook, campaigns and the broadcast topic, the console app's notifications (_Not built yet_ below).
+**Status.** Built 2026-10-06, not deployed on any stage: the `push` channel kind and its console routes, the device-token routes and the targeted send on the state stack, migration `m0028_push`, the daily sweep. The console SPA and `yyt push …` are built too (_Console SPA and CLI_ below); the routes are what they call. Built 2026-10-06 on the server side, not deployed: campaigns and the broadcast (_Campaigns_ below) — migration `m0029_push_campaigns`, the console routes and the `pushJob` worker; the SPA and the CLI do not call them yet. Decided and **not built**: the console app's notifications (_Not built yet_ below).
 
 ## What a push channel is
 
@@ -41,8 +41,10 @@ Session cookie or `yyt_` token; team membership as for every project resource. E
 | `PUT /channels/{id}/sender-key`           | member         | `{serviceAccount}` registers or replaces the team's key; 200 with the view                                                                                                       |
 | `DELETE /channels/{id}/sender-key`        | member         | `{removed: boolean}`; 409 on a `team`-sender channel                                                                                                                             |
 | `GET /limits?scope=team:<id>`             | member, admin  | the `push.appsPerTeam` row beside `team.projects`                                                                                                                                |
+| `GET /limits?scope=channel:<id>`          | member, admin  | `push.recipientsPerJob` and `push.jobsPerDay` beside `channel.lifetime` (_Campaigns_ → _Limits_)                                                                                 |
+| `/channels/{id}/push/…`                   | member         | templates, uploads, jobs, reports, broadcast (_Campaigns_)                                                                                                                       |
 
-**View.** The base channel fields plus `config: {authChannelId, packageName, sender}`, `registered` (the platform registration exists, so the config file can be downloaded), `teamProject` (the team's own Firebase project id, once a team key is registered) and `apiBase` (the state stack's base URL; absent on a stage without that stack). Never returned: the pool slot, the Firebase app id, a platform project id, the team key.
+**View.** The base channel fields plus `config: {authChannelId, packageName, sender}`, `registered` (the platform registration exists, so the config file can be downloaded), `topic` (the FCM topic of the channel's broadcast, `yyt.push.{id}`; _Broadcast_), `teamProject` (the team's own Firebase project id, once a team key is registered) and `apiBase` (the state stack's base URL; absent on a stage without that stack). Never returned: the pool slot, the Firebase app id, a platform project id, the team key.
 
 **Create errors.**
 
@@ -187,14 +189,302 @@ A team that outgrows the shared projects moves to its own Firebase project witho
 | 503    | `push pool unavailable`                                                                              | the pool could not be read on a cold container                                           |
 | 503    | `database error`                                                                                     | the state account lacks its grant on `push_tokens` (_Operator_), or the database is down |
 
+## Campaigns
+
+A campaign sends one templated message to the users a team lists in a CSV. Selection is the team's job: the platform has no query engine. Everything here runs on the **console** stack; the sends are made by its `pushJob` worker, not inside the request.
+
+1. A member writes a **template** (title, body, data with `{{variables}}`).
+2. The team uploads a **recipient CSV** (`userId` plus one column per variable) through a presigned PUT.
+3. A **dry run** of `{templateId, uploadId}` reports what would happen and sends nothing.
+4. The **job** sends, in batches of 500 rows, and ends `done` or `failed`.
+5. The **report** names every row's result for 7 days.
+
+A **broadcast** is the other shape: one message to the channel's FCM topic, no CSV (_Broadcast_).
+
+### Two route families
+
+| Family | Base                    | Credential                                                                  |
+| ------ | ----------------------- | --------------------------------------------------------------------------- |
+| member | `/channels/{id}/push`   | session cookie or `yyt_` token; a member of the channel's team              |
+| apiKey | `/push-api/{channelId}` | `Authorization: Bearer <push channel apiKey>`, the key of the targeted send |
+
+Both live on the console API host and serve the same eight job routes below with the same bodies and answers. Templates exist on the member family only.
+
+- **apiKey family.** For a team's server. Only the bearer counts: a cookie or a `yyt_` token on these paths is a 401. The key is compared in constant time. A channel id that does not exist (or is not a push channel) answers the same 401 as a wrong key, so the family does not say which ids exist; a known channel with the right key that expired or was disabled answers 410. No CORS header is sent, so a browser cannot call it from another origin. Never ship the key in an app.
+- **Write slot.** Every write but `POST {base}/uploads` takes one 500 ms slot — per member on the member family, **per channel** on the apiKey family, whichever server holds the key (429 `{retryAfterMs: 500}`). Reads take none. An upload takes none so the submit that follows it is not throttled; the 20 pending places bound it, and `DELETE {base}/uploads/{uploadId}`, which frees a place, takes the slot.
+- A write by a member is audited under the member; one by the key is audited with `via: "apikey"`, and the job's `author` is the literal `apikey`.
+- A platform admin without a seat in the team reads templates and jobs like every project read, and gets 403 on every write and on the report.
+- Errors are `{error: {code, message, details?}}`; every answer is `no-store`.
+
+### Templates
+
+Member family only. At most **20 per channel** (a constant).
+
+| Route                                               | Does                                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------ |
+| `GET /channels/{id}/push/templates`                 | `{templates: [...], max: 20}`, by name                             |
+| `POST /channels/{id}/push/templates`                | `{name, title?, body?, data?}` → 201 with the template             |
+| `GET /channels/{id}/push/templates/{templateId}`    | the template                                                       |
+| `PATCH /channels/{id}/push/templates/{templateId}`  | `{name?, title?, body?, data?}`; the message is checked as a whole |
+| `DELETE /channels/{id}/push/templates/{templateId}` | 204; jobs already submitted keep their text                        |
+
+A template: `{id, channelId, name, title, body, data, variables, createdBy, createdByLogin, updatedBy, updatedByLogin, createdAt, updatedAt}`. `variables` is the sorted list of names the message uses — the CSV columns a job needs.
+
+- `name`: `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, unique per channel without case.
+- `title`: at most 1024 characters, no control character. Empty means a **data-only** message.
+- `body`: at most 4096 characters; `\n` and `\t` are the only control characters allowed. A body needs a title.
+- `data`: an object of string values, at most 64 keys, no empty key and none FCM reserves (`from`, `notification`, `message_type`, `google.*`, `gcm.*`) — the targeted send's rule, from one shared validator (`@yyt/push`).
+- A title or at least one data key is required.
+
+**Placeholders.** `{{name}}`, where `name` is `[A-Za-z_][A-Za-z0-9_]{0,31}`, written without blanks. Allowed in `title`, `body` and the **values** of `data`; a data key is always literal. Nothing else is syntax: `{{ name }}`, `{{a.b}}`, `{{}}`, a lone `{{` and a 33-character name are sent as written. Placeholders do not nest, and a substituted value is never read again, so a value holding `{{x}}` stays that text. Names are case-sensitive.
+
+**Size.** A message's `data` and `notification` together hold at most 4096 bytes, measured like the targeted send's. A template whose literal text alone is over the limit (each placeholder counted as one byte) is refused with 400 `push_payload_too_large`; what the variables add is checked per row when the job runs (_Recipient CSV_, `too-large`).
+
+| Status | `details`                                | When                                                  |
+| ------ | ---------------------------------------- | ----------------------------------------------------- |
+| 400    | — / `{reason: "push_payload_too_large"}` | a rule above                                          |
+| 404    | —                                        | no such template, or not a push channel of the caller |
+| 409    | `{reason: "push_template_name_taken"}`   | another template of the channel has the name          |
+| 409    | `{reason: "push_template_cap", max: 20}` | the channel holds 20                                  |
+| 429    | `{retryAfterMs: 500}`                    | the member's write slot                               |
+
+### Recipient CSV
+
+- UTF-8. A leading byte-order mark is skipped. Invalid UTF-8 and a NUL byte are errors.
+- Records end in LF or CRLF; a final line break is optional. An empty line is skipped and is no row. A CR without an LF is an error.
+- RFC 4180 quoting, strictly: a field is quoted as a whole or not at all, `""` is a quote inside a quoted field, and a quoted field may hold commas and line breaks. A quote anywhere else is an error.
+- The **first record is the header**. Every name is a variable name (the grammar above, case-sensitive), none twice, at most 32 columns.
+- **`userId` is required** (spelled exactly so): a user id of the channel's auth channel, the `sub` of its player JWT.
+- **A column that reads like a device token is refused** (`token`, `deviceToken`, `fcm_token`, `registrationToken`, `registration_id`, `pushToken`, … compared without case and underscores). Recipients are named by user id only; a device token never travels through a team's file.
+- Every other column is a variable. A column the template does not use is ignored; a variable the template uses must be a column.
+- Every row has exactly as many fields as the header.
+- Limits: 1,024 bytes per record (quotes and commas counted, the line break not), 512 bytes per field, and the file at most **102,401,024 bytes** — the hard `push.recipientsPerJob` (100,000) plus a header, at 1,024 bytes each.
+
+A file that breaks one of these rules is refused **as a whole and before anything is sent**: at submit when the header is wrong, by the worker's first pass otherwise (`csv_invalid`).
+
+**Row rules** (a row that breaks one is reported and skipped; the rest are sent):
+
+| Report `reason`    | When                                                                                |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| `invalid-user`     | `userId` is not a player id                                                         |
+| `duplicate`        | the `userId` appeared in an earlier row — the first row wins, whatever became of it |
+| `missing-variable` | a variable the template uses is empty in this row                                   |
+| `too-large`        | the rendered message exceeds 4096 bytes                                             |
+
+### Job routes
+
+Both families (`{base}` = `/channels/{id}/push` or `/push-api/{channelId}`).
+
+| Route                              | Body                                                                                                | Answer                                                               |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `POST {base}/uploads`              | `{size}`                                                                                            | 201 upload                                                           |
+| `DELETE {base}/uploads/{uploadId}` |                                                                                                     | 204; 409 `upload_in_use` while an unfinished job reads it            |
+| `POST {base}/jobs`                 | `{templateId, uploadId, idempotencyKey, dryRun?, priority?, ttlSec?, collapseKey?}`                 | 202 `{job, created: true}`; 200 `{job, created: false}` for a replay |
+| `GET {base}/jobs?limit=&cursor=`   |                                                                                                     | `{jobs, next}` newest first; `limit` 1–100, default 20               |
+| `GET {base}/jobs?idempotencyKey=`  |                                                                                                     | `{jobs, next: null}`: the one job the key holds, or none             |
+| `GET {base}/jobs/{jobId}`          |                                                                                                     | `{job}`                                                              |
+| `POST {base}/jobs/{jobId}/cancel`  |                                                                                                     | `{job}`                                                              |
+| `GET {base}/jobs/{jobId}/report`   |                                                                                                     | `{url, expiresAt, reportExpiresAt}`                                  |
+| `POST {base}/broadcast`            | `{templateId}` or `{title?, body?, data?}`, plus `idempotencyKey, priority?, ttlSec?, collapseKey?` | as `POST {base}/jobs`                                                |
+
+Unknown body fields are a 400. `priority`, `ttlSec` and `collapseKey` are the targeted send's fields.
+
+**Upload.** `{size}` is the file's exact byte length, 1 to 102,401,024. The answer:
+
+```json
+{
+  "uploadId": "pu_…",
+  "url": "https://…",
+  "method": "PUT",
+  "headers": { "content-type": "text/csv", "content-length": "1234" },
+  "expiresAt": 1790000900,
+  "usableUntil": 1790086400,
+  "maxBytes": 102401024
+}
+```
+
+- `PUT` the file to `url` with exactly those two headers; both are signed, so another type or length is refused by the bucket. The URL works for 15 minutes.
+- A job may name the upload for 24 hours (`usableUntil`), any number of times — the dry run and the job share one upload.
+- A channel holds at most 20 **pending** uploads (409 `push_upload_cap`). Pending: no job names it yet, or an unfinished job does. An upload whose jobs have all finished stops counting, and can still be named again inside its 24 hours. `DELETE {base}/uploads/{uploadId}` removes one (row and object) and is refused while an unfinished job reads it (409 `upload_in_use`). Every upload is removed two days after it was issued.
+- `uploadId` and `templateId` compare without case; the job stores and answers the id as the platform minted it.
+- Replacing the object after a job was submitted fails that job (`upload_changed`): a job reads the object it was submitted with.
+
+**Job.** `idempotencyKey` is the caller's: `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`, unique per channel without case, shared by jobs and broadcasts, kept as long as the job row (30 days after it finished).
+
+- A repeated key with the **same parameters** answers 200 with the job it named the first time — before anything else is checked, so a retry succeeds even after the template or the upload is gone. Nothing is recorded or sent twice.
+- A repeated key with **other parameters** (another template, upload, `dryRun` or option) is 409 `idempotency_key_reused`.
+- The job keeps the template's text as it was at submit time; a later edit or delete of the template does not change it.
+
+```json
+{
+  "id": "pj_…",
+  "channelId": "push_…",
+  "kind": "campaign",
+  "dryRun": false,
+  "status": "running",
+  "error": null,
+  "errorDetails": null,
+  "cancelRequested": false,
+  "idempotencyKey": "launch-1",
+  "templateId": "pt_…",
+  "uploadId": "pu_…",
+  "message": { "title": "Hi {{name}}", "body": "", "data": {} },
+  "options": { "priority": "high" },
+  "author": "m_…",
+  "total": 1200,
+  "processed": 500,
+  "counts": {
+    "resolved": 480,
+    "sent": 470,
+    "noToken": 15,
+    "unregistered": 4,
+    "failed": 6,
+    "skipped": 5,
+    "duplicates": 3,
+    "missingVariables": 2,
+    "invalid": 0
+  },
+  "report": null,
+  "createdAt": 1790000000,
+  "startedAt": 1790000002,
+  "finishedAt": null
+}
+```
+
+- `status`: `queued → running → done | failed`. A cancelled job is `failed` with `error: "canceled"`.
+- `total` is the CSV's row count, `null` until the worker counted it; `processed` is rows finished. Counts are **per row (user)**, not per device:
+  - `resolved` — rows whose user holds at least one token (`sent + unregistered + failed` in a real job);
+  - `sent` — FCM accepted the message for at least one of the user's devices;
+  - `noToken` — the user holds no token in the channel;
+  - `unregistered` — every device of the user was gone; the tokens are deleted;
+  - `failed` — the user holds tokens and none took the message;
+  - `skipped` = `duplicates` + `missingVariables` + `invalid` (`invalid-user`, `too-large` and `invalid-value`).
+- `errorDetails` is `null` unless the job is `failed`.
+- `report`: `null` until one exists, then `{available, expiresAt}`.
+- `author`: a member id, or `apikey`.
+
+**Dry run.** `dryRun: true` runs the same job through the same worker and sends nothing: `total`, `resolved`, `noToken` and the three skipped counts are what the real job would start from, and the report lists every row as `resolved`, `no-token` or `skipped`. It is asynchronous like every job — resolving 100,000 rows is 200 token lookups and does not fit a request — and a small one finishes in seconds. A dry run needs no Firebase project and does not count against `push.jobsPerDay`; a channel may run 20 a day (a constant, 409 `push_dry_run_cap`).
+
+**Cancel.** Sets `cancelRequested`; the worker ends the job between two batches (at once when the job is idle). Rows already sent stay sent and are in the report. Cancelling a finished job answers it unchanged. A cancel that arrives during the last batch stops nothing: every row was processed, so the job ends `done`. A broadcast cannot be cancelled between projects — its one or two messages go out in a single run of seconds; a cancel only stops one that has not started (or that is resumed after a crash).
+
+**Report.** A presigned GET (5 minutes) of a CSV, offered for **7 days** from the moment the job finished (410 afterwards):
+
+```
+userId,status,reason
+0123…,sent,
+89ab…,no-token,
+cdef…,failed,unavailable
+4567…,skipped,duplicate
+```
+
+| `status`       | `reason`                                                                                                                                                                            |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sent`         |                                                                                                                                                                                     |
+| `no-token`     |                                                                                                                                                                                     |
+| `unregistered` |                                                                                                                                                                                     |
+| `failed`       | `unavailable` (no verdict, a quota, or out of time: may be retried in a new job) or `rejected` (FCM will not take it, or the channel holds no working key for the device's project) |
+| `skipped`      | `duplicate`, `missing-variable`, `invalid-user`, `too-large`, `invalid-value` (the row's value would put a control character into the message where a template may hold none)       |
+| `resolved`     | dry run only                                                                                                                                                                        |
+
+- One line per CSV row, in file order. No device token and no Firebase project id is in it.
+- A value a spreadsheet would run as a formula (a leading `=`, `+`, `-`, `@`, tab or CR — only an `invalid-user` row can carry one) is prefixed with `'`; control characters are dropped and a value is cut at 128 characters.
+- A job that failed before its first batch (`csv_invalid`, `recipients_over_limit`, …) has no report (409 `report_absent`); one that failed later reports the rows it reached. A broadcast has none.
+
+**Submit errors** (`POST {base}/jobs`, `POST {base}/broadcast`, `POST {base}/uploads`):
+
+| Status | `details`                                                    | Meaning                                                                                                                                                      |
+| ------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 400    | —                                                            | invalid body                                                                                                                                                 |
+| 400    | `{reason: "csv_invalid", csv, line}`                         | the header cannot be read; `csv` is the rule (`user_column_missing`, `token_column`, `header_name`, `duplicate_header`, `empty`, `invalid_utf8`, `quote`, …) |
+| 400    | `{reason: "csv_missing_columns", columns}`                   | the template uses variables the header lacks                                                                                                                 |
+| 400    | `{reason: "template_has_variables"}`                         | a broadcast message holds a `{{variable}}`                                                                                                                   |
+| 400    | `{reason: "push_payload_too_large"}`                         | an inline broadcast message over 4096 bytes                                                                                                                  |
+| 401    | `api key required`                                           | apiKey family: no bearer, not this channel's key, or no such push channel                                                                                    |
+| 404    | —                                                            | no such template, upload or job; member family: no such channel                                                                                              |
+| 409    | `{reason: "idempotency_key_reused"}`                         | the key names a job with other parameters                                                                                                                    |
+| 409    | `{reason: "upload_missing"}`                                 | nothing was put to the upload's URL                                                                                                                          |
+| 409    | `{reason: "upload_size_mismatch"}`                           | the object is not of the signed size                                                                                                                         |
+| 409    | `{reason: "upload_expired"}`                                 | the upload is older than 24 hours                                                                                                                            |
+| 409    | `{reason: "push_upload_cap", max: 20}`                       | the channel holds 20 pending uploads                                                                                                                         |
+| 409    | `{reason: "upload_in_use"}`                                  | `DELETE …/uploads/{uploadId}`: an unfinished job reads the upload                                                                                            |
+| 409    | `{limit: "push.jobsPerDay", value}`                          | the channel's jobs of this UTC day reached the limit; ask for more with a limit request                                                                      |
+| 409    | `{reason: "push_dry_run_cap", max: 20}`                      | 20 dry runs this UTC day                                                                                                                                     |
+| 409    | `{reason: "push_not_registered"}`                            | the channel has neither a platform registration nor a team key                                                                                               |
+| 409    | `{reason: "report_not_ready"}` / `{reason: "report_absent"}` | the job has not finished / finished without a report                                                                                                         |
+| 410    | `{reason: "channel_inactive"}`                               | the channel is expired or disabled (a member still reads its jobs)                                                                                           |
+| 410    | `{reason: "report_expired"}`                                 | the report is older than 7 days                                                                                                                              |
+| 429    | `{retryAfterMs: 500}`                                        | the write slot                                                                                                                                               |
+| 503    | `{reason: "push_not_configured"}`                            | the stage has no Firebase project (a dry run is still accepted)                                                                                              |
+| 503    | `{reason: "push_sender_unavailable"}`                        | the pool no longer holds the channel's project                                                                                                               |
+| 503    | `{reason: "push_storage_unavailable"}`                       | the stage has no bucket for uploads and reports                                                                                                              |
+
+**Why a job failed** (`job.error`, with `job.errorDetails`):
+
+| `error`                 | `errorDetails`                            | Meaning                                                                                                               |
+| ----------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `canceled`              |                                           | the cancel route                                                                                                      |
+| `csv_invalid`           | `{reason, line}`                          | the file breaks a CSV rule at that record (`no_rows`: a header and nothing else; `missing_columns`); nothing was sent |
+| `recipients_over_limit` | `{limit: "push.recipientsPerJob", value}` | more rows than the limit; nothing was sent                                                                            |
+| `upload_missing`        |                                           | the object is gone                                                                                                    |
+| `upload_changed`        |                                           | the object was replaced after the submit                                                                              |
+| `channel_gone`          |                                           | the channel was deleted                                                                                               |
+| `channel_inactive`      |                                           | the channel expired or was disabled                                                                                   |
+| `not_registered`        |                                           | the channel lost its registration and holds no team key                                                               |
+| `sender_unavailable`    |                                           | FCM refused the platform's key, or the pool lost the channel's project: the operator's to fix                         |
+| `send_failed`           |                                           | a broadcast no project accepted                                                                                       |
+| `stalled`               |                                           | five runs died without finishing it                                                                                   |
+| `expired`               |                                           | still unfinished three days after the submit                                                                          |
+
+### Limits
+
+Both are **channel-scope** keys of the limits registry, listed for push channels only (`GET /limits?scope=channel:<id>`) and raised with a limit request like `channel.lifetime` is granted (`docs/decisions.md` _Limit requests_).
+
+| Key                     | Soft   | Hard    | Counts                                                                                                                                                                                            |
+| ----------------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `push.recipientsPerJob` | 10,000 | 100,000 | rows of one job's CSV, skipped rows included. Checked by the worker's first pass: a longer file fails the job (`recipients_over_limit`) before anything is sent. No usage is shown.               |
+| `push.jobsPerDay`       | 10     | 100     | jobs submitted per channel and UTC day, a broadcast counting as one. Claimed inside the submit's transaction, so concurrent submits cannot pass it (409 `details.limit`). Usage is today's count. |
+
+- A dry run counts against neither; a replayed `idempotencyKey` is answered before the count; a job that failed or was cancelled still counts.
+- Code constants no request raises: 20 templates and 20 pending uploads per channel, 20 dry runs per day, 500 rows per batch.
+
+### Broadcast
+
+One FCM message to the channel's **topic**, so the cost is one request whatever the audience.
+
+- **Topic name: `yyt.push.{channelId}`** — also the channel view's `topic` field.
+- **Client contract.** After `PUT /push/{channelId}/token` succeeded, the app subscribes its FCM instance to that topic (`FirebaseMessaging.subscribeToTopic`), and unsubscribes on sign-out next to `DELETE …/token`. The platform stores no subscriber list and cannot subscribe a device on the app's behalf: a device that never subscribed receives no broadcast. Topic membership is per app install, not per user; FCM takes up to a day to apply a new subscription.
+- The message is `{templateId}` of a template **without variables**, or an inline `{title?, body?, data?}` under the template rules. A `{{variable}}` is refused (400 `template_has_variables`): there is no row to fill it from.
+- When the channel has both a platform registration and a team sender key, one message is sent **per Firebase project** (a topic belongs to a project). `total` is the number of projects, `counts.sent` the projects FCM accepted for, `counts.failed` the rest; the job is `done` when at least one accepted.
+- A broadcast is a job: same `idempotencyKey` rule, same status route, one job against `push.jobsPerDay`, no dry run and no report. It is not counted in `push_send_stats`.
+- `sent` is acceptance by FCM. FCM does not say how many devices a topic reached.
+- **A topic is not private.** Anyone who holds the app can subscribe to `yyt.push.{channelId}`: the app's Firebase config is public by design and the topic name is the channel id. So can any other app registered in the same pooled Firebase project — a topic belongs to the project, not to an app. A broadcast must therefore carry **no secret, no personal data and no `data` that grants anything** (a code, a reward, an entitlement): treat it as a public announcement. Content for particular users goes through a campaign or the targeted send, which address device tokens.
+- **A topic message is not authenticated to the app either.** What holds is integrity on the sending side — only this API, with the project's key, can send to the topic — not that a received message proves anything about its reader. The app must not grant or unlock anything because a topic message arrived; it re-reads state from its server.
+
+### How a job runs
+
+- **One worker container per stage** (`pushJob`, `reservedConcurrency: 1`). It is the pace of every campaign of the stage: at most 20 requests to FCM are in flight for all campaigns together (one `sendMany`), a few hundred messages a second against a default quota of 600,000 a minute per Firebase project, so a campaign cannot take the targeted sends' share. No pause between batches is added on top; after a batch FCM answered with a quota error the worker waits 5 s before its next batch.
+- **Turns.** The worker claims a runnable job of the **channel served least recently**, works on it for at most 60 s plus the batch in flight (always at least one batch; a batch sends for at most 60 s), gives it back and claims the next. Channels alternate whatever each has queued: a channel with many jobs gets one turn between two turns of any other. Inside a channel the job given back longest ago goes first. What a new job or broadcast is guaranteed: it waits for at most **one turn of every other channel that has runnable work** (about two minutes each at worst), plus the turns of its own channel's older jobs — not a fixed time.
+- **Lease.** A claim is one conditional update that sets `lease_owner` and `lease_until` (300 s, renewed by every batch). Two invocations never hold one job, and every later write is fenced on the owner.
+- **Ending.** The lease is renewed, the report object is written from the batch parts, the row is ended by a statement fenced on the lease (it sets the report's time), and only then are the parts removed. A worker that lost its lease stops at the renewal and writes nothing; a crash before the row write leaves the parts for the next run, one after it leaves parts the lifecycle rule removes.
+- **Batch.** 500 CSV rows: one token lookup, the sends (each token with the key of the project that issued it, as the targeted send does), the batch's report rows to S3, then **one statement** that moves the cursor and adds the counts — fenced on the lease and on the cursor it expects. Then the day's `push_send_stats` and the deletion of tokens FCM reported gone.
+- **Duplicate window: one batch.** A run that dies after a batch's sends and before its cursor statement leaves the cursor where it was; the next run sends that batch again and nothing else. At most 500 users can receive a campaign message twice, once per crash. Set `collapseKey` when a duplicate would hurt. The report still holds each row once.
+- **Time box.** An invocation claims no job after 7 minutes (the function's timeout is 10) and then **invokes itself** when runnable work is left. Resuming re-reads the CSV from the start to rebuild the duplicate set and continues at the cursor.
+- **First pass.** Before the first send the whole file is read once: a malformed file or one over `push.recipientsPerJob` fails the job with nothing sent, and `total` is recorded.
+- **Between batches** the channel is read again: deleted, expired or disabled ends the job (`channel_gone`, `channel_inactive`); so does `cancelRequested`, unless every row was processed.
+- **A broadcast** notes each project it sent to on its row (a hash, never the project id) in the statement that counts it. A rerun skips exactly those, so a crash repeats one message at most even when the channel's projects changed meanwhile.
+- **A refused platform key** ends the job (`sender_unavailable`) with the batch's remaining users `failed` / `unavailable`; it is not retried. A refused **team** key fails that project's users (`rejected`) and the platform project's tokens are still sent.
+- **Recovery.** A run that hits a database or bucket error gives its job back, counts an attempt and throws; Lambda retries the event after 1 and 2 minutes. A job whose lease ran out unreleased (its worker was killed) counts an attempt too. A batch that moves the cursor clears the count; five failed runs in a row end the job `failed` / `stalled` (`done` when every row had been processed). When nothing is runnable but an unfinished job sits behind a lease, the invocation **waits for that lease** (at most four sleeps, inside its time box) and claims the job, or hands the wait to its next invocation — a killed worker's job resumes about five minutes later without anyone asking. A status read of a job nobody worked on for a minute kicks the worker (once a minute per job), every submit kicks it, and the daily sweep kicks it and fails anything unfinished after three days (`expired`).
+
 ## What push does not do
 
 - **iOS.** APNs needs each team's Apple key; out of scope.
 - **Devices without Google Play services** get nothing. The app reads over HTTP while it is open.
 - **Delivery guarantee.** `sent` means FCM accepted the message. Doze, a force-stopped app, a full FCM queue or an expired `ttlSec` can still drop it. No receipt, no open tracking.
-- **Topics, broadcast, campaigns, scheduling.** Not built (_Not built yet_).
+- **Scheduling, segments, a query over players.** A campaign is sent when it is submitted, to the users its CSV lists. A team schedules and selects on its own side.
+- **Topics of a team's own.** One topic per channel, the broadcast's.
 - **Per-device targeting, token listing or export.** Tokens are platform-internal; no team-facing route returns one.
-- **Deduplication.** Two calls are two messages.
+- **Deduplication of targeted sends.** Two calls are two messages. A campaign job is deduplicated by its `idempotencyKey` and, inside a file, by `userId`; a crashed batch may still repeat (_How a job runs_).
+- **Retry of failed recipients.** A job reports them; sending again is a new job with a new file.
 
 ## Operator
 
@@ -288,6 +578,23 @@ The digest line itself carries the five channels with the most tokens, each slot
 - **Send counters.** Every send adds its counts to one row per channel and UTC day, best effort: a failed write is logged (`push send stats failed`) and the send still answers. Rows are kept 30 days. Each send also writes one `push send` line to the `pushSend` function's log group with counts only (`sent`, `noToken`, `failed`, per-outcome `outcomes`, `deleted`, `ms`).
 - Other lines worth a filter: `push sender refused` and `push slot missing` (state, error, by slot label), `push registration failed`, `push app removal failed` and `push rollback left a firebase app` (console), `push pool load failed`.
 
+### Campaign worker, storage and upkeep
+
+- **`pushJob`** is a function of the console stack: one reserved container, 512 MB, 600 s, `PUSH_SSM_PATH` set, two Lambda retries. It is invoked asynchronously only — by `api` on a submit, a cancel and an idle status read, by `expire` once a day, and by itself. Its MariaDB connection is the one `api` gave up (`api` 10 → 9): console stays 12 of the budget, 57 of 60 in all. Self-invocation is allowed explicitly (`RecursiveLoop: Allow`): Lambda's loop detection would otherwise stop a long job's chain.
+- **Objects** live in the stack's private bucket (the one site zips are staged in, SSE-KMS): `push-uploads/{channelId}/{uploadId}.csv`, `push-reports/{channelId}/{jobId}.csv`, and `push-reports/{channelId}/{jobId}.parts/{batch}.csv` while a job runs. The bucket's lifecycle rules expire `push-uploads/` after 6 days and `push-reports/` after 8 — an upload may be named for a day and its job may run three more before the sweep fails it, so the rule never removes a file a live job reads; both are part of the stack's template, so a deploy applies them and there is no script to run.
+- **Daily sweep** (console `expire`, after the push sweep, five phases, each isolated; log line `push job sweep` or `push job sweep truncated`):
+  1. jobs, uploads and objects of push channels that died on this run;
+  2. uploads older than 2 days, object first — except one an unfinished job still reads;
+  3. jobs unfinished 3 days after their submit → `failed` / `expired`;
+  4. finished jobs older than 30 days (their idempotency keys go with them);
+  5. the stale count (jobs runnable for an hour or more that no worker claimed) and the kick: when anything is runnable, the worker is invoked.
+- A channel delete drains the same rows and both prefixes inline (20 statements of 500 rows, 1,000 objects per prefix); the sweep and the lifecycle take the rest. Templates go with the channel row's purge (a foreign key; at most 20 rows).
+- **Digest.** The push section carries the previous UTC day's jobs per channel (`jobs`, `failed`; dry runs left out), five channels at most. Warnings: `push:jobs:failed:{channelId}:{day}` for a channel with a failed job, `push:jobs:sweep:failed:{phase}` for a sweep phase that threw, `push:jobs:expired:{n}` when the sweep failed `n` jobs as expired and `push:jobs:stale:{n}` when `n` jobs had been runnable for over an hour unclaimed — the last two are how a `pushJob` that crashes at every start shows (each is repeated once every day it is true). Campaign sends add to `push_send_stats` like targeted sends (one `calls` per batch), so `push:send:failed:…` covers them too. No new alarm.
+- **Log lines** (counts only; no user id, device token or project id): `push job` (one per finished job, the pushJob log group), `push job worker` (one per invocation: `claimed`, `more`), `push job lease expired`, `push job lease lost`, `push job run failed` (error), `push job report failed`, `push job report parts left`, `push upload object left` (api), `push sender refused` (error, by slot label), `push team sender refused`, `push broadcast refused`, `push job kick failed` (api).
+- **Grants.** None: `push_templates`, `push_uploads` and `push_jobs` are console's alone, and the worker uses the console account.
+- **A stuck job** is visible as `status: "running"` with `processed` not moving. Reading its status kicks the worker; `POST …/cancel` ends it at the next claim. Nothing needs a manual database write.
+- **Granting both hard limits to one channel can saturate the worker.** 100 jobs a day of 100,000 rows each is more than one container sends in a day at a few hundred messages a second. Other channels still get every other turn, so they slow down rather than stop, but that channel's own queue grows until jobs expire at three days. Raise one limit or the other for a channel, not both, unless its volume was discussed.
+
 ### Rollout order per stage
 
 1. Owner: Firebase project, APIs, key into SSM (_Adding a project_).
@@ -298,6 +605,8 @@ The digest line itself carries the five channels with the most tokens, each slot
 6. `scripts/deploy-web.sh <stage>`.
 7. `node scripts/smoke/push.mjs <docBase> <debugKey> <authBase> <consoleBase>` (dev).
 
+Campaigns (after the above): `scripts/deploy.sh console <stage>` alone — it applies `m0029_push_campaigns`, adds the `pushJob` function, cuts `api` to 9 containers and adds the two lifecycle rules. No grant and no other stack. Then `node scripts/smoke/push-campaign.mjs <docBase> <debugKey> <authBase> <consoleBase>` (dev; it needs the state stack only to register two made-up tokens).
+
 Rolling console back past `m0028_push`: hard-delete the `push` channel rows and their `push_apps` rows first (`rules/deployment.md`).
 
 ## Not built yet
@@ -305,6 +614,6 @@ Rolling console back past `m0028_push`: hard-delete the `push` channel rows and 
 Decided in `docs/decisions.md`, tracked in the machine-local backlog:
 
 - **Deferred-match hook** (_Match: deferred mode_ #5) — built 2026-10-06 on the match stack, not deployed: a deferred match channel naming a `pushChannelId` sends each affected member a high-priority data-only `{channelId, matchId, state}` (`services/match/README.md` _Deferred mode_). It reads `push_tokens` and deletes nothing: a token FCM reports unregistered is left to the next targeted send and the 60-day sweep. Its sends are not in `push_send_stats`; each writes one `match push` log line. Bound (_Match: deferred mode_ #7): `proposed`/`expired` messages to one user on one channel are at least 10 s apart (dropped, counted as `outcomes.spaced`, never queued), and a player who declined or let a window close cannot queue again for `acceptTimeoutSec`.
-- **Campaigns and broadcast** (#7b, #7c, #9): templates, CSV jobs, reports, the per-channel FCM topic, and the limits `push.recipientsPerJob` and `push.jobsPerDay`.
+- **Campaigns and broadcast** (#7b, #7c, #9) — the server side is built (_Campaigns_): not deployed, and neither the console SPA nor `yyt push template|job|broadcast` exists yet.
 - **Console app notifications** (#10): the app joining the first pool project and one topic per installed catalog app.
-- **Client libraries**: no `push` package exists in tslib, csharplib or flutterlib; an app calls the two token routes directly.
+- **Client libraries**: no `push` package exists in tslib, csharplib or flutterlib; an app calls the two token routes directly and subscribes to the channel's topic itself (_Broadcast_).

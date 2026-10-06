@@ -1,0 +1,19 @@
+id:           pj_01
+kind:         campaign
+status:       queued
+key:          cli-e37d6d0d68351662470b65b06826508c8535c55d-send
+template:     pt_01
+title:        "Hi {{name}}"
+body:         "Season {{season}} is open"
+data:         {"screen":"season"}
+author:       m_1
+created:      2025-08-24T01:46:40Z
+started:      -
+finished:     -
+rows:         not counted yet
+sent:         0
+noToken:      0
+unregistered: 0
+failed:       0
+skipped:      0 (duplicates 0, missing variables 0, invalid 0)
+report:       none

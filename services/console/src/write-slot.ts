@@ -25,7 +25,7 @@ export function createWriteSlot({
 }: {
   kv: Kv;
   clock: Clock;
-}): (id: ConsoleIdentity) => Promise<void> {
+}): (id: Pick<ConsoleIdentity, "subject">) => Promise<void> {
   return async (id) => {
     const slot = Math.floor(clock.now() / MD_RATE_SLOT_MS);
     const ok = await kv.set(`mdrl:${id.subject}:${slot}`, "1", {

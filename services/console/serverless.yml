@@ -180,6 +180,9 @@ provider:
     SITE_CDN_DISTRIBUTION_ID: ${self:custom.siteDistributionId}
     # The worker `api` invokes asynchronously on commit.
     SITE_DEPLOY_FUNCTION: ${self:service}-${self:custom.stage}-siteDeploy
+    # The campaign worker `api` and `expire` kick, and that invokes itself
+    # while `push_jobs` holds runnable work.
+    PUSH_JOB_FUNCTION: ${self:service}-${self:custom.stage}-pushJob
     # `{slug}.{suffix}` host of every site, only where the distribution exists.
     SITE_HOST_SUFFIX: !If
       - HasSiteHost
@@ -209,6 +212,10 @@ provider:
               s3:prefix:
                 - posters/*
                 - site-uploads/*
+                # Campaign report parts are listed before they are joined,
+                # and a channel delete lists both prefixes.
+                - push-uploads/*
+                - push-reports/*
                 # The show sweep lists this prefix and deletes what nothing
                 # references; without it the list is denied, not empty.
                 - shots/*
@@ -220,6 +227,21 @@ provider:
             - s3:GetObject
             - s3:DeleteObject
           Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/site-uploads/*"]]
+        # Push campaigns: recipient CSVs (presigned PUT, read by the worker)
+        # and per-row reports (written by the worker, presigned GET), each
+        # under its own prefix of the same private bucket.
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/push-uploads/*"]]
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: !Join ["", [!GetAtt PosterBucket.Arn, "/push-reports/*"]]
         # Show screenshots: same bucket, its own prefix. A separate statement
         # because each object statement pins a single `!Join` Resource.
         - Effect: Allow
@@ -253,6 +275,11 @@ provider:
         - Effect: Allow
           Action: lambda:InvokeFunction
           Resource: arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:custom.stage}-siteDeploy
+        # job submit / daily sweep → async invoke of the campaign worker, and
+        # the worker's invoke of itself.
+        - Effect: Allow
+          Action: lambda:InvokeFunction
+          Resource: arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:custom.stage}-pushJob
         # Binary catalog artifacts and game assets share this bucket: presigned
         # PUT into uploads/ or asset-uploads/, commit copies to the app prefix
         # or assets/{bundle}/{version}/, delete covers cleanup — whole-bucket
@@ -283,8 +310,8 @@ provider:
               kms:ViaService: s3.${aws:region}.amazonaws.com
         # The push pool: `GetParametersByPath` on the stage's `push/fcm/` path
         # and nothing else in the parameter store. The role is shared by
-        # every function but `cdnGuard`; only `api` and `expire` are told the
-        # path. Both spellings of the path, since the action is authorised
+        # every function but `cdnGuard`; only `api`, `expire` and `pushJob`
+        # are told the path. Both spellings of the path, since the action is authorised
         # against the path itself and the parameters under it.
         - Effect: Allow
           Action: ssm:GetParametersByPath
@@ -320,8 +347,10 @@ functions:
   api:
     handler: src/handler.handler
     # One MySQL + one Redis connection per container; console's share of the
-    # host budget is 10 (api) + 1 (expire) — rules/data.md.
-    reservedConcurrency: 10
+    # host budget is 12: 9 (api) + 1 (expire) + 1 (siteDeploy) + 1 (pushJob)
+    # — rules/data.md. `api` gave one container to `pushJob` (2026-10-06), so
+    # the share and the host total (57 of 60) did not move.
+    reservedConcurrency: 9
     # The KEK of encrypted asset bundles reaches this function only, never
     # the provider (which `expire`, `siteDeploy`, `gatewayProbe` and
     # `cdnGuard` inherit). Created once by `ASSET_KEK_INIT=1
@@ -333,7 +362,8 @@ functions:
       # The stage's pool of Firebase projects: one SecureString per slot under
       # this path, read at run time (never resolved into the template, so a
       # service-account key is in no CloudFormation parameter and a new slot
-      # needs no deploy). Set on `api` and `expire` only; a path holding no
+      # needs no deploy). Set on `api`, `expire` and `pushJob` only; a path
+      # holding no
       # parameter is a stage with no project yet, and platform push answers
       # 503.
       PUSH_SSM_PATH: ${self:custom.pushSsmPath}
@@ -372,6 +402,24 @@ functions:
     timeout: 300
     # Every path ends in a status write; a retry could only repeat a failure.
     maximumRetryAttempts: 0
+
+  pushJob:
+    handler: src/handler.pushJob
+    # The campaign worker (docs/decisions.md *Push notifications* #9). One
+    # container: it is what paces every campaign of the stage against the
+    # Firebase projects all teams share, and it holds one MariaDB connection
+    # — the one `api` gave up (rules/data.md).
+    reservedConcurrency: 1
+    memorySize: 512
+    # It stops claiming jobs after 7 minutes and finishes its batch; the
+    # rest of the 10 is room for that batch and the report write.
+    timeout: 600
+    # A run that dies (the database, the bucket) gave its job back first;
+    # the retries, 1 and 2 minutes later, pick it up again.
+    maximumRetryAttempts: 2
+    environment:
+      # The worker sends with the pool's keys.
+      PUSH_SSM_PATH: ${self:custom.pushSsmPath}
 
   gatewayProbe:
     handler: src/handler.gatewayProbe
@@ -452,6 +500,12 @@ resources:
           DetailedMetricsEnabled: true
           ThrottlingRateLimit: 50
           ThrottlingBurstLimit: 100
+    # The campaign worker invokes itself by design, and Lambda's recursive
+    # loop detection would stop the chain after about 16 links. The chain is
+    # bounded by `push_jobs`: a link is made only while runnable work is left.
+    PushJobLambdaFunction:
+      Properties:
+        RecursiveLoop: Allow
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
     HasArtifactDistribution:
@@ -491,6 +545,20 @@ resources:
               Status: Enabled
               AbortIncompleteMultipartUpload:
                 DaysAfterInitiation: 1
+            # Push campaigns (docs/push.md *Campaigns*). The daily sweep
+            # removes an upload after two days and a report is refused after
+            # seven; these rules are the net under both. An upload may be
+            # named for a day and its job may run for three more (then the
+            # sweep fails it `expired`), so the object must outlive day 4
+            # with room for the rule's own midnight rounding: 6.
+            - Id: push-uploads
+              Status: Enabled
+              Prefix: push-uploads/
+              ExpirationInDays: 6
+            - Id: push-reports
+              Status: Enabled
+              Prefix: push-reports/
+              ExpirationInDays: 8
         CorsConfiguration:
           CorsRules:
             - AllowedMethods: [PUT, GET]

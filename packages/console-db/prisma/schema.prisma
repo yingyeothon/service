@@ -292,6 +292,7 @@ model channels {
   limit_requests  limit_requests[]
   limit_overrides limit_overrides[]
   push_apps       push_apps?
+  push_templates  push_templates[]
 
   @@unique([team_id, name], map: "channels_team_name")
   @@index([kind, owner_id], map: "channels_kind_owner")
@@ -1463,6 +1464,104 @@ model push_send_stats {
   /// Both readers are global: the digest's top failures of a day and the
   /// retention delete, so `day` leads.
   @@index([day, failed], map: "push_send_stats_day")
+}
+
+/// A message template of a push channel (`{{var}}` placeholders in `title`,
+/// `body` and the values of `data_json`). At most 20 per channel, counted
+/// under the channel row's lock. The foreign key cascades: the rows are few.
+model push_templates {
+  id         String   @id @db.VarChar(64)
+  channel_id String   @db.VarChar(64)
+  /// Database default collation: case-variants of one name collide.
+  name       String   @db.VarChar(64)
+  title      String   @db.VarChar(1024)
+  body       String   @db.VarChar(4096)
+  /// A JSON object of string values.
+  data_json  String   @db.Text
+  created_by String   @db.VarChar(64)
+  updated_by String   @db.VarChar(64)
+  created_at BigInt
+  updated_at BigInt
+  channels   channels @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "push_templates_channel_fk")
+
+  @@unique([channel_id, name], map: "push_templates_name")
+}
+
+/// A recipient CSV a presigned PUT was issued for; the object key is derived
+/// from the channel and the id. No foreign key: swept by age, and a channel's
+/// delete drains it in bounded batches.
+model push_uploads {
+  id         String @id @db.VarChar(64)
+  channel_id String @db.VarChar(64)
+  /// The byte length signed into the upload URL.
+  size       BigInt
+  /// A member id, or the literal `apikey`.
+  created_by String @db.VarChar(64)
+  created_at BigInt
+
+  @@index([channel_id], map: "push_uploads_channel")
+  /// The age sweep is global, so `created_at` leads.
+  @@index([created_at], map: "push_uploads_created")
+}
+
+/// One campaign, dry run or broadcast: the worker's queue entry, its progress
+/// and its result. `kind` and `status` are VARCHARs held by CHECK constraints
+/// the migration adds (this schema file cannot express them). No foreign key.
+model push_jobs {
+  id               String  @id @db.VarChar(64)
+  channel_id       String  @db.VarChar(64)
+  /// `campaign` | `broadcast`.
+  kind             String  @db.VarChar(16)
+  dry_run          Boolean
+  idempotency_key  String  @db.VarChar(64)
+  /// sha256 of the submitted parameters.
+  params_hash      String  @db.VarChar(64)
+  template_id      String? @db.VarChar(64)
+  /// The message as it was at submit time.
+  title            String  @db.VarChar(1024)
+  body             String  @db.VarChar(4096)
+  data_json        String  @db.Text
+  options_json     String  @db.VarChar(255)
+  upload_id        String? @db.VarChar(64)
+  upload_etag      String? @db.VarChar(128)
+  /// UTC day number of `created_at`.
+  day              Int
+  /// `queued` | `running` | `done` | `failed`.
+  status           String  @db.VarChar(16)
+  error            String? @db.VarChar(32)
+  error_detail     String? @db.VarChar(255)
+  cancel_requested Boolean
+  /// Data rows of the CSV; null until the worker counted them.
+  total            Int?
+  /// Data rows fully processed.
+  cursor_row       Int
+  resolved         Int
+  sent             Int
+  no_token         Int
+  unregistered     Int
+  failed           Int
+  duplicates       Int
+  missing          Int
+  invalid          Int
+  attempts         Int
+  lease_owner      String? @db.VarChar(64)
+  lease_until      BigInt
+  /// A member id, or the literal `apikey`.
+  author           String  @db.VarChar(64)
+  created_at       BigInt
+  started_at       BigInt?
+  finished_at      BigInt?
+  /// When the per-row report object was written; null while there is none.
+  report_at        BigInt?
+  updated_at       BigInt
+
+  @@unique([channel_id, idempotency_key], map: "push_jobs_idem")
+  @@index([channel_id, created_at], map: "push_jobs_channel")
+  /// The daily cap's count and the digest's per-day groups.
+  @@index([day, channel_id, dry_run], map: "push_jobs_day")
+  @@index([status, lease_until], map: "push_jobs_runnable")
+  @@index([finished_at], map: "push_jobs_finished")
+  @@index([upload_id], map: "push_jobs_upload")
 }
 
 // Appended to only; multi-line with no comment inside (`test/enumOrder.test.ts`).

@@ -21,11 +21,14 @@ import (
 // rotate/delete are the `yyt channels` commands with the kind fixed
 // (`addChannelCommands`); this file adds what only that kind has: the
 // google-services.json download, the team sender key and the admin's pool.
+// Campaigns (templates, jobs, the broadcast) are in push_campaign.go.
 //
 // There is no `yyt push send`: sending is a state-stack route authenticated by
 // the channel apiKey, and this CLI holds a console token only. No command
 // calls a data-plane route (kv, leaderboard and documents print their paths
 // instead), so a game server sends with the `apiBase` and `apiKey` printed here.
+// For the same reason campaigns go through the member routes only; the
+// apiKey family `/push-api/{channelId}/…` is a game server's.
 
 // googleServicesFile is the name Android's build expects in `app/`.
 const googleServicesFile = "google-services.json"
@@ -173,14 +176,20 @@ func withPushHint(err error, scopeFlag string, over ...map[string]string) error 
 func newPush(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "push",
-		Short: "Push notifications (Android, FCM): push channels, their client config and sender key",
+		Short: "Push notifications (Android, FCM): push channels, their client config and sender key, campaigns and broadcasts",
 		Long: "Push notifications (Android, FCM).\n\n" +
 			"A push channel registers one Android application id with the platform's\n" +
 			"Firebase sender and yields the google-services.json the app embeds. The app\n" +
 			"registers its FCM token with a player JWT of the channel's auth channel, and\n" +
 			"a game server sends with the channel apiKey; both go to the `apiBase` that\n" +
 			"`channel get` prints (PUT|DELETE /push/{channel}/token, POST /push/{channel}/send).\n" +
-			"This CLI does not send: it holds a console token, not the channel apiKey.",
+			"This CLI makes no targeted send: it holds a console token, not the channel apiKey.\n\n" +
+			"Campaigns run on the console and take the console token: `template` holds\n" +
+			"the messages, `job submit` sends one to the users a CSV lists (`--dry-run`\n" +
+			"first), `broadcast` sends one public message to every subscribed install\n" +
+			"(anyone holding the app can subscribe: no secret belongs in it). A game server\n" +
+			"runs the same job routes with the channel apiKey as Bearer under\n" +
+			"/push-api/{channelId}/… on the console API host.",
 	}
 	ch := &cobra.Command{
 		Use:     "channel",
@@ -198,6 +207,7 @@ func newPush(a *App) *cobra.Command {
 	resolve := a.channelResolver("push")
 	ch.AddCommand(a.pushConfigCmd(resolve), a.pushSenderKeyCmd(resolve))
 	c.AddCommand(group(ch), a.pushPoolCmd())
+	a.addPushCampaignCommands(c, resolve)
 	return group(c)
 }
 

@@ -33,6 +33,7 @@ import type {
   ListingsDb,
   PushChannelConfig,
   PushDb,
+  PushJobsDb,
 } from "@yyt/console-db";
 import type { PushPool } from "@yyt/push";
 import {
@@ -98,6 +99,9 @@ import {
   drainPushTokens,
   releasePushApp,
 } from "./push.js";
+import { createPushCampaignRoutes } from "./push-campaign.js";
+import { drainPushCampaign } from "./push-job-sweep.js";
+import type { PushJobStore } from "./push-job-store.js";
 import { createWriteSlot } from "./write-slot.js";
 import { createTokenMinter } from "./api-token.js";
 import { createAppHandoffRoutes } from "./app-handoff.js";
@@ -155,6 +159,15 @@ export interface ConsoleAppOptions {
    * names no path: platform-sender push channels answer 503.
    */
   pushPool?: PushPool;
+  /**
+   * Push campaigns: templates, uploads and jobs. Omit on a stage without
+   * the tables: the campaign routes are then not served.
+   */
+  pushJobs?: PushJobsDb;
+  /** Recipient CSVs and reports (the private bucket); omit = 503 on both. */
+  pushJobStore?: PushJobStore;
+  /** Kicks the `pushJob` worker; omit = a job waits for the daily sweep. */
+  pushJobInvoke?: () => Promise<void>;
   /**
    * Publishes one e-mail per new limit request to the stage's alarm topic;
    * omit when the stage has none. Bounded (a short timeout, one attempt): it
@@ -261,6 +274,9 @@ export function createConsoleApp({
   limits,
   push,
   pushPool,
+  pushJobs,
+  pushJobStore,
+  pushJobInvoke,
   notify,
   posters,
   artifacts,
@@ -1176,6 +1192,8 @@ export function createConsoleApp({
           await releasePushApp(pushDeps, row.id);
           await drainPushTokens(push, row.id, logger);
           await drainPushSendStats(push, row.id, logger);
+          // Campaign rows and objects: no foreign key holds them either.
+          await drainPushCampaign(pushJobs, pushJobStore, row.id, logger);
         }
         await audit(id.subject, "channel.delete", row.id);
         await channelHistory(row, id.subject, "resource.delete");
@@ -1315,6 +1333,24 @@ export function createConsoleApp({
     history,
   });
 
+  const pushCampaignRoutes = pushJobs
+    ? createPushCampaignRoutes({
+        jobs: pushJobs,
+        db,
+        limits,
+        access,
+        pool: pushPool,
+        store: pushJobStore,
+        invoke: pushJobInvoke,
+        kv,
+        writeSlot,
+        clock,
+        logger,
+        audit,
+        history,
+      })
+    : [];
+
   const limitRoutes = createLimitRoutes({
     limits,
     db,
@@ -1322,6 +1358,7 @@ export function createConsoleApp({
     assets,
     kvstore,
     push,
+    pushJobs,
     access,
     history,
     kv,
@@ -1414,6 +1451,7 @@ export function createConsoleApp({
       ...channelRedisRoutes,
       ...channelDocKeyRoutes,
       ...pushRoutes,
+      ...pushCampaignRoutes,
       ...gatewayRoutes,
     ],
     identity: createIdentityResolver({
