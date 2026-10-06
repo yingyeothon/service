@@ -105,7 +105,7 @@ async function authChannel(label) {
     headers: as(owner),
     body: {
       kind: "auth",
-      name: `push smoke ${label} ${stamp}`,
+      name: `push smoke auth ${label} ${stamp}`,
       config: {
         audience: "push-smoke",
         tokenTtlSec: 3600,
@@ -733,7 +733,11 @@ try {
     );
   } else if (created.status !== 201) {
     mode = "create refused";
-    check("create a push channel", false, brief(created));
+    check(
+      "create a push channel",
+      false,
+      `${brief(created)} ${created.body?.error?.message ?? ""}`,
+    );
     console.log(
       {
         push_pool_full:
