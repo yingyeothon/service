@@ -5,13 +5,12 @@ import 'package:package_info_plus/package_info_plus.dart';
 void main() {
   test('getCurrentAppVersion combines version and build number', () async {
     final version = await getCurrentAppVersion(
-      packageInfoLoader:
-          () async => PackageInfo(
-            appName: 'Catalog',
-            packageName: 'life.yyt.console',
-            version: '1.0.2',
-            buildNumber: '5',
-          ),
+      packageInfoLoader: () async => PackageInfo(
+        appName: 'Catalog',
+        packageName: 'life.yyt.console',
+        version: '1.0.2',
+        buildNumber: '5',
+      ),
     );
 
     expect(version, '1.0.2+5');
@@ -23,13 +22,12 @@ void main() {
 
     final result = await consumePendingSelfUpdate(
       storage: storage,
-      packageInfoLoader:
-          () async => PackageInfo(
-            appName: 'Catalog',
-            packageName: 'life.yyt.console',
-            version: '1.0.2',
-            buildNumber: '5',
-          ),
+      packageInfoLoader: () async => PackageInfo(
+        appName: 'Catalog',
+        packageName: 'life.yyt.console',
+        version: '1.0.2',
+        buildNumber: '5',
+      ),
     );
 
     expect(result, isNotNull);
@@ -43,13 +41,12 @@ void main() {
 
     final result = await consumePendingSelfUpdate(
       storage: storage,
-      packageInfoLoader:
-          () async => PackageInfo(
-            appName: 'Catalog',
-            packageName: 'life.yyt.console',
-            version: '1.0.2',
-            buildNumber: '4',
-          ),
+      packageInfoLoader: () async => PackageInfo(
+        appName: 'Catalog',
+        packageName: 'life.yyt.console',
+        version: '1.0.2',
+        buildNumber: '4',
+      ),
     );
 
     expect(result, isNull);

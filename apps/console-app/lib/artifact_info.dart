@@ -28,13 +28,12 @@ class ArtifactInfo {
       size: (json['size'] as num?)?.toInt() ?? 0,
       tags: tags,
       // Console sends unix seconds; the legacy API sent an ISO string.
-      createdAt:
-          created is num
-              ? DateTime.fromMillisecondsSinceEpoch(
-                (created * 1000).toInt(),
-                isUtc: true,
-              )
-              : DateTime.parse(created as String),
+      createdAt: created is num
+          ? DateTime.fromMillisecondsSinceEpoch(
+              (created * 1000).toInt(),
+              isUtc: true,
+            )
+          : DateTime.parse(created as String),
     );
   }
 

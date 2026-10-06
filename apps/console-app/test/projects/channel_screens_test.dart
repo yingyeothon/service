@@ -65,7 +65,10 @@ class _ChannelServer {
     final path = req.url.path;
     if (path == '/limits') {
       return jsonResponse({
-        'scope': {'kind': 'channel', 'id': req.url.queryParameters['scope']?.split(':').last},
+        'scope': {
+          'kind': 'channel',
+          'id': req.url.queryParameters['scope']?.split(':').last,
+        },
         'teamId': 'team_1',
         'limits': <Object>[],
         'pending': <Object>[],
@@ -171,27 +174,21 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Builder(
-          builder:
-              (context) => Scaffold(
-                body: TextButton(
-                  onPressed:
-                      () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder:
-                              (_) => ChannelDetailScreen(
-                                authState: AuthState(),
-                                team: team,
-                                api: ProjectsApi(
-                                  token: 'tok',
-                                  client: server.client,
-                                ),
-                                channelId: channelId,
-                              ),
-                        ),
-                      ),
-                  child: const Text('open'),
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => ChannelDetailScreen(
+                    authState: AuthState(),
+                    team: team,
+                    api: ProjectsApi(token: 'tok', client: server.client),
+                    channelId: channelId,
+                  ),
                 ),
               ),
+              child: const Text('open'),
+            ),
+          ),
         ),
       ),
     );

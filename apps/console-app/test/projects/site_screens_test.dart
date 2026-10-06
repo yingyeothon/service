@@ -164,26 +164,23 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Builder(
-          builder:
-              (context) => Scaffold(
-                body: Center(
-                  child: TextButton(
-                    onPressed:
-                        () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder:
-                                (_) => SiteDetailScreen(
-                                  authState: AuthState(),
-                                  team: team,
-                                  api: api,
-                                  siteId: 'st_1',
-                                ),
-                          ),
-                        ),
-                    child: const Text('open'),
+          builder: (context) => Scaffold(
+            body: Center(
+              child: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => SiteDetailScreen(
+                      authState: AuthState(),
+                      team: team,
+                      api: api,
+                      siteId: 'st_1',
+                    ),
                   ),
                 ),
+                child: const Text('open'),
               ),
+            ),
+          ),
         ),
       ),
     );
@@ -271,14 +268,13 @@ void main() {
     tester,
   ) async {
     final server = _SiteServer(
-      onPatch:
-          (_) => jsonResponse({
-            'error': {
-              'code': 'conflict',
-              'message': 'domain is taken',
-              'details': {'reason': 'domain_taken'},
-            },
-          }, 409),
+      onPatch: (_) => jsonResponse({
+        'error': {
+          'code': 'conflict',
+          'message': 'domain is taken',
+          'details': {'reason': 'domain_taken'},
+        },
+      }, 409),
     );
     await pumpDetail(tester, server);
     await tester.tap(find.byTooltip('사이트 편집'));
@@ -304,20 +300,19 @@ void main() {
     tester,
   ) async {
     final server = _SiteServer(
-      onPatch:
-          (_) => jsonResponse({
-            'error': {
-              'code': 'conflict',
-              'message': 'too many site names',
-              'details': {
-                'reason': 'domain_cap',
-                'names': [
-                  {'name': 'one', 'releasedAt': null},
-                  {'name': 'two', 'releasedAt': 1700000000},
-                ],
-              },
-            },
-          }, 409),
+      onPatch: (_) => jsonResponse({
+        'error': {
+          'code': 'conflict',
+          'message': 'too many site names',
+          'details': {
+            'reason': 'domain_cap',
+            'names': [
+              {'name': 'one', 'releasedAt': null},
+              {'name': 'two', 'releasedAt': 1700000000},
+            ],
+          },
+        },
+      }, 409),
     );
     await pumpDetail(tester, server);
     await tester.tap(find.byTooltip('사이트 편집'));
@@ -376,11 +371,10 @@ void main() {
   ) async {
     final server = _SiteServer(
       busyReads: 1,
-      onPatch:
-          (body) => jsonResponse(
-            _view(busy: true, movingTo: body['domain'] as String),
-            202,
-          ),
+      onPatch: (body) => jsonResponse(
+        _view(busy: true, movingTo: body['domain'] as String),
+        202,
+      ),
     );
     await pumpDetail(tester, server);
     await tester.tap(find.byTooltip('사이트 편집'));

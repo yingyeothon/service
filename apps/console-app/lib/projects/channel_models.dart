@@ -103,15 +103,15 @@ class Channel {
     id: j['id'] as String,
     kind: (j['kind'] as String?) ?? '',
     name: (j['name'] as String?) ?? '',
-    config:
-        j['config'] is Map<String, dynamic>
-            ? Map<String, dynamic>.unmodifiable(j['config'] as Map)
-            : const {},
+    config: j['config'] is Map<String, dynamic>
+        ? Map<String, dynamic>.unmodifiable(j['config'] as Map)
+        : const {},
     createdAt: fromUnixSeconds(j['createdAt']),
     expiresAt: fromUnixSeconds(j['expiresAt']),
     status: (j['status'] as String?) ?? '',
-    disabledAt:
-        j['disabledAt'] is num ? fromUnixSeconds(j['disabledAt']) : null,
+    disabledAt: j['disabledAt'] is num
+        ? fromUnixSeconds(j['disabledAt'])
+        : null,
     teamId: _str(j['teamId']),
     teamName: _str(j['teamName']),
     projectId: _str(j['projectId']),

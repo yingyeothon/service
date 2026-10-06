@@ -58,7 +58,11 @@ class _ProjectScreenState extends State<ProjectScreen> {
         appBar: AppBar(
           title: Text('${team.name} / ${widget.project.name}'),
           bottom: const TabBar(
-            tabs: [Tab(text: '이슈'), Tab(text: '사이트'), Tab(text: '채널')],
+            tabs: [
+              Tab(text: '이슈'),
+              Tab(text: '사이트'),
+              Tab(text: '채널'),
+            ],
           ),
         ),
         body: Column(
@@ -69,11 +73,10 @@ class _ProjectScreenState extends State<ProjectScreen> {
                 child: NoticeCard(
                   icon: Icons.visibility_outlined,
                   tone: ChipTone.neutral,
-                  text:
-                      team.role == 'admin'
-                          ? '읽기 전용입니다. 플랫폼 관리자는 채널을 연장하거나 삭제할 수 있지만, '
-                              '만들거나 고치거나 시크릿을 볼 수는 없습니다.'
-                          : '읽기 전용입니다. 팀 좌석(소유자·멤버)이 있어야 만들거나 고칠 수 있습니다.',
+                  text: team.role == 'admin'
+                      ? '읽기 전용입니다. 플랫폼 관리자는 채널을 연장하거나 삭제할 수 있지만, '
+                            '만들거나 고치거나 시크릿을 볼 수는 없습니다.'
+                      : '읽기 전용입니다. 팀 좌석(소유자·멤버)이 있어야 만들거나 고칠 수 있습니다.',
                 ),
               ),
             Expanded(

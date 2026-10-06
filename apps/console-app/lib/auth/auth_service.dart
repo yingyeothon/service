@@ -195,8 +195,9 @@ class AuthService {
         final networkSnapshot = await _collectNetworkSnapshot(
           requestContext.uri,
         );
-        final nextDelay =
-            canRetry ? _computeBackoffDelay(transportAttempt) : null;
+        final nextDelay = canRetry
+            ? _computeBackoffDelay(transportAttempt)
+            : null;
 
         AuthDiagnosticLogger.logTransportFailure(
           context: requestContext,
@@ -265,15 +266,14 @@ class AuthService {
         includeLoopback: false,
         includeLinkLocal: true,
       ).timeout(const Duration(seconds: 2));
-      snapshot['interfaces'] =
-          interfaces
-              .map(
-                (iface) => <String, Object?>{
-                  'name': iface.name,
-                  'addresses': iface.addresses.map((a) => a.address).toList(),
-                },
-              )
-              .toList();
+      snapshot['interfaces'] = interfaces
+          .map(
+            (iface) => <String, Object?>{
+              'name': iface.name,
+              'addresses': iface.addresses.map((a) => a.address).toList(),
+            },
+          )
+          .toList();
     } catch (e) {
       snapshot['interfacesError'] = e.toString();
     }

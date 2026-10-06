@@ -4,10 +4,9 @@
 DateTime _time(Object? v) => fromUnixSeconds(v);
 
 /// A console timestamp (unix seconds) as UTC; the epoch when absent.
-DateTime fromUnixSeconds(Object? v) =>
-    v is num
-        ? DateTime.fromMillisecondsSinceEpoch(v.toInt() * 1000, isUtc: true)
-        : DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+DateTime fromUnixSeconds(Object? v) => v is num
+    ? DateTime.fromMillisecondsSinceEpoch(v.toInt() * 1000, isUtc: true)
+    : DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 
 /// `createdBy` is null when the member no longer exists.
 String _login(Object? v) => v is String && v.isNotEmpty ? v : '(알 수 없음)';
@@ -110,11 +109,10 @@ class Issue {
     createdBy: _login(j['createdBy']),
     createdAt: _time(j['createdAt']),
     updatedAt: _time(j['updatedAt']),
-    comments:
-        ((j['comments'] as List<dynamic>?) ?? const [])
-            .cast<Map<String, dynamic>>()
-            .map(IssueComment.fromJson)
-            .toList(),
+    comments: ((j['comments'] as List<dynamic>?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(IssueComment.fromJson)
+        .toList(),
   );
 }
 
@@ -176,10 +174,9 @@ class Discussion {
     createdAt: _time(j['createdAt']),
     updatedAt: _time(j['updatedAt']),
     mine: j['mine'] == true,
-    comments:
-        ((j['comments'] as List<dynamic>?) ?? const [])
-            .cast<Map<String, dynamic>>()
-            .map(IssueComment.fromJson)
-            .toList(),
+    comments: ((j['comments'] as List<dynamic>?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(IssueComment.fromJson)
+        .toList(),
   );
 }

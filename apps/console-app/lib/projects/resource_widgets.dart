@@ -200,29 +200,29 @@ Future<bool> confirmDestructive(
   required String title,
   required String message,
   required String confirmLabel,
+
   /// The dismiss button; name it when the action itself is a cancellation.
   String cancelLabel = '취소',
 }) async {
   final ok = await showDialog<bool>(
     context: context,
-    builder:
-        (ctx) => AlertDialog(
-          title: Text(title),
-          content: Text(message),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(cancelLabel),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFB3261E),
-              ),
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(confirmLabel),
-            ),
-          ],
+    builder: (ctx) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: Text(cancelLabel),
         ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFFB3261E),
+          ),
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: Text(confirmLabel),
+        ),
+      ],
+    ),
   );
   return ok == true;
 }

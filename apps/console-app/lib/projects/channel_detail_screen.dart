@@ -78,12 +78,11 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
   Future<void> _edit(Channel channel) async {
     final updated = await Navigator.of(context).push<Channel>(
       MaterialPageRoute<Channel>(
-        builder:
-            (_) => ChannelFormScreen.edit(
-              api: _api,
-              existing: channel,
-              onUnauthorized: _unauthorized,
-            ),
+        builder: (_) => ChannelFormScreen.edit(
+          api: _api,
+          existing: channel,
+          onUnauthorized: _unauthorized,
+        ),
       ),
     );
     if (updated == null || !mounted) return;
@@ -170,32 +169,29 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
               onSelected: (v) {
                 if (v == 'delete') _delete(c);
               },
-              itemBuilder:
-                  (_) => [
-                    PopupMenuItem(
-                      value: 'delete',
-                      enabled: !_acting,
-                      child: const Text('채널 삭제'),
-                    ),
-                  ],
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'delete',
+                  enabled: !_acting,
+                  child: const Text('채널 삭제'),
+                ),
+              ],
             ),
         ],
       ),
-      body:
-          c == null
-              ? Center(
-                child:
-                    _error == null
-                        ? const CircularProgressIndicator()
-                        : Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Text(
-                            '채널을 불러오지 못했습니다.\n$_error',
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-              )
-              : RefreshIndicator(onRefresh: _load, child: _body(c)),
+      body: c == null
+          ? Center(
+              child: _error == null
+                  ? const CircularProgressIndicator()
+                  : Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        '채널을 불러오지 못했습니다.\n$_error',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+            )
+          : RefreshIndicator(onRefresh: _load, child: _body(c)),
     );
   }
 
@@ -245,7 +241,10 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
         const SizedBox(height: 8),
         SectionCard(
           title: '엔드포인트',
-          children: [CopyRow(label: '채널 ID', value: c.id), ..._kindDetails(c)],
+          children: [
+            CopyRow(label: '채널 ID', value: c.id),
+            ..._kindDetails(c),
+          ],
         ),
         LimitsSection(
           api: _api,
@@ -286,10 +285,9 @@ class _ChannelDetailScreenState extends State<ChannelDetailScreen> {
     switch (c.kind) {
       case 'auth':
         final providers = (cfg['providers'] as Map?)?.keys.cast<String>() ?? [];
-        final allowlist =
-            ((cfg['redirectAllowlist'] as List?) ?? const [])
-                .whereType<String>()
-                .toList();
+        final allowlist = ((cfg['redirectAllowlist'] as List?) ?? const [])
+            .whereType<String>()
+            .toList();
         return [
           CopyRow(label: '발급자 (iss)', value: c.issuer ?? ''),
           CopyRow(label: '오디언스 (aud)', value: '${cfg['audience'] ?? ''}'),

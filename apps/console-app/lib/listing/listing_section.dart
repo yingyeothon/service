@@ -103,14 +103,13 @@ class _ListingSectionState extends State<ListingSection> {
   Future<void> _edit() async {
     final saved = await Navigator.of(context).push<CatalogListing>(
       MaterialPageRoute<CatalogListing>(
-        builder:
-            (_) => ListingFormScreen(
-              api: widget.api,
-              appId: widget.appId,
-              appName: widget.appName,
-              listing: _listing,
-              onUnauthorized: widget.onUnauthorized,
-            ),
+        builder: (_) => ListingFormScreen(
+          api: widget.api,
+          appId: widget.appId,
+          appName: widget.appName,
+          listing: _listing,
+          onUnauthorized: widget.onUnauthorized,
+        ),
       ),
     );
     if (!mounted) return;
@@ -335,9 +334,9 @@ class _ListingSectionState extends State<ListingSection> {
       HintText(
         public
             ? '모든 사용자가 설치할 수 있습니다. 여기에 이름을 올린 멤버는 검색하지 않아도 앱 목록에서 '
-                '바로 보고, 대상을 "지정 멤버"로 바꾸면 이 목록만 남습니다.'
+                  '바로 보고, 대상을 "지정 멤버"로 바꾸면 이 목록만 남습니다.'
             : '여기에 이름을 올린 플랫폼 멤버만 설치할 수 있습니다. 비어 있으면 팀 밖에서는 아무도 '
-                '볼 수 없습니다.',
+                  '볼 수 없습니다.',
       ),
       if (widget.canWrite)
         Row(
@@ -369,12 +368,10 @@ class _ListingSectionState extends State<ListingSection> {
               padding: const EdgeInsets.only(top: 6),
               child: ValueListenableBuilder<TextEditingValue>(
                 valueListenable: _login,
-                builder:
-                    (context, v, _) => FilledButton.tonal(
-                      onPressed:
-                          _busy || v.text.trim().isEmpty ? null : _addViewer,
-                      child: const Text('추가'),
-                    ),
+                builder: (context, v, _) => FilledButton.tonal(
+                  onPressed: _busy || v.text.trim().isEmpty ? null : _addViewer,
+                  child: const Text('추가'),
+                ),
               ),
             ),
           ],
@@ -405,14 +402,13 @@ class _ListingSectionState extends State<ListingSection> {
               '${formatRelative(_at(v.addedAt))}'
               '${v.addedBy == null ? '' : ' · ${v.addedBy} 추가'}',
             ),
-            trailing:
-                widget.canWrite && v.login != null
-                    ? IconButton(
-                      tooltip: '${v.login} 제외',
-                      onPressed: _busy ? null : () => _removeViewer(v.login!),
-                      icon: const Icon(Icons.person_remove_outlined),
-                    )
-                    : null,
+            trailing: widget.canWrite && v.login != null
+                ? IconButton(
+                    tooltip: '${v.login} 제외',
+                    onPressed: _busy ? null : () => _removeViewer(v.login!),
+                    icon: const Icon(Icons.person_remove_outlined),
+                  )
+                : null,
           ),
     ];
   }

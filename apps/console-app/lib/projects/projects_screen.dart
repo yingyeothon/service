@@ -90,9 +90,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     });
     try {
       _expanded ??= await widget.expansionStore.read();
-      final teams =
-          (await _api.listTeams()).toList()
-            ..sort((a, b) => a.name.compareTo(b.name));
+      final teams = (await _api.listTeams()).toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
       final projects = <String, List<Project>>{};
       final discussions = <String, List<Discussion>>{};
       for (final team in teams) {
@@ -111,9 +110,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
             throw e;
           }),
         ]);
-        projects[team.id] =
-            (results[0] as List<Project>)
-              ..sort((a, b) => a.name.compareTo(b.name));
+        projects[team.id] = (results[0] as List<Project>)
+          ..sort((a, b) => a.name.compareTo(b.name));
         discussions[team.id] = sortDiscussionsNewestFirst(
           results[1] as List<Discussion>,
         );
@@ -180,13 +178,12 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
         _projectOf(team, issue) ?? projectStub(team, issue.projectId);
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder:
-            (_) => IssueDetailScreen(
-              authState: widget.authState,
-              team: team,
-              project: project,
-              number: issue.number,
-            ),
+        builder: (_) => IssueDetailScreen(
+          authState: widget.authState,
+          team: team,
+          project: project,
+          number: issue.number,
+        ),
       ),
     );
     if (mounted) await _loadRecent(team, force: true);
@@ -195,13 +192,12 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   Future<void> _openTeamIssues(Team team) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder:
-            (_) => TeamIssuesScreen(
-              authState: widget.authState,
-              team: team,
-              projects: _projects[team.id] ?? const [],
-              api: _api,
-            ),
+        builder: (_) => TeamIssuesScreen(
+          authState: widget.authState,
+          team: team,
+          projects: _projects[team.id] ?? const [],
+          api: _api,
+        ),
       ),
     );
     if (mounted) await _loadRecent(team, force: true);
@@ -210,13 +206,12 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   Future<void> _openProject(Team team, Project project) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder:
-            (_) => ProjectScreen(
-              authState: widget.authState,
-              team: team,
-              project: project,
-              api: _api,
-            ),
+        builder: (_) => ProjectScreen(
+          authState: widget.authState,
+          team: team,
+          project: project,
+          api: _api,
+        ),
       ),
     );
     if (mounted) await _loadRecent(team, force: true);
@@ -225,8 +220,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   Future<void> _openDiscussions(Team team) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder:
-            (_) => DiscussionsScreen(authState: widget.authState, team: team),
+        builder: (_) =>
+            DiscussionsScreen(authState: widget.authState, team: team),
       ),
     );
     if (mounted) await _load();
@@ -271,14 +266,13 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
         actions: [
           IconButton(
             tooltip: '새로고침',
-            icon:
-                _loading
-                    ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : const Icon(Icons.refresh_rounded),
+            icon: _loading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
             onPressed: _loading ? null : _load,
           ),
           ProfileMenuButton(authState: widget.authState),
@@ -363,14 +357,13 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                     margin: const EdgeInsets.only(bottom: 8),
                     child: ListTile(
                       title: Text(project.name),
-                      subtitle:
-                          project.description.isEmpty
-                              ? null
-                              : Text(
-                                project.description,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                      subtitle: project.description.isEmpty
+                          ? null
+                          : Text(
+                              project.description,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                       trailing: const Icon(Icons.chevron_right_rounded),
                       onTap: () => _openProject(team, project),
                     ),

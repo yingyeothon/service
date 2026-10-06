@@ -72,12 +72,11 @@ class _ChannelConfigFieldsState extends State<ChannelConfigFields> {
         key: ValueKey('field-$key'),
         controller: controller,
         enabled: enabled,
-        keyboardType:
-            number
-                ? TextInputType.number
-                : maxLines > 1
-                ? TextInputType.multiline
-                : TextInputType.text,
+        keyboardType: number
+            ? TextInputType.number
+            : maxLines > 1
+            ? TextInputType.multiline
+            : TextInputType.text,
         maxLength: maxLength,
         minLines: minLines,
         maxLines: maxLines,
@@ -132,10 +131,9 @@ class _ChannelConfigFieldsState extends State<ChannelConfigFields> {
         isExpanded: true,
         decoration: InputDecoration(
           labelText: '인증 채널',
-          helperText:
-              widget.authChannels == null
-                  ? '인증 채널을 불러오는 중…'
-                  : '플레이어는 이 인증 채널이 발급한 JWT로 접속합니다.',
+          helperText: widget.authChannels == null
+              ? '인증 채널을 불러오는 중…'
+              : '플레이어는 이 인증 채널이 발급한 JWT로 접속합니다.',
         ),
         items: [
           const DropdownMenuItem(value: '', child: Text('— 선택 —')),
@@ -250,19 +248,16 @@ class _ChannelConfigFieldsState extends State<ChannelConfigFields> {
                 '${p}ClientId',
                 label: '클라이언트 ID',
                 value: github ? f.githubClientId : f.googleClientId,
-                onChanged:
-                    (v) => github ? f.githubClientId = v : f.googleClientId = v,
+                onChanged: (v) =>
+                    github ? f.githubClientId = v : f.googleClientId = v,
               ),
               _secret(
                 '${p}SecretInput',
                 label: '클라이언트 시크릿',
                 value: github ? f.githubSecretInput : f.googleSecretInput,
                 hint: stored ? '비워 두면 저장된 시크릿을 유지합니다' : null,
-                onChanged:
-                    (v) =>
-                        github
-                            ? f.githubSecretInput = v
-                            : f.googleSecretInput = v,
+                onChanged: (v) =>
+                    github ? f.githubSecretInput = v : f.googleSecretInput = v,
               ),
             ],
           ],
@@ -299,12 +294,11 @@ class _ChannelConfigFieldsState extends State<ChannelConfigFields> {
               FilterChip(
                 label: Text(scope),
                 selected: f.capSay.contains(scope),
-                onSelected:
-                    (on) => _set(() {
-                      final next = {...f.capSay};
-                      on ? next.add(scope) : next.remove(scope);
-                      f.capSay = sayScopes.where(next.contains).toList();
-                    }),
+                onSelected: (on) => _set(() {
+                  final next = {...f.capSay};
+                  on ? next.add(scope) : next.remove(scope);
+                  f.capSay = sayScopes.where(next.contains).toList();
+                }),
               ),
           ],
         ),

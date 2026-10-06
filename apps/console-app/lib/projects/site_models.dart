@@ -99,14 +99,13 @@ class Site {
   /// the team's one-per-second name slot is spent before that check.
   bool get held => busy || movingTo != null;
 
-  SiteState get state =>
-      movingTo != null
-          ? SiteState.moving
-          : busy
-          ? SiteState.deploying
-          : currentDeployId != null
-          ? SiteState.live
-          : SiteState.empty;
+  SiteState get state => movingTo != null
+      ? SiteState.moving
+      : busy
+      ? SiteState.deploying
+      : currentDeployId != null
+      ? SiteState.live
+      : SiteState.empty;
 
   static Site fromJson(Map<String, dynamic> j) => Site(
     id: j['id'] as String,
@@ -201,15 +200,13 @@ class SiteDetail {
 
   static SiteDetail fromJson(Map<String, dynamic> j) => SiteDetail(
     site: Site.fromJson(j),
-    currentDeploy:
-        j['currentDeploy'] is Map<String, dynamic>
-            ? SiteDeploy.fromJson(j['currentDeploy'] as Map<String, dynamic>)
-            : null,
-    deploys:
-        ((j['deploys'] as List<dynamic>?) ?? const [])
-            .cast<Map<String, dynamic>>()
-            .map(SiteDeploy.fromJson)
-            .toList(),
+    currentDeploy: j['currentDeploy'] is Map<String, dynamic>
+        ? SiteDeploy.fromJson(j['currentDeploy'] as Map<String, dynamic>)
+        : null,
+    deploys: ((j['deploys'] as List<dynamic>?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(SiteDeploy.fromJson)
+        .toList(),
     warning: _str(j['warning']),
   );
 }

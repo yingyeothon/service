@@ -103,12 +103,11 @@ class _SiteDetailScreenState extends State<SiteDetailScreen> {
   Future<void> _edit(Site site) async {
     final update = await Navigator.of(context).push<SiteUpdate>(
       MaterialPageRoute<SiteUpdate>(
-        builder:
-            (_) => SiteFormScreen.edit(
-              api: _api,
-              site: site,
-              onUnauthorized: () => widget.authState.invalidate(_api.token),
-            ),
+        builder: (_) => SiteFormScreen.edit(
+          api: _api,
+          site: site,
+          onUnauthorized: () => widget.authState.invalidate(_api.token),
+        ),
       ),
     );
     if (update == null || !mounted) return;
@@ -167,43 +166,40 @@ class _SiteDetailScreenState extends State<SiteDetailScreen> {
               onSelected: (v) {
                 if (v == 'delete') _delete(site);
               },
-              itemBuilder:
-                  (_) => [
-                    PopupMenuItem(
-                      value: 'delete',
-                      enabled: !site.busy && !_acting,
-                      child: const Text('사이트 삭제'),
-                    ),
-                  ],
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'delete',
+                  enabled: !site.busy && !_acting,
+                  child: const Text('사이트 삭제'),
+                ),
+              ],
             ),
           ],
         ],
       ),
-      body:
-          _gone
-              ? const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text(
-                    '이 사이트는 삭제되었거나 더 이상 볼 수 없습니다.',
-                    textAlign: TextAlign.center,
-                  ),
+      body: _gone
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  '이 사이트는 삭제되었거나 더 이상 볼 수 없습니다.',
+                  textAlign: TextAlign.center,
                 ),
-              )
-              : detail == null
-              ? Center(
-                child:
-                    _error == null
-                        ? const CircularProgressIndicator()
-                        : Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Text(
-                            '사이트를 불러오지 못했습니다.\n$_error',
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-              )
-              : RefreshIndicator(onRefresh: _load, child: _body(detail)),
+              ),
+            )
+          : detail == null
+          ? Center(
+              child: _error == null
+                  ? const CircularProgressIndicator()
+                  : Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        '사이트를 불러오지 못했습니다.\n$_error',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+            )
+          : RefreshIndicator(onRefresh: _load, child: _body(detail)),
     );
   }
 
@@ -316,10 +312,9 @@ class _DeployLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final d = deploy;
-    final what =
-        d.isMove
-            ? '이름 이동 → ${d.moveTo}'
-            : '업로드 · 파일 ${d.files}개 · ${formatBytes(d.bytes)}';
+    final what = d.isMove
+        ? '이름 이동 → ${d.moveTo}'
+        : '업로드 · 파일 ${d.files}개 · ${formatBytes(d.bytes)}';
     final tone = switch (d.status) {
       'live' => ChipTone.ok,
       'failed' => ChipTone.danger,

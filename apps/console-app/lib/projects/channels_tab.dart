@@ -86,27 +86,24 @@ class _ChannelsTabState extends State<ChannelsTab>
   Future<void> _create() async {
     final created = await Navigator.of(context).push<CreatedChannel>(
       MaterialPageRoute<CreatedChannel>(
-        builder:
-            (_) => ChannelFormScreen.create(
-              api: _api,
-              projectId: widget.project.id,
-              onUnauthorized: _unauthorized,
-            ),
+        builder: (_) => ChannelFormScreen.create(
+          api: _api,
+          projectId: widget.project.id,
+          onUnauthorized: _unauthorized,
+        ),
       ),
     );
     if (created == null || !mounted) return;
     final id = created.channel.id;
-    final route =
-        created.credential == null
-            ? MaterialPageRoute<void>(builder: (_) => _detail(id))
-            : MaterialPageRoute<void>(
-              builder:
-                  (_) => SecretOnceScreen(
-                    created: created,
-                    secureWindow: widget.secureWindow,
-                    detailBuilder: (_) => _detail(id),
-                  ),
-            );
+    final route = created.credential == null
+        ? MaterialPageRoute<void>(builder: (_) => _detail(id))
+        : MaterialPageRoute<void>(
+            builder: (_) => SecretOnceScreen(
+              created: created,
+              secureWindow: widget.secureWindow,
+              detailBuilder: (_) => _detail(id),
+            ),
+          );
     // Completes when the detail closes, or — through the secret screen —
     // when that screen replaces itself; the list reloads either way and the
     // detail's onChanged covers later edits.
@@ -126,15 +123,14 @@ class _ChannelsTabState extends State<ChannelsTab>
   Widget build(BuildContext context) {
     super.build(context);
     return Scaffold(
-      floatingActionButton:
-          widget.team.canWrite
-              ? FloatingActionButton.extended(
-                heroTag: 'fab-channels',
-                onPressed: _create,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('채널 만들기'),
-              )
-              : null,
+      floatingActionButton: widget.team.canWrite
+          ? FloatingActionButton.extended(
+              heroTag: 'fab-channels',
+              onPressed: _create,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('채널 만들기'),
+            )
+          : null,
       body: _body(),
     );
   }

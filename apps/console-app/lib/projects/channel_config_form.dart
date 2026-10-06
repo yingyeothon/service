@@ -142,10 +142,9 @@ class ChannelFormState {
       return f
         ..authChannelId = _str(c['authChannelId'], '')
         ..capPos = _bool(caps['pos'], d.capPos)
-        ..capSay =
-            caps['say'] is List
-                ? (caps['say'] as List).whereType<String>().toList()
-                : d.capSay
+        ..capSay = caps['say'] is List
+            ? (caps['say'] as List).whereType<String>().toList()
+            : d.capSay
         ..capParty = _bool(caps['party'], d.capParty)
         ..capEvent = _bool(caps['event'], d.capEvent)
         ..capDebug = _bool(caps['debug'], d.capDebug)
@@ -254,12 +253,11 @@ int _int(String s, String label, {required int min, required int max}) {
   return v;
 }
 
-List<String> _lines(String s) =>
-    s
-        .split(RegExp(r'\r?\n'))
-        .map((l) => l.trim())
-        .where((l) => l.isNotEmpty)
-        .toList();
+List<String> _lines(String s) => s
+    .split(RegExp(r'\r?\n'))
+    .map((l) => l.trim())
+    .where((l) => l.isNotEmpty)
+    .toList();
 
 /// The API pins `mapUrl` to the asset CDN; the https half is checked here so
 /// the common mistake reads as a sentence. The origin is only known
@@ -297,8 +295,8 @@ Map<String, dynamic> buildChannelConfig(
       final label = github ? 'GitHub' : 'Google';
       final enabled = github ? f.githubEnabled : f.googleEnabled;
       final clientId = (github ? f.githubClientId : f.googleClientId).trim();
-      final clientSecret =
-          (github ? f.githubSecretInput : f.googleSecretInput).trim();
+      final clientSecret = (github ? f.githubSecretInput : f.googleSecretInput)
+          .trim();
       final stored = prev[p] != null;
       if (!enabled) {
         if (patch && stored) providers[p] = null;
@@ -313,10 +311,9 @@ Map<String, dynamic> buildChannelConfig(
         }
         providers[p] = {'clientId': clientId, 'clientSecret': clientSecret};
       } else {
-        providers[p] =
-            clientSecret.isEmpty
-                ? {'clientId': clientId}
-                : {'clientId': clientId, 'clientSecret': clientSecret};
+        providers[p] = clientSecret.isEmpty
+            ? {'clientId': clientId}
+            : {'clientId': clientId, 'clientSecret': clientSecret};
       }
     }
     final audience = f.audience.trim();

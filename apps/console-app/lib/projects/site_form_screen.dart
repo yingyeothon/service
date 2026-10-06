@@ -73,10 +73,9 @@ class _SiteFormScreenState extends State<SiteFormScreen> {
 
   bool _validate() {
     final nameError = validateSiteName(_name.text.trim());
-    final domainError =
-        _editing && !_domainHeld
-            ? validateSiteDomain(normalizeSiteDomain(_domain.text))
-            : null;
+    final domainError = _editing && !_domainHeld
+        ? validateSiteDomain(normalizeSiteDomain(_domain.text))
+        : null;
     setState(() {
       _nameError = nameError;
       _descriptionError = null;
@@ -190,14 +189,13 @@ class _SiteFormScreenState extends State<SiteFormScreen> {
           const SizedBox(height: 20),
           FilledButton.icon(
             onPressed: _busy ? null : _submit,
-            icon:
-                _busy
-                    ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : Icon(_editing ? Icons.save_rounded : Icons.add_rounded),
+            icon: _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(_editing ? Icons.save_rounded : Icons.add_rounded),
             label: Text(_editing ? '저장' : '사이트 만들기'),
           ),
         ],
@@ -214,10 +212,9 @@ class _SiteFormScreenState extends State<SiteFormScreen> {
         final label = typed.isEmpty ? '<이름>' : typed;
         // Without the name host a claimed name still renames the path URL.
         final host = Uri.tryParse(site.publicUrl)?.host ?? '';
-        final where =
-            suffix != null
-                ? 'https://$label.$suffix/'
-                : '${host.isEmpty ? '' : host}/$label/';
+        final where = suffix != null
+            ? 'https://$label.$suffix/'
+            : '${host.isEmpty ? '' : host}/$label/';
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -232,10 +229,9 @@ class _SiteFormScreenState extends State<SiteFormScreen> {
                 labelText: '사이트 이름 (주소)',
                 hintText: 'my-game',
                 suffixText: suffix == null ? null : '.$suffix',
-                helperText:
-                    _domainHeld
-                        ? SiteFormScreen.domainHeldHint
-                        : '주소: $where · 비우면 무작위 주소로 돌아갑니다',
+                helperText: _domainHeld
+                    ? SiteFormScreen.domainHeldHint
+                    : '주소: $where · 비우면 무작위 주소로 돌아갑니다',
                 helperMaxLines: 2,
                 errorText: _domainError,
                 errorMaxLines: 6,

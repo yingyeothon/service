@@ -86,13 +86,12 @@ class _TeamIssuesScreenState extends State<TeamIssuesScreen> {
         _projectOf(issue) ?? projectStub(widget.team, issue.projectId);
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder:
-            (_) => IssueDetailScreen(
-              authState: widget.authState,
-              team: widget.team,
-              project: project,
-              number: issue.number,
-            ),
+        builder: (_) => IssueDetailScreen(
+          authState: widget.authState,
+          team: widget.team,
+          project: project,
+          number: issue.number,
+        ),
       ),
     );
     if (mounted) await _load();

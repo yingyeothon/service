@@ -106,10 +106,9 @@ class _AppDetailViewState extends State<AppDetailView>
 
       // A shared app is read through its listing: the artifact history is
       // the team's (404 to a viewer), so the newest build is the whole list.
-      final artifacts =
-          widget.app.shared
-              ? [widget.app.latestArtifact]
-              : await fetchAppArtifacts(appId: widget.app.id, token: token);
+      final artifacts = widget.app.shared
+          ? [widget.app.latestArtifact]
+          : await fetchAppArtifacts(appId: widget.app.id, token: token);
       final installedVersions = await _resolveInstalledVersions(artifacts);
       if (!mounted) {
         return;
@@ -270,23 +269,20 @@ class _AppDetailViewState extends State<AppDetailView>
   Future<bool> _confirmDowngradeFallback() async {
     final result = await showDialog<bool>(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('다운그레이드 재설치 필요'),
-            content: const Text(
-              '현재 버전이 더 높아 직접 설치가 실패했습니다.\n기존 앱을 삭제한 뒤 재설치할까요?',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('취소'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('삭제 후 재설치'),
-              ),
-            ],
+      builder: (context) => AlertDialog(
+        title: const Text('다운그레이드 재설치 필요'),
+        content: const Text('현재 버전이 더 높아 직접 설치가 실패했습니다.\n기존 앱을 삭제한 뒤 재설치할까요?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
           ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('삭제 후 재설치'),
+          ),
+        ],
+      ),
     );
 
     return result ?? false;
@@ -295,23 +291,20 @@ class _AppDetailViewState extends State<AppDetailView>
   Future<bool> _confirmArtifactDelete(ArtifactInfo artifact) async {
     final result = await showDialog<bool>(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('아티팩트 삭제'),
-            content: Text(
-              'v${artifact.version} 아티팩트를 삭제할까요?\n삭제 후에는 목록에서 사라집니다.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('취소'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('삭제'),
-              ),
-            ],
+      builder: (context) => AlertDialog(
+        title: const Text('아티팩트 삭제'),
+        content: Text('v${artifact.version} 아티팩트를 삭제할까요?\n삭제 후에는 목록에서 사라집니다.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
           ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
     );
 
     return result ?? false;
@@ -423,8 +416,9 @@ class _AppDetailViewState extends State<AppDetailView>
       );
     }
 
-    final latestArtifact =
-        _versionGroups.isEmpty ? null : _versionGroups.first.topArtifact;
+    final latestArtifact = _versionGroups.isEmpty
+        ? null
+        : _versionGroups.first.topArtifact;
     final latestVersion = latestArtifact?.version ?? widget.app.version;
     final heroInstalledVersion = _summaryInstalledVersion(latestArtifact);
     final state = resolveAppInstallState(latestVersion, heroInstalledVersion);
@@ -453,22 +447,17 @@ class _AppDetailViewState extends State<AppDetailView>
           state: state,
           installedVersion: heroInstalledVersion,
           // Straight to the app's project issues — the app *is* the project.
-          action:
-              home == null
-                  ? null
-                  : ProjectIssuesButton(
-                    authState: widget.authState,
-                    home: home,
-                  ),
+          action: home == null
+              ? null
+              : ProjectIssuesButton(authState: widget.authState, home: home),
           extraChips: [
             if (widget.app.shared)
               const CatalogStateChip(label: '공유됨', color: CatalogPalette.ocean),
             CatalogStateChip(
               label: state == AppInstallState.latest ? '최신' : '최신 아님',
-              color:
-                  state == AppInstallState.latest
-                      ? CatalogPalette.ocean
-                      : CatalogPalette.slate,
+              color: state == AppInstallState.latest
+                  ? CatalogPalette.ocean
+                  : CatalogPalette.slate,
             ),
             CatalogValueChip(
               icon: Icons.download_done_rounded,

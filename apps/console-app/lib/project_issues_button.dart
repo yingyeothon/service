@@ -19,17 +19,15 @@ class ProjectIssuesButton extends StatelessWidget {
     return FilledButton.tonalIcon(
       icon: const Icon(Icons.bug_report_outlined, size: 18),
       label: Text('${home.team.name} › ${home.project.name} 이슈'),
-      onPressed:
-          () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder:
-                  (_) => ProjectScreen(
-                    authState: authState,
-                    team: home.team,
-                    project: home.project,
-                  ),
-            ),
+      onPressed: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ProjectScreen(
+            authState: authState,
+            team: home.team,
+            project: home.project,
           ),
+        ),
+      ),
     );
   }
 }

@@ -15,15 +15,15 @@ _CatalogVersion _parseCatalogVersion(String input) {
 
   final plusIndex = trimmed.indexOf('+');
   final coreText = plusIndex >= 0 ? trimmed.substring(0, plusIndex) : trimmed;
-  final buildText =
-      plusIndex >= 0 ? trimmed.substring(plusIndex + 1).trim() : null;
+  final buildText = plusIndex >= 0
+      ? trimmed.substring(plusIndex + 1).trim()
+      : null;
 
   return _CatalogVersion(
     core: Version.parse(coreText),
-    buildNumber:
-        buildText != null && RegExp(r'^\d+$').hasMatch(buildText)
-            ? int.parse(buildText)
-            : null,
+    buildNumber: buildText != null && RegExp(r'^\d+$').hasMatch(buildText)
+        ? int.parse(buildText)
+        : null,
   );
 }
 

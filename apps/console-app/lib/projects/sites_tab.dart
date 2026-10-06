@@ -70,12 +70,11 @@ class _SitesTabState extends State<SitesTab>
   Future<void> _create() async {
     final created = await Navigator.of(context).push<Site>(
       MaterialPageRoute<Site>(
-        builder:
-            (_) => SiteFormScreen.create(
-              api: _api,
-              project: widget.project,
-              onUnauthorized: () => widget.authState.invalidate(_api.token),
-            ),
+        builder: (_) => SiteFormScreen.create(
+          api: _api,
+          project: widget.project,
+          onUnauthorized: () => widget.authState.invalidate(_api.token),
+        ),
       ),
     );
     if (created == null || !mounted) return;
@@ -87,13 +86,12 @@ class _SitesTabState extends State<SitesTab>
   Future<void> _open(String siteId) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder:
-            (_) => SiteDetailScreen(
-              authState: widget.authState,
-              team: widget.team,
-              api: _api,
-              siteId: siteId,
-            ),
+        builder: (_) => SiteDetailScreen(
+          authState: widget.authState,
+          team: widget.team,
+          api: _api,
+          siteId: siteId,
+        ),
       ),
     );
     if (mounted) await _load();
@@ -103,15 +101,14 @@ class _SitesTabState extends State<SitesTab>
   Widget build(BuildContext context) {
     super.build(context);
     return Scaffold(
-      floatingActionButton:
-          widget.team.canWrite
-              ? FloatingActionButton.extended(
-                heroTag: 'fab-sites',
-                onPressed: _create,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('사이트 만들기'),
-              )
-              : null,
+      floatingActionButton: widget.team.canWrite
+          ? FloatingActionButton.extended(
+              heroTag: 'fab-sites',
+              onPressed: _create,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('사이트 만들기'),
+            )
+          : null,
       body: _body(),
     );
   }

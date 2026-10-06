@@ -96,8 +96,9 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       if (!mounted) return;
       setState(() {
-        _errorMessage =
-            e is AuthDiagnosticError ? e.message : '로그인 실패: ${e.toString()}';
+        _errorMessage = e is AuthDiagnosticError
+            ? e.message
+            : '로그인 실패: ${e.toString()}';
       });
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -162,23 +163,21 @@ class _LoginScreenState extends State<LoginScreen> {
                     ],
                     FilledButton.icon(
                       onPressed: _busy ? null : _scan,
-                      icon:
-                          _busy
-                              ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                              : const Icon(Icons.qr_code_scanner_rounded),
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.qr_code_scanner_rounded),
                       label: const Text('QR 코드 스캔'),
                     ),
                     if (widget.pushed) ...[
                       const SizedBox(height: 8),
                       TextButton(
-                        onPressed:
-                            _busy ? null : () => Navigator.of(context).pop(),
+                        onPressed: _busy
+                            ? null
+                            : () => Navigator.of(context).pop(),
                         child: const Text('취소'),
                       ),
                     ],

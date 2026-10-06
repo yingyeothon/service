@@ -24,23 +24,21 @@ List<ArtifactVersionGroup> groupArtifactsByVersion(
 ) {
   final grouped = <String, List<ArtifactInfo>>{};
   for (final artifact in artifacts) {
-    final version =
-        artifact.version.trim().isEmpty
-            ? unknownArtifactVersion
-            : artifact.version.trim();
+    final version = artifact.version.trim().isEmpty
+        ? unknownArtifactVersion
+        : artifact.version.trim();
     grouped.putIfAbsent(version, () => <ArtifactInfo>[]).add(artifact);
   }
 
-  final groups =
-      grouped.entries.map((entry) {
-        final orderedArtifacts = [...entry.value]
-          ..sort((a, b) => _compareUploadOrder(b, a));
-        return ArtifactVersionGroup(
-          version: entry.key,
-          topArtifact: orderedArtifacts.first,
-          artifacts: orderedArtifacts,
-        );
-      }).toList();
+  final groups = grouped.entries.map((entry) {
+    final orderedArtifacts = [...entry.value]
+      ..sort((a, b) => _compareUploadOrder(b, a));
+    return ArtifactVersionGroup(
+      version: entry.key,
+      topArtifact: orderedArtifacts.first,
+      artifacts: orderedArtifacts,
+    );
+  }).toList();
 
   groups.sort((a, b) => _compareUploadOrder(b.topArtifact, a.topArtifact));
   return groups;

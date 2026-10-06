@@ -30,10 +30,9 @@ class AppListView extends StatelessWidget {
         if (i > 0) cells.add(const SizedBox(width: 8));
         cells.add(
           Expanded(
-            child:
-                index < apps.length
-                    ? _cell(context, apps[index])
-                    : const SizedBox.shrink(),
+            child: index < apps.length
+                ? _cell(context, apps[index])
+                : const SizedBox.shrink(),
           ),
         );
       }

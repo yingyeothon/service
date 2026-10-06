@@ -87,48 +87,46 @@ class _DiscussionsScreenState extends State<DiscussionsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('${widget.team.name} · 토론')),
-      floatingActionButton:
-          widget.team.canWrite
-              ? FloatingActionButton.extended(
-                onPressed: _create,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('토론 시작'),
-              )
-              : null,
-      body:
-          _items == null && _error == null
-              ? const Center(child: CircularProgressIndicator())
-              : RefreshIndicator(
-                onRefresh: _load,
-                child: ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 96),
-                  children: [
-                    if (_error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 60),
-                        child: Text(
-                          '토론을 불러오지 못했습니다.\n$_error',
-                          textAlign: TextAlign.center,
+      floatingActionButton: widget.team.canWrite
+          ? FloatingActionButton.extended(
+              onPressed: _create,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('토론 시작'),
+            )
+          : null,
+      body: _items == null && _error == null
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 96),
+                children: [
+                  if (_error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 60),
+                      child: Text(
+                        '토론을 불러오지 못했습니다.\n$_error',
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                  else if (_items!.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 60),
+                      child: Text('토론이 없습니다.', textAlign: TextAlign.center),
+                    )
+                  else
+                    for (final d in _items!)
+                      Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: DiscussionTile(
+                          discussion: d,
+                          onTap: () => _open(d),
                         ),
-                      )
-                    else if (_items!.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 60),
-                        child: Text('토론이 없습니다.', textAlign: TextAlign.center),
-                      )
-                    else
-                      for (final d in _items!)
-                        Card(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          child: DiscussionTile(
-                            discussion: d,
-                            onTap: () => _open(d),
-                          ),
-                        ),
-                  ],
-                ),
+                      ),
+                ],
               ),
+            ),
     );
   }
 }
@@ -168,8 +166,8 @@ Future<void> openDiscussion(
   required String id,
 }) => Navigator.of(context).push<void>(
   MaterialPageRoute<void>(
-    builder:
-        (_) => DiscussionDetailScreen(authState: authState, team: team, id: id),
+    builder: (_) =>
+        DiscussionDetailScreen(authState: authState, team: team, id: id),
   ),
 );
 
@@ -180,12 +178,11 @@ Future<Discussion?> createDiscussionFlow(
   required Team team,
 }) => Navigator.of(context).push<Discussion>(
   MaterialPageRoute<Discussion>(
-    builder:
-        (_) => DiscussionCreateScreen(
-          api: api,
-          team: team,
-          onUnauthorized: () => authState.invalidate(api.token),
-        ),
+    builder: (_) => DiscussionCreateScreen(
+      api: api,
+      team: team,
+      onUnauthorized: () => authState.invalidate(api.token),
+    ),
   ),
 );
 
@@ -283,108 +280,106 @@ class _DiscussionDetailScreenState extends State<DiscussionDetailScreen> {
     ).textTheme.bodySmall?.copyWith(color: CatalogPalette.slate);
     return Scaffold(
       appBar: AppBar(title: Text('${widget.team.name} · 토론')),
-      body:
-          d == null
-              ? Center(
-                child:
-                    _error == null
-                        ? const CircularProgressIndicator()
-                        : Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Text(
-                            '토론을 불러오지 못했습니다.\n$_error',
-                            textAlign: TextAlign.center,
-                          ),
+      body: d == null
+          ? Center(
+              child: _error == null
+                  ? const CircularProgressIndicator()
+                  : Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        '토론을 불러오지 못했습니다.\n$_error',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+            )
+          : Column(
+              children: [
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: _load,
+                    child: ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
+                      children: [
+                        Text(
+                          d.title,
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w800),
                         ),
-              )
-              : Column(
-                children: [
-                  Expanded(
-                    child: RefreshIndicator(
-                      onRefresh: _load,
-                      child: ListView(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${d.createdBy}${d.mine ? ' (나)' : ''} · ${formatIssueTime(d.createdAt)}',
+                          style: slate,
+                        ),
+                        const SizedBox(height: 12),
+                        if (d.bodyMd.isNotEmpty)
+                          Card(
+                            child: Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: SelectableText(d.bodyMd),
+                            ),
+                          ),
+                        const SizedBox(height: 16),
+                        Text(
+                          '댓글 ${d.comments.length}',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        for (final c in d.comments)
+                          Card(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${c.createdBy}${c.mine ? ' (나)' : ''} · ${formatIssueTime(c.createdAt)}',
+                                    style: slate,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  SelectableText(c.bodyMd),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (widget.team.canWrite)
+                  SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          Text(
-                            d.title,
-                            style: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(fontWeight: FontWeight.w800),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '${d.createdBy}${d.mine ? ' (나)' : ''} · ${formatIssueTime(d.createdAt)}',
-                            style: slate,
-                          ),
-                          const SizedBox(height: 12),
-                          if (d.bodyMd.isNotEmpty)
-                            Card(
-                              child: Padding(
-                                padding: const EdgeInsets.all(14),
-                                child: SelectableText(d.bodyMd),
+                          Expanded(
+                            child: TextField(
+                              controller: _comment,
+                              minLines: 1,
+                              maxLines: 5,
+                              maxLength:
+                                  DiscussionDetailScreen.commentMaxLength,
+                              buildCounter: _counter,
+                              decoration: const InputDecoration(
+                                hintText: '댓글 (Markdown)',
                               ),
                             ),
-                          const SizedBox(height: 16),
-                          Text(
-                            '댓글 ${d.comments.length}',
-                            style: Theme.of(context).textTheme.titleSmall,
                           ),
-                          const SizedBox(height: 8),
-                          for (final c in d.comments)
-                            Card(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      '${c.createdBy}${c.mine ? ' (나)' : ''} · ${formatIssueTime(c.createdAt)}',
-                                      style: slate,
-                                    ),
-                                    const SizedBox(height: 6),
-                                    SelectableText(c.bodyMd),
-                                  ],
-                                ),
-                              ),
-                            ),
+                          const SizedBox(width: 8),
+                          IconButton.filled(
+                            tooltip: '댓글 등록',
+                            onPressed: _busy ? null : _addComment,
+                            icon: const Icon(Icons.send_rounded),
+                          ),
                         ],
                       ),
                     ),
                   ),
-                  if (widget.team.canWrite)
-                    SafeArea(
-                      top: false,
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: _comment,
-                                minLines: 1,
-                                maxLines: 5,
-                                maxLength:
-                                    DiscussionDetailScreen.commentMaxLength,
-                                buildCounter: _counter,
-                                decoration: const InputDecoration(
-                                  hintText: '댓글 (Markdown)',
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            IconButton.filled(
-                              tooltip: '댓글 등록',
-                              onPressed: _busy ? null : _addComment,
-                              icon: const Icon(Icons.send_rounded),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+              ],
+            ),
     );
   }
 }
@@ -482,14 +477,13 @@ class _DiscussionCreateScreenState extends State<DiscussionCreateScreen> {
           const SizedBox(height: 20),
           FilledButton.icon(
             onPressed: _busy ? null : _submit,
-            icon:
-                _busy
-                    ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : const Icon(Icons.send_rounded),
+            icon: _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.send_rounded),
             label: const Text('등록'),
           ),
         ],

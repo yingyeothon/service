@@ -35,14 +35,13 @@ class ChannelFormScreen extends StatefulWidget {
 
 class _ChannelFormScreenState extends State<ChannelFormScreen> {
   late String _kind = widget.existing?.kind ?? 'auth';
-  late final ChannelFormState? _initial =
-      widget.existing == null
-          ? null
-          : ChannelFormState.fromChannel(
-            kind: widget.existing!.kind,
-            name: widget.existing!.name,
-            config: widget.existing!.config,
-          );
+  late final ChannelFormState? _initial = widget.existing == null
+      ? null
+      : ChannelFormState.fromChannel(
+          kind: widget.existing!.kind,
+          name: widget.existing!.name,
+          config: widget.existing!.config,
+        );
   late final ChannelFormState _form = _initial?.copy() ?? ChannelFormState();
   late final _name = TextEditingController(text: _form.name);
 
@@ -163,11 +162,10 @@ class _ChannelFormScreenState extends State<ChannelFormScreen> {
                       ),
                     ),
                 ],
-                onChanged:
-                    (v) => setState(() {
-                      _kind = v ?? 'auth';
-                      _error = null;
-                    }),
+                onChanged: (v) => setState(() {
+                  _kind = v ?? 'auth';
+                  _error = null;
+                }),
               ),
             )
           else
@@ -224,14 +222,13 @@ class _ChannelFormScreenState extends State<ChannelFormScreen> {
           const SizedBox(height: 16),
           FilledButton.icon(
             onPressed: _busy || _needsAuth ? null : _submit,
-            icon:
-                _busy
-                    ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : Icon(existing == null ? Icons.add_rounded : Icons.save),
+            icon: _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(existing == null ? Icons.add_rounded : Icons.save),
             label: Text(existing == null ? '채널 만들기' : '저장'),
           ),
         ],

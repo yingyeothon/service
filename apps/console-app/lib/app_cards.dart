@@ -73,10 +73,9 @@ class AppGridCard extends StatelessWidget {
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.bodySmall?.copyWith(
-              color:
-                  description.isEmpty
-                      ? CatalogPalette.slate
-                      : CatalogPalette.ink,
+              color: description.isEmpty
+                  ? CatalogPalette.slate
+                  : CatalogPalette.ink,
               height: 1.3,
             ),
           ),
@@ -125,14 +124,13 @@ class AppGridCard extends StatelessWidget {
 
     return Material(
       color: Colors.transparent,
-      child:
-          onTap == null
-              ? card
-              : InkWell(
-                borderRadius: BorderRadius.circular(16),
-                onTap: onTap,
-                child: card,
-              ),
+      child: onTap == null
+          ? card
+          : InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: onTap,
+              child: card,
+            ),
     );
   }
 }
@@ -363,12 +361,11 @@ class ArtifactReleaseCard extends StatelessWidget {
                             artifact.changelog,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(
-                              context,
-                            ).textTheme.bodyMedium?.copyWith(
-                              color: CatalogPalette.ink,
-                              height: 1.3,
-                            ),
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
+                                  color: CatalogPalette.ink,
+                                  height: 1.3,
+                                ),
                           ),
                         ],
                       ],
@@ -385,16 +382,15 @@ class ArtifactReleaseCard extends StatelessWidget {
                         IconButton.filledTonal(
                           tooltip: '아티팩트 삭제',
                           onPressed: busy || deleting ? null : onDelete,
-                          icon:
-                              deleting
-                                  ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                  : const Icon(Icons.delete_outline_rounded),
+                          icon: deleting
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.delete_outline_rounded),
                         ),
                       if (installable)
                         FilledButton(
@@ -552,29 +548,27 @@ class ArtifactVersionGroupCard extends StatelessWidget {
                 ],
               ),
             ),
-            children:
-                group.artifacts.asMap().entries.map((entry) {
-                  final index = entry.key;
-                  final artifact = entry.value;
-                  return Padding(
-                    padding: EdgeInsets.only(
-                      bottom: index == group.artifacts.length - 1 ? 0 : 10,
-                    ),
-                    child: ArtifactReleaseCard(
-                      artifact: artifact,
-                      latestVersion: latestVersion,
-                      installedVersion: installedVersionForArtifact(artifact),
-                      busy: busy,
-                      deleting: deletingArtifactId == artifact.id,
-                      installable: artifact.isInstallableAndroidApk,
-                      onInstall: () => onInstallArtifact(artifact),
-                      onDelete:
-                          onDeleteArtifact == null
-                              ? null
-                              : () => onDeleteArtifact!(artifact),
-                    ),
-                  );
-                }).toList(),
+            children: group.artifacts.asMap().entries.map((entry) {
+              final index = entry.key;
+              final artifact = entry.value;
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: index == group.artifacts.length - 1 ? 0 : 10,
+                ),
+                child: ArtifactReleaseCard(
+                  artifact: artifact,
+                  latestVersion: latestVersion,
+                  installedVersion: installedVersionForArtifact(artifact),
+                  busy: busy,
+                  deleting: deletingArtifactId == artifact.id,
+                  installable: artifact.isInstallableAndroidApk,
+                  onInstall: () => onInstallArtifact(artifact),
+                  onDelete: onDeleteArtifact == null
+                      ? null
+                      : () => onDeleteArtifact!(artifact),
+                ),
+              );
+            }).toList(),
           ),
         ),
       ),
@@ -597,10 +591,9 @@ class CatalogStateChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding:
-          dense
-              ? const EdgeInsets.symmetric(horizontal: 7, vertical: 3)
-              : const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: dense
+          ? const EdgeInsets.symmetric(horizontal: 7, vertical: 3)
+          : const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
@@ -677,14 +670,13 @@ class _AppAvatar extends StatelessWidget {
   }
 
   String _initials(String value) {
-    final words =
-        value
-            .trim()
-            .split(RegExp(r'\s+'))
-            .where((word) => word.isNotEmpty)
-            .take(2)
-            .map((word) => word.substring(0, 1).toUpperCase())
-            .join();
+    final words = value
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty)
+        .take(2)
+        .map((word) => word.substring(0, 1).toUpperCase())
+        .join();
     if (words.isNotEmpty) {
       return words;
     }

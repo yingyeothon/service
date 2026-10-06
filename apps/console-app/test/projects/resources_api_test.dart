@@ -51,15 +51,14 @@ Map<String, dynamic> _channelJson(String kind, {Map<String, dynamic>? extra}) =>
       'name': 'ch-$kind',
       'teamId': 'team_1',
       'projectId': 'prj_1',
-      'config':
-          kind == 'auth'
-              ? {
-                'audience': 'game',
-                'tokenTtlSec': 86400,
-                'redirectAllowlist': <String>[],
-                'providers': <String, dynamic>{},
-              }
-              : {'authChannelId': 'auth_1'},
+      'config': kind == 'auth'
+          ? {
+              'audience': 'game',
+              'tokenTtlSec': 86400,
+              'redirectAllowlist': <String>[],
+              'providers': <String, dynamic>{},
+            }
+          : {'authChannelId': 'auth_1'},
       'createdAt': 1700000000,
       'expiresAt': 1700604800,
       'disabledAt': null,
@@ -308,10 +307,9 @@ void main() {
 
     test('update sends only what is given; extend posts no body', () async {
       final (api, calls) = apiWith(
-        (req) async =>
-            req.method == 'DELETE'
-                ? http.Response('', 204)
-                : _json(_channelJson('match')),
+        (req) async => req.method == 'DELETE'
+            ? http.Response('', 204)
+            : _json(_channelJson('match')),
       );
       await api.updateChannel('match_1', name: 'renamed');
       expect(calls.last.method, 'PATCH');

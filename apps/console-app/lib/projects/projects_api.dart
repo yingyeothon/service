@@ -115,10 +115,9 @@ class ProjectsApi {
   }
 
   Future<List<Issue>> listIssues(String projectId, {String? status}) async {
-    final url =
-        status == null
-            ? AuthConfig.projectIssuesUrlOf(baseUrl, projectId)
-            : '${AuthConfig.projectIssuesUrlOf(baseUrl, projectId)}?status=$status';
+    final url = status == null
+        ? AuthConfig.projectIssuesUrlOf(baseUrl, projectId)
+        : '${AuthConfig.projectIssuesUrlOf(baseUrl, projectId)}?status=$status';
     final body = await _get(url);
     return _list(body['issues']).map(Issue.fromJson).toList();
   }
@@ -136,10 +135,9 @@ class ProjectsApi {
       if (limit != null) 'limit': '$limit',
     };
     final base = AuthConfig.teamIssuesUrlOf(baseUrl, teamId);
-    final url =
-        query.isEmpty
-            ? base
-            : Uri.parse(base).replace(queryParameters: query).toString();
+    final url = query.isEmpty
+        ? base
+        : Uri.parse(base).replace(queryParameters: query).toString();
     final body = await _get(url);
     return _list(body['issues']).map(Issue.fromJson).toList();
   }
@@ -161,9 +159,8 @@ class ProjectsApi {
     final perProject = await Future.wait([
       for (final p in projects) listIssues(p.id, status: status),
     ]);
-    final all =
-        perProject.expand((l) => l).toList()
-          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final all = perProject.expand((l) => l).toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     return limit == null ? all : all.take(limit).toList();
   }
 
@@ -298,12 +295,9 @@ class ProjectsApi {
   /// [kind] narrows the list (`auth` for the auth-channel picker).
   Future<List<Channel>> listChannels(String projectId, {String? kind}) async {
     final base = AuthConfig.projectChannelsUrlOf(baseUrl, projectId);
-    final url =
-        kind == null
-            ? base
-            : Uri.parse(
-              base,
-            ).replace(queryParameters: {'kind': kind}).toString();
+    final url = kind == null
+        ? base
+        : Uri.parse(base).replace(queryParameters: {'kind': kind}).toString();
     final body = await _get(url);
     return _list(body['channels']).map(Channel.fromJson).toList();
   }
@@ -532,14 +526,13 @@ class ProjectsApi {
       return data ?? const {};
     }
     final error = data?['error'];
-    final code =
-        error is Map<String, dynamic> && error['code'] is String
-            ? error['code'] as String
-            : null;
+    final code = error is Map<String, dynamic> && error['code'] is String
+        ? error['code'] as String
+        : null;
     final serverMessage =
         error is Map<String, dynamic> && error['message'] is String
-            ? error['message'] as String
-            : null;
+        ? error['message'] as String
+        : null;
     final details = error is Map<String, dynamic> ? error['details'] : null;
     final partial = ApiException(
       r.statusCode,

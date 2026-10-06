@@ -341,10 +341,9 @@ Future<InstallAttemptResult> reinstallAfterUninstall({
         installedVersion: verified,
         needsDowngradeFallback: false,
         downloadedPath: downloadedPath,
-        message:
-            verification.cancelledByUser
-                ? '재설치를 취소했습니다.'
-                : installerReturnedWithoutInstallMessage,
+        message: verification.cancelledByUser
+            ? '재설치를 취소했습니다.'
+            : installerReturnedWithoutInstallMessage,
         cancelledByUser: true,
       );
     }
@@ -354,10 +353,9 @@ Future<InstallAttemptResult> reinstallAfterUninstall({
       installedVersion: verified,
       needsDowngradeFallback: false,
       downloadedPath: downloadedPath,
-      message:
-          isSameVersion(targetVersion, verified)
-              ? '재설치 완료'
-              : '재설치 완료를 확인하지 못했습니다.',
+      message: isSameVersion(targetVersion, verified)
+          ? '재설치 완료'
+          : '재설치 완료를 확인하지 못했습니다.',
       cancelledByUser: false,
     );
   } on InstallCancelledException catch (e) {

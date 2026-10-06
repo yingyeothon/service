@@ -73,12 +73,11 @@ class _IssuesTabState extends State<IssuesTab>
   Future<void> _create() async {
     final created = await Navigator.of(context).push<Issue>(
       MaterialPageRoute<Issue>(
-        builder:
-            (_) => IssueCreateScreen(
-              api: _api,
-              project: widget.project,
-              onUnauthorized: () => widget.authState.invalidate(_api.token),
-            ),
+        builder: (_) => IssueCreateScreen(
+          api: _api,
+          project: widget.project,
+          onUnauthorized: () => widget.authState.invalidate(_api.token),
+        ),
       ),
     );
     if (created != null && mounted) {
@@ -91,14 +90,13 @@ class _IssuesTabState extends State<IssuesTab>
   Future<void> _open(Issue issue) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder:
-            (_) => IssueDetailScreen(
-              authState: widget.authState,
-              team: widget.team,
-              project: widget.project,
-              number: issue.number,
-              api: _api,
-            ),
+        builder: (_) => IssueDetailScreen(
+          authState: widget.authState,
+          team: widget.team,
+          project: widget.project,
+          number: issue.number,
+          api: _api,
+        ),
       ),
     );
     if (mounted) await _load();
@@ -108,15 +106,14 @@ class _IssuesTabState extends State<IssuesTab>
   Widget build(BuildContext context) {
     super.build(context);
     return Scaffold(
-      floatingActionButton:
-          widget.team.canWrite
-              ? FloatingActionButton.extended(
-                heroTag: 'fab-issues',
-                onPressed: _create,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('이슈 등록'),
-              )
-              : null,
+      floatingActionButton: widget.team.canWrite
+          ? FloatingActionButton.extended(
+              heroTag: 'fab-issues',
+              onPressed: _create,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('이슈 등록'),
+            )
+          : null,
       body: Column(
         children: [
           Padding(
@@ -293,14 +290,13 @@ class _IssueCreateScreenState extends State<IssueCreateScreen> {
           const SizedBox(height: 20),
           FilledButton.icon(
             onPressed: _busy ? null : _submit,
-            icon:
-                _busy
-                    ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : const Icon(Icons.send_rounded),
+            icon: _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.send_rounded),
             label: const Text('등록'),
           ),
         ],

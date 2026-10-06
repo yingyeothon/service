@@ -8,15 +8,14 @@ Matcher _formError(String part) => throwsA(
 void main() {
   group('create', () {
     test('auth: trimmed fields, allowlist lines, providers with secrets', () {
-      final f =
-          ChannelFormState()
-            ..audience = ' my-game '
-            ..tokenTtlSec = '3600'
-            ..redirectAllowlist =
-                'https://a.example/cb\r\n\n  http://localhost:3000/cb '
-            ..githubEnabled = true
-            ..githubClientId = ' gh-id '
-            ..githubSecretInput = ' gh-secret ';
+      final f = ChannelFormState()
+        ..audience = ' my-game '
+        ..tokenTtlSec = '3600'
+        ..redirectAllowlist =
+            'https://a.example/cb\r\n\n  http://localhost:3000/cb '
+        ..githubEnabled = true
+        ..githubClientId = ' gh-id '
+        ..githubSecretInput = ' gh-secret ';
       expect(buildChannelConfig('auth', f), {
         'audience': 'my-game',
         'tokenTtlSec': 3600,
@@ -83,13 +82,12 @@ void main() {
     });
 
     test('match: numbers, and a blank callback leaves the key out', () {
-      final f =
-          ChannelFormState()
-            ..authChannelId = 'auth_1'
-            ..partySize = '4'
-            ..waitTimeoutSec = '30'
-            ..onTimeout = 'partial'
-            ..callbackUrl = '  ';
+      final f = ChannelFormState()
+        ..authChannelId = 'auth_1'
+        ..partySize = '4'
+        ..waitTimeoutSec = '30'
+        ..onTimeout = 'partial'
+        ..callbackUrl = '  ';
       expect(buildChannelConfig('match', f), {
         'authChannelId': 'auth_1',
         'partySize': 4,
@@ -135,12 +133,11 @@ void main() {
     });
 
     test('lobby: chat scopes in canonical order, aoi only when set', () {
-      final f =
-          ChannelFormState()
-            ..authChannelId = 'auth_1'
-            ..capSay = ['user', 'zone', 'party']
-            ..aoiRange = ' 12 '
-            ..mapUrl = ' https://d.example/map.json ';
+      final f = ChannelFormState()
+        ..authChannelId = 'auth_1'
+        ..capSay = ['user', 'zone', 'party']
+        ..aoiRange = ' 12 '
+        ..mapUrl = ' https://d.example/map.json ';
       final c = buildChannelConfig('lobby', f);
       expect((c['capabilities'] as Map)['say'], ['zone', 'party', 'user']);
       expect(c['aoi'], {'range': 12});
@@ -260,10 +257,9 @@ void main() {
     });
 
     test('auth patch: a newly enabled provider needs its secret', () {
-      final f =
-          authForm()
-            ..googleEnabled = true
-            ..googleClientId = 'g-id';
+      final f = authForm()
+        ..googleEnabled = true
+        ..googleClientId = 'g-id';
       expect(
         () => buildChannelConfig(
           'auth',

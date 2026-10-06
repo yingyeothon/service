@@ -188,8 +188,9 @@ class _ListingFormScreenState extends State<ListingFormScreen> {
               ),
             ],
             selected: {_audience},
-            onSelectionChanged:
-                _busy ? null : (s) => setState(() => _audience = s.first),
+            onSelectionChanged: _busy
+                ? null
+                : (s) => setState(() => _audience = s.first),
           ),
           const HintText(
             '지정 멤버는 게시 뒤 GitHub 로그인으로 추가하는 플랫폼 멤버입니다. '
@@ -198,16 +199,13 @@ class _ListingFormScreenState extends State<ListingFormScreen> {
           const SizedBox(height: 20),
           FilledButton.icon(
             onPressed: _busy ? null : _submit,
-            icon:
-                _busy
-                    ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : Icon(
-                      _editing ? Icons.save_rounded : Icons.publish_rounded,
-                    ),
+            icon: _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(_editing ? Icons.save_rounded : Icons.publish_rounded),
             label: Text(_editing ? '저장' : '게시'),
           ),
         ],

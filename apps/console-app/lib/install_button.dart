@@ -79,20 +79,18 @@ class _InstallButtonState extends State<InstallButton>
   Widget build(BuildContext context) {
     final installable = widget.app.latestArtifact.isInstallableAndroidApk;
     final disabled = _running || !installable;
-    final label =
-        installable
-            ? widget.label ??
-                (widget.state == AppInstallState.latest ? '재설치' : '설치')
-            : '설치 불가';
+    final label = installable
+        ? widget.label ??
+              (widget.state == AppInstallState.latest ? '재설치' : '설치')
+        : '설치 불가';
 
-    final child =
-        _running
-            ? const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-            : Text(label);
+    final child = _running
+        ? const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : Text(label);
     if (widget.compact) {
       return FilledButton(
         onPressed: disabled ? null : _onPressed,

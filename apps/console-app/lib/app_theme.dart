@@ -19,18 +19,19 @@ class CatalogPalette {
 }
 
 ThemeData buildCatalogTheme() {
-  final scheme = ColorScheme.fromSeed(
-    seedColor: CatalogPalette.ocean,
-    brightness: Brightness.light,
-  ).copyWith(
-    primary: CatalogPalette.ocean,
-    secondary: CatalogPalette.glow,
-    tertiary: CatalogPalette.mint,
-    surface: CatalogPalette.shell,
-    surfaceContainerHighest: const Color(0xFFE7EEF7),
-    onSurface: CatalogPalette.ink,
-    outline: const Color(0xFFB6C4D6),
-  );
+  final scheme =
+      ColorScheme.fromSeed(
+        seedColor: CatalogPalette.ocean,
+        brightness: Brightness.light,
+      ).copyWith(
+        primary: CatalogPalette.ocean,
+        secondary: CatalogPalette.glow,
+        tertiary: CatalogPalette.mint,
+        surface: CatalogPalette.shell,
+        surfaceContainerHighest: const Color(0xFFE7EEF7),
+        onSurface: CatalogPalette.ink,
+        outline: const Color(0xFFB6C4D6),
+      );
 
   final base = ThemeData(
     useMaterial3: true,

@@ -76,24 +76,23 @@ class _SecretOnceScreenState extends State<SecretOnceScreen> {
     if (_leaving) return;
     final ok = await showDialog<bool>(
       context: context,
-      builder:
-          (ctx) => AlertDialog(
-            title: const Text('이 화면을 떠날까요?'),
-            content: Text(
-              '${widget.created.credentialLabel}은(는) 지금 한 번만 볼 수 있습니다. '
-              '안전한 곳에 보관했는지 확인하세요.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('계속 보기'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('보관했습니다'),
-              ),
-            ],
+      builder: (ctx) => AlertDialog(
+        title: const Text('이 화면을 떠날까요?'),
+        content: Text(
+          '${widget.created.credentialLabel}은(는) 지금 한 번만 볼 수 있습니다. '
+          '안전한 곳에 보관했는지 확인하세요.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('계속 보기'),
           ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('보관했습니다'),
+          ),
+        ],
+      ),
     );
     if (ok != true || !mounted) return;
     _leaving = true;
@@ -123,63 +122,62 @@ class _SecretOnceScreenState extends State<SecretOnceScreen> {
           ),
           title: Text('${created.channel.name} · $label'),
         ),
-        body:
-            !_secured
-                ? const Center(child: CircularProgressIndicator())
-                : ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: CatalogPalette.sunrise,
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '$label — 한 번만 보여 줍니다',
-                            style: Theme.of(context).textTheme.titleSmall,
+        body: !_secured
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: CatalogPalette.sunrise,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$label — 한 번만 보여 줍니다',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          '지금 복사해 안전한 곳에 보관하세요. 나중에 다시 볼 수 없고, '
+                          '잃어버리면 웹 콘솔에서 재발급해야 합니다.',
+                        ),
+                        const SizedBox(height: 12),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: CatalogPalette.shell,
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            '지금 복사해 안전한 곳에 보관하세요. 나중에 다시 볼 수 없고, '
-                            '잃어버리면 웹 콘솔에서 재발급해야 합니다.',
-                          ),
-                          const SizedBox(height: 12),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: CatalogPalette.shell,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              value,
-                              key: const ValueKey('secret-value'),
-                              style: const TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 15,
-                              ),
+                          child: Text(
+                            value,
+                            key: const ValueKey('secret-value'),
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 15,
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          FilledButton.tonalIcon(
-                            onPressed: () => _copy(value),
-                            icon: const Icon(Icons.copy_rounded),
-                            label: Text(_copied ? '다시 복사' : '$label 복사'),
-                          ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton.tonalIcon(
+                          onPressed: () => _copy(value),
+                          icon: const Icon(Icons.copy_rounded),
+                          label: Text(_copied ? '다시 복사' : '$label 복사'),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 16),
-                    FilledButton(
-                      onPressed: _leave,
-                      child: const Text('보관했습니다 · 채널 보기'),
-                    ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: _leave,
+                    child: const Text('보관했습니다 · 채널 보기'),
+                  ),
+                ],
+              ),
       ),
     );
   }

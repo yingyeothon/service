@@ -130,7 +130,9 @@ void main() {
       return http.Response('', 404);
     });
     await tester.pumpWidget(
-      MaterialApp(home: HomeShell(authState: auth, client: client)),
+      MaterialApp(
+        home: HomeShell(authState: auth, client: client),
+      ),
     );
     await tester.pump();
     await tester.pump();
