@@ -196,6 +196,8 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       topic: env("TOPIC_BASE_URL"),
       topicWs: env("TOPIC_WS_URL"),
       match: env("MATCH_BASE_URL"),
+      // Empty = a deferred match channel's view omits `apiBase`.
+      matchApi: process.env.MATCH_API_BASE_URL ?? "",
       // Empty until the state stack is deployed on this stage: the auth
       // channel view then omits `docUrl`, same discipline as `gatewayWs`.
       doc: process.env.DOC_BASE_URL ?? "",

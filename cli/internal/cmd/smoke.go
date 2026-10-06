@@ -191,9 +191,15 @@ func newSmokeMatch(a *App) *cobra.Command {
 then waits for {type:"matched"} or {type:"failed"} on each socket. No ping is
 sent: connecting enqueues the player, and a ping that lands after the match
 already formed is answered with {type:"failed", reason:"closed"}.
+Live mode only: a deferred match channel has no socket (its tickets are HTTP).
 Exit code 1 when any player fails or times out.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// A deferred channel has no wsUrl: `jq -r .wsUrl` prints `null`,
+			// and its ticketUrl is https.
+			if !strings.HasPrefix(f.url, "ws://") && !strings.HasPrefix(f.url, "wss://") {
+				return fmt.Errorf("--url %q is not a WebSocket URL: smoke match drives the live mode; a deferred match channel has a ticketUrl instead of a wsUrl (`yyt channels get <channel>` prints its mode)", f.url)
+			}
 			tokens, err := f.tokens()
 			if err != nil {
 				return err

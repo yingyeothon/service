@@ -22,6 +22,22 @@ describe("withLock", () => {
     expect(await kv.get("lock:db")).toBeNull();
   });
 
+  it("tells the holder when it took the lock and whether it still holds it", async () => {
+    const { kv, clock, sleep, tick } = harness();
+    tick(500);
+    await withLock(kv, "l", { clock, sleep, ttlSec: 30 }, async (lock) => {
+      expect(lock.acquiredAt).toBe(500);
+      expect(await lock.held()).toBe(true);
+      // The TTL ran out and somebody else took it.
+      tick(30_000);
+      expect(await lock.held()).toBe(false);
+      await kv.set("l", "other", { ex: 30 });
+      expect(await lock.held()).toBe(false);
+    });
+    // The release did not delete the other holder's lock.
+    expect(await kv.get("l")).toBe("other");
+  });
+
   it("releases even when fn throws", async () => {
     const { kv, clock, sleep } = harness();
     await expect(

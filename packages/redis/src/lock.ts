@@ -36,6 +36,17 @@ else
   return 0
 end`;
 
+/** What the holder can ask about its own lock while `fn` runs. */
+export interface LockHandle {
+  /** `clock.now()` when the `SET NX` succeeded. */
+  readonly acquiredAt: number;
+  /**
+   * Whether the key still holds this holder's token. A `false` means the TTL
+   * ran out (and possibly somebody else holds it): stop writing.
+   */
+  held(): Promise<boolean>;
+}
+
 /**
  * `SET key token NX EX ttl` polling lock. `key` is a logical key: the Kv applies
  * the service/stage prefix, so lock keys never collide across stages.
@@ -44,7 +55,7 @@ export async function withLock<T>(
   kv: Kv,
   key: string,
   options: LockOptions,
-  fn: () => Promise<T>,
+  fn: (lock: LockHandle) => Promise<T>,
 ): Promise<T> {
   const {
     ttlSec = 30,
@@ -65,6 +76,10 @@ export async function withLock<T>(
     }
     await sleep(retryMs);
   }
+  const handle: LockHandle = {
+    acquiredAt: clock.now(),
+    held: async () => (await kv.get(key)) === token,
+  };
   const release = async (rethrow: boolean) => {
     try {
       const released = await kv.eval(RELEASE_SCRIPT, [key], [token]);
@@ -82,7 +97,7 @@ export async function withLock<T>(
   };
   let result: T;
   try {
-    result = await fn();
+    result = await fn(handle);
   } catch (e) {
     await release(false);
     throw e;

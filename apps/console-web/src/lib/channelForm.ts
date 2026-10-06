@@ -4,6 +4,7 @@ import type {
   ChannelKind,
   LobbyConfig,
   MatchConfig,
+  MatchMode,
   PushConfig,
   PushSender,
   SayScope,
@@ -12,6 +13,19 @@ import type {
 import { packageNameProblem, serviceAccountProblem } from "./push";
 
 export const SAY_SCOPES: readonly SayScope[] = ["zone", "party", "user"];
+
+/**
+ * The server's `MATCH_BOUNDS` (`services/console/src/channels.ts`):
+ * `[min, max, default]` in seconds, per mode.
+ */
+export const MATCH_BOUNDS = {
+  live: { waitTimeoutSec: [5, 600, 60] },
+  deferred: {
+    waitTimeoutSec: [30, 7200, 600],
+    acceptTimeoutSec: [30, 600, 120],
+    resultTtlSec: [60, 3600, 600],
+  },
+} as const;
 
 /** Flat, string-valued form state; one shape for all kinds to keep inputs controlled. */
 export interface ChannelFormState {
@@ -30,6 +44,13 @@ export interface ChannelFormState {
   waitTimeoutSec: string;
   onTimeout: "partial" | "fail";
   callbackUrl: string;
+  /** match: fixed at creation. */
+  matchMode: MatchMode;
+  /** match, deferred only. */
+  acceptTimeoutSec: string;
+  resultTtlSec: string;
+  /** match, deferred only; empty = none (the mode works by polling). */
+  pushChannelId: string;
   capPos: boolean;
   capSay: SayScope[];
   capParty: boolean;
@@ -68,6 +89,10 @@ export const emptyForm: ChannelFormState = {
   waitTimeoutSec: "60",
   onTimeout: "fail",
   callbackUrl: "",
+  matchMode: "live",
+  acceptTimeoutSec: String(MATCH_BOUNDS.deferred.acceptTimeoutSec[2]),
+  resultTtlSec: String(MATCH_BOUNDS.deferred.resultTtlSec[2]),
+  pushChannelId: "",
   capPos: true,
   capSay: ["zone"],
   capParty: true,
@@ -143,7 +168,156 @@ export function formFromChannel(ch: Channel): ChannelFormState {
     waitTimeoutSec: String(c.waitTimeoutSec),
     onTimeout: c.onTimeout,
     callbackUrl: c.callbackUrl ?? "",
+    matchMode: c.mode ?? "live",
+    acceptTimeoutSec: String(c.acceptTimeoutSec ?? f.acceptTimeoutSec),
+    resultTtlSec: String(c.resultTtlSec ?? f.resultTtlSec),
+    pushChannelId: c.pushChannelId ?? "",
   };
+}
+
+/**
+ * The create form's mode switch. The wait timeout follows the mode's default
+ * only while it still holds the other mode's: a value the user typed stays
+ * (and is then judged against the new bounds).
+ */
+export function withMatchMode(
+  f: ChannelFormState,
+  mode: MatchMode,
+): ChannelFormState {
+  const was = String(MATCH_BOUNDS[f.matchMode].waitTimeoutSec[2]);
+  return {
+    ...f,
+    matchMode: mode,
+    waitTimeoutSec:
+      f.waitTimeoutSec === was
+        ? String(MATCH_BOUNDS[mode].waitTimeoutSec[2])
+        : f.waitTimeoutSec,
+  };
+}
+
+/** The match fields a message can sit under. */
+export type MatchField =
+  | "partySize"
+  | "waitTimeoutSec"
+  | "acceptTimeoutSec"
+  | "resultTtlSec"
+  | "pushChannelId";
+export type MatchFieldErrors = Partial<Record<MatchField, string>>;
+
+const MATCH_LABELS = {
+  waitTimeoutSec: "Wait timeout",
+  acceptTimeoutSec: "Accept window",
+  resultTtlSec: "Result TTL",
+} as const;
+
+function rangeProblem(
+  value: string,
+  label: string,
+  [min, max]: readonly [number, number, number?],
+  unit = " seconds",
+): string | undefined {
+  const n = Number(value);
+  return value.trim() !== "" && Number.isInteger(n) && n >= min && n <= max
+    ? undefined
+    : `${label} must be a whole number from ${min} to ${max}${unit}.`;
+}
+
+/**
+ * What the server would refuse in a match form, per field: the ranges of
+ * `MATCH_BOUNDS` for the form's mode. Empty = nothing to report.
+ */
+export function matchProblems(f: ChannelFormState): MatchFieldErrors {
+  const out: MatchFieldErrors = {};
+  const put = (k: MatchField, problem: string | undefined) => {
+    if (problem) out[k] = problem;
+  };
+  put("partySize", rangeProblem(f.partySize, "Party size", [2, 16], ""));
+  const bounds = MATCH_BOUNDS[f.matchMode];
+  put(
+    "waitTimeoutSec",
+    rangeProblem(
+      f.waitTimeoutSec,
+      MATCH_LABELS.waitTimeoutSec,
+      bounds.waitTimeoutSec,
+    ),
+  );
+  if (f.matchMode === "deferred") {
+    const d = MATCH_BOUNDS.deferred;
+    for (const k of ["acceptTimeoutSec", "resultTtlSec"] as const)
+      put(k, rangeProblem(f[k], MATCH_LABELS[k], d[k]));
+  }
+  return out;
+}
+
+interface ErrorShape {
+  status?: number;
+  message?: unknown;
+  details?: unknown;
+}
+
+/** The match refusals the console names with a stable `details.reason`. */
+export type MatchRefusalReason = "mode_fixed" | "push_channel_unusable";
+
+const MATCH_REFUSAL_REASONS: readonly string[] = [
+  "mode_fixed",
+  "push_channel_unusable",
+];
+
+/**
+ * `details.reason` of a match refusal. The message is read only when the
+ * server sent no reason at all (one deployed before the reasons existed).
+ */
+function matchRefusalReason(
+  details: unknown,
+  message: unknown,
+): MatchRefusalReason | null {
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    const r = (details as { reason?: unknown }).reason;
+    if (typeof r === "string")
+      return MATCH_REFUSAL_REASONS.includes(r)
+        ? (r as MatchRefusalReason)
+        : null;
+  }
+  if (typeof message !== "string") return null;
+  if (message.startsWith("mode cannot be changed")) return "mode_fixed";
+  if (message.startsWith("pushChannelId is not an active push channel"))
+    return "push_channel_unusable";
+  return null;
+}
+
+/**
+ * A match create/edit refusal as field messages, or `null` when it belongs to
+ * no field of the form. The server reports range problems as
+ * `details: [{path, message}]`, and two refusals by a stable
+ * `details.reason`: `push_channel_unusable` (a field) and `mode_fixed` (not
+ * one: the notice keeps the server's words). Read off the error object rather
+ * than `instanceof ApiError`: the tests' mock carries no class.
+ */
+export function matchRefusal(e: unknown): MatchFieldErrors | null {
+  const { status, message, details } = e as ErrorShape;
+  if (status !== 400) return null;
+  const reason = matchRefusalReason(details, message);
+  if (reason === "mode_fixed") return null;
+  if (reason === "push_channel_unusable")
+    return {
+      pushChannelId:
+        "This push channel cannot be used: it must be an active push channel of this project on the same auth channel. Pick another, or none.",
+    };
+  if (!Array.isArray(details)) return null;
+  const out: MatchFieldErrors = {};
+  const fields: readonly string[] = [
+    "partySize",
+    "waitTimeoutSec",
+    "acceptTimeoutSec",
+    "resultTtlSec",
+    "pushChannelId",
+  ];
+  for (const d of details as { path?: unknown; message?: unknown }[]) {
+    if (typeof d.path !== "string" || !fields.includes(d.path)) return null;
+    const k = d.path as MatchField;
+    out[k] ??= typeof d.message === "string" ? d.message : "Refused.";
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /**
@@ -273,11 +447,25 @@ export function buildConfig(
   // full replace, so an absent key is what clears a callback and turns the
   // channel into the members-only mode (same shape as the lobby `aoi` spread).
   const callbackUrl = f.callbackUrl.trim();
-  return {
+  const base = {
     authChannelId: f.authChannelId,
     partySize: int(f.partySize, "party size"),
     waitTimeoutSec: int(f.waitTimeoutSec, "wait timeout"),
     onTimeout: f.onTimeout,
     ...(callbackUrl === "" ? {} : { callbackUrl }),
+  } satisfies MatchConfig;
+  // A live channel is sent as before the mode existed: no `mode` key (the
+  // server reads its absence as live on create and as the stored mode on
+  // PATCH) and none of the deferred fields, which it refuses there.
+  if (f.matchMode !== "deferred") return base;
+  // Every deferred field goes out on every write: the PATCH is a full
+  // replace, so an omitted one would silently return to its default. Only
+  // `pushChannelId` is cleared by omission.
+  return {
+    ...base,
+    mode: "deferred",
+    acceptTimeoutSec: int(f.acceptTimeoutSec, "accept window"),
+    resultTtlSec: int(f.resultTtlSec, "result TTL"),
+    ...(f.pushChannelId === "" ? {} : { pushChannelId: f.pushChannelId }),
   } satisfies MatchConfig;
 }

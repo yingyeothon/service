@@ -323,6 +323,9 @@ importers:
       '@aws-sdk/client-lambda':
         specifier: ^3.864.0
         version: 3.1116.0
+      '@aws-sdk/client-ssm':
+        specifier: ^3.864.0
+        version: 3.1146.0
       '@yyt/console-db':
         specifier: workspace:*
         version: link:../../packages/console-db
@@ -335,6 +338,9 @@ importers:
       '@yyt/jwt':
         specifier: workspace:*
         version: link:../../packages/jwt
+      '@yyt/push':
+        specifier: workspace:*
+        version: link:../../packages/push
       '@yyt/redis':
         specifier: workspace:*
         version: link:../../packages/redis

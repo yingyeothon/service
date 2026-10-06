@@ -11,7 +11,12 @@ import { PageSkeleton } from "../components/Loading";
 import { PageHeader } from "../components/PageHeader";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import { Notice } from "../components/ui";
-import { buildConfig, emptyForm } from "../lib/channelForm";
+import {
+  buildConfig,
+  emptyForm,
+  matchProblems,
+  matchRefusal,
+} from "../lib/channelForm";
 import { errorMessage } from "../lib/format";
 import { notify } from "../lib/notify";
 import {
@@ -39,6 +44,12 @@ export function ChannelNewPage() {
   const [form, setForm] = useState(emptyForm);
   const auths = useApiQuery(["project", prj, "channels", "auth"], () =>
     api.projectChannels(prj, "auth"),
+  );
+  // A deferred match channel may name one of the project's push channels.
+  const pushes = useApiQuery(
+    ["project", prj, "channels", "push"],
+    () => api.projectChannels(prj, "push"),
+    { enabled: kind === "match" },
   );
   const act = useAction();
   const [localError, setLocalError] = useState<string | null>(null);
@@ -72,6 +83,16 @@ export function ChannelNewPage() {
         return;
       }
     }
+    if (kind === "match") {
+      // The server's ranges for the chosen mode, reported under the field.
+      const errors = matchProblems(form);
+      if (Object.keys(errors).length > 0) {
+        setLocalError(null);
+        act.clear();
+        setFieldErrors(errors);
+        return;
+      }
+    }
     let config: unknown;
     try {
       config = buildConfig(kind, form, "create");
@@ -88,6 +109,12 @@ export function ChannelNewPage() {
           config,
         });
       } catch (err) {
+        if (kind === "match") {
+          const fields = matchRefusal(err);
+          if (!fields) throw err;
+          setFieldErrors(fields);
+          return undefined;
+        }
         if (kind !== "push") throw err;
         // A refusal goes where it can be acted on: under its field, or as a
         // notice that says whose condition it is.
@@ -164,7 +191,10 @@ export function ChannelNewPage() {
                   value: "topic",
                   label: "topic — broadcast topics over WebSocket",
                 },
-                { value: "match", label: "match — WebSocket matchmaker" },
+                {
+                  value: "match",
+                  label: "match — matchmaker: live (WebSocket) or deferred",
+                },
                 {
                   value: "lobby",
                   label: "lobby — realtime relay: movement, chat, party",
@@ -198,6 +228,7 @@ export function ChannelNewPage() {
               form={form}
               onChange={setForm}
               authChannels={auths.data ?? []}
+              pushChannels={pushes.data}
               errors={fieldErrors}
             />
             {(localError ?? act.error) && (

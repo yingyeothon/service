@@ -109,6 +109,44 @@ describe("kit config", () => {
       url: "wss://match-dev.yyt.life",
       channelId: m.id,
     });
+    // Byte for byte what it was before deferred mode existed.
+    expect(JSON.stringify(body.match)).toBe(
+      `{"url":"wss://match-dev.yyt.life","channelId":"${m.id}"}`,
+    );
+  });
+
+  it("a deferred match channel is named by its ticket API, never by a socket", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const auth = await mkChannel(h, alice, "auth", "auth-main", {
+      audience: "game",
+    });
+    const m = await mkChannel(h, alice, "match", "match-late", {
+      authChannelId: auth.id,
+      partySize: 2,
+      mode: "deferred",
+    });
+    const body = parse(await cfg(h, alice));
+    expect(body.match).toEqual({
+      mode: "deferred",
+      apiBase: URLS.matchApi,
+      ticketUrl: `${URLS.matchApi}/m/${m.id}/ticket`,
+      channelId: m.id,
+    });
+    expect(body.match).not.toHaveProperty("url");
+    // A stage without the ticket host omits the section; it never falls
+    // back to the socket URL.
+    const bare = harness({ urls: { ...URLS, matchApi: "" } });
+    const bob = await bare.team("bob");
+    const a2 = await mkChannel(bare, bob, "auth", "auth-main", {
+      audience: "game",
+    });
+    await mkChannel(bare, bob, "match", "match-late", {
+      authChannelId: a2.id,
+      partySize: 2,
+      mode: "deferred",
+    });
+    expect(parse(await cfg(bare, bob))).not.toHaveProperty("match");
   });
 
   it("omits `collections` and `boards` rather than sending an empty map", async () => {

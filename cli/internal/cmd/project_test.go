@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -312,6 +313,41 @@ func TestProjectIssues(t *testing.T) {
 	}
 	if out, _, err := run(t, f, "project", "issue", "comment", "rm", "1", "cmt_2"); err != nil || out != "deleted cmt_2\n" {
 		t.Fatalf("%v %q", err, out)
+	}
+}
+
+// A deferred match channel has no socket: its section names the ticket API
+// and carries no `url`. The block is printed as it arrived, so nothing is
+// invented for the missing key.
+func TestProjectKitConfigDeferredMatch(t *testing.T) {
+	withProject(t)
+	block := json.RawMessage(`{"auth":{"url":"https://auth.yyt.life","channelId":"auth_1"},` +
+		`"match":{"mode":"deferred","apiBase":"https://match-api.yyt.life",` +
+		`"ticketUrl":"https://match-api.yyt.life/m/match_1/ticket","channelId":"match_1"}}`)
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /projects/prj_1/kit-config": func(recorded) (int, any) { return 200, block },
+	}, nil, nil, nil))
+	out, _, err := run(t, f, "project", "kit-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back struct {
+		Match map[string]any `json:"match"`
+	}
+	if err := json.Unmarshal([]byte(out), &back); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	want := map[string]any{
+		"mode": "deferred", "apiBase": "https://match-api.yyt.life",
+		"ticketUrl": "https://match-api.yyt.life/m/match_1/ticket", "channelId": "match_1",
+	}
+	if !reflect.DeepEqual(back.Match, want) {
+		t.Fatalf("match section %v, want %v", back.Match, want)
+	}
+	for _, bad := range []string{"wss://", "undefined", "null", `""`} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("output has %s:\n%s", bad, out)
+		}
 	}
 }
 

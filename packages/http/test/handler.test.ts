@@ -406,3 +406,33 @@ describe("createHttpHandler", () => {
     });
   });
 });
+
+describe("requestLog: false", () => {
+  it("drops the per-request line and keeps the failure lines", async () => {
+    const lines: Array<[string, string]> = [];
+    const at = (level: string) => (msg: string) =>
+      void lines.push([level, msg]);
+    const handler = createHttpHandler({
+      requestLog: false,
+      logger: {
+        debug: at("debug"),
+        info: at("info"),
+        warn: at("warn"),
+        error: at("error"),
+      },
+      routes: [
+        { method: "GET", path: "/ok", handler: () => ({ ok: true }) },
+        {
+          method: "GET",
+          path: "/boom",
+          handler: () => {
+            throw new Error("boom");
+          },
+        },
+      ],
+    });
+    expect((await handler(ev("GET", "/ok"))).statusCode).toBe(200);
+    expect((await handler(ev("GET", "/boom"))).statusCode).toBe(500);
+    expect(lines).toEqual([["error", "unhandled error"]]);
+  });
+});

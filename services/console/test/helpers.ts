@@ -34,6 +34,7 @@ export const URLS = {
   topic: "https://topic-dev.yyt.life",
   topicWs: "wss://topic-ws-dev.yyt.life",
   match: "https://match-dev.yyt.life",
+  matchApi: "https://match-api-dev.yyt.life",
   doc: "https://doc-dev.yyt.life",
   gatewayWs: "wss://gw-dev.yyt.life",
 };

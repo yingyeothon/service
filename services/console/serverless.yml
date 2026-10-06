@@ -121,6 +121,8 @@ provider:
     TOPIC_BASE_URL: https://topic${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     TOPIC_WS_URL: wss://topic-ws${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     MATCH_BASE_URL: https://match${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+    # The match stack's HTTP API (deferred-mode tickets); its WebSocket keeps the host above.
+    MATCH_API_BASE_URL: https://match-api${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
     # Self-hosted realtime gateway (Docker on the yyt-stateful box), rendered
     # into `lobby`/`q` channel views. Not an AWS endpoint, so there is no
     # CloudFormation reference to take it from. Empty until the host actually

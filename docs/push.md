@@ -304,7 +304,7 @@ Rolling console back past `m0028_push`: hard-delete the `push` channel rows and 
 
 Decided in `docs/decisions.md`, tracked in the machine-local backlog:
 
-- **Deferred-match hook** (_Match: deferred mode_ #5): a match channel naming a `pushChannelId` and sending `{channelId, matchId, state}`.
+- **Deferred-match hook** (_Match: deferred mode_ #5) — built 2026-10-06 on the match stack, not deployed: a deferred match channel naming a `pushChannelId` sends each affected member a high-priority data-only `{channelId, matchId, state}` (`services/match/README.md` _Deferred mode_). It reads `push_tokens` and deletes nothing: a token FCM reports unregistered is left to the next targeted send and the 60-day sweep. Its sends are not in `push_send_stats`; each writes one `match push` log line. Bound (_Match: deferred mode_ #7): `proposed`/`expired` messages to one user on one channel are at least 10 s apart (dropped, counted as `outcomes.spaced`, never queued), and a player who declined or let a window close cannot queue again for `acceptTimeoutSec`.
 - **Campaigns and broadcast** (#7b, #7c, #9): templates, CSV jobs, reports, the per-channel FCM topic, and the limits `push.recipientsPerJob` and `push.jobsPerDay`.
 - **Console app notifications** (#10): the app joining the first pool project and one topic per installed catalog app.
 - **Client libraries**: no `push` package exists in tslib, csharplib or flutterlib; an app calls the two token routes directly.

@@ -2,10 +2,17 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
   createConsoleDb,
   createPrismaClient,
+  createPushDb,
   mysqlOptionsFromEnv,
 } from "@yyt/console-db";
 import { createJsonLogger, requireEnv, systemClock } from "@yyt/core";
 import type { HttpEvent, HttpResult } from "@yyt/http";
+import {
+  createPushPool,
+  ssmSlotLoader,
+  type PushPool,
+  type SlotLoader,
+} from "@yyt/push";
 import { createRedisKv, redisOptionsFromEnv } from "@yyt/redis";
 import { createPoster } from "@yyt/ws";
 import type {
@@ -14,17 +21,15 @@ import type {
   APIGatewayRequestAuthorizerEvent,
   Context,
 } from "aws-lambda";
-import {
-  createMatchApp,
-  type MatchApp,
-  type WorkerEvent,
-  type WorkerInvoker,
-} from "./app.js";
+import { createMatchApp, type MatchApp, type WorkerEvent } from "./app.js";
 import { createChannelStore } from "./channels.js";
 import { createDebugHandler } from "./debug.js";
+import { createDeferred, type Deferred } from "./deferred.js";
 import { createDispatcher } from "./dispatch.js";
 import { createMatcher } from "./matcher.js";
 import { createPool } from "./pool.js";
+import { createMatchPush } from "./push.js";
+import { createTicketHandler, type DeferredWorkerEvent } from "./tickets.js";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
 
@@ -32,10 +37,17 @@ const env = (name: string) => requireEnv(process.env, name);
 
 const logger = createJsonLogger(console);
 
-function createLambdaWorker(functionName: string): WorkerInvoker {
-  const client = new LambdaClient({});
+function createLambdaWorker(functionName: string): {
+  invoke(event: WorkerEvent | DeferredWorkerEvent): Promise<void>;
+} {
+  // An async invoke answers in milliseconds; a request must not wait on one
+  // that does not (the tick is the backstop).
+  const client = new LambdaClient({
+    maxAttempts: 2,
+    requestHandler: { requestTimeout: 2000, connectionTimeout: 1000 },
+  });
   return {
-    invoke: async (event: WorkerEvent) => {
+    invoke: async (event) => {
       try {
         await client.send(
           new InvokeCommand({
@@ -54,8 +66,38 @@ function createLambdaWorker(functionName: string): WorkerInvoker {
   };
 }
 
+/**
+ * The stage's pool of Firebase projects, for the deferred mode's push hook:
+ * every SecureString under `PUSH_SSM_PATH`, read on the first push and cached
+ * per container (`services/state/src/handler.ts` `buildPushPool`, same client
+ * bounds). Only `worker` and `tick` carry the variable; without it, or with
+ * nothing under the path, the pool is empty and a push is skipped as "not
+ * configured" -- the match itself never notices.
+ */
+function buildPushPool(): PushPool {
+  const path = process.env.PUSH_SSM_PATH;
+  let loader: SlotLoader | undefined;
+  const loadSlots: SlotLoader = async () => {
+    if (!path) return [];
+    if (!loader) {
+      const { SSMClient } = await import("@aws-sdk/client-ssm");
+      loader = ssmSlotLoader({
+        path,
+        client: new SSMClient({
+          maxAttempts: 2,
+          requestHandler: { requestTimeout: 3000, connectionTimeout: 1000 },
+        }),
+      });
+    }
+    return loader();
+  };
+  return createPushPool({ loadSlots, fetch, clock: systemClock, logger });
+}
+
 interface Built {
   app: MatchApp;
+  deferred: Deferred;
+  http: (event: HttpEvent) => Promise<HttpResult>;
   debug?: (event: HttpEvent) => Promise<HttpResult>;
 }
 
@@ -65,7 +107,8 @@ function build(): Built {
   if (redis.prefix !== `match:${stage}:`)
     throw new Error("REDIS_KEY_PREFIX must be match:<stage>:");
   const kv = createRedisKv(redis);
-  const db = createConsoleDb(createPrismaClient(mysqlOptionsFromEnv()));
+  const prisma = createPrismaClient(mysqlOptionsFromEnv());
+  const db = createConsoleDb(prisma);
   const clock = systemClock;
   const channels = createChannelStore({ db, kv, clock });
   const pool = createPool({ kv, clock });
@@ -80,12 +123,36 @@ function build(): Built {
     clock,
     logger,
   });
+  const worker = createLambdaWorker(env("WORKER_FUNCTION"));
   const app = createMatchApp({
     channels,
     pool,
     matcher,
     poster,
-    worker: createLambdaWorker(env("WORKER_FUNCTION")),
+    worker,
+    clock,
+    logger,
+  });
+  const deferred = createDeferred({
+    kv,
+    channels,
+    dispatcher,
+    // This account only reads `push_tokens`; the same connection as `db`.
+    notifier: createMatchPush({
+      push: createPushDb(prisma),
+      channels: db,
+      pool: buildPushPool(),
+      kv,
+      clock,
+      logger,
+    }),
+    clock,
+    logger,
+  });
+  const http = createTicketHandler({
+    channels,
+    deferred,
+    worker,
     clock,
     logger,
   });
@@ -97,6 +164,7 @@ function build(): Built {
         channels,
         kv,
         matcher,
+        deferredTick: (o) => deferred.tick(o),
         clock,
         logger,
       });
@@ -107,7 +175,7 @@ function build(): Built {
       });
     }
   }
-  return { app, debug };
+  return { app, deferred, http, debug };
 }
 
 let built: Built | undefined;
@@ -120,10 +188,23 @@ export const ws = (
 ): Promise<APIGatewayProxyResult> => get().app.ws(event);
 const budget = (ctx: Context | undefined) =>
   ctx ? { remainingMs: ctx.getRemainingTimeInMillis() } : {};
-export const worker = (event: WorkerEvent, ctx?: Context) =>
-  get().app.worker(event, budget(ctx));
-export const tick = (_event: unknown, ctx?: Context) =>
-  get().app.tick(budget(ctx));
+/** Leaves 1 s for the handler's own epilogue, as `app.ts` does. */
+const deadline = (ctx: Context | undefined) =>
+  ctx ? { deadlineMs: Date.now() + ctx.getRemainingTimeInMillis() - 1000 } : {};
+export const worker = (
+  event: WorkerEvent | DeferredWorkerEvent,
+  ctx?: Context,
+) =>
+  "deferred" in event
+    ? get().deferred.work(event.channelId, deadline(ctx))
+    : get().app.worker(event, budget(ctx));
+/** Live channels first, then deferred ones with what is left of the minute. */
+export const tick = async (_event: unknown, ctx?: Context) => {
+  const live = await get().app.tick(budget(ctx));
+  return { ...live, deferred: await get().deferred.tick(deadline(ctx)) };
+};
+export const http = (event: HttpEvent): Promise<HttpResult> =>
+  get().http(event);
 export const debug = async (event: HttpEvent): Promise<HttpResult> => {
   const d = get().debug;
   if (!d) return { statusCode: 404, headers: {}, body: "" };

@@ -17,6 +17,8 @@ export interface DebugOptions {
   channels: ChannelStore;
   kv: Kv;
   matcher: Matcher;
+  /** The deferred mode's tick; its summary is added under `deferred`. */
+  deferredTick?: (options: { deadlineMs: number }) => Promise<object>;
   clock: Clock;
   logger: Logger;
 }
@@ -31,6 +33,7 @@ const callbackBody = z
   .strict();
 
 export const DEBUG_CALLBACK_TTL_SEC = 600;
+export const DEBUG_TICK_BUDGET_MS = 8000;
 
 /**
  * Dev-only HTTP API (`STAGE=dev` + `DEBUG_HOOKS=1`): a callback sink that
@@ -43,6 +46,7 @@ export function createDebugHandler({
   channels,
   kv,
   matcher,
+  deferredTick,
   clock,
   logger,
 }: DebugOptions): (event: HttpEvent) => Promise<HttpResult> {
@@ -97,7 +101,14 @@ export function createDebugHandler({
         path: "/debug/tick",
         handler: async ({ headers }) => {
           guard(headers);
-          return matcher.tick();
+          // Inside this function's 10 s: with less than a round's budget the
+          // deferred tick proposes and expires but claims nothing, so a
+          // confirmation (and its push) is the worker's.
+          const deadlineMs = clock.now() + DEBUG_TICK_BUDGET_MS;
+          const live = await matcher.tick();
+          return deferredTick
+            ? { ...live, deferred: await deferredTick({ deadlineMs }) }
+            : live;
         },
       }),
     ],

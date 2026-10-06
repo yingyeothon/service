@@ -29,7 +29,10 @@ export interface DispatcherOptions {
   logger?: Logger;
 }
 
-const RETRIES = 1;
+/** Per attempt, and how many: what a claim budgets for (`deferred.ts`). */
+export const CALLBACK_TIMEOUT_MS = 5000;
+export const CALLBACK_ATTEMPTS = 2;
+const RETRIES = CALLBACK_ATTEMPTS - 1;
 
 /** Reads at most `cap` bytes; `undefined` when the body is larger (the rest is discarded). */
 async function readCapped(
@@ -60,7 +63,7 @@ async function readCapped(
 
 export function createDispatcher({
   fetch: doFetch = fetch,
-  timeoutMs = 5000,
+  timeoutMs = CALLBACK_TIMEOUT_MS,
   maxResultBytes = 8 * 1024,
   logger = nullLogger,
 }: DispatcherOptions = {}): Dispatcher {

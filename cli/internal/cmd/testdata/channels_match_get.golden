@@ -1,0 +1,17 @@
+id:               match_def
+kind:             match
+name:             league
+status:           active
+project:          dooroo/game
+created:          2025-08-24T01:46:40Z
+expires:          2025-08-31T01:46:40Z
+apiBase:          https://match-api.example
+mode:             deferred
+acceptTimeoutSec: 45
+resultTtlSec:     1200
+pushChannel:      push_0123
+ticketUrl:        https://match-api.example/m/match_def/ticket
+acceptUrl:        https://match-api.example/m/match_def/accept
+declineUrl:       https://match-api.example/m/match_def/decline
+polling:          GET the ticket no faster than every few seconds (the ticket API is throttled at 5 requests/s per stage); POST …/ticket can answer 429 `cooldown` with details.retryAfter after a decline or an unanswered proposal
+config:           {"acceptTimeoutSec":45,"authChannelId":"auth_0123","mode":"deferred","onTimeout":"fail","partySize":2,"pushChannelId":"push_0123","resultTtlSec":1200,"waitTimeoutSec":900}

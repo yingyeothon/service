@@ -7,6 +7,7 @@ import {
   type AuthChannelConfig,
   type AuthChannelSecret,
   type ChannelRow,
+  type MatchChannelConfig,
   type PushChannelConfig,
   type PushChannelSecret,
 } from "@yyt/console-db";
@@ -31,6 +32,12 @@ export interface ServiceUrls {
   /** WebSocket host of the topic stack (`wss://topic-ws…`); API Gateway cannot share one domain between HTTP and WebSocket APIs. */
   topicWs: string;
   match: string;
+  /**
+   * HTTP base of the match stack (`https://match-api…`), which serves the
+   * deferred mode's tickets; API Gateway cannot share the WebSocket host.
+   * Empty/absent = a deferred channel's view omits `apiBase`.
+   */
+  matchApi?: string;
   /**
    * WebSocket base of the self-hosted realtime gateway (`wss://gw…`), which
    * serves `lobby` and `q`. **Empty until the gateway is actually deployed** —
@@ -167,16 +174,57 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+export const MATCH_MODES = ["live", "deferred"] as const;
+export type MatchMode = (typeof MATCH_MODES)[number];
+/**
+ * `[min, max, default]` per mode. Live keeps its 5–600 s wait. Deferred
+ * (`docs/decisions.md` *Match: deferred mode*): wait 10 minutes by default and
+ * 2 hours at most, accept window 30–600 s; its lower wait bound and the
+ * `resultTtlSec` range are implementation choices (the 1-minute schedule makes
+ * anything under a minute meaningless; an hour bounds what a result holds in
+ * Redis).
+ */
+export const MATCH_BOUNDS = {
+  live: { waitTimeoutSec: [5, 600, 60] },
+  deferred: {
+    waitTimeoutSec: [30, 7200, 600],
+    acceptTimeoutSec: [30, 600, 120],
+    resultTtlSec: [60, 3600, 600],
+  },
+} as const;
+const DEFERRED_ONLY = [
+  "acceptTimeoutSec",
+  "resultTtlSec",
+  "pushChannelId",
+] as const;
+
 const authChannelId = z
   .string()
   .regex(ID, "authChannelId must match [a-z0-9_-]{3,40}");
 const topicConfig = z.object({ authChannelId }).strict();
-const matchConfig = z
+const matchConfigIn = z
   .object({
     authChannelId,
     partySize: z.number().int().min(2).max(16),
-    waitTimeoutSec: z.number().int().min(5).max(600).default(60),
+    /** Absent on create = `live`; absent on PATCH = the stored mode. */
+    mode: z.enum(MATCH_MODES).optional(),
+    // Ranged per mode in `finishMatchConfig`: the two modes share the field
+    // and not its bounds.
+    waitTimeoutSec: z.number().int().optional(),
     onTimeout: z.enum(["partial", "fail"]).default("fail"),
+    acceptTimeoutSec: z.number().int().optional(),
+    resultTtlSec: z.number().int().optional(),
+    /** `null` and a blank string clear it, as `callbackUrl` below. */
+    pushChannelId: z.preprocess(
+      (v) =>
+        v === null || (typeof v === "string" && v.trim() === "")
+          ? undefined
+          : v,
+      z
+        .string()
+        .regex(ID, "pushChannelId must match [a-z0-9_-]{3,40}")
+        .optional(),
+    ),
     /**
      * Optional (`docs/decisions.md` *Serverless clients* #8). Absent = the
      * callback-less mode: the party is announced to its own sockets and posted
@@ -209,6 +257,74 @@ const matchConfig = z
     ),
   })
   .strict();
+
+/**
+ * Applies the per-mode rules a flat schema cannot state
+ * (`docs/decisions.md` *Match: deferred mode*). `stored` is the mode of the
+ * row being patched: it is fixed at creation, and a PATCH that omits `mode`
+ * keeps it -- every client that predates the field sends a full config
+ * without one.
+ *
+ * A live channel is stored exactly as before the field existed (no `mode`
+ * key), so "absent" and `live` stay one shape.
+ */
+function finishMatchConfig(
+  c: z.infer<typeof matchConfigIn>,
+  stored?: MatchMode,
+): MatchChannelConfig {
+  const mode = c.mode ?? stored ?? "live";
+  if (stored !== undefined && mode !== stored)
+    throw new AppError("bad_request", "mode cannot be changed after creation", {
+      details: { reason: "mode_fixed" },
+    });
+  const issues: Array<{ path: string; message: string }> = [];
+  const ranged = (
+    path: "waitTimeoutSec" | "acceptTimeoutSec" | "resultTtlSec",
+    [min, max, fallback]: readonly [number, number, number],
+  ): number => {
+    const v = c[path] ?? fallback;
+    if (v < min || v > max)
+      issues.push({
+        path,
+        message: `${path} must be ${min}..${max} on a ${mode} channel`,
+      });
+    return v;
+  };
+  const base = {
+    authChannelId: c.authChannelId,
+    partySize: c.partySize,
+    waitTimeoutSec: ranged("waitTimeoutSec", MATCH_BOUNDS[mode].waitTimeoutSec),
+    onTimeout: c.onTimeout,
+    ...(c.callbackUrl === undefined ? {} : { callbackUrl: c.callbackUrl }),
+  };
+  let config: MatchChannelConfig = base;
+  if (mode === "deferred") {
+    const d = MATCH_BOUNDS.deferred;
+    config = {
+      ...base,
+      mode,
+      acceptTimeoutSec: ranged("acceptTimeoutSec", d.acceptTimeoutSec),
+      resultTtlSec: ranged("resultTtlSec", d.resultTtlSec),
+      ...(c.pushChannelId === undefined
+        ? {}
+        : { pushChannelId: c.pushChannelId }),
+    };
+  } else
+    for (const path of DEFERRED_ONLY)
+      if (c[path] !== undefined)
+        issues.push({
+          path,
+          message: `${path} belongs to a deferred channel`,
+        });
+  if (issues.length > 0)
+    throw new AppError("bad_request", "invalid config", { details: issues });
+  return config;
+}
+
+const parseMatchConfig = (
+  input: unknown,
+  stored?: MatchMode,
+): MatchChannelConfig => finishMatchConfig(parse(matchConfigIn, input), stored);
 
 /**
  * An absolute https URL with no fragment or credentials, **pinned to
@@ -489,7 +605,7 @@ export const patchBody = z
   .strict();
 
 export type TopicConfig = z.infer<typeof topicConfig>;
-export type MatchConfig = z.infer<typeof matchConfig>;
+export type MatchConfig = MatchChannelConfig;
 export type LobbyConfig = z.infer<typeof lobbyConfig>;
 export type QConfig = z.infer<typeof qConfig>;
 export type PushConfigIn = z.infer<typeof pushConfig>;
@@ -604,7 +720,7 @@ export function buildChannel(
     };
   }
   const config =
-    kind === "topic" ? parse(topicConfig, input) : parse(matchConfig, input);
+    kind === "topic" ? parse(topicConfig, input) : parseMatchConfig(input);
   return { config, secret: { apiKey: randomHex(32) } satisfies ApiKeySecret };
 }
 
@@ -682,12 +798,14 @@ export function patchChannel(
       secret: storedSecret,
     };
   }
-  const schema =
-    row.kind === "topic"
-      ? topicConfig
-      : row.kind === "match"
-        ? matchConfig
-        : qConfig;
+  if (row.kind === "match") {
+    const cur = JSON.parse(row.configJson) as MatchChannelConfig;
+    return {
+      config: parseMatchConfig(input, cur.mode ?? "live"),
+      secret: storedSecret,
+    };
+  }
+  const schema = row.kind === "topic" ? topicConfig : qConfig;
   return { config: parse(schema, input), secret: storedSecret };
 }
 
@@ -832,6 +950,17 @@ export function channelView(
         ? { teamProject: c.teamProject }
         : {}),
       ...(api === "" ? {} : { apiBase: api }),
+    };
+  }
+  if ((config as unknown as MatchChannelConfig).mode === "deferred") {
+    // A deferred channel has no socket: its tickets are an HTTP resource on
+    // the match stack's HTTP host. No base until that host is configured.
+    const api = trim(urls.matchApi ?? "");
+    return {
+      ...base,
+      ...(api === ""
+        ? {}
+        : { apiBase: api, ticketUrl: `${api}/m/${id}/ticket` }),
     };
   }
   const ws = trim(urls.match).replace(/^http/, "ws");

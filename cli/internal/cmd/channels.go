@@ -39,6 +39,9 @@ type channel struct {
 	CallbackURLs map[string]string `json:"callbackUrls,omitempty"`
 	APIBase      string            `json:"apiBase,omitempty"`
 	WsURL        string            `json:"wsUrl,omitempty"`
+	// A deferred `match` channel has no socket: its tickets are an HTTP
+	// resource, and this is where (absent while the stage has no HTTP host).
+	TicketURL string `json:"ticketUrl,omitempty"`
 	// `push` only. Registered says the platform registration exists, so
 	// `yyt push channel config` has a file to fetch; TeamProject is the
 	// Firebase project of the team's own sender key, never the key.
@@ -130,6 +133,10 @@ type configFlags struct {
 	waitTimeout int
 	onTimeout   string
 	callbackURL string
+	mode        string
+	acceptTO    int
+	resultTTL   int
+	pushChannel string
 	// lobby
 	capPos      bool
 	capSay      []string
@@ -178,9 +185,13 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.StringVar(&f.googleSecret, "google-client-secret", "", "auth: Google OAuth client secret (or GOOGLE_CLIENT_SECRET env)")
 	fl.StringVar(&f.authChannel, "auth-channel", "", "topic/match: id of the auth channel whose JWTs are accepted")
 	fl.IntVar(&f.partySize, "party-size", 0, "match: players per match (2..16)")
-	fl.IntVar(&f.waitTimeout, "wait-timeout", 0, "match: seconds to wait before onTimeout (default 60)")
+	fl.IntVar(&f.waitTimeout, "wait-timeout", 0, "match: seconds to wait before onTimeout (live: 5..600, default 60; deferred: 30..7200, default 600)")
 	fl.StringVar(&f.onTimeout, "on-timeout", "", "match: partial|fail (default fail)")
 	fl.StringVar(&f.callbackURL, "callback-url", "", "match: URL called with the matched party (empty: no callback — members arrange the room themselves)")
+	fl.StringVar(&f.mode, "mode", "", "match: live|deferred (default live; fixed at creation). live: players wait on a WebSocket; deferred: a ticket over HTTP that players accept later")
+	fl.IntVar(&f.acceptTO, "accept-timeout", 0, "match, deferred: seconds every member has to accept a proposed match (30..600, default 120)")
+	fl.IntVar(&f.resultTTL, "result-ttl", 0, "match, deferred: seconds a finished ticket stays readable (60..3600, default 600)")
+	fl.StringVar(&f.pushChannel, "push-channel", "", "match, deferred: push channel (id or name) that wakes the players; an active one of this project on the same auth channel ('' on update removes it)")
 	fl.BoolVar(&f.capPos, "cap-pos", true, "lobby: enable the positional relay (--cap-pos=false disables zones entirely)")
 	fl.StringArrayVar(&f.capSay, "cap-say", nil, "lobby: permitted chat scope zone|party|user, or none to disable chat (repeatable; default zone)")
 	fl.BoolVar(&f.capParty, "cap-party", true, "lobby: enable the party primitive")
@@ -317,6 +328,34 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 				// refuses as a URL). This is how a channel is turned into the
 				// members-only mode; on create an empty flag just means "none".
 				m["callbackUrl"] = nil
+			}
+		}
+		if set("mode") {
+			if f.mode != "live" && f.mode != "deferred" {
+				return nil, fmt.Errorf("--mode must be live|deferred (got %q)", f.mode)
+			}
+			m["mode"] = f.mode
+		}
+		if set("accept-timeout") {
+			m["acceptTimeoutSec"] = f.acceptTO
+		}
+		if set("result-ttl") {
+			m["resultTtlSec"] = f.resultTTL
+		}
+		if set("push-channel") {
+			switch {
+			case f.pushChannel != "":
+				m["pushChannelId"] = f.pushChannel
+			case patch:
+				// Untyped nil: dropped from the overlaid config, as --callback-url.
+				m["pushChannelId"] = nil
+			}
+		}
+		// On update the mode is the stored one, known only after the fetch:
+		// `checkMatchMode` judges the same flags there.
+		if !patch {
+			if err := checkMatchMode(c, f.mode); err != nil {
+				return nil, err
 			}
 		}
 		if !patch {
@@ -553,11 +592,26 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 			if a.jsonOut {
 				return a.printer().JSONValue(res)
 			}
+			// MODE is a match channel's (`-` for the other kinds) and sits last,
+			// so the columns scripts already read by position stay put. A
+			// one-kind family (`yyt push channel list`) has no use for it.
+			head := []string{"ID", "KIND", "NAME", "STATUS", "EXPIRES", "TEAM/PROJECT"}
+			if fixedKind == "" {
+				head = append(head, "MODE")
+			}
 			rows := make([][]string, 0, len(res.Channels))
 			for _, ch := range res.Channels {
-				rows = append(rows, []string{ch.ID, ch.Kind, ch.Name, ch.Status, expiryText(ch.ExpiresAt), crumb(ch.TeamName, ch.ProjectName)})
+				row := []string{ch.ID, ch.Kind, ch.Name, ch.Status, expiryText(ch.ExpiresAt), crumb(ch.TeamName, ch.ProjectName)}
+				if fixedKind == "" {
+					mode := "-"
+					if ch.Kind == "match" {
+						mode = matchModeOf(ch.Config)
+					}
+					row = append(row, mode)
+				}
+				rows = append(rows, row)
 			}
-			return a.printer().Table([]string{"ID", "KIND", "NAME", "STATUS", "EXPIRES", "TEAM/PROJECT"}, rows)
+			return a.printer().Table(head, rows)
 		},
 	}
 	if fixedKind == "" {
@@ -597,11 +651,19 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 			if err := resolveAuthChannel(cmd, cc, cfg); err != nil {
 				return err
 			}
+			if ckind == "match" {
+				if err := resolvePushChannel(cmd, cc, cfg); err != nil {
+					return err
+				}
+			}
 			var ch channel
 			body := map[string]any{"kind": ckind, "name": cname, "config": cfg}
 			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/projects/"+api.PathID(r.ProjectID)+"/channels", body, &ch); err != nil {
 				if ckind == "push" {
 					return withPushHint(err, a.teamScopeFlag(r))
+				}
+				if ckind == "match" {
+					return withMatchHint(err)
 				}
 				return err
 			}
@@ -674,6 +736,18 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 				if err := resolveAuthChannel(cmd, cc, cfg); err != nil {
 					return err
 				}
+				if cur.Kind == "match" {
+					// Before any write: the mode is fixed, and the deferred
+					// flags mean nothing on a live channel.
+					if pf.raw == "" {
+						if err := checkMatchMode(cmd, matchModeOf(cur.Config)); err != nil {
+							return err
+						}
+					}
+					if err := resolvePushChannel(cmd, cc, cfg); err != nil {
+						return err
+					}
+				}
 				// auth PATCH is a partial merge server-side; every other kind
 				// replaces the whole config, so overlay the flags on the current one.
 				if cur.Kind != "auth" && pf.raw == "" {
@@ -709,6 +783,9 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 				// A push id says its kind (`newChannelId`), so no read is needed.
 				if fixedKind == "push" || strings.HasPrefix(id, "push_") {
 					return withPushHint(err, "", pushUpdateHints)
+				}
+				if strings.HasPrefix(id, "match_") {
+					return withMatchHint(err)
 				}
 				return err
 			}
@@ -785,7 +862,10 @@ var kindConfigFlags = func() map[string][]string {
 			"google-client-id", "google-client-secret",
 		},
 		"topic": {"auth-channel"},
-		"match": {"auth-channel", "party-size", "wait-timeout", "on-timeout", "callback-url"},
+		"match": {
+			"auth-channel", "party-size", "wait-timeout", "on-timeout", "callback-url",
+			"mode", "accept-timeout", "result-ttl", "push-channel",
+		},
 		"lobby": {
 			"auth-channel", "flush-interval-ms", "max-move-delta",
 			"rate-limit", "party-size-max", "zone", "map-url",
@@ -1095,6 +1175,9 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 	if ch.WsURL != "" {
 		pairs = append(pairs, [2]string{"wsUrl", ch.WsURL})
 	}
+	if ch.Kind == "match" {
+		pairs = append(pairs, matchPairs(ch)...)
+	}
 	if ch.Registered != nil {
 		reg := "true (yyt push channel config " + ch.ID + ")"
 		if !*ch.Registered {
@@ -1134,6 +1217,173 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 		}
 	}
 	return a.printer().KV(pairs)
+}
+
+// matchConfig is the part of a match channel's config the text view spells
+// out; the whole object is still printed as `config`.
+type matchConfig struct {
+	Mode             string `json:"mode"`
+	AcceptTimeoutSec *int   `json:"acceptTimeoutSec"`
+	ResultTTLSec     *int   `json:"resultTtlSec"`
+	PushChannelID    string `json:"pushChannelId"`
+}
+
+// matchModeOf reads the mode out of a match config. A live channel is stored
+// without the key, so absent (and unreadable) is live.
+func matchModeOf(config json.RawMessage) string {
+	var c matchConfig
+	if json.Unmarshal(config, &c) != nil || c.Mode == "" {
+		return "live"
+	}
+	return c.Mode
+}
+
+// matchPairs is the text view of a match channel's mode: the mode itself and,
+// for a deferred channel, its own fields and the ticket routes -- what the
+// console's channel page shows in place of the WebSocket URL.
+func matchPairs(ch channel) [][2]string {
+	var c matchConfig
+	_ = json.Unmarshal(ch.Config, &c)
+	mode := matchModeOf(ch.Config)
+	pairs := [][2]string{{"mode", mode}}
+	if mode != "deferred" {
+		return pairs
+	}
+	if c.AcceptTimeoutSec != nil {
+		pairs = append(pairs, [2]string{"acceptTimeoutSec", fmt.Sprintf("%d", *c.AcceptTimeoutSec)})
+	}
+	if c.ResultTTLSec != nil {
+		pairs = append(pairs, [2]string{"resultTtlSec", fmt.Sprintf("%d", *c.ResultTTLSec)})
+	}
+	push := c.PushChannelID
+	if push == "" {
+		push = "none (clients poll their ticket)"
+	}
+	pairs = append(pairs, [2]string{"pushChannel", push})
+	if ch.TicketURL == "" {
+		return append(pairs, [2]string{"ticketUrl", "none (the match service has no HTTP host on this stage)"})
+	}
+	// Bare URLs, so each can be copied: POST|GET|DELETE the ticket, POST the
+	// other two, all with a player JWT as Bearer.
+	pairs = append(pairs, [2]string{"ticketUrl", ch.TicketURL})
+	if base, ok := strings.CutSuffix(ch.TicketURL, "/ticket"); ok {
+		pairs = append(pairs,
+			[2]string{"acceptUrl", base + "/accept"},
+			[2]string{"declineUrl", base + "/decline"},
+		)
+	}
+	// The two limits a client meets first (`services/match/README.md`).
+	return append(pairs, [2]string{"polling", matchPollingNote})
+}
+
+// matchPollingNote is the one line of the ticket API's limits `get` prints.
+const matchPollingNote = "GET the ticket no faster than every few seconds (the ticket API is throttled at 5 requests/s per stage); " +
+	"POST …/ticket can answer 429 `cooldown` with details.retryAfter after a decline or an unanswered proposal"
+
+// deferredFlags are the match flags only a deferred channel takes.
+var deferredFlags = []string{"accept-timeout", "result-ttl", "push-channel"}
+
+// checkMatchMode refuses, before any write, what the console would: a mode
+// other than the stored one (`mode` is the channel's on update, the flag's on
+// create), and a deferred-only flag on a live channel. Clearing the push
+// channel of a live channel is a no-op the server takes, so `--push-channel
+// ”` passes.
+func checkMatchMode(c *cobra.Command, mode string) error {
+	if mode == "" {
+		mode = "live"
+	}
+	fl := c.Flags()
+	if want, _ := fl.GetString("mode"); fl.Changed("mode") && want != mode {
+		return fmt.Errorf("--mode %s: this is a %s channel and the mode is fixed at creation; create a new match channel with --mode %s", want, mode, want)
+	}
+	if mode == "deferred" {
+		return nil
+	}
+	for _, n := range deferredFlags {
+		if !fl.Changed(n) {
+			continue
+		}
+		if v, _ := fl.GetString(n); n == "push-channel" && v == "" {
+			continue
+		}
+		return fmt.Errorf("--%s belongs to a deferred match channel (--mode deferred, at creation only)", n)
+	}
+	return nil
+}
+
+// resolvePushChannel lets --push-channel take a name, as --auth-channel does:
+// a deferred match channel's push channel lives in the same project, so the
+// name resolves among the project's push channels. An id of another kind is
+// refused before any request.
+func resolvePushChannel(cmd *cobra.Command, cc *ctxClient, cfg map[string]any) error {
+	v, ok := cfg["pushChannelId"].(string)
+	if !ok || v == "" {
+		return nil
+	}
+	if IsID(v) {
+		if !strings.HasPrefix(strings.ToLower(v), "push_") {
+			return fmt.Errorf("--push-channel: %s is not a push channel", v)
+		}
+		return nil
+	}
+	id, err := cc.channelOfKind(cmd.Context(), v, "push", true)
+	if err != nil {
+		return fmt.Errorf("--push-channel: %w", err)
+	}
+	cfg["pushChannelId"] = id
+	return nil
+}
+
+// matchRefusalReason is `details.reason` of a match refusal. The message is
+// read only when the server sent no reason at all (one deployed before the
+// reasons existed).
+func matchRefusalReason(ae *api.Error) string {
+	var d struct {
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(ae.Details, &d) == nil && d.Reason != "" {
+		return d.Reason
+	}
+	switch {
+	case strings.HasPrefix(ae.Message, "mode cannot be changed"):
+		return "mode_fixed"
+	case strings.HasPrefix(ae.Message, "pushChannelId is not an active push channel"):
+		return "push_channel_unusable"
+	}
+	return ""
+}
+
+// withMatchHint adds the next step to a match create/update refusal the
+// console words for its own schema: the fixed mode, a deferred-only field on
+// a live channel, a range that belongs to the other mode, and a push channel
+// it cannot use.
+func withMatchHint(err error) error {
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Status != http.StatusBadRequest {
+		return err
+	}
+	switch matchRefusalReason(ae) {
+	case "mode_fixed":
+		return fmt.Errorf("%w (the mode is fixed at creation: create a new match channel with --mode live|deferred)", err)
+	case "push_channel_unusable":
+		return fmt.Errorf("%w (--push-channel takes an active push channel of the same project whose auth channel is this channel's: `yyt push channel list`; --push-channel '' removes the link)", err)
+	}
+	var issues []struct {
+		Path    string `json:"path"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(ae.Details, &issues) != nil {
+		return err
+	}
+	for _, i := range issues {
+		switch {
+		case strings.HasSuffix(i.Message, "belongs to a deferred channel"):
+			return fmt.Errorf("%w (--accept-timeout, --result-ttl and --push-channel need a deferred channel: --mode deferred, at creation only)", err)
+		case i.Path == "waitTimeoutSec":
+			return fmt.Errorf("%w (--wait-timeout is 5..600 on a live channel and 30..7200 on a deferred one)", err)
+		}
+	}
+	return err
 }
 
 // crumb renders the team/project breadcrumb; legacy rows not yet mapped to a

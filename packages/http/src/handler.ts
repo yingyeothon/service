@@ -87,6 +87,11 @@ export interface HttpHandlerOptions {
     exposeHeaders?: string[];
   };
   logger?: Logger;
+  /**
+   * `false` drops the per-request `request` info line (a polled route would
+   * write one per poll). `request failed` and `unhandled error` still log.
+   */
+  requestLog?: boolean;
 }
 
 function isHttpResult(r: unknown): r is HttpResult {
@@ -144,6 +149,7 @@ export function createHttpHandler({
   maxBodyBytes = 64 * 1024,
   cors,
   logger = nullLogger,
+  requestLog = true,
 }: HttpHandlerOptions): (event: HttpEvent) => Promise<HttpResult> {
   if (cors?.credentials && cors.origins.includes("*")) {
     throw new Error("cors: credentials cannot be combined with origin '*'");
@@ -168,6 +174,7 @@ export function createHttpHandler({
   return async (event) => {
     const startedAt = Date.now();
     const { result, route, subject } = await dispatch(event);
+    if (!requestLog) return result;
     logger.info("request", {
       requestId: event.requestContext.requestId,
       method: event.requestContext.http.method,

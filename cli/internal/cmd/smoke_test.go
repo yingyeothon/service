@@ -102,6 +102,12 @@ func TestSmokeMatchFailedAndRejected(t *testing.T) {
 	if _, err = runSmoke(t, "smoke", "match", "--url", url); err == nil {
 		t.Fatal("--jwt required")
 	}
+	// What `jq -r .wsUrl` and `.ticketUrl` print for a deferred channel.
+	for _, u := range []string{"null", "https://match-api.example/m/match_1/ticket"} {
+		if _, err = runSmoke(t, "smoke", "match", "--url", u, "--jwt", "ok1"); err == nil || !strings.Contains(err.Error(), "deferred match channel has a ticketUrl") {
+			t.Fatalf("%s: err=%v", u, err)
+		}
+	}
 }
 
 func TestSmokeMatchTimeout(t *testing.T) {

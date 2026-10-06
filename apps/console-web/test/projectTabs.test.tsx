@@ -728,6 +728,28 @@ describe("game kit config", () => {
     });
   });
 
+  it("shows a deferred match channel's section as sent: ticket API, no url", async () => {
+    const sent = {
+      auth: { url: "https://auth.example", channelId: "auth_1" },
+      match: {
+        mode: "deferred" as const,
+        apiBase: "https://match-api.example",
+        ticketUrl: "https://match-api.example/m/match_1/ticket",
+        channelId: "match_1",
+      },
+    };
+    vi.mocked(mockApi.kitConfig).mockResolvedValue(sent);
+    mount("channels");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show config" }),
+    );
+    const text =
+      (await screen.findByLabelText("kit-config.json")).textContent ?? "";
+    expect(JSON.parse(text)).toEqual(sent);
+    expect(text).not.toMatch(/undefined|null|"url": ""|"wsUrl"/);
+    expect(text).not.toContain("wss://");
+  });
+
   it("offers a channel to name once the server refuses to guess", async () => {
     vi.mocked(mockApi.kitConfig).mockRejectedValue(
       new Error("this project has 2 auth channels; name one with ?auth="),

@@ -66,7 +66,7 @@ import {
   type TeamStanding,
   type Version,
 } from "../types";
-import { ExpiresCell } from "./Channels";
+import { ExpiresCell, KindCell } from "./Channels";
 import { ISSUE_TONE } from "./Issue";
 import {
   CAP_CEILINGS_ON_CREATE,
@@ -416,7 +416,7 @@ function ChannelsTab({
             <NameCell to={`/channels/${encodeURIComponent(c.id)}`}>
               {c.name}
             </NameCell>
-            <Table.Td>{c.kind}</Table.Td>
+            <KindCell c={c} />
             <Table.Td>
               <Code>{c.id}</Code>
             </Table.Td>

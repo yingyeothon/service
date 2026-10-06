@@ -146,6 +146,19 @@ export interface MatchChannelConfig {
    * a team with no server of its own can still matchmake.
    */
   callbackUrl?: string;
+  /**
+   * Absent = `live` (every channel created before 2026-10-06, and every live
+   * one since: the stored shape of a live channel did not change). `deferred`
+   * is the HTTP ticket mode (`docs/decisions.md` *Match: deferred mode*);
+   * fixed at creation.
+   */
+  mode?: "live" | "deferred";
+  /** Deferred only: seconds every member has to accept a proposal. */
+  acceptTimeoutSec?: number;
+  /** Deferred only: seconds a terminal ticket state (and a confirmed result) stays readable. */
+  resultTtlSec?: number;
+  /** Deferred only: the push channel woken on `proposed`/`confirmed`/`expired`/`failed`. */
+  pushChannelId?: string;
 }
 
 /** Chat scopes a `lobby` channel may permit for `say`. */

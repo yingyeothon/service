@@ -6,16 +6,46 @@ import {
   TextInput,
   Textarea,
 } from "@mantine/core";
-import type { Channel, ChannelKind, SayScope } from "../types";
-import { SAY_SCOPES, type ChannelFormState } from "../lib/channelForm";
+import type {
+  Channel,
+  ChannelKind,
+  MatchMode,
+  PushConfig,
+  SayScope,
+} from "../types";
+import {
+  MATCH_BOUNDS,
+  SAY_SCOPES,
+  withMatchMode,
+  type ChannelFormState,
+  type MatchFieldErrors,
+} from "../lib/channelForm";
 import { PACKAGE_NAME_HINT, PACKAGE_NAME_MAX } from "../lib/push";
 import { ServiceAccountField } from "./ServiceAccountField";
 
-/** A refusal that belongs to one push field, shown under it. */
-export interface ChannelFieldErrors {
+/** A refusal that belongs to one push or match field, shown under it. */
+export interface ChannelFieldErrors extends MatchFieldErrors {
   packageName?: string | null;
   serviceAccount?: string | null;
 }
+
+/**
+ * The push channels a deferred match channel may name: active, and on the
+ * same auth channel (the server's `requirePushChannel`; the list is already
+ * the project's).
+ */
+function usablePushChannels(all: Channel[], authChannelId: string): Channel[] {
+  return all.filter(
+    (c) =>
+      c.kind === "push" &&
+      c.status === "active" &&
+      authChannelId !== "" &&
+      (c.config as PushConfig).authChannelId === authChannelId,
+  );
+}
+
+const range = ([min, max]: readonly [number, number, number]) =>
+  `${min}–${max}`;
 
 interface Props {
   kind: ChannelKind;
@@ -23,7 +53,16 @@ interface Props {
   onChange: (f: ChannelFormState) => void;
   /** Auth channels the caller owns, for topic/match `authChannelId`. */
   authChannels: Channel[];
-  /** Editing an existing auth channel: provider secrets may be left blank to keep them. */
+  /**
+   * match: the project's push channels, for a deferred channel's picker.
+   * `undefined` while they load.
+   */
+  pushChannels?: Channel[];
+  /**
+   * Editing an existing channel: auth provider secrets may be left blank to
+   * keep them, and what is fixed at creation (push package and sender, match
+   * mode) is shown disabled.
+   */
   editing?: boolean;
   errors?: ChannelFieldErrors;
 }
@@ -33,9 +72,11 @@ export function ChannelForm({
   form,
   onChange,
   authChannels,
+  pushChannels: loadedPushChannels,
   editing,
   errors,
 }: Props) {
+  const pushChannels = loadedPushChannels ?? [];
   const set = <K extends keyof ChannelFormState>(
     k: K,
     v: ChannelFormState[K],
@@ -50,7 +91,19 @@ export function ChannelForm({
           : "Players connect with JWTs issued by this auth channel."
       }
       value={form.authChannelId}
-      onChange={(e) => set("authChannelId", e.target.value)}
+      onChange={(e) => {
+        const authChannelId = e.target.value;
+        // A push channel belongs to one auth channel: it does not follow the
+        // match channel to another.
+        const keeps = usablePushChannels(pushChannels, authChannelId).some(
+          (p) => p.id === form.pushChannelId,
+        );
+        onChange({
+          ...form,
+          authChannelId,
+          pushChannelId: keeps ? form.pushChannelId : "",
+        });
+      }}
       required
       data={[
         { value: "", label: "— choose —" },
@@ -61,6 +114,16 @@ export function ChannelForm({
       ]}
     />
   );
+
+  const deferred = form.matchMode === "deferred";
+  const wait = MATCH_BOUNDS[form.matchMode].waitTimeoutSec;
+  const pushOptions = usablePushChannels(pushChannels, form.authChannelId);
+  // A stored link the picker cannot offer (expired, or left on another auth
+  // channel) stays selected and named, so a Save never drops it unseen; the
+  // server refuses it and the message lands under this field.
+  const strayPush =
+    form.pushChannelId !== "" &&
+    !pushOptions.some((p) => p.id === form.pushChannelId);
 
   return (
     <>
@@ -339,15 +402,44 @@ export function ChannelForm({
             max={16}
             value={form.partySize}
             onChange={(e) => set("partySize", e.target.value)}
+            error={errors?.partySize}
             required
           />
+          <NativeSelect
+            label="Mode"
+            description={
+              editing
+                ? "Fixed at creation."
+                : "How players wait. It cannot be changed after the channel is created."
+            }
+            value={form.matchMode}
+            onChange={(e) =>
+              onChange(withMatchMode(form, e.target.value as MatchMode))
+            }
+            disabled={editing}
+            data={[
+              {
+                value: "live",
+                label: "live — players wait on a WebSocket with the app open",
+              },
+              {
+                value: "deferred",
+                label:
+                  "deferred — a ticket over HTTP; players accept the match later",
+              },
+            ]}
+          />
           <TextInput
-            label="Wait timeout (seconds, 5–600)"
+            label={`Wait timeout (seconds, ${range(wait)})`}
+            description={
+              deferred
+                ? "Counted from the first time the ticket was queued."
+                : undefined
+            }
             type="number"
-            min={5}
-            max={600}
             value={form.waitTimeoutSec}
             onChange={(e) => set("waitTimeoutSec", e.target.value)}
+            error={errors?.waitTimeoutSec}
             required
           />
           <NativeSelect
@@ -377,10 +469,59 @@ export function ChannelForm({
           />
           {form.callbackUrl.trim() === "" && (
             <Text size="sm" c="dimmed">
-              No callback: this channel is in members-only mode. A formed party
-              is announced to its own sockets and your game server is never
-              called.
+              No callback: this channel is members-only. A formed party is{" "}
+              {deferred
+                ? "read from each member's ticket"
+                : "announced to its own sockets"}{" "}
+              and your game server is never called.
             </Text>
+          )}
+          {deferred && (
+            <>
+              <TextInput
+                label={`Accept window (seconds, ${range(MATCH_BOUNDS.deferred.acceptTimeoutSec)})`}
+                description="Every member of a proposed match must accept within it. It may close up to a minute late."
+                type="number"
+                value={form.acceptTimeoutSec}
+                onChange={(e) => set("acceptTimeoutSec", e.target.value)}
+                error={errors?.acceptTimeoutSec}
+                required
+              />
+              <TextInput
+                label={`Result TTL (seconds, ${range(MATCH_BOUNDS.deferred.resultTtlSec)})`}
+                description="How long a finished ticket (confirmed, expired, declined or failed) stays readable."
+                type="number"
+                value={form.resultTtlSec}
+                onChange={(e) => set("resultTtlSec", e.target.value)}
+                error={errors?.resultTtlSec}
+                required
+              />
+              <NativeSelect
+                label="Push channel (optional)"
+                description="Wakes the players' devices when a match is proposed, confirmed or expired. Lists the active push channels of this project on the auth channel above."
+                value={form.pushChannelId}
+                onChange={(e) => set("pushChannelId", e.target.value)}
+                error={errors?.pushChannelId}
+                data={[
+                  { value: "", label: "none — clients poll their ticket" },
+                  ...pushOptions.map((p) => ({
+                    value: p.id,
+                    label: `${p.name} (${p.id})`,
+                  })),
+                  ...(strayPush
+                    ? [
+                        {
+                          value: form.pushChannelId,
+                          label:
+                            loadedPushChannels === undefined
+                              ? form.pushChannelId
+                              : `${form.pushChannelId} — not usable (expired, or on another auth channel)`,
+                        },
+                      ]
+                    : []),
+                ]}
+              />
+            </>
           )}
         </>
       )}

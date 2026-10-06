@@ -152,6 +152,29 @@ export function createKitConfigRoutes({
         // `new WebSocket(...)`, which is the sort of failure a copyable block
         // exists to prevent.
         const matchWs = trim(urls.match).replace(/^http/, "ws");
+        // A deferred channel has no socket (`docs/decisions.md` *Match:
+        // deferred mode*): its section names the ticket API, as
+        // `channelView` does, and never a `url` a game would connect to.
+        const matchApi = trim(urls.matchApi ?? "");
+        const deferred =
+          match !== undefined &&
+          (JSON.parse(match.configJson) as { mode?: string }).mode ===
+            "deferred";
+        const matchSection =
+          match === undefined
+            ? undefined
+            : deferred
+              ? matchApi === ""
+                ? undefined
+                : {
+                    mode: "deferred",
+                    apiBase: matchApi,
+                    ticketUrl: `${matchApi}/m/${match.id}/ticket`,
+                    channelId: match.id,
+                  }
+              : matchWs === ""
+                ? undefined
+                : { url: matchWs, channelId: match.id };
         return json(
           {
             ...(auth === undefined || trim(urls.auth) === ""
@@ -174,9 +197,7 @@ export function createKitConfigRoutes({
                     lobbyChannelId: lobby.id,
                   },
                 }),
-            ...(match === undefined || matchWs === ""
-              ? {}
-              : { match: { url: matchWs, channelId: match.id } }),
+            ...(matchSection === undefined ? {} : { match: matchSection }),
             // Keyed by the console name on both sides: the game gives its own
             // aliases in its own config, and inventing aliases here would put
             // two naming schemes in one block. Absent rather than empty, for

@@ -14,7 +14,12 @@ import { channelDeleteNote } from "../lib/push";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
 import { projectUrl } from "../lib/team";
-import type { ChannelKind, ChannelStatus } from "../types";
+import type {
+  Channel,
+  ChannelKind,
+  ChannelStatus,
+  MatchConfig,
+} from "../types";
 
 const STATUS_TONE: Record<ChannelStatus, string> = {
   active: "ok",
@@ -29,6 +34,25 @@ export function ExpiresCell({ expiresAt }: { expiresAt: number }) {
   return (
     <Table.Td title={fmtTime(expiresAt)} style={{ whiteSpace: "nowrap" }}>
       {fmtRelative(expiresAt)}
+    </Table.Td>
+  );
+}
+
+/**
+ * The kind, and for a match channel its mode: one line, the mode in the
+ * column's own slack rather than a column of its own (five of six kinds have
+ * none).
+ */
+export function KindCell({ c }: { c: Pick<Channel, "kind" | "config"> }) {
+  return (
+    <Table.Td style={{ whiteSpace: "nowrap" }}>
+      {c.kind}
+      {c.kind === "match" && (
+        <Text component="span" size="xs" c="dimmed">
+          {" "}
+          · {(c.config as MatchConfig).mode ?? "live"}
+        </Text>
+      )}
     </Table.Td>
   );
 }
@@ -152,7 +176,7 @@ export function ChannelsPage() {
             <NameCell to={`/channels/${encodeURIComponent(c.id)}`}>
               {c.name}
             </NameCell>
-            <Table.Td>{c.kind}</Table.Td>
+            <KindCell c={c} />
             <Table.Td>
               {c.teamId && c.projectId ? (
                 <Anchor

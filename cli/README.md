@@ -113,7 +113,11 @@ yyt channels create --kind topic --name n --auth-channel <auth-id|name>
 yyt channels create --kind match --name n --auth-channel <auth-id|name> --party-size 4 \
                     [--callback-url https://…]   # omit it and a match is announced to its own sockets only \
                     [--wait-timeout 60] [--on-timeout partial|fail]
+yyt channels create --kind match --name n --auth-channel <auth-id|name> --party-size 4 --mode deferred \
+                    [--wait-timeout 600] [--accept-timeout 120] [--result-ttl 600] \
+                    [--push-channel <push-id|name>]   # tickets over HTTP; see "Match modes" below
 yyt channels update <match> --callback-url ''      # drop the callback (members-only mode)
+yyt channels update <match> --push-channel ''      # deferred: drop the push channel (clients poll)
 yyt channels create --kind lobby --name n --auth-channel <auth-id> \
                     [--cap-say zone --cap-say party --cap-say user] [--cap-party=false] \
                     [--cap-pos=false --cap-say user]   # no positions means no zones, so drop zone chat \
@@ -250,7 +254,7 @@ yyt kv entry clear <kv> [--owner <id>]                 # every entry of one play
 yyt project kit-config [project] [--auth <id|name>] [--lobby <id|name>] [--match <id|name>]
 ```
 
-Prints the block a game pastes into its own config so the client kit knows which channels, collections and boards the project owns (`docs/game-kit-design.md`). **Everything in it is public** — ids, names and the stage's own hosts — so it is safe in a repository; there is no secret in it and none will be added. A section whose stack the stage does not have, or whose channel the project does not hold, is **absent** rather than empty, because a kit module with no config fails on first use instead of connecting to nowhere. With several channels of a kind it refuses to guess and asks for `--auth`/`--lobby`/`--match`: a wrong guess would be a *working* config pointing at the wrong channel, which surfaces as an empty lobby rather than as an error.
+Prints the block a game pastes into its own config so the client kit knows which channels, collections and boards the project owns (`docs/game-kit-design.md`). **Everything in it is public** — ids, names and the stage's own hosts — so it is safe in a repository; there is no secret in it and none will be added. A section whose stack the stage does not have, or whose channel the project does not hold, is **absent** rather than empty, because a kit module with no config fails on first use instead of connecting to nowhere. For a deferred match channel the `match` section is `{mode: "deferred", apiBase, ticketUrl, channelId}` with no `url`: it has no socket. With several channels of a kind it refuses to guess and asks for `--auth`/`--lobby`/`--match`: a wrong guess would be a *working* config pointing at the wrong channel, which surfaces as an empty lobby rather than as an error.
 
 ### Leaderboards
 
@@ -308,6 +312,23 @@ yyt limit revoke <limit> [--bundle b | --channel c | --scope team] --note "…" 
 ```
 
 Every limit has a soft value every scope gets and a hard ceiling (`docs/decisions.md` _Limit requests_). One request per limit and scope may be pending, ten per team; a refused or cancelled one blocks the same limit for 7 days (exit 2, the error says when). A channel granted no expiry prints `expires: no expiry`, and `channels extend` refuses it. `push.appsPerTeam` (2 per team, ceiling 5, step 1) is a team limit like `team.projects` and is asked for as `+1`; `push channel create` at the limit prints the request to make. `team.projects` (20 per team, ceiling 1,000) is stepped: `list --scope team` says when it may be asked for, `+5` sends the server's next step (any other `+N` is `effective + N`, and the server refuses it), and `project create` at the limit prints the request to make. `+N` is a whole count and applies to count limits only; sizes take an absolute value.
+
+## Match modes
+
+A match channel is `live` (the default) or `deferred`, chosen with `--mode` at creation and fixed afterwards (`docs/decisions.md` _Match: deferred mode_; client contract in `services/match/README.md`).
+
+| | `live` | `deferred` |
+| --- | --- | --- |
+| Players wait | on a WebSocket (`wsUrl`), app open | with a ticket over HTTP (`ticketUrl`), accepting the match later |
+| `--wait-timeout` | 5..600 s, default 60 | 30..7200 s, default 600 |
+| `--accept-timeout` | — | 30..600 s, default 120: every member must accept a proposed match within it |
+| `--result-ttl` | — | 60..3600 s, default 600: how long a finished ticket stays readable |
+| `--push-channel` | — | optional: an active push channel (id or name) of the same project on the same auth channel; it wakes the players. Without one, clients poll |
+
+- `channels get` prints `mode` for every match channel and, for a deferred one, `acceptTimeoutSec`, `resultTtlSec`, `pushChannel`, `ticketUrl` (`POST`/`GET`/`DELETE`), `acceptUrl` and `declineUrl` (`POST`), all called with a player JWT as Bearer. `ticketUrl` reads `none (…)` on a stage whose match service has no HTTP host. Clients should poll `GET` no faster than every few seconds (the ticket API is throttled at 5 requests/s per stage; `get` prints this as `polling`), and `POST …/ticket` can answer 429 `cooldown` with `details.retryAfter` after a decline or an unanswered proposal. `channels list` has a `MODE` column (`-` for the other kinds). `--json` stays the console's response: the mode is `config.mode`, absent on a live channel.
+- `channels update <match>` reads the channel and sends its whole config back with the given flags on top, so the mode and every deferred field are kept. `--push-channel ''` removes the link.
+- Refused before any write: `--mode` other than the channel's own, and `--accept-timeout`/`--result-ttl`/`--push-channel` on a live channel. A push channel the console cannot use (expired, another project, another auth channel) comes back as its 400 with the next step.
+- `yyt smoke match` drives the live mode only.
 
 ## Smoke helpers
 

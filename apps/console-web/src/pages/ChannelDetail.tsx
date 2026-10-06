@@ -1,8 +1,11 @@
-import { Button, Code, Group, Text } from "@mantine/core";
+import { Anchor, Button, Code, Group, Text } from "@mantine/core";
 import { useEffect, useState, type FormEvent } from "react";
-import { useLocation, useNavigate, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { api } from "../api";
-import { ChannelForm } from "../components/ChannelForm";
+import {
+  ChannelForm,
+  type ChannelFieldErrors,
+} from "../components/ChannelForm";
 import { Crumbs } from "../components/Crumbs";
 import { LimitsSection, useLimits } from "../components/Limits";
 import { Loading, PageSkeleton } from "../components/Loading";
@@ -15,10 +18,17 @@ import {
   Badge,
   CopyBlock,
   CopyField,
+  CopyText,
   Notice,
   SecretOnce,
 } from "../components/ui";
-import { buildConfig, emptyForm, formFromChannel } from "../lib/channelForm";
+import {
+  buildConfig,
+  emptyForm,
+  formFromChannel,
+  matchProblems,
+  matchRefusal,
+} from "../lib/channelForm";
 import { useConfirm } from "../lib/confirm";
 import { errorMessage, fmtRelative, fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
@@ -49,6 +59,13 @@ export function ChannelDetailPage() {
     () => api.projectChannels(projectId ?? "", "auth"),
     { enabled: projectId !== null },
   );
+  // Sibling push channels: what a deferred match channel may link, and the
+  // name of the one it does.
+  const pushes = useApiQuery(
+    ["project", projectId, "channels", "push"],
+    () => api.projectChannels(projectId ?? "", "push"),
+    { enabled: projectId !== null && ch.data?.kind === "match" },
+  );
   const standing = useTeamStanding(ch.data?.teamId);
   const limits = useLimits("channel", id);
   const act = useAction();
@@ -59,6 +76,7 @@ export function ChannelDetailPage() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<ChannelFieldErrors>({});
 
   useEffect(() => {
     // Drop the once-shown secret from history state so back/forward never re-shows it.
@@ -96,11 +114,22 @@ export function ChannelDetailPage() {
   const startEdit = () => {
     setForm(formFromChannel(c));
     setLocalError(null);
+    setFieldErrors({});
     act.clear();
     setEditing(true);
   };
   const save = async (e: FormEvent) => {
     e.preventDefault();
+    setFieldErrors({});
+    if (c.kind === "match") {
+      const errors = matchProblems(form);
+      if (Object.keys(errors).length > 0) {
+        setLocalError(null);
+        act.clear();
+        setFieldErrors(errors);
+        return;
+      }
+    }
     let config: unknown;
     try {
       config = buildConfig(c.kind, form, "patch", c);
@@ -116,6 +145,12 @@ export function ChannelDetailPage() {
           config,
         });
       } catch (err) {
+        if (c.kind === "match") {
+          const fields = matchRefusal(err);
+          if (!fields) throw err;
+          setFieldErrors(fields);
+          return undefined;
+        }
         if (c.kind !== "push") throw err;
         // A registration still under way and the write slot get their own
         // sentence; anything else keeps the server's.
@@ -212,6 +247,7 @@ export function ChannelDetailPage() {
         badges={
           <>
             <Badge>{c.kind}</Badge>
+            {c.kind === "match" && <Badge>{matchMode(c)}</Badge>}
             <Badge
               tone={
                 c.status === "active"
@@ -257,7 +293,9 @@ export function ChannelDetailPage() {
         <CopyField label="Channel id" value={c.id} />
         {c.kind === "auth" && <AuthDetails c={c} />}
         {c.kind === "topic" && <TopicDetails c={c} />}
-        {c.kind === "match" && <MatchDetails c={c} />}
+        {c.kind === "match" && (
+          <MatchDetails c={c} pushChannels={pushes.data} />
+        )}
         {c.kind === "lobby" && <LobbyDetails c={c} />}
         {c.kind === "q" && <QDetails c={c} />}
         {c.kind === "push" && <PushDetails c={c} />}
@@ -309,6 +347,8 @@ export function ChannelDetailPage() {
           form={form}
           onChange={setForm}
           authChannels={auths.data ?? []}
+          pushChannels={pushes.data}
+          errors={fieldErrors}
           editing
         />
       </ResourceDrawer>
@@ -718,18 +758,101 @@ function QDetails({ c }: { c: Channel }) {
   );
 }
 
-function MatchDetails({ c }: { c: Channel }) {
+/** A live channel is stored without the key. */
+const matchMode = (c: Channel) => (c.config as MatchConfig).mode ?? "live";
+
+function MatchDetails({
+  c,
+  pushChannels,
+}: {
+  c: Channel;
+  /** The project's push channels, for the linked one's name. */
+  pushChannels: Channel[] | undefined;
+}) {
   const cfg = c.config as MatchConfig;
+  const deferred = cfg.mode === "deferred";
+  const result = cfg.callbackUrl ? "callback" : "members only";
+  const callback = cfg.callbackUrl ? (
+    <CopyField label="Callback URL" value={cfg.callbackUrl} />
+  ) : null;
+  if (!deferred)
+    return (
+      <>
+        <CopyField label="WebSocket URL" value={c.wsUrl ?? ""} />
+        <CopyField label="Auth channel" value={cfg.authChannelId} />
+        {callback}
+        <Text size="sm" c="dimmed">
+          Mode: live · party size {cfg.partySize} · wait {cfg.waitTimeoutSec}s ·
+          on timeout: {cfg.onTimeout} · result: {result}
+        </Text>
+      </>
+    );
+  // `…/m/{id}/ticket` → `…/m/{id}`: accept and decline are its siblings.
+  const base = c.ticketUrl?.replace(/\/ticket$/, "");
+  const push = cfg.pushChannelId;
   return (
     <>
-      <CopyField label="WebSocket URL" value={c.wsUrl ?? ""} />
+      {c.apiBase && <CopyField label="API base" value={c.apiBase} />}
       <CopyField label="Auth channel" value={cfg.authChannelId} />
-      {cfg.callbackUrl ? (
-        <CopyField label="Callback URL" value={cfg.callbackUrl} />
-      ) : null}
+      {callback}
+      {c.ticketUrl && base ? (
+        <>
+          <CopyText
+            label="Ticket routes"
+            value={[
+              `POST ${c.ticketUrl}`,
+              `GET ${c.ticketUrl}`,
+              `DELETE ${c.ticketUrl}`,
+              `POST ${base}/accept`,
+              `POST ${base}/decline`,
+            ].join("\n")}
+          />
+          <Text size="sm" c="dimmed">
+            Every request carries a player JWT of the auth channel as Bearer.{" "}
+            <Code>POST</Code> queues the player (again: back of the queue),{" "}
+            <Code>GET</Code> reads the ticket — <Code>waiting</Code>,{" "}
+            <Code>proposed</Code>, <Code>confirmed</Code>, <Code>expired</Code>,{" "}
+            <Code>declined</Code> or <Code>failed</Code> — and{" "}
+            <Code>DELETE</Code> cancels it. A proposed match needs every
+            member&rsquo;s accept within the accept window; a decline dissolves
+            it.
+          </Text>
+          <Text size="sm" c="dimmed">
+            Poll <Code>GET</Code> no faster than every few seconds: the ticket
+            API is throttled at 5 requests/s per stage. After a decline or an
+            unanswered proposal, <Code>POST …/ticket</Code> can answer 429{" "}
+            <Code>cooldown</Code> with <Code>details.retryAfter</Code>.
+          </Text>
+        </>
+      ) : (
+        <Text size="sm" c="dimmed">
+          The match service has no HTTP host on this stage, so the ticket routes
+          do not exist here yet.
+        </Text>
+      )}
       <Text size="sm" c="dimmed">
-        Party size {cfg.partySize} · wait {cfg.waitTimeoutSec}s · on timeout:{" "}
-        {cfg.onTimeout} · mode: {cfg.callbackUrl ? "callback" : "members only"}
+        Mode: deferred · party size {cfg.partySize} · wait {cfg.waitTimeoutSec}s
+        · accept window {cfg.acceptTimeoutSec}s · result TTL {cfg.resultTtlSec}s
+        · on timeout: {cfg.onTimeout} · result: {result}
+      </Text>
+      <Text size="sm" c="dimmed">
+        Push channel:{" "}
+        {push ? (
+          <>
+            <Anchor
+              component={Link}
+              to={`/channels/${encodeURIComponent(push)}`}
+              size="sm"
+            >
+              {pushChannels?.find((p) => p.id === push)?.name ?? push}
+            </Anchor>{" "}
+            (<Code>{push}</Code>) — a data-only message{" "}
+            <Code>{"{channelId, matchId, state}"}</Code> tells the app to read
+            its ticket.
+          </>
+        ) : (
+          "none — clients poll their ticket while the app is open."
+        )}
       </Text>
     </>
   );

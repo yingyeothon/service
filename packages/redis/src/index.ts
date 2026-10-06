@@ -11,6 +11,7 @@ export {
   withLock,
   LockTimeoutError,
   RELEASE_SCRIPT,
+  type LockHandle,
   type LockOptions,
 } from "./lock.js";
 export {

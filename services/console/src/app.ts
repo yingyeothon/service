@@ -50,6 +50,7 @@ import { z } from "zod";
 import { listParams, listQuery, searchQuery } from "./list-query.js";
 import {
   buildChannel,
+  channelStatus,
   channelView,
   createBody,
   isGatewayKind,
@@ -408,6 +409,37 @@ export function createConsoleApp({
       throw new AppError(
         "bad_request",
         "authChannelId is not an auth channel of this project",
+      );
+  }
+
+  /**
+   * A deferred match channel's `pushChannelId` must name an **active push
+   * channel of the same project on the same auth channel**
+   * (`docs/decisions.md` *Match: deferred mode* #5): the match stack sends to
+   * the user ids of its own auth channel, and a push channel of another one
+   * holds tokens under ids that mean somebody else. 400 like
+   * `requireAuthChannel`. Checked at write time only -- a push channel that
+   * expires later makes the match stack skip the push, never fail a match.
+   */
+  async function requirePushChannel(
+    projectId: string,
+    config: unknown,
+  ): Promise<void> {
+    const c = config as { pushChannelId?: string; authChannelId?: string };
+    if (!c.pushChannelId) return;
+    const row = await db.findChannelRow(c.pushChannelId);
+    const usable =
+      row !== undefined &&
+      row.kind === "push" &&
+      row.projectId === projectId &&
+      channelStatus(row, nowSec(clock)) === "active" &&
+      (JSON.parse(row.configJson) as { authChannelId?: string })
+        .authChannelId === c.authChannelId;
+    if (!usable)
+      throw new AppError(
+        "bad_request",
+        "pushChannelId is not an active push channel of this project on the same auth channel",
+        { details: { reason: "push_channel_unusable" } },
       );
   }
 
@@ -879,6 +911,8 @@ export function createConsoleApp({
         const split = buildChannel(kind, config, channelOptions);
         if (kind !== "auth")
           await requireAuthChannel(a.project.id, split.config);
+        if (kind === "match")
+          await requirePushChannel(a.project.id, split.config);
         await requireMapUrl(a.team.id, split.config, undefined);
         if (kind === "push") {
           // Every push create spends a claim transaction and, on the
@@ -976,6 +1010,8 @@ export function createConsoleApp({
           const split = patchChannel(row, ctx.body.config, channelOptions);
           if (row.kind !== "auth")
             await requireAuthChannel(project.id, split.config);
+          if (row.kind === "match")
+            await requirePushChannel(project.id, split.config);
           await requireMapUrl(o.id, split.config, row.configJson);
           patch.config = split.config;
           patch.secret = split.secret;

@@ -272,6 +272,8 @@ export interface AuthConfig {
 export interface TopicConfig {
   authChannelId: string;
 }
+/** `live`: players wait on a WebSocket. `deferred`: a ticket is an HTTP resource. */
+export type MatchMode = "live" | "deferred";
 export interface MatchConfig {
   authChannelId: string;
   partySize: number;
@@ -279,6 +281,13 @@ export interface MatchConfig {
   onTimeout: "partial" | "fail";
   /** Absent = the callback-less mode: members arrange the room themselves. */
   callbackUrl?: string;
+  /** Fixed at creation. A live channel is stored without the key. */
+  mode?: MatchMode;
+  // deferred only
+  acceptTimeoutSec?: number;
+  resultTtlSec?: number;
+  /** A push channel of the same project on the same auth channel. */
+  pushChannelId?: string;
 }
 export type SayScope = "zone" | "party" | "user";
 export interface LobbyCapabilities {
@@ -421,10 +430,13 @@ export interface Channel extends ResourceCrumbs {
   callbackUrls?: Record<string, string>;
   /** Absent when the state stack is not deployed on this stage. */
   docUrl?: string;
-  // topic; push (the state stack's base, absent while it is not deployed)
+  // topic; push (the state stack's base, absent while it is not deployed);
+  // deferred match (the match stack's HTTP host, absent while it has none)
   apiBase?: string;
-  // topic / match / lobby / q
+  // topic / live match / lobby / q
   wsUrl?: string;
+  // deferred match, instead of `wsUrl`
+  ticketUrl?: string;
   // q
   redis?: GatewayRedis;
   // push
@@ -1271,7 +1283,18 @@ export interface KitConfig {
   auth?: { url: string; channelId: string; provider?: string };
   state?: { url: string };
   gateway?: { url: string; lobbyChannelId: string };
-  match?: { url: string; channelId: string };
+  /**
+   * A deferred match channel has no socket: its section names the ticket API
+   * instead of a `url` (`docs/decisions.md` *Match: deferred mode*).
+   */
+  match?:
+    | { url: string; channelId: string }
+    | {
+        mode: "deferred";
+        apiBase: string;
+        ticketUrl: string;
+        channelId: string;
+      };
   /** Absent, not empty, when the project has none — same rule as the sections above. */
   collections?: Record<string, string>;
   boards?: Record<string, string>;

@@ -48,18 +48,18 @@ Four consequences run through everything below:
 
 ## 2. Shape at a glance
 
-| Piece                      | Runtime                                       | Where                                                              | Holds                                                                  |
-| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                    | OAuth → per-channel JWT                                                |
-| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front) | schema owner, every management route                                   |
-| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)             | short-lived broadcast rooms                                            |
-| `match`                    | Lambda + API Gateway WebSocket                | `match.yyt.life`                                                   | FIFO matchmaker                                                        |
-| `state`                    | Lambda                                        | `doc.yyt.life`                                                     | `/s` documents, `/kv`, `/lb`, `/social`, `/time`, `/push` (**merged**) |
-| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                      | `lobby` relay, `q` actor bridge, `/presence`                           |
-| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                         | immutable game data; static web builds                                 |
-| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                   | all durable and all volatile state                                     |
-| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                    | every console API as subcommands                                       |
-| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                             | installer + project issues, sites, channels                            |
+| Piece                      | Runtime                                       | Where                                                                           | Holds                                                                  |
+| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                                 | OAuth → per-channel JWT                                                |
+| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front)              | schema owner, every management route                                   |
+| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)                          | short-lived broadcast rooms                                            |
+| `match`                    | Lambda + API Gateway WebSocket + HTTP API     | `match.yyt.life` (sockets), `match-api.yyt.life` (deferred tickets, **merged**) | FIFO matchmaker                                                        |
+| `state`                    | Lambda                                        | `doc.yyt.life`                                                                  | `/s` documents, `/kv`, `/lb`, `/social`, `/time`, `/push` (**merged**) |
+| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                                   | `lobby` relay, `q` actor bridge, `/presence`                           |
+| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                                      | immutable game data; static web builds                                 |
+| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                                | all durable and all volatile state                                     |
+| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                                 | every console API as subcommands                                       |
+| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                                          | installer + project issues, sites, channels                            |
 
 Two deployment classes, and the rule that sorts them: **anything that must hold a socket
 runs as a container; everything else is a Lambda stack.** Region `ap-northeast-2`, stages
@@ -169,6 +169,18 @@ modes; the modes differ only in what else happens:
   chooses the room;
 - **without** — nothing is posted anywhere, and a client-only game elects a host
   deterministically from the roster (lowest `userId`) and forms a `lobby` party.
+
+A channel is `live` (the above) or `deferred` (**merged**, not deployed), fixed at creation.
+Deferred is for players who do not wait with the app open: a ticket is an HTTP resource
+(`POST|GET|DELETE /m/{channelId}/ticket`, `POST …/accept`, `POST …/decline` on
+`match-api.yyt.life`), a formed party is _proposed_ and every member must accept within
+`acceptTimeoutSec` (30–600 s, default 120) before it is confirmed and the callback is
+called. Accepters of a window that closes keep their place in the queue; the others lose
+their ticket. `waitTimeoutSec` is 30–7,200 s (default 600); the confirmed result is
+readable by its members for `resultTtlSec` (60–3,600 s, default 600). An optional
+`pushChannelId` wakes each member's devices on `proposed`, `confirmed`, `expired` and
+`failed`. A player who declines or lets the window close cannot queue again for
+`acceptTimeoutSec`; the ticket API is throttled at 5 requests/s per stage. Contract: `services/match/README.md`.
 
 No skill rating, no rule expressions, no backfill into a running match.
 
@@ -312,7 +324,9 @@ Where the platform binds first, and what binds it:
 | Concurrent players (gateway)       | design ~10; socket cap 64; 256 MB container                                                                                                     | one process on a shared box                                                |
 | MariaDB connections                | 57 reserved of 60                                                                                                                               | `reservedConcurrency` summed across five stacks                            |
 | Redis                              | 256 MB, `allkeys-lru`, shared by both stages and every participant                                                                              | no per-account quota exists                                                |
-| API throttles                      | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`, `/push`); console 50 / 100                                                    | one stage's whole surface                                                  |
+| Deferred match channel             | 500 waiting tickets, 50 open proposals; a timeout is acted on within a minute                                                                   | code constants; the 1-minute schedule                                      |
+| Match containers                   | sockets 6 (+ authorizer 5), ticket API 3, worker 2                                                                                              | the stack's 18 MariaDB connections                                         |
+| API throttles                      | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`, `/push`); console 50 / 100; match ticket API 20 / 40                          | one stage's whole surface                                                  |
 | CloudWatch alarms                  | 10 (8 prod + 2 dev)                                                                                                                             | account free tier; adding one means dropping one                           |
 | Public CDN traffic                 | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day                                                               | the CDN guard disables it (console: alert only)                            |
 | Frames                             | 16 KB inbound, 32 KB outbound; topic 16 KB                                                                                                      | refused, not truncated                                                     |

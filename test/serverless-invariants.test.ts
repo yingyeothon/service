@@ -162,11 +162,94 @@ describe("serverless.yml invariants", () => {
     expect(total).toBeLessThanOrEqual(60);
   });
 
-  it("state: the SSM SDK is loaded by the first push request, not at cold start", () => {
+  it("match: the ticket API has its own function inside the stack's 18", () => {
+    // `docs/decisions.md` *Match: deferred mode*: the HTTP routes took their
+    // containers from `ws` and `authorizer`; the stack's share of the MariaDB
+    // budget did not move.
+    const yml = readFileSync(
+      join(root, "services/match/serverless.yml"),
+      "utf8",
+    );
+    const doc = parse(yml, { logLevel: "silent" }) as {
+      custom: { customDomain: Record<string, { domainName: string }> };
+      provider: {
+        environment: Record<string, unknown>;
+        iam: { role: { statements: Record<string, unknown>[] } };
+      };
+      functions: Record<
+        string,
+        {
+          reservedConcurrency: number;
+          timeout?: number;
+          environment?: Record<string, unknown>;
+          events?: unknown[];
+        }
+      >;
+    };
+    const fns = doc.functions;
+    expect(
+      Object.fromEntries(
+        Object.entries(fns).map(([n, f]) => [n, f.reservedConcurrency]),
+      ),
+    ).toEqual({ authorizer: 5, ws: 6, http: 3, worker: 2, tick: 1, debug: 1 });
+    // One route for every method, so a CORS preflight reaches the handler;
+    // the provider's 10 s, under API Gateway's 29 s.
+    expect(fns.http!.events).toEqual([
+      { httpApi: { method: "*", path: "/m/{proxy+}" } },
+    ]);
+    expect(fns.http!.timeout).toBeUndefined();
+    // An HTTP API and a WebSocket API cannot share a domain.
+    const domains = doc.custom.customDomain;
+    expect(Object.keys(domains).sort()).toEqual(["http", "websocket"]);
+    expect(domains.http!.domainName).not.toBe(domains.websocket!.domainName);
+    // The push pool's path reaches the two functions that send, as a path:
+    // never the provider environment, never the player-facing functions.
+    expect(doc.provider.environment.PUSH_SSM_PATH).toBeUndefined();
+    for (const [name, fn] of Object.entries(fns))
+      expect(fn.environment?.PUSH_SSM_PATH !== undefined, name).toBe(
+        name === "worker" || name === "tick",
+      );
+    // The same two statements the state stack holds, character for character.
+    const state = parse(
+      readFileSync(join(root, "services/state/serverless.yml"), "utf8"),
+      { logLevel: "silent" },
+    ) as typeof doc;
+    const pushIam = (d: typeof doc) =>
+      d.provider.iam.role.statements.filter((st) =>
+        /ssm:|kms:/.test(JSON.stringify(st.Action)),
+      );
+    expect(pushIam(doc)).toEqual(pushIam(state));
+    expect(pushIam(doc)).toHaveLength(2);
+    expect(JSON.stringify(pushIam(doc))).not.toMatch(
+      /ssm:(\*|GetParameter"|GetParameters")/,
+    );
+    // The HTTP API is throttled per stage, where CloudFormation reads it.
+    const stage = (
+      parse(yml, { logLevel: "silent" }) as {
+        resources: {
+          extensions: {
+            HttpApiStage: {
+              Properties: { DefaultRouteSettings: Record<string, number> };
+            };
+          };
+        };
+      }
+    ).resources.extensions.HttpApiStage.Properties.DefaultRouteSettings;
+    expect(stage).toEqual({
+      ThrottlingRateLimit: 5,
+      ThrottlingBurstLimit: 10,
+    });
+    // No alarm was added for the mode (`rules/serverless-aws.md`: 10 in all).
+    expect(yml.match(/AWS::CloudWatch::Alarm/g)).toHaveLength(2);
+  });
+
+  it("the SSM SDK is loaded by the first push, not at cold start", () => {
     // `@aws-sdk/*` is external to the bundle, so a static import is a module
-    // load on every cold start of `/s/*` and `/kv/*` too.
+    // load on every cold start of `/s/*` and `/kv/*` too -- and of every
+    // match socket and ticket request.
     for (const file of [
       "services/state/src/handler.ts",
+      "services/match/src/handler.ts",
       "packages/push/src/ssm.ts",
     ]) {
       const src = readFileSync(join(root, file), "utf8");

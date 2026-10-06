@@ -6,7 +6,6 @@ import {
   type Clock,
   type Logger,
 } from "@yyt/core";
-import { verifyChannelToken } from "@yyt/jwt";
 import { LockTimeoutError } from "@yyt/redis";
 import {
   allowPolicy,
@@ -23,13 +22,16 @@ import type {
   APIGatewayProxyWebsocketEventV2,
   APIGatewayRequestAuthorizerEvent,
 } from "aws-lambda";
-import { requireActiveMatch, type ChannelStore } from "./channels.js";
+import {
+  modeOf,
+  requireActiveMatch,
+  verifyPlayer,
+  type ChannelStore,
+} from "./channels.js";
 import type { Matcher, ServerMessage } from "./matcher.js";
 import type { Pool } from "./pool.js";
 
 export const TICKET_GRACE_SEC = 120;
-const ID = /^[a-z0-9_-]{3,40}$/;
-const TOKEN = /^[\x21-\x7e]{1,4096}$/;
 
 /** `{channelId, connId}` handed from `$connect` to the async worker. */
 export interface WorkerEvent {
@@ -112,19 +114,12 @@ export function createMatchApp({
     const channelId = event.queryStringParameters?.channel ?? "";
     const bearer = extractBearerSubprotocol(event);
     try {
-      if (!ID.test(channelId))
-        throw new AppError("bad_request", "channel query required");
-      if (!bearer || !TOKEN.test(bearer))
-        throw new AppError("unauthorized", "bearer subprotocol required");
-      const ch = await requireActiveMatch(channels, channelId, clock);
-      const auth = await channels.getAuthVerifier(ch.config.authChannelId);
-      if (!auth) throw new AppError("gone", "auth channel inactive");
-      const claims = await verifyChannelToken(bearer, {
-        secret: auth.secret,
-        channelId: ch.config.authChannelId,
-        audience: auth.audience,
+      const { userId } = await verifyPlayer(
+        channels,
+        { channelId, bearer, mode: "live" },
         clock,
-      });
+      );
+      const claims = { userId };
       logger.debug("authorize ok", { channelId, userId: claims.userId });
       return allowPolicy(claims.userId, event.methodArn, {
         userId: claims.userId,
@@ -146,6 +141,10 @@ export function createMatchApp({
     const { userId, channelId } = authorizerContext(event);
     const connId = event.requestContext.connectionId;
     const ch = await requireActiveMatch(channels, channelId, clock);
+    // The authorizer already refused it; a ticket in the live pool of a
+    // deferred channel would be swept as if the channel were live.
+    if (modeOf(ch) !== "live")
+      throw new AppError("bad_request", "a deferred channel has no socket");
     // Under the channel lock so a concurrent sweep cannot deactivate the
     // channel between our push and its empty snapshot, and so a user who
     // reconnects while being dispatched cannot end up in two parties.

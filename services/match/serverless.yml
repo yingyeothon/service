@@ -1,4 +1,5 @@
-# match.yyt.life — FIFO party matchmaker (API Gateway WebSocket).
+# match.yyt.life — FIFO party matchmaker (API Gateway WebSocket), plus the
+# deferred mode's ticket API on match-api.yyt.life (HTTP API).
 service: yyt-match
 frameworkVersion: "4"
 
@@ -18,7 +19,15 @@ custom:
     dev: "-dev"
     prod: ""
   domain: match${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  # API Gateway cannot map an HTTP API and a WebSocket API onto one domain
+  # (rules/serverless-aws.md), so the deferred mode's tickets get a host of
+  # their own, as topic's two do.
+  apiDomain: match-api${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
   ssm: /yyt-service/${self:custom.stage}/match
+  # The stage's pool of Firebase projects, shared with console and state
+  # (services/state/serverless.yml). Read at runtime by the deferred mode's
+  # push hook; without a leading slash so the IAM resource can append it.
+  pushSsm: yyt-service/${self:custom.stage}/push/fcm
   # The debug HTTP API (callback sink, manual tick) only exists when deployed
   # with `--param debugHooks=1`; prod never gets the routes.
   debugEvents:
@@ -38,12 +47,18 @@ custom:
     banner:
       js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
   customDomain:
-    domainName: ${self:custom.domain}
-    apiType: websocket
-    endpointType: regional
-    certificateName: yyt.life
-    createRoute53Record: true
-    autoDomain: true
+    http:
+      domainName: ${self:custom.apiDomain}
+      endpointType: regional
+      certificateName: yyt.life
+      createRoute53Record: true
+      autoDomain: true
+    websocket:
+      domainName: ${self:custom.domain}
+      endpointType: regional
+      certificateName: yyt.life
+      createRoute53Record: true
+      autoDomain: true
   prune:
     automatic: true
     number: 5
@@ -87,10 +102,31 @@ provider:
         - Effect: Allow
           Action: lambda:InvokeFunction
           Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:custom.stage}-worker"
+        # The push pool, exactly as the state stack reads it.
+        # `GetParametersByPath` is authorized against the path itself, and the
+        # parameters under it are what it returns.
+        - Effect: Allow
+          Action: ssm:GetParametersByPath
+          Resource:
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
+        # SecureString decryption, only as SSM performs it for those
+        # parameters: the service condition keeps the key from being used
+        # directly, the encryption context from decrypting any other path.
+        - Effect: Allow
+          Action: kms:Decrypt
+          Resource: arn:aws:kms:${aws:region}:${aws:accountId}:key/*
+          Condition:
+            StringEquals:
+              kms:ViaService: ssm.${aws:region}.amazonaws.com
+            StringLike:
+              kms:EncryptionContext:PARAMETER_ARN: arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
 
 # Connection budget (rules/data.md): every container holds one MySQL + one
-# Redis connection. ws 8 + authorizer 6 + worker 2 + tick 1 + debug 1 = 18,
-# cut from 24 on 2026-08-26 to seat the state stack. Cut here rather than in
+# Redis connection. ws 6 + authorizer 5 + http 3 + worker 2 + tick 1 +
+# debug 1 = 18, cut from 24 on 2026-08-26 to seat the state stack. `http`
+# (2026-10-06, the deferred mode's tickets) took its three from `ws` (8 → 6)
+# and `authorizer` (6 → 5): the stack's share is unchanged. Cut here rather than in
 # auth because nothing pins these to a stated burst the way
 # `docs/auth-game-contract.md` pins auth's, and `worker` is the async
 # dispatcher, one invocation per formed match rather than one per player.
@@ -100,10 +136,10 @@ provider:
 functions:
   authorizer:
     handler: src/handler.authorizer
-    reservedConcurrency: 6
+    reservedConcurrency: 5
   ws:
     handler: src/handler.ws
-    reservedConcurrency: 8
+    reservedConcurrency: 6
     events:
       - websocket:
           route: $connect
@@ -115,11 +151,27 @@ functions:
           route: $disconnect
       - websocket:
           route: $default
+  # The deferred mode's ticket API. One route for every method, so a CORS
+  # preflight reaches the handler too; it wins over `debug`'s catch-all. Every
+  # route is a few Redis commands under the channel lock (4 s wait at most)
+  # and one MySQL read; callbacks and pushes leave from `worker` and `tick`.
+  http:
+    handler: src/handler.http
+    reservedConcurrency: 3
+    events:
+      - httpApi:
+          method: "*"
+          path: /m/{proxy+}
   worker:
     handler: src/handler.worker
     reservedConcurrency: 2
+    environment:
+      # A path, not a value; only the functions that send carry it.
+      PUSH_SSM_PATH: /${self:custom.pushSsm}/
     # Waits up to 6s for the socket, lock wait 4s, then dispatches while
-    # remaining time ≥ 12s (one callback = 5s × 2 attempts + posts).
+    # remaining time ≥ 12s (one callback = 5s × 2 attempts + posts). Deferred
+    # mode: lock wait 4s + channel read 5s, then a claim needs
+    # ROUND_BUDGET_MS (23s) left (services/match/test/deferred.test.ts pins it).
     timeout: 45
     # A retry minutes later matches a different queue; the tick is the backstop.
     maximumRetryAttempts: 0
@@ -129,6 +181,8 @@ functions:
     reservedConcurrency: 1
     timeout: 60
     maximumRetryAttempts: 0
+    environment:
+      PUSH_SSM_PATH: /${self:custom.pushSsm}/
     events:
       - schedule: rate(1 minute)
   debug:
@@ -142,6 +196,18 @@ package:
   individually: true
 
 resources:
+  # Stage throttle of the HTTP API (the ticket routes and, on dev, the debug
+  # routes), written as the state stack writes it: `provider.httpApi` cannot
+  # carry it in Serverless 4. Every ticket request costs one MySQL SELECT (the
+  # auth channel) before anything is decided, and a waiting player polls; the
+  # throttle is what keeps a flood off `http`'s three containers. 5 rps /
+  # burst 10 by owner decision (2026-10-06).
+  extensions:
+    HttpApiStage:
+      Properties:
+        DefaultRouteSettings:
+          ThrottlingRateLimit: 5
+          ThrottlingBurstLimit: 10
   Conditions:
     HasAlarmTopic: !Not [!Equals ["${self:custom.alarmTopic}", ""]]
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.

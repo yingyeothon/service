@@ -1,0 +1,4 @@
+ID          KIND   NAME    STATUS  EXPIRES               TEAM/PROJECT  MODE
+auth_0123   auth   demo    active  2025-08-31T01:46:40Z  dooroo/game   -
+match_live  match  duel    active  2025-08-31T01:46:40Z  dooroo/game   live
+match_def   match  league  active  2025-08-31T01:46:40Z  dooroo/game   deferred
