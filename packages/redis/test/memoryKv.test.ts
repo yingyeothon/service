@@ -51,7 +51,19 @@ describe.skipIf(!it_)(
     // cases use disjoint key names.
     let kv: (Kv & { close(): Promise<void> }) | undefined;
     afterAll(async () => {
-      await kv?.del("a", "nx", "ex", "n", "s", "l", "h", "z", "cad");
+      await kv?.del(
+        "a",
+        "nx",
+        "ex",
+        "n",
+        "s",
+        "l",
+        "h",
+        "z",
+        "cad",
+        "ht",
+        "ht:armed",
+      );
       await kv?.close();
     });
     kvContractTests(

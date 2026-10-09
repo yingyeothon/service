@@ -52,6 +52,7 @@ import {
 import { createConsoleApp } from "./app.js";
 import { createS3ArtifactStore, type ArtifactStore } from "./artifact-store.js";
 import { createAssetKeyring } from "./asset-crypto.js";
+import { flushCatalogPush, type CatalogPushSchedule } from "./catalog-push.js";
 import { createDebugRoutes } from "./debug.js";
 import { runS3Probe, s3SdkVersions } from "./s3-probe.js";
 import { revokeChannelRedis } from "./channel-redis.js";
@@ -105,6 +106,10 @@ import {
   runSiteSweep,
 } from "./site-deploy.js";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import {
+  CreateScheduleCommand,
+  SchedulerClient,
+} from "@aws-sdk/client-scheduler";
 
 /* The only place in the service that reads `process.env` or touches `console`. */
 
@@ -337,6 +342,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     pushJobs,
     pushJobStore: pushJobStoreFromEnv(),
     pushJobInvoke: pushJobInvokerFromEnv(),
+    catalogPushSchedule: catalogPushScheduleFromEnv(),
     // Inside a request: one attempt, a short timeout (the cron's publisher
     // retries and waits longer, which a member's click should not).
     notify: alarmNotify({ attempts: 1, timeoutMs: 3000 }),
@@ -453,6 +459,100 @@ function pushJobInvokerFromEnv(): (() => Promise<void>) | undefined {
     );
   };
 }
+
+let scheduler: SchedulerClient | undefined;
+
+/**
+ * One-time EventBridge Scheduler schedule that runs `catalogPush` once for an
+ * app's burst (`catalog-push.ts`), deleted by Scheduler after it fired;
+ * `undefined` without the stack's scheduler settings, and every commit is
+ * then announced on its own. A schedule is named by a fresh ULID, so two
+ * never collide.
+ */
+function catalogPushScheduleFromEnv(): CatalogPushSchedule | undefined {
+  const fn = process.env.CATALOG_PUSH_FUNCTION_ARN ?? "";
+  const role = process.env.CATALOG_PUSH_SCHEDULER_ROLE_ARN ?? "";
+  const group = process.env.CATALOG_PUSH_SCHEDULE_GROUP ?? "";
+  if (!fn || !role || !group) return undefined;
+  return async (appId, token, at) => {
+    scheduler ??= new SchedulerClient({
+      maxAttempts: 2,
+      requestHandler: { requestTimeout: 2500, connectionTimeout: 1500 },
+    });
+    // `at()` takes whole seconds; never a time already past.
+    const when = new Date(Math.max(at, Date.now() + 5_000) + 999);
+    await scheduler.send(
+      new CreateScheduleCommand({
+        Name: `cp-${ulid()}`,
+        GroupName: group,
+        ScheduleExpression: `at(${when.toISOString().slice(0, 19)})`,
+        ScheduleExpressionTimezone: "UTC",
+        FlexibleTimeWindow: { Mode: "OFF" },
+        ActionAfterCompletion: "DELETE",
+        Target: {
+          Arn: fn,
+          RoleArn: role,
+          Input: JSON.stringify({ appId, token }),
+          // Past its mark's lifetime a run would only end at once.
+          RetryPolicy: {
+            MaximumRetryAttempts: 2,
+            MaximumEventAgeInSeconds: 1200,
+          },
+        },
+      }),
+    );
+  };
+}
+
+let catalogPushKv: Kv | undefined;
+
+/**
+ * One scheduled run of the update notice for one app's burst
+ * (`flushCatalogPush`): send it when due, or schedule the next run. Redis,
+ * the pool and Scheduler only, no MariaDB. Never throws: a notice is best
+ * effort, and a retry could only find the mark gone.
+ */
+export const catalogPush = async (event: unknown): Promise<void> => {
+  const { appId, token } = (event ?? {}) as {
+    appId?: unknown;
+    token?: unknown;
+  };
+  if (
+    typeof appId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,64}$/.test(appId) ||
+    typeof token !== "string" ||
+    !/^[0-9A-Za-z]{1,64}$/.test(token)
+  ) {
+    logger.error("catalog push event malformed");
+    return;
+  }
+  const schedule = catalogPushScheduleFromEnv();
+  if (!schedule) {
+    logger.error("catalog push run without its scheduler settings");
+    return;
+  }
+  try {
+    catalogPushKv ??= createRedisKv(redisOptionsFromEnv());
+    const run = await flushCatalogPush({
+      pool: pushPoolFromEnv(),
+      kv: catalogPushKv,
+      schedule,
+      stage: env("STAGE"),
+      appId,
+      token,
+      clock: systemClock,
+      logger,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    logger.info("catalog push run", { appId, run });
+  } catch (e) {
+    // The error's name only: a message can carry an ARN.
+    logger.warn("catalog push run failed", {
+      appId,
+      error: e instanceof Error ? e.name : "unknown",
+    });
+  }
+};
 
 /**
  * The campaign worker: drains `push_jobs` for one time box, then invokes

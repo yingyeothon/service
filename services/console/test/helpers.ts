@@ -91,6 +91,16 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const pushStore = createMemoryPushJobStore();
   /** One entry per kick of the campaign worker. */
   const pushKicks: number[] = [];
+  /** One app id per invoke of the update-notice worker... */
+  const catalogPushInvoked: string[] = [];
+  /** ...and the mark token it carried, per app (the newest)... */
+  const catalogPushTokens = new Map<string, string>();
+  /** ...and every schedule, the worker's own included. */
+  const catalogPushSchedules: Array<{
+    appId: string;
+    token: string;
+    at: number;
+  }> = [];
   /** One fake Firebase project (`p1`); `over.pushPool` replaces the pool. */
   const fcm = createFakePushPool();
   // The `createdBy`/`login` sorts join `members.github_login` on the real DB.
@@ -225,6 +235,11 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     pushJobStore: pushStore.store,
     pushJobInvoke: async () => {
       pushKicks.push(clock.now());
+    },
+    catalogPushSchedule: async (appId, token, at) => {
+      catalogPushInvoked.push(appId);
+      catalogPushTokens.set(appId, token);
+      catalogPushSchedules.push({ appId, token, at });
     },
     notify: async (subject, message) => {
       mails.push([subject, message]);
@@ -363,6 +378,9 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     pushJobs,
     pushStore,
     pushKicks,
+    catalogPushInvoked,
+    catalogPushTokens,
+    catalogPushSchedules,
     fcm,
     mails,
     teamDb,

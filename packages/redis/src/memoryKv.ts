@@ -24,10 +24,16 @@ interface Stored {
 const COMPARE_AND_DELETE =
   /redis\.call\(["']get["'],\s*KEYS\[1\]\)\s*==\s*ARGV\[1\][\s\S]*redis\.call\(["']del["'],\s*KEYS\[1\]\)/;
 
+const HASH_TAKE_IF =
+  /redis\.call\(["']hget["'],\s*KEYS\[1\],\s*ARGV\[1\]\)\s*~=\s*ARGV\[2\][\s\S]*redis\.call\(["']hgetall["'],\s*KEYS\[1\]\)[\s\S]*redis\.call\(["']del["'],\s*unpack\(KEYS\)\)/;
+
+const HASH_SET_EX =
+  /redis\.call\(["']hset["'],\s*KEYS\[1\],\s*unpack\(ARGV,\s*2\)\)[\s\S]*redis\.call\(["']expire["'],\s*KEYS\[1\],\s*ARGV\[1\]\)/;
+
 /**
  * In-memory `Kv` mirroring the Redis semantics used in this repo (NX/EX,
  * TTL expiry driven by an injected clock, set/list/hash ops, compare-and-delete
- * via `eval`).
+ * hash take-if and hash set-ex via `eval`).
  */
 export function createMemoryKv({
   prefix = "",
@@ -231,6 +237,27 @@ export function createMemoryKv({
           return 1;
         }
         return 0;
+      }
+      if (HASH_SET_EX.test(script)) {
+        const [key] = keys;
+        const [ttl, ...pairs] = args;
+        if (key === undefined || ttl === undefined || pairs.length % 2 !== 0)
+          throw new Error("hash set-ex needs 1 key, a TTL and field pairs");
+        const fields: Record<string, string> = {};
+        for (let i = 0; i < pairs.length; i += 2)
+          fields[pairs[i]!] = pairs[i + 1]!;
+        await kv.hset(key, fields);
+        return (await kv.expire(key, Number(ttl))) ? 1 : 0;
+      }
+      if (HASH_TAKE_IF.test(script)) {
+        const [key] = keys;
+        const [field, expected] = args;
+        if (key === undefined || field === undefined || expected === undefined)
+          throw new Error("hash take-if needs 1 key and 2 args");
+        if ((await kv.hget(key, field)) !== expected) return null;
+        const all = await kv.hgetall(key);
+        await kv.del(...keys);
+        return Object.entries(all).flat();
       }
       throw new Error(
         "createMemoryKv: unsupported Lua script; add a matcher in memoryKv.ts",

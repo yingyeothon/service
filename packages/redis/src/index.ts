@@ -30,4 +30,10 @@ export {
 } from "./aclAdmin.js";
 export { createMemoryAclAdmin, type MemoryAclAdmin } from "./memoryAclAdmin.js";
 export { kvContractTests } from "./contract.js";
+export {
+  HASH_SET_EX_SCRIPT,
+  HASH_TAKE_IF_SCRIPT,
+  hashTakeIf,
+  hsetEx,
+} from "./take.js";
 export { cachedJson, type CachedJsonOptions } from "./cache.js";

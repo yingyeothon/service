@@ -183,6 +183,12 @@ provider:
     # The campaign worker `api` and `expire` kick, and that invokes itself
     # while `push_jobs` holds runnable work.
     PUSH_JOB_FUNCTION: ${self:service}-${self:custom.stage}-pushJob
+    # The update notice (docs/push.md *Console app*): a catalog commit
+    # schedules one `catalogPush` run per burst of uploads through
+    # EventBridge Scheduler, and a run not yet due schedules the next.
+    CATALOG_PUSH_FUNCTION_ARN: arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:custom.stage}-catalogPush
+    CATALOG_PUSH_SCHEDULER_ROLE_ARN: !GetAtt CatalogPushSchedulerRole.Arn
+    CATALOG_PUSH_SCHEDULE_GROUP: !Ref CatalogPushScheduleGroup
     # `{slug}.{suffix}` host of every site, only where the distribution exists.
     SITE_HOST_SUFFIX: !If
       - HasSiteHost
@@ -280,6 +286,18 @@ provider:
         - Effect: Allow
           Action: lambda:InvokeFunction
           Resource: arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:custom.stage}-pushJob
+        # commit and `catalogPush` → one-time schedules in the stack's own
+        # group, run with the scheduler role and nothing else (Scheduler
+        # deletes each after it fired).
+        - Effect: Allow
+          Action: scheduler:CreateSchedule
+          Resource: arn:aws:scheduler:${aws:region}:${aws:accountId}:schedule/${self:service}-${self:custom.stage}-catalog-push/*
+        - Effect: Allow
+          Action: iam:PassRole
+          Resource: !GetAtt CatalogPushSchedulerRole.Arn
+          Condition:
+            StringEquals:
+              iam:PassedToService: scheduler.amazonaws.com
         # Binary catalog artifacts and game assets share this bucket: presigned
         # PUT into uploads/ or asset-uploads/, commit copies to the app prefix
         # or assets/{bundle}/{version}/, delete covers cleanup — whole-bucket
@@ -310,7 +328,7 @@ provider:
               kms:ViaService: s3.${aws:region}.amazonaws.com
         # The push pool: `GetParametersByPath` on the stage's `push/fcm/` path
         # and nothing else in the parameter store. The role is shared by
-        # every function but `cdnGuard`; only `api`, `expire` and `pushJob`
+        # every function but `cdnGuard`; only `api`, `expire`, `pushJob` and `catalogPush`
         # are told the path. Both spellings of the path, since the action is authorised
         # against the path itself and the parameters under it.
         - Effect: Allow
@@ -421,6 +439,32 @@ functions:
       # The worker sends with the pool's keys.
       PUSH_SSM_PATH: ${self:custom.pushSsmPath}
 
+  catalogPush:
+    handler: src/handler.catalogPush
+    # The console app's update notice for one app's burst of uploads
+    # (docs/decisions.md *Push notifications* #10): one run per schedule,
+    # which sends the burst when it is due (quiet 3 minutes, 15 at most) or
+    # schedules the next run. Redis, the push pool and Scheduler only, no
+    # MariaDB: outside the connection budget (rules/data.md). Nothing waits
+    # between runs, so a burst costs a few short invocations.
+    reservedConcurrency: 1
+    memorySize: 128
+    # A run waits at most 10 s for the due time and 10 s for the send.
+    timeout: 30
+    # A retry could only send a burst twice; a lost one is accepted.
+    maximumRetryAttempts: 0
+    # Past its mark's 20 minutes a queued run would only end at once.
+    maximumEventAge: 1200
+    environment:
+      PUSH_SSM_PATH: ${self:custom.pushSsmPath}
+      # None of the provider's secrets but Redis.
+      MYSQL_PASSWORD: ""
+      REDIS_ACL_USER: ""
+      REDIS_ACL_PASSWORD: ""
+      GITHUB_CLIENT_SECRET: ""
+      DEBUG_KEY: ""
+      GATEWAY_TOKEN: ""
+
   gatewayProbe:
     handler: src/handler.gatewayProbe
     reservedConcurrency: 1
@@ -516,6 +560,34 @@ resources:
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
+    # The update notice's one-time schedules (`catalogPush`). Scheduler bills
+    # per invocation, 14 M a month free; an idle group costs nothing.
+    CatalogPushScheduleGroup:
+      Type: AWS::Scheduler::ScheduleGroup
+      Properties:
+        Name: ${self:service}-${self:custom.stage}-catalog-push
+    # What a schedule runs as: invoke `catalogPush`, nothing else.
+    CatalogPushSchedulerRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: scheduler.amazonaws.com
+              Action: sts:AssumeRole
+              Condition:
+                StringEquals:
+                  aws:SourceAccount: ${aws:accountId}
+        Policies:
+          - PolicyName: invoke-catalog-push
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:custom.stage}-catalogPush
     # Private poster bucket; objects are reached only through presigned URLs
     # (visibility is enforced by the API, so CloudFront does not front it).
     # CORS admits the browser PUT from the SPA.

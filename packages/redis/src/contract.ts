@@ -1,4 +1,5 @@
 import type { Kv } from "./kv.js";
+import { hashTakeIf, hsetEx } from "./take.js";
 
 interface TestApi {
   it: (name: string, fn: () => Promise<void>) => void;
@@ -101,5 +102,35 @@ export function kvContractTests(
     expect(await kv.get("cad")).toBe("tok");
     expect(await kv.eval(script, ["cad"], ["tok"])).toBe(1);
     expect(await kv.get("cad")).toBe(null);
+  });
+
+  it("hash take-if", async () => {
+    const kv = await make();
+    await kv.hset("ht", { last: "1", a: "x" });
+    await kv.set("ht:armed", "1");
+    expect(await hashTakeIf(kv, ["ht", "ht:armed"], "last", "2")).toBe(
+      undefined,
+    );
+    expect(await kv.hgetall("ht")).toEqual({ last: "1", a: "x" });
+    expect(await hashTakeIf(kv, ["ht", "ht:armed"], "last", "1")).toEqual({
+      last: "1",
+      a: "x",
+    });
+    expect(await kv.hgetall("ht")).toEqual({});
+    expect(await kv.get("ht:armed")).toBe(null);
+    expect(await hashTakeIf(kv, ["ht", "ht:armed"], "last", "1")).toBe(
+      undefined,
+    );
+  });
+
+  it("hash set-ex", async () => {
+    const kv = await make();
+    await hsetEx(kv, "hx", { a: "1", b: "2" }, 60);
+    expect(await kv.hgetall("hx")).toEqual({ a: "1", b: "2" });
+    const ttl = await kv.ttl("hx");
+    expect(ttl > 0 && ttl <= 60).toBe(true);
+    await hsetEx(kv, "hx", { b: "3" }, 30);
+    expect(await kv.hgetall("hx")).toEqual({ a: "1", b: "3" });
+    expect((await kv.ttl("hx")) <= 30).toBe(true);
   });
 }

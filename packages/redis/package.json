@@ -24,7 +24,8 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@yyt/testing": "workspace:*"
+    "@yyt/testing": "workspace:*",
+    "testcontainers": "^12.1.0"
   },
   "dependencies": {
     "@yyt/core": "workspace:*",

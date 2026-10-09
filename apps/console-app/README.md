@@ -244,8 +244,9 @@ user and nothing is stored. A partial file counts as none.
 
 ## Update notices
 
-A new Android build of a catalog app installed on this device arrives as a
-notification (docs/push.md _Console app_). **Prod only**: the app is
+New builds of a catalog app installed on this device arrive as one
+notification per burst of uploads, naming the app, the version and the builds
+(the server composes it; docs/push.md _Console app_). **Prod only**: the app is
 registered in one Firebase project, the prod pool's first; signed in to dev it
 receives nothing.
 

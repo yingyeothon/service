@@ -44,7 +44,12 @@ import {
   asUploadOwner,
 } from "./resources.js";
 import type { PushPool } from "@yyt/push";
-import { catalogTopicOf, notifyCatalogTopic } from "./catalog-push.js";
+import type { Kv } from "@yyt/redis";
+import {
+  catalogTopicOf,
+  queueCatalogPush,
+  type CatalogPushSchedule,
+} from "./catalog-push.js";
 import { notifyNewArtifact } from "./slack.js";
 import { createVersionLinker } from "./version-link.js";
 
@@ -281,6 +286,13 @@ export interface CatalogRoutesOptions {
   stage: string;
   /** Omit on a stage without push: a commit then announces nothing. */
   pushPool?: PushPool;
+  /** Holds each app's burst of uploads until its notice goes out. */
+  kv: Kv;
+  /**
+   * Schedules a `catalogPush` run for one app's burst; omit = every
+   * commit is announced on its own, right away.
+   */
+  catalogPushSchedule?: CatalogPushSchedule;
 }
 
 export function createCatalogRoutes({
@@ -298,6 +310,8 @@ export function createCatalogRoutes({
   fetchFn,
   stage,
   pushPool,
+  kv,
+  catalogPushSchedule,
 }: CatalogRoutesOptions): AnyRoute[] {
   const { teamAccess, projectAccess, projectResource, memberSeats } = access;
   const versions = createVersionLinker({ team, clock, logger });
@@ -899,12 +913,14 @@ export function createCatalogRoutes({
         // waits for the slower one, not for their sum.
         await Promise.all([
           notifyNewArtifact({ app, artifact: a, fetchFn, logger }),
-          notifyCatalogTopic({
+          queueCatalogPush({
             pool: pushPool,
+            kv,
+            schedule: catalogPushSchedule,
             stage,
             app,
             artifact: a,
-            listings,
+            clock,
             logger,
           }),
         ]);

@@ -77,6 +77,7 @@ import {
   revokeChannelRedis,
 } from "./channel-redis.js";
 import { createCatalogRoutes } from "./catalog.js";
+import type { CatalogPushSchedule } from "./catalog-push.js";
 import { createListingRoutes } from "./listings.js";
 import { createKvStoreRoutes, deleteChannelKvEntries } from "./kvstore.js";
 import {
@@ -168,6 +169,11 @@ export interface ConsoleAppOptions {
   pushJobStore?: PushJobStore;
   /** Kicks the `pushJob` worker; omit = a job waits for the daily sweep. */
   pushJobInvoke?: () => Promise<void>;
+  /**
+   * Schedules a `catalogPush` run for one app's burst of uploads; omit =
+   * each upload's notice goes out on its own, right away.
+   */
+  catalogPushSchedule?: CatalogPushSchedule;
   /**
    * Publishes one e-mail per new limit request to the stage's alarm topic;
    * omit when the stage has none. Bounded (a short timeout, one attempt): it
@@ -277,6 +283,7 @@ export function createConsoleApp({
   pushJobs,
   pushJobStore,
   pushJobInvoke,
+  catalogPushSchedule,
   notify,
   posters,
   artifacts,
@@ -1433,6 +1440,8 @@ export function createConsoleApp({
     fetchFn: slackFetch,
     stage,
     pushPool,
+    kv,
+    catalogPushSchedule,
   });
 
   return createHttpHandler({

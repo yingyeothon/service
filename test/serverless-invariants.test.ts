@@ -139,7 +139,11 @@ describe("serverless.yml invariants", () => {
     // so the reservations of every function that opens MariaDB add up to the
     // worst case of one stage, against `max_connections=60`. Functions that
     // hold Redis only are listed here and nowhere else.
-    const noMariaDb = new Set(["console/gatewayProbe", "console/cdnGuard"]);
+    const noMariaDb = new Set([
+      "console/gatewayProbe",
+      "console/cdnGuard",
+      "console/catalogPush",
+    ]);
     const perStack: Record<string, number> = {};
     for (const file of files) {
       const stack = file.slice(root.length + 1).split("/")[1]!;
@@ -231,12 +235,12 @@ describe("serverless.yml invariants", () => {
     expect(JSON.stringify(invoke)).toContain(
       "function:${self:service}-${self:custom.stage}-pushJob",
     );
-    // No wildcard: the role invokes its own two workers and nothing else.
+    // No wildcard: the role invokes its own workers and nothing else.
     expect(JSON.stringify(invoke)).not.toMatch(/function:\*/);
-    // The pool's path: the three functions that talk to Firebase, no other.
+    // The pool's path: the four functions that talk to Firebase, no other.
     for (const [name, fn] of Object.entries(doc.functions))
       expect(fn.environment?.PUSH_SSM_PATH !== undefined, name).toBe(
-        ["api", "expire", "pushJob"].includes(name),
+        ["api", "expire", "pushJob", "catalogPush"].includes(name),
       );
     // Uploads and reports expire by lifecycle, whatever the sweep missed. A
     // report is offered 7 days, so its rule must not fire before the 8th;
@@ -262,6 +266,81 @@ describe("serverless.yml invariants", () => {
     const s3 = JSON.stringify(doc.provider.iam.role.statements);
     expect(s3).toContain("/push-uploads/*");
     expect(s3).toContain("/push-reports/*");
+  });
+
+  it("console: the update notice runs from one-time schedules, Redis-only, nothing waiting in between", () => {
+    const doc = parse(
+      readFileSync(join(root, "services/console/serverless.yml"), "utf8"),
+      { logLevel: "silent" },
+    ) as {
+      provider: {
+        environment: Record<string, unknown>;
+        iam: { role: { statements: unknown[] } };
+      };
+      functions: Record<
+        string,
+        {
+          reservedConcurrency: number;
+          maximumEventAge?: number;
+          memorySize?: number;
+          timeout?: number;
+          maximumRetryAttempts?: number;
+          environment?: Record<string, unknown>;
+          events?: unknown[];
+        }
+      >;
+      resources: {
+        extensions: Record<string, unknown>;
+        Resources: Record<string, { Type: string; Properties: unknown }>;
+      };
+    };
+    const fn = doc.functions.catalogPush!;
+    // Run by Scheduler only: no route, no recurring schedule.
+    expect(fn.events).toBeUndefined();
+    // Short runs (`docs/decisions.md` *Push notifications* #10): it waits
+    // at most 10 s for the due time, never minutes, so nothing bills while
+    // a burst is quiet. One container is its whole cost ceiling.
+    expect(fn.memorySize).toBe(128);
+    expect(fn.timeout).toBe(30);
+    expect(fn.reservedConcurrency).toBe(1);
+    expect(fn.maximumRetryAttempts).toBe(0);
+    expect(fn.maximumEventAge).toBe(1200);
+    // It does not invoke itself; no recursion opt-out.
+    expect(doc.resources.extensions.CatalogPushLambdaFunction).toBeUndefined();
+    // No MariaDB and none of the provider's other secrets, like `cdnGuard`.
+    for (const secret of [
+      "MYSQL_PASSWORD",
+      "REDIS_ACL_USER",
+      "REDIS_ACL_PASSWORD",
+      "GITHUB_CLIENT_SECRET",
+      "DEBUG_KEY",
+      "GATEWAY_TOKEN",
+    ])
+      expect(fn.environment?.[secret], secret).toBe("");
+    const res = doc.resources.Resources;
+    expect(res.CatalogPushScheduleGroup!.Type).toBe(
+      "AWS::Scheduler::ScheduleGroup",
+    );
+    // The schedules' role invokes `catalogPush` and nothing else.
+    const role = JSON.stringify(res.CatalogPushSchedulerRole);
+    expect(role).toContain("scheduler.amazonaws.com");
+    expect(role).toContain(
+      "function:${self:service}-${self:custom.stage}-catalogPush",
+    );
+    expect(role).not.toMatch(/function:\*/);
+    // The functions create schedules in the stack's group only, and pass
+    // only that role, only to Scheduler.
+    const statements = JSON.stringify(doc.provider.iam.role.statements);
+    expect(statements).toContain(
+      "schedule/${self:service}-${self:custom.stage}-catalog-push/*",
+    );
+    expect(statements).toContain("scheduler.amazonaws.com");
+    expect(statements).not.toContain(
+      "function:${self:service}-${self:custom.stage}-catalogPush",
+    );
+    expect(doc.provider.environment.CATALOG_PUSH_FUNCTION_ARN).toBe(
+      "arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:custom.stage}-catalogPush",
+    );
   });
 
   it("match: the ticket API has its own function inside the stack's 18", () => {
