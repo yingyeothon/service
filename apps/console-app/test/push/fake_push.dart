@@ -79,6 +79,7 @@ PushEvent catalogEvent(
   String version = '1.2.3',
   String kind = 'catalog',
   String? title = '앱 업데이트',
+  String? builds,
 }) => PushEvent(
   from: '/topics/$topic',
   data: {
@@ -86,6 +87,7 @@ PushEvent catalogEvent(
     'appId': appId,
     'version': version,
     'platform': 'android',
+    'builds': ?builds,
   },
   title: title,
   body: '새 버전 $version',

@@ -30,16 +30,35 @@ class CatalogPush {
   const CatalogPush({
     required this.appId,
     required this.version,
+    this.builds = '',
     this.title,
     this.body,
   });
 
   final String appId;
 
-  /// The announced version; empty when the artifact carried none.
+  /// The announced version; empty when the artifact carried none. For a
+  /// burst of several versions, the newest.
   final String version;
+
+  /// The server's summary of the burst, such as
+  /// `Android release · AAB / iOS App Store`, with one `1.0.1: …` line per
+  /// version when there are several; empty from a server that predates
+  /// bursts.
+  final String builds;
   final String? title;
   final String? body;
+}
+
+/// What the open app says for [p] about the app called [name]: the version
+/// and, from a server that sends it, the burst's builds. A burst of several
+/// versions lists one line per version under the name.
+String foregroundNoticeText(String name, CatalogPush p) {
+  final builds = p.builds;
+  if (builds.contains('\n')) return '$name 업데이트\n$builds';
+  final head = p.version.isEmpty ? '$name 새 빌드' : '$name 새 버전 ${p.version}';
+  if (builds.isNotEmpty) return '$head\n$builds';
+  return p.version.isEmpty ? '$name 새 빌드가 올라왔습니다.' : head;
 }
 
 typedef PushConnect = Future<PushMessaging?> Function();
@@ -273,9 +292,11 @@ class PushService {
       return null;
     }
     final version = e.data['version'];
+    final builds = e.data['builds'];
     return CatalogPush(
       appId: appId,
       version: version is String ? version : '',
+      builds: builds is String ? builds.trim() : '',
       title: e.title,
       body: e.body,
     );

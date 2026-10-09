@@ -236,6 +236,29 @@ void main() {
     expect(find.text('detail ca_a 2.0.0'), findsOneWidget);
   });
 
+  testWidgets('a foreground notice of a burst lists its builds', (
+    tester,
+  ) async {
+    await launch(tester);
+    versionA = '2.0.0';
+    fcm.foreground.add(
+      catalogEvent(
+        _topicA,
+        'ca_a',
+        version: '2.0.0',
+        builds: 'Android debug · release · AAB / iOS ad-hoc · App Store',
+      ),
+    );
+    await settle(tester);
+    expect(
+      find.text(
+        'app-ca_a 새 버전 2.0.0\n'
+        'Android debug · release · AAB / iOS ad-hoc · App Store',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('a tap that started the app opens the detail after the first '
       'list load, without a second list request', (tester) async {
     fcm.initial = catalogEvent(_topicA, 'ca_a', version: '1.0.0');

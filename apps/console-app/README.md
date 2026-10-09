@@ -291,8 +291,11 @@ receives nothing.
   that app's detail screen — after the first list load on a cold start
   (`getInitialMessage`), reading the lists again when the loaded one does not
   show the announced version yet.
-- Foreground: a SnackBar (`<name> 새 버전 <version>`, action _보기_) and a
-  reload of the app tab; no local-notification plugin.
+- Foreground: a SnackBar (`<name> 새 버전 <version>` and, since 1.6.4+30,
+  the burst's builds from `data.builds` on the next line — `<name> 업데이트`
+  over one line per version when the burst has several; text in
+  `foregroundNoticeText`, action _보기_) and a reload of the app tab; no
+  local-notification plugin.
 - Dropped silently: a message whose `data.kind` is not `catalog`, or whose
   topic is not one the active profile's server named for that app (another
   stage, another profile, an app not followed).

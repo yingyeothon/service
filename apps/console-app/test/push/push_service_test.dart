@@ -571,6 +571,65 @@ void main() {
       expect(s.pendingOpen.value, isNull);
     });
 
+    test(
+      'foregroundNoticeText: version, builds, several versions, old servers',
+      () {
+        CatalogPush p(String version, [String builds = '']) =>
+            CatalogPush(appId: 'ca_a', version: version, builds: builds);
+        expect(foregroundNoticeText('g', p('1.0')), 'g 새 버전 1.0');
+        expect(foregroundNoticeText('g', p('')), 'g 새 빌드가 올라왔습니다.');
+        expect(
+          foregroundNoticeText(
+            'g',
+            p('1.0', 'Android release / iOS App Store'),
+          ),
+          'g 새 버전 1.0\nAndroid release / iOS App Store',
+        );
+        expect(
+          foregroundNoticeText('g', p('', 'Android debug')),
+          'g 새 빌드\nAndroid debug',
+        );
+        expect(
+          foregroundNoticeText(
+            'g',
+            p('1.1', '1.0: Android release\n1.1: Android release'),
+          ),
+          'g 업데이트\n1.0: Android release\n1.1: Android release',
+        );
+      },
+    );
+
+    test(
+      'carries the server\'s builds, trimmed, and none from an old server',
+      () {
+        expect(
+          s
+              .accept(
+                const PushEvent(
+                  data: {
+                    'kind': 'catalog',
+                    'appId': 'ca_a',
+                    'version': '3',
+                    'builds': ' Android AAB ',
+                  },
+                ),
+              )
+              ?.builds,
+          'Android AAB',
+        );
+        expect(
+          s
+              .accept(
+                const PushEvent(
+                  data: {'kind': 'catalog', 'appId': 'ca_a', 'version': '3'},
+                ),
+              )
+              ?.builds,
+          '',
+        );
+      },
+    );
+
     test('a notice without a topic is matched by its app id', () {
       const e = PushEvent(
         data: {'kind': 'catalog', 'appId': 'ca_a', 'version': '3'},

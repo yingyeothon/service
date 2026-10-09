@@ -154,9 +154,7 @@ class _HomeShellState extends State<HomeShell> {
     _reload.value++;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          p.version.isEmpty ? '$name 새 빌드가 올라왔습니다.' : '$name 새 버전 ${p.version}',
-        ),
+        content: Text(foregroundNoticeText(name, p)),
         action: SnackBarAction(label: '보기', onPressed: () => _open(p)),
       ),
     );
