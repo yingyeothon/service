@@ -559,6 +559,7 @@ export {
   PUSH_TEMPLATE_TITLE_MAX,
   PUSH_TEMPLATES_PER_CHANNEL,
   PUSH_UPLOADS_PER_CHANNEL,
+  sameUpload,
   type MemoryPushJobsDeps,
   type PushJobClaim,
   type PushJobCounts,

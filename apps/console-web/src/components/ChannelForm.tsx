@@ -1,8 +1,8 @@
 import {
   Checkbox,
   Fieldset,
-  Group,
   NativeSelect,
+  SimpleGrid,
   Text,
   TextInput,
   Textarea,
@@ -570,22 +570,20 @@ function NotifyRow({
   onChange: (v: { title: string; body: string }) => void;
 }) {
   return (
-    <Group grow align="flex-start" wrap="wrap" mb="xs">
+    <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs" mb="xs">
       <TextInput
         label={`${state}: title`}
         placeholder={NOTIFY_HINT[state]}
         maxLength={100}
-        miw={200}
         value={value.title}
         onChange={(e) => onChange({ ...value, title: e.target.value })}
       />
       <TextInput
         label={`${state}: body`}
         maxLength={240}
-        miw={200}
         value={value.body}
         onChange={(e) => onChange({ ...value, body: e.target.value })}
       />
-    </Group>
+    </SimpleGrid>
   );
 }

@@ -187,6 +187,8 @@ describe("push sweep: expired channels", () => {
         filled: 0,
         repaired: 0,
         released: 0,
+        restored: 0,
+        lost: 0,
         unread: false,
         autoClosed: false,
         autoOpened: false,
@@ -268,6 +270,7 @@ describe("push sweep: reconciliation", () => {
     google.seedApp(P1, "com.example.console");
     google.seedApp(P1, "com.example.lost", "ACTIVE", `${MARKER}push_lost`);
     const before = google.calls.remove;
+    const undeletes = google.calls.undelete;
 
     const s = sweep(h);
     const r = await s.run();
@@ -276,20 +279,24 @@ describe("push sweep: reconciliation", () => {
       slots: [
         {
           slot: "p1",
-          claims: 5,
-          // `cut`, `pending` (soft-removed by hand), the hand-made
-          // `foreign` and the console app; `lost` is gone.
+          // `gone`'s claim is released on this run.
+          claims: 4,
+          // `cut`, `pending` (soft-removed by hand, restored), the
+          // hand-made `foreign` and the console app; `lost` is gone.
           firebaseApps: 4,
-          pendingDeletion: 1,
+          pendingDeletion: 0,
           // The two apps without the marker: counted, never touched.
           orphans: 2,
           // The marked app no claim names: what a failed create leaves.
           removed: 1,
-          missing: 4,
+          // `gone` (released), `never` and `foreign`.
+          missing: 3,
           foreign: 1,
           filled: 1,
           repaired: 0,
           released: 0,
+          restored: 1,
+          lost: 1,
           unread: false,
           autoClosed: false,
           autoOpened: false,
@@ -298,11 +305,13 @@ describe("push sweep: reconciliation", () => {
     });
     // One app, two calls: the soft removal, then the purge.
     expect(google.calls.remove).toBe(before + 2);
+    // `gone` (purged: not found) and `pending` (restored), once each.
+    expect(google.calls.undelete).toBe(undeletes + 2);
     expect(google.apps(P1).map((x) => x.packageName)).not.toContain(
       "com.example.lost",
     );
     expect(appOf("com.example.console").state).toBe("ACTIVE");
-    expect(appOf("com.example.pending").state).toBe("DELETED");
+    expect(appOf("com.example.pending").state).toBe("ACTIVE");
     expect(appOf("com.example.foreign").appId).toBe(byHand);
     // The cut-off registration is whole again, on the claim and in the row.
     expect((await h.push.findApp(cut))?.firebaseAppId).toBe(cutId);
@@ -312,7 +321,12 @@ describe("push sweep: reconciliation", () => {
     });
     // The foreign app was not adopted.
     expect((await h.push.findApp(foreign))?.firebaseAppId).toBeNull();
-    expect((await h.push.findApp(gone))?.firebaseAppId).not.toBeNull();
+    // A purged app's claim is released; the channel keeps its config.
+    expect(await h.push.findApp(gone)).toBeUndefined();
+    expect((await h.db.findPushChannel(gone))?.config).toMatchObject({
+      slot: "p1",
+    });
+    expect(s.audits).toContainEqual(["push.app.lost", gone, { slot: "p1" }]);
     expect((await h.push.findApp(pending))?.firebaseAppId).not.toBeNull();
     expect(s.lines).toContain("info push sweep");
   });
@@ -710,6 +724,288 @@ describe("push sweep: reconciliation", () => {
     );
   });
 
+  describe("a live claim whose app is not active (decisions #11g)", () => {
+    /** A channel bound to an app the reconciliation soft-removed and failed to restore. */
+    async function unrestored() {
+      const { h, a, auth } = await setup();
+      const google = h.fcm.google;
+      const app = google.seedApp(
+        P1,
+        "com.example.a",
+        "ACTIVE",
+        `${MARKER}push_old`,
+      );
+      let reads = 0;
+      let created: string | undefined;
+      const s = sweep(h, {
+        push: {
+          ...h.push,
+          findPlatformApp: async (pkg: string) => {
+            const claim = await h.push.findPlatformApp(pkg);
+            if (++reads === 1) {
+              created = await mk(h, a, auth, "com.example.a");
+              google.failNext("undelete", { status: 500 });
+            }
+            return claim;
+          },
+        },
+      });
+      const undeletes = google.calls.undelete;
+      expect((await s.run()).reconcile?.slots[0]).toMatchObject({
+        missing: 1,
+        restored: 0,
+        pendingDeletion: 1,
+      });
+      // One restore per app and run: the claim taken mid-run is not
+      // retried by the same run.
+      expect(google.calls.undelete).toBe(undeletes + 1);
+      const stateOf = () => google.apps(P1).find((x) => x.appId === app)?.state;
+      expect(stateOf()).toBe("DELETED");
+      return { h, a, auth, google, app, channel: created!, stateOf };
+    }
+
+    it("restores it on the next run, again after a second failure", async () => {
+      const { h, google, app, channel, stateOf } = await unrestored();
+      const calls = () => ({ ...google.calls });
+
+      // The next run's restore fails too: still missing, retried tomorrow.
+      google.failNext("undelete", { status: 503 });
+      let before = calls();
+      let s = sweep(h);
+      expect((await s.run()).reconcile?.slots[0]).toMatchObject({
+        claims: 1,
+        missing: 1,
+        restored: 0,
+        lost: 0,
+        pendingDeletion: 1,
+      });
+      expect(google.calls.undelete).toBe(before.undelete + 1);
+      expect(google.calls.remove).toBe(before.remove);
+      expect(stateOf()).toBe("DELETED");
+      expect(s.lines).toContain(
+        "error push reconciliation: claimed app not restored",
+      );
+
+      before = calls();
+      s = sweep(h);
+      expect((await s.run()).reconcile).toEqual({
+        truncated: false,
+        slots: [
+          expect.objectContaining({
+            claims: 1,
+            firebaseApps: 1,
+            pendingDeletion: 0,
+            orphans: 0,
+            removed: 0,
+            missing: 0,
+            restored: 1,
+            lost: 0,
+          }),
+        ],
+      });
+      expect(google.calls.undelete).toBe(before.undelete + 1);
+      expect(google.calls.remove).toBe(before.remove);
+      expect(stateOf()).toBe("ACTIVE");
+      expect((await h.push.findApp(channel))?.firebaseAppId).toBe(app);
+      expect(s.lines).toContain(
+        "info push reconciliation: claimed app restored",
+      );
+
+      // Healed: the run after that has nothing to do.
+      before = calls();
+      expect((await sweep(h).run()).reconcile?.slots[0]).toMatchObject({
+        missing: 0,
+        restored: 0,
+      });
+      expect(google.calls.undelete).toBe(before.undelete);
+    });
+
+    it("takes a restore whose answer was lost as done", async () => {
+      const { h, google, stateOf } = await unrestored();
+      google.failNext("undelete", { status: 500 }, { when: "after" });
+      expect((await sweep(h).run()).reconcile?.slots[0]).toMatchObject({
+        missing: 1,
+        restored: 0,
+      });
+      // Firebase restored it after all; the next run finds it active.
+      expect(stateOf()).toBe("ACTIVE");
+      const undeletes = google.calls.undelete;
+      expect((await sweep(h).run()).reconcile?.slots[0]).toMatchObject({
+        missing: 0,
+        restored: 0,
+        pendingDeletion: 0,
+      });
+      expect(google.calls.undelete).toBe(undeletes);
+    });
+
+    it("withholds every release when no claimed app of the slot is listed (another project behind it)", async () => {
+      const { h, a, auth } = await setup();
+      const google = h.fcm.google;
+      const c1 = await mk(h, a, auth, "com.example.a");
+      const c2 = await mk(h, a, auth, "com.example.b");
+      for (const c of [c1, c2]) {
+        const id = (await h.push.findApp(c))!.firebaseAppId!;
+        await google.management(P1).removeAndroidApp(id, { immediate: true });
+      }
+      const s = sweep(h);
+      const r = await s.run();
+      expect(r.reconcile?.slots[0]).toMatchObject({ lost: 0, missing: 2 });
+      expect(await h.push.findApp(c1)).toBeDefined();
+      expect(await h.push.findApp(c2)).toBeDefined();
+      expect(s.lines).toContain("error push reconciliation: release withheld");
+    });
+
+    it("releases the claim of an app Firebase purged, and says so", async () => {
+      const { h, a, auth, google, app, channel } = await unrestored();
+      // Purged before the next run: 30 days passed, or an operator did it.
+      await google.management(P1).removeAndroidApp(app, { immediate: true });
+      const removes = google.calls.remove;
+      const undeletes = google.calls.undelete;
+      const s = sweep(h);
+      const r = await s.run();
+      expect(r.reconcile?.slots[0]).toMatchObject({
+        claims: 0,
+        firebaseApps: 0,
+        pendingDeletion: 0,
+        missing: 1,
+        restored: 0,
+        lost: 1,
+        removed: 0,
+      });
+      // One restore that found nothing, and no removal.
+      expect(google.calls.undelete).toBe(undeletes + 1);
+      expect(google.calls.remove).toBe(removes);
+      expect(await h.push.findApp(channel)).toBeUndefined();
+      expect(await h.push.countTeamApps(a.teamId)).toBe(0);
+      expect(s.audits).toContainEqual([
+        "push.app.lost",
+        channel,
+        { slot: "p1" },
+      ]);
+      expect(s.lines).toContain(
+        "error push reconciliation: claimed app purged, claim released",
+      );
+      // The digest names it on this run (`missing`).
+      const d = await runUsageDigest({
+        stage: "dev",
+        push: { db: h.push, sweep: r },
+        kv: createMemoryKv({ clock: h.clock }),
+        notify: async () => {},
+        clock: h.clock,
+        logger: nullLogger,
+      });
+      expect(d.announced.map((w) => w.kind)).toContain("push:missing:p1:1");
+      // The channel keeps its slot and app id, so it says what happened.
+      expect((await h.db.findPushChannel(channel))?.config).toMatchObject({
+        slot: "p1",
+        firebaseAppId: app,
+      });
+      h.clock.tick(60);
+      const dl = await h.app(
+        ev("GET", `/channels/${channel}/google-services.json`, {
+          headers: a.cookie,
+        }),
+      );
+      expect(dl.statusCode).toBe(409);
+      expect((parse(dl).error as { details?: unknown }).details).toEqual({
+        reason: "registration_missing",
+      });
+      // The package name is free again.
+      h.clock.tick(60);
+      const again = await h.app(
+        ev("POST", `/projects/${a.prjId}/channels`, {
+          headers: a.cookie,
+          body: {
+            kind: "push",
+            name: "again",
+            config: { authChannelId: auth, packageName: "com.example.a" },
+          },
+        }),
+      );
+      expect(again.statusCode, again.body).toBe(201);
+    });
+
+    it("releases nothing while the list still shows the app", async () => {
+      const { h, google, app, channel } = await unrestored();
+      const real = (await h.fcm.pool.bySlot("p1"))!;
+      const s = sweep(h, {
+        pool: {
+          ...h.fcm.pool,
+          bySlot: async () => ({
+            ...real,
+            management: {
+              ...real.management,
+              undeleteAndroidApp: async () => ({ kind: "not_found" }),
+            },
+          }),
+        },
+      });
+      expect((await s.run()).reconcile?.slots[0]).toMatchObject({
+        claims: 1,
+        missing: 1,
+        lost: 0,
+        pendingDeletion: 1,
+      });
+      expect((await h.push.findApp(channel))?.firebaseAppId).toBe(app);
+      expect(s.audits.map((x) => x[0])).not.toContain("push.app.lost");
+      expect(s.lines).toContain(
+        "error push reconciliation: claimed app not restored",
+      );
+      expect(google.apps(P1).find((x) => x.appId === app)?.state).toBe(
+        "DELETED",
+      );
+    });
+
+    it("releases nothing when the claim changed after the restore found nothing", async () => {
+      const { h, google, app, channel } = await unrestored();
+      await google.management(P1).removeAndroidApp(app, { immediate: true });
+      const s = sweep(h, {
+        push: {
+          ...h.push,
+          findApp: async (id: string) => {
+            const row = await h.push.findApp(id);
+            return row && { ...row, firebaseAppId: null };
+          },
+        },
+      });
+      expect((await s.run()).reconcile?.slots[0]).toMatchObject({
+        claims: 1,
+        missing: 1,
+        lost: 0,
+      });
+      expect((await h.push.findApp(channel))?.firebaseAppId).toBe(app);
+      expect(s.audits.map((x) => x[0])).not.toContain("push.app.lost");
+    });
+
+    it("waits for tomorrow when the run's deadline is spent", async () => {
+      const { h, google, stateOf } = await unrestored();
+      const real = (await h.fcm.pool.bySlot("p1"))!;
+      const undeletes = google.calls.undelete;
+      const s = sweep(h, {
+        pool: {
+          ...h.fcm.pool,
+          bySlot: async () => ({
+            ...real,
+            management: {
+              ...real.management,
+              listAndroidApps: async () => {
+                const r = await real.management.listAndroidApps();
+                h.clock.tick(10_000);
+                return r;
+              },
+            },
+          }),
+        },
+      });
+      expect((await s.run()).reconcile).toMatchObject({
+        truncated: true,
+        slots: [{ missing: 1, restored: 0, lost: 0, pendingDeletion: 1 }],
+      });
+      expect(google.calls.undelete).toBe(undeletes);
+      expect(stateOf()).toBe("DELETED");
+    });
+  });
+
   it("shares one deadline between the releases and the reconciliation", async () => {
     const { h, a, auth } = await setup();
     const boss = await h.login("boss", "admin");
@@ -939,6 +1235,8 @@ describe("usage digest: push lines", () => {
       filled: 0,
       repaired: 0,
       released: 0,
+      restored: 0,
+      lost: 1,
       unread: false,
       autoClosed: true,
       autoOpened: false,
@@ -964,6 +1262,7 @@ describe("usage digest: push lines", () => {
             orphans: 0,
             removed: 0,
             missing: 0,
+            lost: 0,
             foreign: 0,
             autoClosed: false,
             unread: true,
@@ -1023,6 +1322,7 @@ describe("usage digest: push lines", () => {
       ["push:orphans:p1:2", "level"],
       ["push:removed:p1", "delta"],
       ["push:missing:p1:1", "level"],
+      ["push:lost:p1", "delta"],
       ["push:foreign:p1:1", "level"],
       ["push:autoclose:p1", "delta"],
       ["push:unread:p2", "level"],
@@ -1047,7 +1347,9 @@ describe("usage digest: push lines", () => {
         pool: { unreadable: true, unprovisioned: [], skipped: [] },
         reconcile: {
           truncated: false,
-          slots: [{ ...finding, orphans: 3, removed: 0, autoClosed: false }],
+          slots: [
+            { ...finding, orphans: 3, removed: 0, lost: 0, autoClosed: false },
+          ],
         },
       },
       { kv, thresholds: { pushChannelTokens: 0 } },

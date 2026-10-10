@@ -127,6 +127,8 @@ export interface PushUploadRow {
   size: number;
   createdBy: string;
   createdAt: number;
+  /** The SHA-256 (hex) the upload declared, which its PUT signs; null for none. */
+  contentSha256: string | null;
 }
 
 /** An upload as the list shows it: whether it holds a place, and whether a job reads it. */
@@ -178,6 +180,11 @@ export interface PushJobRow extends PushMessageText, PushJobCounts {
   options: PushJobOptions;
   uploadId: string | null;
   uploadEtag: string | null;
+  /**
+   * The SHA-256 (hex) S3 held for the upload at submit: the content identity
+   * a replay compares. Null for a broadcast and an undeclared upload.
+   */
+  contentSha256: string | null;
   day: number;
   status: PushJobStatus;
   error: string | null;
@@ -209,6 +216,7 @@ export interface PushJobInput extends PushMessageText {
   options: PushJobOptions;
   uploadId: string | null;
   uploadEtag: string | null;
+  contentSha256: string | null;
   day: number;
   author: string;
   at: number;
@@ -311,7 +319,8 @@ export interface PushJobsDb {
    *
    *   1. the channel is a live push channel (`not_found` otherwise);
    *   2. a job of the channel already holds the key: the same `paramsHash`
-   *      answers that job (`created: false`), another one `params_differ`;
+   *      and the same upload ({@link sameUpload}) answer that job
+   *      (`created: false`), anything else is `params_differ`;
    *   3. the channel's jobs of `day` with the same `dryRun` are counted
    *      against `limit` (`day_cap`);
    *   4. the row is inserted `queued`.
@@ -485,6 +494,23 @@ function checkPatch(p: PushTemplatePatch): void {
 function checkUpload(u: PushUploadRow): void {
   checkId(u.id, "upload id");
   if (!Number.isSafeInteger(u.size) || u.size < 1) throw bad("invalid size");
+  if (u.contentSha256 !== null && !SHA256.test(u.contentSha256))
+    throw bad("invalid contentSha256");
+}
+
+/**
+ * Whether a held job and a submit name the same upload: the same id (without
+ * case), or two uploads both known to hold the same bytes. `paramsHash`
+ * leaves the upload out, so this is the other half of "the same request".
+ */
+export function sameUpload(
+  held: Pick<PushJobRow, "uploadId" | "contentSha256">,
+  j: Pick<PushJobInput, "uploadId" | "contentSha256">,
+): boolean {
+  if (held.uploadId === null || j.uploadId === null)
+    return held.uploadId === j.uploadId;
+  if (ci(held.uploadId) === ci(j.uploadId)) return true;
+  return held.contentSha256 !== null && held.contentSha256 === j.contentSha256;
 }
 
 function checkJob(j: PushJobInput, limit: number): void {
@@ -500,6 +526,11 @@ function checkJob(j: PushJobInput, limit: number): void {
     throw bad("a broadcast has no dry run");
   if (j.uploadEtag !== null && j.uploadEtag.length > ETAG_MAX)
     throw bad("invalid uploadEtag");
+  if (
+    j.contentSha256 !== null &&
+    (j.uploadId === null || !SHA256.test(j.contentSha256))
+  )
+    throw bad("invalid contentSha256");
   if (!Number.isInteger(j.day) || j.day < 0) throw bad("invalid day");
   if (!Number.isInteger(limit) || limit < 0) throw bad("invalid limit");
   checkText(j);
@@ -577,12 +608,14 @@ const toUpload = (r: {
   size: bigint | number;
   created_by: string;
   created_at: bigint | number;
+  content_sha256: string | null;
 }): PushUploadRow => ({
   id: r.id,
   channelId: r.channel_id,
   size: num(r.size),
   createdBy: r.created_by,
   createdAt: num(r.created_at),
+  contentSha256: r.content_sha256,
 });
 
 type JobModel = {
@@ -599,6 +632,7 @@ type JobModel = {
   options_json: string;
   upload_id: string | null;
   upload_etag: string | null;
+  content_sha256: string | null;
   day: number;
   status: string;
   error: string | null;
@@ -639,6 +673,7 @@ const toJob = (r: JobModel): PushJobRow => ({
   options: parseObject<PushJobOptions>(r.options_json, {}),
   uploadId: r.upload_id,
   uploadEtag: r.upload_etag,
+  contentSha256: r.content_sha256,
   day: r.day,
   status: r.status as PushJobStatus,
   error: r.error,
@@ -826,6 +861,7 @@ export function createPushJobsDb(prisma: PrismaClient): PushJobsDb {
               size: u.size,
               created_by: u.createdBy,
               created_at: u.createdAt,
+              content_sha256: u.contentSha256,
             },
           });
           return true;
@@ -957,10 +993,12 @@ export function createPushJobsDb(prisma: PrismaClient): PushJobsDb {
             idempotency_key: j.idempotencyKey,
           },
         };
-        const replay = (held: JobModel): PushJobSubmit =>
-          held.params_hash === j.paramsHash
-            ? { ok: true, created: false, job: toJob(held) }
+        const replay = (model: JobModel): PushJobSubmit => {
+          const held = toJob(model);
+          return held.paramsHash === j.paramsHash && sameUpload(held, j)
+            ? { ok: true, created: false, job: held }
             : { ok: false, reason: "params_differ" };
+        };
         try {
           return await inTx<PushJobSubmit>(async (tx) => {
             await lockPushChannel(tx, j.channelId);
@@ -990,6 +1028,7 @@ export function createPushJobsDb(prisma: PrismaClient): PushJobsDb {
                 options_json: JSON.stringify(j.options),
                 upload_id: j.uploadId,
                 upload_etag: j.uploadEtag,
+                content_sha256: j.contentSha256,
                 day: j.day,
                 status: "queued",
                 cancel_requested: false,
@@ -1615,7 +1654,7 @@ export function createMemoryPushJobsDb(
         (x) => ci(x.idempotencyKey) === ci(j.idempotencyKey),
       );
       if (same)
-        return same.paramsHash === j.paramsHash
+        return same.paramsHash === j.paramsHash && sameUpload(same, j)
           ? { ok: true, created: false, job: copy(same) }
           : { ok: false, reason: "params_differ" };
       const usage = mine.filter(
@@ -1637,6 +1676,7 @@ export function createMemoryPushJobsDb(
         options: { ...j.options },
         uploadId: j.uploadId,
         uploadEtag: j.uploadEtag,
+        contentSha256: j.contentSha256,
         day: j.day,
         status: "queued",
         error: null,

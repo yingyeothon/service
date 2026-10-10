@@ -530,8 +530,12 @@ export function createApiClient({
     deletePushTemplate: (id: string, templateId: string) =>
       del(`/channels/${enc(id)}/push/templates/${enc(templateId)}`),
     /** Where a recipient CSV of exactly `size` bytes is PUT. */
-    createPushUpload: (id: string, size: number) =>
-      post<PushUploadGrant>(`/channels/${enc(id)}/push/uploads`, { size }),
+    /** `sha256` (hex) is signed into the PUT; the grant's headers carry it. */
+    createPushUpload: (id: string, size: number, sha256?: string) =>
+      post<PushUploadGrant>(`/channels/${enc(id)}/push/uploads`, {
+        size,
+        ...(sha256 ? { sha256 } : {}),
+      }),
     /** 204; 404 when it is gone, 409 `upload_in_use` while an unfinished job reads it. */
     pushUploads: (id: string, cursor?: string) =>
       get<PushUploadPage>(`/channels/${enc(id)}/push/uploads${qs({ cursor })}`),
@@ -539,7 +543,7 @@ export function createApiClient({
       get<PushChannelStats>(`/channels/${enc(id)}/push/stats${qs({ days })}`),
     deletePushUpload: (id: string, uploadId: string) =>
       del(`/channels/${enc(id)}/push/uploads/${enc(uploadId)}`),
-    /** The browser PUT of the CSV; both signed headers go up verbatim. */
+    /** The browser PUT of the CSV; every signed header goes up verbatim. */
     putPushUpload: (grant: PushUploadGrant, file: File) =>
       putToGrant(grant, file, "recipient CSV"),
     /** 202 for a new job, 200 `created: false` for a replayed key. */

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -344,6 +346,10 @@ func TestPushJobSubmit(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "push_job_submitted", out)
+	// The file's SHA-256 goes with the size: the console signs it into the PUT.
+	if sum := sha256.Sum256([]byte(sampleCSV)); len(uploads) == 1 && uploads[0]["sha256"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("upload body %v carries no sha256 of the file", uploads[0])
+	}
 	if len(uploads) != 1 || fmt.Sprint(uploads[0]["size"]) != fmt.Sprint(len(sampleCSV)) {
 		t.Fatalf("uploads = %v", uploads)
 	}

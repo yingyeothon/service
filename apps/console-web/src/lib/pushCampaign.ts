@@ -399,6 +399,22 @@ function readBytes(blob: Blob): Promise<Uint8Array> {
   });
 }
 
+/**
+ * The file's SHA-256, lower-case hex: declared when the upload is created,
+ * so the PUT signs it and another upload of the same bytes replays a job's
+ * idempotency key.
+ */
+export async function fileSha256(file: Blob): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    // `readBytes` wraps a fresh `ArrayBuffer`, never a shared one.
+    (await readBytes(file)) as Uint8Array<ArrayBuffer>,
+  );
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /** The whole pre-upload check of a picked file against a template. */
 export async function checkCsvFile(
   file: File,
@@ -704,6 +720,13 @@ export function campaignProblem(
         reupload: true,
         message:
           "The stored CSV is not the size that was announced. Nothing was sent; submit again to upload it anew.",
+      };
+    case "upload_checksum_mismatch":
+      return {
+        at: "file",
+        reupload: true,
+        message:
+          "The stored CSV is not the file that was announced. Nothing was sent; submit again to upload it anew.",
       };
     case "upload_expired":
       return {

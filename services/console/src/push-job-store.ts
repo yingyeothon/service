@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { AppError } from "@yyt/core";
+import { createHash } from "node:crypto";
 import { isMissingObject, presignPutUrl } from "./s3-util.js";
 
 /*
@@ -59,6 +60,17 @@ export interface StoredUpload {
   size: number;
   /** The object's ETag: later reads are pinned to it. */
   etag: string;
+  /**
+   * The SHA-256 (hex) S3 stored for the object: present when its PUT carried
+   * `x-amz-checksum-sha256`, null otherwise (a composite checksum included).
+   */
+  sha256: string | null;
+}
+
+/** A full-object SHA-256 as `HeadObject` answers it (base64), in hex. */
+export function checksumHex(b64: string | undefined): string | null {
+  if (!b64 || !/^[A-Za-z0-9+/]{43}=$/.test(b64)) return null;
+  return Buffer.from(b64, "base64").toString("hex");
 }
 
 /** The object is gone, or is no longer the one the job was submitted with. */
@@ -72,8 +84,16 @@ export class UploadReadError extends Error {
 }
 
 export interface PushJobStore {
-  /** A PUT of exactly `contentLength` bytes of `text/csv`, both signed. */
-  presignUploadPut(o: { key: string; contentLength: number }): Promise<string>;
+  /**
+   * A PUT of exactly `contentLength` bytes of `text/csv`, both signed; with
+   * `sha256` (hex) the bytes' `x-amz-checksum-sha256` is signed too, as a
+   * header, so S3 refuses other bytes (`BadDigest`) and stores the hash.
+   */
+  presignUploadPut(o: {
+    key: string;
+    contentLength: number;
+    sha256?: string;
+  }): Promise<string>;
   headUpload(key: string): Promise<StoredUpload | undefined>;
   /**
    * Bytes `[start, end)` of an upload, only while its ETag is still `etag`.
@@ -120,20 +140,29 @@ export function createS3PushJobStore({
     }
   };
   return {
-    presignUploadPut: ({ key, contentLength }) =>
+    presignUploadPut: ({ key, contentLength, sha256 }) =>
       presignPutUrl(s3, {
         bucket,
         key,
         contentType: PUSH_CSV_CONTENT_TYPE,
         contentLength,
         ttlSec: PUSH_UPLOAD_URL_TTL_SEC,
+        ...(sha256 ? { sha256 } : {}),
       }),
     headUpload: async (key) => {
       try {
         const r = await s3.send(
-          new HeadObjectCommand({ Bucket: bucket, Key: key }),
+          new HeadObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ChecksumMode: "ENABLED",
+          }),
         );
-        return { size: Number(r.ContentLength ?? 0), etag: r.ETag ?? "" };
+        return {
+          size: Number(r.ContentLength ?? 0),
+          etag: r.ETag ?? "",
+          sha256: checksumHex(r.ChecksumSHA256),
+        };
       } catch (e) {
         if (isMissingObject(e)) return undefined;
         throw storageError(e);
@@ -226,7 +255,12 @@ export function createS3PushJobStore({
 
 /** In-memory {@link PushJobStore} for tests. */
 export function createMemoryPushJobStore() {
-  const objects = new Map<string, { body: Buffer; contentType: string }>();
+  const objects = new Map<
+    string,
+    { body: Buffer; contentType: string; sha256: string | null }
+  >();
+  /** The SHA-256 (hex) each key's last presigned PUT signed. */
+  const signed = new Map<string, string>();
   /** How many times each object was written, to tell a change from a replay. */
   const versions = new Map<string, number>();
   const calls = { readUpload: 0, put: 0, get: 0, list: 0, remove: 0 };
@@ -238,19 +272,26 @@ export function createMemoryPushJobStore() {
     }
   };
   const etagOf = (key: string) => `"v${versions.get(key) ?? 0}"`;
-  const write = (key: string, body: Buffer, contentType: string) => {
-    objects.set(key, { body, contentType });
+  const write = (
+    key: string,
+    body: Buffer,
+    contentType: string,
+    sha256: string | null = null,
+  ) => {
+    objects.set(key, { body, contentType, sha256 });
     versions.set(key, (versions.get(key) ?? 0) + 1);
   };
   const store: PushJobStore = {
-    presignUploadPut: async ({ key }) => {
+    presignUploadPut: async ({ key, sha256 }) => {
       maybeFail("presignUploadPut");
+      if (sha256) signed.set(key, sha256);
+      else signed.delete(key);
       return `https://push.test/put/${key}`;
     },
     headUpload: async (key) => {
       maybeFail("headUpload");
       const o = objects.get(key);
-      return o && { size: o.body.length, etag: etagOf(key) };
+      return o && { size: o.body.length, etag: etagOf(key), sha256: o.sha256 };
     },
     readUpload: async (key, etag, start, end) => {
       maybeFail("readUpload");
@@ -293,13 +334,28 @@ export function createMemoryPushJobStore() {
     objects,
     calls,
     failNext,
-    /** What a client's PUT to the presigned URL leaves behind. */
-    upload: (key: string, body: string | Buffer) =>
+    /**
+     * What a client's PUT to the presigned URL leaves behind. A URL signed
+     * with a SHA-256 refuses other bytes, as S3 does (`BadDigest`), and
+     * stores the hash; `o.sha256` overrides what is stored (a lying HEAD).
+     */
+    upload: (
+      key: string,
+      body: string | Buffer,
+      o: { sha256?: string | null } = {},
+    ) => {
+      const bytes = typeof body === "string" ? Buffer.from(body, "utf8") : body;
+      const declared = signed.get(key);
+      const actual = createHash("sha256").update(bytes).digest("hex");
+      if (declared !== undefined && declared !== actual)
+        throw new Error("BadDigest");
       write(
         key,
-        typeof body === "string" ? Buffer.from(body, "utf8") : body,
+        bytes,
         PUSH_CSV_CONTENT_TYPE,
-      ),
+        o.sha256 !== undefined ? o.sha256 : (declared ?? null),
+      );
+    },
     text: (key: string) => objects.get(key)?.body.toString("utf8"),
   };
 }

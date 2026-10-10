@@ -46,7 +46,9 @@ import {
  *
  * Phases 1 and 5 call Firebase and share **one** deadline, checked before
  * every release and every Firebase call -- but the restore of an app a claim
- * took while it was being removed, which is never skipped.
+ * took while it was being removed, which is never skipped. A restore that
+ * failed is retried by the next run, which finds the claim's app pending
+ * deletion; a claim whose app Firebase purged is released (decisions #11g).
  */
 
 /** Statements each token phase may spend; the social sweep's number. */
@@ -59,9 +61,14 @@ export const PUSH_SWEEP_MAX_BATCHES = 20;
  */
 export const PUSH_FIREBASE_APPS_CLOSE_AT = 28;
 /**
- * Firebase removals one run makes in the reconciliation: dead claims retried
- * and unclaimed platform apps removed, together.
+ * Firebase mutations one run makes in the reconciliation: dead claims retried,
+ * unclaimed platform apps removed and live claims' apps restored, together.
  */
+/**
+ * Claims one run may release as lost in one slot: a wrong project behind a
+ * slot would make every claim look purged, so a burst waits for the operator.
+ */
+export const PUSH_LOST_PER_SLOT_MAX = 2;
 export const PUSH_RECONCILE_RELEASES_MAX = 20;
 /**
  * Wall time one run may spend from its start until its last Firebase call
@@ -80,7 +87,8 @@ export interface PushSlotFinding {
   firebaseApps?: number;
   /**
    * Listed apps in state `deleted`: removed by hand without `immediate`, or
-   * soft-removed by this run and not purged (or restored) in time.
+   * soft-removed by this run and not purged in time, or a claim's app whose
+   * restore failed (retried tomorrow).
    */
   pendingDeletion?: number;
   /**
@@ -97,7 +105,8 @@ export interface PushSlotFinding {
   removed: number;
   /**
    * Live channels whose Firebase app is gone, pending deletion or was never
-   * created -- one whose restore failed on this run included.
+   * created after this run: one whose restore failed (retried tomorrow), and
+   * one whose claim was released on this run (`lost`), included.
    */
   missing: number;
   /**
@@ -111,6 +120,20 @@ export interface PushSlotFinding {
   repaired: number;
   /** Claims of dead channels given back on this run. */
   released: number;
+  /**
+   * Live claims whose app was pending deletion -- a restore that failed on an
+   * earlier run, or a removal by hand without `immediate` -- restored with
+   * `:undelete` on this run.
+   */
+  restored: number;
+  /**
+   * Live claims whose app Firebase purged (not listed, and `:undelete`
+   * answered not found), released on this
+   * run and counted in `missing` too. The channel keeps its stored slot and
+   * app id, so its config download answers `registration_missing`; the sweep
+   * no longer sees it, and the `push.app.lost` audit row names it.
+   */
+  lost: number;
   /**
    * Firebase's list was not read -- it did not answer, or the run's deadline
    * came first (`truncated` is then set too); nothing but `claims` is known.
@@ -215,6 +238,16 @@ export async function runPushSweep({
   };
   /** Claims whose release failed in phase 1: not tried again on this run. */
   const refused = new Set<string>();
+  // The reconciliation's own state (phase 5).
+  /**
+   * Firebase mutations so far: dead claims, unclaimed platform apps and
+   * live claims' restores.
+   */
+  let removals = 0;
+  /** A budget or the deadline ran out in the reconciliation. */
+  let truncated = false;
+  /** App ids a restore was tried for: one try per app and run. */
+  const handled = new Set<string>();
 
   const phase = async (
     name: PushSweepPhase,
@@ -371,10 +404,7 @@ export async function runPushSweep({
       .map((u) => ({ slot: u.slot, claims: u.apps }));
     if (slots.length === 0) return undefined;
 
-    /** Firebase removals so far: dead claims and unclaimed platform apps. */
-    let removals = 0;
     const findings: PushSlotFinding[] = [];
-    let truncated = false;
     for (const { slot } of slots) {
       if (left() <= 0) {
         truncated = true;
@@ -390,6 +420,8 @@ export async function runPushSweep({
         filled: 0,
         repaired: 0,
         released: 0,
+        restored: 0,
+        lost: 0,
         unread: false,
         autoClosed: false,
         autoOpened: false,
@@ -437,6 +469,20 @@ export async function runPushSweep({
       const apps = list.apps;
       const active = (a: AndroidAppInfo) => a.state !== "deleted";
       const byId = new Map(apps.map((a) => [a.appId, a]));
+      // A slot whose list names none of its claimed apps (two or more) reads like another
+      // project (a slot key replaced by one of a different project): every
+      // claim would look purged. No release there, and at most
+      // `PUSH_LOST_PER_SLOT_MAX` a run anywhere.
+      const withApp = live.filter((l) => l.row.firebaseAppId != null);
+      const claimedListed = withApp.some((l) => byId.has(l.row.firebaseAppId!));
+      // One claim alone cannot tell the two apart; it is released.
+      let releasesLeft =
+        claimedListed || withApp.length <= 1 ? PUSH_LOST_PER_SLOT_MAX : 0;
+      const mayRelease = () => {
+        if (releasesLeft <= 0) return false;
+        releasesLeft--;
+        return true;
+      };
 
       for (const { row, channel } of live) {
         if (row.firebaseAppId === null) {
@@ -456,7 +502,27 @@ export async function runPushSweep({
           continue;
         }
         const app = byId.get(row.firebaseAppId);
-        if (!app || !active(app)) f.missing++;
+        if (!app || !active(app)) {
+          const healed = await heal(
+            management,
+            slot,
+            row,
+            row.firebaseAppId,
+            app,
+            mayRelease,
+          );
+          if (healed === "restored") {
+            f.restored++;
+            if (app) byId.set(app.appId, { ...app, state: "active" });
+          } else if (healed === "lost") {
+            f.lost++;
+            f.missing++;
+            f.claims--;
+            byId.delete(row.firebaseAppId);
+            // Released: nothing is left to repair.
+            continue;
+          } else f.missing++;
+        }
         // The claim is the truth; a config that lost its two fields (or
         // names another slot) is rewritten from it.
         const config = configOf(channel);
@@ -541,6 +607,81 @@ export async function runPushSweep({
       }
     }
     return { slots: findings, truncated };
+  }
+
+  /**
+   * A live claim whose app is pending deletion or no longer listed: the app
+   * is restored with `:undelete` (a restore that failed on an earlier run, or
+   * a removal by hand without `immediate`). When the list no longer shows it
+   * and the restore answers that Firebase has no such app, it was purged and
+   * cannot come back: the claim is read again
+   * and, if it still names that app, released (`docs/decisions.md` #11g),
+   * which frees the package name and the team's count. The channel's stored
+   * config is left as it is, so its download keeps answering
+   * `registration_missing`. No create of the package can get in between: the
+   * claim holds the package name until it is released, and an app id once
+   * recorded on a claim never changes.
+   */
+  async function heal(
+    management: ManagementClient,
+    slot: string,
+    row: PushAppRow,
+    appId: string,
+    app: AndroidAppInfo | undefined,
+    mayRelease: () => boolean,
+  ): Promise<"restored" | "lost" | "missing"> {
+    if (handled.has(appId)) return "missing";
+    handled.add(appId);
+    if (removals >= PUSH_RECONCILE_RELEASES_MAX || left() <= 0) {
+      truncated = true;
+      return "missing";
+    }
+    removals++;
+    const restored = await within(
+      () => management.undeleteAndroidApp(appId),
+      Math.min(PUSH_REMOVE_BUDGET_MS, left()),
+    );
+    if (restored?.kind === "restored") {
+      logger.info("push reconciliation: claimed app restored", { slot });
+      return "restored";
+    }
+    if (restored?.kind !== "not_found") {
+      logger.error("push reconciliation: claimed app not restored", {
+        slot,
+        outcome: restored?.kind ?? "timeout",
+        listed: app !== undefined,
+      });
+      return "missing";
+    }
+    // Two reads must agree before an irreversible release: Firebase's list
+    // and the restore. One still listed (pending deletion) waits a day; the
+    // next list shows whether it is gone.
+    if (app !== undefined) {
+      logger.error("push reconciliation: claimed app not restored", {
+        slot,
+        outcome: "not_found",
+        listed: true,
+      });
+      return "missing";
+    }
+    // Gone for good: not listed, and the restore found nothing. The release
+    // is irreversible, so the claim is read once more.
+    if (!mayRelease()) {
+      logger.error("push reconciliation: release withheld", {
+        slot,
+        channelId: row.channelId,
+      });
+      return "missing";
+    }
+    const now = await push.findApp(row.channelId);
+    if (now?.slot !== slot || now.firebaseAppId !== appId) return "missing";
+    if (!(await push.deleteApp(row.channelId))) return "missing";
+    logger.error("push reconciliation: claimed app purged, claim released", {
+      slot,
+      channelId: row.channelId,
+    });
+    await audit(null, "push.app.lost", row.channelId, { slot });
+    return "lost";
   }
 
   /**

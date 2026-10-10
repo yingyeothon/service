@@ -5,6 +5,7 @@ import {
   cancelMissed,
   checkCsvFile,
   createKeyRing,
+  fileSha256,
   csvHeaderProblem,
   isTokenColumn,
   jobCountLines,
@@ -457,6 +458,7 @@ describe("campaignProblem", () => {
     for (const reason of [
       "upload_missing",
       "upload_size_mismatch",
+      "upload_checksum_mismatch",
       "upload_expired",
     ])
       expect(at(refusal(409, { reason }))).toMatchObject({
@@ -573,5 +575,16 @@ describe("campaignProblem", () => {
       at: "form",
       message: "invalid body",
     });
+  });
+});
+
+describe("fileSha256", () => {
+  it("is the file's SHA-256 in lower-case hex", async () => {
+    expect(await fileSha256(new File(["hello"], "a.csv"))).toBe(
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    );
+    expect(await fileSha256(new Blob([]))).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
   });
 });

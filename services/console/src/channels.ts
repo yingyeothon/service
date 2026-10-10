@@ -214,8 +214,12 @@ const notifyLine = (max: number) =>
     .string()
     .trim()
     .max(max)
-    // eslint-disable-next-line no-control-regex -- rejecting control chars is the point
-    .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), "no control characters");
+    // Control, format (bidi overrides, zero-width) and line/paragraph
+    // separators: nothing a lock screen should show unseen.
+    .refine(
+      (v) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(v),
+      "no control or invisible characters",
+    );
 const notifyText = z
   .object({
     title: notifyLine(MATCH_NOTIFY_TITLE_MAX).pipe(z.string().min(1)),

@@ -149,7 +149,11 @@ const GRANT: PushUploadGrant = {
   uploadId: "pu_7",
   url: "https://bucket.example.test/put",
   method: "PUT",
-  headers: { "content-type": "text/csv", "content-length": "26" },
+  headers: {
+    "content-type": "text/csv",
+    "content-length": "26",
+    "x-amz-checksum-sha256": "c2lnbmVk",
+  },
   expiresAt: Date.now() / 1000 + 900,
   usableUntil: Date.now() / 1000 + 86400,
   maxBytes: 102_401_024,
@@ -601,7 +605,13 @@ describe("push campaign submit", () => {
       within(drawer).getByRole("button", { name: "Dry run" }),
     );
     await waitFor(() => expect(mockApi.submitPushJob).toHaveBeenCalledTimes(1));
-    expect(mockApi.createPushUpload).toHaveBeenCalledWith("push_9", 26);
+    // The file's SHA-256 is declared, so the PUT signs it.
+    expect(mockApi.createPushUpload).toHaveBeenCalledWith(
+      "push_9",
+      26,
+      // sha256sum of GOOD_CSV
+      "09e9a2820fc2044649f200e2e4d4fef153557e677f03629ab6f47b4afdb2ee2e",
+    );
     expect(mockApi.putPushUpload).toHaveBeenCalledWith(GRANT, expect.any(File));
     const [, dryBody] = vi.mocked(mockApi.submitPushJob).mock.calls[0]!;
     expect(dryBody).toEqual({

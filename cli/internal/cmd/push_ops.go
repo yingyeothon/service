@@ -216,6 +216,8 @@ type pushSweepSlot struct {
 	Filled          int    `json:"filled"`
 	Repaired        int    `json:"repaired"`
 	Released        int    `json:"released"`
+	Restored        int    `json:"restored"`
+	Lost            int    `json:"lost"`
 	Unread          bool   `json:"unread"`
 	AutoClosed      bool   `json:"autoClosed"`
 	AutoOpened      bool   `json:"autoOpened"`
@@ -317,11 +319,16 @@ func (a *App) pushSweepCmd() *cobra.Command {
 				if s.Unread {
 					auto = "unread"
 				}
-				rows = append(rows, []string{s.Slot, strconv.Itoa(s.Claims), opt(s.FirebaseApps), strconv.Itoa(s.Orphans), strconv.Itoa(s.Missing), strconv.Itoa(s.Foreign), strconv.Itoa(s.Removed + s.Released), auto})
+				rows = append(rows, []string{s.Slot, strconv.Itoa(s.Claims), opt(s.FirebaseApps), strconv.Itoa(s.Orphans), strconv.Itoa(s.Missing), strconv.Itoa(s.Foreign), strconv.Itoa(s.Restored), strconv.Itoa(s.Lost), strconv.Itoa(s.Removed + s.Released), auto})
 			}
 			fmt.Fprintln(a.Out)
-			if err := a.printer().Table([]string{"SLOT", "CLAIMS", "APPS", "ORPHANS", "MISSING", "FOREIGN", "CLEANED", "AUTO"}, rows); err != nil {
+			if err := a.printer().Table([]string{"SLOT", "CLAIMS", "APPS", "ORPHANS", "MISSING", "FOREIGN", "RESTORED", "LOST", "CLEANED", "AUTO"}, rows); err != nil {
 				return err
+			}
+			for _, s := range l.Reconcile.Slots {
+				if s.Lost > 0 {
+					fmt.Fprintf(a.Err, "note: %s: %d push channel(s) lost their Firebase app for good; their claim was released and they must be recreated\n", s.Slot, s.Lost)
+				}
 			}
 			if l.Reconcile.Truncated {
 				fmt.Fprintln(a.Err, "note: the reconciliation stopped early; the next sweep continues")

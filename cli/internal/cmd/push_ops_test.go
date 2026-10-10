@@ -22,7 +22,7 @@ func TestPushUploadsStatsSweep(t *testing.T) {
 		},
 		"GET /admin/push/sweep": func(recorded) (int, any) {
 			return 200, map[string]any{"last": map[string]any{"at": 1756000000, "tokens": map[string]any{"channels": 1, "stale": 4}, "released": 0, "kept": 0, "failed": []any{},
-				"reconcile": map[string]any{"truncated": false, "slots": []any{map[string]any{"slot": "p1", "claims": 2, "firebaseApps": 3, "orphans": 1, "autoClosed": true}}}}}
+				"reconcile": map[string]any{"truncated": false, "slots": []any{map[string]any{"slot": "p1", "claims": 2, "firebaseApps": 3, "orphans": 1, "restored": 1, "lost": 1, "autoClosed": true}}}}}
 		},
 	}, nil, nil, nil))
 	out, errs, err := run(t, f, "push", "upload", "ls", pushID)

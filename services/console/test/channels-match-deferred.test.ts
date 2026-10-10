@@ -178,6 +178,7 @@ describe("match channel: mode", () => {
         400,
       ],
       [{ ...d, notification: { proposed: { title: "a\u0007b" } } }, 400],
+      [{ ...d, notification: { proposed: { title: "a\u202eb" } } }, 400],
     ];
     for (const [config, status, path] of cases) {
       const r = await mk(config);

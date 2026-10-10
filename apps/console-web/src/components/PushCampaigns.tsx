@@ -28,6 +28,7 @@ import {
   cancelMissed,
   checkCsvFile,
   createKeyRing,
+  fileSha256,
   emptyMessage,
   emptyOptions,
   hasProblems,
@@ -378,7 +379,11 @@ function CampaignForm({
       upload.current = null;
       u = upload.current = {
         file: f,
-        grant: await api.createPushUpload(channel.id, f.size),
+        grant: await api.createPushUpload(
+          channel.id,
+          f.size,
+          await fileSha256(f),
+        ),
         put: false,
         used: false,
       };

@@ -62,6 +62,9 @@ export function sweepNotes(s: PushSweepSlot): string {
     s.unread ? "not read" : undefined,
     s.autoClosed ? "auto-closed" : undefined,
     s.autoOpened ? "auto-opened" : undefined,
+    // Optional for a record a pre-2026-10-11 sweep stored.
+    (s.restored ?? 0) > 0 ? `${s.restored} restored` : undefined,
+    (s.lost ?? 0) > 0 ? `${s.lost} lost: recreate` : undefined,
   ].filter((x): x is string => x !== undefined);
   return notes.length === 0 ? "—" : notes.join(", ");
 }

@@ -16,6 +16,7 @@ import { AppError } from "@yyt/core";
 import {
   createMemoryPushJobStore,
   createS3PushJobStore,
+  checksumHex,
   pushReportKey,
   pushReportPartKey,
   pushReportPartsPrefix,
@@ -100,12 +101,60 @@ describe("s3 push job store", () => {
     });
   });
 
-  it("heads an upload: size and ETag, undefined when missing, 503 otherwise", async () => {
+  it("signs a declared SHA-256 as a header, never in the query", async () => {
+    const hex =
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    const url = new URL(
+      await store().presignUploadPut({
+        key: "push-uploads/c/u.csv",
+        contentLength: 5,
+        sha256: hex,
+      }),
+    );
+    expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe(
+      "content-length;content-type;host;x-amz-checksum-sha256",
+    );
+    expect(
+      [...url.searchParams.keys()].filter((k) => /checksum/i.test(k)),
+    ).toEqual([]);
+    const call = vi.mocked(getSignedUrl).mock.lastCall!;
+    expect((call[1] as { input: PutObjectCommandInput }).input).toMatchObject({
+      ContentType: "text/csv",
+      ContentLength: 5,
+      ChecksumSHA256: "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+    });
+    expect(call[2]).toMatchObject({
+      unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
+    });
+  });
+
+  it("heads an upload: size, ETag and stored SHA-256, undefined when missing, 503 otherwise", async () => {
     s3.on(HeadObjectCommand)
       .resolvesOnce({ ContentLength: 5, ETag: '"e"' })
+      .resolvesOnce({
+        ContentLength: 5,
+        ETag: '"f"',
+        ChecksumSHA256: "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+      })
       .rejectsOnce(named("NotFound"))
       .rejectsOnce(named("SlowDown"));
-    expect(await store().headUpload("k")).toEqual({ size: 5, etag: '"e"' });
+    expect(await store().headUpload("k")).toEqual({
+      size: 5,
+      etag: '"e"',
+      sha256: null,
+    });
+    expect(await store().headUpload("k")).toEqual({
+      size: 5,
+      etag: '"f"',
+      sha256:
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    });
+    // The stored checksum is only answered when asked for.
+    expect(s3.commandCalls(HeadObjectCommand)[0]!.args[0].input).toEqual({
+      Bucket: "b",
+      Key: "k",
+      ChecksumMode: "ENABLED",
+    });
     expect(await store().headUpload("k")).toBeUndefined();
     await expect(store().headUpload("k")).rejects.toMatchObject({
       code: "unavailable",
@@ -215,7 +264,35 @@ describe("s3 push job store", () => {
   });
 });
 
+describe("checksumHex", () => {
+  it("reads a full-object SHA-256 and nothing else", () => {
+    expect(checksumHex("LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=")).toBe(
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    );
+    // A multipart object's composite checksum is not the bytes' hash.
+    expect(
+      checksumHex("LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=-3"),
+    ).toBeNull();
+    expect(checksumHex(undefined)).toBeNull();
+    expect(checksumHex("")).toBeNull();
+  });
+});
+
 describe("memory push job store", () => {
+  it("stores the signed SHA-256 of a PUT and refuses other bytes against it", async () => {
+    const m = createMemoryPushJobStore();
+    const hex =
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    await m.store.presignUploadPut({ key: "k", contentLength: 5, sha256: hex });
+    expect(() => m.upload("k", "HELLO")).toThrow("BadDigest");
+    m.upload("k", "hello");
+    expect((await m.store.headUpload("k"))?.sha256).toBe(hex);
+    // A URL signed without one stores none.
+    await m.store.presignUploadPut({ key: "j", contentLength: 5 });
+    m.upload("j", "hello");
+    expect((await m.store.headUpload("j"))?.sha256).toBeNull();
+  });
+
   it("behaves like the bucket: ETag pinning, ranges, prefixes, scripted failures", async () => {
     const m = createMemoryPushJobStore();
     expect(await m.store.headUpload("k")).toBeUndefined();
@@ -224,7 +301,7 @@ describe("memory push job store", () => {
     });
     m.upload("k", "hello world");
     const head = await m.store.headUpload("k");
-    expect(head).toEqual({ size: 11, etag: '"v1"' });
+    expect(head).toEqual({ size: 11, etag: '"v1"', sha256: null });
     expect(
       Buffer.from(await m.store.readUpload("k", head!.etag, 6, 11)).toString(),
     ).toBe("world");

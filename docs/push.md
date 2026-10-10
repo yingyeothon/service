@@ -336,7 +336,7 @@ Both families (`{base}` = `/channels/{id}/push` or `/push-api/{channelId}`).
 
 | Route                               | Body                                                                                                | Answer                                                               |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `POST {base}/uploads`               | `{size}`                                                                                            | 201 upload                                                           |
+| `POST {base}/uploads`               | `{size, sha256?}`                                                                                   | 201 upload                                                           |
 | `GET {base}/uploads?limit=&cursor=` |                                                                                                     | `{uploads, next, max: 20}` newest first; `limit` 1–100, default 20   |
 | `DELETE {base}/uploads/{uploadId}`  |                                                                                                     | 204; 409 `upload_in_use` while an unfinished job reads it            |
 | `POST {base}/jobs`                  | `{templateId, uploadId, idempotencyKey, dryRun?, priority?, ttlSec?, collapseKey?}`                 | 202 `{job, created: true}`; 200 `{job, created: false}` for a replay |
@@ -349,21 +349,26 @@ Both families (`{base}` = `/channels/{id}/push` or `/push-api/{channelId}`).
 
 Unknown body fields are a 400. `priority`, `ttlSec` and `collapseKey` are the targeted send's fields.
 
-**Upload.** `{size}` is the file's exact byte length, 1 to 102,401,024. The answer:
+**Upload.** `{size}` is the file's exact byte length, 1 to 102,401,024. `sha256`, optional, is the file's SHA-256 in lower-case hex (64 characters); the console declares it. The answer:
 
 ```json
 {
   "uploadId": "pu_…",
   "url": "https://…",
   "method": "PUT",
-  "headers": { "content-type": "text/csv", "content-length": "1234" },
+  "headers": {
+    "content-type": "text/csv",
+    "content-length": "1234",
+    "x-amz-checksum-sha256": "<base64 of the SHA-256>"
+  },
   "expiresAt": 1790000900,
   "usableUntil": 1790086400,
   "maxBytes": 102401024
 }
 ```
 
-- `PUT` the file to `url` with exactly those two headers; both are signed, so another type or length is refused by the bucket. The URL works for 15 minutes.
+- `PUT` the file to `url` with exactly those headers; all are signed, so another type or length is refused by the bucket. `x-amz-checksum-sha256` is present only when `sha256` was declared: it is the same hash in base64, and the bucket refuses other bytes (`400 BadDigest`). The URL works for 15 minutes.
+- A declared hash is checked again at submit: the object must carry it (409 `upload_checksum_mismatch` otherwise). It is what lets another upload of the same file replay a job (_Job_ below).
 - A job may name the upload for 24 hours (`usableUntil`), any number of times — the dry run and the job share one upload.
 - A channel holds at most 20 **pending** uploads (409 `push_upload_cap`). Pending: no job names it yet, or an unfinished job does. An upload whose jobs have all finished stops counting, and can still be named again inside its 24 hours. `DELETE {base}/uploads/{uploadId}` removes one (row and object) and is refused while an unfinished job reads it (409 `upload_in_use`). Every upload is removed two days after it was issued.
 - `GET {base}/uploads` lists the channel's uploads, newest first: `{id, size, createdBy, createdByLogin, createdAt, usableUntil, pending, inUse}` per upload (`createdBy` is a member id or `apikey`; `createdByLogin` is null for the key, and on the apiKey family). `pending` is whether it holds one of the 20 places, `inUse` whether an unfinished job reads it (a delete is then refused). No object key and no URL: the URL is the create's to hand out once.
@@ -373,7 +378,8 @@ Unknown body fields are a 400. `priority`, `ttlSec` and `collapseKey` are the ta
 **Job.** `idempotencyKey` is the caller's: `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`, unique per channel without case, shared by jobs and broadcasts, kept as long as the job row (30 days after it finished).
 
 - A repeated key with the **same parameters** answers 200 with the job it named the first time — before anything else is checked, so a retry succeeds even after the template or the upload is gone. Nothing is recorded or sent twice.
-- A repeated key with **other parameters** (another template, upload, `dryRun` or option) is 409 `idempotency_key_reused`.
+- The same parameters are the same template, `dryRun` and options, and **the same file**: the same `uploadId`, or another upload of the same bytes when both uploads declared `sha256`. An ETag cannot tell this (the bucket is SSE-KMS, so the same file uploaded twice has two ETags); the declared and stored SHA-256 can. So a client that lost the answer and uploads the file again under the same key gets the job back. Comparing by content reads the new upload's row, so it is answered only while that upload exists (two days).
+- A repeated key with **other parameters** (another template, file, `dryRun` or option) is 409 `idempotency_key_reused`. An upload without `sha256` matches its own `uploadId` only.
 - The job keeps the template's text as it was at submit time; a later edit or delete of the template does not change it.
 
 ```json
@@ -465,6 +471,7 @@ cdef…,failed,unavailable
 | 409    | `{reason: "idempotency_key_reused"}`                         | the key names a job with other parameters                                                                                                                    |
 | 409    | `{reason: "upload_missing"}`                                 | nothing was put to the upload's URL                                                                                                                          |
 | 409    | `{reason: "upload_size_mismatch"}`                           | the object is not of the signed size                                                                                                                         |
+| 409    | `{reason: "upload_checksum_mismatch"}`                       | the upload declared `sha256` and the object does not carry it                                                                                                |
 | 409    | `{reason: "upload_expired"}`                                 | the upload is older than 24 hours                                                                                                                            |
 | 409    | `{reason: "push_upload_cap", max: 20}`                       | the channel holds 20 pending uploads                                                                                                                         |
 | 409    | `{reason: "upload_in_use"}`                                  | `DELETE …/uploads/{uploadId}`: an unfinished job reads the upload                                                                                            |
@@ -634,6 +641,7 @@ The Firebase Management calls were written from the public reference; `packages/
 - A channel delete removes the Firebase app with `immediate: true` — its place in the project and its package name are free at once, and it cannot be restored — then the claim, then up to 10,000 tokens and the channel's send counters.
 - When Firebase does not confirm the removal inside 8 s, or the pool no longer returns the claim's slot, **the claim stays**: the package name and the team's count remain held until the daily sweep's retry succeeds. Without the claim nothing would name the Firebase app.
 - An expired channel releases its registration when the sweep soft-deletes it, 30 days after it was disabled.
+- A live channel whose app was purged behind the platform's back loses its claim at the next sweep (`lost`); delete and recreate the channel.
 - A platform-registered app pending deletion (removed by hand without `immediate`, or soft-removed by a reconciliation that did not finish) still holds its name; the next create of that package purges it and registers anew.
 
 ### Daily sweep and digest
@@ -648,22 +656,24 @@ Console `expire` runs the push sweep before the usage digest, in five phases; on
 
 Phases 1 and 5 share one 90 s deadline, checked before every release and every Firebase call, and 20 Firebase removals per run; a claim whose release failed in phase 1 is not retried until tomorrow. Log lines: `push sweep` or `push sweep truncated`.
 
-**The last run, for admins.** The run's result — the same content as its log line, plus `at` (unix seconds) — is kept in console Redis under `push:sweep:last` for 8 days and read by `GET /admin/push/sweep`: `{last: null}` before the first run, else `{last: {at, tokens: {channels, stale}, stats, truncated, released, kept, failed: [phase], pool?: {unreadable, unprovisioned: [{slot, claims}], skipped: [{slot, reason}]}, reconcile?: {truncated, slots: [{slot, claims, firebaseApps?, pendingDeletion?, orphans, removed, missing, foreign, filled, repaired, released, unread, autoClosed, autoOpened}]}}}`. Slot labels and counts only: no Firebase project or app id. A failed write is logged (`push sweep record failed`) and does not fail the sweep.
+**The last run, for admins.** The run's result — the same content as its log line, plus `at` (unix seconds) — is kept in console Redis under `push:sweep:last` for 8 days and read by `GET /admin/push/sweep`: `{last: null}` before the first run, else `{last: {at, tokens: {channels, stale}, stats, truncated, released, kept, failed: [phase], pool?: {unreadable, unprovisioned: [{slot, claims}], skipped: [{slot, reason}]}, reconcile?: {truncated, slots: [{slot, claims, firebaseApps?, pendingDeletion?, orphans, removed, missing, foreign, filled, repaired, released, restored, lost, unread, autoClosed, autoOpened}]}}}`. Slot labels and counts only: no Firebase project or app id. A failed write is logged (`push sweep record failed`) and does not fail the sweep.
 
-| Finding      | Meaning                                                                                                                             | Digest warning            |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `orphans`    | active Firebase apps no claim names that are still there: added by hand or by another stage (**never touched**), or not yet removed | `push:orphans:{slot}:{n}` |
-| `removed`    | apps carrying this stage's marker that no claim named, purged on this run (left by a failed create)                                 | `push:removed:{slot}`     |
-| `missing`    | live channels whose Firebase app is gone, pending deletion or was never created                                                     | `push:missing:{slot}:{n}` |
-| `foreign`    | claims whose package Firebase lists under an app this stage did not register; never adopted                                         | `push:foreign:{slot}:{n}` |
-| `filled`     | claims that lacked an app id and took the platform-registered app of their package                                                  | —                         |
-| `repaired`   | channels whose stored slot and app id were rewritten from the claim                                                                 | —                         |
-| `released`   | claims of dead channels given back on this run                                                                                      | —                         |
-| `unread`     | Firebase's app list was not read (no answer, or out of time); the slot is unreconciled today                                        | `push:unread:{slot}`      |
-| `autoClosed` | the slot was closed at 28 listed apps                                                                                               | `push:autoclose:{slot}`   |
-| truncated    | a budget ran out; the rest waits for tomorrow                                                                                       | `push:sweep:truncated`    |
+| Finding      | Meaning                                                                                                                                                                                                                                                                       | Digest warning            |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `orphans`    | active Firebase apps no claim names that are still there: added by hand or by another stage (**never touched**), or not yet removed                                                                                                                                           | `push:orphans:{slot}:{n}` |
+| `removed`    | apps carrying this stage's marker that no claim named, purged on this run (left by a failed create)                                                                                                                                                                           | `push:removed:{slot}`     |
+| `missing`    | live channels whose Firebase app is gone, pending deletion or was never created                                                                                                                                                                                               | `push:missing:{slot}:{n}` |
+| `foreign`    | claims whose package Firebase lists under an app this stage did not register; never adopted                                                                                                                                                                                   | `push:foreign:{slot}:{n}` |
+| `filled`     | claims that lacked an app id and took the platform-registered app of their package                                                                                                                                                                                            | —                         |
+| `repaired`   | channels whose stored slot and app id were rewritten from the claim                                                                                                                                                                                                           | —                         |
+| `released`   | claims of dead channels given back on this run                                                                                                                                                                                                                                | —                         |
+| `restored`   | live channels whose Firebase app was pending deletion (a failed restore, or removed by hand) and was restored on this run                                                                                                                                                     | —                         |
+| `lost`       | live channels whose Firebase app was purged (not listed, and the restore found nothing); their claim was released on this run (at most 2 a slot, none while a slot of several claims lists none of them) and they are counted in `missing` too; the channel must be recreated | `push:lost:{slot}`        |
+| `unread`     | Firebase's app list was not read (no answer, or out of time); the slot is unreconciled today                                                                                                                                                                                  | `push:unread:{slot}`      |
+| `autoClosed` | the slot was closed at 28 listed apps                                                                                                                                                                                                                                         | `push:autoclose:{slot}`   |
+| truncated    | a budget ran out; the rest waits for tomorrow                                                                                                                                                                                                                                 | `push:sweep:truncated`    |
 
-An unclaimed platform app is removed only after the claim was read again by package name **after** Firebase's list was fetched: a create writes its claim before it calls Firebase, so an app that is listed while no claim of the slot names its package is one a rolled-back or timed-out create left. The removal itself is two steps, because a retry of that create can adopt the app at any moment: a soft removal (the app is pending deletion and restorable), the claim read once more, then the purge with `immediate: true`. An app a claim names by then is restored instead and not counted as `removed`; a failed restore is logged as `push reconciliation: claimed app not restored` and counted in `missing`. A purge that did not fit leaves the app pending deletion for the next run.
+An unclaimed platform app is removed only after the claim was read again by package name **after** Firebase's list was fetched: a create writes its claim before it calls Firebase, so an app that is listed while no claim of the slot names its package is one a rolled-back or timed-out create left. The removal itself is two steps, because a retry of that create can adopt the app at any moment: a soft removal (the app is pending deletion and restorable), the claim read once more, then the purge with `immediate: true`. An app a claim names by then is restored instead and not counted as `removed`. A failed restore is logged as `push reconciliation: claimed app not restored`, counted in `missing`, and retried by the next run: a live claim whose app is pending deletion or not listed gets one `:undelete` per run within the budgets (`restored` on success). When the list no longer shows the app and the restore finds nothing, the claim is read again and released (`lost`, audit `push.app.lost`, digest `push:lost:{slot}`); the channel keeps its config, its download answers `registration_missing`, and it must be recreated. A purge that did not fit leaves the app pending deletion for the next run.
 
 Further digest warnings:
 
@@ -720,6 +730,6 @@ Rolling console back past `m0028_push`: hard-delete the `push` channel rows and 
 Decided in `docs/decisions.md`, tracked in the machine-local backlog:
 
 - **Not verified on any stage**: receipt on a real device (targeted send, deferred-match hook, campaign, broadcast topic, the console app's tap; the console app's burst notice itself was received on a phone on prod 2026-10-09), `:undelete`, the 30-app limit error code, the `already_exists` shape.
-- **Deferred-match hook** (_Match: deferred mode_ #5) — live on dev and prod since 2026-10-06 on the match stack: a deferred match channel naming a `pushChannelId` sends each affected member a high-priority data-only `{channelId, matchId, state}` (`services/match/README.md` _Deferred mode_); with the channel's `notification` text for `proposed`, `confirmed` or `expired` (since 2026-10-11, _Push notifications_ #11h) that state's message also carries `notification: {title, body}`. It reads `push_tokens` and deletes nothing: a token FCM reports unregistered is left to the next targeted send and the 60-day sweep. Its sends are not in `push_send_stats`; each writes one `match push` log line. Bound (_Match: deferred mode_ #7): `proposed`/`expired` messages to one user on one channel are at least 10 s apart (dropped, counted as `outcomes.spaced`, never queued), and a player who declined or let a window close cannot queue again for `acceptTimeoutSec`.
+- **Deferred-match hook** (_Match: deferred mode_ #5) — live on dev and prod since 2026-10-06 on the match stack: a deferred match channel naming a `pushChannelId` sends each affected member a high-priority data-only `{channelId, matchId, state}` (`services/match/README.md` _Deferred mode_); with the channel's `notification` text for `proposed`, `confirmed` or `expired` (since 2026-10-11, _Push notifications_ #11h) that state's message also carries `notification: {title, body}`. A backgrounded Android app then shows the tray notification and gets the data only when the user taps it; in the foreground `onMessageReceived` gets both. It reads `push_tokens` and deletes nothing: a token FCM reports unregistered is left to the next targeted send and the 60-day sweep. Its sends are not in `push_send_stats`; each writes one `match push` log line. Bound (_Match: deferred mode_ #7): `proposed`/`expired` messages to one user on one channel are at least 10 s apart (dropped, counted as `outcomes.spaced`, never queued), and a player who declined or let a window close cannot queue again for `acceptTimeoutSec`.
 - **Console app notifications** (#10) — live (_Console app_); receipt on a real device (background, foreground, cold-start tap) is not verified.
 - **Client libraries**: no `push` package exists in tslib, csharplib or flutterlib, and the examples repository has no sample; an app calls the two token routes directly and subscribes to the channel's topic itself (_Broadcast_).

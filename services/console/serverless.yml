@@ -645,7 +645,8 @@ resources:
               AllowedOrigins:
                 - ${param:webUrl, "https://${self:custom.domain}"}
                 - http://localhost:5173
-              AllowedHeaders: ["content-type", "content-length"]
+              AllowedHeaders:
+                ["content-type", "content-length", "x-amz-checksum-sha256"]
               MaxAge: 600
 
     # --- SPA bucket + CloudFront (todo/07) ---------------------------------

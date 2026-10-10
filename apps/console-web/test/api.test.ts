@@ -156,6 +156,39 @@ describe("api client", () => {
     );
   });
 
+  it("declares a recipient CSV's SHA-256 and PUTs with every header of the grant", async () => {
+    const headers = {
+      "content-type": "text/csv",
+      "content-length": "5",
+      "x-amz-checksum-sha256": "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+    };
+    const grant = {
+      uploadId: "pu_1",
+      url: "https://s3.test/put",
+      method: "PUT",
+      headers,
+      expiresAt: 1,
+      usableUntil: 2,
+      maxBytes: 9,
+    };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonRes(201, grant))
+      .mockResolvedValueOnce(jsonRes(201, grant))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const api = createApiClient({ fetch });
+    const hex =
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    await api.createPushUpload("push_1", 5, hex);
+    await api.createPushUpload("push_1", 5);
+    expect(fetch.mock.calls[0]![1]!.body).toBe(
+      JSON.stringify({ size: 5, sha256: hex }),
+    );
+    expect(fetch.mock.calls[1]![1]!.body).toBe(JSON.stringify({ size: 5 }));
+    await api.putPushUpload(grant, new File(["hello"], "r.csv"));
+    expect(fetch.mock.calls[2]![1]).toMatchObject({ method: "PUT", headers });
+  });
+
   it("reports a failed S3 PUT without committing", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

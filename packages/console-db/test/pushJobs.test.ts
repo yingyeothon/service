@@ -66,6 +66,7 @@ const job = (
   options: { priority: "high" },
   uploadId: "pu_1",
   uploadEtag: '"etag"',
+  contentSha256: null,
   day: DAY,
   author: "m1",
   at: NOW,
@@ -267,6 +268,7 @@ export function pushJobsContract(
       size: 123,
       createdBy: "apikey",
       createdAt: at,
+      contentSha256: null as string | null,
     });
 
     it("records an upload and reads it back for its own channel only", async () => {
@@ -283,6 +285,15 @@ export function pushJobsContract(
         db.createUpload(upload("pu_2", NOW, "push_none")),
         "not_found",
       );
+      // The declared content hash: lower-case hex, kept as given.
+      const declared = { ...upload("pu_3"), contentSha256: HASH2 };
+      expect(await db.createUpload(declared)).toBe(true);
+      expect(await db.findUpload(CH, "PU_3")).toEqual(declared);
+      for (const contentSha256 of ["B".repeat(64), "b".repeat(63), "x"])
+        await rejects(
+          db.createUpload({ ...upload("pu_4"), contentSha256 }),
+          "bad_request",
+        );
     });
 
     it(`holds at most ${PUSH_UPLOADS_PER_CHANNEL} rows per channel`, async () => {
@@ -366,6 +377,7 @@ export function pushJobsContract(
         options: { priority: "high" },
         uploadId: "pu_1",
         uploadEtag: '"etag"',
+        contentSha256: null,
         day: DAY,
         status: "queued",
         error: null,
@@ -423,6 +435,59 @@ export function pushJobsContract(
       expect(
         await db.submitJob(job("pj_3", "key-1", { channelId: CH2 }), 10),
       ).toMatchObject({ ok: true, created: true });
+    });
+
+    it("replays a key for another upload only when both hold the same bytes", async () => {
+      const { db } = await seeded();
+      const sha = "c".repeat(64);
+      // Held without a content hash: only the same upload id replays.
+      await db.submitJob(job("pj_1", "plain"), 10);
+      expect(
+        await db.submitJob(job("pj_2", "plain", { uploadId: "PU_1" }), 10),
+      ).toMatchObject({ ok: true, created: false, job: { id: "pj_1" } });
+      for (const contentSha256 of [null, sha])
+        expect(
+          await db.submitJob(
+            job("pj_2", "plain", { uploadId: "pu_2", contentSha256 }),
+            10,
+          ),
+        ).toEqual({ ok: false, reason: "params_differ" });
+
+      // Held with one: another upload of the same bytes replays.
+      const r = await db.submitJob(
+        job("pj_3", "content", { contentSha256: sha }),
+        10,
+      );
+      expect(r).toMatchObject({
+        ok: true,
+        created: true,
+        job: { contentSha256: sha },
+      });
+      expect(
+        await db.submitJob(
+          job("pj_4", "content", { uploadId: "pu_9", contentSha256: sha }),
+          10,
+        ),
+      ).toMatchObject({ ok: true, created: false, job: { id: "pj_3" } });
+      for (const contentSha256 of [null, "d".repeat(64)])
+        expect(
+          await db.submitJob(
+            job("pj_4", "content", { uploadId: "pu_9", contentSha256 }),
+            10,
+          ),
+        ).toEqual({ ok: false, reason: "params_differ" });
+      // The same bytes with other parameters are still another request.
+      expect(
+        await db.submitJob(
+          job("pj_4", "content", {
+            uploadId: "pu_9",
+            contentSha256: sha,
+            paramsHash: HASH2,
+          }),
+          10,
+        ),
+      ).toEqual({ ok: false, reason: "params_differ" });
+      expect(await db.findJob(CH, "pj_4")).toBeUndefined();
     });
 
     it("counts a channel's jobs of one UTC day against the limit, dry runs apart", async () => {
@@ -489,6 +554,8 @@ export function pushJobsContract(
         { uploadId: null },
         { kind: "other" as "campaign" },
         { uploadEtag: "e".repeat(129) },
+        { contentSha256: "C".repeat(64) },
+        { contentSha256: "c".repeat(65) },
         { day: -1 },
         { id: "bad id" },
         { title: "x".repeat(1025) },
@@ -500,6 +567,13 @@ export function pushJobsContract(
       );
       await rejects(
         db.submitJob(broadcast("pj_1", "k", { dryRun: true }), 10),
+        "bad_request",
+      );
+      await rejects(
+        db.submitJob(
+          broadcast("pj_1", "k", { contentSha256: "c".repeat(64) }),
+          10,
+        ),
         "bad_request",
       );
       await rejects(db.submitJob(job("pj_1", "k"), -1), "bad_request");
@@ -1045,6 +1119,7 @@ export function pushJobsContract(
       size: 123,
       createdBy: "m1",
       createdAt: NOW,
+      contentSha256: null,
     });
 
     it("an upload whose jobs have all finished gives its place back", async () => {
@@ -1359,6 +1434,7 @@ describe("memory push jobs db", () => {
       size: 1,
       createdBy: "m1",
       createdAt: NOW,
+      contentSha256: null,
     });
     await rejects(
       h.db.createUpload({
@@ -1367,6 +1443,7 @@ describe("memory push jobs db", () => {
         size: 1,
         createdBy: "m1",
         createdAt: NOW,
+        contentSha256: null,
       }),
       "conflict",
     );

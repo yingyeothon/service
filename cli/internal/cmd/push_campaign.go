@@ -170,8 +170,9 @@ var pushCampaignHints = map[string]string{
 	"idempotency_key_reused":   "the key names an earlier job with another template, file, --dry-run or option; pass a new --idempotency-key to submit this one",
 	"upload_missing":           "nothing reached the upload's URL; run the command again",
 	"upload_size_mismatch":     "the uploaded object is not of the signed size; run the command again",
+	"upload_checksum_mismatch": "the uploaded object is not of the declared SHA-256; run the command again",
 	"upload_expired":           "the upload is older than 24 hours; run the command again to upload the file anew",
-	"push_upload_cap":          "the channel holds its 20 pending uploads; one stops counting when its jobs have finished and an unused one is removed two days after it was made, so wait for the oldest",
+	"push_upload_cap":          "the channel holds its 20 pending uploads; one stops counting when its jobs have finished and an unused one is removed two days after it was made, so remove an unused one with `yyt push upload ls|rm` or wait for the oldest",
 	"push_not_registered":      "the channel has neither a finished platform registration nor a team sender key: check `registered` in `yyt push channel get`, or add a key with `yyt push channel sender-key set` (a --dry-run needs neither)",
 	"push_not_configured":      "this stage has no push sender yet; a platform admin provisions it (a --dry-run is still accepted)",
 	"report_not_ready":         "the job has not finished; follow it with `yyt push job get`",
@@ -631,11 +632,11 @@ func heldPushJobs(ctx context.Context, cl *api.Client, base, channelID string, k
 
 // uploadPushCSV creates an upload and PUTs the file to it. The URL is a
 // temporary credential and is never printed.
-func uploadPushCSV(ctx context.Context, cl *api.Client, base, channelID, path string, size int64) (string, error) {
+func uploadPushCSV(ctx context.Context, cl *api.Client, base, channelID, path string, size int64, sha256Hex string) (string, error) {
 	var grant uploadGrant
 	// Not retried: the route takes no write slot, and after a failure the
 	// upload row may exist — a channel holds 20 pending.
-	if err := cl.Do(ctx, http.MethodPost, base+"/uploads", map[string]any{"size": size}, &grant); err != nil {
+	if err := cl.Do(ctx, http.MethodPost, base+"/uploads", map[string]any{"size": size, "sha256": sha256Hex}, &grant); err != nil {
 		return "", withCampaignHint(err, channelID)
 	}
 	if grant.UploadID == "" || grant.URL == "" {
@@ -695,7 +696,7 @@ func pushUploadGone(err error) bool {
 		Reason string `json:"reason"`
 	}
 	_ = json.Unmarshal(ae.Details, &d)
-	return d.Reason == "upload_expired" || d.Reason == "upload_missing" || d.Reason == "upload_size_mismatch"
+	return d.Reason == "upload_expired" || d.Reason == "upload_missing" || d.Reason == "upload_size_mismatch" || d.Reason == "upload_checksum_mismatch"
 }
 
 // postPushJob submits a job or a broadcast. The idempotency key makes the
@@ -1122,7 +1123,7 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 				}
 			}
 			if !submitted {
-				uploadID, err := uploadPushCSV(ctx, jc, base, id, csvPath, file.size)
+				uploadID, err := uploadPushCSV(ctx, jc, base, id, csvPath, file.size, file.sha256)
 				if err != nil {
 					return err
 				}

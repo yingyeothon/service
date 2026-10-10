@@ -16,6 +16,7 @@ import {
   PUSH_TEMPLATE_NAME,
   PUSH_TEMPLATES_PER_CHANNEL,
   PUSH_UPLOADS_PER_CHANNEL,
+  sameUpload,
   type ChannelRow,
   type ConsoleDb,
   type LimitsDb,
@@ -60,6 +61,7 @@ import {
   templateVars,
 } from "./push-template.js";
 import { createChannelCredentialHelpers } from "./resources.js";
+import { sha256Base64 } from "./s3-util.js";
 import type { ResourceHistory } from "./resources.js";
 import type { TeamAccessHelpers } from "./team-access.js";
 
@@ -146,7 +148,15 @@ const templatePatchBody = z
   .object({ name: templateName.optional(), ...messageIn })
   .strict();
 const uploadBody = z
-  .object({ size: z.number().int().min(1).max(PUSH_CSV_MAX_BYTES) })
+  .object({
+    size: z.number().int().min(1).max(PUSH_CSV_MAX_BYTES),
+    // The file's SHA-256, lower-case hex: signed into the PUT, and what
+    // makes another upload of the same bytes replay a job's key.
+    sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+  })
   .strict();
 const jobBody = z
   .object({
@@ -408,7 +418,10 @@ export function createPushCampaignRoutes({
 
   /* ---------------- uploads ---------------- */
 
-  async function createUpload(c: Caller, size: number): Promise<HttpResult> {
+  async function createUpload(
+    c: Caller,
+    { size, sha256 }: z.infer<typeof uploadBody>,
+  ): Promise<HttpResult> {
     requireLive(c);
     const s = requireStore();
     // No write slot: the submit that follows an upload needs the caller's,
@@ -421,6 +434,7 @@ export function createPushCampaignRoutes({
       size,
       createdBy: c.author,
       createdAt: at,
+      contentSha256: sha256 ?? null,
     });
     if (!created)
       throw conflict(
@@ -432,6 +446,7 @@ export function createPushCampaignRoutes({
       url = await s.presignUploadPut({
         key: pushUploadKey(c.channel.id, id),
         contentLength: size,
+        ...(sha256 ? { sha256 } : {}),
       });
     } catch (e) {
       // No URL was handed out: the row would only hold one of the 20 places.
@@ -443,10 +458,12 @@ export function createPushCampaignRoutes({
         uploadId: id,
         url,
         method: "PUT",
-        // Both are part of the signature: another type or length is refused.
+        // All are part of the signature: another type, length or (with a
+        // declared hash) other bytes are refused.
         headers: {
           "content-type": PUSH_CSV_CONTENT_TYPE,
           "content-length": String(size),
+          ...(sha256 ? { "x-amz-checksum-sha256": sha256Base64(sha256) } : {}),
         },
         expiresAt: at + PUSH_UPLOAD_URL_TTL_SEC,
         usableUntil: at + PUSH_UPLOAD_USABLE_SEC,
@@ -524,14 +541,20 @@ export function createPushCampaignRoutes({
 
   /**
    * The uploaded object as a job may read it: present, of the signed length,
-   * with a header that parses. Returns the id as stored (the object's key is
-   * made of it, and the caller's spelling may differ by case), the ETag and
-   * the header.
+   * of the declared SHA-256 when the upload declared one, with a header that
+   * parses. Returns the id as stored (the object's key is made of it, and the
+   * caller's spelling may differ by case), the ETag, the content hash and the
+   * header.
    */
   async function inspectUpload(
     c: Caller,
     uploadId: string,
-  ): Promise<{ id: string; etag: string; header: CsvHeader }> {
+  ): Promise<{
+    id: string;
+    etag: string;
+    sha256: string | null;
+    header: CsvHeader;
+  }> {
     const s = requireStore();
     const row = await jobs.findUpload(c.channel.id, uploadId);
     if (!row) throw new AppError("not_found", "upload not found");
@@ -548,6 +571,12 @@ export function createPushCampaignRoutes({
     if (head.size !== row.size)
       throw conflict("the uploaded object is not of the signed size", {
         reason: "upload_size_mismatch",
+      });
+    // S3 already refuses other bytes against a signed checksum (`BadDigest`);
+    // this also refuses an object stored without one.
+    if (row.contentSha256 !== null && head.sha256 !== row.contentSha256)
+      throw conflict("the uploaded object is not of the declared SHA-256", {
+        reason: "upload_checksum_mismatch",
       });
     try {
       // The header is one record, so two records' worth of bytes hold it.
@@ -566,7 +595,12 @@ export function createPushCampaignRoutes({
       if (!fields && first.length === head.size)
         fields = reader.end()[0]?.fields;
       if (!fields) throw new CsvError("empty", 1);
-      return { id: row.id, etag: head.etag, header: parseCsvHeader(fields) };
+      return {
+        id: row.id,
+        etag: head.etag,
+        sha256: row.contentSha256,
+        header: parseCsvHeader(fields),
+      };
     } catch (e) {
       if (e instanceof CsvError)
         throw new AppError("bad_request", "the CSV cannot be read", {
@@ -582,15 +616,37 @@ export function createPushCampaignRoutes({
 
   /* ---------------- jobs ---------------- */
 
-  /** A replay of an idempotency key, answered before anything else is checked. */
+  /**
+   * A replay of an idempotency key, answered before anything else is checked.
+   * `paramsHash` leaves the upload out: the same upload id replays, and so
+   * does another upload of the same declared bytes — the only case that
+   * reads the request's upload row.
+   */
   async function replayOf(
     c: Caller,
     key: string,
     paramsHash: string,
+    uploadId: string | null,
   ): Promise<HttpResult | undefined> {
     const held = await jobs.findJobByKey(c.channel.id, key);
     if (!held) return undefined;
     if (held.paramsHash !== paramsHash) throw keyReused();
+    let same = sameUpload(held, { uploadId, contentSha256: null });
+    if (!same && uploadId !== null && held.contentSha256 !== null) {
+      const row = await jobs.findUpload(c.channel.id, uploadId);
+      same =
+        row !== undefined &&
+        sameUpload(held, { uploadId, contentSha256: row.contentSha256 });
+      // A declared hash is only a claim: the bytes must be stored, or a
+      // replay would confirm a guessed hash of the held job's file.
+      if (same && row) {
+        const head = await requireStore().headUpload(
+          pushUploadKey(c.channel.id, row.id),
+        );
+        same = head !== undefined && head.sha256 === row.contentSha256;
+      }
+    }
+    if (!same) throw keyReused();
     return reply({ job: jobView(held, now()), created: false });
   }
 
@@ -668,17 +724,12 @@ export function createPushCampaignRoutes({
     const options = optionsOf(b);
     // Ids as stored: the platform mints them lower-case and the columns
     // compare without case, so the lower-case spelling is the stored one
-    // and a replay is recognised before either row is read.
+    // and a replay is recognised before the template row is read. The
+    // upload is not in the hash: `replayOf` compares it by id or content.
     const paramsHash = sha256Hex(
-      JSON.stringify([
-        "campaign",
-        b.templateId.toLowerCase(),
-        b.uploadId.toLowerCase(),
-        dryRun,
-        options,
-      ]),
+      JSON.stringify(["campaign", b.templateId.toLowerCase(), dryRun, options]),
     );
-    const replay = await replayOf(c, b.idempotencyKey, paramsHash);
+    const replay = await replayOf(c, b.idempotencyKey, paramsHash, b.uploadId);
     if (replay) return replay;
     await c.slot();
     const template = await jobs.findTemplate(c.channel.id, b.templateId);
@@ -709,6 +760,7 @@ export function createPushCampaignRoutes({
         options,
         uploadId: upload.id,
         uploadEtag: upload.etag,
+        contentSha256: upload.sha256,
       },
       "push.job.submit",
     );
@@ -735,7 +787,7 @@ export function createPushCampaignRoutes({
         options,
       ]),
     );
-    const replay = await replayOf(c, b.idempotencyKey, paramsHash);
+    const replay = await replayOf(c, b.idempotencyKey, paramsHash, null);
     if (replay) return replay;
     await c.slot();
     let text: PushMessageText;
@@ -767,6 +819,7 @@ export function createPushCampaignRoutes({
         options,
         uploadId: null,
         uploadEtag: null,
+        contentSha256: null,
       },
       "push.broadcast",
     );
@@ -1025,8 +1078,7 @@ export function createPushCampaignRoutes({
       path: `${base}/uploads`,
       auth,
       body: uploadBody,
-      handler: async (ctx) =>
-        createUpload(await caller(ctx, true), ctx.body.size),
+      handler: async (ctx) => createUpload(await caller(ctx, true), ctx.body),
     }),
     defineRoute({
       method: "GET",

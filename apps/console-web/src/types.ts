@@ -436,6 +436,10 @@ export interface PushSweepSlot {
   filled: number;
   repaired: number;
   released: number;
+  /** Since 2026-10-11: apps a failed restore left pending deletion, restored. */
+  restored?: number;
+  /** Since 2026-10-11: claims released because the app was purged for good. */
+  lost?: number;
   unread: boolean;
   autoClosed: boolean;
   autoOpened: boolean;

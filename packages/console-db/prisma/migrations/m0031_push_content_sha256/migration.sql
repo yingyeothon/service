@@ -1,0 +1,31 @@
+-- Content identity of a push campaign's recipient CSV (docs/decisions.md
+-- *Push* #11(e), docs/push.md *Campaigns*, todo/61). An upload may declare
+-- the file's SHA-256, which the presigned PUT then signs as
+-- `x-amz-checksum-sha256`; the submit reads the stored checksum back and
+-- keeps it on the job, so a job's idempotency key replays for another upload
+-- of the same bytes. An SSE-KMS ETag is not a content hash, so `upload_etag`
+-- cannot serve.
+--
+--   * `push_uploads.content_sha256` the SHA-256 the upload declared (hex),
+--                                   NULL when it declared none;
+--   * `push_jobs.content_sha256`    the SHA-256 S3 holds for the object the
+--                                   job was submitted with (hex), NULL for a
+--                                   broadcast and an upload that declared none.
+--
+-- Pure **expand**: two nullable columns appended, no index (a replay reads
+-- the job by its key and the upload by its id). Not a `-- contract` file;
+-- `scripts/deploy.sh console <stage>` applies it with no flag. An older
+-- console bundle never selects the columns (the generated client names its
+-- columns), so a rollback needs no contract migration. Console-only tables:
+-- no grant.
+--
+-- Verify around this file (read-only, per stage):
+--   SHOW CREATE TABLE push_uploads
+--   SHOW CREATE TABLE push_jobs
+--
+-- If the second statement fails: `ALTER TABLE push_uploads DROP COLUMN
+-- content_sha256`, then `prisma migrate resolve --rolled-back
+-- m0031_push_content_sha256` and rerun scripts/migrate.sh.
+
+ALTER TABLE `push_uploads` ADD COLUMN `content_sha256` CHAR(64) NULL;
+ALTER TABLE `push_jobs` ADD COLUMN `content_sha256` CHAR(64) NULL;

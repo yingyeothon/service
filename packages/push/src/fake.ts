@@ -97,8 +97,8 @@ export interface FakeGoogle {
   /** Device tokens FCM refuses; any other token is accepted. */
   readonly deviceTokens: Map<string, FakeDeviceTokenState>;
   /**
-   * The next `times` requests to `api` fail. `when: "after"` (create and
-   * remove only) applies the mutation first and then answers the failure —
+   * The next `times` requests to `api` fail. `when: "after"` (create,
+   * remove and undelete only) applies the mutation first and then answers the failure —
    * the lost answer.
    */
   failNext(

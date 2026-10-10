@@ -357,3 +357,27 @@ describe("PushPoolPage", () => {
     ).not.toBeNull();
   });
 });
+
+describe("sweep notes", () => {
+  it("names restored and lost apps beside the slot's flags", async () => {
+    const { sweepNotes } = await import("../src/pages/PushPool");
+    const base = {
+      slot: "p1",
+      claims: 1,
+      orphans: 0,
+      removed: 0,
+      missing: 1,
+      foreign: 0,
+      filled: 0,
+      repaired: 0,
+      released: 0,
+      unread: false,
+      autoClosed: false,
+      autoOpened: false,
+    };
+    expect(sweepNotes(base)).toBe("—");
+    expect(sweepNotes({ ...base, restored: 2, lost: 1 })).toBe(
+      "2 restored, 1 lost: recreate",
+    );
+  });
+});

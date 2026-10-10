@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { ensureTeam } from "./_team.mjs";
 import {
   asUser,
@@ -156,9 +157,13 @@ const keyOf =
     });
 
 /** Issues an upload URL and PUTs the CSV there. Returns the upload id. */
-async function upload(call, label, csv = CSV) {
+async function upload(call, label, csv = CSV, { sha256 = false } = {}) {
   const bytes = Buffer.from(csv, "utf8");
-  const issued = await call("POST", "/uploads", { size: bytes.length });
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const issued = await call("POST", "/uploads", {
+    size: bytes.length,
+    ...(sha256 ? { sha256: digest } : {}),
+  });
   check(
     `${label}: upload URL issued`,
     issued.status === 201 &&
@@ -166,6 +171,13 @@ async function upload(call, label, csv = CSV) {
       issued.body?.headers?.["content-type"] === "text/csv",
     brief(issued),
   );
+  if (sha256)
+    check(
+      `${label}: the grant signs the SHA-256 into the PUT`,
+      issued.body?.headers?.["x-amz-checksum-sha256"] ===
+        Buffer.from(digest, "hex").toString("base64"),
+      brief(issued),
+    );
   if (issued.status !== 201) return undefined;
   // The URL is a bucket's, not the console's: no cookie goes with it.
   const put = await fetch(issued.body.url, {
@@ -338,6 +350,54 @@ async function run(id, apiKey, authId) {
     stranger.status === 401,
     brief(stranger),
   );
+  // Content idempotency (decisions *Push notifications* #11e): the same file
+  // uploaded twice, each with its SHA-256 signed into the PUT, replays the
+  // held job under one key on the real SSE-KMS bucket.
+  const sumA = await upload(m, "checksum A", CSV, { sha256: true });
+  const first = await m("POST", "/jobs", {
+    templateId,
+    uploadId: sumA,
+    idempotencyKey: `sum-${stamp}`,
+    dryRun: true,
+  });
+  check(
+    "a dry run on a checksummed upload: 202",
+    first.status === 202,
+    brief(first),
+  );
+  // Different bytes under the held key are another request.
+  const sumC = await upload(m, "checksum C (other bytes)", CSV + "\n", {
+    sha256: true,
+  });
+  const other = await m("POST", "/jobs", {
+    templateId,
+    uploadId: sumC,
+    idempotencyKey: `sum-${stamp}`,
+    dryRun: true,
+  });
+  check(
+    "other content under the same key: 409 idempotency_key_reused",
+    other.status === 409 && why(other) === "idempotency_key_reused",
+    brief(other),
+  );
+  const sumB = await upload(m, "checksum B (same bytes)", CSV, {
+    sha256: true,
+  });
+  const replayed = await m("POST", "/jobs", {
+    templateId,
+    uploadId: sumB,
+    idempotencyKey: `sum-${stamp}`,
+    dryRun: true,
+  });
+  check(
+    "the same content under the same key replays the job",
+    replayed.status === 200 &&
+      replayed.body?.created === false &&
+      replayed.body?.job?.id === first.body?.job?.id,
+    brief(replayed),
+  );
+  await settled(m, first.body?.job?.id, "checksum dry run");
+  for (const id of [sumA, sumB, sumC]) await m("DELETE", `/uploads/${id}`);
   const spare = await upload(k, "spare");
   const dropped = await k("DELETE", `/uploads/${spare}`);
   check(

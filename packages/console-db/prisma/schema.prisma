@@ -1505,13 +1505,15 @@ model push_templates {
 /// from the channel and the id. No foreign key: swept by age, and a channel's
 /// delete drains it in bounded batches.
 model push_uploads {
-  id         String @id @db.VarChar(64)
-  channel_id String @db.VarChar(64)
+  id             String  @id @db.VarChar(64)
+  channel_id     String  @db.VarChar(64)
   /// The byte length signed into the upload URL.
-  size       BigInt
+  size           BigInt
   /// A member id, or the literal `apikey`.
-  created_by String @db.VarChar(64)
-  created_at BigInt
+  created_by     String  @db.VarChar(64)
+  created_at     BigInt
+  /// The SHA-256 (hex) the upload declared and its PUT signs; null for none.
+  content_sha256 String? @db.Char(64)
 
   @@index([channel_id], map: "push_uploads_channel")
   /// The age sweep is global, so `created_at` leads.
@@ -1538,6 +1540,9 @@ model push_jobs {
   options_json     String  @db.VarChar(255)
   upload_id        String? @db.VarChar(64)
   upload_etag      String? @db.VarChar(128)
+  /// The SHA-256 (hex) S3 holds for the upload at submit; the content
+  /// identity a replay compares. Null for a broadcast or an undeclared upload.
+  content_sha256   String? @db.Char(64)
   /// UTC day number of `created_at`.
   day              Int
   /// `queued` | `running` | `done` | `failed`.

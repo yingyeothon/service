@@ -315,8 +315,10 @@ token.
 - Broadcast: after a successful `register`, subscribe the FCM instance to
   `push.topic` from the config block (the kit never builds the name);
   unsubscribe on sign-out. A topic message is public and grants nothing.
-- `classify(message)` → `match` (data-only `{channelId, matchId, state}`
-  from a deferred match channel: hand it to `matchmaking`) or `message`
+- `classify(message)` → `match` (`{channelId, matchId, state}` in data,
+  with a notification when the channel set text for that state — then a
+  backgrounded Android app gets the data only through the tap: hand it to
+  `matchmaking` either way, and read the ticket on resume) or `message`
   (a targeted send, a campaign or a broadcast: the game's own payload).
 - Server side (a game server holding the channel apiKey, never an app):
   targeted send `POST /push/{channelId}/send` (≤ 500 userIds, resend only

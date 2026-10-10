@@ -786,6 +786,12 @@ export async function runUsageDigest({
           type: "level",
           text: `push slot ${f.slot}: ${f.missing} push channel(s) whose Firebase app is gone or was never registered`,
         });
+      if ((f.lost ?? 0) > 0)
+        warnings.push({
+          kind: `push:lost:${f.slot}`,
+          type: "delta",
+          text: `push slot ${f.slot}: ${f.lost} push channel(s) lost their Firebase app for good; their claim was released and they must be recreated`,
+        });
       if (f.foreign > 0)
         warnings.push({
           kind: `push:foreign:${f.slot}:${f.foreign}`,

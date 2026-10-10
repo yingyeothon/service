@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Logger } from "@yyt/core";
 import {
@@ -167,6 +168,20 @@ async function makeTemplate(
 async function upload(c: Ctx, csv: string | Buffer): Promise<string> {
   const size = Buffer.byteLength(csv);
   const r = await member(c, "POST", "/uploads", { size });
+  expect(r.statusCode, r.body).toBe(201);
+  const uploadId = parse(r).uploadId as string;
+  c.h.pushStore.upload(pushUploadKey(c.id, uploadId), csv);
+  return uploadId;
+}
+
+const sha256Of = (s: string) => createHash("sha256").update(s).digest("hex");
+
+/** {@link upload} with the file's SHA-256 declared, so the PUT signs it. */
+async function uploadHashed(c: Ctx, csv: string): Promise<string> {
+  const r = await member(c, "POST", "/uploads", {
+    size: Buffer.byteLength(csv),
+    sha256: sha256Of(csv),
+  });
   expect(r.statusCode, r.body).toBe(201);
   const uploadId = parse(r).uploadId as string;
   c.h.pushStore.upload(pushUploadKey(c.id, uploadId), csv);
@@ -428,6 +443,38 @@ describe("push campaign uploads", () => {
     ).toBe(201);
   });
 
+  it("signs a declared SHA-256 and hands back the checksum header to send", async () => {
+    const c = await setup();
+    const csv = "userId,name\n";
+    const sha256 = sha256Of(csv);
+    const r = await member(c, "POST", "/uploads", { size: 12, sha256 });
+    expect(r.statusCode, r.body).toBe(201);
+    const u = parse(r);
+    expect(u.headers).toEqual({
+      "content-type": "text/csv",
+      "content-length": "12",
+      "x-amz-checksum-sha256": Buffer.from(sha256, "hex").toString("base64"),
+    });
+    expect(await c.h.pushJobs.findUpload(c.id, u.uploadId)).toMatchObject({
+      contentSha256: sha256,
+    });
+    // Other bytes are refused by the bucket against the signed checksum.
+    expect(() =>
+      c.h.pushStore.upload(pushUploadKey(c.id, u.uploadId), "userId,nam3\n"),
+    ).toThrow("BadDigest");
+    // Without one: no checksum header, nothing stored.
+    const plain = parse(await member(c, "POST", "/uploads", { size: 12 }));
+    expect(plain.headers).not.toHaveProperty("x-amz-checksum-sha256");
+    expect(await c.h.pushJobs.findUpload(c.id, plain.uploadId)).toMatchObject({
+      contentSha256: null,
+    });
+    for (const bad of [sha256.toUpperCase(), sha256.slice(1), "x", 1])
+      expect(
+        (await member(c, "POST", "/uploads", { size: 12, sha256: bad }))
+          .statusCode,
+      ).toBe(400);
+  });
+
   it(`refuses the ${PUSH_UPLOADS_PER_CHANNEL + 1}st pending upload and a stage without a bucket`, async () => {
     const c = await setup();
     for (let i = 0; i < PUSH_UPLOADS_PER_CHANNEL; i++)
@@ -562,6 +609,106 @@ describe("push campaign submit", () => {
     const viaKey = await api(c, "POST", "/jobs", body);
     expect(viaKey.statusCode).toBe(200);
     expect(parse(viaKey).job.id).toBe(parse(first).job.id);
+  });
+
+  it("replays a key for another upload of the same declared bytes, and only for those", async () => {
+    const c = await setup();
+    const templateId = await makeTemplate(c);
+    const csv = csvOf(0, 2);
+    const first = await member(c, "POST", "/jobs", {
+      templateId,
+      uploadId: await uploadHashed(c, csv),
+      idempotencyKey: "content",
+    });
+    expect(first.statusCode, first.body).toBe(202);
+    const jobId = parse(first).job.id as string;
+    expect(c.h.pushJobs.jobs.get(jobId)?.contentSha256).toBe(sha256Of(csv));
+    const kicks = c.h.pushKicks.length;
+
+    // The same file uploaded again: the job the key named.
+    const again = await member(c, "POST", "/jobs", {
+      templateId,
+      uploadId: await uploadHashed(c, csv),
+      idempotencyKey: "content",
+    });
+    expect(again.statusCode, again.body).toBe(200);
+    expect(parse(again)).toMatchObject({ created: false, job: { id: jobId } });
+    expect(c.h.pushKicks.length).toBe(kicks);
+    expect(c.h.pushJobs.jobs.size).toBe(1);
+
+    for (const other of [
+      // Other bytes.
+      await uploadHashed(c, csvOf(0, 3)),
+      // The same bytes, not declared: nothing says they are the same.
+      await upload(c, csv),
+      // No such upload.
+      "pu_none",
+    ]) {
+      const r = await member(c, "POST", "/jobs", {
+        templateId,
+        uploadId: other,
+        idempotencyKey: "content",
+      });
+      expect(r.statusCode, r.body).toBe(409);
+      expect(errorOf(r).details).toEqual({ reason: "idempotency_key_reused" });
+    }
+    // The same bytes under other parameters are another request.
+    const dry = await member(c, "POST", "/jobs", {
+      templateId,
+      uploadId: await uploadHashed(c, csv),
+      idempotencyKey: "content",
+      dryRun: true,
+    });
+    expect(dry.statusCode).toBe(409);
+    expect(c.h.pushJobs.jobs.size).toBe(1);
+
+    // A job held without a content hash replays its own upload id only.
+    const plain = await upload(c, csv);
+    const held = { templateId, uploadId: plain, idempotencyKey: "plain" };
+    expect((await member(c, "POST", "/jobs", held)).statusCode).toBe(202);
+    expect(
+      (
+        await member(c, "POST", "/jobs", {
+          ...held,
+          uploadId: plain.toUpperCase(),
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await member(c, "POST", "/jobs", {
+          ...held,
+          uploadId: await uploadHashed(c, csv),
+        })
+      ).statusCode,
+    ).toBe(409);
+  });
+
+  it("refuses an upload whose stored checksum is not the declared one", async () => {
+    const c = await setup();
+    const templateId = await makeTemplate(c);
+    const csv = csvOf(0, 2);
+    let n = 0;
+    for (const stored of [null, sha256Of("other")]) {
+      const r = await member(c, "POST", "/uploads", {
+        size: Buffer.byteLength(csv),
+        sha256: sha256Of(csv),
+      });
+      const uploadId = parse(r).uploadId as string;
+      c.h.pushStore.upload(pushUploadKey(c.id, uploadId), csv, {
+        sha256: stored,
+      });
+      const s = await member(c, "POST", "/jobs", {
+        templateId,
+        uploadId,
+        idempotencyKey: `mismatch-${++n}`,
+      });
+      expect(s.statusCode, s.body).toBe(409);
+      expect(errorOf(s).details).toEqual({
+        reason: "upload_checksum_mismatch",
+      });
+    }
+    expect(c.h.pushJobs.jobs.size).toBe(0);
   });
 
   it("refuses a job whose template, upload or CSV header cannot be used", async () => {
@@ -897,6 +1044,7 @@ describe("push campaign submit", () => {
           options: {},
           uploadId,
           uploadEtag: '"v1"',
+          contentSha256: null,
           day: DAY,
           author: c.a.id,
           at: NOW_SEC,
@@ -2003,6 +2151,7 @@ describe("push job report and status", () => {
         options: {},
         uploadId: null,
         uploadEtag: null,
+        contentSha256: null,
         day: DAY,
         author: "apikey",
         at: NOW_SEC,
@@ -2742,6 +2891,7 @@ describe("push campaign worker: endings and recovery", () => {
           c.h.pushStore.objects.set(pushReportPartKey(c.id, jobId, 1), {
             body: Buffer.from("b-rows\n"),
             contentType: "text/csv",
+            sha256: null,
           });
           // And this worker sees the channel as inactive: it wants to end
           // the job.
