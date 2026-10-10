@@ -1081,7 +1081,7 @@ export function createApiClient({
         `/kv/${enc(id)}/entries${qs({ owner })}`,
       );
     },
-    /** The game kit block; `?auth=`/`?lobby=`/`?match=` disambiguate. */
+    /** The game kit block; `?auth=`/`?lobby=`/`?match=`/`?push=` disambiguate. */
     kitConfig: (prj: string, p: Record<string, string> = {}) =>
       get<KitConfig>(`${projectPath(prj)}/kit-config${qs(p)}`),
     // ---- leaderboards (addressed by id) -----------------------------------

@@ -15,6 +15,11 @@
     "url": "wss://match.yyt.life",
     "channelId": "match_1"
   },
+  "push": {
+    "channelId": "push_1",
+    "apiBase": "https://doc.yyt.life",
+    "topic": "yyt.push.push_1"
+  },
   "collections": {
     "save": "save"
   }

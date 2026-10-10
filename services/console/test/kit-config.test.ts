@@ -149,6 +149,100 @@ describe("kit config", () => {
     expect(parse(await cfg(bare, bob))).not.toHaveProperty("match");
   });
 
+  it("names the push channel by id, state base and broadcast topic", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const auth = await mkChannel(h, alice, "auth", "auth-main", {
+      audience: "game",
+    });
+    const p = await mkChannel(h, alice, "push", "push-main", {
+      authChannelId: auth.id,
+      packageName: "com.example.game",
+    });
+    const body = parse(await cfg(h, alice));
+    expect(body.push).toEqual({
+      channelId: p.id,
+      apiBase: URLS.doc,
+      topic: `yyt.push.${p.id}`,
+    });
+    // The channel's sender key exists, and the block never carries it.
+    expect(p.apiKey).toBeTruthy();
+    const r = await cfg(h, alice);
+    expect(r.body).not.toContain(String(p.apiKey));
+    expect(r.body).not.toMatch(/apiKey|secret/i);
+
+    // Two push channels: the caller names one, as for every other kind.
+    const p2 = await mkChannel(h, alice, "push", "push-two", {
+      authChannelId: auth.id,
+      packageName: "com.example.other",
+    });
+    const ambiguous = await cfg(h, alice);
+    expect(ambiguous.statusCode, ambiguous.body).toBe(400);
+    expect(parse(ambiguous).error.details).toMatchObject({
+      reason: "ambiguous",
+      kind: "push",
+    });
+    expect(parse(ambiguous).error.details.channels).toEqual(
+      expect.arrayContaining([
+        { id: p.id, name: "push-main" },
+        { id: p2.id, name: "push-two" },
+      ]),
+    );
+    expect(
+      parse(await cfg(h, alice, { push: "push-two" })).push.channelId,
+    ).toBe(p2.id);
+    expect(parse(await cfg(h, alice, { push: p.id })).push.channelId).toBe(
+      p.id,
+    );
+    expect((await cfg(h, alice, { push: "nope" })).statusCode).toBe(404);
+  });
+
+  it("chooses the live push channel over a lapsed one, and folds case", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const auth = await mkChannel(h, alice, "auth", "auth-main", {
+      audience: "game",
+    });
+    await mkChannel(h, alice, "push", "push-old", {
+      authChannelId: auth.id,
+      packageName: "com.example.old",
+    });
+    // The first one lapses (7 days by default); the team makes another.
+    h.clock.tick(7 * 86400 + 1);
+    // The 7-day session lapsed with it; sign in again.
+    const again = {
+      ...alice,
+      cookie: (await h.login("alice", "member")).cookie,
+    };
+    const ext = await h.app(
+      ev("POST", `/channels/${auth.id}/extend`, { headers: again.cookie }),
+    );
+    expect(ext.statusCode, ext.body).toBe(200);
+    const fresh = await mkChannel(h, again, "push", "push-new", {
+      authChannelId: auth.id,
+      packageName: "com.example.new",
+    });
+    const r = await cfg(h, again);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(parse(r).push.channelId).toBe(fresh.id);
+    expect(
+      parse(await cfg(h, again, { push: "PUSH-NEW" })).push.channelId,
+    ).toBe(fresh.id);
+  });
+
+  it("omits the push section on a stage without the state stack", async () => {
+    const h = harness({ urls: { ...URLS, doc: "" } });
+    const alice = await h.team("alice");
+    const auth = await mkChannel(h, alice, "auth", "auth-main", {
+      audience: "game",
+    });
+    await mkChannel(h, alice, "push", "push-main", {
+      authChannelId: auth.id,
+      packageName: "com.example.game",
+    });
+    expect(parse(await cfg(h, alice))).not.toHaveProperty("push");
+  });
+
   it("omits `collections` and `boards` rather than sending an empty map", async () => {
     const h = harness();
     const alice = await h.team("alice");

@@ -276,7 +276,7 @@ func newProject(a *App) *cobra.Command {
 		},
 	})
 	{
-		var authCh, lobbyCh, matchCh string
+		var authCh, lobbyCh, matchCh, pushCh string
 		kit := &cobra.Command{
 			Use:   "kit-config [project]",
 			Short: "Print the game kit config block for a project (JSON, all public values)",
@@ -288,7 +288,7 @@ func newProject(a *App) *cobra.Command {
 				"A section whose stack the stage does not have, or whose channel the project\n" +
 				"does not hold, is **absent** rather than empty: a kit module with no config\n" +
 				"fails on first use instead of connecting to nowhere. With several channels\n" +
-				"of a kind, name one with --auth/--lobby/--match (id or name) — it refuses to\n" +
+				"of a kind, name one with --auth/--lobby/--match/--push (id or name) — it refuses to\n" +
 				"guess, because a wrong guess is a working config pointing at the wrong\n" +
 				"channel, which looks like an empty lobby rather than an error.",
 			Args: cobra.MaximumNArgs(1),
@@ -300,7 +300,7 @@ func newProject(a *App) *cobra.Command {
 				q := url.Values{}
 				for _, f := range []struct {
 					key, val string
-				}{{"auth", authCh}, {"lobby", lobbyCh}, {"match", matchCh}} {
+				}{{"auth", authCh}, {"lobby", lobbyCh}, {"match", matchCh}, {"push", pushCh}} {
 					if f.val != "" {
 						q.Set(f.key, f.val)
 					}
@@ -328,6 +328,7 @@ func newProject(a *App) *cobra.Command {
 		f.StringVar(&authCh, "auth", "", "auth channel id or name (needed only when the project has several)")
 		f.StringVar(&lobbyCh, "lobby", "", "lobby channel id or name (same)")
 		f.StringVar(&matchCh, "match", "", "match channel id or name (same)")
+		f.StringVar(&pushCh, "push", "", "push channel id or name (same)")
 		c.AddCommand(kit)
 	}
 	{

@@ -9,6 +9,7 @@ import {
 import { defineRoute, json, type AnyRoute } from "@yyt/http";
 import { z } from "zod";
 import { channelStatus, trim, type ServiceUrls } from "./channels.js";
+import { pushTopicOf } from "./push-send.js";
 import { sameName } from "./resources.js";
 import type { TeamAccessHelpers } from "./team-access.js";
 
@@ -42,7 +43,7 @@ const named = z
   .optional();
 
 export const kitConfigQuery = z
-  .object({ auth: named, lobby: named, match: named })
+  .object({ auth: named, lobby: named, match: named, push: named })
   .passthrough();
 
 export interface KitConfigRoutesOptions {
@@ -127,6 +128,7 @@ export function createKitConfigRoutes({
         const auth = pick(channels, "auth", ctx.query.auth, now);
         const lobby = pick(channels, "lobby", ctx.query.lobby, now);
         const match = pick(channels, "match", ctx.query.match, now);
+        const push = pick(channels, "push", ctx.query.push, now);
         // The provider the game will send a player to. `providers` is the
         // public half of the auth config, so this names what is configured
         // rather than what is possible; with both, `github` is the platform's
@@ -175,6 +177,16 @@ export function createKitConfigRoutes({
               : matchWs === ""
                 ? undefined
                 : { url: matchWs, channelId: match.id };
+        // A push channel (`docs/push.md` *Device tokens* and *Broadcast*): the state stack
+        // serves `/push/{channelId}/token`, so the section needs that base, as
+        // the channel view's `apiBase` does. The channel `apiKey` is a sender
+        // credential for the game's server and never belongs here.
+        const pushApi = trim(urls.doc);
+        const pushTopic = push === undefined ? undefined : pushTopicOf(push.id);
+        const pushSection =
+          push === undefined || pushApi === "" || pushTopic === undefined
+            ? undefined
+            : { channelId: push.id, apiBase: pushApi, topic: pushTopic };
         return json(
           {
             ...(auth === undefined || trim(urls.auth) === ""
@@ -198,6 +210,7 @@ export function createKitConfigRoutes({
                   },
                 }),
             ...(matchSection === undefined ? {} : { match: matchSection }),
+            ...(pushSection === undefined ? {} : { push: pushSection }),
             // Keyed by the console name on both sides: the game gives its own
             // aliases in its own config, and inventing aliases here would put
             // two naming schemes in one block. Absent rather than empty, for

@@ -1419,6 +1419,11 @@ export interface KitConfig {
         ticketUrl: string;
         channelId: string;
       };
+  /**
+   * The push channel: token routes on `apiBase`, broadcast on `topic`
+   * (`docs/push.md`). Never the channel's apiKey.
+   */
+  push?: { channelId: string; apiBase: string; topic: string };
   /** Absent, not empty, when the project has none — same rule as the sections above. */
   collections?: Record<string, string>;
   boards?: Record<string, string>;

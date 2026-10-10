@@ -329,6 +329,7 @@ Design of record: `docs/game-kit-design.md`. The server stays a set of composabl
 3. **`turns` is a generic deterministic turn log** (index, hash chain, `apply` on both sides, `mismatch` on divergence, replay on reconnect), not a chess module.
 4. Same module, method, event and error-code names in the three languages; a shared scenario list is the conformance test; the console prints one public **kit config block** per project (`GET /projects/{prj}/kit-config`).
 5. Delivery in three waves gated on the server work: A (`session`/`content`/`save`/`room`/`turns`, no server change), B (`board`/`mail`, after `todo/36`–`37`), C (`friends`/`matchmaking`, after `todo/38`–`39`). Execution: `todo/40-game-kit.md`.
+6. **The config block names the push channel** (owner decision 2026-10-11): `push: {channelId, apiBase, topic}` — the state stack base the token routes live on and the broadcast topic `yyt.push.{channelId}` — chosen like every other kind (`?push=` by id or name, 400 `ambiguous` with several, 404 for an unknown one), absent on a stage without the state stack. Never the channel's apiKey. The kit's `push` module and the deferred `matchmaking` API are specified in `docs/game-kit-design.md`.
 
 ## Player ids are salted per auth channel — added 2026-09-09
 

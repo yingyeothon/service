@@ -189,6 +189,33 @@ A team that outgrows the shared projects moves to its own Firebase project witho
 | 503    | `push pool unavailable`                                                                              | the pool could not be read on a cold container                                           |
 | 503    | `database error`                                                                                     | the state account lacks its grant on `push_tokens` (_Operator_), or the database is down |
 
+## Client error codes
+
+What a client library maps (`docs/game-kit-design.md` _Errors_). Errors are `{"error":{"code","message","details":{"reason"}}}`; the reason is the key, never the message text.
+
+| Route                                        | Status  | `details.reason`        | Client action                                                                                   |
+| -------------------------------------------- | ------- | ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `PUT /push/{id}/token`                       | 400     | `push_project_required` | send `project`; the channel accepts two Firebase projects                                       |
+| `PUT /push/{id}/token`                       | 400     | `push_project_refused`  | the app's `google-services.json` is not one this channel accepts; do not retry                  |
+| `PUT /push/{id}/token`, `…/send`             | 409     | `push_not_registered`   | the channel has no registration and no team key; console side                                   |
+| `PUT /push/{id}/token`, `…/send`             | 503     | `push_not_configured`   | the stage has no Firebase project; do not retry                                                 |
+| any state route                              | 401     |                         | refresh the JWT (token routes) or check the apiKey (send)                                       |
+| `PUT`/`DELETE /push/{id}/token`              | 403     |                         | a JWT of another auth channel: the push channel belongs to a different auth channel             |
+| any state route                              | 410     |                         | channel expired or disabled                                                                     |
+| `POST /push/{id}/send`                       | 503/429 | none (no body)          | Lambda throttle: the call never ran; retry with backoff                                         |
+| `POST /m/{id}/ticket`                        | 429     | `cooldown`              | wait `details.retryAfter` seconds                                                               |
+| `POST /m/{id}/ticket`                        | 429     | `queue_full`            | retry later                                                                                     |
+| `POST /m/{id}/ticket`                        | 409     | `proposed`              | answer the proposal (`accept`/`decline`) instead; `DELETE` during a proposal is a decline (204) |
+| `POST /m/{id}/ticket`, `DELETE`, `…/decline` | 409     | `confirming`            | retry after 1–2 s; the match is being confirmed                                                 |
+| `POST /m/{id}/accept`, `…/decline`           | 409     | `proposal_closed`       | the window closed; read `GET` for the new state                                                 |
+| `POST /m/{id}/accept`, `…/decline`           | 409     | `not_proposed`          | no proposal to answer; read `GET`                                                               |
+| `POST /m/{id}/decline`                       | 409     | `confirmed`             | already matched; read `GET`                                                                     |
+| `GET`, `…/accept`, `…/decline`               | 404     |                         | no ticket; submit again                                                                         |
+| any match ticket route                       | 503     | `busy`                  | retry with backoff                                                                              |
+| any match ticket route                       | 503/429 | none (no body)          | API Gateway throttle (5 rps per stage); back off                                                |
+
+The deferred match routes are specified in `services/match/README.md` _Deferred mode_; this table only gathers what a client branches on.
+
 ## Campaigns
 
 A campaign sends one templated message to the users a team lists in a CSV. Selection is the team's job: the platform has no query engine. Everything here runs on the **console** stack; the sends are made by its `pushJob` worker, not inside the request.

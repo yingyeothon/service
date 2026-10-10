@@ -259,10 +259,10 @@ yyt kv entry clear <kv> [--owner <id>]                 # every entry of one play
 ### Game kit config
 
 ```sh
-yyt project kit-config [project] [--auth <id|name>] [--lobby <id|name>] [--match <id|name>]
+yyt project kit-config [project] [--auth <id|name>] [--lobby <id|name>] [--match <id|name>] [--push <id|name>]
 ```
 
-Prints the block a game pastes into its own config so the client kit knows which channels, collections and boards the project owns (`docs/game-kit-design.md`). **Everything in it is public** — ids, names and the stage's own hosts — so it is safe in a repository; there is no secret in it and none will be added. A section whose stack the stage does not have, or whose channel the project does not hold, is **absent** rather than empty, because a kit module with no config fails on first use instead of connecting to nowhere. For a deferred match channel the `match` section is `{mode: "deferred", apiBase, ticketUrl, channelId}` with no `url`: it has no socket. With several channels of a kind it refuses to guess and asks for `--auth`/`--lobby`/`--match`: a wrong guess would be a *working* config pointing at the wrong channel, which surfaces as an empty lobby rather than as an error.
+Prints the block a game pastes into its own config so the client kit knows which channels, collections and boards the project owns (`docs/game-kit-design.md`). **Everything in it is public** — ids, names and the stage's own hosts — so it is safe in a repository; there is no secret in it and none will be added. A section whose stack the stage does not have, or whose channel the project does not hold, is **absent** rather than empty, because a kit module with no config fails on first use instead of connecting to nowhere. For a deferred match channel the `match` section is `{mode: "deferred", apiBase, ticketUrl, channelId}` with no `url`: it has no socket. The `push` section is `{channelId, apiBase, topic}` — the state base of the token routes and the broadcast topic — and never the channel apiKey. With several channels of a kind it refuses to guess and asks for `--auth`/`--lobby`/`--match`/`--push`: a wrong guess would be a *working* config pointing at the wrong channel, which surfaces as an empty lobby rather than as an error.
 
 ### Leaderboards
 

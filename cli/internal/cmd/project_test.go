@@ -361,6 +361,7 @@ func TestProjectKitConfig(t *testing.T) {
 		`"state":{"url":"https://doc.yyt.life"},` +
 		`"gateway":{"url":"wss://gw.yyt.life","lobbyChannelId":"lobby_1"},` +
 		`"match":{"url":"wss://match.yyt.life","channelId":"match_1"},` +
+		`"push":{"channelId":"push_1","apiBase":"https://doc.yyt.life","topic":"yyt.push.push_1"},` +
 		`"collections":{"save":"save"}}`)
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /projects/prj_1/kit-config": func(recorded) (int, any) { return 200, block },
@@ -380,10 +381,10 @@ func TestProjectKitConfig(t *testing.T) {
 	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config" {
 		t.Fatalf("path %s", got)
 	}
-	if _, _, err := run(t, f, "project", "kit-config", "--auth", "auth-main", "--lobby", "lobby-main"); err != nil {
+	if _, _, err := run(t, f, "project", "kit-config", "--auth", "auth-main", "--lobby", "lobby-main", "--push", "push-main"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config?auth=auth-main&lobby=lobby-main" {
+	if got := f.reqs[len(f.reqs)-1].Path; got != "/projects/prj_1/kit-config?auth=auth-main&lobby=lobby-main&push=push-main" {
 		t.Fatalf("path %s", got)
 	}
 }

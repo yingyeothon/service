@@ -67,7 +67,7 @@ Two rules the route follows, both worth keeping if it grows: a section whose
 stack the stage does not have, or whose channel the project does not hold, is
 **absent** rather than empty, because a kit module with no config fails on first
 use instead of connecting to nowhere; and with several channels of a kind it
-answers `400 ambiguous` and asks for `?auth=`/`?lobby=`/`?match=` (id or name)
+answers `400 ambiguous` and asks for `?auth=`/`?lobby=`/`?match=`/`?push=` (id or name)
 rather than picking one — a wrong guess would be a _working_ config pointing at
 the wrong channel, which surfaces as an empty lobby rather than as an error.
 
@@ -81,6 +81,11 @@ the wrong channel, which surfaces as an empty lobby rather than as an error.
   "state": { "url": "https://doc.yyt.life" },
   "gateway": { "url": "wss://gw.yyt.life", "lobbyChannelId": "ch_…" },
   "match": { "url": "wss://match.yyt.life", "channelId": "ch_…" },
+  "push": {
+    "channelId": "push_…",
+    "apiBase": "https://doc.yyt.life",
+    "topic": "yyt.push.push_…"
+  },
   "collections": { "save": "save", "content": "content", "mail": "mail" },
   "boards": { "weekly": "score-weekly", "speed": "best-time" }
 }
@@ -89,7 +94,14 @@ the wrong channel, which surfaces as an empty lobby rather than as an error.
 Names under `collections`/`boards` are the game's aliases; the values are the
 console names. The route emits identity pairs (`{"save": "save"}`) because the
 console does not know the game's aliases -- the example above is what the block
-looks like after a game has renamed its own side. `match`, `mail`, `boards` are
+looks like after a game has renamed its own side. A deferred match channel's
+section is `{mode: "deferred", apiBase, ticketUrl, channelId}` instead of a
+socket `url`; the kit picks live or deferred `matchmaking` from `match.mode`.
+`push` (added 2026-10-11) names the push channel, the state stack base its
+token routes live on, and its broadcast topic; never the channel's apiKey, which
+is a server credential. The route does not check that the chosen `match` or
+`push` channel hangs off the chosen `auth` channel: with several auth channels,
+name the matching ones. `match`, `push`, `mail`, `boards` are
 optional; a module whose config is absent throws `not_configured` on first use
 rather than at construction, and an **empty** `collections`/`boards` is
 therefore omitted too rather than sent as `{}`.
@@ -266,28 +278,79 @@ Over the match socket, then `room`.
   partial roster after the window, `partial: true`). With a callback channel
   the kit hands back `result` verbatim and forms no room.
 
+**Deferred mode** (`match.mode: "deferred"`, `services/match/README.md`
+_Deferred mode_): HTTP tickets on `match.apiBase`, no socket, no lobby
+requirement.
+
+- `submit()` → `POST {ticketUrl}`; `status()` → `GET`; `cancel()` →
+  `DELETE` (a decline during a proposal); `accept()` / `decline()` →
+  `POST /m/{channelId}/accept|decline`.
+- Events: `stateChanged(ticket)` with `state` one of `waiting`, `proposed`,
+  `confirmed`, `expired`, `declined`, `failed`. `confirmed` carries the same
+  `{matchId, partial, result, members}` as the live mode's `matched`, so the
+  game handles one type.
+- Polling: on a push message `{channelId, matchId, state}` read `GET` at
+  once; without push, every 3–5 s while the game is in the foreground; stop
+  in the background. Never faster than 1 s (the API is 5 rps per stage).
+- Retries: 429 `cooldown` waits `details.retryAfter` s; 409 `confirming`
+  (submit, cancel, decline) retries after 1–2 s; 429 `queue_full`, 503
+  `busy` and a body-less 503/429 (throttle) back off; 409 `proposed`,
+  `proposal_closed`, `not_proposed` and `confirmed` are answers, not
+  retries: read `status()`. `cancel()` during a proposal is a decline
+  (204), not a refusal.
+
+### `push` — device registration and messages
+
+Over the state stack's `/push/{channelId}/token` (`docs/push.md` _Device
+tokens_, _Broadcast_), with the `session` JWT of the push channel's auth
+channel. Android/FCM only; the game owns the FCM SDK and hands the kit the
+token.
+
+- `register(token, { project? })` → `PUT {apiBase}/push/{channelId}/token`.
+  Call on every app start and on every FCM token refresh: a token not
+  refreshed for 60 days is deleted. Send `project`
+  (`project_info.project_id` of the embedded `google-services.json`) always.
+- `unregister()` → `DELETE …/token` with the last registered token; call on
+  sign-out, with the topic unsubscribe below.
+- Broadcast: after a successful `register`, subscribe the FCM instance to
+  `push.topic` from the config block (the kit never builds the name);
+  unsubscribe on sign-out. A topic message is public and grants nothing.
+- `classify(message)` → `match` (data-only `{channelId, matchId, state}`
+  from a deferred match channel: hand it to `matchmaking`) or `message`
+  (a targeted send, a campaign or a broadcast: the game's own payload).
+- Server side (a game server holding the channel apiKey, never an app):
+  targeted send `POST /push/{channelId}/send` (≤ 500 userIds, resend only
+  `failed` with `budget`/`unavailable`), campaigns and broadcast on
+  `/push-api/{channelId}/…` (`docs/push.md` _Campaigns_). The libraries
+  expose these in a separate server entry point, not in the client kit.
+
 ## Errors
 
 One type per language — `KitError { module, code, retryable, cause? }` —
 and one code table shared by all three repositories. Wire errors are mapped,
 never surfaced by HTTP status or close code:
 
-| code                | from                                      | retryable |
-| ------------------- | ----------------------------------------- | --------- |
-| `not_configured`    | module used without its config block      | no        |
-| `signed_out`        | any 401                                   | no        |
-| `offline`           | invite/whisper to a user without a socket | yes       |
-| `conflict`          | save version lost and no `merge`          | yes       |
-| `out_of_range`      | counter guard                             | no        |
-| `payload_too_large` | room/turns payload > 8 KB                 | no        |
-| `not_your_turn`     | turns                                     | no        |
-| `mismatch`          | turns hash/apply divergence               | no        |
-| `server_only`       | board `submit: server`                    | no        |
-| `already_claimed`   | mail claim race                           | no        |
-| `inbox_full`        | mail send                                 | yes       |
-| `lobby_required`    | matchmaking without a lobby socket        | no        |
-| `unavailable`       | 5xx, network                              | yes       |
-| `rate_limited`      | 429 / gateway `rate_limited`              | yes       |
+| code                | from                                                                                 | retryable               |
+| ------------------- | ------------------------------------------------------------------------------------ | ----------------------- |
+| `not_configured`    | module used without its config block                                                 | no                      |
+| `signed_out`        | any 401                                                                              | no                      |
+| `offline`           | invite/whisper to a user without a socket                                            | yes                     |
+| `conflict`          | save version lost and no `merge`                                                     | yes                     |
+| `out_of_range`      | counter guard                                                                        | no                      |
+| `payload_too_large` | room/turns payload > 8 KB                                                            | no                      |
+| `not_your_turn`     | turns                                                                                | no                      |
+| `mismatch`          | turns hash/apply divergence                                                          | no                      |
+| `server_only`       | board `submit: server`                                                               | no                      |
+| `already_claimed`   | mail claim race                                                                      | no                      |
+| `inbox_full`        | mail send                                                                            | yes                     |
+| `lobby_required`    | matchmaking without a lobby socket                                                   | no                      |
+| `channel_inactive`  | 410: the channel or its auth channel expired or was disabled                         | no                      |
+| `cooldown`          | deferred ticket 429 `cooldown`                                                       | yes, after `retryAfter` |
+| `proposal_closed`   | deferred accept/decline 409 `proposal_closed`, `not_proposed`                        | no                      |
+| `push_refused`      | push 400 `push_project_required`/`push_project_refused`, 409 `push_not_registered`   | no                      |
+| `proposed`          | deferred ticket 409 `proposed`, decline 409 `confirmed` (an answer: read `status()`) | no                      |
+| `unavailable`       | 5xx, network                                                                         | yes                     |
+| `rate_limited`      | 429 / gateway `rate_limited`                                                         | yes                     |
 
 ## Scenarios every repository proves
 
@@ -311,6 +374,14 @@ never surfaced by HTTP status or close code:
    request is invisible; `list` marks presence from the gateway.
 8. `matchmaking`: callback-less match with 4 members ends with all four in
    one room; a member that never joins yields `partial`.
+9. `matchmaking` (deferred): submit → `proposed` → accept on every member →
+   `confirmed` with the same `members` on each; a decline sends the others
+   back to `waiting` and the decliner reads 429 `cooldown`, after which a
+   submit succeeds once `retryAfter` has passed.
+10. `push`: `register` then subscribe to `push.topic`; a data message
+    `{channelId, matchId, state}` classifies as `match` and wakes
+    `matchmaking`; `unregister` on sign-out removes the token and the topic
+    subscription.
 
 ## Reference games (`yingyeothon/examples`)
 

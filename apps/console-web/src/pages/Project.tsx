@@ -1109,7 +1109,7 @@ function KvTab({
  * on every visit, and the project page's job is the resource tabs.
  */
 /** The kinds `kit-config` names, and therefore the ones it can be asked about. */
-const KIT_KINDS = ["auth", "lobby", "match"] as const;
+const KIT_KINDS = ["auth", "lobby", "match", "push"] as const;
 
 function KitConfigSection({ project }: { project: ProjectDetail }) {
   const [open, setOpen] = useState(false);
@@ -1135,7 +1135,7 @@ function KitConfigSection({ project }: { project: ProjectDetail }) {
   return (
     <Section
       title="Game kit config"
-      description="What a game pastes into its own config so the client kit knows this project's channels, collections and boards. Every value here is public."
+      description="What a game pastes into its own config so the client kit knows this project's channels, collections and boards. Every value here is public; a push channel's apiKey is never in it."
       actions={
         <Button variant="default" onClick={() => setOpen((v) => !v)}>
           {open ? "Hide" : "Show config"}
