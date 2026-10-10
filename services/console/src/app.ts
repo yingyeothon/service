@@ -241,6 +241,12 @@ const tokenCreateBody = z
   .object({ name: z.string().trim().min(1).max(100) })
   .strict();
 const DEVICE_HANDLE = /^dev_[0-9a-f]{32}$/;
+/**
+ * The device flow's Redis key: the handle is the bearer of a pending login,
+ * so it is stored as its digest, never as itself (rules/security.md).
+ */
+export const deviceKey = (handle: string): string =>
+  `device:${sha256Hex(handle)}`;
 const deviceTokenBody = z
   .object({
     handle: z.string().regex(DEVICE_HANDLE),
@@ -581,7 +587,7 @@ export function createConsoleApp({
         // The GitHub device_code stays server-side; clients only see a handle.
         const handle = `dev_${randomHex(16)}`;
         await kv.set(
-          `device:${handle}`,
+          deviceKey(handle),
           JSON.stringify({ deviceCode: d.deviceCode, interval: d.intervalSec }),
           { nx: true, ex: d.expiresInSec },
         );
@@ -606,7 +612,7 @@ export function createConsoleApp({
       path: "/auth/device/token",
       body: deviceTokenBody,
       handler: async (ctx) => {
-        const key = `device:${ctx.body.handle}`;
+        const key = deviceKey(ctx.body.handle);
         const raw = await kv.get(key);
         if (raw === null)
           throw new AppError("gone", "device login expired; start again");

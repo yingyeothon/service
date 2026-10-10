@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { deviceKey } from "../src/app.js";
 import { ev, harness } from "./helpers.js";
 
 const JSON_H = { headers: { "content-type": "application/json" } };
@@ -38,6 +39,10 @@ describe("device flow", () => {
     expect(d.handle).toMatch(/^dev_[0-9a-f]{32}$/);
     expect(d.userCode).toBe("ABCD-1234");
     expect(r.body).not.toContain("dc_secret");
+    // Redis holds the handle's digest, never the handle (rules/security.md).
+    expect(await h.kv.get(`device:${d.handle}`)).toBeNull();
+    expect(await h.kv.get(deviceKey(d.handle))).not.toBeNull();
+    expect(deviceKey(d.handle)).not.toContain(d.handle);
   });
 
   it("polls pending → throttled → issues a console token on approval", async () => {
