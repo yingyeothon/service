@@ -100,7 +100,7 @@ yyt project issue comment add <n> --body … | update <n> <cid> --body … | rm 
 
 `team|project|channels|events list` take `--sort`/`--order` and `--q`, the console's list parameters (2026-09-02, `docs/team-project.md` _List parameters_); `show list` takes `--q` only, because it is cursor-paged and the cursor pins the order. A value outside the route's vocabulary is refused before the request, and the vocabulary is in each command's `--help`; so is `--order` with no `--sort`, which the routes ignore and which would otherwise print the default order while looking as if it had done something. Without any of them a list prints the server's default order, which is what **name resolution** relies on: `yyt` resolves a name to an id from the whole, unfiltered list, so these flags are for what you read, never for what the CLI looks up.
 
-Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret`; `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
+Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret` (a push channel's apiKey not even there with `--save`, which stores it instead); `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
 
 ```
 yyt members list | approve <id> | promote <id> | demote <id>        # admin
@@ -130,7 +130,7 @@ yyt channels create --kind push  --name n --auth-channel <auth-id|name> --packag
 
 yyt push channel create --name n --auth <auth-id|name> --package com.example.game \
                         [--sender platform|team] [--service-account <file|->]   # apiKey printed once; the key file only with --sender team
-yyt push channel ls | get|extend|rotate|delete <channel>         # `yyt channels …` with the kind fixed
+yyt push channel ls | get|extend|rotate [--save]|delete <channel>   # `yyt channels …` with the kind fixed
 yyt push channel update <channel> [--name n] [--auth <auth-id|name>]   # the package and the sender are fixed at creation
 yyt push channel config <channel> [-o <file>|-] [--force]        # google-services.json; default ./google-services.json, kept unless --force
 yyt push channel sender-key set <channel> --service-account <file|->   # the team's own Firebase project as a second sender
@@ -144,6 +144,10 @@ yyt push job submit <channel> --template <id|name> --csv users.csv [--dry-run] [
 yyt push job ls <channel> [--limit n] [--cursor c] | get|cancel <channel> <job>
 yyt push job report <channel> <job> [-o <file>|-] [--force] [--url]   # default ./push-report-<job>.csv, kept unless --force
 yyt push broadcast <channel> (--template <id|name> | --title t [--body b] [--data k=v …]) [--idempotency-key K] [--wait]
+                                                                 # job submit|ls|get|cancel|report and broadcast take --as-server (the apiKey routes)
+yyt push key set <channel>  < key.txt                            # store the channel apiKey (stdin only; also `create|rotate --save`)
+yyt push key ls | rm <channel>                                   # ids only; rm forgets the key, it stays valid
+yyt push send <channel> --user <id>[,<id>…] [--data k=v …] [--title t [--body b]] [--priority high|normal] [--ttl sec] [--collapse-key k]
 
 yyt events list | get <id>                                       # anonymous: waiting/opened/closed; members: + voting/cancelled + own drafts
 yyt events create <title> --place p [--place-url url] --hours N --vote-until <when> --option <when>... [--body @f]  # member draft (max 3)
@@ -292,7 +296,9 @@ Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing
 
 A push channel is a channel of kind `push`: `yyt push channel create|ls|get|update|extend|rotate|delete` are the `yyt channels` commands with the kind fixed (same routes, same output), and `yyt push channel` adds what only that kind has. It registers one Android application id with the platform's Firebase sender; `config` downloads the `google-services.json` the app embeds (`registered: true` in `get` says there is one). `create` and `rotate` print the `apiKey` once. `get` prints `apiBase`: the app registers its FCM token there with a player JWT of the channel's auth channel (`PUT|DELETE /push/{channel}/token`) and a game server sends with the apiKey (`POST /push/{channel}/send`).
 
-**There is no `yyt push send`** (a targeted send). Sending is authenticated by the channel apiKey, and the CLI holds a console token only; like the KV, leaderboard and document APIs, it prints the endpoint and leaves the call to the game server.
+**apiKey.** `push send`, `smoke push` and `--as-server` need the channel apiKey. The CLI keeps it in its config file (mode 0600, `YYT_CONFIG` overrides the path), filed under the console URL (the stage) and the channel id: `create --save` and `rotate --save` store the new key instead of printing it, and `push key set <channel>` reads one from stdin — there is no argument, environment variable or file flag for a key, so it stays out of shell history and `ps`. `push key ls` prints channel ids, never keys; `push key rm` forgets one (rotate to revoke). In CI, keep the config file itself as the secret.
+
+**Targeted send.** `yyt push send <channel> --user u1,u2 --title "Party" --body "join" --data kind=invite` calls `POST {apiBase}/push/{channel}/send` with the stored key and prints one line per user (`sent`, `no-token`, `failed` with `budget|unavailable|rejected|unregistered`); it exits 1 when any user failed. The route is not idempotent: only a throttled call — a 503/429 without an error body, which never ran — is retried with a backoff. Resend only the users that failed with `budget` or `unavailable`. At most 500 users per call; duplicates fold.
 
 `--sender team` makes the team's own Firebase project the only sender (the service-account key file is required and the channel has no platform registration, so `config` refuses); `sender-key set` adds such a key to a platform channel as a second sender. The key is read from a file or stdin (`-`), is never printed, and no route returns it — `get` shows only `teamProject`.
 
@@ -316,7 +322,7 @@ yyt push job report alerts pj_…                                               
 - `job ls` shows resolved users in `SENT` for a dry run. `job report --url` prints the five-minute download link instead of fetching it; nothing else prints it. A report row's `status` is `sent`, `no-token`, `unregistered`, `failed` (`unavailable` or `rejected`), `skipped` or, in a dry run, `resolved`. A skipped row's `reason` is `duplicate`, `missing-variable`, `invalid-user`, `too-large` or `invalid-value` (the row's value would put a control character into the message); the last three make up the job's `invalid` count.
 - `broadcast` sends one literal message (or a template without variables) to every app install subscribed to the channel's topic. **It does not ask for confirmation** — no `yyt` command prompts. Its derived key covers the message, the options and the UTC day, so the same broadcast run twice on one day is sent once; a new `--idempotency-key` sends it again. It is a job (`job get|ls`), counts against `push.jobsPerDay`, and has no dry run and no report. **A broadcast is not confidential**: anyone who holds the app can subscribe to the topic, so it carries no secret, no personal data and nothing that grants something (a code, a reward). Private content goes through a campaign (`job submit`), which addresses the users a CSV lists.
 - Limits are the channel's: `yyt limit list --channel <channel>` shows `push.recipientsPerJob` (rows per file) and `push.jobsPerDay` (jobs per UTC day; dry runs are not counted and have a daily cap of their own, which the refusal names). A refused submit prints the request to make, e.g. `yyt limit request push.jobsPerDay <value> --channel push_… --reason "…"`.
-- A game server runs the same job routes (not the templates) with the channel apiKey as Bearer under `/push-api/{channelId}/…` on the console API host. There a channel id that does not exist answers 401, like a wrong key (not 404), and an expired or disabled channel 410. The CLI holds a console token and has no apiKey mode.
+- A game server runs the same job routes (not the templates) with the channel apiKey as Bearer under `/push-api/{channelId}/…` on the console API host. There a channel id that does not exist answers 401, like a wrong key (not 404), and an expired or disabled channel 410. `--as-server` on `job submit|ls|get|cancel|report` and `broadcast` runs the same command on those routes with the stored key, as a game server would. It is a flag, not automatic on a stored key, so the same command never changes its principal (and its errors: an unknown channel answers 401 there) from one machine to the next. Template names are still looked up with the console token, so `--as-server` still needs a login.
 
 ### Limits
 
@@ -355,7 +361,7 @@ A match channel is `live` (the default) or `deferred`, chosen with `--mode` at c
 - `channels get` prints `mode` for every match channel and, for a deferred one, `acceptTimeoutSec`, `resultTtlSec`, `pushChannel`, `ticketUrl` (`POST`/`GET`/`DELETE`), `acceptUrl` and `declineUrl` (`POST`), all called with a player JWT as Bearer. `ticketUrl` reads `none (…)` on a stage whose match service has no HTTP host. Clients should poll `GET` no faster than every few seconds (the ticket API is throttled at 5 requests/s per stage; `get` prints this as `polling`), and `POST …/ticket` can answer 429 `cooldown` with `details.retryAfter` after a decline or an unanswered proposal. `channels list` has a `MODE` column (`-` for the other kinds). `--json` stays the console's response: the mode is `config.mode`, absent on a live channel.
 - `channels update <match>` reads the channel and sends its whole config back with the given flags on top, so the mode and every deferred field are kept. `--push-channel ''` removes the link.
 - Refused before any write: `--mode` other than the channel's own, and `--accept-timeout`/`--result-ttl`/`--push-channel` on a live channel. A push channel the console cannot use (expired, another project, another auth channel) comes back as its 400 with the next step.
-- `yyt smoke match` drives the live mode only.
+- `yyt smoke match --deferred --url <ticketUrl>` drives the deferred mode (_Smoke helpers_).
 
 ## Smoke helpers
 
@@ -363,9 +369,13 @@ A match channel is `live` (the default) or `deferred`, chosen with `--mode` at c
 # one socket per JWT (JWTs minted by the auth channel, e.g. POST /c/{ch}/token)
 yyt smoke match --url "$(yyt channels get match_… --json | jq -r .wsUrl)" --jwt-file players.txt
 yyt smoke topic --url wss://topic-ws.yyt.life/<topicId> --jwt <t1> --jwt <t2> --wait 5s
+# deferred match: submit, accept, wait for confirmed (polls at most 4 requests/s)
+yyt smoke match --deferred --url "$(yyt channels get match_… --json | jq -r .ticketUrl)" --jwt-file players.txt
+# push: register a device token with a player JWT, send it one message with the stored apiKey, remove the token
+yyt smoke push <push channel> --jwt-file player.txt --token-file fcm-token.txt [--project <firebase project id>] [--keep]
 ```
 
-`smoke match` connects (which enqueues each player) and waits (`--timeout`, default 90s) for `matched`/`failed` on every socket; `smoke topic` sends one `msg` per member and prints every frame received during `--wait`. With `--json` each event is one NDJSON line. Both exit non-zero on failure frames or timeout and never print the tokens.
+`smoke match` connects (which enqueues each player) and waits (`--timeout`, default 90s) for `matched`/`failed` on every socket; `smoke topic` sends one `msg` per member and prints every frame received during `--wait`. With `--json` each event is one NDJSON line. All exit non-zero on failure frames or timeout and never print the tokens. `smoke match --deferred` deletes the players' tickets when a run fails. `smoke push` prints the send's per-user line; `sent` means FCM accepted the message, so look at the device.
 
 ## Development
 

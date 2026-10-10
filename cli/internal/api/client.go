@@ -56,10 +56,18 @@ type Client struct {
 	Base  string
 	Token string
 	HTTP  *http.Client
+	// DataPlane marks a client of a data-plane host (state, match tickets):
+	// its errors must not suggest checking the console URL.
+	DataPlane bool
 }
 
 func New(base, token string) *Client {
-	return &Client{Base: strings.TrimRight(base, "/"), Token: token, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{Base: strings.TrimRight(base, "/"), Token: token, HTTP: &http.Client{
+		Timeout: 30 * time.Second,
+		// No API route redirects, and net/http would carry the bearer along a
+		// same-host redirect, an https → http downgrade included.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 // Do sends `in` as JSON (nil = no body) and decodes the JSON response into
@@ -121,7 +129,9 @@ func (c *Client) DoStatus(ctx context.Context, method, path string, in, out any)
 				e.Message = http.StatusText(res.StatusCode)
 			}
 			e.Code = "http_" + fmt.Sprint(res.StatusCode)
-			e.Message += " (is --api the console base URL?)"
+			if !c.DataPlane {
+				e.Message += " (is --api the console base URL?)"
+			}
 		}
 		return 0, e
 	}

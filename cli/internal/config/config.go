@@ -4,7 +4,8 @@
 // (YYT_CONFIG overrides). The file is 0600 where permission bits exist; on
 // Windows the profile's default ACL protects it.
 //
-// File schema: {"profiles":{"<name>":{"api","token"}},"default":"<name>"}.
+// File schema: {"profiles":{"<name>":{"api","token"}},"default":"<name>",
+// "pushKeys":{"<console URL>":{"<push channel id>":"<apiKey>"}}}.
 // A legacy flat file {"api","token"} is migrated to the "default" profile on
 // first load (re-saved once with 0600; read-only locations keep working with
 // the in-memory migration).
@@ -39,6 +40,11 @@ type Profile struct {
 type File struct {
 	Profiles map[string]Profile `json:"profiles"`
 	Default  string             `json:"default,omitempty"`
+	// PushKeys holds push channel apiKeys by console URL (the stage) and
+	// channel id. Keyed by the stage, not the profile: a channel id belongs to
+	// one stage whichever login reads it, and a --token override must still
+	// find the key. The only place the CLI keeps a channel credential.
+	PushKeys map[string]map[string]string `json:"pushKeys,omitempty"`
 }
 
 // Config is the resolved per-invocation credential set.
@@ -67,10 +73,11 @@ func Path() (string, error) {
 
 // legacyDoc matches both the old flat schema and the new one during load.
 type legacyDoc struct {
-	API      string             `json:"api"`
-	Token    string             `json:"token"`
-	Profiles map[string]Profile `json:"profiles"`
-	Default  string             `json:"default"`
+	API      string                       `json:"api"`
+	Token    string                       `json:"token"`
+	Profiles map[string]Profile           `json:"profiles"`
+	Default  string                       `json:"default"`
+	PushKeys map[string]map[string]string `json:"pushKeys"`
 }
 
 // LoadFile reads the config file, migrating a legacy flat file to the
@@ -91,7 +98,7 @@ func LoadFile() (File, error) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return File{}, fmt.Errorf("%s: %w", p, err)
 	}
-	f := File{Profiles: doc.Profiles, Default: doc.Default}
+	f := File{Profiles: doc.Profiles, Default: doc.Default, PushKeys: doc.PushKeys}
 	if f.Profiles == nil {
 		f.Profiles = map[string]Profile{}
 	}
@@ -334,4 +341,70 @@ func CheckAPI(api string) error {
 		return nil
 	}
 	return fmt.Errorf("console URL must use https (got %q)", api)
+}
+
+// stageKey normalises a console URL the way Resolve does, so a key stored
+// under `https://console.yyt.life/` is found under `https://console.yyt.life`.
+func stageKey(api string) string { return strings.TrimRight(api, "/") }
+
+// SetPushKey stores a push channel's apiKey for the stage at `api`.
+func SetPushKey(api, channelID, key string) error {
+	if channelID == "" || key == "" {
+		return errors.New("channel id and key must not be empty")
+	}
+	f, err := LoadFile()
+	if err != nil {
+		return err
+	}
+	if f.PushKeys == nil {
+		f.PushKeys = map[string]map[string]string{}
+	}
+	s := stageKey(api)
+	if f.PushKeys[s] == nil {
+		f.PushKeys[s] = map[string]string{}
+	}
+	f.PushKeys[s][channelID] = key
+	return SaveFile(f)
+}
+
+// RemovePushKey deletes a stored key; it reports whether one was there.
+func RemovePushKey(api, channelID string) (bool, error) {
+	f, err := LoadFile()
+	if err != nil {
+		return false, err
+	}
+	s := stageKey(api)
+	if _, ok := f.PushKeys[s][channelID]; !ok {
+		return false, nil
+	}
+	delete(f.PushKeys[s], channelID)
+	if len(f.PushKeys[s]) == 0 {
+		delete(f.PushKeys, s)
+	}
+	return true, SaveFile(f)
+}
+
+// PushKey returns the stored key of a channel on the stage at `api`.
+func PushKey(api, channelID string) (string, bool, error) {
+	f, err := LoadFile()
+	if err != nil {
+		return "", false, err
+	}
+	k, ok := f.PushKeys[stageKey(api)][channelID]
+	return k, ok, nil
+}
+
+// PushKeyChannels lists the channel ids with a stored key on the stage, sorted.
+// Never the keys.
+func PushKeyChannels(api string) ([]string, error) {
+	f, err := LoadFile()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(f.PushKeys[stageKey(api)]))
+	for id := range f.PushKeys[stageKey(api)] {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }

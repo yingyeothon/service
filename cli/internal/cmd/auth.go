@@ -215,9 +215,18 @@ func deviceLogin(cmd *cobra.Command, a *App, tokenName string) error {
 
 // readToken reads one line from stdin; prompts when stdin is a terminal.
 func readToken(in io.Reader, prompt io.Writer) (string, error) {
+	return readSecretLine(in, prompt, "API token: ")
+}
+
+// readSecretLine reads one line from `in` (stdin when nil), printing `label`
+// to `prompt` only when stdin is a terminal.
+func readSecretLine(in io.Reader, prompt io.Writer, label string) (string, error) {
+	if in == nil {
+		in = os.Stdin
+	}
 	if f, ok := in.(*os.File); ok {
 		if st, err := f.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
-			fmt.Fprint(prompt, "API token: ")
+			fmt.Fprint(prompt, label)
 		}
 	}
 	line, err := bufio.NewReader(in).ReadString('\n')

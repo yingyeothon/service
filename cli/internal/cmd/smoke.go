@@ -62,8 +62,8 @@ func (f *smokeFlags) tokens() ([]string, error) {
 }
 
 func newSmoke(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "smoke", Short: "Exercise the match/topic WebSocket protocols with real JWTs"}
-	c.AddCommand(newSmokeMatch(a), newSmokeTopic(a))
+	c := &cobra.Command{Use: "smoke", Short: "Exercise match (live and deferred), topic and push with real JWTs"}
+	c.AddCommand(newSmokeMatch(a), newSmokeTopic(a), newSmokePush(a))
 	return c
 }
 
@@ -184,21 +184,32 @@ func isFailure(m ws.Message) bool {
 
 func newSmokeMatch(a *App) *cobra.Command {
 	var f smokeFlags
+	var deferred bool
 	c := &cobra.Command{
-		Use:   "match --url <wsUrl> --jwt <t> [--jwt <t> ...]",
+		Use:   "match --url <wsUrl|ticketUrl> --jwt <t> [--jwt <t> ...] [--deferred]",
 		Short: "Queue one player per JWT on a match channel and print matched/failed",
 		Long: `Connects every JWT to the match channel's wsUrl (from "yyt channels get"),
 then waits for {type:"matched"} or {type:"failed"} on each socket. No ping is
 sent: connecting enqueues the player, and a ping that lands after the match
 already formed is answered with {type:"failed", reason:"closed"}.
-Live mode only: a deferred match channel has no socket (its tickets are HTTP).
-Exit code 1 when any player fails or times out.`,
+With --deferred, --url is the channel's ticketUrl: every JWT submits a
+ticket, accepts the proposal and waits for "confirmed" (at most 4 requests/s,
+the stage's API throttle being 5/s). When the run fails the tickets are
+deleted; a ticket deleted during a proposal counts as a decline, so a rerun
+right after may answer 429 cooldown for the channel's accept timeout. Exit code 1 when any player fails or times out.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if deferred {
+				tokens, err := f.tokens()
+				if err != nil {
+					return err
+				}
+				return a.smokeDeferred(cmd.Context(), f.url, tokens, f.timeout)
+			}
 			// A deferred channel has no wsUrl: `jq -r .wsUrl` prints `null`,
 			// and its ticketUrl is https.
 			if !strings.HasPrefix(f.url, "ws://") && !strings.HasPrefix(f.url, "wss://") {
-				return fmt.Errorf("--url %q is not a WebSocket URL: smoke match drives the live mode; a deferred match channel has a ticketUrl instead of a wsUrl (`yyt channels get <channel>` prints its mode)", f.url)
+				return fmt.Errorf("--url %q is not a WebSocket URL: a deferred match channel has a ticketUrl instead of a wsUrl; pass --deferred (`yyt channels get <channel>` prints its mode)", f.url)
 			}
 			tokens, err := f.tokens()
 			if err != nil {
@@ -220,7 +231,8 @@ Exit code 1 when any player fails or times out.`,
 			return nil
 		},
 	}
-	f.bind(c, "match channel wsUrl (wss://match…/?channel=<id>)", "timeout", "how long to wait for matched/failed", 90*time.Second)
+	f.bind(c, "match channel wsUrl (wss://match…/?channel=<id>), or its ticketUrl with --deferred", "timeout", "how long to wait for matched/failed (confirmed with --deferred)", 90*time.Second)
+	c.Flags().BoolVar(&deferred, "deferred", false, "drive a deferred channel's HTTP tickets instead of a socket")
 	return c
 }
 

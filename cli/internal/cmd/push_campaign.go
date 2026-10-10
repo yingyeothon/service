@@ -28,9 +28,9 @@ import (
 // reports and the broadcast, on the member family `/channels/{id}/push/…`.
 //
 // The same job routes exist under `/push-api/{channelId}/…` for the channel
-// apiKey. This CLI holds a console token only and calls no route with a
-// channel apiKey (see push.go), so that family is a game server's. There an
-// unknown channel id answers the 401 of a wrong key, not a 404.
+// apiKey; `--as-server` uses them with the key `yyt push key set` stored
+// (`campaignAPI`). There an unknown channel id answers the 401 of a wrong
+// key, not a 404.
 
 const (
 	// pushCSVMaxBytes mirrors `PUSH_CSV_MAX_BYTES`: the hard
@@ -607,14 +607,14 @@ func derivedPushKey(suffix string, parts ...string) string {
 // heldPushJobs reads the job each given idempotency key holds, one
 // `GET …/jobs?idempotencyKey=` per key. The server compares keys without
 // case, so the answer is filed under the key as asked.
-func heldPushJobs(ctx context.Context, cl *api.Client, channelID string, keys ...string) (map[string]pushJob, error) {
+func heldPushJobs(ctx context.Context, cl *api.Client, base, channelID string, keys ...string) (map[string]pushJob, error) {
 	found := map[string]pushJob{}
 	for _, k := range keys {
 		var res struct {
 			Jobs []pushJob `json:"jobs"`
 		}
 		q := url.Values{"idempotencyKey": {k}}
-		if err := cl.Do(ctx, http.MethodGet, pushBase(channelID)+"/jobs?"+q.Encode(), nil, &res); err != nil {
+		if err := cl.Do(ctx, http.MethodGet, base+"/jobs?"+q.Encode(), nil, &res); err != nil {
 			return nil, withCampaignHint(err, channelID)
 		}
 		// Only the job of this key: an answer that is a page of the list (a
@@ -631,11 +631,11 @@ func heldPushJobs(ctx context.Context, cl *api.Client, channelID string, keys ..
 
 // uploadPushCSV creates an upload and PUTs the file to it. The URL is a
 // temporary credential and is never printed.
-func uploadPushCSV(ctx context.Context, cl *api.Client, channelID, path string, size int64) (string, error) {
+func uploadPushCSV(ctx context.Context, cl *api.Client, base, channelID, path string, size int64) (string, error) {
 	var grant uploadGrant
 	// Not retried: the route takes no write slot, and after a failure the
 	// upload row may exist — a channel holds 20 pending.
-	if err := cl.Do(ctx, http.MethodPost, pushBase(channelID)+"/uploads", map[string]any{"size": size}, &grant); err != nil {
+	if err := cl.Do(ctx, http.MethodPost, base+"/uploads", map[string]any{"size": size}, &grant); err != nil {
 		return "", withCampaignHint(err, channelID)
 	}
 	if grant.UploadID == "" || grant.URL == "" {
@@ -658,7 +658,7 @@ func uploadPushCSV(ctx context.Context, cl *api.Client, channelID, path string, 
 	})
 	if err != nil {
 		// Nothing can name it: the row would only hold a pending place.
-		dropPushUpload(ctx, cl, channelID, grant.UploadID)
+		dropPushUpload(ctx, cl, base, grant.UploadID)
 		return "", err
 	}
 	return grant.UploadID, nil
@@ -668,9 +668,9 @@ func uploadPushCSV(ctx context.Context, cl *api.Client, channelID, path string, 
 // left is removed by the platform two days after it was made. The route
 // takes the write slot, which the refused submit before it may still hold,
 // so a 429 is retried.
-func dropPushUpload(ctx context.Context, cl *api.Client, channelID, uploadID string) {
+func dropPushUpload(ctx context.Context, cl *api.Client, base, uploadID string) {
 	_ = presignRetry.do(ctx, func() error {
-		return cl.Do(ctx, http.MethodDelete, pushBase(channelID)+"/uploads/"+api.PathID(uploadID), nil, nil)
+		return cl.Do(ctx, http.MethodDelete, base+"/uploads/"+api.PathID(uploadID), nil, nil)
 	})
 }
 
@@ -713,8 +713,8 @@ func postPushJob(ctx context.Context, cl *api.Client, path string, body map[stri
 
 // waitPushJob polls a job until it is done or failed, or `timeout` passed.
 // Progress goes to stderr, one line per change.
-func (a *App) waitPushJob(ctx context.Context, cl *api.Client, j pushJob, timeout time.Duration) (pushJob, error) {
-	path := pushBase(j.ChannelID) + "/jobs/" + api.PathID(j.ID)
+func (a *App) waitPushJob(ctx context.Context, cl *api.Client, base string, j pushJob, timeout time.Duration) (pushJob, error) {
+	path := base + "/jobs/" + api.PathID(j.ID)
 	var waited time.Duration
 	last := ""
 	for !j.finished() {
@@ -747,7 +747,7 @@ func (a *App) waitPushJob(ctx context.Context, cl *api.Client, j pushJob, timeou
 
 // finishPushSubmit reports a submit's answer: what happened on stderr, the
 // job on stdout, and with `wait` the job's end (an error when it failed).
-func (a *App) finishPushSubmit(ctx context.Context, cl *api.Client, res pushJobAnswer, wait bool, timeout time.Duration) error {
+func (a *App) finishPushSubmit(ctx context.Context, cl *api.Client, base string, res pushJobAnswer, wait bool, timeout time.Duration) error {
 	j := res.Job
 	if res.Created {
 		fmt.Fprintf(a.Err, "submitted %s %s\n", pushJobKind(j), j.ID)
@@ -757,7 +757,7 @@ func (a *App) finishPushSubmit(ctx context.Context, cl *api.Client, res pushJobA
 	}
 	if wait {
 		var err error
-		if j, err = a.waitPushJob(ctx, cl, j, timeout); err != nil {
+		if j, err = a.waitPushJob(ctx, cl, base, j, timeout); err != nil {
 			return err
 		}
 	} else if !j.finished() {
@@ -971,6 +971,7 @@ func (a *App) pushTemplateCmd(resolve channelResolver) *cobra.Command {
 }
 
 func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
+	var asServer bool
 	c := &cobra.Command{
 		Use:     "job",
 		Aliases: []string{"jobs"},
@@ -992,8 +993,9 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 			"dry run as none.\n\n" +
 			"A game server runs the same job routes with the channel apiKey as Bearer\n" +
 			"under /push-api/{channelId}/… on the console API host (an unknown channel\n" +
-			"id answers 401 there, like a wrong key); this CLI holds a console token\n" +
-			"and calls /channels/{id}/push/….",
+			"id answers 401 there, like a wrong key). The CLI calls /channels/{id}/push/…\n" +
+			"with the console token, or those routes with --as-server and the key\n" +
+			"`yyt push key set` stored.",
 	}
 
 	var template, csvPath, key string
@@ -1039,6 +1041,10 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			jc, base, err := a.campaignAPI(cc, id, asServer)
+			if err != nil {
+				return err
+			}
 			tpl, err := resolvePushTemplate(ctx, cc.cl, id, template)
 			if err != nil {
 				return err
@@ -1076,7 +1082,7 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 			}
 			post := func(uploadID string) (pushJobAnswer, error) {
 				body["uploadId"] = uploadID
-				return postPushJob(ctx, cc.cl, pushBase(id)+"/jobs", body)
+				return postPushJob(ctx, jc, base+"/jobs", body)
 			}
 
 			// A job the key already names is answered with its own upload, so
@@ -1086,7 +1092,7 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 			if sibling != "" {
 				lookup = append(lookup, sibling)
 			}
-			held, err := heldPushJobs(ctx, cc.cl, id, lookup...)
+			held, err := heldPushJobs(ctx, jc, base, id, lookup...)
 			if err != nil {
 				return err
 			}
@@ -1102,7 +1108,7 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 					fmt.Fprintf(a.Err, "the key names job %s: asking for that job again; %s is not uploaded or compared\n", j.ID, csvPath)
 				}
 				if res, err = post(*j.UploadID); err != nil {
-					return withCampaignHint(err, id)
+					return withCampaignHint(serverErr(err, asServer), id)
 				}
 				submitted = true
 			} else if j, ok := held[sibling]; ok && sibling != "" && j.UploadID != nil {
@@ -1112,11 +1118,11 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 					fmt.Fprintf(a.Err, "reused the upload of %s %s (the same file)\n", pushJobKind(j), j.ID)
 					submitted = true
 				case !pushUploadGone(err):
-					return withCampaignHint(err, id)
+					return withCampaignHint(serverErr(err, asServer), id)
 				}
 			}
 			if !submitted {
-				uploadID, err := uploadPushCSV(ctx, cc.cl, id, csvPath, file.size)
+				uploadID, err := uploadPushCSV(ctx, jc, base, id, csvPath, file.size)
 				if err != nil {
 					return err
 				}
@@ -1124,15 +1130,16 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 				if res, err = post(uploadID); err != nil {
 					// Refused before a job exists: the upload is nobody's.
 					if pushSubmitRefused(err) {
-						dropPushUpload(ctx, cc.cl, id, uploadID)
+						dropPushUpload(ctx, jc, base, uploadID)
 					}
-					return withCampaignHint(err, id)
+					return withCampaignHint(serverErr(err, asServer), id)
 				}
 			}
-			return a.finishPushSubmit(ctx, cc.cl, res, wait, timeout)
+			return a.finishPushSubmit(ctx, jc, base, res, wait, timeout)
 		},
 	}
 	fl := submit.Flags()
+	asServerFlag(submit, &asServer)
 	fl.StringVar(&template, "template", "", "the template to send (id or name)")
 	fl.StringVar(&csvPath, "csv", "", "the recipient CSV: a userId column plus one per template variable")
 	fl.BoolVar(&dryRun, "dry-run", false, "count what the job would start from and send nothing (needs no sender; not counted in push.jobsPerDay)")
@@ -1166,7 +1173,11 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 			if cursor != "" {
 				q.Set("cursor", cursor)
 			}
-			path := pushBase(id) + "/jobs"
+			jc, base, err := a.campaignAPI(cc, id, asServer)
+			if err != nil {
+				return err
+			}
+			path := base + "/jobs"
 			if len(q) > 0 {
 				path += "?" + q.Encode()
 			}
@@ -1174,8 +1185,8 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 				Jobs []pushJob `json:"jobs"`
 				Next *string   `json:"next"`
 			}
-			if err := cc.cl.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
-				return withCampaignHint(err, id)
+			if err := jc.Do(cmd.Context(), http.MethodGet, path, nil, &res); err != nil {
+				return withCampaignHint(serverErr(err, asServer), id)
 			}
 			if a.jsonOut {
 				return a.printer().JSONValue(res)
@@ -1210,11 +1221,13 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 	}
 	ls.Flags().IntVar(&limit, "limit", 0, "page size, 1 to 100 (default 20)")
 	ls.Flags().StringVar(&cursor, "cursor", "", "the `more: --cursor …` value of the previous page")
+	asServerFlag(ls, &asServer)
 	c.AddCommand(ls)
 
 	// one runs a route addressed by job id and prints the job it answers.
 	one := func(use, short, method, suffix string, write bool, note string) *cobra.Command {
-		return &cobra.Command{
+		var server bool
+		oc := &cobra.Command{
 			Use:   use + " <channel> <job>",
 			Short: short,
 			Args:  cobra.ExactArgs(2),
@@ -1226,9 +1239,13 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				jc, base, err := a.campaignAPI(cc, id, server)
+				if err != nil {
+					return err
+				}
 				var res pushJobAnswer
-				if err := cc.cl.Do(cmd.Context(), method, pushBase(id)+"/jobs/"+api.PathID(args[1])+suffix, nil, &res); err != nil {
-					return withCampaignHint(err, id)
+				if err := jc.Do(cmd.Context(), method, base+"/jobs/"+api.PathID(args[1])+suffix, nil, &res); err != nil {
+					return withCampaignHint(serverErr(err, server), id)
 				}
 				if note != "" && !res.Job.finished() {
 					fmt.Fprintln(a.Err, note)
@@ -1236,6 +1253,8 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 				return a.showPushJob(res.Job)
 			},
 		}
+		asServerFlag(oc, &server)
+		return oc
 	}
 	c.AddCommand(
 		one("get", "Show a job: status, progress, per-row counts and why it failed", http.MethodGet, "", false, ""),
@@ -1286,8 +1305,12 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 				ExpiresAt       int64  `json:"expiresAt"`
 				ReportExpiresAt int64  `json:"reportExpiresAt"`
 			}
-			if err := cc.cl.Do(cmd.Context(), http.MethodGet, pushBase(id)+"/jobs/"+api.PathID(args[1])+"/report", nil, &res); err != nil {
-				return withCampaignHint(err, id)
+			jc, base, err := a.campaignAPI(cc, id, asServer)
+			if err != nil {
+				return err
+			}
+			if err := jc.Do(cmd.Context(), http.MethodGet, base+"/jobs/"+api.PathID(args[1])+"/report", nil, &res); err != nil {
+				return withCampaignHint(serverErr(err, asServer), id)
 			}
 			if res.URL == "" {
 				return errors.New("the console answered a report without a URL")
@@ -1312,11 +1335,13 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 	report.Flags().StringVarP(&out, "output", "o", "", "where to write (default: ./push-report-<job>.csv; - is stdout)")
 	report.Flags().BoolVar(&force, "force", false, "replace an existing file")
 	report.Flags().BoolVar(&printURL, "url", false, "print the presigned download URL instead of downloading")
+	asServerFlag(report, &asServer)
 	c.AddCommand(report)
 	return group(c)
 }
 
 func (a *App) pushBroadcastCmd(resolve channelResolver) *cobra.Command {
+	var asServer bool
 	var template, title, body, key string
 	var data []string
 	var wait bool
@@ -1407,14 +1432,19 @@ func (a *App) pushBroadcastCmd(resolve channelResolver) *cobra.Command {
 				fmt.Fprintf(a.Err, "idempotency key: %s (derived from the message, the options and the UTC day)\n", key)
 			}
 			req["idempotencyKey"] = key
-			res, err := postPushJob(ctx, cc.cl, pushBase(id)+"/broadcast", req)
+			jc, base, err := a.campaignAPI(cc, id, asServer)
 			if err != nil {
-				return withCampaignHint(err, id)
+				return err
 			}
-			return a.finishPushSubmit(ctx, cc.cl, res, wait, timeout)
+			res, err := postPushJob(ctx, jc, base+"/broadcast", req)
+			if err != nil {
+				return withCampaignHint(serverErr(err, asServer), id)
+			}
+			return a.finishPushSubmit(ctx, jc, base, res, wait, timeout)
 		},
 	}
 	fl := c.Flags()
+	asServerFlag(c, &asServer)
 	fl.StringVar(&template, "template", "", "a template without variables (id or name)")
 	fl.StringVar(&title, "title", "", "literal notification title")
 	fl.StringVar(&body, "body", "", "literal notification body; needs a title")
@@ -1424,4 +1454,32 @@ func (a *App) pushBroadcastCmd(resolve channelResolver) *cobra.Command {
 	fl.DurationVar(&timeout, "timeout", 30*time.Minute, "with --wait: stop waiting after this long")
 	opts.flags(c)
 	return c
+}
+
+// campaignAPI picks the job routes' family: the member routes with the
+// console token, or with --as-server the apiKey family
+// `/push-api/{channelId}/…` on the same host with the stored channel apiKey
+// (`yyt push key set`). Templates stay on the member routes either way.
+func (a *App) campaignAPI(cc *ctxClient, channelID string, asServer bool) (*api.Client, string, error) {
+	if !asServer {
+		return cc.cl, pushBase(channelID), nil
+	}
+	key, err := pushKeyOf(cc, channelID)
+	if err != nil {
+		return nil, "", err
+	}
+	cl, err := a.dataClient(cc.api, key)
+	return cl, "/push-api/" + api.PathID(channelID), err
+}
+
+func asServerFlag(c *cobra.Command, v *bool) {
+	c.Flags().BoolVar(v, "as-server", false, "use the channel's apiKey routes (/push-api/{channelId}/…) with the key stored by `yyt push key set`, as a game server would")
+}
+
+// serverErr rewords a refused stored apiKey on the --as-server routes.
+func serverErr(err error, asServer bool) error {
+	if !asServer {
+		return err
+	}
+	return dataPlaneErr(err)
 }

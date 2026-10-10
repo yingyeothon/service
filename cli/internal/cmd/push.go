@@ -23,12 +23,9 @@ import (
 // google-services.json download, the team sender key and the admin's pool.
 // Campaigns (templates, jobs, the broadcast) are in push_campaign.go.
 //
-// There is no `yyt push send`: sending is a state-stack route authenticated by
-// the channel apiKey, and this CLI holds a console token only. No command
-// calls a data-plane route (kv, leaderboard and documents print their paths
-// instead), so a game server sends with the `apiBase` and `apiKey` printed here.
-// For the same reason campaigns go through the member routes only; the
-// apiKey family `/push-api/{channelId}/…` is a game server's.
+// `push send` and the apiKey job routes use a channel apiKey the user stored
+// with `push key set` (push_key.go, push_send.go); everything else takes the
+// console token.
 
 // googleServicesFile is the name Android's build expects in `app/`.
 const googleServicesFile = "google-services.json"
@@ -183,7 +180,7 @@ func newPush(a *App) *cobra.Command {
 			"registers its FCM token with a player JWT of the channel's auth channel, and\n" +
 			"a game server sends with the channel apiKey; both go to the `apiBase` that\n" +
 			"`channel get` prints (PUT|DELETE /push/{channel}/token, POST /push/{channel}/send).\n" +
-			"This CLI makes no targeted send: it holds a console token, not the channel apiKey.\n\n" +
+			"`push send` makes that send with an apiKey stored by `push key set` (stdin).\n\n" +
 			"Campaigns run on the console and take the console token: `template` holds\n" +
 			"the messages, `job submit` sends one to the users a CSV lists (`--dry-run`\n" +
 			"first), `broadcast` sends one public message to every subscribed install\n" +
@@ -206,6 +203,7 @@ func newPush(a *App) *cobra.Command {
 	a.addChannelCommands(ch, "push")
 	resolve := a.channelResolver("push")
 	ch.AddCommand(a.pushConfigCmd(resolve), a.pushSenderKeyCmd(resolve))
+	c.AddCommand(a.pushKeyCmd(resolve), a.pushSendCmd(resolve))
 	c.AddCommand(group(ch), a.pushPoolCmd())
 	a.addPushCampaignCommands(c, resolve)
 	return group(c)

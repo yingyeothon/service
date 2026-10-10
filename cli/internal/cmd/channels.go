@@ -623,6 +623,7 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 
 	cf := configFlags{app: a}
 	var ckind, cname string
+	var saveKey bool
 	create := &cobra.Command{
 		Use:   "create --kind <" + channelKindList + "> --name <name> [config flags]",
 		Short: "Create a channel in the project context (explicit); the secret/apiKey is printed once",
@@ -656,6 +657,9 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 					return err
 				}
 			}
+			if err := checkSave(saveKey, ckind, ""); err != nil {
+				return err
+			}
 			var ch channel
 			body := map[string]any{"kind": ckind, "name": cname, "config": cfg}
 			if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/projects/"+api.PathID(r.ProjectID)+"/channels", body, &ch); err != nil {
@@ -667,13 +671,17 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 				}
 				return err
 			}
+			if err := a.savePushKey(cc, &ch, saveKey); err != nil {
+				return err
+			}
 			return a.showChannel(ch, true)
 		},
 	}
 	create.Flags().StringVar(&cname, "name", "", "display name")
 	_ = create.MarkFlagRequired("name")
+	create.Flags().BoolVar(&saveKey, "save", false, "push: store the apiKey in the config file (`yyt push key`) instead of printing it")
 	if fixedKind == "push" {
-		create.Use = "create --name <name> --auth <auth channel> --package <com.example.app> [--sender platform|team] [--service-account <file|->]"
+		create.Use = "create --name <name> --auth <auth channel> --package <com.example.app> [--sender platform|team] [--service-account <file|->] [--save]"
 		create.Short = "Create a push channel in the project context (explicit); the apiKey is printed once"
 		cf.bindPush(create, true)
 	} else {
@@ -804,7 +812,8 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 
 	// postAction is a bodiless POST on the channel that answers with the channel.
 	postAction := func(use, short, suffix string, withSecret bool) *cobra.Command {
-		return &cobra.Command{
+		var save bool
+		c := &cobra.Command{
 			Use:   use,
 			Short: short,
 			Args:  cobra.ExactArgs(1),
@@ -813,16 +822,26 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 				if err != nil {
 					return err
 				}
+				if err := checkSave(save, fixedKind, id); err != nil {
+					return err
+				}
 				var ch channel
 				if err := cc.cl.Do(cmd.Context(), http.MethodPost, "/channels/"+api.PathID(id)+suffix, nil, &ch); err != nil {
+					return err
+				}
+				if err := a.savePushKey(cc, &ch, save); err != nil {
 					return err
 				}
 				return a.showChannel(ch, withSecret)
 			},
 		}
+		if withSecret {
+			c.Flags().BoolVar(&save, "save", false, "push: store the new apiKey in the config file (`yyt push key`) instead of printing it")
+		}
+		return c
 	}
 	c.AddCommand(postAction("extend <channel>", "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel. A channel with no expiry (`yyt limit request channel.lifetime unlimited`) refuses", "/extend", false))
-	rotate := postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (owner only); the new value is printed once", "/rotate-secret", true)
+	rotate := postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (any team member; a platform admin without a seat cannot); the new value is printed once", "/rotate-secret", true)
 	rotate.Aliases = []string{"rotate"}
 	c.AddCommand(rotate)
 	if fixedKind == "" {
@@ -1037,7 +1056,7 @@ func (a *App) channelRedisUserCmd(channelID channelResolver) *cobra.Command {
 	return credentialCmd(a, channelID, credentialSpec[redisUser]{
 		use:         "redis-user",
 		aliases:     []string{"redis"},
-		short:       "Scoped Redis account for a `q` channel's game Lambda (owner issues; admins may read)",
+		short:       "Scoped Redis account for a `q` channel's game Lambda (any team member issues it; a seatless admin sees its status, never the password)",
 		segment:     "redis-user",
 		noun:        "redis account",
 		showShort:   "Show the connection block and whether an account has been issued",
@@ -1093,7 +1112,7 @@ func (a *App) channelDocKeyCmd(channelID channelResolver) *cobra.Command {
 	return credentialCmd(a, channelID, credentialSpec[docKey]{
 		use:         "doc-key",
 		aliases:     []string{"doc"},
-		short:       "Document API key for an `auth` channel (owner issues; admins may read)",
+		short:       "Document API key for an `auth` channel (any team member issues it; a seatless admin sees its status, never the key)",
 		segment:     "doc-key",
 		noun:        "document key",
 		showShort:   "Show the document endpoint and whether a key has been issued",

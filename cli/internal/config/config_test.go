@@ -255,3 +255,45 @@ func TestRenameSameNameWritesNothing(t *testing.T) {
 		t.Fatal("file rewritten")
 	}
 }
+
+func TestPushKeys(t *testing.T) {
+	p := setConfig(t)
+	_ = SaveProfile("dev", Profile{API: "https://console-dev.example", Token: "yyt_abc"})
+	if err := SetPushKey("https://console-dev.example/", "push_b", "kb"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPushKey("https://console-dev.example", "push_a", "ka"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPushKey("https://console.example", "push_a", "kprod"); err != nil {
+		t.Fatal(err)
+	}
+	// Keyed by stage: the same id on another console is another key.
+	if k, ok, _ := PushKey("https://console-dev.example", "push_a"); !ok || k != "ka" {
+		t.Fatalf("dev push_a = %q %v", k, ok)
+	}
+	if k, _, _ := PushKey("https://console.example", "push_a"); k != "kprod" {
+		t.Fatalf("prod push_a = %q", k)
+	}
+	ids, _ := PushKeyChannels("https://console-dev.example")
+	if strings.Join(ids, ",") != "push_a,push_b" {
+		t.Fatalf("ids %v", ids)
+	}
+	// A re-login keeps the keys.
+	_ = SaveProfile("dev", Profile{API: "https://console-dev.example", Token: "yyt_new"})
+	if _, ok, _ := PushKey("https://console-dev.example", "push_b"); !ok {
+		t.Fatal("re-login dropped a key")
+	}
+	if gone, _ := RemovePushKey("https://console-dev.example", "push_b"); !gone {
+		t.Fatal("remove reported nothing")
+	}
+	if gone, _ := RemovePushKey("https://console-dev.example", "push_b"); gone {
+		t.Fatal("second remove reported a key")
+	}
+	if runtime.GOOS != "windows" {
+		st, err := os.Stat(p)
+		if err != nil || st.Mode().Perm() != 0o600 {
+			t.Fatalf("mode %v %v", st.Mode().Perm(), err)
+		}
+	}
+}

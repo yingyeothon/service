@@ -580,16 +580,11 @@ func TestPushPool(t *testing.T) {
 	}
 }
 
-// A targeted send is a data-plane call with the channel apiKey; the CLI has
-// no such command and says where sending happens instead. Campaigns go
-// through the console's member routes, and the apiKey family is named.
-func TestPushHasNoSend(t *testing.T) {
+// The help names where a send goes and how the CLI gets the apiKey.
+func TestPushHelpNamesSend(t *testing.T) {
 	f := newFake(t, nil)
-	if _, _, err := run(t, f, "push", "send", pushID); err == nil || !strings.Contains(err.Error(), "unknown command") {
-		t.Errorf("push send: %v", err)
-	}
 	out, _, err := run(t, f, "push", "--help")
-	if err != nil || !strings.Contains(out, "POST /push/{channel}/send") || !strings.Contains(out, "This CLI makes no targeted send") ||
+	if err != nil || !strings.Contains(out, "POST /push/{channel}/send") || !strings.Contains(out, "push key set") ||
 		!strings.Contains(out, "/push-api/{channelId}/") {
 		t.Errorf("help: %v\n%s", err, out)
 	}

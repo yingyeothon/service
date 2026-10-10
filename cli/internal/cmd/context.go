@@ -245,6 +245,8 @@ type ctxClient struct {
 	a    *App
 	cl   *api.Client
 	spec ctxSpec
+	// api is the console base URL: the stage stored push keys are filed under.
+	api string
 }
 
 // idResolver turns a <channel>/<app>/<bundle>/<site> argument into an id;
@@ -259,7 +261,7 @@ func (a *App) ctxClient(cmd *cobra.Command) (*ctxClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ctxClient{a: a, cl: cl, spec: a.contextSpec(contextStart(cmd), cfg)}, nil
+	return &ctxClient{a: a, cl: cl, spec: a.contextSpec(contextStart(cmd), cfg), api: cfg.API}, nil
 }
 
 // seatedTeams lists the teams the caller may act in (pending requests are
