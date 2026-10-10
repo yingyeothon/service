@@ -93,6 +93,18 @@ export interface SitePatch {
   currentDeployId?: string | null;
 }
 
+/**
+ * The site's effective `site.*` limits at commit time, pinned on the row
+ * (migration `m0030`): the worker reads these and never the registry, so a
+ * grant revoked while the zip waits in the queue changes nothing already
+ * committed. Null on rows committed before the columns existed and on moves.
+ */
+export interface SiteDeployLimits {
+  zipBytes: number;
+  files: number;
+  extractedBytes: number;
+}
+
 export interface SiteDeployRow {
   id: string;
   siteId: string;
@@ -102,6 +114,7 @@ export interface SiteDeployRow {
   /** Extracted bytes and file count, set when the worker finishes. */
   bytes: number;
   files: number;
+  limits: SiteDeployLimits | null;
   /** Short machine code on `failed`, never a path or a stack. */
   error: string | null;
   /** Staging zip key. */
@@ -131,6 +144,7 @@ export interface SiteDeployPatch {
   zipBytes?: number;
   bytes?: number;
   files?: number;
+  limits?: SiteDeployLimits;
   error?: string | null;
 }
 
@@ -401,6 +415,9 @@ type DeployModel = {
   expires_at: bigint | number;
   move_to: string | null;
   move_from: string | null;
+  max_zip_bytes: bigint | number | null;
+  max_files: number | null;
+  max_extracted_bytes: bigint | number | null;
 };
 
 const toSite = (r: SiteModel): SiteRow => ({
@@ -436,6 +453,16 @@ const toDeploy = (r: DeployModel): SiteDeployRow => ({
   zipBytes: num(r.zip_bytes),
   bytes: num(r.bytes),
   files: r.files,
+  limits:
+    r.max_zip_bytes !== null &&
+    r.max_files !== null &&
+    r.max_extracted_bytes !== null
+      ? {
+          zipBytes: num(r.max_zip_bytes),
+          files: r.max_files,
+          extractedBytes: num(r.max_extracted_bytes),
+        }
+      : null,
   error: r.error,
   objectKey: r.object_key,
   createdBy: r.created_by,
@@ -451,6 +478,13 @@ const deployData = (patch: SiteDeployPatch) => ({
   ...(patch.zipBytes !== undefined ? { zip_bytes: patch.zipBytes } : {}),
   ...(patch.bytes !== undefined ? { bytes: patch.bytes } : {}),
   ...(patch.files !== undefined ? { files: patch.files } : {}),
+  ...(patch.limits !== undefined
+    ? {
+        max_zip_bytes: patch.limits.zipBytes,
+        max_files: patch.limits.files,
+        max_extracted_bytes: patch.limits.extractedBytes,
+      }
+    : {}),
   ...(patch.error !== undefined ? { error: patch.error } : {}),
 });
 
@@ -1030,6 +1064,8 @@ export function createMemorySitesDb(
     loginOf?: (id: string) => string;
     /** The team fake's view: a deleted team's ledger rows read as team-less (`ON DELETE SET NULL`). */
     teamExists?: (id: string) => boolean;
+    /** The FK cascade of a site delete into the limit tables (`m0030`). */
+    siteDeleted?: (id: string) => void;
   } = {},
 ): SitesDb & {
   sites: Map<string, SiteRow>;
@@ -1204,6 +1240,7 @@ export function createMemorySitesDb(
       releasePrefix(s, at, served);
       sites.delete(id);
       for (const [k, d] of [...deploys]) if (d.siteId === id) deploys.delete(k); // FK cascade
+      deps.siteDeleted?.(id);
       return true;
     },
     renameSite: async (o) => {
@@ -1272,6 +1309,7 @@ export function createMemorySitesDb(
         zipBytes: 0,
         bytes: 0,
         files: 0,
+        limits: null,
         error: null,
         objectKey: `site-uploads/${o.moveId}.zip`,
         createdBy: o.memberId,
@@ -1430,6 +1468,7 @@ export function createMemorySitesDb(
         zipBytes: d.zipBytes,
         bytes: 0,
         files: 0,
+        limits: null,
         error: null,
         objectKey: d.objectKey,
         createdBy: d.createdBy ?? null,
@@ -1464,6 +1503,7 @@ export function createMemorySitesDb(
         ...(patch.zipBytes !== undefined ? { zipBytes: patch.zipBytes } : {}),
         ...(patch.bytes !== undefined ? { bytes: patch.bytes } : {}),
         ...(patch.files !== undefined ? { files: patch.files } : {}),
+        ...(patch.limits !== undefined ? { limits: patch.limits } : {}),
         ...(patch.error !== undefined ? { error: patch.error } : {}),
         updatedAt: at,
       });

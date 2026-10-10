@@ -211,6 +211,7 @@ export {
   type SiteRenameResult,
   type SiteDeployInput,
   type SiteDeployPatch,
+  type SiteDeployLimits,
   type SiteDeployRow,
   type SiteDeployStatus,
   type SiteInput,

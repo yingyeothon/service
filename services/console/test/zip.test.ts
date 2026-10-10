@@ -152,7 +152,7 @@ describe("readSiteZip", () => {
           { maxEntries: 10, maxTotalBytes: 100 * 1024 },
         ),
       ),
-    ).toBe("zip_too_large");
+    ).toBe("zip_extracted_too_large");
     // Declared as tiny, actually big: the inflater's own limit catches it.
     expect(
       code(() =>
@@ -164,7 +164,7 @@ describe("readSiteZip", () => {
           { maxEntries: 10, maxTotalBytes: 100 * 1024 },
         ),
       ),
-    ).toBe("zip_too_large");
+    ).toBe("zip_extracted_too_large");
     // Sum over entries, not per entry.
     const half = Buffer.alloc(60 * 1024, 1);
     expect(
@@ -178,7 +178,7 @@ describe("readSiteZip", () => {
           { maxEntries: 10, maxTotalBytes: 100 * 1024 },
         ),
       ),
-    ).toBe("zip_too_large");
+    ).toBe("zip_extracted_too_large");
     expect(
       code(() =>
         readSiteZip(

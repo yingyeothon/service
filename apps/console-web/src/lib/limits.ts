@@ -33,6 +33,9 @@ export const LIMIT_LABELS: Record<string, string> = {
   "kv.maxEntries": "Entries cap",
   "kv.maxEntriesPerOwner": "Entries per owner cap",
   "kv.collections": "Collections",
+  "site.zipBytes": "Zip size",
+  "site.files": "Files",
+  "site.extractedBytes": "Extracted size",
 };
 
 export const limitLabel = (key: string): string => LIMIT_LABELS[key] ?? key;

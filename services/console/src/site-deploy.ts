@@ -1,5 +1,10 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
-import type { SiteDeployRow, SiteRow, SitesDb } from "@yyt/console-db";
+import type {
+  SiteDeployLimits,
+  SiteDeployRow,
+  SiteRow,
+  SitesDb,
+} from "@yyt/console-db";
 import type { SiteObjectHeaders, SiteStore } from "./site-store.js";
 import { readSiteZip, ZipError, type ZipErrorCode } from "./zip.js";
 
@@ -9,11 +14,26 @@ import { readSiteZip, ZipError, type ZipErrorCode } from "./zip.js";
  * pure over `SitesDb` + `SiteStore`, so the whole flow runs in vitest.
  */
 
-/** Zip upload cap (decision 4). Presign signs it; commit and the worker re-check. */
+/**
+ * The soft values of `site.zipBytes`, `site.files` and `site.extractedBytes`
+ * (docs/decisions.md *Limit requests* #1, todo/58): what a site gets without
+ * a grant. The presign checks the first, commit re-checks it against the
+ * site's effective values and pins all three on the deploy row, and the
+ * worker reads the row (`SiteDeployRow.limits`), falling back to these on a
+ * row committed before `m0030`.
+ */
 export const SITE_MAX_ZIP_BYTES = 5 * 1024 * 1024;
-/** Worker caps on what the zip may expand to. */
 export const SITE_MAX_FILES = 2000;
 export const SITE_MAX_EXTRACTED_BYTES = 50 * 1024 * 1024;
+/** The hard values: what one 1024 MB `siteDeploy` run holds in memory (zip + inflated files). */
+export const SITE_HARD_ZIP_BYTES = 64 * 1024 * 1024;
+export const SITE_HARD_FILES = 10_000;
+export const SITE_HARD_EXTRACTED_BYTES = 256 * 1024 * 1024;
+export const SITE_SOFT_LIMITS: SiteDeployLimits = {
+  zipBytes: SITE_MAX_ZIP_BYTES,
+  files: SITE_MAX_FILES,
+  extractedBytes: SITE_MAX_EXTRACTED_BYTES,
+};
 /** Deploy grants per site per hour; a shell loop must not buy invalidations. */
 export const SITE_DEPLOYS_PER_HOUR = 20;
 /**
@@ -137,6 +157,8 @@ export type SiteDeployError =
   | "invoke_failed"
   | "site_gone"
   | "zip_missing"
+  /** The staged zip object is over the deploy's pinned `site.zipBytes`. */
+  | "zip_too_large"
   | "storage_error"
   | "cdn_invalidation_failed"
   /** A move whose target became another site's slug in between. */
@@ -242,24 +264,37 @@ export async function runSiteDeploy(
     return sites.findDeploy(deployId).catch(() => undefined);
 
   const prefix = `${site.slug}/`;
+  // The values commit pinned (the site's effective limits then); the soft
+  // values for a row from before `m0030`. Never the registry: a grant that
+  // changed while the zip waited in the queue does not move a committed deploy.
+  const caps = deploy.limits ?? SITE_SOFT_LIMITS;
   let files: { path: string; data: Buffer }[];
   try {
-    const zip = await store.getZip(deploy.objectKey, SITE_MAX_ZIP_BYTES);
+    const zip = await store.getZip(deploy.objectKey, caps.zipBytes);
     files = readSiteZip(zip, {
-      maxEntries: SITE_MAX_FILES,
-      maxTotalBytes: SITE_MAX_EXTRACTED_BYTES,
+      maxEntries: caps.files,
+      maxTotalBytes: caps.extractedBytes,
     });
   } catch (e) {
-    if (e instanceof ZipError) return fail(e.code, "extracting", e.detail);
+    // A cap refusal names the key and the value it was judged against, the
+    // way an HTTP refusal's `details` would.
+    if (e instanceof ZipError)
+      return fail(
+        e.code,
+        "extracting",
+        e.code === "zip_extracted_too_large"
+          ? `site.extractedBytes ${caps.extractedBytes}`
+          : e.code === "zip_too_many_entries"
+            ? `site.files ${caps.files}`
+            : e.detail,
+      );
     const code = (e as { code?: string }).code;
-    return fail(
-      code === "payload_too_large"
-        ? "zip_too_large"
-        : code === "not_found"
-          ? "zip_missing"
-          : "storage_error",
-      "extracting",
-    );
+    return code === "payload_too_large"
+      ? fail("zip_too_large", "extracting", `site.zipBytes ${caps.zipBytes}`)
+      : fail(
+          code === "not_found" ? "zip_missing" : "storage_error",
+          "extracting",
+        );
     // (no detail: the SDK message can quote the bucket or the key)
   }
 

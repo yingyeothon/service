@@ -5,12 +5,15 @@ import {
   Group,
   Table,
   Text,
+  Textarea,
   TextInput,
 } from "@mantine/core";
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
+import { useAuth } from "../auth";
 import { Clipped } from "../components/Clipped";
+import { LimitsSection, useLimits } from "../components/Limits";
 import { Crumbs } from "../components/Crumbs";
 import { DataTable } from "../components/DataTable";
 import { PageSkeleton } from "../components/Loading";
@@ -22,6 +25,7 @@ import { Section } from "../components/Section";
 import { Badge, CopyField, DropZone, Notice } from "../components/ui";
 import { fmtSize } from "../lib/catalog";
 import { fmtTime } from "../lib/format";
+import { fmtBytes } from "../lib/limits";
 import { notify } from "../lib/notify";
 import { useListQuery } from "../lib/listQuery";
 import { useAction, useApiQuery } from "../lib/query";
@@ -111,9 +115,12 @@ function hostOf(url: string): string {
 export function BuildHints({
   basePath,
   hostUrl,
+  caps,
 }: {
   basePath: string;
   hostUrl?: string | null;
+  /** The site's effective upload caps, as text; absent while they load. */
+  caps?: { zip: string; extracted: string; files: string };
 }) {
   return (
     <Section title="Build for these URLs">
@@ -138,8 +145,10 @@ export function BuildHints({
         claiming or changing the name changes it: rebuild such a build after a
         rename. Runtime config is a file in the build (for example{" "}
         <Code>config.json</Code>) — never a token. The zip must hold{" "}
-        <Code>index.html</Code> at its root (a zipped folder is unwrapped); at
-        most 5 MiB compressed, 50 MB and 2000 files extracted.
+        <Code>index.html</Code> at its root (a zipped folder is unwrapped);
+        {caps
+          ? ` at most ${caps.zip} compressed, ${caps.extracted} and ${caps.files} files extracted — this site's limits, raised on request below.`
+          : " the size caps are this site's limits, shown below."}
       </Text>
       <CopyField label="Base path" value={basePath} />
     </Section>
@@ -226,6 +235,8 @@ export interface SiteEditForm {
   name: string;
   description: string;
   domain: string;
+  /** A platform admin's reason for a reserved word (sent only with a claim). */
+  reservedNote: string;
   /**
    * What the drawer opened with — the domain re-seeded when a move lands
    * while it is open. A key is sent only when its field differs from this,
@@ -243,6 +254,7 @@ export interface SitePatch {
   name?: string;
   description?: string | null;
   domain?: string | null;
+  reservedNote?: string;
 }
 
 /** The PATCH body: only the fields changed since the drawer opened. */
@@ -255,8 +267,12 @@ export function sitePatch(f: SiteEditForm): SitePatch {
   // Only a changed domain is sent: every name request spends the team's
   // one-per-second slot and, when it moves files, a deploy.
   const domain = f.domain.trim().toLowerCase();
-  if (f.seed.domain !== undefined && domain !== (f.seed.domain ?? ""))
+  if (f.seed.domain !== undefined && domain !== (f.seed.domain ?? "")) {
     body.domain = domain || null;
+    // Only a claim carries the note; the server requires it for a reserved word.
+    const note = f.reservedNote.trim();
+    if (body.domain && note) body.reservedNote = note;
+  }
   return body;
 }
 
@@ -269,11 +285,18 @@ function DomainField({
   value,
   onChange,
   error,
+  admin,
+  reservedNote,
+  onReservedNote,
 }: {
   site: Site;
   value: string;
   onChange: (v: string) => void;
   error: string | null;
+  /** A platform admin may claim a reserved word (`help`) with a note. */
+  admin: boolean;
+  reservedNote: string;
+  onReservedNote: (v: string) => void;
 }) {
   const suffix = site.hostSuffix ? `.${site.hostSuffix}` : null;
   const pathHint = `${hostOf(site.publicUrl)}/<name>/`;
@@ -313,6 +336,19 @@ function DomainField({
         completes, and a <Code>{site.basePath}</Code> build must be rebuilt. A
         name that has served files stays with this team.
       </Text>
+      {admin && (
+        <Textarea
+          label="Reserved-name note"
+          description="Platform admin only: reserved words (help, docs, status, …) are the platform's own page names. Required to claim one; audited."
+          placeholder="The user guide, published by the platform team"
+          value={reservedNote}
+          onChange={(e) => onReservedNote(e.currentTarget.value)}
+          autosize
+          minRows={2}
+          maxLength={2000}
+          disabled={siteHeld(site)}
+        />
+      )}
     </>
   );
 }
@@ -386,6 +422,8 @@ export function SitePage() {
   const navigate = useNavigate();
   const site = useApiQuery(["sites", "site", id], () => api.site(id));
   const standing = useTeamStanding(site.data?.teamId);
+  const limits = useLimits("site", id);
+  const { me } = useAuth();
   // The detail embeds the newest deploys; a chosen order asks the list route.
   const lq = useListQuery({ scope: id });
   const ordered = useApiQuery(
@@ -400,6 +438,7 @@ export function SitePage() {
     name: s?.name ?? "",
     description: s?.description ?? "",
     domain: s?.domain ?? "",
+    reservedNote: "",
     seed: {
       name: s?.name ?? "",
       description: s?.description ?? "",
@@ -516,6 +555,22 @@ export function SitePage() {
     );
   const canWrite = standing.canWrite;
   const primary = sitePrimaryUrl(s);
+  // The hints quote the site's effective caps (a grant, else the soft values).
+  const effective = (key: string) =>
+    limits.data?.limits.find((l) => l.key === key)?.effective;
+  const zip = effective("site.zipBytes");
+  const extracted = effective("site.extractedBytes");
+  const files = effective("site.files");
+  const caps =
+    typeof zip === "number" &&
+    typeof extracted === "number" &&
+    typeof files === "number"
+      ? {
+          zip: fmtBytes(zip),
+          extracted: fmtBytes(extracted),
+          files: files.toLocaleString(),
+        }
+      : undefined;
   const domainHeld = "domain" in sitePatch(edit.form) && siteHeld(s);
   const actions: HeaderAction[] = canWrite
     ? [
@@ -668,7 +723,12 @@ export function SitePage() {
           )}
         />
       </Section>
-      <BuildHints basePath={s.basePath} hostUrl={s.hostUrl} />
+      <LimitsSection
+        limits={limits}
+        standing={standing.standing}
+        description="What one deploy of this site may upload: the zip, what it extracts to and how many files. The usage is the live deploy; a team member may ask a platform admin for more on this site alone."
+      />
+      <BuildHints basePath={s.basePath} hostUrl={s.hostUrl} caps={caps} />
       <ResourceDrawer
         opened={edit.opened}
         onClose={edit.close}
@@ -709,6 +769,9 @@ export function SitePage() {
               clearFieldErr("domain");
             }}
             error={fieldErrs.domain ?? null}
+            admin={me?.role === "admin"}
+            reservedNote={edit.form.reservedNote}
+            onReservedNote={(reservedNote) => edit.patch({ reservedNote })}
           />
         )}
       </ResourceDrawer>

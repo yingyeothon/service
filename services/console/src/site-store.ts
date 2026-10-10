@@ -113,7 +113,8 @@ export function createS3SiteStore({
         const bytes = await r.Body!.transformToByteArray();
         if (bytes.byteLength > maxBytes)
           throw new AppError("payload_too_large", "zip too large");
-        return Buffer.from(bytes);
+        // A view, not a copy: at 64 MiB the copy was a second zip in memory.
+        return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       } catch (e) {
         if (e instanceof AppError) throw e;
         const name = (e as { name?: string }).name;
@@ -160,8 +161,11 @@ export function createS3SiteStore({
     listKeys: async (prefix) => {
       const out: string[] = [];
       let token: string | undefined;
-      // 10 pages = 10k keys, five times the per-deploy entry cap.
-      for (let page = 0; page < 10; page++) {
+      // 30 pages = 30k keys: a deploy at the hard `site.files` (10,000)
+      // holds old ∪ new under the prefix until it prunes, so the bound has
+      // to clear twice the cap with room, or a crashed deploy at that size
+      // would make the prefix unlistable (no redeploy, rename or delete).
+      for (let page = 0; page < 30; page++) {
         const r = await s3.send(
           new ListObjectsV2Command({
             Bucket: siteBucket,
@@ -174,7 +178,7 @@ export function createS3SiteStore({
         if (!token) return out;
       }
       throw new AppError("unavailable", "site storage error", {
-        cause: new Error("prefix listing exceeds 10 pages"),
+        cause: new Error("prefix listing exceeds 30 pages"),
       });
     },
     deleteKeys: async (keys) => {

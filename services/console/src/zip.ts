@@ -13,7 +13,8 @@ export type ZipErrorCode =
   | "zip_unsupported"
   | "zip_corrupt"
   | "zip_too_many_entries"
-  | "zip_too_large"
+  /** The inflated files exceed `maxTotalBytes` (the zip object's own cap is the worker's `zip_too_large`). */
+  | "zip_extracted_too_large"
   | "zip_path_rejected"
   | "zip_no_index_html";
 
@@ -166,7 +167,7 @@ export function readSiteZip(buf: Buffer, limits: ZipLimits): ZipFile[] {
     // enforced during inflating with `maxOutputLength`: a lying header is
     // caught either way.
     const remaining = limits.maxTotalBytes - total;
-    if (uncompressed > remaining) throw new ZipError("zip_too_large");
+    if (uncompressed > remaining) throw new ZipError("zip_extracted_too_large");
     let data: Buffer;
     if (method === 0) {
       if (compressed !== uncompressed)
@@ -180,18 +181,21 @@ export function readSiteZip(buf: Buffer, limits: ZipLimits): ZipFile[] {
       } catch (e) {
         const code = (e as { code?: string }).code;
         if (code === "ERR_BUFFER_TOO_LARGE")
-          throw new ZipError("zip_too_large");
+          throw new ZipError("zip_extracted_too_large");
         throw new ZipError("zip_corrupt", "inflate");
       }
       if (data.length !== uncompressed)
         throw new ZipError("zip_corrupt", "inflated size");
     } else throw new ZipError("zip_unsupported", `method ${method}`);
     total += data.length;
-    if (total > limits.maxTotalBytes) throw new ZipError("zip_too_large");
+    if (total > limits.maxTotalBytes)
+      throw new ZipError("zip_extracted_too_large");
     raw.push({ name: path, data });
+    // Checked as files are kept, not after the loop: at the hard values
+    // (10,000 files, 256 MiB) nothing past the cap is inflated.
+    if (raw.length > limits.maxEntries)
+      throw new ZipError("zip_too_many_entries");
   }
-  if (raw.length > limits.maxEntries)
-    throw new ZipError("zip_too_many_entries");
 
   // Unwrap a zipped folder: no root index.html, one shared top directory.
   let files = raw;

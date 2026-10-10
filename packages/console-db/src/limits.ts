@@ -19,7 +19,7 @@ import {
  * cancellation, and decisions that change a request only while it is pending.
  *
  * Lock order, shared by every writer here and by the channel deletes in
- * `channels.ts`: team row → scope row (project, bundle or channel) → request
+ * `channels.ts`: team row → scope row (project, bundle, channel, collection or site) → request
  * rows → override rows. A writer that inserts takes the team row first
  * (`rules/data.md`, one lock order); the channel deletes never take the team
  * row, so they cannot close a cycle with it. For a team scope the team row
@@ -47,10 +47,11 @@ export const LIMIT_SCOPE_KINDS = [
   "channel",
   "team",
   "collection",
+  "site",
 ] as const;
 export type LimitScopeKind = (typeof LIMIT_SCOPE_KINDS)[number];
 
-/** A project, an asset bundle, a channel, the team itself or a kv collection, by id. */
+/** A project, an asset bundle, a channel, the team itself, a kv collection or a site, by id. */
 export interface LimitScope {
   kind: LimitScopeKind;
   id: string;
@@ -227,6 +228,8 @@ type ScopeColumns = {
   scope_team_id: string | null;
   /** A kv collection as the scope (`m0027`). */
   collection_id: string | null;
+  /** A static site as the scope (`m0030`). */
+  site_id: string | null;
 };
 
 const scopeData = (s: LimitScope): ScopeColumns => ({
@@ -235,6 +238,7 @@ const scopeData = (s: LimitScope): ScopeColumns => ({
   channel_id: s.kind === "channel" ? s.id : null,
   scope_team_id: s.kind === "team" ? s.id : null,
   collection_id: s.kind === "collection" ? s.id : null,
+  site_id: s.kind === "site" ? s.id : null,
 });
 
 /** Exactly one column is set (the CHECK constraint); anything else is a corrupt row. */
@@ -245,6 +249,7 @@ function scopeOf(r: ScopeColumns): LimitScope {
   if (r.scope_team_id !== null) return { kind: "team", id: r.scope_team_id };
   if (r.collection_id !== null)
     return { kind: "collection", id: r.collection_id };
+  if (r.site_id !== null) return { kind: "site", id: r.site_id };
   throw new AppError("internal", "limit row without a scope");
 }
 
@@ -255,7 +260,8 @@ const scopeWhere = (
   | { bundle_id: string }
   | { channel_id: string }
   | { scope_team_id: string }
-  | { collection_id: string } =>
+  | { collection_id: string }
+  | { site_id: string } =>
   s.kind === "project"
     ? { project_id: s.id }
     : s.kind === "bundle"
@@ -264,7 +270,9 @@ const scopeWhere = (
         ? { channel_id: s.id }
         : s.kind === "team"
           ? { scope_team_id: s.id }
-          : { collection_id: s.id };
+          : s.kind === "collection"
+            ? { collection_id: s.id }
+            : { site_id: s.id };
 
 const clampLimit = (n: number | undefined) =>
   Math.min(
@@ -377,9 +385,14 @@ export function createLimitsDb(prisma: PrismaClient): LimitsDb {
             ? await t.$queryRaw<
                 { id: string }[]
               >`SELECT id FROM asset_bundles WHERE id = ${s.id} FOR UPDATE`
-            : await t.$queryRaw<
-                { id: string }[]
-              >`SELECT id FROM projects WHERE id = ${s.id} FOR UPDATE`;
+            : s.kind === "site"
+              ? // Hard-deleted, so no `deleted_at`; `deleteSite` locks team then site, the same order.
+                await t.$queryRaw<
+                  { id: string }[]
+                >`SELECT id FROM sites WHERE id = ${s.id} FOR UPDATE`
+              : await t.$queryRaw<
+                  { id: string }[]
+                >`SELECT id FROM projects WHERE id = ${s.id} FOR UPDATE`;
     return rows.length > 0;
   }
 
@@ -707,7 +720,7 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
   channelsDeleted(ids: readonly string[], at: number): void;
   /** The collection soft delete's half (`KvStoreDb.softDeleteCollection`), the same shape. */
   collectionsDeleted(ids: readonly string[], at: number): void;
-  /** The cascades of deleting a scope row (bundle, project, purged channel or collection). */
+  /** The cascades of deleting a scope row (bundle, project, site, purged channel or collection). */
   scopeDeleted(scope: LimitScope): void;
 } {
   const requests = new Map<string, LimitRequestRow>();

@@ -973,6 +973,8 @@ export interface SiteDeploy {
   zipBytes: number;
   bytes: number;
   files: number;
+  /** The `site.*` values commit pinned for the worker; null before that, and on a move. */
+  limits?: { zipBytes: number; files: number; extractedBytes: number } | null;
   /** Fixed machine code on `failed` (`zip_no_index_html`, `worker_lost`, …). */
   error: string | null;
   createdBy: string | null;
@@ -1425,7 +1427,7 @@ export interface KitConfig {
 // ---- limits (docs/decisions.md *Limit requests (soft/hard)*) --------------
 
 export type LimitScopeKind =
-  "project" | "bundle" | "channel" | "team" | "collection";
+  "project" | "bundle" | "channel" | "team" | "collection" | "site";
 export type LimitUnit = "bytes" | "count" | "seconds";
 /** `unlimited` exists only where the hard value is (`channel.lifetime`). */
 export type LimitValue = number | "unlimited";

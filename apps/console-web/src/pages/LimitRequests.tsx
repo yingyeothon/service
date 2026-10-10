@@ -69,6 +69,8 @@ function scopeUrl(r: LimitRequest): string {
       return teamUrl(r.teamId);
     case "collection":
       return kvUrl(r.scope.id);
+    case "site":
+      return `/sites/${encodeURIComponent(r.scope.id)}`;
   }
 }
 

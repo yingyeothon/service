@@ -166,7 +166,8 @@ describe("limit requests", () => {
     expect((await get(boss, `bundle:${b}`)).statusCode).toBe(200);
     expect((await get(bob, `bundle:${b}`)).statusCode).toBe(404);
     expect((await get(alice, "bundle")).statusCode).toBe(400);
-    expect((await get(alice, "site:x")).statusCode).toBe(400);
+    expect((await get(alice, "app:x")).statusCode).toBe(400);
+    expect((await get(alice, "site:x")).statusCode).toBe(404);
     expect((await get(alice, "team:x")).statusCode).toBe(404);
   });
 

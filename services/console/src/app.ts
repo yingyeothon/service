@@ -1290,6 +1290,7 @@ export function createConsoleApp({
 
   const siteRoutes = createSiteRoutes({
     sites,
+    limits,
     access,
     crumbs,
     history,
@@ -1364,6 +1365,7 @@ export function createConsoleApp({
     team,
     assets,
     kvstore,
+    sites,
     push,
     pushJobs,
     access,

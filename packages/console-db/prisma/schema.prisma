@@ -765,25 +765,27 @@ enum issues_status {
 
 /// Static sites on the shared `g.yyt.life` host (docs/decisions.md *Static sites*).
 model sites {
-  id                String         @id @db.VarChar(64)
-  team_id           String         @db.VarChar(64)
-  project_id        String         @db.VarChar(64)
-  name              String         @db.VarChar(255)
+  id                String            @id @db.VarChar(64)
+  team_id           String            @db.VarChar(64)
+  project_id        String            @db.VarChar(64)
+  name              String            @db.VarChar(255)
   /// S3 key prefix, path segment and host label: random, or a claimed name (`named`). Binary.
-  slug              String         @unique(map: "sites_slug") @db.VarChar(32)
-  description       String?        @db.MediumText
-  owner_id          String?        @db.VarChar(64)
-  current_deploy_id String?        @db.VarChar(64)
+  slug              String            @unique(map: "sites_slug") @db.VarChar(32)
+  description       String?           @db.MediumText
+  owner_id          String?           @db.VarChar(64)
+  current_deploy_id String?           @db.VarChar(64)
   /// Claim held by the deploy (or the delete) in flight; null when idle.
-  active_deploy_id  String?        @db.VarChar(64)
+  active_deploy_id  String?           @db.VarChar(64)
   /// The slug is a name the team chose (docs/decisions.md *Site domains*), not a random one.
-  named             Boolean        @default(false)
+  named             Boolean           @default(false)
   created_at        BigInt
   updated_at        BigInt
-  members           members?       @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_owner")
-  teams             teams          @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_team_fk")
-  projects          projects       @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_project_fk")
+  members           members?          @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_owner")
+  teams             teams             @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_team_fk")
+  projects          projects          @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "sites_project_fk")
   site_deploys      site_deploys[]
+  limit_requests    limit_requests[]
+  limit_overrides   limit_overrides[]
 
   @@unique([team_id, name], map: "sites_team_name")
   @@index([owner_id], map: "sites_owner")
@@ -792,23 +794,27 @@ model sites {
 
 /// One zip upload per row; the row is created with the presign and ends `live` or `failed`.
 model site_deploys {
-  id         String              @id @db.VarChar(64)
-  site_id    String              @db.VarChar(64)
-  status     site_deploys_status @default(pending)
-  zip_bytes  BigInt
-  bytes      BigInt              @default(0)
-  files      Int                 @default(0)
-  error      String?             @db.VarChar(255)
-  object_key String              @db.VarChar(1024)
-  created_by String?             @db.VarChar(64)
-  created_at BigInt
-  updated_at BigInt
-  expires_at BigInt
+  id                  String              @id @db.VarChar(64)
+  site_id             String              @db.VarChar(64)
+  status              site_deploys_status @default(pending)
+  zip_bytes           BigInt
+  bytes               BigInt              @default(0)
+  files               Int                 @default(0)
+  error               String?             @db.VarChar(255)
+  object_key          String              @db.VarChar(1024)
+  created_by          String?             @db.VarChar(64)
+  created_at          BigInt
+  updated_at          BigInt
+  expires_at          BigInt
   /// A move deploy (no zip): the prefix the site's files move to, and from.
-  move_to    String?             @db.VarChar(32)
-  move_from  String?             @db.VarChar(32)
-  sites      sites               @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "site_deploys_site")
-  members    members?            @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "site_deploys_creator")
+  move_to             String?             @db.VarChar(32)
+  move_from           String?             @db.VarChar(32)
+  /// The site's effective `site.*` limits pinned at commit (m0030); null before, and on moves.
+  max_zip_bytes       BigInt?
+  max_files           Int?
+  max_extracted_bytes BigInt?
+  sites               sites               @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "site_deploys_site")
+  members             members?            @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "site_deploys_creator")
 
   @@index([site_id, created_at], map: "site_deploys_site")
   @@index([status, updated_at], map: "site_deploys_status")
@@ -1015,26 +1021,26 @@ enum show_entry_shots_status {
 /// state stack writes while console edits, and a shape change mid-flight would
 /// mix plaintext with ciphertext, or shared rows with owner rows, in one table.
 model kv_collections {
-  id                    String       @id @db.VarChar(64)
-  team_id               String       @db.VarChar(64)
-  project_id            String       @db.VarChar(64)
-  name                  String       @db.VarChar(255)
-  description           String?      @db.MediumText
+  id                    String            @id @db.VarChar(64)
+  team_id               String            @db.VarChar(64)
+  project_id            String            @db.VarChar(64)
+  name                  String            @db.VarChar(255)
+  description           String?           @db.MediumText
   read_scope            kv_scope
   write_scope           kv_scope
-  encrypted             Boolean      @default(false)
-  max_entries           Int          @default(10000)
-  max_entries_per_owner Int          @default(100)
+  encrypted             Boolean           @default(false)
+  max_entries           Int               @default(10000)
+  max_entries_per_owner Int               @default(100)
   /// Creator, kept for display; authorization is team membership.
-  owner_id              String?      @db.VarChar(64)
+  owner_id              String?           @db.VarChar(64)
   /// Soft-delete claim. The name is freed at once (set to the id) and the rows
   /// drain in bounded batches, inline first and by the sweep afterwards.
   deleted_at            BigInt?
   created_at            BigInt
   updated_at            BigInt
-  members               members?     @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_owner")
-  teams                 teams        @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_team_fk")
-  projects              projects     @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_project_fk")
+  members               members?          @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_owner")
+  teams                 teams             @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_team_fk")
+  projects              projects          @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "kv_collections_project_fk")
   kv_entries            kv_entries[]
   kv_keys               kv_keys?
   limit_requests        limit_requests[]
@@ -1297,6 +1303,8 @@ model limit_requests {
   scope_team_id   String?               @db.VarChar(64)
   /// A kv collection as the scope (`kv.maxEntries`, `kv.maxEntriesPerOwner`, m0027).
   collection_id   String?               @db.VarChar(64)
+  /// A static site as the scope (`site.*`, m0030).
+  site_id         String?               @db.VarChar(64)
   limit_key       String                @db.VarChar(64)
   /// Null asks for unlimited.
   requested_value BigInt?
@@ -1314,6 +1322,7 @@ model limit_requests {
   channels        channels?             @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_channel_fk")
   scope_team      teams?                @relation("limit_request_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_team_fk")
   kv_collections  kv_collections?       @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_collection_fk")
+  sites           sites?                @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_site_fk")
   creator         members               @relation("limit_request_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_creator_fk")
   decider         members?              @relation("limit_request_decider", fields: [decided_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_decider_fk")
   limit_overrides limit_overrides[]
@@ -1323,6 +1332,7 @@ model limit_requests {
   @@index([channel_id, limit_key, status], map: "limit_requests_channel")
   @@index([scope_team_id, limit_key, status], map: "limit_requests_scope_team")
   @@index([collection_id, limit_key, status], map: "limit_requests_scope_collection")
+  @@index([site_id, limit_key, status], map: "limit_requests_scope_site")
   @@index([team_id, status, id], map: "limit_requests_team")
   @@index([status, id], map: "limit_requests_status")
   @@index([created_by], map: "limit_requests_creator")
@@ -1341,6 +1351,8 @@ model limit_overrides {
   scope_team_id  String?         @db.VarChar(64)
   /// A kv collection as the scope (m0027).
   collection_id  String?         @db.VarChar(64)
+  /// A static site as the scope (m0030).
+  site_id        String?         @db.VarChar(64)
   limit_key      String          @db.VarChar(64)
   /// Null is unlimited.
   value          BigInt?
@@ -1355,6 +1367,7 @@ model limit_overrides {
   channels       channels?       @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_channel_fk")
   scope_team     teams?          @relation("limit_override_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_team_fk")
   kv_collections kv_collections? @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_collection_fk")
+  sites          sites?          @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_site_fk")
   limit_requests limit_requests? @relation(fields: [request_id], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "limit_overrides_request_fk")
   members        members         @relation(fields: [granted_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_overrides_granter_fk")
 
@@ -1363,6 +1376,7 @@ model limit_overrides {
   @@unique([channel_id, limit_key], map: "limit_overrides_channel")
   @@unique([scope_team_id, limit_key], map: "limit_overrides_scope_team")
   @@unique([collection_id, limit_key], map: "limit_overrides_scope_collection")
+  @@unique([site_id, limit_key], map: "limit_overrides_scope_site")
   @@index([team_id], map: "limit_overrides_team")
   @@index([expires_at], map: "limit_overrides_expires")
   @@index([request_id], map: "limit_overrides_request")

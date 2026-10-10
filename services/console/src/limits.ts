@@ -27,6 +27,7 @@ import {
   type LimitsDb,
   type PushDb,
   type PushJobsDb,
+  type SitesDb,
   type TeamDb,
   type TeamHistoryAction,
 } from "@yyt/console-db";
@@ -40,6 +41,14 @@ import type { Kv } from "@yyt/redis";
 import { z } from "zod";
 import { CHANNEL_MAX_AHEAD_SEC } from "./channels.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
+import {
+  SITE_HARD_EXTRACTED_BYTES,
+  SITE_HARD_FILES,
+  SITE_HARD_ZIP_BYTES,
+  SITE_MAX_EXTRACTED_BYTES,
+  SITE_MAX_FILES,
+  SITE_MAX_ZIP_BYTES,
+} from "./site-deploy.js";
 import type { ResourceHistory } from "./resources.js";
 import type { TeamAccess, TeamAccessHelpers } from "./team-access.js";
 
@@ -197,6 +206,29 @@ export const LIMITS = {
     soft: 20,
     hard: 100,
   },
+  // One static site's deploy (docs/decisions.md *Static sites* §4, todo/58):
+  // the former fixed caps as soft values. The presign checks the zip size,
+  // commit re-checks the zip size and pins all three on the deploy row for the
+  // worker; the hard values are what one `siteDeploy` run holds in memory.
+  // Usage is the last live upload's zip size, extracted size and file count.
+  "site.zipBytes": {
+    scope: "site",
+    unit: "bytes",
+    soft: SITE_MAX_ZIP_BYTES,
+    hard: SITE_HARD_ZIP_BYTES,
+  },
+  "site.files": {
+    scope: "site",
+    unit: "count",
+    soft: SITE_MAX_FILES,
+    hard: SITE_HARD_FILES,
+  },
+  "site.extractedBytes": {
+    scope: "site",
+    unit: "bytes",
+    soft: SITE_MAX_EXTRACTED_BYTES,
+    hard: SITE_HARD_EXTRACTED_BYTES,
+  },
 } as const satisfies Record<string, LimitSpec>;
 
 export type LimitKey = keyof typeof LIMITS;
@@ -319,7 +351,7 @@ export const scopeParam = z
       ctx.addIssue({
         code: "custom",
         message:
-          "scope is project:<id>, bundle:<id>, channel:<id>, team:<id> or collection:<id>",
+          "scope is project:<id>, bundle:<id>, channel:<id>, team:<id>, collection:<id> or site:<id>",
       });
       return z.NEVER;
     }
@@ -381,6 +413,8 @@ export interface LimitRoutesOptions {
     KvStoreDb,
     "findCollection" | "countCollections" | "findCollectionNamesByIds"
   >;
+  /** The `site.*` usage (the current deploy) and the names a request list shows. */
+  sites: Pick<SitesDb, "findSite" | "findDeploy" | "listSitesByIds">;
   /** The usage of `push.appsPerTeam`; absent on a stage without push. */
   push?: Pick<PushDb, "countTeamApps">;
   /** The usage of `push.jobsPerDay`; absent on a stage without push. */
@@ -439,6 +473,7 @@ export function createLimitRoutes({
   team,
   assets,
   kvstore,
+  sites,
   push,
   pushJobs,
   access,
@@ -514,6 +549,14 @@ export function createLimitRoutes({
         );
         return { ...a, scope: { kind: "collection", id: a.row.id } };
       }
+      case "site": {
+        const a = await projectResource(
+          ctx,
+          { kind: "site", id: scope.id },
+          opts,
+        );
+        return { ...a, scope: { kind: "site", id: a.row.id } };
+      }
     }
   }
 
@@ -571,6 +614,24 @@ export function createLimitRoutes({
           }
         : {};
     }
+    if (scope.kind === "site") {
+      // The live tree is the usage: the current deploy's zip, its inflated
+      // size and its file count. `currentDeployId` only ever names an
+      // upload (a move keeps the pointer), but should a move row land here
+      // it knows its file count and neither a zip nor the inflated size.
+      // A site with no live upload shows nothing.
+      const s = await sites.findSite(scope.id);
+      const d = s?.currentDeployId
+        ? await sites.findDeploy(s.currentDeployId)
+        : undefined;
+      if (!d) return {};
+      return {
+        "site.files": d.files,
+        ...(d.moveTo === null
+          ? { "site.zipBytes": d.zipBytes, "site.extractedBytes": d.bytes }
+          : {}),
+      };
+    }
     return {};
   }
 
@@ -627,12 +688,16 @@ export function createLimitRoutes({
     const collections = await ask(ofKind("collection"), (ids) =>
       kvstore.findCollectionNamesByIds(ids),
     );
+    const siteRows = await ask(ofKind("site"), (ids) =>
+      sites.listSitesByIds(ids),
+    );
     const names = {
       project: projects,
       bundle: bundles,
       channel: channels,
       team: teams,
       collection: collections,
+      site: siteRows,
     };
     const login = (id: string | null) =>
       id === null ? null : (members.get(id.toLowerCase())?.githubLogin ?? null);
@@ -783,6 +848,11 @@ export function createLimitRoutes({
       // A soft-deleted collection is no scope (its overrides were dropped).
       if (!k || k.deletedAt !== null) throw gone();
       return { teamId: k.teamId, scope: { kind: "collection", id: k.id } };
+    }
+    if (scope.kind === "site") {
+      const s = await sites.findSite(scope.id);
+      if (!s) throw gone();
+      return { teamId: s.teamId, scope: { kind: "site", id: s.id } };
     }
     const c = await db.findChannelRow(scope.id);
     if (!c?.teamId) throw gone();

@@ -9,6 +9,8 @@ import {
 import {
   DEPLOY_SORT_KEYS,
   SITE_SORT_KEYS,
+  type LimitsDb,
+  type SiteDeployLimits,
   type SiteDeployRow,
   type SiteNameRow,
   type SiteRow,
@@ -27,7 +29,6 @@ import {
   SITE_DELETING,
   SITE_DEPLOYS_PER_HOUR,
   SITE_DEPLOYS_PER_MEMBER_HOUR,
-  SITE_MAX_ZIP_BYTES,
   purgePrefix,
   sitePublicUrl,
   siteStagingKey,
@@ -37,10 +38,17 @@ import { SITE_UPLOAD_URL_TTL_SEC, type SiteStore } from "./site-store.js";
 import {
   SITE_NAME_COUNT_SEC,
   SITE_NAMES_PER_TEAM,
+  isReservedWord,
   siteHostUrl,
-  siteNameProblem,
+  siteNameIssue,
   type SiteMemberBudget,
 } from "./site-domains.js";
+import {
+  formatLimitValue,
+  overLimit,
+  resolveLimits,
+  type LimitKey,
+} from "./limits.js";
 
 /**
  * Shown on the site page, the create form and in `yyt site` help — the one
@@ -61,15 +69,23 @@ const siteName = resourceName.refine(
   "letters, digits, _, - (max 64)",
 );
 const description = z.string().max(2000);
-/** Lower-cased before the grammar: the stored name is byte-exact. */
+/**
+ * Lower-cased before the grammar: the stored name is byte-exact. A reserved
+ * *word* passes here and is judged in the handler, where the identity is
+ * known: a platform admin may claim it with a note (docs/decisions.md *Site
+ * domains* §3); everything else reserved is refused for everyone.
+ */
 const siteDomain = z
   .string()
   .trim()
   .toLowerCase()
   .superRefine((v, c) => {
-    const problem = siteNameProblem(v);
-    if (problem) c.addIssue({ code: "custom", message: problem });
+    const issue = siteNameIssue(v);
+    if (issue && issue.kind !== "reserved-word")
+      c.addIssue({ code: "custom", message: issue.message });
   });
+/** Why a platform admin claims a reserved word; required for one, audited, never shown to members. */
+const reservedNote = z.string().trim().min(1).max(2000);
 
 export const siteCreateBody = z
   .object({ name: siteName, description: description.optional() })
@@ -80,10 +96,12 @@ export const sitePatchBody = z
     description: description.nullable().optional(),
     /** A name claims (moving the site to it), `null` moves back to a random slug. */
     domain: siteDomain.nullable().optional(),
+    reservedNote: reservedNote.optional(),
   })
   .strict();
+/** The size is judged against the site's `site.zipBytes` in the handler (409 with `details`). */
 export const siteDeployBody = z
-  .object({ size: z.number().int().positive().max(SITE_MAX_ZIP_BYTES) })
+  .object({ size: z.number().int().positive() })
   .strict();
 
 const SLUG_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -107,6 +125,8 @@ export type SiteDeployInvoker = (deployId: string) => Promise<void>;
 
 export interface SiteRoutesOptions {
   sites: SitesDb;
+  /** The `site.*` overrides (docs/decisions.md *Limit requests* #1). */
+  limits: Pick<LimitsDb, "listOverrides">;
   access: Pick<
     TeamAccessHelpers,
     "projectAccess" | "projectResource" | "memberTeamIds"
@@ -136,6 +156,7 @@ export interface SiteRoutesOptions {
 
 export function createSiteRoutes({
   sites,
+  limits,
   access,
   crumbs,
   history,
@@ -227,6 +248,8 @@ export function createSiteRoutes({
     zipBytes: d.zipBytes,
     bytes: d.bytes,
     files: d.files,
+    /** The `site.*` values commit pinned for the worker; null before m0030 and on a move. */
+    limits: d.limits,
     error: d.error,
     createdBy: d.createdBy,
     createdAt: d.createdAt,
@@ -284,7 +307,7 @@ export function createSiteRoutes({
     for (let attempt = 0; attempt < 5; attempt++) {
       const candidate = mintSlug();
       // A random `…yyt…` or reserved word would read as the platform's host.
-      if (siteNameProblem(candidate)) continue;
+      if (siteNameIssue(candidate)) continue;
       if (await sites.findSiteBySlug(candidate)) continue;
       if (await sites.findSiteName(candidate)) continue;
       if (store && (await store.listKeys(`${candidate}/`)).length > 0) continue;
@@ -304,6 +327,7 @@ export function createSiteRoutes({
     teamId: string,
     row: SiteRow,
     want: string | null,
+    reserved?: { note: string },
   ): Promise<{ site: SiteRow; deploy?: SiteDeployRow }> {
     await nameSlot(teamId);
     if (row.activeDeployId !== null)
@@ -408,6 +432,9 @@ export function createSiteRoutes({
       slugFrom: row.slug,
       slugTo: target,
       deployId: r.deploy.id,
+      // A platform admin claiming a reserved word (*Site domains* §3): the
+      // audit row is where the reason lives.
+      ...(reserved ? { reserved: true, note: reserved.note } : {}),
     });
     if (r.status === "renamed") return { site: r.site };
     try {
@@ -440,6 +467,31 @@ export function createSiteRoutes({
     new AppError("conflict", "this name is taken", {
       details: { reason: "domain_taken" },
     });
+
+  /** The site's effective `site.*` values: an unexpired override, else the soft value. */
+  async function siteLimits(
+    siteId: string,
+    now: number,
+  ): Promise<SiteDeployLimits> {
+    const limit = await resolveLimits(
+      limits,
+      [{ kind: "site", id: siteId }],
+      now,
+    );
+    return {
+      zipBytes: limit("site.zipBytes"),
+      files: limit("site.files"),
+      extractedBytes: limit("site.extractedBytes"),
+    };
+  }
+  /** 409 naming the key and the value (`details: {limit, value}`), the asset routes' shape. */
+  const overSiteLimit = (key: LimitKey, max: number) =>
+    overLimit(
+      "conflict",
+      key,
+      max,
+      `zip is over this site's ${key} limit (${formatLimitValue(key, max)}); ask for more with a limit request`,
+    );
 
   /** Per site and per member per hour; a move counts like an upload. */
   async function requireDeployBudget(
@@ -639,7 +691,33 @@ export function createSiteRoutes({
         const noop =
           row.activeDeployId === null && want === (row.named ? row.slug : null);
         if (want !== undefined && !noop) {
-          moving = (await rename(id, o.id, row, want)).deploy;
+          // Reserved words are the platform's own page names (*Site domains*
+          // §3): a platform admin claims one with a note, a member never; and
+          // a site that holds one changes or gives it up only by an admin, so
+          // the name cannot pass to a team's ordinary members.
+          const claimingReserved = want !== null && isReservedWord(want);
+          const holdsReserved = row.named && isReservedWord(row.slug);
+          if (claimingReserved && id.role !== "admin")
+            throw new AppError("bad_request", "this name is reserved");
+          if (holdsReserved && id.role !== "admin")
+            throw new AppError(
+              "forbidden",
+              "only a platform admin changes a reserved name",
+            );
+          if (claimingReserved && ctx.body.reservedNote === undefined)
+            throw new AppError(
+              "bad_request",
+              "reservedNote is required to claim a reserved name",
+            );
+          moving = (
+            await rename(
+              id,
+              o.id,
+              row,
+              want,
+              claimingReserved ? { note: ctx.body.reservedNote! } : undefined,
+            )
+          ).deploy;
           fields.push("domain");
         }
         if (Object.keys(patch).length > 0 || fields.length === 0) {
@@ -761,6 +839,11 @@ export function createSiteRoutes({
             "site extraction is not configured",
           );
         const now = nowSec(clock);
+        // The site's effective `site.zipBytes` (a grant, else the soft value):
+        // refused with the key, so a client can point at `yyt limit request`.
+        const caps = await siteLimits(row.id, now);
+        if (ctx.body.size > caps.zipBytes)
+          throw overSiteLimit("site.zipBytes", caps.zipBytes);
         // Grants, not commits: a loop of presigns is the same S3/CDN cost.
         await requireDeployBudget(row.id, id.subject, now);
         // Time-ordered: the deploy list sorts by (created_at, id).
@@ -830,12 +913,14 @@ export function createSiteRoutes({
           );
         const obj = await s.headZip(deploy.objectKey);
         if (!obj) throw new AppError("bad_request", "zip was not uploaded");
-        if (
-          obj.contentLength <= 0 ||
-          obj.contentLength > SITE_MAX_ZIP_BYTES ||
-          obj.contentLength > deploy.zipBytes
-        )
+        if (obj.contentLength <= 0 || obj.contentLength > deploy.zipBytes)
           throw new AppError("bad_request", "uploaded zip has a bad size");
+        // Re-checked against the limits of *now* (a grant lowered after the
+        // presign still refuses, as the asset routes do) and pinned on the
+        // row: from here the worker judges the zip by these values alone.
+        const caps = await siteLimits(row.id, now);
+        if (obj.contentLength > caps.zipBytes)
+          throw overSiteLimit("site.zipBytes", caps.zipBytes);
         if (
           obj.contentType !== undefined &&
           obj.contentType !== "application/zip"
@@ -853,7 +938,7 @@ export function createSiteRoutes({
           !(await sites.transitionDeploy(
             deploy.id,
             "pending",
-            { status: "queued", zipBytes: obj.contentLength },
+            { status: "queued", zipBytes: obj.contentLength, limits: caps },
             now,
           ))
         ) {

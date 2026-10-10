@@ -140,9 +140,11 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
           ? kvstore.collections.get(s.id)?.deletedAt === null
           : s.kind === "bundle"
             ? assets.bundles.has(s.id)
-            : s.kind === "team"
-              ? teamDb.teams.has(s.id)
-              : teamDb.projects.has(s.id),
+            : s.kind === "site"
+              ? sites.sites.has(s.id)
+              : s.kind === "team"
+                ? teamDb.teams.has(s.id)
+                : teamDb.projects.has(s.id),
     writeChannel: (id, w) => {
       const c = db.channels.get(id);
       if (!c || c.deletedAt !== null) return false;
@@ -159,6 +161,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
   const sites = createMemorySitesDb((id) => db.members.has(id), {
     loginOf,
     teamExists: (id) => teamDb.teams.has(id),
+    // `limit_*.site_id` cascades with the site row (m0030).
+    siteDeleted: (id) => limits.scopeDeleted({ kind: "site", id }),
   });
   const posters = createMemoryPosterStore();
   const siteStore = createMemorySiteStore({ distributionId: "EDIST" });

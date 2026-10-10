@@ -1002,6 +1002,8 @@ export function createApiClient({
         name?: string;
         description?: string | null;
         domain?: string | null;
+        /** Platform admin claiming a reserved word (`help`): required then, audited. */
+        reservedNote?: string;
       },
     ) => patch<Site>(`/sites/${enc(id)}`, body),
     deleteSite: (id: string) => del(`/sites/${enc(id)}`),

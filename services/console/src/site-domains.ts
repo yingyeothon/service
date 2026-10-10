@@ -127,10 +127,14 @@ const RESERVED_WORDS = [
   "www",
 ];
 
+/** The platform's host labels and their stage forms: refused for everyone, admins included. */
+export const PLATFORM_LABEL_NAMES: ReadonlySet<string> = new Set(
+  PLATFORM_LABELS.flatMap((l) => [l, `${l}-dev`, `dev-${l}`]),
+);
 /** Exact reserved names (the code's list, as docs/decisions.md says). */
 export const SITE_NAME_RESERVED: ReadonlySet<string> = new Set([
   ...RESERVED_WORDS,
-  ...PLATFORM_LABELS.flatMap((l) => [l, `${l}-dev`, `dev-${l}`]),
+  ...PLATFORM_LABEL_NAMES,
 ]);
 
 /**
@@ -142,17 +146,44 @@ const RESERVED_TOKEN =
   /(^|-)(login|signin|signup|auth|oauth|sso|account|accounts|admin|verify|password|console)(-|$)/;
 const RESERVED_ANYWHERE = /yyt|yingyeothon/;
 
-/** Why a (lower-cased) name is refused, or `undefined` when it is valid. */
-export function siteNameProblem(name: string): string | undefined {
+/** A reserved word (`RESERVED_WORDS`, exact): the one kind of reserved name a platform admin may claim. */
+const RESERVED_WORD_SET: ReadonlySet<string> = new Set(RESERVED_WORDS);
+export const isReservedWord = (name: string): boolean =>
+  RESERVED_WORD_SET.has(name);
+
+/**
+ * Why a (lower-cased) name is refused. `reserved-word` is a name from the
+ * reserved-word list — refused for members, claimable by a platform admin
+ * with a note (docs/decisions.md *Site domains* §3); `reserved` is a
+ * platform host label, a sign-in token or the platform's own name, refused
+ * for everyone.
+ */
+export type SiteNameIssue = {
+  kind: "grammar" | "reserved-word" | "reserved";
+  message: string;
+};
+export function siteNameIssue(name: string): SiteNameIssue | undefined {
   if (!SITE_NAME.test(name) || name.includes("--"))
-    return "3-32 of a-z, 0-9 and - (no leading, trailing or double -)";
+    return {
+      kind: "grammar",
+      message: "3-32 of a-z, 0-9 and - (no leading, trailing or double -)",
+    };
+  const message = "this name is reserved";
+  // Everyone-refused patterns and the platform labels are judged before the
+  // word list, so a word that later also becomes a host label stays closed.
   if (
-    SITE_NAME_RESERVED.has(name) ||
     RESERVED_TOKEN.test(name) ||
-    RESERVED_ANYWHERE.test(name)
+    RESERVED_ANYWHERE.test(name) ||
+    PLATFORM_LABEL_NAMES.has(name)
   )
-    return "this name is reserved";
+    return { kind: "reserved", message };
+  if (isReservedWord(name)) return { kind: "reserved-word", message };
   return undefined;
+}
+
+/** Why a (lower-cased) name is refused for a member, or `undefined` when it is valid. */
+export function siteNameProblem(name: string): string | undefined {
+  return siteNameIssue(name)?.message;
 }
 
 /**

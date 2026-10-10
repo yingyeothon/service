@@ -49,7 +49,7 @@ import {
 import { pushTokenHash } from "../src/push.js";
 import { pushJobsContract, type PushJobsHarness } from "./pushJobs.test.js";
 import type { PrismaClient } from "../src/prisma.js";
-import { KV_COLLECTION, limitsContract } from "./limits.test.js";
+import { KV_COLLECTION, SITE, limitsContract } from "./limits.test.js";
 import {
   dockerAvailable,
   resetTestDb,
@@ -299,6 +299,7 @@ describe.skipIf(!dockerAvailable())(
           createdAt: 1,
         });
         await createKvStoreDb(db.client).insertCollection(KV_COLLECTION);
+        await createSitesDb(db.client).insertSite(SITE);
         for (const id of ["ch_1", "ch_2"])
           await db.client.channels.create({
             data: {
@@ -342,6 +343,8 @@ describe.skipIf(!dockerAvailable())(
           },
           deleteCollection: (id, at) =>
             createKvStoreDb(db.client).softDeleteCollection(id, at),
+          deleteSite: (id, at) =>
+            createSitesDb(db.client).deleteSite(id, at, false),
         };
       });
 
@@ -385,6 +388,11 @@ describe.skipIf(!dockerAvailable())(
         await expect(
           row({ project_id: "prj_1", scope_team_id: "team_1" }),
         ).rejects.toThrow();
+        await createSitesDb(db.client).insertSite(SITE);
+        await expect(
+          row({ site_id: "st_1", channel_id: "ch_1" }),
+        ).rejects.toThrow();
+        await expect(row({ site_id: "st_1" })).resolves.toBeDefined();
         await expect(row({ channel_id: "ch_1" })).resolves.toBeDefined();
         await expect(row({ scope_team_id: "team_1" })).resolves.toBeDefined();
       });

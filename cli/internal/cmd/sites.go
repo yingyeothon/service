@@ -122,9 +122,6 @@ type siteDeployGrant struct {
 // services/console/src/sites.ts and the SPA (docs/decisions.md *Static sites*).
 const siteSharedOriginWarning = "Every site on this host shares one origin: another site here can read this page, its storage and its in-memory state (same-origin frames). Never keep a credential (JWT, API token) in localStorage, sessionStorage or IndexedDB; use short-lived tokens minted per session and treat this host as untrusted."
 
-// siteMaxZipBytes mirrors SITE_MAX_ZIP_BYTES (decision 4).
-const siteMaxZipBytes = 5 * 1024 * 1024
-
 func newSites(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "site",
@@ -298,7 +295,7 @@ func newSiteGet(a *App, siteID siteResolver) *cobra.Command {
 // newSiteUpdate is its own command rather than newResourceUpdate: a domain
 // claim moves the files (202) and is waited for like a deploy.
 func newSiteUpdate(a *App, siteID siteResolver) *cobra.Command {
-	var name, description, domain string
+	var name, description, domain, reservedNote string
 	var clearDomain, noWait bool
 	var wait time.Duration
 	c := &cobra.Command{
@@ -312,7 +309,10 @@ func newSiteUpdate(a *App, siteID siteResolver) *cobra.Command {
 			"counts against the hourly deploy caps, and a team gets one name request per\n" +
 			"second): this command waits until the move settles unless --no-wait. The\n" +
 			"old URLs stop working when it completes, a `/<slug>/` build must be\n" +
-			"rebuilt, and a name that has served files stays with this team.",
+			"rebuilt, and a name that has served files stays with this team.\n\n" +
+			"Reserved words (help, docs, status, ...) are the platform's own page names:\n" +
+			"a platform admin claims one with --reserved-note; only an admin changes or\n" +
+			"clears such a name afterwards.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := map[string]any{}
@@ -325,6 +325,12 @@ func newSiteUpdate(a *App, siteID siteResolver) *cobra.Command {
 					return fmt.Errorf("--domain needs a name; --clear-domain goes back to a random slug")
 				}
 				body["domain"] = domain
+			}
+			if cmd.Flags().Changed("reserved-note") {
+				if !cmd.Flags().Changed("domain") {
+					return fmt.Errorf("--reserved-note goes with --domain")
+				}
+				body["reservedNote"] = reservedNote
 			}
 			if clearDomain {
 				body["domain"] = nil // untyped nil: JSON null
@@ -385,6 +391,7 @@ func newSiteUpdate(a *App, siteID siteResolver) *cobra.Command {
 	f.StringVar(&name, "name", "", "new site name (unique within the team)")
 	f.StringVar(&description, "description", "", "new description (empty clears it)")
 	f.StringVar(&domain, "domain", "", "claim this name for the site's host and path (3-32 of a-z, 0-9, -)")
+	f.StringVar(&reservedNote, "reserved-note", "", "platform admin only: why this site takes a reserved word such as help (required for one; audited)")
 	f.BoolVar(&clearDomain, "clear-domain", false, "give the name up and move back to a random slug")
 	f.DurationVar(&wait, "wait", 6*time.Minute, "how long to poll for a move to finish")
 	f.BoolVar(&noWait, "no-wait", false, "return right after a move is queued; poll with `yyt site get`")
@@ -529,8 +536,10 @@ func newSiteDeploy(a *App, siteID siteResolver) *cobra.Command {
 		Use:   "deploy <site> <dir|file.zip>",
 		Short: "Publish a build directory (zipped here) or a zip; waits until it is live",
 		Long: "Publish a build directory or a zip as the site's new live tree.\n\n" +
-			"A directory is zipped in memory (dot-files and symlinks skipped; at most\n" +
-			"5 MiB compressed). The console extracts it asynchronously: this command polls\n" +
+			"A directory is zipped in memory (dot-files and symlinks skipped). The zip\n" +
+			"must fit the site's zip limit (5 MiB unless raised: `yyt limit list --site`,\n" +
+			"`yyt limit request --site <site> site.zipBytes 16MiB`). The console extracts\n" +
+			"it asynchronously: this command polls\n" +
 			"the deploy until it is live or failed and prints the public URL. The\n" +
 			"previous files keep serving until the new set is complete; files missing\n" +
 			"from the new build are removed.",
@@ -544,13 +553,13 @@ func newSiteDeploy(a *App, siteID siteResolver) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(payload) > siteMaxZipBytes {
-				return fmt.Errorf("zip is %d bytes; a site deploy is at most %d bytes (5 MiB) — trim source maps or large media", len(payload), siteMaxZipBytes)
-			}
 			ctx := cmd.Context()
+			// The zip cap is the site's effective `site.zipBytes` (a grant, else
+			// 5 MiB): the server refuses with the key, and the hint names the
+			// limit request that raises it for this site.
 			var grant siteDeployGrant
 			if err := cc.cl.Do(ctx, http.MethodPost, "/sites/"+api.PathID(id)+"/deploys", map[string]any{"size": len(payload)}, &grant); err != nil {
-				return err
+				return withLimitHint(err, " --site "+args[0])
 			}
 			if err := putPresigned(ctx, cc.cl, uploadGrant{UploadID: grant.DeployID, URL: grant.URL, Method: grant.Method, Headers: grant.Headers}, bytes.NewReader(payload), int64(len(payload))); err != nil {
 				return err

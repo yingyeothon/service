@@ -415,8 +415,10 @@ functions:
     # One deploy at a time (the api serialises per site anyway); holds one
     # MariaDB connection — counted in the budget table (rules/data.md).
     reservedConcurrency: 1
-    # Inflates up to 50 MB and PUTs up to 2000 objects.
-    memorySize: 512
+    # Holds the zip and every inflated file in memory: up to 64 MiB + 256 MiB
+    # at the hard values of `site.*` (docs/decisions.md *Limit requests* #1),
+    # and PUTs up to 10,000 objects. Billed only while a deploy runs.
+    memorySize: 1024
     timeout: 300
     # Every path ends in a status write; a retry could only repeat a failure.
     maximumRetryAttempts: 0

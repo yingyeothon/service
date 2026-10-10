@@ -4,6 +4,7 @@ import {
   createMemoryConsoleDb,
   createMemoryKvStoreDb,
   createMemoryLimitsDb,
+  createMemorySitesDb,
   type ChannelRow,
   type LimitRequestInput,
   type LimitScope,
@@ -32,6 +33,8 @@ export interface LimitsEnv {
   deleteBundle(id: string): Promise<void>;
   /** `KvStoreDb.softDeleteCollection` over the same store (the limit half rides along). */
   deleteCollection(id: string, at: number): Promise<boolean>;
+  /** `SitesDb.deleteSite` over the same store (a hard delete; the FK cascades, m0030). */
+  deleteSite(id: string, at: number): Promise<boolean>;
 }
 
 /** The kv collection every `make` seeds beside the bundle (`kv_1`, the defaults). */
@@ -50,10 +53,20 @@ export const KV_COLLECTION = {
   at: 1,
 };
 
+/** The site every `make` seeds beside the bundle (`st_1`). */
+export const SITE = {
+  id: "st_1",
+  name: "web",
+  slug: "abcdefghi",
+  teamId: "team_1",
+  projectId: "prj_1",
+  createdAt: 1,
+};
+
 /**
- * Seeded by every `make`: team `team_1` with project `prj_1`, bundle `ab_1`
- * and kv collection `kv_1` in it, channels `ch_1` and `ch_2` (expiring at
- * 1000), members m1–m3.
+ * Seeded by every `make`: team `team_1` with project `prj_1`, bundle `ab_1`,
+ * kv collection `kv_1` and site `st_1` in it, channels `ch_1` and `ch_2`
+ * (expiring at 1000), members m1–m3.
  */
 export const RULES = { cooldownSec: 100, maxPendingPerTeam: 3 };
 const BUNDLE: LimitScope = { kind: "bundle", id: "ab_1" };
@@ -62,6 +75,7 @@ const CH1: LimitScope = { kind: "channel", id: "ch_1" };
 const CH2: LimitScope = { kind: "channel", id: "ch_2" };
 const TEAM: LimitScope = { kind: "team", id: "team_1" };
 const COLLECTION: LimitScope = { kind: "collection", id: "kv_1" };
+const SITE_SCOPE: LimitScope = { kind: "site", id: "st_1" };
 
 const req = (
   id: string,
@@ -629,6 +643,60 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("a site is a scope, and its hard delete cascades into its request and override (m0030)", async () => {
+    const env = await make();
+    const { limits } = env;
+    await limits.createRequest(
+      req("lr_01", {
+        scope: SITE_SCOPE,
+        key: "site.zipBytes",
+        requestedValue: 16 * 1024 * 1024,
+      }),
+      RULES,
+    );
+    expect((await limits.findRequest("lr_01"))?.scope).toEqual(SITE_SCOPE);
+    await limits.setOverride({
+      id: "lo_1",
+      teamId: "team_1",
+      scope: SITE_SCOPE,
+      key: "site.files",
+      value: 5000,
+      note: "n",
+      grantedBy: "m2",
+      grantedAt: 1,
+    });
+    expect(
+      (await limits.listOverrides([SITE_SCOPE, BUNDLE], 0)).map((o) => [
+        o.scope.kind,
+        o.key,
+        o.value,
+      ]),
+    ).toEqual([["site", "site.files", 5000]]);
+    // One override per site and key: a second set replaces, never duplicates.
+    await limits.setOverride({
+      id: "lo_2",
+      teamId: "team_1",
+      scope: SITE_SCOPE,
+      key: "site.files",
+      value: 6000,
+      note: "n",
+      grantedBy: "m2",
+      grantedAt: 2,
+    });
+    expect(
+      (await limits.listOverrides([SITE_SCOPE], 0)).map((o) => o.value),
+    ).toEqual([6000]);
+    expect(await env.deleteSite("st_1", 7)).toBe(true);
+    expect(await limits.findRequest("lr_01")).toBeUndefined();
+    expect(await limits.listOverrides([SITE_SCOPE], 0)).toEqual([]);
+    await expect(
+      limits.createRequest(
+        req("lr_02", { scope: SITE_SCOPE, key: "site.zipBytes" }),
+        RULES,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("the sweep deletes expired overrides in batches and purges old decisions", async () => {
     const { limits } = await make();
     const base = {
@@ -718,6 +786,9 @@ describe("memory limits repository", () => {
     const kvstore = createMemoryKvStoreDb({
       collectionsDeleted: (ids, at) => limits.collectionsDeleted(ids, at),
     });
+    const sites = createMemorySitesDb(undefined, {
+      siteDeleted: (id) => limits.scopeDeleted({ kind: "site", id }),
+    });
     // The hooks above only run after `limits` exists.
     const limits = createMemoryLimitsDb({
       scopeExists: (s) =>
@@ -727,9 +798,11 @@ describe("memory limits repository", () => {
             ? kvstore.collections.get(s.id)?.deletedAt === null
             : s.kind === "bundle"
               ? assets.bundles.has(s.id)
-              : s.kind === "team"
-                ? s.id === "team_1"
-                : s.id === "prj_1",
+              : s.kind === "site"
+                ? sites.sites.has(s.id)
+                : s.kind === "team"
+                  ? s.id === "team_1"
+                  : s.id === "prj_1",
       writeChannel: (id, w) => {
         const c = db.channels.get(id);
         if (!c || c.deletedAt !== null) return false;
@@ -741,6 +814,7 @@ describe("memory limits repository", () => {
         return true;
       },
     });
+    await sites.insertSite(SITE);
     await assets.insertBundle({
       id: "ab_1",
       name: "maps",
@@ -786,6 +860,7 @@ describe("memory limits repository", () => {
         await assets.deleteBundle(id);
       },
       deleteCollection: (id, at) => kvstore.softDeleteCollection(id, at),
+      deleteSite: (id, at) => sites.deleteSite(id, at, false),
     };
   });
 });

@@ -377,17 +377,18 @@ describe("sites", () => {
     expect(
       (await deploy(h, alice, s.id, siteZip(), { size: 10 })).statusCode,
     ).toBe(400);
-    // Over the cap at grant time.
-    expect(
-      (
-        await h.app(
-          ev("POST", `/sites/${s.id}/deploys`, {
-            body: { size: SITE_MAX_ZIP_BYTES + 1 },
-            headers: alice.cookie,
-          }),
-        )
-      ).statusCode,
-    ).toBe(400);
+    // Over the site's `site.zipBytes` at grant time: 409 naming the key.
+    const over = await h.app(
+      ev("POST", `/sites/${s.id}/deploys`, {
+        body: { size: SITE_MAX_ZIP_BYTES + 1 },
+        headers: alice.cookie,
+      }),
+    );
+    expect(over.statusCode).toBe(409);
+    expect(parse(over).error.details).toEqual({
+      limit: "site.zipBytes",
+      value: SITE_MAX_ZIP_BYTES,
+    });
     // The site is not busy after refused commits.
     expect(
       parse(await h.app(ev("GET", `/sites/${s.id}`, { headers: alice.cookie })))
@@ -423,6 +424,131 @@ describe("sites", () => {
       ).statusCode,
     ).toBe(409);
     expect((await deploy(h, alice, s.id, siteZip())).statusCode).toBe(202);
+  });
+
+  it("per-site limits: a grant raises the zip cap, commit pins the values and the worker judges by them (todo/58)", async () => {
+    const h = harness();
+    const alice = await h.team("alice");
+    const boss = await h.login("boss", "admin");
+    const s = await mkSite(h, alice);
+    const MiB = 1024 * 1024;
+    const limitsOf = async () =>
+      parse(
+        await h.app(
+          ev("GET", "/limits", {
+            headers: alice.cookie,
+            query: { scope: `site:${s.id}` },
+          }),
+        ),
+      );
+    // The three keys with their soft values; no live upload, no usage.
+    expect((await limitsOf()).limits).toMatchObject([
+      { key: "site.zipBytes", soft: 5 * MiB, hard: 64 * MiB, usage: null },
+      { key: "site.files", soft: 2000, hard: 10_000, usage: null },
+      { key: "site.extractedBytes", soft: 50 * MiB, hard: 256 * MiB },
+    ]);
+    // Refused → request → approved → the same grant passes.
+    const grant = (size: number) =>
+      h.app(
+        ev("POST", `/sites/${s.id}/deploys`, {
+          body: { size },
+          headers: alice.cookie,
+        }),
+      );
+    expect((await grant(6 * MiB)).statusCode).toBe(409);
+    h.clock.tick(1);
+    const req = await h.app(
+      ev("POST", "/limit-requests", {
+        headers: alice.cookie,
+        body: {
+          scope: `site:${s.id}`,
+          key: "site.zipBytes",
+          value: 16 * MiB,
+          reason: "the user guide",
+        },
+      }),
+    );
+    expect(req.statusCode, req.body).toBe(201);
+    expect(parse(req).scope).toEqual({ kind: "site", id: s.id, name: "web" });
+    h.clock.tick(1);
+    const ok = await h.app(
+      ev("POST", `/admin/limit-requests/${parse(req).id}/approve`, {
+        headers: boss.cookie,
+        body: { note: "ok" },
+      }),
+    );
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect((await limitsOf()).limits[0]).toMatchObject({
+      key: "site.zipBytes",
+      effective: 16 * MiB,
+    });
+    // Commit re-checks against the limits of now and pins them on the row.
+    const g = await grant(6 * MiB);
+    expect(g.statusCode, g.body).toBe(201);
+    const { deployId } = parse(g);
+    h.siteStore.stageZip(siteStagingKey(deployId), siteZip());
+    const c = await h.app(
+      ev("POST", `/sites/${s.id}/deploys/${deployId}/commit`, {
+        headers: alice.cookie,
+      }),
+    );
+    expect(c.statusCode, c.body).toBe(202);
+    expect(parse(c).limits).toEqual({
+      zipBytes: 16 * MiB,
+      files: 2000,
+      extractedBytes: 50 * MiB,
+    });
+    // A grant revoked while the zip waits changes nothing already committed.
+    h.clock.tick(1);
+    const revoke = await h.app(
+      ev("DELETE", `/admin/limit-overrides/site/${s.id}/site.zipBytes`, {
+        headers: boss.cookie,
+        body: { note: "revoked" },
+      }),
+    );
+    expect(revoke.statusCode, revoke.body).toBe(204);
+    expect(await work(h, deployId)).toMatchObject({ status: "live", files: 3 });
+    // The live tree is the usage.
+    expect((await limitsOf()).limits).toMatchObject([
+      { key: "site.zipBytes", effective: 5 * MiB, usage: siteZip().length },
+      { key: "site.files", usage: 3 },
+      { key: "site.extractedBytes", usage: expect.any(Number) },
+    ]);
+    // But a new grant is judged by the limits of now: 6 MiB is over again.
+    expect((await grant(6 * MiB)).statusCode).toBe(409);
+    // A commit after the grant is lowered refuses too (the asset rule).
+    const g2 = await grant(5 * MiB);
+    expect(g2.statusCode).toBe(201);
+    // The worker reads the pinned file cap: an admin's lower cap fails the deploy with the key.
+    h.clock.tick(1);
+    const low = await h.app(
+      ev("PUT", `/admin/limit-overrides/site/${s.id}/site.files`, {
+        headers: boss.cookie,
+        body: { value: 2, note: "tiny" },
+      }),
+    );
+    expect(low.statusCode, low.body).toBe(200);
+    h.siteStore.stageZip(siteStagingKey(parse(g2).deployId), siteZip("two"));
+    const c2 = await h.app(
+      ev("POST", `/sites/${s.id}/deploys/${parse(g2).deployId}/commit`, {
+        headers: alice.cookie,
+      }),
+    );
+    expect(c2.statusCode, c2.body).toBe(202);
+    expect(parse(c2).limits).toMatchObject({ files: 2 });
+    expect(await work(h, parse(g2).deployId)).toMatchObject({
+      status: "failed",
+      error: "zip_too_many_entries: site.files 2",
+    });
+    // Deleting the site takes its request and override with it (FK cascade).
+    h.clock.tick(1);
+    const del = await h.app(
+      ev("DELETE", `/sites/${s.id}`, { headers: alice.cookie }),
+    );
+    expect(del.statusCode, del.body).toBe(204);
+    expect(
+      await h.limits.listOverrides([{ kind: "site", id: s.id }], 0),
+    ).toEqual([]);
   });
 
   it("storage and CDN failures end in failed, never in a stuck row", async () => {
@@ -779,6 +905,66 @@ describe("site names (docs/decisions.md *Site domains*)", () => {
   const get = async (h: H, u: Team, siteId: string) =>
     parse(await h.app(ev("GET", `/sites/${siteId}`, { headers: u.cookie })));
 
+  it("a platform admin claims a reserved word with a note; members cannot claim, change or release it (todo/58)", async () => {
+    const h = harness();
+    const boss = await h.team("boss", "admin");
+    await h.login("carol", "member");
+    await h.seat(boss, boss.teamId, "carol");
+    const carol = {
+      ...(await h.login("carol", "member")),
+      teamId: boss.teamId,
+      prjId: boss.prjId,
+    };
+    const s = await mkSite(h, boss, "help-site");
+    // The note is required for an admin.
+    const noNote = await patch(h, boss, s.id, { domain: "help" });
+    expect(noNote.statusCode).toBe(400);
+    expect(parse(noNote).error.message).toMatch(/reservedNote/);
+    // Platform labels, sign-in tokens and the platform's name stay refused for an admin too.
+    for (const bad of ["api", "dev-g", "console", "my-login", "yyt-help"]) {
+      h.clock.tick(1);
+      const r = await patch(h, boss, s.id, {
+        domain: bad,
+        reservedNote: "official page",
+      });
+      expect(r.statusCode, bad).toBe(400);
+    }
+    h.clock.tick(1);
+    const r = await patch(h, boss, s.id, {
+      domain: "help",
+      reservedNote: "the platform's user guide",
+    });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(parse(r)).toMatchObject({ slug: "help", domain: "help" });
+    const audit = h.db.audits.find((a) => a.action === "site.domain");
+    expect(audit?.detail).toMatchObject({
+      to: "help",
+      reserved: true,
+      note: "the platform's user guide",
+    });
+    // A seated member of the same team: cannot change or give the name up.
+    h.clock.tick(1);
+    const change = await patch(h, carol, s.id, { domain: "other-name" });
+    expect(change.statusCode, change.body).toBe(403);
+    h.clock.tick(1);
+    expect((await patch(h, carol, s.id, { domain: null })).statusCode).toBe(
+      403,
+    );
+    // The description is still theirs to edit.
+    expect(
+      (await patch(h, carol, s.id, { description: "guide" })).statusCode,
+    ).toBe(200);
+    // The admin releases it; the slug is random again and a member cannot reclaim it.
+    h.clock.tick(1);
+    const back = await patch(h, boss, s.id, { domain: null });
+    expect(back.statusCode, back.body).toBe(200);
+    expect(parse(back).domain).toBeNull();
+    h.clock.tick(1);
+    expect((await patch(h, carol, s.id, { domain: "help" })).statusCode).toBe(
+      400,
+    );
+  });
+
   it("claims a name on an empty site at once; URLs and host follow the slug", async () => {
     const h = harness();
     const alice = await h.team("alice");
@@ -839,6 +1025,11 @@ describe("site names (docs/decisions.md *Site domains*)", () => {
       const r = await patch(h, alice, s.id, { domain: bad });
       expect(r.statusCode, bad).toBe(400);
     }
+    // A reserved word is a 400 for a member even with a note.
+    expect(
+      (await patch(h, alice, s.id, { domain: "help", reservedNote: "please" }))
+        .statusCode,
+    ).toBe(400);
     // No 400 above spent the slot: this one passes in the same second.
     expect((await patch(h, alice, s.id, { domain: "abc" })).statusCode).toBe(
       200,
