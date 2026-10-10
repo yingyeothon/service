@@ -98,7 +98,10 @@ interface Built {
   app: MatchApp;
   deferred: Deferred;
   http: (event: HttpEvent) => Promise<HttpResult>;
-  debug?: (event: HttpEvent) => Promise<HttpResult>;
+  debugDeps: Pick<
+    Parameters<typeof createDebugHandler>[0],
+    "channels" | "kv" | "matcher" | "clock"
+  >;
 }
 
 function build(): Built {
@@ -156,26 +159,7 @@ function build(): Built {
     clock,
     logger,
   });
-  let debug: Built["debug"];
-  if (stage === "dev" && process.env.DEBUG_HOOKS === "1") {
-    try {
-      debug = createDebugHandler({
-        debugKey: process.env.DEBUG_KEY ?? "",
-        channels,
-        kv,
-        matcher,
-        deferredTick: (o) => deferred.tick(o),
-        clock,
-        logger,
-      });
-      logger.warn("debug hooks enabled", { stage });
-    } catch (e) {
-      logger.error("debug hooks disabled", {
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-  return { app, deferred, http, debug };
+  return { app, deferred, http, debugDeps: { channels, kv, matcher, clock } };
 }
 
 let built: Built | undefined;
@@ -205,8 +189,38 @@ export const tick = async (_event: unknown, ctx?: Context) => {
 };
 export const http = (event: HttpEvent): Promise<HttpResult> =>
   get().http(event);
+/**
+ * Built on the first `debug` call only: `DEBUG_KEY` is set on that function
+ * alone, so building it in `build()` made every other function log
+ * "debug hooks disabled" on a dev cold start.
+ */
+let debugHandler:
+  ((event: HttpEvent) => Promise<HttpResult>) | null | undefined;
+function getDebug() {
+  if (debugHandler !== undefined) return debugHandler;
+  const stage = env("STAGE");
+  if (stage !== "dev" || process.env.DEBUG_HOOKS !== "1")
+    return (debugHandler = null);
+  // Outside the cache: a `build()` failure throws on every call, as before.
+  const b = get();
+  debugHandler = null;
+  try {
+    debugHandler = createDebugHandler({
+      ...b.debugDeps,
+      debugKey: process.env.DEBUG_KEY ?? "",
+      deferredTick: (o) => b.deferred.tick(o),
+      logger,
+    });
+    logger.warn("debug hooks enabled", { stage });
+  } catch (e) {
+    logger.error("debug hooks disabled", {
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+  return debugHandler;
+}
 export const debug = async (event: HttpEvent): Promise<HttpResult> => {
-  const d = get().debug;
+  const d = getDebug();
   if (!d) return { statusCode: 404, headers: {}, body: "" };
   return d(event);
 };
