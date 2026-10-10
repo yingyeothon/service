@@ -1,14 +1,16 @@
-import type {
-  AuthConfig,
-  Channel,
-  ChannelKind,
-  LobbyConfig,
-  MatchConfig,
-  MatchMode,
-  PushConfig,
-  PushSender,
-  SayScope,
-  TopicConfig,
+import {
+  MATCH_NOTIFY_STATES,
+  type AuthConfig,
+  type Channel,
+  type ChannelKind,
+  type LobbyConfig,
+  type MatchConfig,
+  type MatchMode,
+  type MatchNotifyState,
+  type PushConfig,
+  type PushSender,
+  type SayScope,
+  type TopicConfig,
 } from "../types";
 import { packageNameProblem, serviceAccountProblem } from "./push";
 
@@ -51,6 +53,8 @@ export interface ChannelFormState {
   resultTtlSec: string;
   /** match, deferred only; empty = none (the mode works by polling). */
   pushChannelId: string;
+  /** match, deferred only: an empty title = that state's push stays data-only. */
+  notify: Record<MatchNotifyState, { title: string; body: string }>;
   capPos: boolean;
   capSay: SayScope[];
   capParty: boolean;
@@ -93,6 +97,11 @@ export const emptyForm: ChannelFormState = {
   acceptTimeoutSec: String(MATCH_BOUNDS.deferred.acceptTimeoutSec[2]),
   resultTtlSec: String(MATCH_BOUNDS.deferred.resultTtlSec[2]),
   pushChannelId: "",
+  notify: {
+    proposed: { title: "", body: "" },
+    confirmed: { title: "", body: "" },
+    expired: { title: "", body: "" },
+  },
   capPos: true,
   capSay: ["zone"],
   capParty: true,
@@ -172,6 +181,15 @@ export function formFromChannel(ch: Channel): ChannelFormState {
     acceptTimeoutSec: String(c.acceptTimeoutSec ?? f.acceptTimeoutSec),
     resultTtlSec: String(c.resultTtlSec ?? f.resultTtlSec),
     pushChannelId: c.pushChannelId ?? "",
+    notify: Object.fromEntries(
+      MATCH_NOTIFY_STATES.map((k) => [
+        k,
+        {
+          title: c.notification?.[k]?.title ?? "",
+          body: c.notification?.[k]?.body ?? "",
+        },
+      ]),
+    ) as ChannelFormState["notify"],
   };
 }
 
@@ -201,7 +219,8 @@ export type MatchField =
   | "waitTimeoutSec"
   | "acceptTimeoutSec"
   | "resultTtlSec"
-  | "pushChannelId";
+  | "pushChannelId"
+  | "notification";
 export type MatchFieldErrors = Partial<Record<MatchField, string>>;
 
 const MATCH_LABELS = {
@@ -311,6 +330,7 @@ export function matchRefusal(e: unknown): MatchFieldErrors | null {
     "acceptTimeoutSec",
     "resultTtlSec",
     "pushChannelId",
+    "notification",
   ];
   for (const d of details as { path?: unknown; message?: unknown }[]) {
     if (typeof d.path !== "string" || !fields.includes(d.path)) return null;
@@ -467,5 +487,25 @@ export function buildConfig(
     acceptTimeoutSec: int(f.acceptTimeoutSec, "accept window"),
     resultTtlSec: int(f.resultTtlSec, "result TTL"),
     ...(f.pushChannelId === "" ? {} : { pushChannelId: f.pushChannelId }),
+    ...notificationOf(f.notify),
   } satisfies MatchConfig;
+}
+
+/**
+ * The states given a title; none = no key, which clears the text on a PATCH
+ * (a full replace). A body without a title is refused here, as the server
+ * would.
+ */
+function notificationOf(
+  n: ChannelFormState["notify"],
+): Pick<MatchConfig, "notification"> {
+  const out: NonNullable<MatchConfig["notification"]> = {};
+  for (const k of MATCH_NOTIFY_STATES) {
+    const title = n[k].title.trim();
+    const body = n[k].body.trim();
+    if (title === "" && body !== "")
+      throw new Error(`the ${k} notification needs a title`);
+    if (title !== "") out[k] = body === "" ? { title } : { title, body };
+  }
+  return Object.keys(out).length > 0 ? { notification: out } : {};
 }

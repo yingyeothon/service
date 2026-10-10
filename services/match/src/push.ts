@@ -184,10 +184,19 @@ export function createMatchPush({
     const groups = new Map<string, PushMessage[]>();
     for (const t of targets)
       for (const n of byUser.get(t.userId) ?? []) {
+        // Data-only unless the channel gave this state a text
+        // (`docs/decisions.md` *Push notifications* #11h): then FCM shows it
+        // and the same data still reaches the app.
+        const text =
+          n.state === "failed" ? undefined : ch.config.notification?.[n.state];
         const message: PushMessage = {
           target: { token: t.token },
-          // Data-only: no `notification`, so the app decides what to show.
           data: { channelId: ch.id, matchId: n.matchId ?? "", state: n.state },
+          ...(text === undefined
+            ? {}
+            : {
+                notification: { title: text.title, body: text.body ?? "" },
+              }),
           priority: "high",
         };
         const g = groups.get(t.firebaseProject);

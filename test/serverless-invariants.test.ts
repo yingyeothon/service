@@ -395,13 +395,38 @@ describe("serverless.yml invariants", () => {
       readFileSync(join(root, "services/state/serverless.yml"), "utf8"),
       { logLevel: "silent" },
     ) as typeof doc;
-    const pushIam = (d: typeof doc) =>
-      d.provider.iam.role.statements.filter((st) =>
-        /ssm:|kms:/.test(JSON.stringify(st.Action)),
+    const pushIam = (list: Record<string, unknown>[]) =>
+      list.filter((st) => /ssm:|kms:/.test(JSON.stringify(st.Action)));
+    // Only `worker` and `tick` hold the path: they run on `PushSenderRole`,
+    // and the provider role the player-facing functions share has none.
+    expect(pushIam(doc.provider.iam.role.statements)).toEqual([]);
+    for (const [name, fn] of Object.entries(fns))
+      expect((fn as { role?: string }).role, name).toBe(
+        name === "worker" || name === "tick" ? "PushSenderRole" : undefined,
       );
-    expect(pushIam(doc)).toEqual(pushIam(state));
-    expect(pushIam(doc)).toHaveLength(2);
-    expect(JSON.stringify(pushIam(doc))).not.toMatch(
+    const sender = (
+      parse(yml, { logLevel: "silent" }) as {
+        resources: {
+          Resources: Record<
+            string,
+            {
+              Properties: {
+                Policies: {
+                  PolicyDocument: { Statement: Record<string, unknown>[] };
+                }[];
+              };
+            }
+          >;
+        };
+      }
+    ).resources.Resources.PushSenderRole!.Properties.Policies.flatMap(
+      (p) => p.PolicyDocument.Statement,
+    );
+    expect(pushIam(sender)).toEqual(
+      pushIam(state.provider.iam.role.statements),
+    );
+    expect(pushIam(sender)).toHaveLength(2);
+    expect(JSON.stringify(pushIam(sender))).not.toMatch(
       /ssm:(\*|GetParameter"|GetParameters")/,
     );
     // The HTTP API is throttled per stage, where CloudFormation reads it.
@@ -639,13 +664,33 @@ describe("serverless.yml invariants", () => {
     for (const s of flat(doc.provider.iam.role.statements))
       for (const a of actions(s)) expect(a, a).not.toSatisfy(grantsUpdate);
     expect(doc.provider.iam.role.managedPolicies).toBeUndefined();
+    // `siteDeploy` and `gatewayProbe` read no push key and have roles of
+    // their own (docs/decisions.md *Push notifications* #11f); neither may
+    // update a distribution or read the parameter store.
+    const own: Record<string, string> = {
+      cdnGuard: "CdnGuardRole",
+      siteDeploy: "SiteDeployRole",
+      gatewayProbe: "GatewayProbeRole",
+    };
+    for (const [name, fn] of Object.entries(doc.functions)) {
+      expect(fn.role, name).toBe(own[name]);
+      expect(JSON.stringify(fn.iam ?? {}), name).not.toContain(
+        "UpdateDistribution",
+      );
+    }
+    for (const r of ["SiteDeployRole", "GatewayProbeRole"]) {
+      const text = JSON.stringify(doc.resources.Resources[r]);
+      expect(text, r).not.toMatch(/UpdateDistribution|cloudfront:\*|ssm:|"\*"/);
+    }
+    // The shared role keeps the pool's two statements; the own roles hold none.
+    const ssmIam = flat(doc.provider.iam.role.statements).filter((st) =>
+      /ssm[:.]/.test(JSON.stringify(st)),
+    );
+    expect(ssmIam).toHaveLength(2);
+    // The functions that read the pool are on the shared role.
     for (const [name, fn] of Object.entries(doc.functions))
-      if (name !== "cdnGuard") {
+      if (fn.environment?.PUSH_SSM_PATH !== undefined)
         expect(fn.role, name).toBeUndefined();
-        expect(JSON.stringify(fn.iam ?? {}), name).not.toContain(
-          "UpdateDistribution",
-        );
-      }
 
     // The guard's role names each distribution it may disable, each behind
     // the condition that the stage has it; never the console's.

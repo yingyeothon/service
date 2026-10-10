@@ -1,6 +1,8 @@
 import {
   createMemoryPushDb,
+  memoryTokenKey,
   pushDay,
+  PUSH_TOKENS_PER_CHANNEL_DEFAULT,
   PUSH_SEND_USERS_MAX,
   PUSH_TOKENS_PER_USER,
   type PushChannelConfig,
@@ -57,7 +59,7 @@ const errorOf = (r: HttpResult) =>
       error?: {
         code?: string;
         message?: string;
-        details?: { reason?: string };
+        details?: { reason?: string; limit?: string; value?: number };
       };
     }
   ).error;
@@ -263,13 +265,73 @@ describe("push token registration", () => {
       { token: 1 },
       { token: "" },
       { token: "with blank" },
-      { token: "x".repeat(4097) },
+      { token: "x".repeat(513) },
       { token: device(1), project: 7 },
       { token: device(1), project: "Not_A_Project" },
       { token: device(1), platform: "ios" },
     ])
       expect(status(await put(h, OWNER, body)), JSON.stringify(body)).toBe(400);
     expect(await rowsOf(h, OWNER)).toEqual([]);
+  });
+
+  it("accepts a token of 512 characters", async () => {
+    const h = await build();
+    await seedPush(h);
+    expect(status(await put(h, OWNER, { token: "x".repeat(512) }))).toBe(204);
+  });
+
+  describe("push.tokensPerChannel", () => {
+    it("refuses a new row at the channel's cap, never a refresh or a move", async () => {
+      const h = await build();
+      await seedPush(h, { config: { tokenCap: 2 } });
+      expect(status(await put(h, user(1), { token: device(1) }))).toBe(204);
+      expect(status(await put(h, user(2), { token: device(2) }))).toBe(204);
+      const r = await put(h, user(3), { token: device(3) });
+      expect(status(r)).toBe(409);
+      expect(errorOf(r)).toMatchObject({
+        code: "conflict",
+        details: { limit: "push.tokensPerChannel", value: 2 },
+      });
+      expect(await rowsOf(h, user(3))).toEqual([]);
+      // A refresh of a stored row and a move to another user add no row.
+      expect(status(await put(h, user(1), { token: device(1) }))).toBe(204);
+      expect(status(await put(h, user(3), { token: device(2) }))).toBe(204);
+      expect((await rowsOf(h, user(3))).map((t) => t.token)).toEqual([
+        device(2),
+      ]);
+      // Another channel's rows do not count against this one.
+      await seedPush(h, { id: "push_b", config: { tokenCap: 1 } });
+      expect(
+        status(
+          await put(h, user(1), { token: device(1) }, { channel: "push_b" }),
+        ),
+      ).toBe(204);
+    });
+
+    it("applies the soft value while the config holds no grant", async () => {
+      const push = createMemoryPushDb();
+      const h = await build({ push });
+      await seedPush(h);
+      for (let i = 0; i < PUSH_TOKENS_PER_CHANNEL_DEFAULT; i++)
+        push.tokens.set(memoryTokenKey(PUSH, `h${i}`), {
+          tokenHash: `h${i}`,
+          channelId: PUSH,
+          userId: user(9),
+          token: `t${i}`,
+          firebaseProject: PLATFORM_PROJECT,
+          platform: "android",
+          createdAt: NOW_SEC,
+          updatedAt: NOW_SEC,
+        });
+      const r = await put(h, OWNER, { token: device(1) });
+      expect(status(r)).toBe(409);
+      expect(errorOf(r)).toMatchObject({
+        details: {
+          limit: "push.tokensPerChannel",
+          value: PUSH_TOKENS_PER_CHANNEL_DEFAULT,
+        },
+      });
+    });
   });
 
   describe("the Firebase project of a registration", () => {

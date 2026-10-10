@@ -30,6 +30,7 @@ export const LIMIT_LABELS: Record<string, string> = {
   "push.appsPerTeam": "Push apps",
   "push.recipientsPerJob": "Recipients per job",
   "push.jobsPerDay": "Jobs per day",
+  "push.tokensPerChannel": "Device tokens",
   "kv.maxEntries": "Entries cap",
   "kv.maxEntriesPerOwner": "Entries per owner cap",
   "kv.collections": "Collections",

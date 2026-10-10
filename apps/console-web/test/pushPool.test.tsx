@@ -10,6 +10,7 @@ const mockApi = {
   loginUrl: vi.fn(() => "/auth/github/start"),
   setUnauthorizedHandler: vi.fn(),
   pushPool: vi.fn(),
+  pushSweep: vi.fn(),
   setPushSlotClosed: vi.fn(),
 } as unknown as ApiClient;
 
@@ -58,6 +59,79 @@ describe("PushPoolPage", () => {
       role: "admin",
       via: "session",
     });
+    vi.mocked(mockApi.pushSweep).mockResolvedValue({ last: null });
+  });
+
+  it("shows what the last sweep found per slot, and the run's own lines", async () => {
+    vi.mocked(mockApi.pushPool).mockResolvedValue(pool([slot()]));
+    vi.mocked(mockApi.pushSweep).mockResolvedValue({
+      last: {
+        at: now - 3600,
+        tokens: { channels: 3, stale: 40 },
+        stats: 2,
+        truncated: true,
+        released: 1,
+        kept: 0,
+        failed: ["stale-tokens"],
+        pool: {
+          unreadable: false,
+          unprovisioned: [{ slot: "p9", claims: 2 }],
+          skipped: [{ slot: "bad?label", reason: "label" }],
+        },
+        reconcile: {
+          truncated: false,
+          slots: [
+            {
+              slot: "p1",
+              claims: 4,
+              firebaseApps: 6,
+              orphans: 1,
+              removed: 0,
+              missing: 2,
+              foreign: 1,
+              filled: 0,
+              repaired: 0,
+              released: 0,
+              unread: false,
+              autoClosed: true,
+              autoOpened: false,
+            },
+          ],
+        },
+      },
+    });
+    mount(<PushPoolPage />, { client: mockApi });
+    const s = (
+      await screen.findByRole("heading", { name: "Last sweep" })
+    ).closest("section")!;
+    expect(await within(s).findByText(/ran 1h ago/)).toBeInTheDocument();
+    const row = within(s).getByText("p1").closest("tr")!;
+    expect(
+      within(row)
+        .getAllByRole("cell")
+        .map((c) => c.textContent),
+    ).toEqual(["p1", "4", "6", "1", "1", "2", "0", "auto-closed"]);
+    expect(
+      within(s).getByText(/Tokens deleted: 3 of dead channels, 40 stale/),
+    ).toBeInTheDocument();
+    expect(
+      within(s).getByText("Phases that failed: stale-tokens."),
+    ).toBeInTheDocument();
+    expect(within(s).getByText(/A budget ran out/)).toBeInTheDocument();
+    expect(
+      within(s).getByText(/Slot p9 holds 2 registration/),
+    ).toBeInTheDocument();
+    expect(
+      within(s).getByText("Parameter bad?label was skipped: label."),
+    ).toBeInTheDocument();
+  });
+
+  it("says when no sweep was recorded", async () => {
+    vi.mocked(mockApi.pushPool).mockResolvedValue(pool([slot()]));
+    mount(<PushPoolPage />, { client: mockApi });
+    expect(
+      await screen.findByText("No sweep recorded in the last 8 days."),
+    ).toBeInTheDocument();
   });
 
   it("lists every slot with its apps, state and who closed it", async () => {

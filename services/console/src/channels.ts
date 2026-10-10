@@ -7,7 +7,11 @@ import {
   type AuthChannelConfig,
   type AuthChannelSecret,
   type ChannelRow,
+  MATCH_NOTIFY_BODY_MAX,
+  MATCH_NOTIFY_STATES,
+  MATCH_NOTIFY_TITLE_MAX,
   type MatchChannelConfig,
+  type MatchNotificationText,
   type PushChannelConfig,
   type PushChannelSecret,
 } from "@yyt/console-db";
@@ -197,7 +201,45 @@ const DEFERRED_ONLY = [
   "acceptTimeoutSec",
   "resultTtlSec",
   "pushChannelId",
+  "notification",
 ] as const;
+
+/**
+ * Notification text of one deferred state (`docs/decisions.md` *Push
+ * notifications* #11h): a title, and a body that may be left out. Trimmed;
+ * control characters are refused, since the text reaches a lock screen.
+ */
+const notifyLine = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    // eslint-disable-next-line no-control-regex -- rejecting control chars is the point
+    .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), "no control characters");
+const notifyText = z
+  .object({
+    title: notifyLine(MATCH_NOTIFY_TITLE_MAX).pipe(z.string().min(1)),
+    body: notifyLine(MATCH_NOTIFY_BODY_MAX)
+      .optional()
+      .transform((v) => (v === "" ? undefined : v)),
+  })
+  .strict();
+/** `null` or `{}` clears it, as `pushChannelId` and `callbackUrl` do. */
+const matchNotification = z.preprocess(
+  (v) =>
+    v === null ||
+    (typeof v === "object" && v !== null && Object.keys(v).length === 0)
+      ? undefined
+      : v,
+  z
+    .object({
+      proposed: notifyText.optional(),
+      confirmed: notifyText.optional(),
+      expired: notifyText.optional(),
+    })
+    .strict()
+    .optional(),
+);
 
 const authChannelId = z
   .string()
@@ -226,6 +268,7 @@ const matchConfigIn = z
         .regex(ID, "pushChannelId must match [a-z0-9_-]{3,40}")
         .optional(),
     ),
+    notification: matchNotification,
     /**
      * Optional (`docs/decisions.md` *Serverless clients* #8). Absent = the
      * callback-less mode: the party is announced to its own sockets and posted
@@ -309,6 +352,9 @@ function finishMatchConfig(
       ...(c.pushChannelId === undefined
         ? {}
         : { pushChannelId: c.pushChannelId }),
+      ...(c.notification === undefined
+        ? {}
+        : { notification: dropEmpty(c.notification) }),
     };
   } else
     for (const path of DEFERRED_ONLY)
@@ -320,6 +366,16 @@ function finishMatchConfig(
   if (issues.length > 0)
     throw new AppError("bad_request", "invalid config", { details: issues });
   return config;
+}
+
+/** Leaves out the states given no text, so the stored shape stays minimal. */
+function dropEmpty(n: MatchNotificationText): MatchNotificationText {
+  const out: MatchNotificationText = {};
+  for (const k of MATCH_NOTIFY_STATES) {
+    const t = n[k];
+    if (t !== undefined) out[k] = t.body === undefined ? { title: t.title } : t;
+  }
+  return out;
 }
 
 const parseMatchConfig = (

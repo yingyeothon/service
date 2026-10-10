@@ -1339,6 +1339,7 @@ export function createConsoleApp({
   const pushRoutes = createPushRoutes({
     ...pushDeps,
     access,
+    kv,
     db,
     view,
     writeSlot,

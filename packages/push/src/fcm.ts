@@ -23,7 +23,7 @@ const SEND_TIMEOUT_MS = 10_000;
 // FCM topic name grammar (the part after `/topics/`).
 const TOPIC_RE = /^[a-zA-Z0-9\-_.~%]{1,900}$/;
 // Registration tokens are URL-safe base64 with `:`; printable ASCII is the guard.
-const TOKEN_RE = /^[\x21-\x7e]{1,4096}$/;
+const TOKEN_RE = /^[\x21-\x7e]{1,512}$/;
 
 export interface PushMessage {
   /** Exactly one device registration token or one topic name (no `/topics/`). */

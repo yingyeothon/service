@@ -1058,6 +1058,50 @@ describe("usage digest: push lines", () => {
     ]);
   });
 
+  it("names a top channel at its push.tokensPerChannel", async () => {
+    const { h, a, auth } = await setup();
+    const c1 = await mk(h, a, auth, "com.example.a");
+    const c2 = await mk(h, a, auth, "com.example.b");
+    for (let n = 0; n < 3; n++) await putToken(h, c1, n);
+    await putToken(h, c2, 7);
+    // Both channels carry a cap of 3: only c1 holds that many.
+    const channels = {
+      findPushChannel: async (id: string) => {
+        const ch = await h.db.findPushChannel(id);
+        return ch && { ...ch, config: { ...ch.config, tokenCap: 3 } };
+      },
+    };
+    const d = digest(h, undefined, {
+      push: { db: h.push, channels },
+    });
+    const r = await d.run();
+    expect(r.warnings.map((w) => [w.kind, w.type])).toEqual([
+      [`push:tokens:full:${c1}`, "level"],
+    ]);
+    expect(d.sent[0]).toContain(
+      `push channel "com.example.a" (${c1}) holds 3 device tokens, its push.tokensPerChannel of 3; new devices are refused until a limit request is granted`,
+    );
+    // Without a cap in the config the soft default applies: nothing is full.
+    const plain = digest(h, undefined, {
+      push: { db: h.push, channels: h.db },
+    });
+    expect((await plain.run()).warnings).toEqual([]);
+    // A failed read is one source error, not a stopped digest.
+    const down = digest(h, undefined, {
+      push: {
+        db: h.push,
+        channels: {
+          findPushChannel: async () => {
+            throw new Error("db down");
+          },
+        },
+      },
+    });
+    const rd = await down.run();
+    expect(rd.errors).toEqual(["push-caps"]);
+    expect(rd.warnings).toEqual([]);
+  });
+
   it("goes on without a failed source or a sweep", async () => {
     const { h } = await setup();
     const d = digest(h, undefined, {

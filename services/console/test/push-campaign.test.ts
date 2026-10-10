@@ -804,6 +804,7 @@ describe("push campaign submit", () => {
       "channel.lifetime",
       "push.jobsPerDay",
       "push.recipientsPerJob",
+      "push.tokensPerChannel",
     ]);
     expect(rows["push.jobsPerDay"]).toMatchObject({
       soft: 10,
@@ -3016,6 +3017,101 @@ describe("push campaign worker: endings and recovery", () => {
 /* ------------------------------------------------------------------ */
 
 describe("push campaign routes: uploads, keys and refusals", () => {
+  it("lists uploads on both families, newest first, with what holds them", async () => {
+    const c = await setup();
+    const list = (
+      family: "member" | "key",
+      query: Record<string, string> = {},
+      key = c.key,
+    ) =>
+      send(
+        c.h,
+        ev(
+          "GET",
+          family === "member"
+            ? `/channels/${c.id}/push/uploads`
+            : `/push-api/${c.id}/uploads`,
+          {
+            headers:
+              family === "member"
+                ? c.a.cookie
+                : { authorization: `Bearer ${key}` },
+            query,
+          },
+        ),
+      );
+    const templateId = await makeTemplate(c);
+    const first = await upload(c, csvOf(0, 1));
+    c.h.clock.tick(5);
+    const viaKey = parse(await api(c, "POST", "/uploads", { size: 10 }))
+      .uploadId as string;
+    c.h.clock.tick(5);
+    const third = await upload(c, csvOf(0, 1));
+    // A dry run reads `first`, unfinished until the worker runs.
+    expect(
+      (
+        await member(c, "POST", "/jobs", {
+          templateId,
+          uploadId: first,
+          idempotencyKey: "k",
+          dryRun: true,
+        })
+      ).statusCode,
+    ).toBe(202);
+    const r = await list("member");
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.headers?.["cache-control"]).toBe("no-store");
+    const body = parse(r);
+    expect(body.max).toBe(PUSH_UPLOADS_PER_CHANNEL);
+    expect(body.next).toBeNull();
+    expect(
+      body.uploads.map((u: Record<string, unknown>) => [
+        u.id,
+        u.pending,
+        u.inUse,
+        u.createdBy,
+        u.createdByLogin,
+      ]),
+    ).toEqual([
+      [third, true, false, c.a.id, "alice"],
+      [viaKey, true, false, "apikey", null],
+      [first, true, true, c.a.id, "alice"],
+    ]);
+    expect(body.uploads[0]).toEqual({
+      id: third,
+      size: Buffer.byteLength(csvOf(0, 1)),
+      createdBy: c.a.id,
+      createdByLogin: "alice",
+      createdAt: expect.any(Number),
+      usableUntil: body.uploads[0].createdAt + PUSH_UPLOAD_USABLE_SEC,
+      pending: true,
+      inUse: false,
+    });
+    // No object key and no URL in a list.
+    expect(r.body).not.toContain("push-uploads/");
+    expect(r.body).not.toContain("http");
+    await worker(c);
+    const after = parse(await list("key", { limit: "2" }));
+    expect(after.uploads.map((u: { id: string }) => u.id)).toEqual([
+      third,
+      viaKey,
+    ]);
+    // The key family names no login.
+    expect(after.uploads[0].createdByLogin).toBeNull();
+    expect(after.next).toMatch(/^\d+\.pu_/);
+    const rest = parse(
+      await list("key", { limit: "2", cursor: after.next as string }),
+    );
+    // Its job finished: it no longer holds a place, and may be deleted.
+    expect(rest.uploads).toMatchObject([
+      { id: first, pending: false, inUse: false },
+    ]);
+    expect(rest.next).toBeNull();
+    expect((await list("member", { limit: "101" })).statusCode).toBe(400);
+    expect((await list("member", { cursor: "x" })).statusCode).toBe(400);
+    expect((await list("key", {}, "no")).statusCode).toBe(401);
+  });
+
   it("deletes an upload on both families, unless an unfinished job reads it", async () => {
     const c = await setup();
     const templateId = await makeTemplate(c);

@@ -13,6 +13,7 @@ import {
   checkKvOwnerId,
   checkPushToken,
   pushDay,
+  pushTokenCapOf,
   pushTokenHash,
   PUSH_SEND_USERS_MAX,
   type ConsoleDb,
@@ -622,6 +623,9 @@ export function createPushRoutes({
           firebaseProject,
           platform: "android",
           at: nowSec(clock),
+          // `push.tokensPerChannel`: console mirrors a grant into the
+          // config, since this account cannot read `limit_overrides`.
+          tokenCap: pushTokenCapOf(ch.config),
         });
         logger.debug("push token put", { channelId: ch.id, ...r });
         // Nothing to echo: the caller holds the token already.

@@ -5,6 +5,7 @@ import {
   createMemoryKvStoreDb,
   createMemoryLimitsDb,
   createMemorySitesDb,
+  patchChannelConfig,
   type ChannelRow,
   type LimitRequestInput,
   type LimitScope,
@@ -30,6 +31,9 @@ export interface LimitsEnv {
       }
     | undefined
   >;
+  /** `config_json`, parsed, and a direct write of it. */
+  config(id: string): Promise<Record<string, unknown> | undefined>;
+  setConfig(id: string, config: Record<string, unknown>): Promise<void>;
   deleteBundle(id: string): Promise<void>;
   /** `KvStoreDb.softDeleteCollection` over the same store (the limit half rides along). */
   deleteCollection(id: string, at: number): Promise<boolean>;
@@ -372,7 +376,10 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
     expect(
       await limits.approveRequest(
         "lr_01",
-        grant({ value: null, channel: { expiresAt: 9_999, revive: true } }),
+        grant({
+          value: null,
+          channel: { lifetime: { expiresAt: 9_999, revive: true } },
+        }),
       ),
     ).toBe(true);
     expect(await env.channel("ch_1")).toEqual({
@@ -381,8 +388,7 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
       deletedAt: null,
     });
     const back = await limits.revokeOverride(CH1, "channel.lifetime", {
-      expiresAt: 3_000,
-      revive: false,
+      lifetime: { expiresAt: 3_000, revive: false },
     });
     expect(back).toMatchObject({ id: "lo_1", value: null, requestId: "lr_01" });
     expect(await env.channel("ch_1")).toMatchObject({ expiresAt: 3_000 });
@@ -390,11 +396,78 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
     // Nothing left to revoke: no channel write either.
     expect(
       await limits.revokeOverride(CH1, "channel.lifetime", {
-        expiresAt: 1,
-        revive: false,
+        lifetime: { expiresAt: 1, revive: false },
       }),
     ).toBeUndefined();
     expect(await env.channel("ch_1")).toMatchObject({ expiresAt: 3_000 });
+  });
+
+  it("a config grant merges into the channel's config in the same transaction", async () => {
+    const env = await make();
+    const { limits } = env;
+    await env.setConfig("ch_1", { authChannelId: "auth_1", slot: "p1" });
+    await limits.createRequest(
+      req("lr_01", {
+        scope: CH1,
+        key: "push.tokensPerChannel",
+        requestedValue: 20_000,
+      }),
+      RULES,
+    );
+    expect(
+      await limits.approveRequest(
+        "lr_01",
+        grant({ value: 20_000, channel: { config: { tokenCap: 20_000 } } }),
+      ),
+    ).toBe(true);
+    expect(await env.config("ch_1")).toEqual({
+      authChannelId: "auth_1",
+      slot: "p1",
+      tokenCap: 20_000,
+    });
+    // The expiry is not touched by a config-only write.
+    expect(await env.channel("ch_1")).toMatchObject({ expiresAt: 1000 });
+    await limits.setOverride(
+      {
+        id: "lo_2",
+        teamId: "team_1",
+        scope: CH1,
+        key: "push.tokensPerChannel",
+        value: 50_000,
+        note: "n",
+        grantedBy: "m2",
+        grantedAt: 2,
+      },
+      { config: { tokenCap: 50_000 } },
+    );
+    expect(await env.config("ch_1")).toMatchObject({ tokenCap: 50_000 });
+    expect(
+      await limits.revokeOverride(CH1, "push.tokensPerChannel", {
+        config: { tokenCap: null },
+      }),
+    ).toMatchObject({ id: "lo_2", value: 50_000 });
+    expect(await env.config("ch_1")).toEqual({
+      authChannelId: "auth_1",
+      slot: "p1",
+    });
+    // A blob that is not an object fails the write and keeps the override.
+    await env.setConfig("ch_2", [] as unknown as Record<string, unknown>);
+    await expect(
+      limits.setOverride(
+        {
+          id: "lo_3",
+          teamId: "team_1",
+          scope: CH2,
+          key: "push.tokensPerChannel",
+          value: 50_000,
+          note: "n",
+          grantedBy: "m2",
+          grantedAt: 3,
+        },
+        { config: { tokenCap: 50_000 } },
+      ),
+    ).rejects.toMatchObject({ code: "internal" });
+    expect(await limits.listOverrides([CH2], 0)).toEqual([]);
   });
 
   it("an extend that read the old expiry cannot overwrite a lifetime grant", async () => {
@@ -410,7 +483,7 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
         grantedBy: "m2",
         grantedAt: 1,
       },
-      { expiresAt: 9_999, revive: true },
+      { lifetime: { expiresAt: 9_999, revive: true } },
     );
     // Extend read 1000 before the grant landed: its guarded write matches nothing.
     expect(await env.extendIf("ch_1", 1_500, 1_000)).toBe(false);
@@ -435,7 +508,10 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
     expect(
       await limits.approveRequest(
         "lr_01",
-        grant({ value: null, channel: { expiresAt: 9_999, revive: true } }),
+        grant({
+          value: null,
+          channel: { lifetime: { expiresAt: 9_999, revive: true } },
+        }),
       ),
     ).toBe(false);
     expect(await limits.findRequest("lr_01")).toMatchObject({
@@ -456,7 +532,7 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
           grantedBy: "m2",
           grantedAt: 60,
         },
-        { expiresAt: 9_999, revive: true },
+        { lifetime: { expiresAt: 9_999, revive: true } },
       ),
     ).rejects.toMatchObject({ code: "not_found" });
     await expect(
@@ -808,8 +884,15 @@ describe("memory limits repository", () => {
         if (!c || c.deletedAt !== null) return false;
         db.channels.set(id, {
           ...c,
-          expiresAt: w.expiresAt,
-          ...(w.revive ? { disabledAt: null } : {}),
+          ...(w.lifetime
+            ? {
+                expiresAt: w.lifetime.expiresAt,
+                ...(w.lifetime.revive ? { disabledAt: null } : {}),
+              }
+            : {}),
+          ...(w.config
+            ? { configJson: patchChannelConfig(c.configJson, w.config) }
+            : {}),
         });
         return true;
       },
@@ -856,6 +939,12 @@ describe("memory limits repository", () => {
           }
         );
       },
+      config: async (id) => {
+        const c = db.channels.get(id);
+        return c && (JSON.parse(c.configJson) as Record<string, unknown>);
+      },
+      setConfig: async (id, config) =>
+        db.patchChannel(id, { configJson: JSON.stringify(config) }),
       deleteBundle: async (id) => {
         await assets.deleteBundle(id);
       },

@@ -1,0 +1,9 @@
+at:              2025-08-24T01:46:40Z
+stale tokens:    4 in 1 channels
+claims released: 0
+claims kept:     0
+failed phases:   -
+truncated:       false
+
+SLOT  CLAIMS  APPS  ORPHANS  MISSING  FOREIGN  CLEANED  AUTO
+p1    2       3     1        0        0        0        closed

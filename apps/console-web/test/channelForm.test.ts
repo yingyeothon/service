@@ -6,6 +6,7 @@ import {
   matchProblems,
   matchRefusal,
   withMatchMode,
+  type ChannelFormState,
 } from "../src/lib/channelForm";
 import type { Channel } from "../src/types";
 
@@ -428,5 +429,56 @@ describe("buildConfig lobby/q", () => {
         config: { authChannelId: "auth_9" },
       }).authChannelId,
     ).toBe("auth_9");
+  });
+});
+
+describe("deferred match notification text", () => {
+  const deferred = (notify: Partial<ChannelFormState["notify"]>) => ({
+    ...emptyForm,
+    authChannelId: "auth_1",
+    matchMode: "deferred" as const,
+    notify: { ...emptyForm.notify, ...notify },
+  });
+  it("sends only the states given a title, trimmed, an empty body left out", () => {
+    const c = buildConfig(
+      "match",
+      deferred({
+        proposed: { title: " Match found ", body: "" },
+        expired: { title: "Gone", body: " try again " },
+      }),
+      "create",
+    ) as { notification?: unknown };
+    expect(c.notification).toEqual({
+      proposed: { title: "Match found" },
+      expired: { title: "Gone", body: "try again" },
+    });
+  });
+  it("sends no key when nothing is set, which clears it on a PATCH", () => {
+    const c = buildConfig("match", deferred({}), "patch") as object;
+    expect(c).not.toHaveProperty("notification");
+  });
+  it("refuses a body without a title", () => {
+    expect(() =>
+      buildConfig(
+        "match",
+        deferred({ confirmed: { title: "", body: "x" } }),
+        "create",
+      ),
+    ).toThrow(/confirmed notification needs a title/);
+  });
+  it("reads the stored text back into the form", () => {
+    const f = formFromChannel({
+      kind: "match",
+      config: {
+        authChannelId: "auth_1",
+        partySize: 2,
+        waitTimeoutSec: 600,
+        onTimeout: "fail",
+        mode: "deferred",
+        notification: { confirmed: { title: "Ready" } },
+      },
+    } as unknown as Channel);
+    expect(f.notify.confirmed).toEqual({ title: "Ready", body: "" });
+    expect(f.notify.proposed).toEqual({ title: "", body: "" });
   });
 });

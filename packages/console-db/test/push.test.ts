@@ -16,7 +16,10 @@ import {
   PUSH_SEND_USERS_MAX,
   PUSH_TOKEN_MAX,
   PUSH_TOKEN_TTL_SEC,
+  PUSH_TOKENS_PER_CHANNEL_DEFAULT,
+  PUSH_TOKENS_PER_CHANNEL_HARD,
   PUSH_TOKENS_PER_USER,
+  pushTokenCapOf,
   type PushAppClaim,
   type PushDb,
   type PushTokenPut,
@@ -123,6 +126,24 @@ describe("push grammar", () => {
       `com.${"a".repeat(255)}`,
     ])
       expect(() => checkPushPackageName(s)).toThrow(AppError);
+  });
+
+  it("takes a token of up to 512 characters", () => {
+    expect(PUSH_TOKEN_MAX).toBe(512);
+    expect(checkPushToken("x".repeat(512))).toHaveLength(512);
+    expect(() => checkPushToken("x".repeat(513))).toThrow(AppError);
+  });
+
+  it("reads the token cap from a channel config, clamped to the hard value", () => {
+    expect(pushTokenCapOf({})).toBe(PUSH_TOKENS_PER_CHANNEL_DEFAULT);
+    expect(pushTokenCapOf({ tokenCap: 20_000 })).toBe(20_000);
+    expect(pushTokenCapOf({ tokenCap: 10_000_000 })).toBe(
+      PUSH_TOKENS_PER_CHANNEL_HARD,
+    );
+    for (const bad of [0, -1, 1.5, "20000", null])
+      expect(pushTokenCapOf({ tokenCap: bad })).toBe(
+        PUSH_TOKENS_PER_CHANNEL_DEFAULT,
+      );
   });
 
   it("refuses a token with a blank, a control character or too many bytes", () => {
@@ -880,6 +901,68 @@ export function pushContract(make: () => PushHarness | Promise<PushHarness>) {
     await expect(h.db.topPushChannels(1.5)).rejects.toThrow(AppError);
   });
 
+  it("counts a channel's tokens up to a bound", async () => {
+    const h = await make();
+    for (let i = 0; i < 3; i++) await h.db.putToken(put(hex(i), tok(i)));
+    await h.db.putToken(put(A, tok("other"), NOW, CH2));
+    expect(await h.db.countTokens(CH, 10)).toBe(3);
+    expect(await h.db.countTokens(CH, 2)).toBe(2);
+    expect(await h.db.countTokens(CH2, 10)).toBe(1);
+    expect(await h.db.countTokens("push_none", 10)).toBe(0);
+    await expect(h.db.countTokens(CH, 0)).rejects.toThrow(AppError);
+    await expect(h.db.countTokens(CH, 1.5)).rejects.toThrow(AppError);
+  });
+
+  it("refuses a new token at the channel cap, and never a refresh or a move", async () => {
+    const h = await make();
+    const capped = (p: PushTokenPut): PushTokenPut => ({ ...p, tokenCap: 2 });
+    await h.db.putToken(capped(put(A, tok(1))));
+    await h.db.putToken(capped(put(B, tok(2))));
+    await expect(h.db.putToken(capped(put(A, tok(3))))).rejects.toMatchObject({
+      code: "conflict",
+      details: { limit: "push.tokensPerChannel", value: 2 },
+    });
+    expect(await tokensOf(h.db, A)).toEqual([tok(1)]);
+    // A refresh and a move add no row.
+    expect(await h.db.putToken(capped(put(A, tok(1), NOW + 1)))).toMatchObject({
+      created: false,
+      moved: false,
+    });
+    expect(await h.db.putToken(capped(put(A, tok(2), NOW + 2)))).toMatchObject({
+      created: false,
+      moved: true,
+    });
+    // Another channel counts its own rows; no cap at all is no count.
+    await h.db.putToken(capped(put(A, tok(3), NOW, CH2)));
+    await h.db.putToken(put(A, tok(4)));
+    expect(await h.db.countTokens(CH, 10)).toBe(3);
+    await expect(
+      h.db.putToken({ ...put(A, tok(5)), tokenCap: 0 }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("lets a user at the per-user cap register a new device on a full channel", async () => {
+    const h = await make();
+    const cap = PUSH_TOKENS_PER_USER + 1;
+    const capped = (p: PushTokenPut): PushTokenPut => ({ ...p, tokenCap: cap });
+    for (let i = 0; i < PUSH_TOKENS_PER_USER; i++)
+      await h.db.putToken(capped(put(A, tok(i), NOW + i)));
+    await h.db.putToken(capped(put(B, tok("b"))));
+    expect(await h.db.countTokens(CH, 100)).toBe(cap);
+    // A holds the per-user cap: the write evicts A's oldest row, net zero.
+    expect(await h.db.putToken(capped(put(A, tok("new"), NOW + 10)))).toEqual({
+      created: true,
+      moved: false,
+      evicted: 1,
+    });
+    expect(await h.db.countTokens(CH, 100)).toBe(cap);
+    expect(await tokensOf(h.db, A)).not.toContain(tok(0));
+    // B holds one row: a new one would add a row, so it is refused.
+    await expect(
+      h.db.putToken(capped(put(B, tok("b2")))),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
   it("reports the channels holding the most tokens for the usage digest", async () => {
     const h = await make();
     await h.db.putToken(put(A, tok(1)));
@@ -997,6 +1080,37 @@ export function pushStatsContract(
     expect(
       (await h.db.topSendFailures(DAY, 10)).map((r) => r.channelId),
     ).toEqual([CH2]);
+  });
+
+  it("lists one channel's days in a range, newest first", async () => {
+    const h = await make();
+    for (const d of [0, 1, 3])
+      await h.db.addSendStats({
+        channelId: CH,
+        day: DAY - d,
+        ...counts(d, 1, 0),
+        at: NOW,
+      });
+    await h.db.addSendStats({
+      channelId: CH2,
+      day: DAY,
+      ...counts(7, 0, 0),
+      at: NOW,
+    });
+    expect(await h.db.listSendStats(CH, DAY - 2, DAY)).toEqual([
+      { channelId: CH, day: DAY, calls: 1, ...counts(0, 1, 0) },
+      { channelId: CH, day: DAY - 1, calls: 1, ...counts(1, 1, 0) },
+    ]);
+    expect(
+      (await h.db.listSendStats(CH, DAY - 10, DAY)).map((r) => r.day),
+    ).toEqual([DAY, DAY - 1, DAY - 3]);
+    expect(await h.db.listSendStats("push_none", DAY - 10, DAY)).toEqual([]);
+    await expect(h.db.listSendStats(CH, DAY, DAY - 1)).rejects.toThrow(
+      AppError,
+    );
+    await expect(h.db.listSendStats(CH, DAY, DAY + 31)).rejects.toThrow(
+      AppError,
+    );
   });
 
   it("refuses a malformed counter, day or batch", async () => {

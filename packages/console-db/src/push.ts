@@ -52,8 +52,38 @@ export const PUSH_TOKENS_PER_USER = 5;
 export const PUSH_SEND_USERS_MAX = 500;
 /** A token not refreshed for this long is swept (decisions #5). */
 export const PUSH_TOKEN_TTL_SEC = 60 * 24 * 3600;
-/** Width of `push_tokens`.`token`. */
-export const PUSH_TOKEN_MAX = 4096;
+/**
+ * Longest device token accepted (decisions #11a; observed FCM tokens are
+ * 140-165 characters). The `push_tokens`.`token` column is wider (4096).
+ */
+export const PUSH_TOKEN_MAX = 512;
+/**
+ * `push.tokensPerChannel` (decisions #11a): token rows one push channel may
+ * hold. The soft value applies while the channel's config carries no
+ * `tokenCap`; a grant writes its value there (console `limits.ts`), because
+ * the state account cannot read `limit_overrides`.
+ */
+export const PUSH_TOKENS_PER_CHANNEL_DEFAULT = 10_000;
+export const PUSH_TOKENS_PER_CHANNEL_HARD = 100_000;
+
+/**
+ * The effective `push.tokensPerChannel` of a push channel, from its config:
+ * the stored `tokenCap` clamped to the hard value, or the soft default.
+ */
+export function pushTokenCapOf(config: { tokenCap?: unknown }): number {
+  const v = config.tokenCap;
+  return typeof v === "number" && Number.isSafeInteger(v) && v > 0
+    ? Math.min(v, PUSH_TOKENS_PER_CHANNEL_HARD)
+    : PUSH_TOKENS_PER_CHANNEL_DEFAULT;
+}
+
+/** The refusal of a token that would add a row past the channel's cap. */
+export const pushTokenCapReached = (cap: number): AppError =>
+  new AppError(
+    "conflict",
+    `the channel holds ${cap} device tokens; ask for more with a limit request`,
+    { details: { limit: "push.tokensPerChannel", value: cap } },
+  );
 /** `push_tokens`.`platform` is a VARCHAR; this is what may be written today. */
 export const PUSH_PLATFORMS = ["android"] as const;
 export type PushPlatform = (typeof PUSH_PLATFORMS)[number];
@@ -194,6 +224,15 @@ export interface PushTokenPut {
   firebaseProject: string;
   platform: PushPlatform;
   at: number;
+  /**
+   * The channel's `push.tokensPerChannel` ({@link pushTokenCapOf}): a write
+   * that would add a row while the channel holds this many is refused
+   * ({@link pushTokenCapReached}). A refresh or a move adds none and always
+   * goes through, and so does a new token of a user already holding
+   * {@link PUSH_TOKENS_PER_USER} rows here (the write evicts one of theirs).
+   * Absent: no cap.
+   */
+  tokenCap?: number;
 }
 
 export interface PushTokenPutResult {
@@ -328,6 +367,11 @@ export interface PushDb {
     channelId: string,
     userIds: readonly string[],
   ): Promise<PushTokenTarget[]>;
+  /**
+   * The channel's token rows, counted up to `max` (one bounded `COUNT` over
+   * the primary key): the answer is `min(rows, max)`.
+   */
+  countTokens(channelId: string, max: number): Promise<number>;
   /** Tokens with `updated_at < cutoff`, globally, in one bounded batch. */
   sweepStaleTokens(cutoff: number, limit: number): Promise<number>;
   /** A dying channel's tokens, in one bounded batch; returns how many went. */
@@ -349,6 +393,15 @@ export interface PushDb {
   ): Promise<void>;
   /** The `limit` channels with the most failed users on `day`, most first. */
   topSendFailures(day: number, limit: number): Promise<PushSendStats[]>;
+  /**
+   * One channel's rows with `fromDay <= day <= toDay`, newest first, over
+   * the primary key `(channel_id, day)`; days without a send have no row.
+   */
+  listSendStats(
+    channelId: string,
+    fromDay: number,
+    toDay: number,
+  ): Promise<PushSendStats[]>;
   /** Rows with `day < beforeDay`, globally, in one bounded batch. */
   sweepSendStats(beforeDay: number, limit: number): Promise<number>;
   /** A dying channel's rows (at most one per kept day), in one bounded batch. */
@@ -400,6 +453,7 @@ function pickSlot(
 
 function checkTokenPut(t: PushTokenPut): string {
   checkKvOwnerId(t.userId);
+  checkTokenCap(t.tokenCap);
   checkPushToken(t.token);
   if (!PUSH_FIREBASE_PROJECT.test(t.firebaseProject))
     throw bad("invalid firebaseProject");
@@ -477,6 +531,30 @@ function checkSendStats(
   for (const n of [s.sent, s.noToken, s.failed, s.unregistered])
     if (!Number.isInteger(n) || n < 0 || n > COUNT_MAX)
       throw bad("invalid send count");
+}
+
+function checkCountMax(max: number): number {
+  if (!Number.isSafeInteger(max) || max < 1 || max > COUNT_MAX)
+    throw bad("invalid count bound");
+  return max;
+}
+
+function checkDayRange(fromDay: number, toDay: number): void {
+  checkPushDay(fromDay);
+  checkPushDay(toDay);
+  if (fromDay > toDay || toDay - fromDay > PUSH_STATS_RETAIN_DAYS)
+    throw bad("invalid day range");
+}
+
+const byDayDesc = (rows: PushSendStats[]): PushSendStats[] =>
+  rows.sort((a, b) => b.day - a.day);
+
+function checkTokenCap(cap: number | undefined): void {
+  if (
+    cap !== undefined &&
+    (!Number.isSafeInteger(cap) || cap < 1 || cap > COUNT_MAX)
+  )
+    throw bad("invalid token cap");
 }
 
 function checkPushDay(day: number): number {
@@ -846,6 +924,32 @@ export function createPushDb(prisma: PrismaClient): PushDb {
               select: { user_id: true },
             });
             const mine = cur !== null && cur.user_id === p.userId;
+            // Only a write that adds a row is counted: a refresh or a move
+            // always goes through. The count takes no lock (the reads here
+            // never lock, see below), so registrations racing past the cap
+            // together may overshoot it by their concurrency; the next new
+            // token is refused all the same. Cost: the bounded count reads up
+            // to `tokenCap` primary-key entries per new token.
+            if (cur === null && p.tokenCap !== undefined) {
+              const n = await t.$queryRaw<{ n: bigint | number }[]>`
+                SELECT COUNT(*) AS n FROM (
+                  SELECT 1 FROM \`push_tokens\`
+                  WHERE \`channel_id\` = ${p.channelId}
+                  LIMIT ${Prisma.raw(String(p.tokenCap))}) AS t`;
+              // A user already at the per-user cap evicts one of their own
+              // rows below, so the write adds nothing net: let it through.
+              // Same non-locking read over the user index the eviction uses.
+              if (num(n[0]?.n ?? 0) >= p.tokenCap) {
+                const u = await t.$queryRaw<{ n: bigint | number }[]>`
+                  SELECT COUNT(*) AS n FROM (
+                    SELECT 1 FROM \`push_tokens\`
+                    WHERE \`channel_id\` = ${p.channelId}
+                      AND \`user_id\` = ${p.userId}
+                    LIMIT ${Prisma.raw(String(PUSH_TOKENS_PER_USER))}) AS t`;
+                if (num(u[0]?.n ?? 0) < PUSH_TOKENS_PER_USER)
+                  throw pushTokenCapReached(p.tokenCap);
+              }
+            }
             // One row per token per channel (the primary key is the table's
             // only unique key). `created_at` is assigned first: MySQL
             // evaluates the assignments left to right, and it reads the
@@ -948,6 +1052,21 @@ export function createPushDb(prisma: PrismaClient): PushDb {
         ).map(toTarget);
       }),
 
+    countTokens: (channelId, max) =>
+      run(async () => {
+        const n = checkCountMax(max);
+        // A prefix of the primary key, cut at `max`: the count reads at most
+        // that many index entries however large the channel is. Cost: up to
+        // the cap (100,000 hard) entries per `/push/stats` or `/limits` view;
+        // nothing is cached.
+        const r = await prisma.$queryRaw<{ n: bigint | number }[]>`
+          SELECT COUNT(*) AS n FROM (
+            SELECT 1 FROM \`push_tokens\`
+            WHERE \`channel_id\` = ${channelId}
+            LIMIT ${Prisma.raw(String(n))}) AS t`;
+        return num(r[0]?.n ?? 0);
+      }),
+
     sweepStaleTokens: (cutoff, limit) =>
       run(async () => {
         const n = checkPushBatch(limit);
@@ -1021,6 +1140,16 @@ export function createPushDb(prisma: PrismaClient): PushDb {
           take: n,
         });
         return sortStats(rows.map(toStats));
+      }),
+
+    listSendStats: (channelId, fromDay, toDay) =>
+      run(async () => {
+        checkDayRange(fromDay, toDay);
+        const rows = await prisma.push_send_stats.findMany({
+          where: { channel_id: channelId, day: { gte: fromDay, lte: toDay } },
+          orderBy: { day: "desc" },
+        });
+        return byDayDesc(rows.map(toStats));
       }),
 
     sweepSendStats: (beforeDay, limit) =>
@@ -1255,6 +1384,13 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
       const key = memoryTokenKey(p.channelId, hash);
       const cur = tokens.get(key);
       const mine = cur !== undefined && cur.userId === p.userId;
+      if (
+        cur === undefined &&
+        p.tokenCap !== undefined &&
+        tokensOf(p.channelId).length >= p.tokenCap &&
+        tokensOf(p.channelId, p.userId).length < PUSH_TOKENS_PER_USER
+      )
+        throw pushTokenCapReached(p.tokenCap);
       tokens.set(key, {
         tokenHash: hash,
         channelId: cur?.channelId ?? p.channelId,
@@ -1293,6 +1429,9 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
         tokensOf(channelId).filter((r) => ids.has(r.userId)),
       ).map(toTarget);
     },
+
+    countTokens: async (channelId, max) =>
+      Math.min(tokensOf(channelId).length, checkCountMax(max)),
 
     sweepStaleTokens: async (cutoff, limit) => {
       const n = checkPushBatch(limit);
@@ -1351,6 +1490,20 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
           .filter((r) => r.day === day && r.failed > 0)
           .map((r) => ({ ...r })),
       ).slice(0, n);
+    },
+
+    listSendStats: async (channelId, fromDay, toDay) => {
+      checkDayRange(fromDay, toDay);
+      return byDayDesc(
+        [...stats.values()]
+          .filter(
+            (r) =>
+              ci(r.channelId) === ci(channelId) &&
+              r.day >= fromDay &&
+              r.day <= toDay,
+          )
+          .map((r) => ({ ...r })),
+      );
     },
 
     sweepSendStats: async (beforeDay, limit) => {

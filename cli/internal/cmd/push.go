@@ -202,8 +202,8 @@ func newPush(a *App) *cobra.Command {
 	}
 	a.addChannelCommands(ch, "push")
 	resolve := a.channelResolver("push")
-	ch.AddCommand(a.pushConfigCmd(resolve), a.pushSenderKeyCmd(resolve))
-	c.AddCommand(a.pushKeyCmd(resolve), a.pushSendCmd(resolve))
+	ch.AddCommand(a.pushConfigCmd(resolve), a.pushSenderKeyCmd(resolve), a.pushStatsCmd(resolve))
+	c.AddCommand(a.pushKeyCmd(resolve), a.pushSendCmd(resolve), a.pushUploadCmd(resolve))
 	c.AddCommand(group(ch), a.pushPoolCmd())
 	a.addPushCampaignCommands(c, resolve)
 	return group(c)
@@ -434,6 +434,7 @@ func (a *App) pushPoolCmd() *cobra.Command {
 	c.AddCommand(
 		toggle("close", "Stop placing new push channels in a slot (its channels keep working); on a slot the platform closed, keep it closed", "closed"),
 		toggle("open", "Let a closed slot take new push channels again", "open"),
+		a.pushSweepCmd(),
 	)
 	return c
 }

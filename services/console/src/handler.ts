@@ -710,6 +710,7 @@ export const expire = async (): Promise<void> => {
         db,
         deleted: deletedPushChannels,
         purged: purgedChannels,
+        kv,
         // Best-effort like the API's audit: the slot change already happened.
         audit: async (actorId, action, target, detail) => {
           try {
@@ -763,6 +764,7 @@ export const expire = async (): Promise<void> => {
           sweep: pushSweep,
           jobs: pushJobs,
           jobSweep: pushJobSweep,
+          channels: db,
         },
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,

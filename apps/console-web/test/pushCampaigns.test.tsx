@@ -15,6 +15,7 @@ import type {
   LimitRow,
   PushJob,
   PushTemplate,
+  PushUpload,
   PushUploadGrant,
 } from "../src/types";
 
@@ -34,6 +35,8 @@ const mockApi = {
   deletePushTemplate: vi.fn(),
   createPushUpload: vi.fn(),
   deletePushUpload: vi.fn(),
+  pushUploads: vi.fn(),
+  pushStats: vi.fn(),
   putPushUpload: vi.fn(),
   submitPushJob: vi.fn(),
   pushBroadcast: vi.fn(),
@@ -56,6 +59,7 @@ vi.mock("../src/lib/push", async (orig) => ({
 
 const { ChannelDetailPage } = await import("../src/pages/ChannelDetail");
 const { PUSH_JOB_POLL_MS } = await import("../src/components/PushCampaigns");
+const { IN_USE_REASON } = await import("../src/components/PushUploads");
 const { mount: mountWith } = await import("./wrap");
 
 const CHANNEL: Channel = {
@@ -235,6 +239,17 @@ beforeEach(() => {
   vi.mocked(mockApi.createPushUpload).mockResolvedValue(GRANT);
   vi.mocked(mockApi.putPushUpload).mockResolvedValue(undefined);
   vi.mocked(mockApi.deletePushUpload).mockResolvedValue(undefined);
+  vi.mocked(mockApi.pushUploads).mockResolvedValue({
+    uploads: [],
+    next: null,
+    max: 20,
+  });
+  vi.mocked(mockApi.pushStats).mockResolvedValue({
+    tokens: { count: 0, capped: false },
+    tokenCap: 10_000,
+    since: "2026-09-28",
+    days: [],
+  });
 });
 
 const closeDrawer = async (drawer: HTMLElement, title: string) => {
@@ -243,6 +258,102 @@ const closeDrawer = async (drawer: HTMLElement, title: string) => {
     expect(screen.queryByRole("dialog", { name: title })).toBeNull(),
   );
 };
+
+describe("push uploads", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const up = (p: Partial<PushUpload> = {}): PushUpload => ({
+    id: "pu_01free",
+    size: 2048,
+    createdBy: "m_1",
+    createdByLogin: "alice",
+    createdAt: now - 3600,
+    usableUntil: now + 82_800,
+    pending: true,
+    inUse: false,
+    ...p,
+  });
+
+  it("lists the files with their state and deletes an unused one behind a confirm", async () => {
+    vi.mocked(mockApi.pushUploads).mockResolvedValue({
+      uploads: [
+        up(),
+        up({
+          id: "pu_01busy",
+          inUse: true,
+          createdBy: "apikey",
+          createdByLogin: null,
+        }),
+        up({ id: "pu_01used", pending: false }),
+      ],
+      next: null,
+      max: 20,
+    });
+    mount();
+    const s = await section("Uploads");
+    expect(await within(s).findByText(/\(2 of 20\)/)).toBeInTheDocument();
+    const busy = within(s).getByText("pu_01busy").closest("tr")!;
+    const free = within(s).getByText("pu_01free").closest("tr")!;
+    expect(within(busy).getByText("in use")).toBeInTheDocument();
+    expect(within(busy).getByText("API key")).toBeInTheDocument();
+    const busyDelete = within(busy).getByRole("button", {
+      name: "Delete pu_01busy",
+    });
+    expect(busyDelete).toBeDisabled();
+    expect(busyDelete).toHaveAccessibleDescription(IN_USE_REASON);
+    expect(busyDelete).toHaveAttribute("title", IN_USE_REASON);
+    expect(
+      within(free).getByRole("button", { name: "Delete pu_01free" }),
+    ).not.toHaveAttribute("aria-describedby");
+    const used = within(s).getByText("pu_01used").closest("tr")!;
+    expect(within(used).getByText("used")).toBeInTheDocument();
+    expect(within(free).getByText("pending")).toBeInTheDocument();
+    expect(within(free).getByText("2 KiB")).toBeInTheDocument();
+    await userEvent.click(
+      within(free).getByRole("button", { name: "Delete pu_01free" }),
+    );
+    const confirm = await screen.findByRole("dialog", {
+      name: "Delete recipient file?",
+    });
+    await userEvent.click(
+      within(confirm).getByRole("button", { name: "Delete" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.deletePushUpload).toHaveBeenCalledWith(
+        "push_9",
+        "pu_01free",
+      ),
+    );
+    await waitFor(() => expect(mockApi.pushUploads).toHaveBeenCalledTimes(2));
+  });
+
+  it("says why a delete was refused", async () => {
+    vi.mocked(mockApi.pushUploads).mockResolvedValue({
+      uploads: [up()],
+      next: null,
+      max: 20,
+    });
+    vi.mocked(mockApi.deletePushUpload).mockRejectedValue(
+      Object.assign(new Error("in use"), {
+        status: 409,
+        code: "conflict",
+        details: { reason: "upload_in_use" },
+      }),
+    );
+    mount();
+    const s = await section("Uploads");
+    await userEvent.click(
+      await within(s).findByRole("button", { name: "Delete pu_01free" }),
+    );
+    await userEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Delete recipient file?" }),
+      ).getByRole("button", { name: "Delete" }),
+    );
+    expect(
+      await within(s).findByText(/An unfinished job reads this recipient file/),
+    ).toBeInTheDocument();
+  });
+});
 
 describe("push templates", () => {
   it("lists name, title, variables and when it changed", async () => {
@@ -1044,6 +1155,7 @@ describe("push jobs", () => {
       act(() => hide(true));
       act(() => void vi.advanceTimersByTime(PUSH_JOB_POLL_MS * 3));
       expect(mockApi.pushJob).toHaveBeenCalledTimes(1);
+      const uploadReads = vi.mocked(mockApi.pushUploads).mock.calls.length;
       vi.mocked(mockApi.pushJob).mockResolvedValue({
         ...RUNNING,
         status: "done",
@@ -1054,6 +1166,10 @@ describe("push jobs", () => {
       act(() => void vi.advanceTimersByTime(PUSH_JOB_POLL_MS));
       expect(mockApi.pushJob).toHaveBeenCalledTimes(2);
       expect(await within(s).findByText("1,200 / 1,200")).toBeInTheDocument();
+      // A job that ended frees its upload: the uploads list is read again.
+      await waitFor(() =>
+        expect(mockApi.pushUploads).toHaveBeenCalledTimes(uploadReads + 1),
+      );
 
       // Nothing is running any more: no timer is left.
       act(() => void vi.advanceTimersByTime(PUSH_JOB_POLL_MS * 3));

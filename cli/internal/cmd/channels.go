@@ -137,6 +137,8 @@ type configFlags struct {
 	acceptTO    int
 	resultTTL   int
 	pushChannel string
+	notify      map[string]*string // "<state>" title, "<state>-body" body
+	notifyClear bool
 	// lobby
 	capPos      bool
 	capSay      []string
@@ -192,6 +194,14 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.IntVar(&f.acceptTO, "accept-timeout", 0, "match, deferred: seconds every member has to accept a proposed match (30..600, default 120)")
 	fl.IntVar(&f.resultTTL, "result-ttl", 0, "match, deferred: seconds a finished ticket stays readable (60..3600, default 600)")
 	fl.StringVar(&f.pushChannel, "push-channel", "", "match, deferred: push channel (id or name) that wakes the players; an active one of this project on the same auth channel ('' on update removes it)")
+	f.notify = map[string]*string{}
+	for _, st := range matchNotifyStates {
+		t, b := new(string), new(string)
+		f.notify[st], f.notify[st+"-body"] = t, b
+		fl.StringVar(t, "notify-"+st, "", "match, deferred: notification title of the `"+st+"` push (at most 100 characters; '' removes it); without one the push stays data-only")
+		fl.StringVar(b, "notify-"+st+"-body", "", "match, deferred: notification body of the `"+st+"` push (at most 240; needs --notify-"+st+")")
+	}
+	fl.BoolVar(&f.notifyClear, "notify-clear", false, "match, deferred: remove every notification text (the pushes go back to data-only)")
 	fl.BoolVar(&f.capPos, "cap-pos", true, "lobby: enable the positional relay (--cap-pos=false disables zones entirely)")
 	fl.StringArrayVar(&f.capSay, "cap-say", nil, "lobby: permitted chat scope zone|party|user, or none to disable chat (repeatable; default zone)")
 	fl.BoolVar(&f.capParty, "cap-party", true, "lobby: enable the party primitive")
@@ -350,6 +360,13 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 				// Untyped nil: dropped from the overlaid config, as --callback-url.
 				m["pushChannelId"] = nil
 			}
+		}
+		if n, err := f.notification(set, patch); err != nil {
+			return nil, err
+		} else if n != nil {
+			m["notification"] = n
+		} else if set("notify-clear") && f.notifyClear && patch {
+			m["notification"] = nil
 		}
 		// On update the mode is the stored one, known only after the fetch:
 		// `checkMatchMode` judges the same flags there.
@@ -777,6 +794,24 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 								continue
 							}
 						}
+						// Per state: a state not named keeps its text, a
+						// state set to nil loses it.
+						if k == "notification" {
+							if cm, ok := mergeCapabilities(merged[k], v); ok {
+								v = cm
+							}
+							if nm, ok := v.(map[string]any); ok {
+								for st, t := range nm {
+									if t == nil {
+										delete(nm, st)
+									}
+								}
+								if len(nm) == 0 {
+									delete(merged, k)
+									continue
+								}
+							}
+						}
 						merged[k] = v
 					}
 					cfg = merged
@@ -883,7 +918,9 @@ var kindConfigFlags = func() map[string][]string {
 		"topic": {"auth-channel"},
 		"match": {
 			"auth-channel", "party-size", "wait-timeout", "on-timeout", "callback-url",
-			"mode", "accept-timeout", "result-ttl", "push-channel",
+			"mode", "accept-timeout", "result-ttl", "push-channel", "notify-clear",
+			"notify-proposed", "notify-proposed-body", "notify-confirmed",
+			"notify-confirmed-body", "notify-expired", "notify-expired-body",
 		},
 		"lobby": {
 			"auth-channel", "flush-interval-ms", "max-move-delta",
@@ -1245,6 +1282,10 @@ type matchConfig struct {
 	AcceptTimeoutSec *int   `json:"acceptTimeoutSec"`
 	ResultTTLSec     *int   `json:"resultTtlSec"`
 	PushChannelID    string `json:"pushChannelId"`
+	Notification     map[string]struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	} `json:"notification"`
 }
 
 // matchModeOf reads the mode out of a match config. A live channel is stored
@@ -1279,6 +1320,15 @@ func matchPairs(ch channel) [][2]string {
 		push = "none (clients poll their ticket)"
 	}
 	pairs = append(pairs, [2]string{"pushChannel", push})
+	for _, st := range matchNotifyStates {
+		if t, ok := c.Notification[st]; ok {
+			line := output.Clean(t.Title)
+			if t.Body != "" {
+				line += " — " + output.Clean(t.Body)
+			}
+			pairs = append(pairs, [2]string{"notify " + st, line})
+		}
+	}
 	if ch.TicketURL == "" {
 		return append(pairs, [2]string{"ticketUrl", "none (the match service has no HTTP host on this stage)"})
 	}
@@ -1300,7 +1350,49 @@ const matchPollingNote = "GET the ticket no faster than every few seconds (the t
 	"POST …/ticket can answer 429 `cooldown` with details.retryAfter after a decline or an unanswered proposal"
 
 // deferredFlags are the match flags only a deferred channel takes.
-var deferredFlags = []string{"accept-timeout", "result-ttl", "push-channel"}
+var deferredFlags = []string{"accept-timeout", "result-ttl", "push-channel", "notify-clear",
+	"notify-proposed", "notify-proposed-body", "notify-confirmed", "notify-confirmed-body",
+	"notify-expired", "notify-expired-body"}
+
+// matchNotifyStates are the deferred states whose push may carry text
+// (docs/decisions.md *Push notifications* #11h).
+var matchNotifyStates = []string{"proposed", "confirmed", "expired"}
+
+// notification builds the `notification` object from the --notify-* flags:
+// nil when none was given. A state set to ” is an untyped nil, which the
+// update merge drops; on create it is simply left out.
+func (f *configFlags) notification(set func(string) bool, patch bool) (map[string]any, error) {
+	out := map[string]any{}
+	for _, st := range matchNotifyStates {
+		titleSet, bodySet := set("notify-"+st), set("notify-"+st+"-body")
+		if !titleSet && !bodySet {
+			continue
+		}
+		if f.notifyClear {
+			return nil, errors.New("--notify-clear removes every text; give it alone")
+		}
+		title, body := strings.TrimSpace(*f.notify[st]), strings.TrimSpace(*f.notify[st+"-body"])
+		if !titleSet {
+			return nil, fmt.Errorf("--notify-%s-body needs --notify-%s (the title) in the same command", st, st)
+		}
+		switch {
+		case title == "" && body != "":
+			return nil, fmt.Errorf("--notify-%s-body needs a non-empty --notify-%s", st, st)
+		case title == "":
+			if patch {
+				out[st] = nil
+			}
+		case body == "":
+			out[st] = map[string]any{"title": title}
+		default:
+			out[st] = map[string]any{"title": title, "body": body}
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
 
 // checkMatchMode refuses, before any write, what the console would: a mode
 // other than the stored one (`mode` is the channel's on update, the flag's on
@@ -1320,6 +1412,9 @@ func checkMatchMode(c *cobra.Command, mode string) error {
 	}
 	for _, n := range deferredFlags {
 		if !fl.Changed(n) {
+			continue
+		}
+		if n == "notify-clear" {
 			continue
 		}
 		if v, _ := fl.GetString(n); n == "push-channel" && v == "" {

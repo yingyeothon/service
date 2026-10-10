@@ -288,7 +288,18 @@ export interface MatchConfig {
   resultTtlSec?: number;
   /** A push channel of the same project on the same auth channel. */
   pushChannelId?: string;
+  /** Text that makes that state's push a visible notification. */
+  notification?: Partial<
+    Record<MatchNotifyState, { title: string; body?: string }>
+  >;
 }
+/** The deferred states whose push may carry notification text. */
+export const MATCH_NOTIFY_STATES = [
+  "proposed",
+  "confirmed",
+  "expired",
+] as const;
+export type MatchNotifyState = (typeof MATCH_NOTIFY_STATES)[number];
 export type SayScope = "zone" | "party" | "user";
 export interface LobbyCapabilities {
   pos: boolean;
@@ -412,6 +423,66 @@ export interface PushPoolView {
   slots: PushPoolSlot[];
 }
 
+/** One pool slot as the daily sweep found it. Counts only. */
+export interface PushSweepSlot {
+  slot: string;
+  claims: number;
+  firebaseApps?: number;
+  pendingDeletion?: number;
+  orphans: number;
+  removed: number;
+  missing: number;
+  foreign: number;
+  filled: number;
+  repaired: number;
+  released: number;
+  unread: boolean;
+  autoClosed: boolean;
+  autoOpened: boolean;
+}
+
+/** The last daily push sweep (`GET /admin/push/sweep`). */
+export interface PushSweepRecord {
+  /** Unix seconds the run started. */
+  at: number;
+  tokens: { channels: number; stale: number };
+  stats: number;
+  truncated: boolean;
+  released: number;
+  kept: number;
+  /** Phases that threw. */
+  failed: string[];
+  pool?: {
+    unreadable: boolean;
+    unprovisioned: { slot: string; claims: number }[];
+    skipped: { slot: string; reason: string }[];
+  };
+  reconcile?: { slots: PushSweepSlot[]; truncated: boolean };
+}
+
+/** `GET /admin/push/sweep`; `null` before the first run (or after a week without one). */
+export interface PushSweepView {
+  last: PushSweepRecord | null;
+}
+
+/** `GET /channels/{id}/push/stats`. */
+export interface PushChannelStats {
+  /** Counted up to `tokenCap`; `capped`: the channel holds that many, so a new device is refused. */
+  tokens: { count: number; capped: boolean };
+  tokenCap: number;
+  /** First UTC day of the window (`YYYY-MM-DD`). */
+  since: string;
+  /** UTC days with a send, newest first. */
+  days: {
+    day: string;
+    calls: number;
+    sent: number;
+    noToken: number;
+    failed: number;
+    unregistered: number;
+  }[];
+}
+
 export interface Channel extends ResourceCrumbs {
   id: string;
   kind: ChannelKind;
@@ -498,6 +569,28 @@ export interface PushUploadGrant {
   expiresAt: number;
   usableUntil: number;
   maxBytes: number;
+}
+
+/** One row of `GET …/push/uploads`. No object key and no URL. */
+export interface PushUpload {
+  id: string;
+  size: number;
+  /** A member id, or `apikey`. */
+  createdBy: string;
+  createdByLogin: string | null;
+  createdAt: number;
+  /** A job may name it until then. */
+  usableUntil: number;
+  /** Holds one of the channel's `max` pending places. */
+  pending: boolean;
+  /** An unfinished job reads it: a delete is refused. */
+  inUse: boolean;
+}
+
+export interface PushUploadPage {
+  uploads: PushUpload[];
+  next: string | null;
+  max: number;
 }
 
 export type PushJobStatus = "queued" | "running" | "done" | "failed";

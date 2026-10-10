@@ -92,16 +92,19 @@ import type {
   Project,
   ProjectDetail,
   PushBroadcastInput,
+  PushChannelStats,
   PushJob,
   PushJobInput,
   PushJobPage,
   PushJobSubmitResult,
   PushPoolView,
   PushReportLink,
+  PushSweepView,
   PushTemplate,
   PushTemplateInput,
   PushTemplateList,
   PushUploadGrant,
+  PushUploadPage,
   RemoveMemberResult,
   Team,
   TeamDetail,
@@ -530,6 +533,10 @@ export function createApiClient({
     createPushUpload: (id: string, size: number) =>
       post<PushUploadGrant>(`/channels/${enc(id)}/push/uploads`, { size }),
     /** 204; 404 when it is gone, 409 `upload_in_use` while an unfinished job reads it. */
+    pushUploads: (id: string, cursor?: string) =>
+      get<PushUploadPage>(`/channels/${enc(id)}/push/uploads${qs({ cursor })}`),
+    pushStats: (id: string, days?: number) =>
+      get<PushChannelStats>(`/channels/${enc(id)}/push/stats${qs({ days })}`),
     deletePushUpload: (id: string, uploadId: string) =>
       del(`/channels/${enc(id)}/push/uploads/${enc(uploadId)}`),
     /** The browser PUT of the CSV; both signed headers go up verbatim. */
@@ -556,6 +563,7 @@ export function createApiClient({
       ),
     /** Platform admin: the stage's pool of Firebase projects, by slot label. */
     pushPool: () => get<PushPoolView>("/admin/push/pool"),
+    pushSweep: () => get<PushSweepView>("/admin/push/sweep"),
     /** Platform admin: `changed` is `false` when the slot already was. */
     setPushSlotClosed: (slot: string, closed: boolean) =>
       post<{ slot: string; closed: boolean; changed: boolean }>(

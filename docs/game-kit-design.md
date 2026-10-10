@@ -330,27 +330,27 @@ One type per language — `KitError { module, code, retryable, cause? }` —
 and one code table shared by all three repositories. Wire errors are mapped,
 never surfaced by HTTP status or close code:
 
-| code                | from                                                                                 | retryable               |
-| ------------------- | ------------------------------------------------------------------------------------ | ----------------------- |
-| `not_configured`    | module used without its config block                                                 | no                      |
-| `signed_out`        | any 401                                                                              | no                      |
-| `offline`           | invite/whisper to a user without a socket                                            | yes                     |
-| `conflict`          | save version lost and no `merge`                                                     | yes                     |
-| `out_of_range`      | counter guard                                                                        | no                      |
-| `payload_too_large` | room/turns payload > 8 KB                                                            | no                      |
-| `not_your_turn`     | turns                                                                                | no                      |
-| `mismatch`          | turns hash/apply divergence                                                          | no                      |
-| `server_only`       | board `submit: server`                                                               | no                      |
-| `already_claimed`   | mail claim race                                                                      | no                      |
-| `inbox_full`        | mail send                                                                            | yes                     |
-| `lobby_required`    | matchmaking without a lobby socket                                                   | no                      |
-| `channel_inactive`  | 410: the channel or its auth channel expired or was disabled                         | no                      |
-| `cooldown`          | deferred ticket 429 `cooldown`                                                       | yes, after `retryAfter` |
-| `proposal_closed`   | deferred accept/decline 409 `proposal_closed`, `not_proposed`                        | no                      |
-| `push_refused`      | push 400 `push_project_required`/`push_project_refused`, 409 `push_not_registered`   | no                      |
-| `proposed`          | deferred ticket 409 `proposed`, decline 409 `confirmed` (an answer: read `status()`) | no                      |
-| `unavailable`       | 5xx, network                                                                         | yes                     |
-| `rate_limited`      | 429 / gateway `rate_limited`                                                         | yes                     |
+| code                | from                                                                                                                                                      | retryable               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `not_configured`    | module used without its config block                                                                                                                      | no                      |
+| `signed_out`        | any 401                                                                                                                                                   | no                      |
+| `offline`           | invite/whisper to a user without a socket                                                                                                                 | yes                     |
+| `conflict`          | save version lost and no `merge`                                                                                                                          | yes                     |
+| `out_of_range`      | counter guard                                                                                                                                             | no                      |
+| `payload_too_large` | room/turns payload > 8 KB                                                                                                                                 | no                      |
+| `not_your_turn`     | turns                                                                                                                                                     | no                      |
+| `mismatch`          | turns hash/apply divergence                                                                                                                               | no                      |
+| `server_only`       | board `submit: server`                                                                                                                                    | no                      |
+| `already_claimed`   | mail claim race                                                                                                                                           | no                      |
+| `inbox_full`        | mail send                                                                                                                                                 | yes                     |
+| `lobby_required`    | matchmaking without a lobby socket                                                                                                                        | no                      |
+| `channel_inactive`  | 410: the channel or its auth channel expired or was disabled                                                                                              | no                      |
+| `cooldown`          | deferred ticket 429 `cooldown`                                                                                                                            | yes, after `retryAfter` |
+| `proposal_closed`   | deferred accept/decline 409 `proposal_closed`, `not_proposed`                                                                                             | no                      |
+| `push_refused`      | push 400 `push_project_required`/`push_project_refused`, 409 `push_not_registered`, 409 with `details.limit: push.tokensPerChannel` (the channel is full) | no                      |
+| `proposed`          | deferred ticket 409 `proposed`, decline 409 `confirmed` (an answer: read `status()`)                                                                      | no                      |
+| `unavailable`       | 5xx, network                                                                                                                                              | yes                     |
+| `rate_limited`      | 429 / gateway `rate_limited`                                                                                                                              | yes                     |
 
 ## Scenarios every repository proves
 

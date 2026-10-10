@@ -23,6 +23,8 @@ const mockApi = {
   channelGoogleServices: vi.fn(),
   pushTemplates: vi.fn(),
   pushJobs: vi.fn(),
+  pushUploads: vi.fn(),
+  pushStats: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -102,6 +104,17 @@ describe("push channel page", () => {
       max: 20,
     });
     vi.mocked(mockApi.pushJobs).mockResolvedValue({ jobs: [], next: null });
+    vi.mocked(mockApi.pushUploads).mockResolvedValue({
+      uploads: [],
+      next: null,
+      max: 20,
+    });
+    vi.mocked(mockApi.pushStats).mockResolvedValue({
+      tokens: { count: 0, capped: false },
+      tokenCap: 10_000,
+      since: "2026-09-28",
+      days: [],
+    });
     vi.mocked(mockApi.limits).mockResolvedValue({
       scope: { kind: "channel", id: "push_9" },
       teamId: "team_1",
@@ -134,6 +147,62 @@ describe("push channel page", () => {
       expect(
         screen.getByRole("button", { name: `Copy ${label}` }),
       ).toBeInTheDocument();
+  });
+
+  it("shows the device tokens against the cap and the days' send counters", async () => {
+    vi.mocked(mockApi.pushStats).mockResolvedValue({
+      tokens: { count: 1234, capped: false },
+      tokenCap: 10_000,
+      since: "2026-09-28",
+      days: [
+        {
+          day: "2026-10-11",
+          calls: 3,
+          sent: 1500,
+          noToken: 20,
+          failed: 4,
+          unregistered: 2,
+        },
+      ],
+    });
+    mount();
+    const s = (
+      await screen.findByRole("heading", { name: "Delivery" })
+    ).closest("section")!;
+    expect(
+      await within(s).findByText("Device tokens: 1,234 of 10,000"),
+    ).toBeInTheDocument();
+    const row = within(s).getByText("2026-10-11").closest("tr")!;
+    expect(
+      within(row)
+        .getAllByRole("cell")
+        .map((c) => c.textContent),
+    ).toEqual(["2026-10-11", "3", "1,500", "20", "4", "2"]);
+    expect(mockApi.pushStats).toHaveBeenCalledWith("push_9");
+  });
+
+  it("says when the channel is full and when nothing was sent", async () => {
+    vi.mocked(mockApi.pushStats).mockResolvedValue({
+      tokens: { count: 20_000, capped: true },
+      tokenCap: 20_000,
+      since: "2026-09-28",
+      days: [],
+    });
+    mount();
+    const s = (
+      await screen.findByRole("heading", { name: "Delivery" })
+    ).closest("section")!;
+    expect(
+      await within(s).findByText(
+        /20,000 of 20,000 — full: a new device is refused/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(s).getByText("No sends in the last 14 days."),
+    ).toBeInTheDocument();
+    expect(
+      within(s).getByText("Counted since 2026-09-28."),
+    ).toBeInTheDocument();
   });
 
   it("says so when the stage has no state service", async () => {

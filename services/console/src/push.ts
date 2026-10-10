@@ -7,6 +7,8 @@ import {
 } from "@yyt/core";
 import {
   checkPushSlot,
+  pushDay,
+  pushTokenCapOf,
   PUSH_APPS_PER_PROJECT,
   PUSH_AUTO_CLOSE_BY,
   PUSH_DELETE_BATCH,
@@ -26,6 +28,7 @@ import {
   type ManagementFailure,
   type PushPool,
 } from "@yyt/push";
+import type { Kv } from "@yyt/redis";
 import { z } from "zod";
 import { readServiceAccount, serviceAccountIn } from "./channels.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
@@ -162,6 +165,22 @@ type FirebaseOutcome =
   | ManagementFailure;
 
 const TIMED_OUT: ManagementFailure = { kind: "unavailable", reason: "timeout" };
+
+/**
+ * Console Redis key of the last daily push sweep's result (`push-sweep.ts`
+ * writes it, `GET /admin/push/sweep` reads it): slot labels, counts and
+ * phase names only, as the `push sweep` log line carries them.
+ */
+export const PUSH_SWEEP_LAST_KEY = "push:sweep:last";
+/** A week of daily runs and one more day: a missing record means no run for a week. */
+export const PUSH_SWEEP_LAST_TTL_SEC = 8 * 24 * 3600;
+/** `GET /channels/{id}/push/stats`: days shown by default and at most. */
+export const PUSH_STATS_DAYS_DEFAULT = 14;
+export const PUSH_STATS_DAYS_MAX = 30;
+
+/** `YYYY-MM-DD` of a {@link pushDay}. */
+export const pushDayDate = (day: number): string =>
+  new Date(day * 86_400_000).toISOString().slice(0, 10);
 
 export interface PushDeps {
   /** Absent on a stage without the tables' grant: every push route answers 503. */
@@ -609,6 +628,8 @@ export type PushRegistrar = ReturnType<typeof createPushRegistrar>;
 
 export interface PushRoutesOptions extends PushDeps {
   access: Pick<TeamAccessHelpers, "projectResource">;
+  /** Console Redis: the last sweep's record ({@link PUSH_SWEEP_LAST_KEY}). */
+  kv: Pick<Kv, "get">;
   db: Pick<ConsoleDb, "editChannel" | "findMembersByIds">;
   /** The channel view (`app.ts`): what a sender-key write answers. */
   view: (row: ChannelRow) => Promise<Record<string, unknown>>;
@@ -619,6 +640,11 @@ export interface PushRoutesOptions extends PushDeps {
 }
 
 const senderKeyBody = z.object({ serviceAccount: serviceAccountIn }).strict();
+const statsQuery = z
+  .object({
+    days: z.coerce.number().int().min(1).max(PUSH_STATS_DAYS_MAX).optional(),
+  })
+  .strict();
 
 const noStore = (body: unknown): HttpResult => ({
   statusCode: 200,
@@ -631,6 +657,7 @@ const noStore = (body: unknown): HttpResult => ({
 
 export function createPushRoutes({
   access,
+  kv,
   db,
   push,
   pool,
@@ -855,7 +882,58 @@ export function createPushRoutes({
         } satisfies HttpResult;
       },
     }),
+    // ---- the channel's numbers (decisions #11c) -------------------------
+    defineRoute({
+      method: "GET",
+      path: "/channels/{id}/push/stats",
+      auth: true,
+      query: statsQuery,
+      handler: async (ctx) => {
+        const { row } = await pushChannel(ctx, false);
+        const { config } = stored(row);
+        if (!push) throw new AppError("unavailable", "push is not available");
+        const tokenCap = pushTokenCapOf(config);
+        // Bounded at the cap: past it the exact number changes nothing a
+        // team can act on, and the count never reads more index entries.
+        const count = await push.countTokens(row.id, tokenCap);
+        const days = ctx.query.days ?? PUSH_STATS_DAYS_DEFAULT;
+        const today = pushDay(nowSec(clock));
+        const from = Math.max(0, today - days + 1);
+        const rows = await push.listSendStats(row.id, from, today);
+        return noStore({
+          tokens: { count, capped: count >= tokenCap },
+          tokenCap,
+          since: pushDayDate(from),
+          // UTC days with a send, newest first; a day without one has no row.
+          days: rows.map((r) => ({
+            day: pushDayDate(r.day),
+            calls: r.calls,
+            sent: r.sent,
+            noToken: r.noToken,
+            failed: r.failed,
+            unregistered: r.unregistered,
+          })),
+        });
+      },
+    }),
     // ---- the pool (platform admin) -------------------------------------
+    defineRoute({
+      method: "GET",
+      path: "/admin/push/sweep",
+      auth: true,
+      handler: async (ctx) => {
+        requireRole(ctx, "admin");
+        const raw = await kv.get(PUSH_SWEEP_LAST_KEY);
+        let last: unknown = null;
+        if (raw !== null)
+          try {
+            last = JSON.parse(raw) as unknown;
+          } catch {
+            last = null;
+          }
+        return noStore({ last });
+      },
+    }),
     defineRoute({
       method: "GET",
       path: "/admin/push/pool",

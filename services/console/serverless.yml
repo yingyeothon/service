@@ -327,9 +327,10 @@ provider:
             StringEquals:
               kms:ViaService: s3.${aws:region}.amazonaws.com
         # The push pool: `GetParametersByPath` on the stage's `push/fcm/` path
-        # and nothing else in the parameter store. The role is shared by
-        # every function but `cdnGuard`; only `api`, `expire`, `pushJob` and `catalogPush`
-        # are told the path. Both spellings of the path, since the action is authorised
+        # and nothing else in the parameter store. The shared role serves
+        # `api`, `expire`, `pushJob` and `catalogPush`, the four that read the
+        # pool; `cdnGuard`, `siteDeploy` and `gatewayProbe` have roles of
+        # their own. Both spellings of the path, since the action is authorised
         # against the path itself and the parameters under it.
         - Effect: Allow
           Action: ssm:GetParametersByPath
@@ -352,7 +353,8 @@ provider:
         - Effect: Allow
           Action: cloudwatch:GetMetricStatistics
           Resource: "*"
-        # Gateway probe and usage digest → the stage's alarm topic. The topic
+        # Usage digest → the stage's alarm topic (the gateway probe publishes
+        # through its own role). The topic
         # is created by scripts/bootstrap-alarms.sh, so only its ARN is known here.
         - !If
           - HasAlarmTopic
@@ -380,7 +382,7 @@ functions:
       # The stage's pool of Firebase projects: one SecureString per slot under
       # this path, read at run time (never resolved into the template, so a
       # service-account key is in no CloudFormation parameter and a new slot
-      # needs no deploy). Set on `api`, `expire` and `pushJob` only; a path
+      # needs no deploy). Set on `api`, `expire`, `pushJob` and `catalogPush` only; a path
       # holding no
       # parameter is a stage with no project yet, and platform push answers
       # 503.
@@ -422,6 +424,7 @@ functions:
     timeout: 300
     # Every path ends in a status write; a retry could only repeat a failure.
     maximumRetryAttempts: 0
+    role: SiteDeployRole
 
   pushJob:
     handler: src/handler.pushJob
@@ -470,6 +473,7 @@ functions:
   gatewayProbe:
     handler: src/handler.gatewayProbe
     reservedConcurrency: 1
+    role: GatewayProbeRole
     memorySize: 128
     timeout: 20
     events:
@@ -1200,6 +1204,93 @@ resources:
                     - ""
                     - - arn:aws:cloudfront::${aws:accountId}:distribution/
                       - !Ref WebDistribution
+    # `siteDeploy` and `gatewayProbe` read no push key, so they run on roles
+    # of their own instead of the shared one, which holds the push pool's
+    # SSM path (docs/decisions.md *Push notifications* #11f).
+    SiteDeployRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: site-deploy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: arn:aws:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/${self:service}-${self:custom.stage}-siteDeploy:*
+                # The staged zip: read once, deleted after. ListBucket on the
+                # prefix makes a missing zip a NoSuchKey (`zip_missing`), not
+                # an AccessDenied (`storage_error`).
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:DeleteObject
+                  Resource:
+                    !Join ["", [!GetAtt PosterBucket.Arn, "/site-uploads/*"]]
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !GetAtt PosterBucket.Arn
+                  Condition:
+                    StringLike:
+                      s3:prefix: site-uploads/*
+                - Effect: Allow
+                  Action:
+                    - s3:PutObject
+                    - s3:GetObject
+                    - s3:DeleteObject
+                  Resource: arn:aws:s3:::${self:custom.siteBucket}/*
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: arn:aws:s3:::${self:custom.siteBucket}
+                - Effect: Allow
+                  Action:
+                    - kms:GenerateDataKey
+                    - kms:Decrypt
+                  Resource: arn:aws:kms:${aws:region}:${aws:accountId}:key/*
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: s3.${aws:region}.amazonaws.com
+                - !If
+                  - HasSiteDistribution
+                  - Effect: Allow
+                    Action: cloudfront:CreateInvalidation
+                    Resource: arn:aws:cloudfront::${aws:accountId}:distribution/${self:custom.siteDistributionId}
+                  - !Ref AWS::NoValue
+    GatewayProbeRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: gateway-probe
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: arn:aws:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/${self:service}-${self:custom.stage}-gatewayProbe:*
+                - !If
+                  - HasAlarmTopic
+                  - Effect: Allow
+                    Action: sns:Publish
+                    Resource: ${self:custom.alarmTopic}
+                  - !Ref AWS::NoValue
   Outputs:
     WebBucketName:
       Value: !Ref WebBucket

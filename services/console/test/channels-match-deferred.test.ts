@@ -156,6 +156,28 @@ describe("match channel: mode", () => {
       [{ ...base, mode: "later" }, 400, "mode"],
       [{ ...d, pushChannelId: "NOT AN ID" }, 400, "pushChannelId"],
       [{ ...d, surprise: 1 }, 400],
+      // Notification text (decisions *Push notifications* #11h).
+      [{ ...d, notification: { proposed: { title: "Match found" } } }, 201],
+      [{ ...d, notification: { expired: { title: "x", body: "y" } } }, 201],
+      [{ ...d, notification: null }, 201],
+      [{ ...d, notification: {} }, 201],
+      [
+        { ...base, notification: { proposed: { title: "x" } } },
+        400,
+        "notification",
+      ],
+      [{ ...d, notification: { failed: { title: "x" } } }, 400],
+      [{ ...d, notification: { proposed: { title: "  " } } }, 400],
+      [{ ...d, notification: { proposed: { body: "no title" } } }, 400],
+      [{ ...d, notification: { proposed: { title: "x".repeat(101) } } }, 400],
+      [
+        {
+          ...d,
+          notification: { proposed: { title: "x", body: "y".repeat(241) } },
+        },
+        400,
+      ],
+      [{ ...d, notification: { proposed: { title: "a\u0007b" } } }, 400],
     ];
     for (const [config, status, path] of cases) {
       const r = await mk(config);
@@ -166,6 +188,16 @@ describe("match channel: mode", () => {
           JSON.stringify(config),
         ).toContain(path);
     }
+    // The text is stored trimmed, an empty body left out; null clears it.
+    const withText = parse(
+      await mk({
+        ...d,
+        notification: { proposed: { title: " Match found ", body: "" } },
+      }),
+    );
+    expect(withText.config.notification).toEqual({
+      proposed: { title: "Match found" },
+    });
     // Every problem of one body is reported at once.
     const many = await mk({
       ...base,

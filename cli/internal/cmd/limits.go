@@ -649,7 +649,7 @@ func isTeamLimit(key string) bool {
 // isPushChannelLimit reports a `push.` key whose scope is a push channel, not
 // the team: the campaign limits (`channelKind: "push"` in console's registry).
 func isPushChannelLimit(key string) bool {
-	return key == "push.recipientsPerJob" || key == "push.jobsPerDay"
+	return key == "push.recipientsPerJob" || key == "push.jobsPerDay" || key == "push.tokensPerChannel"
 }
 
 // withLimitHint names the request to make when a create was refused by a

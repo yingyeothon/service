@@ -1,11 +1,12 @@
-import { Button, Code, Group, Text } from "@mantine/core";
+import { Button, Code, Group, Table, Text } from "@mantine/core";
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
 import { useConfirm } from "../lib/confirm";
 import { notify } from "../lib/notify";
 import { pushProblem, saveBlob, serviceAccountProblem } from "../lib/push";
-import { useAction } from "../lib/query";
-import type { Channel, PushConfig } from "../types";
+import { useAction, useApiQuery } from "../lib/query";
+import type { Channel, PushChannelStats, PushConfig } from "../types";
+import { DataTable } from "./DataTable";
 import { ResourceDrawer, useDrawerForm } from "./ResourceDrawer";
 import { Section } from "./Section";
 import { ServiceAccountField } from "./ServiceAccountField";
@@ -261,6 +262,78 @@ export function PushSenderKeyCard({
           }
         />
       </ResourceDrawer>
+    </Section>
+  );
+}
+
+const NOWRAP = { whiteSpace: "nowrap" } as const;
+const count = (v: number) => v.toLocaleString("en-US");
+
+/** `12 of 10,000`, or `10,000 of 10,000 — full` once a new device is refused. */
+export function tokenLine(s: PushChannelStats): string {
+  return s.tokens.capped
+    ? `${count(s.tokenCap)} of ${count(s.tokenCap)} — full: a new device is refused until tokens expire or the limit is raised`
+    : `${count(s.tokens.count)} of ${count(s.tokenCap)}`;
+}
+
+/**
+ * The channel's device tokens against `push.tokensPerChannel`, and what its
+ * sends did over the last two weeks (`GET /channels/{id}/push/stats`).
+ */
+export function PushStatsSection({ channelId }: { channelId: string }) {
+  const q = useApiQuery(["channel", channelId, "push", "stats"], () =>
+    api.pushStats(channelId),
+  );
+  const s = q.data;
+  return (
+    <Section
+      title="Delivery"
+      description="Device tokens are counted up to the channel's limit. Send counters are per UTC day and cover targeted sends and campaign jobs (one call per batch of 500); broadcasts and the deferred-match hook are not counted."
+    >
+      {s && (
+        <Text size="sm" mb="xs">
+          Device tokens: {tokenLine(s)}
+        </Text>
+      )}
+      <DataTable
+        columns={[
+          { key: "day", label: "Day (UTC)" },
+          { key: "calls", label: "Calls", align: "right" },
+          { key: "sent", label: "Reached", align: "right" },
+          { key: "noToken", label: "No token", align: "right" },
+          { key: "failed", label: "Failed", align: "right" },
+          { key: "gone", label: "Tokens dropped", align: "right" },
+        ]}
+        rows={s?.days}
+        loading={q.loading}
+        error={q.error}
+        rowKey={(d) => d.day}
+        minWidth={560}
+        empty={{
+          title: "No sends in the last 14 days.",
+          hint: s ? `Counted since ${s.since}.` : undefined,
+        }}
+        render={(d) => (
+          <>
+            <Table.Td style={NOWRAP}>{d.day}</Table.Td>
+            <Table.Td style={{ ...NOWRAP, textAlign: "right" }}>
+              {count(d.calls)}
+            </Table.Td>
+            <Table.Td style={{ ...NOWRAP, textAlign: "right" }}>
+              {count(d.sent)}
+            </Table.Td>
+            <Table.Td style={{ ...NOWRAP, textAlign: "right" }}>
+              {count(d.noToken)}
+            </Table.Td>
+            <Table.Td style={{ ...NOWRAP, textAlign: "right" }}>
+              {count(d.failed)}
+            </Table.Td>
+            <Table.Td style={{ ...NOWRAP, textAlign: "right" }}>
+              {count(d.unregistered)}
+            </Table.Td>
+          </>
+        )}
+      />
     </Section>
   );
 }

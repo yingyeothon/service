@@ -309,3 +309,58 @@ func TestChannelsMatchModeUpdate(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelsMatchNotify(t *testing.T) {
+	deferred := matchFixture("match_def", "league", true)
+	deferred["config"].(map[string]any)["notification"] = map[string]any{
+		"proposed": map[string]any{"title": "Match found"},
+		"expired":  map[string]any{"title": "Gone", "body": "try again"},
+	}
+	var patched map[string]any
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"GET /channels/match_def": func(recorded) (int, any) { return 200, deferred },
+		"PATCH /channels/match_def": func(r recorded) (int, any) {
+			patched = r.Body
+			return 200, deferred
+		},
+		"GET /channels/match_live": func(recorded) (int, any) { return 200, matchFixture("match_live", "duel", false) },
+	}, nil, nil, nil))
+	note := func() map[string]any {
+		n, _ := patched["config"].(map[string]any)["notification"].(map[string]any)
+		return n
+	}
+	// One state set, one removed; the third is kept.
+	if _, _, err := run(t, f, "channels", "update", "match_def", "--notify-confirmed", "Game on", "--notify-confirmed-body", "Join now", "--notify-expired", ""); err != nil {
+		t.Fatal(err)
+	}
+	n := note()
+	if len(n) != 2 || n["proposed"] == nil || n["expired"] != nil {
+		t.Fatalf("notification %v", n)
+	}
+	if c := n["confirmed"].(map[string]any); c["title"] != "Game on" || c["body"] != "Join now" {
+		t.Fatalf("confirmed %v", c)
+	}
+	// --notify-clear drops the key.
+	if _, _, err := run(t, f, "channels", "update", "match_def", "--notify-clear"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := patched["config"].(map[string]any)["notification"]; ok {
+		t.Fatalf("still there: %v", patched["config"])
+	}
+	// A body alone, and a live channel, are refused before any write.
+	patched = nil
+	if _, _, err := run(t, f, "channels", "update", "match_def", "--notify-proposed-body", "x"); err == nil || !strings.Contains(err.Error(), "--notify-proposed") {
+		t.Fatalf("body alone: %v", err)
+	}
+	if _, _, err := run(t, f, "channels", "update", "match_live", "--notify-proposed", "x"); err == nil || !strings.Contains(err.Error(), "deferred") {
+		t.Fatalf("live: %v", err)
+	}
+	if patched != nil {
+		t.Fatal("a refused update was sent")
+	}
+	// The view lists the text.
+	out, _, err := run(t, f, "channels", "get", "match_def")
+	if err != nil || !strings.Contains(out, "notify proposed") || !strings.Contains(out, "Gone — try again") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}

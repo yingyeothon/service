@@ -6,6 +6,11 @@ Verified end to end on `dev` with `sample-dungeon` from [`yingyeothon/examples`]
 
 - `prod` stacks deployed (launch checklist: `local/owner-checklist.md`), console reachable, members approved.
 - CDN guard thresholds (`docs/decisions.md` _CDN cost guard and emergency stops_) checked against the expected audience: a trip disables every site (`g`, `*.g`) or every asset (`d`) of the stage. Expecting a crowd on one big build: deploy with `--param cdnGuardScaleArtifact=4` (the asset host alone; `cdnGuardScale=4` raises every host, `cdnGuardMode=alert` announces only) first. Each host trips on its own: with `g` off, sites still load at `{slug}.g.yyt.life`, and the other way round.
+- **Push pool, if teams will make push channels** (`docs/push.md` _Operator_). Each Firebase project takes 20 platform registrations, so give the contest a fresh one rather than the remainder of the last:
+  1. `yyt push pool` — note each slot's `APPS` against its capacity of 20, and whether a slot is closed.
+  2. Teams × push channels per team (`push.appsPerTeam`, 2 by default) must fit the open slots. If not, add a project (_Adding a project_: create it, then put its key under the next label, e.g. `p4`); `yyt push pool` lists it `provisioned` within 10 minutes.
+  3. `yyt push pool close <previous slot>` for every slot that should take no new registration, so placement (the first open slot with room, in label order) lands the contest's channels in the fresh project. Its existing channels keep working: a closed slot only refuses new registrations.
+  4. After the contest, leave it closed or `yyt push pool open <slot>` it again; `yyt push pool sweep` shows what the last daily sweep found per slot (orphans, missing apps, auto-closes).
 - tslib built and available (`~/git/yyt.life/tslib`, `pnpm build`) or published to npm.
 - Each team has: a console login, the `yyt` CLI, an AWS account/profile for their own stack, Serverless Framework v4 CLI (`npm i -g serverless`, logged in), a Redis they own (any Redis 6+; ACL user optional).
 - Each team registers a GitHub OAuth app (any placeholder callback URL for now) and keeps its client id/secret; the real callback is set in step 1.

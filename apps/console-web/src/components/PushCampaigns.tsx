@@ -66,6 +66,7 @@ import {
   VarCodes,
 } from "./PushMessageFields";
 import { PushTemplatesSection } from "./PushTemplates";
+import { PushUploadsSection, usePushUploads } from "./PushUploads";
 import { ResourceDrawer } from "./ResourceDrawer";
 import { Section } from "./Section";
 import { Badge, CopyField, Notice } from "./ui";
@@ -118,9 +119,10 @@ function useVisiblePoll(on: boolean, fn: () => Promise<void>, ms: number) {
  * The channel's jobs, newest first: the paged list, plus the jobs a submit,
  * a cancel or a poll answered since (`fresh`), which replace their row.
  * Unfinished jobs are re-read one by one — the status read is also what
- * kicks a job whose worker died.
+ * kicks a job whose worker died. `onMoved` runs when the list is reloaded or
+ * a job is seen in a final state: what holds an upload may have changed.
  */
-function usePushJobs(channelId: string) {
+function usePushJobs(channelId: string, onMoved: () => void) {
   const list = useCursorList<PushJobPage, PushJob>(
     ["channel", channelId, "push", "jobs"],
     (cursor) => api.pushJobs(channelId, cursor),
@@ -134,7 +136,10 @@ function usePushJobs(channelId: string) {
     ...(rows ?? []),
   ];
   const active = known.filter(jobActive).slice(0, POLL_MAX);
-  const put = (j: PushJob) => setFresh((cur) => ({ ...cur, [j.id]: j }));
+  const put = (j: PushJob) => {
+    setFresh((cur) => ({ ...cur, [j.id]: j }));
+    if (!jobActive(j)) onMoved();
+  };
   useVisiblePoll(
     active.length > 0,
     async () => {
@@ -146,6 +151,8 @@ function usePushJobs(channelId: string) {
         for (const j of read) if (j) next[j.id] = j;
         return next;
       });
+      // Only active jobs were read: a final one just finished.
+      if (read.some((j) => j !== null && !jobActive(j))) onMoved();
     },
     PUSH_JOB_POLL_MS,
   );
@@ -157,7 +164,10 @@ function usePushJobs(channelId: string) {
     busy: list.busy,
     fetching: list.fetching,
     loadMore: list.loadMore,
-    reload: list.reload,
+    reload: async () => {
+      await list.reload();
+      onMoved();
+    },
     put,
     byId: (id: string | null) =>
       id === null ? undefined : known.find((j) => j.id === id),
@@ -856,7 +866,9 @@ export function PushCampaigns({
     ["channel", channel.id, "push", "templates"],
     () => api.pushTemplates(channel.id),
   );
-  const jobs = usePushJobs(channel.id);
+  const uploads = usePushUploads(channel.id);
+  // A job that starts, ends or is cancelled moves its upload's state.
+  const jobs = usePushJobs(channel.id, () => void uploads.reload());
   // A form is mounted per opening: its state, upload and idempotency keys
   // never outlive the drawer.
   const [form, setForm] = useState<{
@@ -868,7 +880,11 @@ export function PushCampaigns({
     setOpens((n) => n + 1);
     setForm({ kind, n: opens + 1 });
   };
-  const closeForm = () => setForm(null);
+  const closeForm = () => {
+    setForm(null);
+    // The form made (and may have dropped) an upload: the list moved.
+    void uploads.reload();
+  };
   const [viewingId, setViewingId] = useState<string | null>(null);
   const viewing = jobs.byId(viewingId);
   const list = templates.data?.templates ?? [];
@@ -956,6 +972,11 @@ export function PushCampaigns({
           </Group>
         )}
       </Section>
+      <PushUploadsSection
+        channelId={channel.id}
+        owner={owner}
+        uploads={uploads}
+      />
       <Section
         title="Broadcast"
         description="One message to every device subscribed to the channel topic, whatever the audience: no CSV and no per-user text."

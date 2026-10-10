@@ -101,6 +101,34 @@ describe("push hook", () => {
     });
   });
 
+  it("carries the channel's notification text for a state that has one, with the same data", async () => {
+    const h = await ready({
+      config: {
+        pushChannelId: PUSH,
+        notification: {
+          proposed: { title: "Match found", body: "Accept within 2 minutes" },
+          confirmed: { title: "Game on" },
+        },
+      },
+    });
+    await h.token(U(1), 1);
+    await h.token(U(2), 2);
+    const matchId = await propose(h);
+    for (const s of h.fcm.google.sent) {
+      expect(s.notification).toEqual({
+        title: "Match found",
+        body: "Accept within 2 minutes",
+      });
+      expect(s.data).toEqual({ channelId: CH, matchId, state: "proposed" });
+    }
+    h.fcm.google.sent.length = 0;
+    await accept(h, U(1));
+    await accept(h, U(2));
+    expect(h.fcm.google.sent).toHaveLength(2);
+    for (const s of h.fcm.google.sent)
+      expect(s.notification).toEqual({ title: "Game on", body: "" });
+  });
+
   it("expired: a closed window tells the whole proposal, a wait timeout its ticket", async () => {
     const h = await ready({
       config: {

@@ -136,6 +136,9 @@ yyt push channel config <channel> [-o <file>|-] [--force]        # google-servic
 yyt push channel sender-key set <channel> --service-account <file|->   # the team's own Firebase project as a second sender
 yyt push channel sender-key rm <channel>                         # refused on a --sender team channel
 yyt push pool [ls] | close <slot> | open <slot>                  # platform admin: registration slots (p1, p2, …)
+yyt push pool sweep                                              # platform admin: what the last daily sweep found per slot
+yyt push channel stats <channel> [--days 14]                     # device tokens against push.tokensPerChannel, sends per UTC day
+yyt push upload ls <channel> | rm <channel> <upload>             # recipient CSVs; rm frees one of the 20 pending places (--as-server too)
 yyt push template ls <channel> | get|rm <channel> <template>      # <template>: id (pt_…) or name; get prints the variables = CSV columns
 yyt push template create <channel> --name n [--title t] [--body b] [--data k=v …] [--file template.json]
 yyt push template update <channel> <template> [--name n] [--title t] [--body b] [--data k=v … | --clear-data] [--file template.json]
@@ -304,6 +307,8 @@ A push channel is a channel of kind `push`: `yyt push channel create|ls|get|upda
 
 A `push_…` argument is always an id: a channel name may not have that shape. A refused create says what to do: `package_taken` (the application id belongs to another platform-sender channel on the stage; `--sender team` is not bound by it), `service_account` (which field of the key file failed), `push.appsPerTeam` (the limit request to make), `push_pool_full` / `push_not_configured` (a platform admin's `yyt push pool`), `firebase_unavailable` (retry). `update` with `--auth` answers `not_registered` while a platform registration is unfinished (`--name` alone is not refused), and `create`, `sender-key` and every `config` download take the per-member write slot (429: run it again).
 
+**Upkeep.** `push channel stats` prints the channel's device tokens against `push.tokensPerChannel` (soft 10,000, hard 100,000; a new token past it is refused 409, a refresh never is — `yyt limit request push.tokensPerChannel <n> --channel …`) and, per UTC day of the last 14 (`--days` up to 30), the targeted sends. `push upload ls` lists the recipient CSVs with their state (`pending` and `in use` hold one of the 20 places, `free` no longer does) and `push upload rm` removes one no running job reads. `push pool sweep` (platform admin) shows the last daily sweep: stale tokens, claims released or kept, and per slot the reconciliation's orphans, missing and foreign apps and any auto-close.
+
 `yyt push pool close <slot>` on a slot the platform closed itself (`CLOSED BY auto:firebase-limit`) takes the closure over: it prints `closed`, and the daily sweep no longer reopens the slot.
 
 **Campaigns** (`docs/push.md` _Campaigns_). A template is a message with `{{variables}}` in its title, body and data values (`--file` takes `{name, title, body, data}`, e.g. an edited `template get --json`; flags beside it win; `--data` replaces the whole data set). `job submit` sends one template to the users a recipient CSV lists — a `userId` column plus one column per variable:
@@ -357,6 +362,7 @@ A match channel is `live` (the default) or `deferred`, chosen with `--mode` at c
 | `--accept-timeout` | — | 30..600 s, default 120: every member must accept a proposed match within it |
 | `--result-ttl` | — | 60..3600 s, default 600: how long a finished ticket stays readable |
 | `--push-channel` | — | optional: an active push channel (id or name) of the same project on the same auth channel; it wakes the players. Without one, clients poll |
+| `--notify-proposed\|confirmed\|expired <title>` and `--notify-<state>-body <body>` | — | optional: makes that state's push a visible notification (title ≤ 100, body ≤ 240); `''` removes one state, `--notify-clear` all |
 
 - `channels get` prints `mode` for every match channel and, for a deferred one, `acceptTimeoutSec`, `resultTtlSec`, `pushChannel`, `ticketUrl` (`POST`/`GET`/`DELETE`), `acceptUrl` and `declineUrl` (`POST`), all called with a player JWT as Bearer. `ticketUrl` reads `none (…)` on a stage whose match service has no HTTP host. Clients should poll `GET` no faster than every few seconds (the ticket API is throttled at 5 requests/s per stage; `get` prints this as `polling`), and `POST …/ticket` can answer 429 `cooldown` with `details.retryAfter` after a decline or an unanswered proposal. `channels list` has a `MODE` column (`-` for the other kinds). `--json` stays the console's response: the mode is `config.mode`, absent on a live channel.
 - `channels update <match>` reads the channel and sends its whole config back with the given flags on top, so the mode and every deferred field are kept. `--push-channel ''` removes the link.

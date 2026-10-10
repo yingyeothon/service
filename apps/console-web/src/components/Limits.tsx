@@ -64,6 +64,12 @@ import { Badge, Notice } from "./ui";
  */
 
 /** `GET /limits` for one scope; the page and its section share the query. */
+/** Overrides of these keys are written into the channel row and cannot expire. */
+export const UNTIMED_KEYS: ReadonlySet<string> = new Set([
+  "channel.lifetime",
+  "push.tokensPerChannel",
+]);
+
 export function useLimits(
   kind: LimitScopeKind,
   id: string,
@@ -508,8 +514,9 @@ export function LimitsSection({
   const setProblem = setRow
     ? limitValueProblem(setRow.unit, setValue, setRow.hard)
     : null;
-  // `channel.lifetime` refuses `expiresAt` (#7): no expiry is revoked, not timed.
-  const temporary = setRow !== undefined && setRow.unit !== "seconds";
+  // Keys the console mirrors into a channel row refuse `expiresAt`: no expiry
+  // (#7) and the push token cap (#11a) are revoked, not timed.
+  const temporary = setRow !== undefined && !UNTIMED_KEYS.has(setRow.key);
   const canSet =
     setRow !== undefined &&
     setValue !== null &&

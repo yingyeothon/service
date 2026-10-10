@@ -1,0 +1,6 @@
+tokens:   3
+tokenCap: 10000
+since:    2026-09-27
+
+DAY         CALLS  SENT  NO TOKEN  FAILED  UNREGISTERED
+2026-10-10  2      1     1         0       0

@@ -17,9 +17,12 @@ import type {
   PushPool,
   SkippedSlot,
 } from "@yyt/push";
+import type { Kv } from "@yyt/redis";
 import {
   isPlatformApp,
   PUSH_AUTO_CLOSE_BY,
+  PUSH_SWEEP_LAST_KEY,
+  PUSH_SWEEP_LAST_TTL_SEC,
   PUSH_REMOVE_BUDGET_MS,
   releasePushApp,
   within,
@@ -164,7 +167,15 @@ export interface PushSweepOptions {
   maxBatches?: number;
   /** Default {@link PUSH_RECONCILE_BUDGET_MS}; phases 1 and 5 share it. */
   reconcileBudgetMs?: number;
+  /**
+   * Console Redis: the result is kept under {@link PUSH_SWEEP_LAST_KEY} for
+   * `GET /admin/push/sweep`. Absent: not kept.
+   */
+  kv?: Pick<Kv, "set">;
 }
+
+/** What `GET /admin/push/sweep` answers as `last`: the result and when it ran. */
+export type PushSweepRecord = PushSweepResult & { at: number };
 
 const configOf = (row: ChannelRow): PushChannelConfig | undefined => {
   try {
@@ -188,6 +199,7 @@ export async function runPushSweep({
   batch = PUSH_DELETE_BATCH,
   maxBatches = PUSH_SWEEP_MAX_BATCHES,
   reconcileBudgetMs = PUSH_RECONCILE_BUDGET_MS,
+  kv,
 }: PushSweepOptions): Promise<PushSweepResult> {
   const now = nowSec(clock);
   const deps = { push, pool, stage, logger, clock };
@@ -313,6 +325,21 @@ export async function runPushSweep({
   if (result.truncated || result.reconcile?.truncated)
     logger.warn("push sweep truncated", line);
   else logger.info("push sweep", line);
+  if (kv) {
+    // The log line's content, nothing more: slot labels, counts, phase
+    // names and skipped parameters' sanitised labels. Best effort -- the
+    // sweep already ran, and the log line holds the same.
+    const record: PushSweepRecord = { at: now, ...result };
+    try {
+      await kv.set(PUSH_SWEEP_LAST_KEY, JSON.stringify(record), {
+        ex: PUSH_SWEEP_LAST_TTL_SEC,
+      });
+    } catch (e) {
+      logger.warn("push sweep record failed", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
   return result;
 
   async function reconcile(): Promise<PushSweepResult["reconcile"]> {

@@ -16,9 +16,11 @@ import {
   LIMIT_REQUEST_STATUSES,
   LIMIT_SCOPE_KINDS,
   pushDay,
+  PUSH_TOKENS_PER_CHANNEL_DEFAULT,
+  PUSH_TOKENS_PER_CHANNEL_HARD,
   type AssetsDb,
   type KvStoreDb,
-  type ChannelLifetimeWrite,
+  type ChannelWrite,
   type ConsoleDb,
   type LimitOverrideRow,
   type LimitRequestRow,
@@ -198,6 +200,18 @@ export const LIMITS = {
     unit: "count",
     soft: 10,
     hard: 100,
+  },
+  // Device-token rows one push channel holds (docs/decisions.md *Push
+  // notifications* #11a). Enforced by the state stack's token `PUT`, which
+  // cannot read `limit_overrides`: a grant or a revocation writes the
+  // effective value into the channel's config (`tokenCap`) in the override's
+  // transaction, so no `expiresAt` is taken (an expiry would leave it stale).
+  "push.tokensPerChannel": {
+    scope: "channel",
+    channelKind: "push",
+    unit: "count",
+    soft: PUSH_TOKENS_PER_CHANNEL_DEFAULT,
+    hard: PUSH_TOKENS_PER_CHANNEL_HARD,
   },
   // Collections per project, the former `KV_COLLECTIONS_PER_PROJECT`.
   "kv.collections": {
@@ -415,8 +429,8 @@ export interface LimitRoutesOptions {
   >;
   /** The `site.*` usage (the current deploy) and the names a request list shows. */
   sites: Pick<SitesDb, "findSite" | "findDeploy" | "listSitesByIds">;
-  /** The usage of `push.appsPerTeam`; absent on a stage without push. */
-  push?: Pick<PushDb, "countTeamApps">;
+  /** The usage of `push.appsPerTeam` and `push.tokensPerChannel`; absent on a stage without push. */
+  push?: Pick<PushDb, "countTeamApps" | "countTokens">;
   /** The usage of `push.jobsPerDay`; absent on a stage without push. */
   pushJobs?: Pick<PushJobsDb, "countJobsOfDay">;
   access: Pick<
@@ -565,16 +579,29 @@ export function createLimitRoutes({
     scope: LimitScope,
     a: TeamAccess & { channelKind?: ChannelKind },
   ): Promise<Partial<Record<LimitKey, number>>> {
-    if (scope.kind === "channel")
+    if (scope.kind === "channel") {
+      if (a.channelKind !== "push") return {};
       // `push.recipientsPerJob` bounds one job, so it has no running usage.
-      return a.channelKind === "push" && pushJobs
-        ? {
-            "push.jobsPerDay": await pushJobs.countJobsOfDay(
-              scope.id,
-              pushDay(nowSec(clock)),
-            ),
-          }
-        : {};
+      return {
+        ...(pushJobs
+          ? {
+              "push.jobsPerDay": await pushJobs.countJobsOfDay(
+                scope.id,
+                pushDay(nowSec(clock)),
+              ),
+            }
+          : {}),
+        // Bounded: past the hard value the exact number tells nothing more.
+        ...(push
+          ? {
+              "push.tokensPerChannel": await push.countTokens(
+                scope.id,
+                PUSH_TOKENS_PER_CHANNEL_HARD + 1,
+              ),
+            }
+          : {}),
+      };
+    }
     if (scope.kind === "team")
       return {
         "team.projects": await team.countProjects(a.team.id),
@@ -864,10 +891,45 @@ export function createLimitRoutes({
   }
 
   /** The channel write a `channel.lifetime` grant makes (#7): no expiry, revived. */
-  const noExpiry: ChannelLifetimeWrite = {
-    expiresAt: CHANNEL_NO_EXPIRY_SEC,
-    revive: true,
+  const noExpiry: ChannelWrite = {
+    lifetime: { expiresAt: CHANNEL_NO_EXPIRY_SEC, revive: true },
   };
+
+  /**
+   * Keys whose grant is mirrored into the channel row, in the override's
+   * transaction: their enforcer reads the row, not `limit_overrides`. Such a
+   * grant takes no `expiresAt` (nothing would undo the row write).
+   */
+  const mirrored = (key: LimitKey): boolean =>
+    key === "channel.lifetime" || key === "push.tokensPerChannel";
+
+  /** The channel write that grants `value` for `key`, if the key has one. */
+  function grantWrite(
+    key: LimitKey,
+    value: LimitValue,
+  ): ChannelWrite | undefined {
+    if (key === "channel.lifetime") return noExpiry;
+    if (key === "push.tokensPerChannel")
+      // The effective value, as `effectiveLimit` would read the override.
+      return {
+        config: {
+          tokenCap: effectiveLimit(key, { value: toDb(value) }) as number,
+        },
+      };
+    return undefined;
+  }
+
+  /** The channel write that revokes `key`'s grant, if the key has one. */
+  function revokeWrite(key: LimitKey, at: number): ChannelWrite | undefined {
+    // Revoking no expiry puts the channel back on extend's reach (#7).
+    if (key === "channel.lifetime")
+      return {
+        lifetime: { expiresAt: at + CHANNEL_MAX_AHEAD_SEC, revive: false },
+      };
+    // Absent = the soft value.
+    if (key === "push.tokensPerChannel") return { config: { tokenCap: null } };
+    return undefined;
+  }
 
   /** Whether `key` exists for a scope of this channel kind (any other scope: yes). */
   const appliesTo = (key: LimitKey, channelKind?: ChannelKind): boolean => {
@@ -1123,6 +1185,7 @@ export function createLimitRoutes({
         await writeSlot(admin);
         const at = nowSec(clock);
         const overrideId = `lo_${ulid(at * 1000).toLowerCase()}`;
+        const channel = grantWrite(key, value);
         const ok = await limits.approveRequest(req.id, {
           by: admin.subject,
           at,
@@ -1132,7 +1195,7 @@ export function createLimitRoutes({
             id: overrideId,
             note: ctx.body.note ?? `approved request ${req.id}`,
           },
-          ...(key === "channel.lifetime" ? { channel: noExpiry } : {}),
+          ...(channel ? { channel } : {}),
         });
         if (!ok)
           throw new AppError("conflict", "the request is no longer pending");
@@ -1204,10 +1267,10 @@ export function createLimitRoutes({
         const key = keyFor(scopeOfParams(ctx), ctx.params.key!);
         const { value, expiresAt } = ctx.body;
         checkLimitValue(key, value);
-        if (key === "channel.lifetime" && expiresAt !== undefined)
+        if (mirrored(key) && expiresAt !== undefined)
           throw new AppError(
             "bad_request",
-            "channel.lifetime takes no expiresAt: revoke it instead",
+            `${key} takes no expiresAt: revoke it instead`,
           );
         const at = nowSec(clock);
         if (expiresAt !== undefined && expiresAt <= at)
@@ -1229,7 +1292,7 @@ export function createLimitRoutes({
             grantedAt: at,
             expiresAt: expiresAt ?? null,
           },
-          key === "channel.lifetime" ? noExpiry : undefined,
+          grantWrite(key, value),
         );
         await audit(admin.subject, "limit.override.set", scopeLabel(scope), {
           key,
@@ -1263,13 +1326,10 @@ export function createLimitRoutes({
         const { scope } = await scopeRow(scopeOfParams(ctx));
         await writeSlot(admin);
         const at = nowSec(clock);
-        // Revoking no expiry puts the channel back on extend's reach (#7).
         const gone = await limits.revokeOverride(
           scope,
           key,
-          key === "channel.lifetime"
-            ? { expiresAt: at + CHANNEL_MAX_AHEAD_SEC, revive: false }
-            : undefined,
+          revokeWrite(key, at),
         );
         if (!gone) throw new AppError("not_found", "no override to revoke");
         await audit(admin.subject, "limit.override.revoke", scopeLabel(scope), {

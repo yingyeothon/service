@@ -1,6 +1,7 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
 import type {
   AssetsDb,
+  ConsoleDb,
   KvCollectionUsage,
   KvStoreDb,
   LbBoardUsage,
@@ -14,7 +15,11 @@ import type {
   SocialChannelUsage,
   SocialDb,
 } from "@yyt/console-db";
-import { PUSH_APPS_PER_PROJECT, pushDay } from "@yyt/console-db";
+import {
+  PUSH_APPS_PER_PROJECT,
+  pushDay,
+  pushTokenCapOf,
+} from "@yyt/console-db";
 import type { Kv } from "@yyt/redis";
 import {
   CloudWatchClient,
@@ -226,6 +231,11 @@ export interface UsageDigestOptions {
     jobs?: Pick<PushJobsDb, "jobStatsOfDay">;
     /** The campaign sweep that ran before this digest. */
     jobSweep?: PushJobSweepResult;
+    /**
+     * Reads the top channels' `tokenCap` to name the full ones; absent
+     * leaves the `push:tokens:full` lines out.
+     */
+    channels?: Pick<ConsoleDb, "findPushChannel">;
   };
   /** Limit requests; omitted leaves the pending-request line out. */
   limits?: Pick<LimitsDb, "countPending">;
@@ -702,6 +712,40 @@ export async function runUsageDigest({
           type: "level",
           text: `push channel ${c.channelId} holds ${c.tokens} device tokens`,
         });
+    // A channel at its `push.tokensPerChannel` refuses new devices. Only the
+    // top channels are read (one row each), so a full channel below them is
+    // not named here; its team sees the 409 and `/push/stats`.
+    const channelDb = push.channels;
+    const full =
+      channelDb && top && top.length > 0
+        ? await attempt("push-caps", async () => {
+            const out: {
+              id: string;
+              name: string;
+              tokens: number;
+              cap: number;
+            }[] = [];
+            for (const c of top) {
+              const ch = await channelDb.findPushChannel(c.channelId);
+              if (!ch) continue;
+              const cap = pushTokenCapOf(ch.config);
+              if (c.tokens >= cap)
+                out.push({
+                  id: c.channelId,
+                  name: ch.name,
+                  tokens: c.tokens,
+                  cap,
+                });
+            }
+            return out;
+          })
+        : undefined;
+    for (const f of full ?? [])
+      warnings.push({
+        kind: `push:tokens:full:${f.id}`,
+        type: "level",
+        text: `push channel "${f.name}" (${f.id}) holds ${f.tokens} device tokens, its push.tokensPerChannel of ${f.cap}; new devices are refused until a limit request is granted`,
+      });
     // Room left in the pool, over the slots SSM provisions (the ones the
     // reconciliation visited); unknown without it, and then not guessed.
     if (reconcile && slots) {

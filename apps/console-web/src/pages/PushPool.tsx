@@ -5,11 +5,12 @@ import { DataTable } from "../components/DataTable";
 import { FoldCell } from "../components/FoldCell";
 import { PageHeader } from "../components/PageHeader";
 import { RowMenu, type RowMenuItem } from "../components/RowMenu";
+import { Section } from "../components/Section";
 import { Badge, Notice } from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
-import type { PushPoolSlot } from "../types";
+import type { PushPoolSlot, PushSweepRecord, PushSweepSlot } from "../types";
 
 /*
  * The platform admin's view of the push pool (docs/decisions.md *Push
@@ -53,6 +54,121 @@ function state(s: PushPoolSlot): { label: string; tone: string } {
   if (s.closed) return { label: "closed", tone: "warn" };
   if (s.apps >= s.capacity) return { label: "full", tone: "danger" };
   return { label: "open", tone: "ok" };
+}
+
+/** A slot's flags from the last sweep, as one line. */
+export function sweepNotes(s: PushSweepSlot): string {
+  const notes = [
+    s.unread ? "not read" : undefined,
+    s.autoClosed ? "auto-closed" : undefined,
+    s.autoOpened ? "auto-opened" : undefined,
+  ].filter((x): x is string => x !== undefined);
+  return notes.length === 0 ? "—" : notes.join(", ");
+}
+
+/** The run's own lines: what it did beside the per-slot findings. */
+export function sweepSummary(r: PushSweepRecord): string[] {
+  const lines = [
+    `Tokens deleted: ${r.tokens.channels} of dead channels, ${r.tokens.stale} stale. Send counters deleted: ${r.stats}. Registrations released: ${r.released}, kept for a retry: ${r.kept}.`,
+  ];
+  if (r.failed.length > 0)
+    lines.push(`Phases that failed: ${r.failed.join(", ")}.`);
+  if (r.truncated || r.reconcile?.truncated)
+    lines.push("A budget ran out: the rest waits for tomorrow's run.");
+  if (r.pool?.unreadable)
+    lines.push(
+      "The pool's SSM path could not be read: nothing was reconciled.",
+    );
+  for (const u of r.pool?.unprovisioned ?? [])
+    lines.push(
+      `Slot ${u.slot} holds ${u.claims} registration(s) but is not provisioned.`,
+    );
+  for (const k of r.pool?.skipped ?? [])
+    lines.push(`Parameter ${k.slot} was skipped: ${k.reason}.`);
+  return lines;
+}
+
+/** `GET /admin/push/sweep`: what the last daily sweep found per slot. */
+function LastSweep() {
+  const q = useApiQuery(["admin", "push-sweep"], () => api.pushSweep());
+  const last = q.data?.last;
+  return (
+    <Section
+      title="Last sweep"
+      description={
+        last
+          ? `The daily sweep ran ${fmtRelative(last.at)} (${fmtTime(last.at)}). Orphans are Firebase apps no registration names (never touched); foreign are packages Firebase lists under an app this stage did not register; missing are live channels whose app is gone.`
+          : "The daily sweep reconciles each slot against Firebase's app list."
+      }
+    >
+      {q.error && <Notice kind="error">{q.error}</Notice>}
+      {q.data && last === null && (
+        <Text size="sm" c="dimmed">
+          No sweep recorded in the last 8 days.
+        </Text>
+      )}
+      {last !== null && (
+        <>
+          {last &&
+            sweepSummary(last).map((l) => (
+              <Text key={l} size="sm" mb={4}>
+                {l}
+              </Text>
+            ))}
+          {/* Rows stay undefined until the answer: the table's loading state. */}
+          <DataTable
+            columns={[
+              { key: "slot", label: "Slot" },
+              { key: "claims", label: "Claims", align: "right" },
+              { key: "apps", label: "Firebase apps", align: "right" },
+              { key: "orphans", label: "Orphans", align: "right" },
+              { key: "foreign", label: "Foreign", align: "right" },
+              { key: "missing", label: "Missing", align: "right" },
+              { key: "removed", label: "Removed", align: "right" },
+              { key: "notes", label: "Notes" },
+            ]}
+            rows={last ? (last.reconcile?.slots ?? []) : undefined}
+            loading={q.loading}
+            rowKey={(s) => s.slot}
+            minWidth={640}
+            empty={{ title: "No slot was reconciled." }}
+            render={(s) => (
+              <>
+                <Table.Td style={NOWRAP}>
+                  {s.slot.length > SLOT_CHARS ? (
+                    <Clipped
+                      text={s.slot}
+                      width={SLOT_WIDTH}
+                      what={`Full label of slot ${s.slot}`}
+                    />
+                  ) : (
+                    <Code>{s.slot}</Code>
+                  )}
+                </Table.Td>
+                {[
+                  s.claims,
+                  s.firebaseApps,
+                  s.orphans,
+                  s.foreign,
+                  s.missing,
+                  s.removed,
+                ].map((v, i) => (
+                  <Table.Td
+                    key={i}
+                    className="tabular"
+                    style={{ ...NOWRAP, textAlign: "right" }}
+                  >
+                    {v === undefined ? "—" : v}
+                  </Table.Td>
+                ))}
+                <Table.Td style={NOWRAP}>{sweepNotes(s)}</Table.Td>
+              </>
+            )}
+          />
+        </>
+      )}
+    </Section>
+  );
 }
 
 export function PushPoolPage() {
@@ -229,6 +345,7 @@ export function PushPoolPage() {
           it or sent through it.
         </Text>
       )}
+      <LastSweep />
     </>
   );
 }

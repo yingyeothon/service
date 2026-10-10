@@ -11,7 +11,11 @@ import { LimitsSection, useLimits } from "../components/Limits";
 import { Loading, PageSkeleton } from "../components/Loading";
 import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { PushCampaigns } from "../components/PushCampaigns";
-import { PushDetails, PushSenderKeyCard } from "../components/PushChannel";
+import {
+  PushDetails,
+  PushSenderKeyCard,
+  PushStatsSection,
+} from "../components/PushChannel";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import { ResourceDrawer } from "../components/ResourceDrawer";
 import { Section } from "../components/Section";
@@ -310,6 +314,7 @@ export function ChannelDetailPage() {
           onReload={ch.reload}
         />
       )}
+      {c.kind === "push" && <PushStatsSection channelId={c.id} />}
       {c.kind === "push" && (
         <PushCampaigns
           channel={c}
@@ -328,7 +333,7 @@ export function ChannelDetailPage() {
           onChanged={ch.reload}
           description={
             c.kind === "push"
-              ? "Extend keeps a channel alive up to 28 days ahead. A team member may ask a platform admin for no expiry, more recipients per job or more jobs per day (a broadcast counts as one, a dry run does not; the count resets at 00:00 UTC)."
+              ? "Extend keeps a channel alive up to 28 days ahead. A team member may ask a platform admin for no expiry, more device tokens, more recipients per job or more jobs per day (a broadcast counts as one, a dry run does not; the count resets at 00:00 UTC)."
               : "Extend keeps a channel alive up to 28 days ahead. A team member may ask a platform admin for no expiry."
           }
         />

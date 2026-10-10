@@ -137,11 +137,11 @@ All three 503s are `AppError`s, so the **Lambda invocation succeeds** and a Lamb
 
 **Device tokens and the targeted send of one push channel** (`docs/decisions.md` _Push notifications (Android, FCM)_ #5–#7). The credentials are not the doc store's: a token route takes the player JWT of the push channel's **auth channel**, the send route takes the **push channel's own apiKey**.
 
-| Route                            | Credential     | Does                                                                                            |
-| -------------------------------- | -------------- | ----------------------------------------------------------------------------------------------- |
-| `PUT /push/{channelId}/token`    | player JWT     | `{"token", "project"?}` → `204`; the user is the token's `sub`, at most 5 tokens per user       |
-| `DELETE /push/{channelId}/token` | player JWT     | `{"token"}` → `204`, idempotent, the caller's own row only                                      |
-| `POST /push/{channelId}/send`    | channel apiKey | `{"userIds": [≤500], "data"?, "notification"?, "priority"?, "ttlSec"?, "collapseKey"?}` → `200` |
+| Route                            | Credential     | Does                                                                                                                                                                    |
+| -------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUT /push/{channelId}/token`    | player JWT     | `{"token", "project"?}` → `204`; the user is the token's `sub`, at most 5 tokens per user; a new token past `push.tokensPerChannel` is 409, one over 512 characters 400 |
+| `DELETE /push/{channelId}/token` | player JWT     | `{"token"}` → `204`, idempotent, the caller's own row only                                                                                                              |
+| `POST /push/{channelId}/send`    | channel apiKey | `{"userIds": [≤500], "data"?, "notification"?, "priority"?, "ttlSec"?, "collapseKey"?}` → `200`                                                                         |
 
 - **`project`** is the Firebase project id in the app's `google-services.json`. Optional while the channel accepts one project; **required** once a team key is registered beside the platform registration (`400 push_project_required`). A project the channel does not accept is `400 push_project_refused`; the accepted ids are never named. A channel with no registration yet answers `409 push_not_registered`.
 - **A send answers per user**, never per device: `{"results": [{"userId", "status": "sent" | "no-token" | "failed", "reason"?}], "sent", "noToken", "failed"}`. `sent` means FCM accepted the message for at least one device. `reason` (on `failed` only) is `budget` (the call ran out of time — send those ids again), `unavailable` (FCM quota or outage — later), `rejected` (a retry changes nothing) or `unregistered` (every device was gone; the tokens are deleted). No device token, Firebase project id or FCM message id leaves this stack.

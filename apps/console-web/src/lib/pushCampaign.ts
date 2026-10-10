@@ -612,7 +612,7 @@ export type CampaignProblem =
   | { at: "form"; message: string };
 
 export type CampaignAction =
-  "template" | "job" | "broadcast" | "cancel" | "report";
+  "template" | "job" | "broadcast" | "cancel" | "report" | "upload";
 
 interface ErrorShape {
   status?: number;
@@ -717,7 +717,13 @@ export function campaignProblem(
         at: "form",
         message: `This channel already holds ${
           typeof d.max === "number" ? d.max : 20
-        } pending recipient files. One stops counting when its jobs have finished, and an unused one is removed two days after it was made; try again later.`,
+        } pending recipient files. Delete an unused one under Uploads; one also stops counting when its jobs have finished, and is removed two days after it was made.`,
+      };
+    case "upload_in_use":
+      return {
+        at: "form",
+        message:
+          "An unfinished job reads this recipient file. Delete it once the job has finished, or cancel the job.",
       };
     case "push_dry_run_cap":
       return {

@@ -159,7 +159,27 @@ export interface MatchChannelConfig {
   resultTtlSec?: number;
   /** Deferred only: the push channel woken on `proposed`/`confirmed`/`expired`/`failed`. */
   pushChannelId?: string;
+  /**
+   * Deferred only (`docs/decisions.md` *Push notifications* #11h): text that
+   * turns that state's push into a notification message carrying the same
+   * data. A state without an entry stays data-only.
+   */
+  notification?: MatchNotificationText;
 }
+
+/** The deferred match states whose push may carry notification text. */
+export const MATCH_NOTIFY_STATES = [
+  "proposed",
+  "confirmed",
+  "expired",
+] as const;
+export type MatchNotifyState = (typeof MATCH_NOTIFY_STATES)[number];
+export type MatchNotificationText = Partial<
+  Record<MatchNotifyState, { title: string; body?: string }>
+>;
+/** Bounds of the text: a phone shows about this much of either line. */
+export const MATCH_NOTIFY_TITLE_MAX = 100;
+export const MATCH_NOTIFY_BODY_MAX = 240;
 
 /** Chat scopes a `lobby` channel may permit for `say`. */
 export type SayScope = "zone" | "party" | "user";
@@ -240,6 +260,12 @@ export interface PushChannelConfig {
   firebaseAppId?: string;
   /** Firebase project id of the registered team-owned service account. */
   teamProject?: string;
+  /**
+   * The granted `push.tokensPerChannel`, written by console with the limit
+   * override in one transaction; absent = the soft default
+   * (`pushTokenCapOf`). Never part of the channel view.
+   */
+  tokenCap?: number;
 }
 
 /**

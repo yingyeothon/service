@@ -183,6 +183,7 @@ describe("send", () => {
       { target: null },
       { target: { token: "has space" } },
       { target: { token: "" } },
+      { target: { token: "t".repeat(513) } },
       { target: { topic: "/topics/x" } },
       { target: { token: "t" }, data: { n: 1 } },
       { target: { token: "t" }, ttlSec: -1 },

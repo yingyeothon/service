@@ -338,6 +338,18 @@ describe.skipIf(!dockerAvailable())(
               deletedAt: c.deleted_at === null ? null : Number(c.deleted_at),
             };
           },
+          config: async (id) => {
+            const c = await db.client.channels.findUnique({ where: { id } });
+            return c
+              ? (JSON.parse(c.config_json) as Record<string, unknown>)
+              : undefined;
+          },
+          setConfig: async (id, config) => {
+            await db.client.channels.update({
+              where: { id },
+              data: { config_json: JSON.stringify(config) },
+            });
+          },
           deleteBundle: async (id) => {
             await createAssetsDb(db.client).deleteBundle(id);
           },
@@ -901,6 +913,15 @@ describe.skipIf(!dockerAvailable())(
           );
           expect(one[0]!.key).toBe("push_tokens_user");
           expect(one[0]!.type).toBe("ref");
+          // The full channel's per-user check, bounded like the eviction.
+          const full = await plan(
+            `select count(*) from (select 1 from push_tokens
+             where channel_id = 'push_1' and user_id = '${users[3]}'
+             limit 5) as t`,
+          );
+          expect(
+            full.some((r) => r.key === "push_tokens_user" && r.type === "ref"),
+          ).toBe(true);
           const sweep = await plan(
             "delete from push_tokens where updated_at < 100 limit 1000",
           );

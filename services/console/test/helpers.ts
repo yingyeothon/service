@@ -16,6 +16,7 @@ import {
   createMemorySitesDb,
   createMemoryTeamDb,
   createMemoryStateDb,
+  patchChannelConfig,
 } from "@yyt/console-db";
 import type { HttpEvent, HttpResult } from "@yyt/http";
 import { httpEvent, NOW_MS, NOW_SEC } from "@yyt/testing";
@@ -150,8 +151,15 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
       if (!c || c.deletedAt !== null) return false;
       db.channels.set(id, {
         ...c,
-        expiresAt: w.expiresAt,
-        ...(w.revive ? { disabledAt: null } : {}),
+        ...(w.lifetime
+          ? {
+              expiresAt: w.lifetime.expiresAt,
+              ...(w.lifetime.revive ? { disabledAt: null } : {}),
+            }
+          : {}),
+        ...(w.config
+          ? { configJson: patchChannelConfig(c.configJson, w.config) }
+          : {}),
       });
       return true;
     },

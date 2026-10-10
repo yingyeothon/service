@@ -1068,6 +1068,49 @@ export function pushJobsContract(
       expect(await db.findUpload(CH, "pu_0")).toBeDefined();
     });
 
+    it("lists a channel's uploads newest first, in pages, with what holds them", async () => {
+      const h = await seeded();
+      await h.seedChannel(CH2);
+      const { db } = h;
+      for (const [id, at] of [
+        ["pu_a", NOW],
+        ["pu_b", NOW + 1],
+        ["pu_c", NOW + 1],
+        ["pu_d", NOW + 2],
+      ] as const)
+        await db.createUpload({ ...upload(id), createdAt: at });
+      await db.createUpload({ ...upload("pu_z"), channelId: CH2 });
+      // pu_b: a finished job named it; pu_c: an unfinished one reads it.
+      await db.submitJob(job("pj_1", "k1", { uploadId: "pu_b" }), 10);
+      const c = await db.claimJob({ owner: "w", now: NOW, leaseSec: 60 });
+      await db.finishJob(c!.job.id, "w", { status: "done", at: NOW });
+      await db.submitJob(job("pj_2", "k2", { uploadId: "pu_c" }), 10);
+      const all = await db.listUploads(CH, { limit: 10 });
+      expect(all.map((u) => [u.id, u.pending, u.inUse])).toEqual([
+        ["pu_d", true, false],
+        ["pu_c", true, true],
+        ["pu_b", false, false],
+        ["pu_a", true, false],
+      ]);
+      expect(all[0]).toMatchObject({
+        channelId: CH,
+        size: 123,
+        createdBy: "m1",
+        createdAt: NOW + 2,
+      });
+      const first = await db.listUploads(CH, { limit: 2 });
+      expect(first.map((u) => u.id)).toEqual(["pu_d", "pu_c"]);
+      const next = await db.listUploads(CH, { limit: 2, before: first[1]! });
+      expect(next.map((u) => u.id)).toEqual(["pu_b", "pu_a"]);
+      expect(await db.listUploads(CH, { limit: 2, before: next[1]! })).toEqual(
+        [],
+      );
+      expect(
+        (await db.listUploads(CH2, { limit: 10 })).map((u) => u.id),
+      ).toEqual(["pu_z"]);
+      await rejects(db.listUploads(CH, { limit: 0 }), "bad_request");
+    });
+
     it("deletes an upload of its channel unless an unfinished job reads it", async () => {
       const h = await seeded();
       await h.seedChannel(CH2);

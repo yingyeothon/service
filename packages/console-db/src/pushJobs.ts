@@ -129,6 +129,14 @@ export interface PushUploadRow {
   createdAt: number;
 }
 
+/** An upload as the list shows it: whether it holds a place, and whether a job reads it. */
+export interface PushUploadListRow extends PushUploadRow {
+  /** Counts against {@link PUSH_UPLOADS_PER_CHANNEL}: no job names it, or an unfinished one does. */
+  pending: boolean;
+  /** An unfinished job reads it, so a delete is refused (`in_use`). */
+  inUse: boolean;
+}
+
 /** Delivery options a job's messages carry; all optional. */
 export interface PushJobOptions {
   priority?: "high" | "normal";
@@ -274,6 +282,16 @@ export interface PushJobsDb {
     id: string,
   ): Promise<PushUploadRow | "in_use" | undefined>;
   findUpload(channelId: string, id: string): Promise<PushUploadRow | undefined>;
+  /**
+   * The channel's uploads, newest first (`created_at`, then id, both
+   * descending), at most `limit`; `before` continues past the previous
+   * page. Each row says whether it is pending and whether a job reads it
+   * (one `push_jobs` probe for the page over `push_jobs_upload`).
+   */
+  listUploads(
+    channelId: string,
+    opts: { limit: number; before?: Pick<PushUploadRow, "id" | "createdAt"> },
+  ): Promise<PushUploadListRow[]>;
   /**
    * Uploads created before `cutoff` that no unfinished job reads, oldest
    * first, at most `limit`; `after` continues past the previous page.
@@ -839,6 +857,44 @@ export function createPushJobsDb(prisma: PrismaClient): PushJobsDb {
           return toUpload(row);
         }),
       ),
+
+    listUploads: (channelId, { limit, before }) =>
+      run(async () => {
+        const n = checkBatch(limit);
+        // `push_uploads_channel`; the sort is over one channel's rows, which
+        // the pending cap and the two-day sweep keep few.
+        const rows = await prisma.push_uploads.findMany({
+          where: {
+            channel_id: channelId,
+            ...(before
+              ? {
+                  OR: [
+                    { created_at: { lt: before.createdAt } },
+                    { created_at: before.createdAt, id: { lt: before.id } },
+                  ],
+                }
+              : {}),
+          },
+          orderBy: [{ created_at: "desc" }, { id: "desc" }],
+          take: n,
+        });
+        if (rows.length === 0) return [];
+        const named = await prisma.push_jobs.findMany({
+          where: { upload_id: { in: rows.map((r) => r.id) } },
+          select: { upload_id: true, status: true },
+        });
+        return rows.map((r) => {
+          const mine = named.filter((j) => ci(j.upload_id ?? "") === ci(r.id));
+          const inUse = mine.some((j) =>
+            (UNFINISHED as readonly string[]).includes(j.status),
+          );
+          return {
+            ...toUpload(r),
+            pending: mine.length === 0 || inUse,
+            inUse,
+          };
+        });
+      }),
 
     listStaleUploads: (cutoff, limit, after) =>
       run(async () => {
@@ -1486,6 +1542,31 @@ export function createMemoryPushJobsDb(
         return "in_use";
       uploads.delete(ci(u.id));
       return { ...u };
+    },
+
+    listUploads: async (channelId, { limit, before }) => {
+      const n = checkBatch(limit);
+      return [...uploads.values()]
+        .filter(
+          (u) =>
+            sameCh(u.channelId, channelId) &&
+            (!before ||
+              u.createdAt < before.createdAt ||
+              (u.createdAt === before.createdAt &&
+                cmpBin(ci(u.id), ci(before.id)) < 0)),
+        )
+        .sort((a, b) => b.createdAt - a.createdAt || cmpBin(ci(b.id), ci(a.id)))
+        .slice(0, n)
+        .map((u) => ({
+          ...u,
+          pending: pendingUpload(u),
+          inUse: [...jobs.values()].some(
+            (j) =>
+              unfinished(j) &&
+              j.uploadId !== null &&
+              ci(j.uploadId) === ci(u.id),
+          ),
+        }));
     },
 
     listStaleUploads: async (cutoff, limit, after) => {

@@ -26,7 +26,8 @@ vi.mock("../src/api", () => ({
   ApiError: class extends Error {},
 }));
 
-const { LimitsSection, useLimits } = await import("../src/components/Limits");
+const { LimitsSection, UNTIMED_KEYS, useLimits } =
+  await import("../src/components/Limits");
 const { fmtTime } = await import("../src/lib/format");
 const { mount } = await import("./wrap");
 
@@ -723,6 +724,75 @@ describe("LimitsSection", () => {
         { value: "unlimited", note: "event" },
       ),
     );
+  });
+
+  it("offers no temporary override for the keys written into the channel row", async () => {
+    expect([...UNTIMED_KEYS].sort()).toEqual([
+      "channel.lifetime",
+      "push.tokensPerChannel",
+    ]);
+    asAdmin();
+    vi.mocked(mockApi.setLimitOverride).mockResolvedValue({
+      scope: { kind: "channel", id: "push_1" },
+      key: "push.tokensPerChannel",
+      effective: 20_000,
+      override: null,
+    });
+    const expiresAt = Math.floor(Date.now() / 1000) + 86400;
+    open(
+      {
+        scope: { kind: "channel", id: "push_1" },
+        teamId: "team_1",
+        expiresAt,
+        limits: [
+          CHANNEL(expiresAt).limits[0]!,
+          {
+            key: "push.tokensPerChannel",
+            unit: "count",
+            soft: 10_000,
+            hard: 100_000,
+            effective: 10_000,
+            usage: 42,
+            step: null,
+            next: null,
+            override: null,
+          },
+        ],
+        pending: [],
+      },
+      "member",
+    );
+    const s = await section();
+    for (const name of ["Device tokens", "Lifetime"]) {
+      await userEvent.click(
+        await within(s).findByRole("button", { name: `Actions for ${name}` }),
+      );
+      await userEvent.click(
+        await screen.findByRole("menuitem", { name: "Set limit" }),
+      );
+      const drawer = await screen.findByRole("dialog", { name: "Set limit" });
+      expect(
+        within(drawer).queryByRole("textbox", { name: /^Temporary/ }),
+      ).toBeNull();
+      if (name === "Device tokens") {
+        const value = within(drawer).getByRole("textbox", { name: /^Value/ });
+        await userEvent.clear(value);
+        await userEvent.type(value, "20000");
+        await userEvent.type(within(drawer).getByLabelText(/^Note/), "event");
+        await userEvent.click(
+          within(drawer).getByRole("button", { name: "Set limit" }),
+        );
+        await waitFor(() =>
+          expect(mockApi.setLimitOverride).toHaveBeenCalledWith(
+            "channel",
+            "push_1",
+            "push.tokensPerChannel",
+            { value: 20_000, note: "event" },
+          ),
+        );
+        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      }
+    }
   });
 
   it("revokes an override with the reason as its note", async () => {

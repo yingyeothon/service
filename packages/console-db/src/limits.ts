@@ -127,13 +127,40 @@ export interface LimitOverrideInput {
 }
 
 /**
- * The channel-row write a `channel.lifetime` grant or revocation makes in the
- * same transaction as its override. `revive` clears `disabled_at`, as extend
- * does. A missing or soft-deleted channel fails the whole transaction.
+ * The channel-row write a channel-scope grant or revocation makes in the same
+ * transaction as its override, under the channel row's lock (the scope lock).
+ * A missing or soft-deleted channel fails the whole transaction.
  */
-export interface ChannelLifetimeWrite {
-  expiresAt: number;
-  revive: boolean;
+export interface ChannelWrite {
+  /** `channel.lifetime`: the new `expires_at`; `revive` clears `disabled_at`, as extend does. */
+  lifetime?: { expiresAt: number; revive: boolean };
+  /**
+   * Fields merged into `config_json` as it is under the lock (`null` removes
+   * one); every other field stays -- the blob has several writers
+   * (`ConsoleDb.editChannel`). A blob that is not a JSON object fails the
+   * transaction rather than being overwritten.
+   */
+  config?: Record<string, number | null>;
+}
+
+/** Applies a {@link ChannelWrite}'s config patch to a stored blob. */
+export function patchChannelConfig(
+  configJson: string,
+  patch: Record<string, number | null>,
+): string {
+  let cur: unknown;
+  try {
+    cur = JSON.parse(configJson);
+  } catch {
+    cur = undefined;
+  }
+  if (typeof cur !== "object" || cur === null || Array.isArray(cur))
+    throw new AppError("internal", "channel config cannot be read");
+  const next: Record<string, unknown> = { ...(cur as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(patch))
+    if (v === null) delete next[k];
+    else next[k] = v;
+  return JSON.stringify(next);
 }
 
 export interface LimitRequestFilter {
@@ -194,14 +221,11 @@ export interface LimitsDb {
       value: number | null;
       note: string | null;
       override: { id: string; note: string; expiresAt?: number | null };
-      channel?: ChannelLifetimeWrite;
+      channel?: ChannelWrite;
     },
   ): Promise<boolean>;
   /** Replaces the scope's override for the key (an admin's direct set). */
-  setOverride(
-    o: LimitOverrideInput,
-    channel?: ChannelLifetimeWrite,
-  ): Promise<void>;
+  setOverride(o: LimitOverrideInput, channel?: ChannelWrite): Promise<void>;
   /**
    * Deletes the scope's override for the key and returns it; `undefined`
    * (and no channel write) when there was none.
@@ -209,7 +233,7 @@ export interface LimitsDb {
   revokeOverride(
     scope: LimitScope,
     key: string,
-    channel?: ChannelLifetimeWrite,
+    channel?: ChannelWrite,
   ): Promise<LimitOverrideRow | undefined>;
   /** Deletes up to `limit` overrides whose `expires_at` passed and returns them. */
   deleteExpiredOverrides(
@@ -396,17 +420,33 @@ export function createLimitsDb(prisma: PrismaClient): LimitsDb {
     return rows.length > 0;
   }
 
-  /** The channel row write of a `channel.lifetime` change; throws when the channel is gone. */
+  /**
+   * The channel row write of a channel-scope change; throws when the channel
+   * is gone. Runs after `lockScope`, so the row is held `FOR UPDATE` and the
+   * config merge reads what the last writer committed.
+   */
   async function writeChannel(
     t: Tx,
     channelId: string,
-    w: ChannelLifetimeWrite,
+    w: ChannelWrite,
   ): Promise<void> {
+    const cur = await t.channels.findFirst({
+      where: { id: channelId, deleted_at: null },
+      select: { config_json: true },
+    });
+    if (!cur) throw channelGone();
     const r = await t.channels.updateMany({
       where: { id: channelId, deleted_at: null },
       data: {
-        expires_at: w.expiresAt,
-        ...(w.revive ? { disabled_at: null } : {}),
+        ...(w.lifetime
+          ? {
+              expires_at: w.lifetime.expiresAt,
+              ...(w.lifetime.revive ? { disabled_at: null } : {}),
+            }
+          : {}),
+        ...(w.config
+          ? { config_json: patchChannelConfig(cur.config_json, w.config) }
+          : {}),
       },
     });
     if (r.count === 0) throw channelGone();
@@ -699,10 +739,11 @@ export interface MemoryLimitsDeps {
   /** Whether the scope row exists; a soft-deleted channel does not. */
   scopeExists?: (scope: LimitScope) => boolean;
   /**
-   * Applies a `channel.lifetime` write to a live channel; `false` when the
-   * channel is missing or soft-deleted (the transaction then fails).
+   * Applies a {@link ChannelWrite} to a live channel (use
+   * {@link patchChannelConfig} for its config); `false` when the channel is
+   * missing or soft-deleted (the transaction then fails).
    */
-  writeChannel?: (id: string, w: ChannelLifetimeWrite) => boolean;
+  writeChannel?: (id: string, w: ChannelWrite) => boolean;
 }
 
 /**

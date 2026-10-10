@@ -2,7 +2,11 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { nullLogger, type Logger } from "@yyt/core";
-import { PUSH_APPS_PER_PROJECT, PUSH_DELETE_BATCH } from "@yyt/console-db";
+import {
+  pushDay,
+  PUSH_APPS_PER_PROJECT,
+  PUSH_DELETE_BATCH,
+} from "@yyt/console-db";
 import { createFakePushPool, type PushPool } from "@yyt/push";
 import type { HttpEvent } from "@yyt/http";
 import { LIMITS } from "../src/limits.js";
@@ -13,8 +17,12 @@ import {
   PUSH_AUTO_CLOSE_BY,
   PUSH_DRAIN_MAX_BATCHES,
   pushAppMarker,
+  pushDayDate,
+  PUSH_SWEEP_LAST_KEY,
+  PUSH_SWEEP_LAST_TTL_SEC,
   releasePushApp,
 } from "../src/push.js";
+import { runPushSweep } from "../src/push-sweep.js";
 import {
   ev,
   harness,
@@ -1677,5 +1685,267 @@ describe("push channel: one writer never loses another's config", () => {
     expect(after.secret.teamServiceAccount).toBeDefined();
     expect(after.secret.apiKey).toBe(parse(answers[1]!).apiKey);
     expect(after.secret.apiKey).not.toBe(ch.apiKey);
+  });
+});
+
+describe("push channel: token cap, stats and the last sweep", () => {
+  const configOf = (h: H, id: string) =>
+    JSON.parse(h.db.channels.get(id)!.configJson) as Record<string, unknown>;
+
+  async function setupChannel() {
+    const h = harness();
+    const a = await h.team("alice");
+    const boss = await h.login("boss", "admin");
+    const auth = await authFor(h, a);
+    const c = await create(h, a, auth);
+    expect(c.statusCode, c.body).toBe(201);
+    return { h, a, boss, auth, id: parse(c).id as string };
+  }
+  const stats = (
+    h: H,
+    who: { cookie: Record<string, string> },
+    id: string,
+    days?: string,
+  ) =>
+    h.app(
+      ev("GET", `/channels/${id}/push/stats`, {
+        headers: who.cookie,
+        ...(days === undefined ? {} : { query: { days } }),
+      }),
+    );
+
+  it("mirrors a push.tokensPerChannel grant into the config, and its revocation", async () => {
+    const { h, a, boss, auth, id } = await setupChannel();
+    expect(LIMITS["push.tokensPerChannel"]).toMatchObject({
+      scope: "channel",
+      channelKind: "push",
+      unit: "count",
+      soft: 10_000,
+      hard: 100_000,
+    });
+    await putToken(h, id, 1);
+    const view = parse(
+      await h.app(
+        ev("GET", "/limits", {
+          headers: a.cookie,
+          query: { scope: `channel:${id}` },
+        }),
+      ),
+    );
+    expect(
+      view.limits.find(
+        (l: { key: string }) => l.key === "push.tokensPerChannel",
+      ),
+    ).toMatchObject({ effective: 10_000, usage: 1 });
+
+    const asked = await send(
+      h,
+      ev("POST", "/limit-requests", {
+        headers: a.cookie,
+        body: {
+          scope: `channel:${id}`,
+          key: "push.tokensPerChannel",
+          value: 20_000,
+          reason: "a bigger contest",
+        },
+      }),
+    );
+    expect(asked.statusCode, asked.body).toBe(201);
+    const approved = await send(
+      h,
+      ev("POST", `/admin/limit-requests/${parse(asked).id}/approve`, {
+        headers: boss.cookie,
+        body: {},
+      }),
+    );
+    expect(approved.statusCode, approved.body).toBe(200);
+    expect(configOf(h, id)).toMatchObject({
+      authChannelId: auth,
+      packageName: PKG,
+      slot: "p1",
+      tokenCap: 20_000,
+    });
+    // A PATCH keeps it, and no view shows it.
+    const patched = await send(
+      h,
+      ev("PATCH", `/channels/${id}`, {
+        headers: a.cookie,
+        body: { config: { authChannelId: auth } },
+      }),
+    );
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(configOf(h, id).tokenCap).toBe(20_000);
+    expect(Object.keys(parse(patched).config).sort()).toEqual([
+      "authChannelId",
+      "packageName",
+      "sender",
+    ]);
+    expect(parse(await stats(h, a, id)).tokenCap).toBe(20_000);
+
+    const override = (method: string, body: Record<string, unknown>) =>
+      send(
+        h,
+        ev(
+          method,
+          `/admin/limit-overrides/channel/${id}/push.tokensPerChannel`,
+          {
+            headers: boss.cookie,
+            body,
+          },
+        ),
+      );
+    const expiring = await override("PUT", {
+      value: 30_000,
+      expiresAt: NOW_SEC + 86_400,
+      note: "contest",
+    });
+    expect(expiring.statusCode).toBe(400);
+    expect(errorOf(expiring).message).toContain("takes no expiresAt");
+    expect(configOf(h, id).tokenCap).toBe(20_000);
+    expect(
+      (await override("PUT", { value: 100_001, note: "too much" })).statusCode,
+    ).toBe(400);
+    const set = await override("PUT", { value: 30_000, note: "contest" });
+    expect(set.statusCode, set.body).toBe(200);
+    expect(configOf(h, id).tokenCap).toBe(30_000);
+    const gone = await override("DELETE", { note: "over" });
+    expect(gone.statusCode, gone.body).toBe(204);
+    expect(configOf(h, id)).not.toHaveProperty("tokenCap");
+    expect(configOf(h, id)).toMatchObject({ slot: "p1", authChannelId: auth });
+    expect(parse(await stats(h, a, id)).tokenCap).toBe(10_000);
+  });
+
+  it("answers the token count and the send counters of the last days", async () => {
+    const { h, a, id } = await setupChannel();
+    const outsider = await h.team("mallory");
+    for (const n of [1, 2, 3]) await putToken(h, id, n);
+    const today = pushDay(NOW_SEC);
+    for (const [d, failed] of [
+      [0, 1],
+      [2, 0],
+      [20, 4],
+    ] as const)
+      await h.push.addSendStats({
+        channelId: id,
+        day: today - d,
+        sent: 5,
+        noToken: 1,
+        failed,
+        unregistered: 0,
+        at: NOW_SEC,
+      });
+    const r = await stats(h, a, id);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.headers?.["cache-control"]).toBe("no-store");
+    expect(parse(r)).toEqual({
+      tokens: { count: 3, capped: false },
+      tokenCap: 10_000,
+      since: pushDayDate(today - 13),
+      days: [
+        {
+          day: pushDayDate(today),
+          calls: 1,
+          sent: 5,
+          noToken: 1,
+          failed: 1,
+          unregistered: 0,
+        },
+        {
+          day: pushDayDate(today - 2),
+          calls: 1,
+          sent: 5,
+          noToken: 1,
+          failed: 0,
+          unregistered: 0,
+        },
+      ],
+    });
+    expect(parse(await stats(h, a, id, "30")).days).toHaveLength(3);
+    expect((await stats(h, a, id, "31")).statusCode).toBe(400);
+    expect((await stats(h, a, id, "0")).statusCode).toBe(400);
+    expect([403, 404]).toContain((await stats(h, outsider, id)).statusCode);
+    // At the cap the count stops there and says so.
+    await h.db.editChannel(id, (cur) => ({
+      config: { ...JSON.parse(cur.configJson), tokenCap: 3 },
+    }));
+    expect(parse(await stats(h, a, id)).tokens).toEqual({
+      count: 3,
+      capped: true,
+    });
+    expect(pushDayDate(0)).toBe("1970-01-01");
+  });
+
+  it("keeps the last sweep's findings for a platform admin", async () => {
+    const { h, a, boss } = await setupChannel();
+    const get = (who: { cookie: Record<string, string> }) =>
+      h.app(ev("GET", "/admin/push/sweep", { headers: who.cookie }));
+    expect((await get(a)).statusCode).toBe(403);
+    const none = await get(boss);
+    expect(none.statusCode).toBe(200);
+    expect(none.headers?.["cache-control"]).toBe("no-store");
+    expect(parse(none)).toEqual({ last: null });
+
+    const ranAt = Math.floor(h.clock.now() / 1000);
+    await runPushSweep({
+      push: h.push,
+      pool: h.fcm.pool,
+      stage: STAGE,
+      db: h.db,
+      clock: h.clock,
+      logger: nullLogger,
+      audit: async () => {},
+      kv: h.kv,
+    });
+    const r = await get(boss);
+    expect(r.statusCode, r.body).toBe(200);
+    const last = parse(r).last;
+    expect(last).toMatchObject({
+      at: ranAt,
+      failed: [],
+      truncated: false,
+      pool: { unreadable: false, unprovisioned: [], skipped: [] },
+      reconcile: {
+        truncated: false,
+        slots: [
+          expect.objectContaining({
+            slot: "p1",
+            claims: 1,
+            orphans: 0,
+            foreign: 0,
+            missing: 0,
+            unread: false,
+            autoClosed: false,
+          }),
+        ],
+      },
+    });
+    // Labels and counts only: no Firebase project or app id.
+    expect(r.body).not.toContain("example-project");
+    expect(r.body).not.toContain(":android:");
+    expect(await h.kv.ttl(PUSH_SWEEP_LAST_KEY)).toBe(PUSH_SWEEP_LAST_TTL_SEC);
+    // A record that cannot be read is no record.
+    await h.kv.set(PUSH_SWEEP_LAST_KEY, "{");
+    expect(parse(await get(boss))).toEqual({ last: null });
+  });
+
+  it("still finishes a sweep whose record cannot be written", async () => {
+    const { h } = await setupChannel();
+    const lines: string[] = [];
+    const r = await runPushSweep({
+      push: h.push,
+      pool: h.fcm.pool,
+      stage: STAGE,
+      db: h.db,
+      clock: h.clock,
+      logger: { ...nullLogger, warn: (m: string) => void lines.push(m) },
+      audit: async () => {},
+      kv: {
+        set: async () => {
+          throw new Error("redis down");
+        },
+      },
+    });
+    expect(r.failed).toEqual([]);
+    expect(lines).toContain("push sweep record failed");
   });
 });

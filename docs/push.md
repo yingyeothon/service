@@ -41,10 +41,34 @@ Session cookie or `yyt_` token; team membership as for every project resource. E
 | `PUT /channels/{id}/sender-key`           | member         | `{serviceAccount}` registers or replaces the team's key; 200 with the view                                                                                                       |
 | `DELETE /channels/{id}/sender-key`        | member         | `{removed: boolean}`; 409 on a `team`-sender channel                                                                                                                             |
 | `GET /limits?scope=team:<id>`             | member, admin  | the `push.appsPerTeam` row beside `team.projects`                                                                                                                                |
-| `GET /limits?scope=channel:<id>`          | member, admin  | `push.recipientsPerJob` and `push.jobsPerDay` beside `channel.lifetime` (_Campaigns_ → _Limits_)                                                                                 |
+| `GET /limits?scope=channel:<id>`          | member, admin  | `push.tokensPerChannel`, `push.recipientsPerJob` and `push.jobsPerDay` beside `channel.lifetime` (_Campaigns_ → _Limits_)                                                        |
+| `GET /channels/{id}/push/stats?days=`     | project reader | the token count against `push.tokensPerChannel` and the send counters of the last `days` UTC days (_Channel stats_)                                                              |
 | `/channels/{id}/push/…`                   | member         | templates, uploads, jobs, reports, broadcast (_Campaigns_)                                                                                                                       |
 
 **View.** The base channel fields plus `config: {authChannelId, packageName, sender}`, `registered` (the platform registration exists, so the config file can be downloaded), `topic` (the FCM topic of the channel's broadcast, `yyt.push.{id}`; _Broadcast_), `teamProject` (the team's own Firebase project id, once a team key is registered) and `apiBase` (the state stack's base URL; absent on a stage without that stack). Never returned: the pool slot, the Firebase app id, a platform project id, the team key.
+
+**Channel stats.** `GET /channels/{id}/push/stats?days=` (`days` 1–30, default 14; `no-store`; no write slot) answers
+
+```json
+{
+  "tokens": { "count": 1234, "capped": false },
+  "tokenCap": 10000,
+  "since": "2026-09-28",
+  "days": [
+    {
+      "day": "2026-10-11",
+      "calls": 3,
+      "sent": 1500,
+      "noToken": 20,
+      "failed": 4,
+      "unregistered": 2
+    }
+  ]
+}
+```
+
+- `tokenCap` is the channel's effective `push.tokensPerChannel`. `tokens.count` is one `COUNT` cut at `tokenCap`, so it never exceeds it; `capped: true` means the channel holds that many rows and a new device is refused (409) until tokens are removed or expire, or the limit is raised.
+- `days` are the `push_send_stats` rows of the UTC days from `since` to today, newest first; a day without a send has no row. Counts as in _Daily sweep and digest_: `calls` send calls (a campaign batch is one), `sent` users reached, `noToken` users without a token, `failed` users not reached, `unregistered` tokens FCM reported gone. Broadcasts and the deferred-match hook are not counted.
 
 **Create errors.**
 
@@ -76,14 +100,18 @@ Both call the routes above and nothing else; neither sends a message (the send r
   - _New channel_ (`/ui/teams/{team}/projects/{prj}/channels/new`, kind `push`): auth channel, package name (the server's grammar, checked before any request), sender. `team` adds a masked service-account key field. A refusal is shown where it can be acted on: `package_taken`, `package_refused` and `service_account` (one sentence per `field`) under their field; `push.appsPerTeam` as a notice linking to the team's Limits; `push_not_configured`, `push_pool_full`, `firebase_unavailable` and the write slot's 429 as a notice that says nothing in the form is wrong. The `apiKey` is shown once on the page that follows.
   - Channel page (`/ui/channels/{id}`): package, auth channel, sender, the `registered` badge, _Download google-services.json_ (disabled with the reason while there is no platform registration; 429 and the Firebase refusals have their own sentence), the API base and the three state routes, rotate / extend / delete (the delete confirm names the Firebase registration and the device tokens). _Edit_ changes the name and the auth channel only; a 409 `not_registered` says the registration is not finished.
   - _Team sender key_ card on the channel page: register, rotate, remove. The key is typed into a masked field and never shown again; only `teamProject` comes back. _Remove_ is off on a `team`-sender channel.
+  - _Delivery_ on the channel page: `Device tokens: n of cap` (`— full` once `capped`) and one row per UTC day with a send (`GET …/push/stats`, 14 days).
+  - _Uploads_ on the channel page: one row per recipient file (id, size, `pending`/`in use`/`used`, by, uploaded, usable until) with _Delete_ behind a confirm, off while a job reads the file (`GET`/`DELETE {base}/uploads`).
   - Team page → _Limits_: the `push.appsPerTeam` row with its usage and _Request increase_.
-  - `/ui/admin/push-pool` (platform admin): one row per slot — label, apps / 20, state (`open`, `closed`, `full`, `not provisioned`), who closed it and when. _Close slot_ / _Open slot_ behind a confirm; a slot the platform closed itself (`platform (app limit)`) also offers _Keep closed_, which takes the closure over.
+  - `/ui/admin/push-pool` (platform admin): one row per slot — label, apps / 20, state (`open`, `closed`, `full`, `not provisioned`), who closed it and when. _Close slot_ / _Open slot_ behind a confirm; a slot the platform closed itself (`platform (app limit)`) also offers _Keep closed_, which takes the closure over. Below it _Last sweep_ (`GET /admin/push/sweep`): when it ran, its own lines (tokens and counters deleted, failed phases, truncation, an unreadable pool, unprovisioned and skipped slots) and one row per slot (claims, Firebase apps, orphans, foreign, missing, removed, not read / auto-closed / auto-opened).
 - **CLI** (`cli/internal/cmd/push.go`, `cli/README.md` _Push notifications_):
   - `yyt push channel create --name n --auth <auth> --package com.example.game [--sender team --service-account <file|->]`, `yyt push channel ls|get|update|rotate|delete|extend <channel>` — the `yyt channels` commands with the kind fixed (`yyt channels … --kind push` is the same thing). `update` takes `--name` and `--auth`; the package and the sender are fixed.
   - `yyt push channel config <channel> [-o <file>|-] [--force]` — the `google-services.json`; an existing file is kept unless `--force`.
   - `yyt push channel sender-key set <channel> --service-account <file|->`, `yyt push channel sender-key rm <channel>` — the key is read from a file or stdin and never printed.
-  - `yyt push pool [ls]`, `yyt push pool close <slot>`, `yyt push pool open <slot>` — platform admin. `close` on a slot the platform closed itself takes the closure over and prints `closed`.
-  - A refusal carries its next step: the `yyt limit request push.appsPerTeam +1 --team …` line, one hint per `details.reason` (a `service_account` refusal also names the `field`), the write slot for a 429. There is no `yyt push send`.
+  - `yyt push pool [ls]`, `yyt push pool close <slot>`, `yyt push pool open <slot>`, `yyt push pool sweep` — platform admin. `close` on a slot the platform closed itself takes the closure over and prints `closed`; `sweep` prints the last daily sweep (`GET /admin/push/sweep`).
+  - `yyt push channel stats <channel> [--days n]` (`GET /channels/{id}/push/stats`), `yyt push upload ls|rm` (`GET|DELETE {base}/uploads`), and `push.tokensPerChannel` in `yyt limit list|request`.
+  - A refusal carries its next step: the `yyt limit request push.appsPerTeam +1 --team …` line, one hint per `details.reason` (a `service_account` refusal also names the `field`), the write slot for a 429.
+  - With the channel apiKey (`cli/README.md` _Push notifications_): `yyt push key set|rm|ls` keeps keys in the CLI config file (stdin only), `yyt push send` makes the targeted send, `--as-server` runs the job, upload and broadcast commands on `/push-api/{channelId}/…`, and `yyt smoke push` registers a device token, sends to it and removes it.
 
 ## Device tokens
 
@@ -94,10 +122,11 @@ State stack, base URL = the view's `apiBase`. `Authorization: Bearer <player JWT
 | `PUT /push/{channelId}/token`    | `{token, project?}` | 204                                                |
 | `DELETE /push/{channelId}/token` | `{token}`           | 204, idempotent; removes the caller's own row only |
 
-- `token` is the FCM registration token: printable ASCII without blanks, at most 4096 characters. Unknown body fields are a 400.
+- `token` is the FCM registration token: printable ASCII without blanks, at most 512 characters (observed FCM tokens are 140–165). Unknown body fields are a 400.
 - `project` is `project_info.project_id` of the `google-services.json` the app was built with. Optional while the channel accepts one project; **required** once it accepts two — a platform registration plus a team key (400 `push_project_required`). A project the channel does not accept is 400 `push_project_refused`; the accepted ids are never named. Always sending it is the simple rule.
 - **One row per token per channel.** Inside a channel, a token registered again under another user moves to that user, so a shared device follows whoever registered last. Channels are independent: registering a token in one channel never moves or removes the row another channel holds for the same token.
 - **At most 5 tokens per user per channel.** A sixth evicts the least recently refreshed; the one just written always stays.
+- **At most `push.tokensPerChannel` rows per channel** (soft 10,000, hard 100,000; _Campaigns_ → _Limits_). A `PUT` that would add a row while the channel holds that many is 409 `{limit: "push.tokensPerChannel", value}`; a refresh of a stored token and a move to another user add none and always succeed, and so does a new token of a user already holding 5 rows in the channel (the write evicts one of theirs, net zero). The count is a `COUNT` cut at the cap, so each new-token registration reads up to that many index entries. It takes no lock, so registrations racing past the cap together may overshoot it by their number; the next new token is refused all the same. The state stack cannot read `limit_overrides`: a grant or a revocation writes the effective value into the channel's config (`tokenCap`, never in a view) in the override's own transaction, and absent means the soft value.
 - **A token not refreshed for 60 days is deleted** by the daily sweep. `PUT` on every app start and in `onNewToken` keeps it alive; a refresh of an existing token costs one upsert.
 - Call `DELETE` on sign-out. A token FCM reports as unregistered is deleted by the send that met it — that channel's row only.
 
@@ -183,6 +212,7 @@ A team that outgrows the shared projects moves to its own Firebase project witho
 | 403    |                                                                                                      | a JWT of another auth channel, or a credential that is not a player's                    |
 | 404    |                                                                                                      | no such push channel (a deleted one included)                                            |
 | 409    | `details.reason: "push_not_registered"`                                                              | the channel has neither a platform registration nor a team key                           |
+| 409    | `details: {limit: "push.tokensPerChannel", value}`                                                   | `PUT …/token` of a new token while the channel holds `value` rows                        |
 | 410    |                                                                                                      | the channel is expired or disabled; extend it in the console                             |
 | 503    | `details.reason: "push_not_configured"`                                                              | the stage has no Firebase project                                                        |
 | 503    | `push sender unavailable`                                                                            | FCM refused the platform key, or the channel's slot left the pool                        |
@@ -193,26 +223,28 @@ A team that outgrows the shared projects moves to its own Firebase project witho
 
 What a client library maps (`docs/game-kit-design.md` _Errors_). Errors are `{"error":{"code","message","details":{"reason"}}}`; the reason is the key, never the message text.
 
-| Route                                        | Status  | `details.reason`        | Client action                                                                                   |
-| -------------------------------------------- | ------- | ----------------------- | ----------------------------------------------------------------------------------------------- |
-| `PUT /push/{id}/token`                       | 400     | `push_project_required` | send `project`; the channel accepts two Firebase projects                                       |
-| `PUT /push/{id}/token`                       | 400     | `push_project_refused`  | the app's `google-services.json` is not one this channel accepts; do not retry                  |
-| `PUT /push/{id}/token`, `…/send`             | 409     | `push_not_registered`   | the channel has no registration and no team key; console side                                   |
-| `PUT /push/{id}/token`, `…/send`             | 503     | `push_not_configured`   | the stage has no Firebase project; do not retry                                                 |
-| any state route                              | 401     |                         | refresh the JWT (token routes) or check the apiKey (send)                                       |
-| `PUT`/`DELETE /push/{id}/token`              | 403     |                         | a JWT of another auth channel: the push channel belongs to a different auth channel             |
-| any state route                              | 410     |                         | channel expired or disabled                                                                     |
-| `POST /push/{id}/send`                       | 503/429 | none (no body)          | Lambda throttle: the call never ran; retry with backoff                                         |
-| `POST /m/{id}/ticket`                        | 429     | `cooldown`              | wait `details.retryAfter` seconds                                                               |
-| `POST /m/{id}/ticket`                        | 429     | `queue_full`            | retry later                                                                                     |
-| `POST /m/{id}/ticket`                        | 409     | `proposed`              | answer the proposal (`accept`/`decline`) instead; `DELETE` during a proposal is a decline (204) |
-| `POST /m/{id}/ticket`, `DELETE`, `…/decline` | 409     | `confirming`            | retry after 1–2 s; the match is being confirmed                                                 |
-| `POST /m/{id}/accept`, `…/decline`           | 409     | `proposal_closed`       | the window closed; read `GET` for the new state                                                 |
-| `POST /m/{id}/accept`, `…/decline`           | 409     | `not_proposed`          | no proposal to answer; read `GET`                                                               |
-| `POST /m/{id}/decline`                       | 409     | `confirmed`             | already matched; read `GET`                                                                     |
-| `GET`, `…/accept`, `…/decline`               | 404     |                         | no ticket; submit again                                                                         |
-| any match ticket route                       | 503     | `busy`                  | retry with backoff                                                                              |
-| any match ticket route                       | 503/429 | none (no body)          | API Gateway throttle (5 rps per stage); back off                                                |
+| Route                                        | Status  | `details.reason`                               | Client action                                                                                                        |
+| -------------------------------------------- | ------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `PUT /push/{id}/token`                       | 400     | `push_project_required`                        | send `project`; the channel accepts two Firebase projects                                                            |
+| `PUT /push/{id}/token`                       | 400     | `push_project_refused`                         | the app's `google-services.json` is not one this channel accepts; do not retry                                       |
+| `PUT /push/{id}/token`                       | 409     | none; `details.limit: "push.tokensPerChannel"` | the channel holds its cap of device tokens; the team asks for more. A refresh of a registered token is never refused |
+| `PUT /push/{id}/token`, `…/send`             | 409     | `push_not_registered`                          | the channel has no registration and no team key; console side                                                        |
+| `PUT /push/{id}/token`                       | 409     | none (`details.limit`)                         | the channel's `push.tokensPerChannel` is reached; do not retry, the team asks for more                               |
+| `PUT /push/{id}/token`, `…/send`             | 503     | `push_not_configured`                          | the stage has no Firebase project; do not retry                                                                      |
+| any state route                              | 401     |                                                | refresh the JWT (token routes) or check the apiKey (send)                                                            |
+| `PUT`/`DELETE /push/{id}/token`              | 403     |                                                | a JWT of another auth channel: the push channel belongs to a different auth channel                                  |
+| any state route                              | 410     |                                                | channel expired or disabled                                                                                          |
+| `POST /push/{id}/send`                       | 503/429 | none (no body)                                 | Lambda throttle: the call never ran; retry with backoff                                                              |
+| `POST /m/{id}/ticket`                        | 429     | `cooldown`                                     | wait `details.retryAfter` seconds                                                                                    |
+| `POST /m/{id}/ticket`                        | 429     | `queue_full`                                   | retry later                                                                                                          |
+| `POST /m/{id}/ticket`                        | 409     | `proposed`                                     | answer the proposal (`accept`/`decline`) instead; `DELETE` during a proposal is a decline (204)                      |
+| `POST /m/{id}/ticket`, `DELETE`, `…/decline` | 409     | `confirming`                                   | retry after 1–2 s; the match is being confirmed                                                                      |
+| `POST /m/{id}/accept`, `…/decline`           | 409     | `proposal_closed`                              | the window closed; read `GET` for the new state                                                                      |
+| `POST /m/{id}/accept`, `…/decline`           | 409     | `not_proposed`                                 | no proposal to answer; read `GET`                                                                                    |
+| `POST /m/{id}/decline`                       | 409     | `confirmed`                                    | already matched; read `GET`                                                                                          |
+| `GET`, `…/accept`, `…/decline`               | 404     |                                                | no ticket; submit again                                                                                              |
+| any match ticket route                       | 503     | `busy`                                         | retry with backoff                                                                                                   |
+| any match ticket route                       | 503/429 | none (no body)                                 | API Gateway throttle (5 rps per stage); back off                                                                     |
 
 The deferred match routes are specified in `services/match/README.md` _Deferred mode_; this table only gathers what a client branches on.
 
@@ -235,7 +267,7 @@ A **broadcast** is the other shape: one message to the channel's FCM topic, no C
 | member | `/channels/{id}/push`   | session cookie or `yyt_` token; a member of the channel's team              |
 | apiKey | `/push-api/{channelId}` | `Authorization: Bearer <push channel apiKey>`, the key of the targeted send |
 
-Both live on the console API host and serve the same eight job routes below with the same bodies and answers. Templates exist on the member family only.
+Both live on the console API host and serve the same nine job routes below with the same bodies and answers. Templates exist on the member family only.
 
 - **apiKey family.** For a team's server. Only the bearer counts: a cookie or a `yyt_` token on these paths is a 401. The key is compared in constant time. A channel id that does not exist (or is not a push channel) answers the same 401 as a wrong key, so the family does not say which ids exist; a known channel with the right key that expired or was disabled answers 410. No CORS header is sent, so a browser cannot call it from another origin. Never ship the key in an app.
 - **Write slot.** Every write but `POST {base}/uploads` takes one 500 ms slot — per member on the member family, **per channel** on the apiKey family, whichever server holds the key (429 `{retryAfterMs: 500}`). Reads take none. An upload takes none so the submit that follows it is not throttled; the 20 pending places bound it, and `DELETE {base}/uploads/{uploadId}`, which frees a place, takes the slot.
@@ -302,17 +334,18 @@ A file that breaks one of these rules is refused **as a whole and before anythin
 
 Both families (`{base}` = `/channels/{id}/push` or `/push-api/{channelId}`).
 
-| Route                              | Body                                                                                                | Answer                                                               |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `POST {base}/uploads`              | `{size}`                                                                                            | 201 upload                                                           |
-| `DELETE {base}/uploads/{uploadId}` |                                                                                                     | 204; 409 `upload_in_use` while an unfinished job reads it            |
-| `POST {base}/jobs`                 | `{templateId, uploadId, idempotencyKey, dryRun?, priority?, ttlSec?, collapseKey?}`                 | 202 `{job, created: true}`; 200 `{job, created: false}` for a replay |
-| `GET {base}/jobs?limit=&cursor=`   |                                                                                                     | `{jobs, next}` newest first; `limit` 1–100, default 20               |
-| `GET {base}/jobs?idempotencyKey=`  |                                                                                                     | `{jobs, next: null}`: the one job the key holds, or none             |
-| `GET {base}/jobs/{jobId}`          |                                                                                                     | `{job}`                                                              |
-| `POST {base}/jobs/{jobId}/cancel`  |                                                                                                     | `{job}`                                                              |
-| `GET {base}/jobs/{jobId}/report`   |                                                                                                     | `{url, expiresAt, reportExpiresAt}`                                  |
-| `POST {base}/broadcast`            | `{templateId}` or `{title?, body?, data?}`, plus `idempotencyKey, priority?, ttlSec?, collapseKey?` | as `POST {base}/jobs`                                                |
+| Route                               | Body                                                                                                | Answer                                                               |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `POST {base}/uploads`               | `{size}`                                                                                            | 201 upload                                                           |
+| `GET {base}/uploads?limit=&cursor=` |                                                                                                     | `{uploads, next, max: 20}` newest first; `limit` 1–100, default 20   |
+| `DELETE {base}/uploads/{uploadId}`  |                                                                                                     | 204; 409 `upload_in_use` while an unfinished job reads it            |
+| `POST {base}/jobs`                  | `{templateId, uploadId, idempotencyKey, dryRun?, priority?, ttlSec?, collapseKey?}`                 | 202 `{job, created: true}`; 200 `{job, created: false}` for a replay |
+| `GET {base}/jobs?limit=&cursor=`    |                                                                                                     | `{jobs, next}` newest first; `limit` 1–100, default 20               |
+| `GET {base}/jobs?idempotencyKey=`   |                                                                                                     | `{jobs, next: null}`: the one job the key holds, or none             |
+| `GET {base}/jobs/{jobId}`           |                                                                                                     | `{job}`                                                              |
+| `POST {base}/jobs/{jobId}/cancel`   |                                                                                                     | `{job}`                                                              |
+| `GET {base}/jobs/{jobId}/report`    |                                                                                                     | `{url, expiresAt, reportExpiresAt}`                                  |
+| `POST {base}/broadcast`             | `{templateId}` or `{title?, body?, data?}`, plus `idempotencyKey, priority?, ttlSec?, collapseKey?` | as `POST {base}/jobs`                                                |
 
 Unknown body fields are a 400. `priority`, `ttlSec` and `collapseKey` are the targeted send's fields.
 
@@ -333,6 +366,7 @@ Unknown body fields are a 400. `priority`, `ttlSec` and `collapseKey` are the ta
 - `PUT` the file to `url` with exactly those two headers; both are signed, so another type or length is refused by the bucket. The URL works for 15 minutes.
 - A job may name the upload for 24 hours (`usableUntil`), any number of times — the dry run and the job share one upload.
 - A channel holds at most 20 **pending** uploads (409 `push_upload_cap`). Pending: no job names it yet, or an unfinished job does. An upload whose jobs have all finished stops counting, and can still be named again inside its 24 hours. `DELETE {base}/uploads/{uploadId}` removes one (row and object) and is refused while an unfinished job reads it (409 `upload_in_use`). Every upload is removed two days after it was issued.
+- `GET {base}/uploads` lists the channel's uploads, newest first: `{id, size, createdBy, createdByLogin, createdAt, usableUntil, pending, inUse}` per upload (`createdBy` is a member id or `apikey`; `createdByLogin` is null for the key, and on the apiKey family). `pending` is whether it holds one of the 20 places, `inUse` whether an unfinished job reads it (a delete is then refused). No object key and no URL: the URL is the create's to hand out once.
 - `uploadId` and `templateId` compare without case; the job stores and answers the id as the platform minted it.
 - Replacing the object after a job was submitted fails that job (`upload_changed`): a job reads the object it was submitted with.
 
@@ -464,12 +498,13 @@ cdef…,failed,unavailable
 
 ### Limits
 
-Both are **channel-scope** keys of the limits registry, listed for push channels only (`GET /limits?scope=channel:<id>`) and raised with a limit request like `channel.lifetime` is granted (`docs/decisions.md` _Limit requests_).
+All three are **channel-scope** keys of the limits registry, listed for push channels only (`GET /limits?scope=channel:<id>`) and raised with a limit request like `channel.lifetime` is granted (`docs/decisions.md` _Limit requests_).
 
-| Key                     | Soft   | Hard    | Counts                                                                                                                                                                                            |
-| ----------------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `push.recipientsPerJob` | 10,000 | 100,000 | rows of one job's CSV, skipped rows included. Checked by the worker's first pass: a longer file fails the job (`recipients_over_limit`) before anything is sent. No usage is shown.               |
-| `push.jobsPerDay`       | 10     | 100     | jobs submitted per channel and UTC day, a broadcast counting as one. Claimed inside the submit's transaction, so concurrent submits cannot pass it (409 `details.limit`). Usage is today's count. |
+| Key                     | Soft   | Hard    | Counts                                                                                                                                                                                                                             |
+| ----------------------- | ------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `push.recipientsPerJob` | 10,000 | 100,000 | rows of one job's CSV, skipped rows included. Checked by the worker's first pass: a longer file fails the job (`recipients_over_limit`) before anything is sent. No usage is shown.                                                |
+| `push.jobsPerDay`       | 10     | 100     | jobs submitted per channel and UTC day, a broadcast counting as one. Claimed inside the submit's transaction, so concurrent submits cannot pass it (409 `details.limit`). Usage is today's count.                                  |
+| `push.tokensPerChannel` | 10,000 | 100,000 | device-token rows of the channel (_Device tokens_). Checked by the state stack's token `PUT` against the config's `tokenCap`; a grant takes no `expiresAt` (400), like `channel.lifetime`. Usage is the row count, cut at 100,001. |
 
 - A dry run counts against neither; a replayed `idempotencyKey` is answered before the count; a job that failed or was cancelled still counts.
 - Code constants no request raises: 20 templates and 20 pending uploads per channel, 20 dry runs per day, 500 rows per batch.
@@ -579,7 +614,7 @@ The Firebase Management calls were written from the public reference; `packages/
 
 ### IAM and grants
 
-- Console and state roles each hold `ssm:GetParametersByPath` on the path and `kms:Decrypt` conditioned on `kms:ViaService` = SSM and on the parameter ARN under that path. Console passes the path to `api` and `expire` only.
+- The roles of the functions that read the pool hold `ssm:GetParametersByPath` on the path and `kms:Decrypt` conditioned on `kms:ViaService` = SSM and on the parameter ARN under that path: console's shared role (`api`, `expire`, `pushJob`, `catalogPush`; `siteDeploy`, `gatewayProbe` and `cdnGuard` run on roles of their own), match's `PushSenderRole` (`worker`, `tick`; the player-facing functions hold none) and the state stack's role (`api` and `pushSend` both read it). `test/serverless-invariants.test.ts` pins this.
 - After `m0028_push` is applied, the state MySQL account needs (private ops repo):
   - `SELECT, INSERT, UPDATE, DELETE` on `push_tokens`. Until then every `/push/*` route answers 503 `database error` and the rest of the stack works.
   - `SELECT, INSERT, UPDATE` on `push_send_stats`. The counter write is `INSERT … ON DUPLICATE KEY UPDATE col = col + VALUES(col)`, which on MariaDB needs `INSERT`, `UPDATE` **and `SELECT`** (the assignment reads the column; `ERROR 1143` without it, measured on 10.5). Without this grant sends still work; each logs `push send stats failed` and the digest shows no send failures.
@@ -589,6 +624,7 @@ The Firebase Management calls were written from the public reference; `packages/
 ### Closing and opening a slot
 
 - `GET /admin/push/pool` → `{configured, slots: [{slot, provisioned, closed, closedBy, closedByLogin, closedAt, apps, capacity: 20}]}`.
+- `GET /admin/push/sweep` → `{last}`: the last daily sweep's result, or `null` when none was recorded in 8 days (_Daily sweep and digest_). Platform admin, `no-store`.
 - `POST /admin/push/pool/{slot}/close` and `…/open` → `{slot, closed, changed}`. Platform admin, write slot, audited as `push.pool.close` / `push.pool.open`. Closing a slot the platform closed itself takes the closure over (`changed: true`, `closedBy` becomes the admin).
 - A closed slot takes no new registration; its channels keep registering tokens and sending. Close the previous slot before a contest to give it a fresh project.
 - **Auto-close.** The platform closes a slot itself, with `closedBy: "auto:firebase-limit"`, when Firebase refuses a registration at its own 30-app limit (the create then tries the next slot once) or when the daily reconciliation counts 28 or more apps in the project — the net for apps added by hand, since the platform's own removals end in a purge. The reconciliation reopens such a slot once the count is below 28. A slot an operator closed, or took over by closing it again, is never reopened automatically.
@@ -612,6 +648,8 @@ Console `expire` runs the push sweep before the usage digest, in five phases; on
 
 Phases 1 and 5 share one 90 s deadline, checked before every release and every Firebase call, and 20 Firebase removals per run; a claim whose release failed in phase 1 is not retried until tomorrow. Log lines: `push sweep` or `push sweep truncated`.
 
+**The last run, for admins.** The run's result — the same content as its log line, plus `at` (unix seconds) — is kept in console Redis under `push:sweep:last` for 8 days and read by `GET /admin/push/sweep`: `{last: null}` before the first run, else `{last: {at, tokens: {channels, stale}, stats, truncated, released, kept, failed: [phase], pool?: {unreadable, unprovisioned: [{slot, claims}], skipped: [{slot, reason}]}, reconcile?: {truncated, slots: [{slot, claims, firebaseApps?, pendingDeletion?, orphans, removed, missing, foreign, filled, repaired, released, unread, autoClosed, autoOpened}]}}}`. Slot labels and counts only: no Firebase project or app id. A failed write is logged (`push sweep record failed`) and does not fail the sweep.
+
 | Finding      | Meaning                                                                                                                             | Digest warning            |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
 | `orphans`    | active Firebase apps no claim names that are still there: added by hand or by another stage (**never touched**), or not yet removed | `push:orphans:{slot}:{n}` |
@@ -631,6 +669,7 @@ Further digest warnings:
 
 - `push:pool:low` — 5 or fewer registrations left over the open slots; adding a project is the only way to grow.
 - `push:tokens:{channelId}` — a channel holding more than 100,000 tokens.
+- `push:tokens:full:{channelId}` — one of the five channels with the most tokens holds its `push.tokensPerChannel` (the config's `tokenCap`, read per top channel); new devices are refused until a limit request is granted. A full channel outside the top five is not named.
 - `push:send:failed:{channelId}:{day}` — one of the five channels with the most users not reached on the previous UTC day, with that day's counts (`push_send_stats`: calls, users reached, users without a token, users failed, dead tokens dropped). Counts only.
 - `push:pool:unreadable` — the SSM path could not be read; nothing was reconciled.
 - `push:pool:skipped:{label}` — a parameter under the path that is not served (bad label, malformed key, duplicate project).
@@ -681,6 +720,6 @@ Rolling console back past `m0028_push`: hard-delete the `push` channel rows and 
 Decided in `docs/decisions.md`, tracked in the machine-local backlog:
 
 - **Not verified on any stage**: receipt on a real device (targeted send, deferred-match hook, campaign, broadcast topic, the console app's tap; the console app's burst notice itself was received on a phone on prod 2026-10-09), `:undelete`, the 30-app limit error code, the `already_exists` shape.
-- **Deferred-match hook** (_Match: deferred mode_ #5) — live on dev and prod since 2026-10-06 on the match stack: a deferred match channel naming a `pushChannelId` sends each affected member a high-priority data-only `{channelId, matchId, state}` (`services/match/README.md` _Deferred mode_). It reads `push_tokens` and deletes nothing: a token FCM reports unregistered is left to the next targeted send and the 60-day sweep. Its sends are not in `push_send_stats`; each writes one `match push` log line. Bound (_Match: deferred mode_ #7): `proposed`/`expired` messages to one user on one channel are at least 10 s apart (dropped, counted as `outcomes.spaced`, never queued), and a player who declined or let a window close cannot queue again for `acceptTimeoutSec`.
+- **Deferred-match hook** (_Match: deferred mode_ #5) — live on dev and prod since 2026-10-06 on the match stack: a deferred match channel naming a `pushChannelId` sends each affected member a high-priority data-only `{channelId, matchId, state}` (`services/match/README.md` _Deferred mode_); with the channel's `notification` text for `proposed`, `confirmed` or `expired` (since 2026-10-11, _Push notifications_ #11h) that state's message also carries `notification: {title, body}`. It reads `push_tokens` and deletes nothing: a token FCM reports unregistered is left to the next targeted send and the 60-day sweep. Its sends are not in `push_send_stats`; each writes one `match push` log line. Bound (_Match: deferred mode_ #7): `proposed`/`expired` messages to one user on one channel are at least 10 s apart (dropped, counted as `outcomes.spaced`, never queued), and a player who declined or let a window close cannot queue again for `acceptTimeoutSec`.
 - **Console app notifications** (#10) — live (_Console app_); receipt on a real device (background, foreground, cold-start tap) is not verified.
 - **Client libraries**: no `push` package exists in tslib, csharplib or flutterlib, and the examples repository has no sample; an app calls the two token routes directly and subscribes to the channel's topic itself (_Broadcast_).

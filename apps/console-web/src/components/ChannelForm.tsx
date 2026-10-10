@@ -1,17 +1,20 @@
 import {
   Checkbox,
   Fieldset,
+  Group,
   NativeSelect,
   Text,
   TextInput,
   Textarea,
 } from "@mantine/core";
-import type {
-  Channel,
-  ChannelKind,
-  MatchMode,
-  PushConfig,
-  SayScope,
+import {
+  MATCH_NOTIFY_STATES,
+  type Channel,
+  type ChannelKind,
+  type MatchMode,
+  type MatchNotifyState,
+  type PushConfig,
+  type SayScope,
 } from "../types";
 import {
   MATCH_BOUNDS,
@@ -521,10 +524,68 @@ export function ChannelForm({
                     : []),
                 ]}
               />
+              <Fieldset legend="Notification text (optional)">
+                <Text size="sm" c="dimmed" mb="xs">
+                  With a title, that state&apos;s push shows on the lock screen
+                  and still carries the data; without one it stays a silent data
+                  message. One language, at most 100 characters a title and 240
+                  a body.
+                </Text>
+                {MATCH_NOTIFY_STATES.map((k) => (
+                  <NotifyRow
+                    key={k}
+                    state={k}
+                    value={form.notify[k]}
+                    onChange={(v) => set("notify", { ...form.notify, [k]: v })}
+                  />
+                ))}
+                {errors?.notification && (
+                  <Text size="sm" c="red" role="alert">
+                    {errors.notification}
+                  </Text>
+                )}
+              </Fieldset>
             </>
           )}
         </>
       )}
     </>
+  );
+}
+
+const NOTIFY_HINT: Record<MatchNotifyState, string> = {
+  proposed: "e.g. Match found — accept within 2 minutes",
+  confirmed: "e.g. Your match is ready",
+  expired: "e.g. The match fell through",
+};
+
+/** One deferred state's title and body, side by side from `sm` up. */
+function NotifyRow({
+  state,
+  value,
+  onChange,
+}: {
+  state: MatchNotifyState;
+  value: { title: string; body: string };
+  onChange: (v: { title: string; body: string }) => void;
+}) {
+  return (
+    <Group grow align="flex-start" wrap="wrap" mb="xs">
+      <TextInput
+        label={`${state}: title`}
+        placeholder={NOTIFY_HINT[state]}
+        maxLength={100}
+        miw={200}
+        value={value.title}
+        onChange={(e) => onChange({ ...value, title: e.target.value })}
+      />
+      <TextInput
+        label={`${state}: body`}
+        maxLength={240}
+        miw={200}
+        value={value.body}
+        onChange={(e) => onChange({ ...value, body: e.target.value })}
+      />
+    </Group>
   );
 }

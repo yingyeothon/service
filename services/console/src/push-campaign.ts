@@ -177,6 +177,16 @@ const listQuery = z
   })
   .strict();
 
+const uploadListQuery = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    cursor: z
+      .string()
+      .regex(/^\d{1,12}\.[A-Za-z0-9_-]{1,64}$/)
+      .optional(),
+  })
+  .strict();
+
 const reply = (body: unknown, statusCode = 200): HttpResult => ({
   statusCode,
   headers: {
@@ -444,6 +454,51 @@ export function createPushCampaignRoutes({
       },
       201,
     );
+  }
+
+  /**
+   * The channel's uploads, newest first: what holds the 20 pending places
+   * and what may be deleted. No object key and no URL: the URL was the
+   * create's to hand out once.
+   */
+  async function listUploads(
+    c: Caller,
+    q: z.infer<typeof uploadListQuery>,
+  ): Promise<HttpResult> {
+    const limit = q.limit ?? 20;
+    let before: { createdAt: number; id: string } | undefined;
+    if (q.cursor !== undefined) {
+      const dot = q.cursor.indexOf(".");
+      before = {
+        createdAt: Number(q.cursor.slice(0, dot)),
+        id: q.cursor.slice(dot + 1),
+      };
+    }
+    const rows = await jobs.listUploads(c.channel.id, {
+      limit: limit + 1,
+      before,
+    });
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    // Logins on the member family only, as `jobView` names no login to the key.
+    const loginOf =
+      c.actorId === null
+        ? () => null
+        : await logins(page.map((u) => u.createdBy));
+    return reply({
+      uploads: page.map((u) => ({
+        id: u.id,
+        size: u.size,
+        createdBy: u.createdBy,
+        createdByLogin: loginOf(u.createdBy),
+        createdAt: u.createdAt,
+        usableUntil: u.createdAt + PUSH_UPLOAD_USABLE_SEC,
+        pending: u.pending,
+        inUse: u.inUse,
+      })),
+      next: rows.length > limit && last ? `${last.createdAt}.${last.id}` : null,
+      max: PUSH_UPLOADS_PER_CHANNEL,
+    });
   }
 
   async function deleteUpload(c: Caller, uploadId: string): Promise<undefined> {
@@ -972,6 +1027,13 @@ export function createPushCampaignRoutes({
       body: uploadBody,
       handler: async (ctx) =>
         createUpload(await caller(ctx, true), ctx.body.size),
+    }),
+    defineRoute({
+      method: "GET",
+      path: `${base}/uploads`,
+      auth,
+      query: uploadListQuery,
+      handler: async (ctx) => listUploads(await caller(ctx, false), ctx.query),
     }),
     defineRoute({
       method: "DELETE",
