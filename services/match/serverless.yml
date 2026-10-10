@@ -102,25 +102,9 @@ provider:
         - Effect: Allow
           Action: lambda:InvokeFunction
           Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:custom.stage}-worker"
-        # The push pool, exactly as the state stack reads it.
-        # `GetParametersByPath` is authorized against the path itself, and the
-        # parameters under it are what it returns.
-        - Effect: Allow
-          Action: ssm:GetParametersByPath
-          Resource:
-            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}
-            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
-        # SecureString decryption, only as SSM performs it for those
-        # parameters: the service condition keeps the key from being used
-        # directly, the encryption context from decrypting any other path.
-        - Effect: Allow
-          Action: kms:Decrypt
-          Resource: arn:aws:kms:${aws:region}:${aws:accountId}:key/*
-          Condition:
-            StringEquals:
-              kms:ViaService: ssm.${aws:region}.amazonaws.com
-            StringLike:
-              kms:EncryptionContext:PARAMETER_ARN: arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
+        # The push pool's SSM path is not here: only `worker` and `tick`
+        # send, and they run on `PushSenderRole` (docs/decisions.md *Push
+        # notifications* #11f).
 
 # Connection budget (rules/data.md): every container holds one MySQL + one
 # Redis connection. ws 6 + authorizer 5 + http 3 + worker 2 + tick 1 +
@@ -165,6 +149,7 @@ functions:
   worker:
     handler: src/handler.worker
     reservedConcurrency: 2
+    role: PushSenderRole
     environment:
       # A path, not a value; only the functions that send carry it.
       PUSH_SSM_PATH: /${self:custom.pushSsm}/
@@ -179,6 +164,7 @@ functions:
   tick:
     handler: src/handler.tick
     reservedConcurrency: 1
+    role: PushSenderRole
     timeout: 60
     maximumRetryAttempts: 0
     environment:
@@ -213,6 +199,52 @@ resources:
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
+    # `worker` and `tick`: the provider role's two statements plus the push
+    # pool, exactly as the state stack reads it. `GetParametersByPath` is
+    # authorized against the path itself, and the parameters under it are
+    # what it returns; SecureString decryption only as SSM performs it for
+    # those parameters.
+    PushSenderRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: push-sender
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource:
+                    - arn:aws:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/${self:service}-${self:custom.stage}-worker:*
+                    - arn:aws:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/${self:service}-${self:custom.stage}-tick:*
+                - Effect: Allow
+                  Action: execute-api:ManageConnections
+                  Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:custom.stage}/*"
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:custom.stage}-worker"
+                - Effect: Allow
+                  Action: ssm:GetParametersByPath
+                  Resource:
+                    - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}
+                    - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
+                - Effect: Allow
+                  Action: kms:Decrypt
+                  Resource: arn:aws:kms:${aws:region}:${aws:accountId}:key/*
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: ssm.${aws:region}.amazonaws.com
+                    StringLike:
+                      kms:EncryptionContext:PARAMETER_ARN: arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/${self:custom.pushSsm}/*
     WsErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
