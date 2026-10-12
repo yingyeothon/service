@@ -90,3 +90,7 @@
   outages separate from hash divergence and commit chunk manifests last.
 - State client-library checkout, release and deployment status separately;
   in-process fake scenarios are not evidence of deployed gateway delivery.
+
+- Treat game-kit capability groups as implementation milestones; TypeScript
+  publishes the remaining groups together. Keep explicit callback selection in
+  `docs/game-kit-design.md`; a null callback result cannot identify channel mode.

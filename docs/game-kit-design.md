@@ -278,6 +278,12 @@ Over the match socket, then `room`.
   partial roster after the window, `partial: true`). With a callback channel
   the kit hands back `result` verbatim and forms no room.
 
+**Callback selection (TypeScript).** `GameKitOptions.matchmaking.callback` is an
+explicit local boolean, default `false`, configured to match the channel. The kit
+never infers callback presence from `result`: a callback may return `null` too.
+With `callback: true` the live result is returned unchanged and no room is made.
+The option does not change the channel or service runtime.
+
 **Deferred mode** (`match.mode: "deferred"`, `services/match/README.md`
 _Deferred mode_): HTTP tickets on `match.apiBase`, no socket, no lobby
 requirement.
@@ -407,15 +413,17 @@ platform; `board` needs `todo/36`, `mail`'s stamp and `counter`'s range need
 exception, and it is not a deploy: `friends`'s online dots call the gateway's
 `GET /presence`, which is in the merged image and answers only after the
 gateway container is recreated — a restart that disconnects every player, so it
-waits for a quiet day rather than for code. The kit therefore lands in three waves, each shipped in all three
-repositories before the next: **A** session/content/save/room/turns,
-**B** board/mail, **C** friends/matchmaking. Per-repository checklists:
-`todo/40-game-kit.md` here, mirrored as each repository's handover.
+waits for a quiet day rather than for code. The capability groups are
+**A** session/content/save/room/turns, **B** board/mail, and **C**
+friends/matchmaking/push. They are implementation milestones, not intermediate
+release gates. TypeScript completes the remaining groups before one consolidated
+SDK release; other-language delivery is tracked independently in its repository.
 
 ## Wave A interoperability contract (2026-10-12)
 
-The TypeScript Wave A checkout implements the following shared contract;
-publication is pending the library repositories' release workflows. The kit exposes
+The TypeScript Wave A checkout implements the following shared contract and was
+published at 2.4.0 on 2026-10-12. Other-language publication is tracked in each
+library repository. The kit exposes
 `forbidden` (authorization denied), `invalid_state` (an operation is invalid in
 its current lifecycle), and `cancelled` (login cancelled) as non-retryable errors.
 Local malformed inputs are argument errors, not remote refusals.
