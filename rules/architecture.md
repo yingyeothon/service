@@ -82,3 +82,11 @@
 - Web HUD (2026-08-30): `web/src/ui/*.ts` are pure view models (`hudModel`, `dialogModel`, `stateToasts`/`LineToasts`, `portraitCell`) tested by vitest without a DOM; `web/src/ui/dom/*` are the only files that touch `document` and re-render only when a model's JSON signature changes. Rules that keep the two front-ends honest: the DOM never owns game state (popups are `state.overlay`, the console is `state.input`, toasts derive from the state each paint); a tapped row goes through `pickChoice` (the hotkey path); a front-end that lists every row passes `maxChoices: Infinity` instead of copying `keyChoices`; a HUD button tap while the line is open sends Esc first so the letter is not typed. Panels keep painting while hidden — the headless driver reads their `textContent`. Player pass-through: the client must not refuse a move the sim allows (peers never blocked server-side; the old `dungeonStep` did).
 - The web `tsconfig` adds `DOM` but keeps `types: ["node"]` because `src/actor.ts` (reached through `client/types.ts`) names `NodeJS` types; browser safety is enforced by the grep guard, not by the type library.
 - **"This surface never writes" is a design lever, not a restriction to apologise for.** The console has no route, no SPA control and no CLI verb that writes a leaderboard score (owner decision 2026-09-09), and each of the three has a test asserting it. The payoff is downstream: because every row carries the `channel_id` of the credential that wrote it, the channel purge is one `channel_id = ?` predicate — where kv, whose console _does_ write, needs `deleteChannelEntries` to derive an owner set from rows a channel's players own and to be careful not to take a live player's data on another channel. When a new resource is proposed, ask which writers it really needs before ask what they may write.
+
+## Game kit client interoperability
+
+- Define kit envelopes, turn hash bytes and replay vectors in
+  `docs/game-kit-design.md` before implementing a language port. Keep storage
+  outages separate from hash divergence and commit chunk manifests last.
+- State client-library checkout, release and deployment status separately;
+  in-process fake scenarios are not evidence of deployed gateway delivery.

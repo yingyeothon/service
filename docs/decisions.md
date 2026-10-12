@@ -532,3 +532,14 @@ Status: decided 2026-10-06 by the owner (`todo/56`); the server side (console va
 6. **Scheduling.** A ticket submit triggers an attempt; the existing 1-minute schedule handles wait and accept timeouts, so an accept window may close up to a minute late.
 7. **Abuse bound** (owner, 2026-10-06; the bound _Push_ #7 asks for; code constants, not registry limits). (a) A player who declined (or deleted the ticket during a proposal), or did not accept before the window closed, cannot submit to that channel for `acceptTimeoutSec`: `POST …/ticket` answers 429 `details.reason: "cooldown"` with `details.retryAfter` seconds. (b) `proposed`/`expired` pushes to one user on one channel are at least 10 s apart; a push inside the interval is dropped and counted in the log line, never queued. `confirmed` and `failed` always go.
 8. **Ticket API limits** (owner, 2026-10-06). Stage throttle 5 rps / burst 10. The `http` function writes no per-request log line; errors and warnings still log.
+
+## Game kit Wave A interoperability (2026-10-12)
+
+The TypeScript Wave A uses the shared envelope, RFC 8785 JCS/SHA-256 turn
+chain, paced log chunks and manifest-last save persistence in
+[Game kit design](game-kit-design.md#wave-a-interoperability-contract-2026-10-12).
+Browser login defaults to a popup; engine hosts inject their browser flow.
+Token storage and durable offline store/remove queues are opt-in. The current
+state API has no 304 reads, so content compares ETag versions after full GETs.
+This is a client-library contract, not a new deployed service feature;
+publication and the other-language ports are separate work.

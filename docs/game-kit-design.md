@@ -335,6 +335,9 @@ never surfaced by HTTP status or close code:
 | code                | from                                                                                                                                                      | retryable               |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
 | `not_configured`    | module used without its config block                                                                                                                      | no                      |
+| `forbidden`         | authorization denied (403)                                                                                                                                | no                      |
+| `invalid_state`     | operation invalid in the current lifecycle                                                                                                                | no                      |
+| `cancelled`         | login window closed or host flow cancelled                                                                                                                | no                      |
 | `signed_out`        | any 401                                                                                                                                                   | no                      |
 | `offline`           | invite/whisper to a user without a socket                                                                                                                 | yes                     |
 | `conflict`          | save version lost and no `merge`                                                                                                                          | yes                     |
@@ -408,3 +411,105 @@ waits for a quiet day rather than for code. The kit therefore lands in three wav
 repositories before the next: **A** session/content/save/room/turns,
 **B** board/mail, **C** friends/matchmaking. Per-repository checklists:
 `todo/40-game-kit.md` here, mirrored as each repository's handover.
+
+## Wave A interoperability contract (2026-10-12)
+
+The TypeScript Wave A checkout implements the following shared contract;
+publication is pending the library repositories' release workflows. The kit exposes
+`forbidden` (authorization denied), `invalid_state` (an operation is invalid in
+its current lifecycle), and `cancelled` (login cancelled) as non-retryable errors.
+Local malformed inputs are argument errors, not remote refusals.
+
+### Session and persistence
+
+`session.now()` returns epoch milliseconds; `expiresAt` is epoch seconds.
+Adopting a JWT reads its claims, not its signature: the service authenticates
+requests. The platform clock is anchored to the monotonic midpoint of the
+`/time` request. Until its first successful synchronization, `now()` reports
+`unavailable`; local wall time is never a substitute. Restored offline sessions
+may enqueue conditional save writes but do not infer expiry from wall time.
+
+Token storage is opt-in. An offline queue requires a durable adapter and is
+isolated by auth channel, collection and user. Only conditional store/remove
+operations are queued, never counters or claims. Persist a queue record before
+acknowledging it. A retry may acknowledge an already-satisfied store when a newer revision has
+the exact desired value; it never overwrites a differing value. Persist merged
+queue intent before retrying a conditional write. Replay in order; on an unresolved conflict retain the record
+and stop. Merge functions cannot be serialized: restored queues use registered
+save-name policies. Sign-out stops replay but retains the isolated queue.
+
+### Event envelope and limits
+
+Every kit-routed event payload is `{v:1, roomId, senderSession, seq, data}`.
+The gateway's authenticated `from` is the identity; an identity inside `data`
+is never a substitute. A cryptographically random `senderSession` is generated
+per kit instance and survives socket reconnects; `seq` starts at 1 and increases
+per sender. Deduplicate by `(from, senderSession, seq)`. Events retain ordering
+per sender; there is no cross-sender total order.
+
+The 8192-byte limit applies to the entire UTF-8 JSON envelope, including the
+kit fields. User event names cannot start with `kit.`. Kit state is accepted
+only from the current host; `kit.resync` is a user-targeted request to that
+host, which answers `kit.state` with its latest snapshot. State data contains
+`{revision, snapshot}`; the revision is per host session. Roster host changes
+reset the accepted revision and invoke `becomeHost` with the last known state.
+
+### Turns and hashes
+
+`gameId` is a random id for one turn game, announced by the host in `kit.turns.start`
+with `{gameId, players, initialHash}`; all peers must start with identical
+players and initial state. Index starts at 0. `kit.turn` carries
+`{gameId,index,move,by,hash}`. Validate `by === from`, the player at that index,
+and the hash before applying. A divergence emits `mismatch` and freezes the
+turn game. The hash is lowercase hex SHA-256 of UTF-8 RFC 8785 JCS for
+`[prevHash,index,by,move]`, starting with 64 zeroes. JSON must be finite IEEE-754
+values, valid Unicode strings, arrays and plain objects; no custom serializers,
+undefined, sparse arrays or cycles. The initial state hash is SHA-256 of its JCS. `elapsed` reports per-player
+monotonic milliseconds observed by this instance; it is informational, resets
+on instance reconstruction, and is not part of the replay hash.
+
+A `kit.turns.log` request contains `{gameId,requestId}` (`gameId: ""` requests the current game and its start
+announcement). The host answers (or,
+when offline or when the host itself is recovering, the first other online
+member in player order) with `kit.turns.manifest`
+`{gameId,requestId,count,finalHash,chunks}` and `kit.turns.chunk`
+`{gameId,requestId,part,records}`. Each full envelope fits 8192 bytes. Select one
+responder and never mix its chunks with another peer's. Stage and verify the
+complete log before replacing state. Duplicate chunks must be identical.
+Individual encoded turn records are capped at 7000 bytes to leave room for
+resync envelope overhead. Chunk sending is paced at 5/s; assembly expires after 30 seconds and is capped
+at 1 MiB (`maxLogBytes`, configurable). New turns received during resync are
+buffered and replayed after the validated log. Invalid or conflicting logs
+freeze with `mismatch`; missing chunks end with retryable `unavailable`.
+
+`persist: true` uses the player's save collection. Write immutable revision
+chunks (each row at most 16384 UTF-8 bytes) under
+`turns:{roomId}:{gameId}:{revision}:{part}`, then conditionally commit a
+manifest under `turns:{roomId}`. The manifest includes version 1, gameId,
+players, initialHash, revision, chunks, count and finalHash. All rows have
+`logTtlSeconds`, default 604800 (7 days). Partial revisions are never restored;
+old chunks expire. A host announces `kit.turns.finish` with `{gameId,result,count,finalHash}`;
+each player records its own result in its configured save sink. Persistence
+failures report retryable errors separately from mismatch, retaining the log
+and pending result for retry on foreground resume or explicit `finish`. This is
+host-authoritative by agreement, not server arbitration.
+
+Hash conformance vectors (no whitespace or newline in the hashed bytes):
+
+- Input `["0000000000000000000000000000000000000000000000000000000000000000",0,"alice",{"x":1,"y":2}]` → `8e48ac7f284692548995d918cbc6328694734bef04eb5dad33144fcd7d300c2a`.
+- Input `["0000000000000000000000000000000000000000000000000000000000000000",1,"alice",{"ok":true,"text":"안녕"}]` → `de6d3a87f5523e1f59808cb6072bafefb66db18938fabcf516fd808549607935`.
+
+Content uses GET entry reads and compares their ETag versions: the current state
+API has no 304 conditional-read support. Background polling is paused; cached
+reads are refreshed when used. Browsers must wire visibility changes to
+`setForeground`; engine-specific lifecycle hooks are injected by the host app.
+
+Finish is staged while a resync is incomplete, then checked against the complete
+log and buffered live turns before result persistence. Log replies for finished
+games include that finish marker after the chunks. A result must never be saved
+with a chain hash from before a reconnect.
+
+A replay responder attaches the original requestId to its finish marker. A
+recovering member accepts a non-host terminal marker only from its selected
+responder, bound to that requestId, gameId, terminal count and chain hash.
+This relays host authority by agreement; it is not a server-signed result.
