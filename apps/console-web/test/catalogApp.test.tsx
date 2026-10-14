@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type {
   CatalogApp,
@@ -97,6 +97,17 @@ function open() {
 }
 
 describe("CatalogAppPage", () => {
+  const touchDescriptor = Object.getOwnPropertyDescriptor(
+    navigator,
+    "maxTouchPoints",
+  );
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (touchDescriptor)
+      Object.defineProperty(navigator, "maxTouchPoints", touchDescriptor);
+    else Reflect.deleteProperty(navigator, "maxTouchPoints");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(mockApi.me).mockResolvedValue({
@@ -380,6 +391,68 @@ describe("CatalogAppPage", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await waitFor(() => expect(within(cell).queryByRole("group")).toBeNull());
   });
+
+  it.each([
+    [
+      "iPhone",
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+      0,
+      true,
+    ],
+    ["iPad", "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)", 5, true],
+    ["desktop iPad", "Mozilla/5.0 (Macintosh; Intel Mac OS X)", 5, true],
+    ["Mac", "Mozilla/5.0 (Macintosh; Intel Mac OS X)", 0, false],
+    ["Windows", "Mozilla/5.0 (Windows NT 10.0)", 10, false],
+    ["Android", "Mozilla/5.0 (Linux; Android 14)", 5, false],
+  ])(
+    "exposes ad-hoc installation only on iOS: %s",
+    async (_, ua, touches, ios) => {
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ua);
+      Object.defineProperty(navigator, "maxTouchPoints", {
+        configurable: true,
+        value: touches,
+      });
+      const installUrl =
+        "itms-services://?action=download-manifest&url=https%3A%2F%2Fcdn.example%2Fm.plist";
+      vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);
+      vi.mocked(mockApi.catalogArtifacts).mockResolvedValue([
+        {
+          ...ARTIFACTS[0]!,
+          platform: "ios",
+          url: "https://cdn.example/a.ipa",
+          objectKey: "apps/ca_1/1.0.0/a.ipa",
+          tags: { version: "1.0.0", distribution_method: "ad-hoc" },
+          ios: { manifestUrl: "https://cdn.example/m.plist", installUrl },
+        },
+        {
+          ...ARTIFACTS[0]!,
+          id: "art_2",
+          platform: "ios",
+          tags: { distribution_method: "app-store" },
+        },
+        ARTIFACTS[0]!,
+      ]);
+      mount(
+        <Routes>
+          <Route path="/catalog/apps/:id" element={<CatalogAppPage />} />
+        </Routes>,
+        { client: mockApi, path: "/catalog/apps/ca_1" },
+      );
+      expect(
+        await screen.findByRole("link", { name: "a.ipa" }),
+      ).toHaveAttribute("href", "https://cdn.example/a.ipa");
+      const links = screen.queryAllByRole("link", {
+        name: "Install on this device",
+      });
+      expect(links).toHaveLength(ios ? 1 : 0);
+      if (ios) {
+        expect(links[0]).toHaveAttribute("href", installUrl);
+        expect(links[0]?.closest("td")).toBe(
+          screen.getByRole("link", { name: "a.ipa" }).closest("td"),
+        );
+      }
+    },
+  );
 
   it("keeps the iOS OTA hint out of the table and in the metadata", async () => {
     vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);

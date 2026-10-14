@@ -58,6 +58,18 @@ describe("isIosUserAgent", () => {
       false,
     );
   });
+
+  it.each([
+    ["Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)", 5, true],
+    ["Mozilla/5.0 (iPod; CPU iPhone OS 17_0 like Mac OS X)", 0, true],
+    ["Mozilla/5.0 (Macintosh; Intel Mac OS X)", 5, true],
+    ["Mozilla/5.0 (Macintosh; Intel Mac OS X)", 0, false],
+    ["Mozilla/5.0 (Macintosh; Intel Mac OS X)", 1, false],
+    ["Mozilla/5.0 (Windows NT 10.0; Win64; x64)", 10, false],
+    ["Mozilla/5.0 (Linux; Android 14)", 5, false],
+  ])("detects device %s with %i touch points", (ua, touchPoints, expected) => {
+    expect(isIosUserAgent(ua, touchPoints)).toBe(expected);
+  });
 });
 
 describe("artifactTagRows", () => {

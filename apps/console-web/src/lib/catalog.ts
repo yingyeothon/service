@@ -52,8 +52,11 @@ export function fmtSize(n: number | null): string {
 }
 
 /** iOS ad-hoc install links only work on actual iPhones/iPads. */
-export function isIosUserAgent(ua: string): boolean {
-  return /\b(iPhone|iPad|iPod)\b/.test(ua);
+export function isIosUserAgent(ua: string, maxTouchPoints = 0): boolean {
+  return (
+    /\b(iPhone|iPad|iPod)\b/.test(ua) ||
+    (/\bMacintosh\b/.test(ua) && maxTouchPoints > 1)
+  );
 }
 
 /**

@@ -452,7 +452,10 @@ export function CatalogAppPage() {
     { enabled: standing.canWrite },
   );
   const act = useAction();
-  const iosDevice = isIosUserAgent(navigator.userAgent);
+  const iosDevice = isIosUserAgent(
+    navigator.userAgent,
+    navigator.maxTouchPoints,
+  );
   const a = app.data;
   const s = settings.data ?? null;
   const edit = useDrawerForm<EditForm>(() => ({
@@ -603,9 +606,6 @@ export function CatalogAppPage() {
             { key: "size", label: "Size", align: "right" },
             { key: "created", label: "Created" },
             { key: "changelog", label: "Changelog", width: CHANGELOG_WIDTH },
-            // An empty column on every other machine: the hint that used to
-            // live here is metadata now.
-            ...(iosDevice ? [{ key: "install", label: "" }] : []),
           ]}
           rows={artifacts.data ? rows : undefined}
           loading={artifacts.loading}
@@ -636,6 +636,17 @@ export function CatalogAppPage() {
                 >
                   {art.objectKey?.split("/").pop() ?? art.url}
                 </Anchor>
+                {iosDevice && art.ios && (
+                  <Button
+                    component="a"
+                    href={art.ios.installUrl}
+                    size="compact-sm"
+                    variant="default"
+                    ml="sm"
+                  >
+                    Install on this device
+                  </Button>
+                )}
               </Table.Td>
               <Table.Td style={{ ...NOWRAP, textAlign: "right" }}>
                 {fmtSize(art.size)}
@@ -649,20 +660,6 @@ export function CatalogAppPage() {
                     : undefined
                 }
               />
-              {iosDevice && (
-                <Table.Td>
-                  {art.ios && (
-                    <Button
-                      component="a"
-                      href={art.ios.installUrl}
-                      size="compact-sm"
-                      variant="default"
-                    >
-                      Install on this device
-                    </Button>
-                  )}
-                </Table.Td>
-              )}
             </>
           )}
           actions={
