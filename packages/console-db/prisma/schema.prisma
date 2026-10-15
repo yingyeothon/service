@@ -1592,7 +1592,7 @@ enum push_apps_sender {
 }
 
 model site_edge_policies {
-  prefix String @id @db.VarChar(32)
+  prefix String @id @db.VarChar(64)
   payload String @db.Text
   pending Boolean @default(true)
 }

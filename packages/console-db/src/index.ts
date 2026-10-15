@@ -580,6 +580,7 @@ export {
   type PushUploadRow,
 } from "./pushJobs.js";
 export {
+  SITE_EDGE_PREFIX,
   createSiteEdgeDb,
   createMemorySiteEdgeDb,
   type SiteEdgeDb,

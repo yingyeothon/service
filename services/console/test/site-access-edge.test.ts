@@ -80,6 +80,38 @@ describe("site access edge enforcement", () => {
       ).toBeUndefined();
     }
   });
+  it("preserves registered 64-character legacy paths without widening site hosts", async () => {
+    const prefix = "a".repeat(64);
+    const read = async (key: string) => {
+      if (key !== prefix) throw new Error("missing");
+      return '{"mode":"public"}';
+    };
+    expect(
+      (await edge("PathHostRequestFunction", read)(req(`/${prefix}/page.html`)))
+        .uri,
+    ).toBe(`/${prefix}/page.html`);
+    expect(
+      (
+        await edge(
+          "PathHostRequestFunction",
+          async () => '{"mode":"basic"}',
+        )(req(`/${prefix}/page.html`, auth))
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await edge(
+          "PathHostRequestFunction",
+          read,
+        )(req(`/${prefix}a/page.html`))
+      ).statusCode,
+    ).toBe(404);
+    const host = req();
+    host.request.headers.host.value = `${prefix}.dev-g.yyt.life`;
+    expect((await edge("SiteHostRequestFunction", read)(host)).statusCode).toBe(
+      404,
+    );
+  });
   it("denies shared paths, malformed policies, missing keys and store failures", async () => {
     const shared = edge("PathHostRequestFunction", async () =>
       JSON.stringify(policy),

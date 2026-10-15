@@ -256,6 +256,20 @@ describe("approved site access", () => {
   });
 });
 describe("edge management budget", () => {
+  it("accepts legacy keys and mirrors validation atomically", async () => {
+    const db = createMemorySiteEdgeDb();
+    const prefix = "a".repeat(64);
+    await db.queue([{ prefix, payload: '{"mode":"public"}' }]);
+    expect(db.rows.has(prefix)).toBe(true);
+    await expect(
+      db.queue([
+        { prefix: "abc", payload: "public" },
+        { prefix: prefix + "a", payload: "public" },
+      ]),
+    ).rejects.toThrow("invalid site edge policy");
+    expect(db.rows.has("abc")).toBe(false);
+  });
+
   it("counts failures, preserves emergency reserve and resets only at UTC month boundary", async () => {
     const db = createMemorySiteEdgeDb();
     const publish = async () => {};

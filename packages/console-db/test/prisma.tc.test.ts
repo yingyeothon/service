@@ -238,6 +238,27 @@ describe.skipIf(!dockerAvailable())(
     });
 
     describe("site edge policy persistence", () => {
+      it("stores legacy prefixes without truncation and refuses oversized keys", async () => {
+        await resetTestDb(db.client);
+        await db.client.site_edge_control.create({
+          data: { id: 1, month: "", used: 0 },
+        });
+        const edge = createSiteEdgeDb(db.client),
+          prefix = "a".repeat(64);
+        await edge.queue([{ prefix, payload: '{"mode":"public"}' }]);
+        expect(await edge.pending(prefix)).toBe(true);
+        expect(
+          (
+            await db.client.site_edge_policies.findUniqueOrThrow({
+              where: { prefix },
+            })
+          ).prefix,
+        ).toBe(prefix);
+        await expect(
+          edge.queue([{ prefix: prefix + "a", payload: '{"mode":"public"}' }]),
+        ).rejects.toThrow("invalid site edge policy");
+      });
+
       it("retains reservations after network failure, rejects stale sources and backward months", async () => {
         await resetTestDb(db.client);
         await seedTeamProject(db.client);

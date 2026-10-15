@@ -943,7 +943,7 @@ resources:
           }
           async function gate(event) {
             var req = event.request;
-            var match = /^\/([a-z0-9][a-z0-9-]{1,30}[a-z0-9])(?:\/|$)/.exec(req.uri);
+            var match = /^\/([a-z0-9][a-z0-9-]{1,62}[a-z0-9])(?:\/|$)/.exec(req.uri);
             try {
               if (!match || /%|\\|\/\/|\/\.\.?(\/|$)/.test(req.uri)) throw 0;
               var raw = await kvs.get(match[1]);

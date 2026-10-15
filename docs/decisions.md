@@ -576,3 +576,8 @@ may take tens of seconds and previous settings, including a Basic Auth prompt
 after switching to Public, can remain temporarily. Pending synchronization gets
 a separate retry message; failed writes get no saved dialog. The dialog is
 after the write and is not a confirmation or a claim of global completion.
+
+Production site-access rollout (2026-10-15): explicitly registered legacy shared
+paths may have prefixes up to 64 characters. Policy storage and the shared-path
+gate accept those prefixes; managed site names and independent host labels stay
+at 3–32 characters. Unknown prefixes and protected shared paths remain denied.

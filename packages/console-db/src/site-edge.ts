@@ -24,6 +24,15 @@ export interface SiteEdgeDb {
     prefix?: string,
   ): Promise<number>;
 }
+/** Shared-path legacy keys can be longer than a managed site name. */
+export const SITE_EDGE_PREFIX = /^(?!.*--)[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
+function checkPolicy(row: SiteEdgePolicy): void {
+  if (
+    !SITE_EDGE_PREFIX.test(row.prefix) ||
+    Buffer.byteLength(row.payload) > 1024
+  )
+    throw new AppError("bad_request", "invalid site edge policy");
+}
 const MAX_BYTES = 4 * 1024 * 1024;
 export function createSiteEdgeDb(prisma: PrismaClient): SiteEdgeDb {
   return {
@@ -49,11 +58,7 @@ export function createSiteEdgeDb(prisma: PrismaClient): SiteEdgeDb {
               );
           }
           for (const row of rows) {
-            if (
-              !/^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/.test(row.prefix) ||
-              Buffer.byteLength(row.payload) > 1024
-            )
-              throw new AppError("bad_request", "invalid site edge policy");
+            checkPolicy(row);
             const old = await tx.site_edge_policies.findUnique({
               where: { prefix: row.prefix },
             });
@@ -180,8 +185,10 @@ export function createMemorySiteEdgeDb(
             );
         }
         const next = new Map(rows);
-        for (const row of entries)
+        for (const row of entries) {
+          checkPolicy(row);
           next.set(row.prefix, { ...row, pending: true });
+        }
         if (
           [...next.values()].reduce(
             (n, r) => n + Buffer.byteLength(r.prefix + r.payload),

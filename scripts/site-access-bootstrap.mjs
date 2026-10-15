@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
 import {
+  SITE_EDGE_PREFIX,
   createPrismaClient,
   mysqlOptionsFromEnv,
   createSitesDb,
@@ -155,7 +156,7 @@ try {
       ]);
       for (const p of page.CommonPrefixes ?? []) {
         const name = p.Prefix.slice(0, -1);
-        if (!/^(?!.*--)[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/.test(name))
+        if (!SITE_EDGE_PREFIX.test(name))
           throw new Error(
             "legacy prefix outside supported grammar; review before activation",
           );
