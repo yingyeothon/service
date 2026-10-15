@@ -728,26 +728,38 @@ export function SitePage() {
           )}
         />
       </Section>
-      <SiteAccessSettings
-        site={s}
-        approved={
-          limits.data?.limits.some(
-            (l) => l.key === "site.basicAuth" && l.effective === 1,
-          ) ?? false
-        }
-        writable={
-          standing.standing === "owner" || standing.standing === "member"
-        }
-        admin={me?.role === "admin"}
-        reload={() => {
-          void site.reload();
-        }}
-      />
       <LimitsSection
         limits={limits}
         standing={standing.standing}
-        description="What one deploy of this site may upload: the zip, what it extracts to and how many files. The usage is the live deploy; a team member may ask a platform admin for more on this site alone."
-      />
+        description="Site deploy limits and approval for Basic Auth. A team member may request a change for this site."
+      >
+        {(requestLimit) => (
+          <SiteAccessSettings
+            site={s}
+            approved={
+              limits.data?.limits.some(
+                (l) => l.key === "site.basicAuth" && l.effective === 1,
+              ) ?? false
+            }
+            approvalPending={
+              limits.data?.pending.some((r) => r.key === "site.basicAuth") ??
+              false
+            }
+            requestApproval={
+              limits.data?.limits.some((l) => l.key === "site.basicAuth")
+                ? () => requestLimit("site.basicAuth", 1)
+                : undefined
+            }
+            writable={
+              standing.standing === "owner" || standing.standing === "member"
+            }
+            admin={me?.role === "admin"}
+            reload={() => {
+              void site.reload();
+            }}
+          />
+        )}
+      </LimitsSection>
       <BuildHints basePath={s.basePath} hostUrl={s.hostUrl} caps={caps} />
       <ResourceDrawer
         opened={edit.opened}

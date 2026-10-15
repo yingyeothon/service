@@ -42,3 +42,5 @@ with the probe writing `getBoundingClientRect()` widths, row heights, `scrollWid
 - `env="test"` renders portals inline, so a tooltip label and an in-cell fold share one `<td>`: query a fold by `role="group"` with its own `aria-label`, never by its text.
 - `Text` defaults to a `<p>`; inside a phrasing context pass `component="span"`.
 - A `Badge` is `inline-grid` with `overflow: hidden`: as a flex item (inside `Group wrap="nowrap"`) it shrinks before the table widens and ellipses its own label (`pending` → "p…", `cancelled` → "cancell…" on the limit-request tables, 2026-09-28 — jsdom cannot see it). Put it in plain inline content, or give its wrapper `flex-shrink: 0`.
+
+- An approval-gated feature must expose its request action at the point of use. Keep configuration reachable, reuse the shared limit-request drawer with the relevant key/value selected, and show pending status there. Do not send users to a distant Limits section or collect credentials before approval.

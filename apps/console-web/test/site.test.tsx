@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
-import type { SiteDetail, TeamDetail } from "../src/types";
+import type {
+  LimitsView,
+  LimitRequest,
+  SiteDetail,
+  TeamDetail,
+} from "../src/types";
 
 const mockApi = {
   me: vi.fn(),
@@ -19,6 +24,7 @@ const mockApi = {
   siteSuspension: vi.fn(),
   siteAccessSync: vi.fn(),
   limits: vi.fn(),
+  requestLimit: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -125,6 +131,134 @@ describe("SitePage", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  const authLimit: LimitsView = {
+    scope: { kind: "site", id: "site_1" },
+    teamId: "team_1",
+    limits: [
+      {
+        key: "site.basicAuth",
+        unit: "count",
+        soft: 0,
+        hard: 1,
+        effective: 0,
+        usage: null,
+        step: null,
+        next: null,
+        override: null,
+      },
+    ],
+    pending: [],
+  };
+  const authRequest: LimitRequest = {
+    id: "lr_1",
+    teamId: "team_1",
+    teamName: "studio",
+    scope: { kind: "site", id: "site_1", name: "game-web" },
+    key: "site.basicAuth",
+    unit: "count",
+    hard: 1,
+    requestedValue: 1,
+    reason: "Private review",
+    status: "pending",
+    decidedValue: null,
+    decisionNote: null,
+    createdBy: "u1",
+    createdByLogin: "alice",
+    createdAt: 0,
+    decidedBy: null,
+    decidedByLogin: null,
+    decidedAt: null,
+  };
+  const publicAccess = {
+    ...NAMED_API,
+    access: {
+      mode: "public" as const,
+      username: null,
+      suspended: false,
+      sync: "submitted" as const,
+      available: true,
+    },
+  };
+  it("requests Basic Auth from Edit access using the shared request drawer", async () => {
+    vi.mocked(mockApi.limits).mockResolvedValue(authLimit);
+    vi.mocked(mockApi.requestLimit).mockImplementation(async () => {
+      vi.mocked(mockApi.limits).mockResolvedValue({
+        ...authLimit,
+        pending: [authRequest],
+      });
+      return authRequest;
+    });
+    open(publicAccess);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit access" }),
+    );
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Access mode" }),
+      "basic",
+    );
+    expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Request approval" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Request increase",
+    });
+    expect(within(dialog).getByRole("combobox", { name: "Limit" })).toHaveValue(
+      "site.basicAuth",
+    );
+    expect(within(dialog).getByRole("textbox", { name: "Value" })).toHaveValue(
+      "1",
+    );
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "Reason" }),
+      "Private review",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Send request" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.requestLimit).toHaveBeenCalledWith({
+        scope: "site:site_1",
+        key: "site.basicAuth",
+        value: 1,
+        reason: "Private review",
+      }),
+    );
+    expect(mockApi.siteAuth).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(/Basic Auth approval is pending\./),
+    ).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Edit access" }));
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Access mode" }),
+      "basic",
+    );
+    expect(
+      screen.getByRole("button", { name: "Approval pending" }),
+    ).toBeDisabled();
+  });
+  it("requires credentials after approval instead of opening another request", async () => {
+    vi.mocked(mockApi.limits).mockResolvedValue({
+      ...authLimit,
+      limits: [{ ...authLimit.limits[0]!, effective: 1 }],
+    });
+    open(publicAccess);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit access" }),
+    );
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Access mode" }),
+      "basic",
+    );
+    expect(screen.getByLabelText("New password")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Save Basic Auth" }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Request approval" }),
+    ).not.toBeInTheDocument();
   });
 
   it.each([false, true])(

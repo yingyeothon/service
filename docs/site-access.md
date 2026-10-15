@@ -1,8 +1,9 @@
 # Site access
 
 Basic Auth is an approved capability, not a default hosting option. Create a
-site, request `site.basicAuth` with value `1` in its Limits section, and wait for
-a platform admin to approve the request. Pending and rejected requests confer
+site, open **Edit access**, select **Basic Auth**, and choose **Request approval**.
+The shared request drawer preselects `site.basicAuth` with value `1`; enter the
+reason and send it. Wait for a platform admin to approve the request. Pending and rejected requests confer
 no permission. Approval is permanent until the site is deleted; the generic
 limit set/revoke routes cannot change this capability.
 

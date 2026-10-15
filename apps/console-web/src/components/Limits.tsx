@@ -392,12 +392,15 @@ export function LimitsSection({
   standing,
   description,
   onChanged,
+  children,
 }: {
   limits: AsyncState<LimitsView>;
   standing: TeamStanding | undefined;
   description?: ReactNode;
   /** After an admin override: the page's own row may have moved too (a channel's expiry). */
   onChanged?: () => Promise<void>;
+  /** Point-of-use controls share this section's request drawer. */
+  children?: (request: (key: string, value: number) => void) => ReactNode;
 }) {
   const { me } = useAuth();
   const act = useAction();
@@ -472,6 +475,13 @@ export function LimitsSection({
   const openDrawer = () => {
     ask.clear();
     drawer.open();
+  };
+  const requestFromFeature = (key: string, value: number) => {
+    const target = requestable.find((l) => l.key === key);
+    if (!canWrite || !target) return;
+    ask.clear();
+    drawer.open();
+    drawer.setForm({ ...fresh(target), amount: value });
   };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -594,7 +604,7 @@ export function LimitsSection({
             : []),
         ];
 
-  return (
+  const section = (
     <Section
       title="Limits"
       id="limits"
@@ -825,5 +835,11 @@ export function LimitsSection({
         />
       </ResourceDrawer>
     </Section>
+  );
+  return (
+    <>
+      {children?.(requestFromFeature)}
+      {section}
+    </>
   );
 }

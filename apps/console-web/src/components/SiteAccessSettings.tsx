@@ -19,12 +19,16 @@ import { Notice } from "./ui";
 export function SiteAccessSettings({
   site,
   approved,
+  approvalPending = false,
+  requestApproval,
   writable,
   admin,
   reload,
 }: {
   site: Site;
   approved: boolean;
+  approvalPending?: boolean;
+  requestApproval?: () => void;
   writable: boolean;
   admin: boolean;
   reload: () => void;
@@ -44,6 +48,13 @@ export function SiteAccessSettings({
   };
   const save = async (e: FormEvent) => {
     e.preventDefault();
+    if (auth.form.mode === "basic" && !approved) {
+      if (!approvalPending && requestApproval) {
+        closeAuth();
+        requestApproval();
+      }
+      return;
+    }
     const result = await act.run(() =>
       api.siteAuth(
         site.id,
@@ -76,7 +87,9 @@ export function SiteAccessSettings({
       <Text size="sm" c="dimmed">
         {approved
           ? "Basic Auth approved for this site."
-          : "Request Basic Auth in Limits below. A platform admin must approve it before use."}{" "}
+          : approvalPending
+            ? "Basic Auth approval is pending."
+            : "Choose Basic Auth in Edit access to request platform admin approval."}{" "}
         Changes propagate across the CDN; saved settings do not mean every edge
         has updated. Previously downloaded files cannot be recalled.
       </Text>
@@ -90,12 +103,7 @@ export function SiteAccessSettings({
         {writable && (
           <Button
             variant="default"
-            disabled={
-              !access.available ||
-              access.suspended ||
-              site.busy ||
-              (!approved && access.mode !== "basic")
-            }
+            disabled={!access.available || access.suspended || site.busy}
             onClick={auth.open}
           >
             Edit access
@@ -126,14 +134,22 @@ export function SiteAccessSettings({
         onClose={closeAuth}
         title="Edit site access"
         submitLabel={
-          auth.form.mode === "public" ? "Make public" : "Save Basic Auth"
+          auth.form.mode === "public"
+            ? "Make public"
+            : !approved
+              ? approvalPending
+                ? "Approval pending"
+                : "Request approval"
+              : "Save Basic Auth"
         }
         onSubmit={save}
         busy={act.busy}
         error={auth.opened ? act.error : null}
         disabled={
           auth.form.mode === "basic" &&
-          (!approved || !auth.form.username || auth.form.password.length < 16)
+          (!approved
+            ? approvalPending || !requestApproval
+            : !auth.form.username || auth.form.password.length < 16)
         }
       >
         <NativeSelect
@@ -149,32 +165,40 @@ export function SiteAccessSettings({
           }}
         />
         {auth.form.mode === "basic" ? (
-          <>
-            <TextInput
-              label="ID"
-              autoComplete="off"
-              maxLength={64}
-              value={auth.form.username}
-              onChange={(e) => {
-                const value = e.currentTarget.value;
-                auth.setForm((f) => ({ ...f, username: value }));
-              }}
-            />
-            <PasswordInput
-              label="New password"
-              description="16–128 printable ASCII characters. Use a unique, randomly generated password."
-              autoComplete="new-password"
-              value={auth.form.password}
-              onChange={(e) => {
-                const value = e.currentTarget.value;
-                auth.setForm((f) => ({ ...f, password: value }));
-              }}
-            />
-            <Text size="sm">
-              Only the independent site host will work. The shared path URL will
-              be blocked; use a relative build base.
+          !approved ? (
+            <Text>
+              {approvalPending
+                ? "Your request is awaiting a platform admin decision."
+                : "Request approval to use Basic Auth on this site. The next step asks for your reason; ID and password are configured after approval."}
             </Text>
-          </>
+          ) : (
+            <>
+              <TextInput
+                label="ID"
+                autoComplete="off"
+                maxLength={64}
+                value={auth.form.username}
+                onChange={(e) => {
+                  const value = e.currentTarget.value;
+                  auth.setForm((f) => ({ ...f, username: value }));
+                }}
+              />
+              <PasswordInput
+                label="New password"
+                description="16–128 printable ASCII characters. Use a unique, randomly generated password."
+                autoComplete="new-password"
+                value={auth.form.password}
+                onChange={(e) => {
+                  const value = e.currentTarget.value;
+                  auth.setForm((f) => ({ ...f, password: value }));
+                }}
+              />
+              <Text size="sm">
+                Only the independent site host will work. The shared path URL
+                will be blocked; use a relative build base.
+              </Text>
+            </>
+          )
         ) : (
           <Text>
             Saving makes this site's files accessible without credentials.
