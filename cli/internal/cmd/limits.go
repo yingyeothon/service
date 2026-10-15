@@ -171,7 +171,7 @@ func newLimits(a *App) *cobra.Command {
 		cmd.Flags().StringVar(&bundle, "bundle", "", "an asset bundle (id or name in the project context)")
 		cmd.Flags().StringVar(&channel, "channel", "", "a channel (id or name in the project context)")
 		cmd.Flags().StringVar(&collection, "collection", "", "a kv collection (id or name in the project context)")
-		cmd.Flags().StringVar(&siteArg, "site", "", "a static site (id or name in the project context): site.zipBytes, site.files, site.extractedBytes")
+		cmd.Flags().StringVar(&siteArg, "site", "", "a static site (id or name in the project context): site.basicAuth, site.zipBytes, site.files, site.extractedBytes")
 		cmd.Flags().StringVar(&scopeKind, "scope", "", "team | project: the team or (default) the project in context")
 	}
 	// scopeOf resolves --bundle / --channel / --collection / --site /

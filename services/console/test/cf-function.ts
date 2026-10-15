@@ -20,6 +20,11 @@ export function functionCode(
   const m = /FunctionCode: \|\n((?: {10}.*\n)+)/.exec(yml.slice(at));
   if (!m) throw new Error(`FunctionCode of ${resource} not found`);
   let code = (m[1] ?? "").replace(/^ {10}/gm, "");
+  vars = {
+    "${self:custom.siteAccessEnabled}": "false",
+    "${self:custom.siteAccessPepper}": "0123456789abcdef0123456789abcdef",
+    ...vars,
+  };
   for (const [k, v] of Object.entries(vars)) code = code.split(k).join(v);
   if (code.includes("${"))
     throw new Error(`unresolved variable in ${resource}`);
@@ -30,5 +35,9 @@ export function functionCode(
 export function loadFunction<T>(code: string): T {
   // Evaluating the extracted snippet is the point: it is what CloudFront runs.
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call
-  return new Function(`${code}; return handler;`)() as T;
+  return new Function(
+    "cf",
+    "require",
+    `${code.replace("import cf from 'cloudfront';", "")}; return handler;`,
+  )({}, () => ({})) as T;
 }

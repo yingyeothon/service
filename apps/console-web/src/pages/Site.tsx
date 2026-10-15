@@ -1,3 +1,4 @@
+import { SiteAccessSettings } from "../components/SiteAccessSettings";
 import {
   Anchor,
   Button,
@@ -76,7 +77,7 @@ function DeployKind({ d }: { d: SiteDeploy }) {
   );
 }
 
-type SiteUrls = Pick<Site, "domain" | "hostUrl" | "publicUrl">;
+type SiteUrls = Pick<Site, "domain" | "hostUrl" | "publicUrl" | "access">;
 
 /**
  * The link a site is reached by (docs/decisions.md *Site domains* §10): its
@@ -84,11 +85,14 @@ type SiteUrls = Pick<Site, "domain" | "hostUrl" | "publicUrl">;
  * `/{slug}/` build that works on the path host alone.
  */
 export function sitePrimaryUrl(s: SiteUrls): string {
-  return s.domain ? (s.hostUrl ?? s.publicUrl) : s.publicUrl;
+  return s.domain || s.access?.mode === "basic"
+    ? (s.hostUrl ?? s.publicUrl)
+    : s.publicUrl;
 }
 
 /** The other URLs the same files answer on, labelled. */
 export function siteOtherUrls(s: SiteUrls): { label: string; url: string }[] {
+  if (s.access?.mode === "basic" || s.access?.suspended) return [];
   const primary = sitePrimaryUrl(s);
   const out: { label: string; url: string }[] = [];
   if (s.hostUrl && s.hostUrl !== primary)
@@ -554,6 +558,7 @@ export function SitePage() {
       </>
     );
   const canWrite = standing.canWrite;
+
   const primary = sitePrimaryUrl(s);
   // The hints quote the site's effective caps (a grant, else the soft values).
   const effective = (key: string) =>
@@ -723,6 +728,21 @@ export function SitePage() {
           )}
         />
       </Section>
+      <SiteAccessSettings
+        site={s}
+        approved={
+          limits.data?.limits.some(
+            (l) => l.key === "site.basicAuth" && l.effective === 1,
+          ) ?? false
+        }
+        writable={
+          standing.standing === "owner" || standing.standing === "member"
+        }
+        admin={me?.role === "admin"}
+        reload={() => {
+          void site.reload();
+        }}
+      />
       <LimitsSection
         limits={limits}
         standing={standing.standing}

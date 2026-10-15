@@ -542,10 +542,16 @@ describe("serverless.yml invariants", () => {
       "FunctionCode: |",
       yml.indexOf("\n    SiteHostRequestFunction:\n"),
     );
-    const code = yml.slice(at, yml.indexOf("\n    SiteHostCachePolicy:", at));
-    expect(code.match(/\$\{[^}]*\}?/g)).toEqual([
-      "${self:custom.siteHostSuffix.${self:custom.stage}",
-    ]);
+    const code = /FunctionCode: \|\n((?: {10}.*\n)+)/.exec(yml.slice(at))![1]!;
+    expect(
+      code
+        .replaceAll(
+          "${self:custom.siteHostSuffix.${self:custom.stage}}",
+          "suffix",
+        )
+        .replaceAll("${self:custom.siteAccessEnabled}", "false")
+        .replaceAll("${self:custom.siteAccessPepper}", "fixture"),
+    ).not.toContain("${");
   });
   it("console: CloudFront reads the site bucket through origin access control, never with a header", () => {
     const yml = readFileSync(
@@ -593,7 +599,13 @@ describe("serverless.yml invariants", () => {
     for (const name of ["PathHostRequestFunction", "ArtifactRequestFunction"]) {
       expect(res[name]?.Condition, name).toBeUndefined();
       expect(res[name]?.Properties.FunctionCode, name).toBeTypeOf("string");
-      expect(res[name]?.Properties.FunctionCode, name).not.toContain("${");
+      expect(
+        res[name]?.Properties.FunctionCode?.replaceAll(
+          "${self:custom.siteAccessEnabled}",
+          "false",
+        ),
+        name,
+      ).not.toContain("${");
     }
   });
 

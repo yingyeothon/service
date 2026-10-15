@@ -70,3 +70,11 @@ Not secrets, on purpose: team, project and resource **ids** (`team_â€¦`, `prj_â€
 3. Add the leaked shape to `.gitleaks.toml` or `local/identifiers.txt` and prove the hook blocks it with a throwaway staged file.
 
 History note: on 2026-08-22 `main` was rewritten to drop `todo/` and every host/DB name that had been committed earlier.
+
+## Site Basic Auth pepper
+
+SSM `/yyt-service/<stage>/console/site-access-pepper` is a stage-specific
+SecureString. The API and CloudFront request function use it for HMAC verifiers.
+It is never committed or logged; rendered Serverless templates and downloaded
+function code belong only in ignored, mode-600 local files. `get-env.sh` backs
+it up as `SITE_ACCESS_PEPPER`. Routine bootstrap/deploy never rotates it.

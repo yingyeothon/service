@@ -1,3 +1,5 @@
+import { createMemorySiteEdgeDb } from "@yyt/console-db";
+import { createSiteAccess } from "../src/site-access.js";
 import { expect } from "vitest";
 import { MockAgent, fetch as undiciFetch } from "undici";
 import {
@@ -172,6 +174,15 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     // `limit_*.site_id` cascades with the site row (m0030).
     siteDeleted: (id) => limits.scopeDeleted({ kind: "site", id }),
   });
+  const siteEdge = createMemorySiteEdgeDb(sites.findSite);
+  const siteAccess = createSiteAccess({
+    sites,
+    db: siteEdge,
+    clock,
+    stage: "prod",
+    pepper: "0123456789abcdef0123456789abcdef",
+    publish: async () => {},
+  });
   const posters = createMemoryPosterStore();
   const siteStore = createMemorySiteStore({ distributionId: "EDIST" });
   /** Deploy ids the app asked the worker for; tests run `runSiteDeploy` themselves. */
@@ -260,6 +271,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     artifacts,
     cdnBaseUrl: CDN,
     siteStore,
+    siteAccess,
     siteInvoke: async (id) => {
       invoked.push(id);
     },
@@ -381,6 +393,8 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     assets,
     sites,
     siteStore,
+    siteAccess,
+    siteEdge,
     invoked,
     kvstore,
     leaderboards,

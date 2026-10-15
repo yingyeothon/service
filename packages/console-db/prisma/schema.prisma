@@ -765,6 +765,8 @@ enum issues_status {
 
 /// Static sites on the shared `g.yyt.life` host (docs/decisions.md *Static sites*).
 model sites {
+  /// Private access configuration; never serialize into a site response.
+  access_json       String?           @db.Text
   id                String            @id @db.VarChar(64)
   team_id           String            @db.VarChar(64)
   project_id        String            @db.VarChar(64)
@@ -1587,4 +1589,16 @@ model push_jobs {
 enum push_apps_sender {
   platform
   team
+}
+
+model site_edge_policies {
+  prefix String @id @db.VarChar(32)
+  payload String @db.Text
+  pending Boolean @default(true)
+}
+
+model site_edge_control {
+  id Int @id
+  month String @db.VarChar(7)
+  used Int @default(0)
 }

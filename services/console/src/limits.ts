@@ -225,6 +225,7 @@ export const LIMITS = {
   // commit re-checks the zip size and pins all three on the deploy row for the
   // worker; the hard values are what one `siteDeploy` run holds in memory.
   // Usage is the last live upload's zip size, extracted size and file count.
+  "site.basicAuth": { scope: "site", unit: "count", soft: 0, hard: 1 },
   "site.zipBytes": {
     scope: "site",
     unit: "bytes",
@@ -1265,6 +1266,11 @@ export function createLimitRoutes({
       handler: async (ctx) => {
         const admin = requireRole(ctx, "admin");
         const key = keyFor(scopeOfParams(ctx), ctx.params.key!);
+        if (key === "site.basicAuth")
+          throw new AppError(
+            "bad_request",
+            "Basic Auth requires an approved limit request; use site suspension for emergencies",
+          );
         const { value, expiresAt } = ctx.body;
         checkLimitValue(key, value);
         if (mirrored(key) && expiresAt !== undefined)
@@ -1323,6 +1329,11 @@ export function createLimitRoutes({
       handler: async (ctx) => {
         const admin = requireRole(ctx, "admin");
         const key = keyFor(scopeOfParams(ctx), ctx.params.key!);
+        if (key === "site.basicAuth")
+          throw new AppError(
+            "bad_request",
+            "Basic Auth requires an approved limit request; use site suspension for emergencies",
+          );
         const { scope } = await scopeRow(scopeOfParams(ctx));
         await writeSlot(admin);
         const at = nowSec(clock);

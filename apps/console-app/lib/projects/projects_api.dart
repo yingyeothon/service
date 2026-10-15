@@ -287,6 +287,28 @@ class ProjectsApi {
     );
   }
 
+  Future<bool> isPlatformAdmin() async =>
+      (await _get('$baseUrl/me'))['role'] == 'admin';
+
+  Future<void> setSiteAuth(String id, Map<String, Object?> body) async {
+    await _put('${AuthConfig.siteUrlOf(baseUrl, id)}/auth', body);
+  }
+
+  Future<void> setSiteSuspension(
+    String id,
+    bool suspended,
+    String reason,
+  ) async {
+    await _put('$baseUrl/admin/sites/${Uri.encodeComponent(id)}/suspension', {
+      'suspended': suspended,
+      'reason': reason,
+    });
+  }
+
+  Future<void> syncSiteAccess(String id) async {
+    await _post('${AuthConfig.siteUrlOf(baseUrl, id)}/access-sync', {});
+  }
+
   Future<void> deleteSite(String id) =>
       _delete(AuthConfig.siteUrlOf(baseUrl, id));
 

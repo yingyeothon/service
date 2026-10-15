@@ -63,6 +63,12 @@ for svc in "${SERVICES[@]}"; do
       # answer 503, everything else works). bootstrap-ssm.sh's init mode
       # reads it from this file only to seed a stage from a backup; a
       # routine run never touches it.
+      # Edge verifier pepper: backup only; the bootstrap never rotates it.
+      v="$(get site-access-pepper)"
+      if [ -n "$v" ]; then
+        case "$v" in *$'\n'*) echo "invalid site access pepper" >&2; rm -f "$tmp"; exit 1;; esac
+        echo "SITE_ACCESS_PEPPER=${v}"
+      fi
       v="$(get asset-kek)"
       if [ -n "$v" ]; then
         case "$v" in *$'\n'*) echo "${prefix}asset-kek contains a newline" >&2; rm -f "$tmp"; exit 1;; esac

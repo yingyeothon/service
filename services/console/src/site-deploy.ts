@@ -1,3 +1,4 @@
+import { siteAccessState, type SiteAccess } from "./site-access.js";
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
 import type {
   SiteDeployLimits,
@@ -136,6 +137,7 @@ export function siteObjectHeaders(path: string): SiteObjectHeaders {
 }
 
 export interface SiteDeployDeps {
+  access?: SiteAccess;
   sites: SitesDb;
   store: SiteStore;
   clock?: Clock;
@@ -153,6 +155,7 @@ export interface SiteDeployDeps {
  * the edge was not told.
  */
 export type SiteDeployError =
+  | "access_sync_failed"
   | "worker_lost"
   | "invoke_failed"
   | "site_gone"
@@ -182,6 +185,7 @@ export async function runSiteDeploy(
   deployId: string,
   {
     sites,
+    access,
     store,
     clock = systemClock,
     logger,
@@ -201,8 +205,30 @@ export async function runSiteDeploy(
     log("site deploy not queued", { status: deploy.status });
     return deploy;
   }
+  if (access) {
+    try {
+      const row = await sites.findSite(deploy.siteId);
+      if (
+        !row ||
+        row.activeDeployId !== deployId ||
+        siteAccessState(row).suspended
+      )
+        throw new Error("site suspended");
+      if (deploy.moveTo === null) await access.publish(row);
+    } catch {
+      await sites.finishDeploy({
+        deployId,
+        from: ["queued"],
+        patch: { status: "failed", error: "access_sync_failed" },
+        at: nowSec(clock),
+        releaseTarget: true,
+      });
+      return sites.findDeploy(deployId);
+    }
+  }
   if (deploy.moveTo !== null)
     return runSiteMove(deploy, {
+      access,
       sites,
       store,
       clock,
@@ -411,6 +437,7 @@ export const SITE_MOVE_RESERVE_MS = 30_000;
 async function runSiteMove(
   deploy: SiteDeployRow,
   {
+    access,
     sites,
     store,
     clock = systemClock,
@@ -502,6 +529,7 @@ async function runSiteMove(
     // The claim recorded the target for this team; nothing else may use it.
     if (await sites.findSiteBySlug(to))
       return fail("target_taken", "extracting", false);
+    await access?.block(to);
     // The target is about to serve copies: it is the team's for good.
     await sites.markServed({
       name: to,
@@ -551,6 +579,13 @@ async function runSiteMove(
     );
   }
 
+  // Do not release an old public alias until its deny policy is submitted.
+  // The target stays blocked while copying and on every pre-switch failure.
+  try {
+    await access?.block(from);
+  } catch {
+    return fail("access_sync_failed", "extracting", true);
+  }
   const switchedAt = nowSec(clock);
   let switched = false;
   try {
@@ -571,6 +606,12 @@ async function runSiteMove(
     else return fail("target_taken", "extracting", now.slug === from);
   }
   if (!switched) return fail("site_gone", "extracting", true);
+  try {
+    const moved = await sites.findSite(site.id);
+    if (moved) await access?.publish(moved);
+  } catch {
+    /* The new host stays blocked; access-sync repairs it. */
+  }
 
   let warning: SiteDeployError | null = null;
   try {

@@ -1,3 +1,9 @@
+import { createSiteEdgeDb, type SiteEdgeDb } from "@yyt/console-db";
+import {
+  createSiteAccess,
+  createAwsSitePolicyPublisher,
+  type SiteAccess,
+} from "./site-access.js";
 import {
   createAssetsDb,
   createCatalogDb,
@@ -127,6 +133,7 @@ interface Deps {
   listings: ListingsDb;
   assets: AssetsDb;
   sites: SitesDb;
+  siteEdge: SiteEdgeDb;
   team: TeamDb;
   /** The key-value store; the state stack serves its API from the same tables. */
   kvstore: KvStoreDb;
@@ -178,6 +185,7 @@ function getDeps(): Promise<Deps> {
       listings: createListingsDb(raw),
       assets: createAssetsDb(raw),
       sites: createSitesDb(raw),
+      siteEdge: createSiteEdgeDb(raw),
       team: createTeamDb(raw, { newHistoryId: historyId }),
       kvstore: createKvStoreDb(raw),
       leaderboards: createLeaderboardDb(raw),
@@ -354,6 +362,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     assetKek: process.env.ASSET_KEK || undefined,
     cdnBaseUrl: process.env.ARTIFACT_CDN_URL || undefined,
     siteStore,
+    siteAccess: await siteAccessFromEnv(),
     siteInvoke: siteInvokerFromEnv(),
     siteCdnUrl: process.env.SITE_CDN_URL || undefined,
     // Both set only once the wildcard record exists (serverless.yml).
@@ -622,6 +631,7 @@ export const siteDeploy = async (
     return;
   }
   await runSiteDeploy(deployId, {
+    access: await siteAccessFromEnv(),
     sites,
     store,
     logger,
@@ -1003,3 +1013,17 @@ export const cdnGuard = async (event?: unknown): Promise<void> => {
     });
   }
 };
+
+async function siteAccessFromEnv(): Promise<SiteAccess | undefined> {
+  const arn = process.env.SITE_ACCESS_KVS_ARN;
+  if (!arn || process.env.SITE_ACCESS_ENABLED !== "true") return undefined;
+  const { sites, siteEdge, stage } = await getDeps();
+  return createSiteAccess({
+    sites,
+    db: siteEdge,
+    clock: systemClock,
+    stage: stage === "prod" ? "prod" : "dev",
+    pepper: process.env.SITE_ACCESS_PEPPER ?? "",
+    publish: createAwsSitePolicyPublisher(arn),
+  });
+}

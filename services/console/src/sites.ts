@@ -1,3 +1,10 @@
+import type { createWriteSlot } from "./write-slot.js";
+import {
+  siteAccessState,
+  siteAuthBody,
+  siteSuspensionBody,
+  type SiteAccess,
+} from "./site-access.js";
 import {
   AppError,
   nowSec,
@@ -124,6 +131,8 @@ function defaultRandom(): number {
 export type SiteDeployInvoker = (deployId: string) => Promise<void>;
 
 export interface SiteRoutesOptions {
+  siteAccess?: SiteAccess;
+  writeSlot?: ReturnType<typeof createWriteSlot>;
   sites: SitesDb;
   /** The `site.*` overrides (docs/decisions.md *Limit requests* #1). */
   limits: Pick<LimitsDb, "listOverrides">;
@@ -155,6 +164,8 @@ export interface SiteRoutesOptions {
 }
 
 export function createSiteRoutes({
+  siteAccess,
+  writeSlot,
   sites,
   limits,
   access,
@@ -190,11 +201,18 @@ export function createSiteRoutes({
       { kind: "site", id: ctx.params.site! },
       write ? { secret: true } : {},
     );
+    if (
+      a.row.activeDeployId?.startsWith("sa_") &&
+      a.row.updatedAt < nowSec(clock) - 60
+    )
+      await sites.releaseSite(a.row.id, a.row.activeDeployId, nowSec(clock));
     await heal(a.row.id);
     await healStaleDelete({ sites, clock, logger }, a.row);
     // Healing may have changed the row (claim released); re-read it.
     const row = await sites.findSite(a.row.id);
     if (!row) throw new AppError("not_found", "site not found");
+    if (write && siteAccessState(row).suspended)
+      throw new AppError("forbidden", "site is suspended");
     return { ...a, row };
   }
 
@@ -271,26 +289,37 @@ export function createSiteRoutes({
         const d = await sites.findDeploy(r.activeDeployId);
         if (d?.moveTo) moving.set(r.id, d.moveTo);
       }
-    return rows.map((s) => ({
-      id: s.id,
-      name: s.name,
-      slug: s.slug,
-      description: s.description,
-      ...crumb(s),
-      publicUrl: sitePublicUrl(cdnBaseUrl, s),
-      basePath: `/${s.slug}/`,
-      /** The claimed name, or null while the slug is random. */
-      domain: s.named ? s.slug : null,
-      /** The site's own origin (`{slug}.{suffix}`), null on a stage without it. */
-      hostUrl: siteHostUrl(hostSuffix, s.slug),
-      hostSuffix: hostSuffix ?? null,
-      movingTo: moving.get(s.id) ?? null,
-      currentDeployId: s.currentDeployId,
-      /** A deploy (or a delete) holds the site; a new deploy is refused. */
-      busy: s.activeDeployId !== null,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
-    }));
+    return Promise.all(
+      rows.map(async (s) => ({
+        access: siteAccess
+          ? await siteAccess.view(s)
+          : {
+              mode: "public",
+              username: null,
+              suspended: false,
+              sync: "submitted",
+              available: false,
+            },
+        id: s.id,
+        name: s.name,
+        slug: s.slug,
+        description: s.description,
+        ...crumb(s),
+        publicUrl: sitePublicUrl(cdnBaseUrl, s),
+        basePath: `/${s.slug}/`,
+        /** The claimed name, or null while the slug is random. */
+        domain: s.named ? s.slug : null,
+        /** The site's own origin (`{slug}.{suffix}`), null on a stage without it. */
+        hostUrl: siteHostUrl(hostSuffix, s.slug),
+        hostSuffix: hostSuffix ?? null,
+        movingTo: moving.get(s.id) ?? null,
+        currentDeployId: s.currentDeployId,
+        /** A deploy (or a delete) holds the site; a new deploy is refused. */
+        busy: s.activeDeployId !== null,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      })),
+    );
   }
   const siteView = async (s: SiteRow) => (await siteViews([s]))[0]!;
 
@@ -436,7 +465,11 @@ export function createSiteRoutes({
       // audit row is where the reason lives.
       ...(reserved ? { reserved: true, note: reserved.note } : {}),
     });
-    if (r.status === "renamed") return { site: r.site };
+    if (r.status === "renamed") {
+      await siteAccess?.publish(r.site);
+      if (r.site.slug !== row.slug) await siteAccess?.block(row.slug);
+      return { site: r.site };
+    }
     try {
       await invoke!(r.deploy.id);
     } catch (e) {
@@ -639,6 +672,7 @@ export function createSiteRoutes({
         });
         const s = await sites.findSite(siteId);
         if (!s) throw new AppError("unavailable", "site vanished");
+        await siteAccess?.publish(s);
         await siteHistory(s, a.id.subject, "resource.create");
         return noStore(201, {
           ...(await siteView(s)),
@@ -665,6 +699,90 @@ export function createSiteRoutes({
         };
       },
     },
+    defineRoute({
+      method: "PUT",
+      path: "/sites/{site}/auth",
+      auth: true,
+      body: siteAuthBody,
+      handler: async (ctx) => {
+        const { id, row } = await siteWith(ctx, true);
+        if (!siteAccess || !hostSuffix)
+          throw new AppError(
+            "unavailable",
+            "site authentication is not configured",
+          );
+        if (ctx.body.mode === "basic") {
+          const grants = await limits.listOverrides(
+            [{ kind: "site", id: row.id }],
+            nowSec(clock),
+          );
+          if (!grants.some((g) => g.key === "site.basicAuth" && g.value === 1))
+            throw new AppError(
+              "forbidden",
+              "request site.basicAuth and obtain platform admin approval first",
+            );
+        }
+        await writeSlot?.(id);
+        await siteAccess.configure(row, ctx.body);
+        await audit(id.subject, "site.auth", row.id, { mode: ctx.body.mode });
+        return noStore(202, await siteView((await sites.findSite(row.id))!));
+      },
+    }),
+    defineRoute({
+      method: "PUT",
+      path: "/admin/sites/{site}/suspension",
+      auth: true,
+      body: siteSuspensionBody,
+      handler: async (ctx) => {
+        const admin = requireRole(ctx, "admin");
+        const row = await sites.findSite(ctx.params.site!);
+        if (!row) throw new AppError("not_found", "site not found");
+        if (!siteAccess)
+          throw new AppError(
+            "unavailable",
+            "site access control is not configured",
+          );
+        await writeSlot?.(admin);
+        await siteAccess.suspend(row, ctx.body.suspended);
+        await audit(admin.subject, "site.suspension", row.id, {
+          suspended: ctx.body.suspended,
+          reason: ctx.body.reason,
+        });
+        return noStore(202, await siteView((await sites.findSite(row.id))!));
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/sites/{site}/access-sync",
+      auth: true,
+      body: z.object({}).strict(),
+      handler: async (ctx) => {
+        const { id, row } = await siteWith(ctx, false);
+        if (row.activeDeployId !== null)
+          throw new AppError(
+            "conflict",
+            "site is busy; retry synchronization later",
+          );
+        if (id.role !== "admin")
+          await projectResource(
+            ctx,
+            { kind: "site", id: row.id },
+            { secret: true },
+          );
+        if (!siteAccess)
+          throw new AppError(
+            "unavailable",
+            "site access control is not configured",
+          );
+        await writeSlot?.(id);
+        await siteAccess.publish(
+          row,
+          row.slug,
+          id.role === "admin" && siteAccessState(row).suspended,
+        );
+        return noStore(202, await siteView(row));
+      },
+    }),
     defineRoute({
       method: "PATCH",
       path: "/sites/{site}",
@@ -762,6 +880,7 @@ export function createSiteRoutes({
         let keys: string[] = [];
         try {
           const s = requireStore();
+          await siteAccess?.block(slug);
           keys = await s.listKeys(`${slug}/`);
           served = keys.length > 0;
           if (keys.length > 0) await s.deleteKeys(keys);

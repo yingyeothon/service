@@ -1018,6 +1018,16 @@ export function createApiClient({
         reservedNote?: string;
       },
     ) => patch<Site>(`/sites/${enc(id)}`, body),
+    siteAuth: (
+      id: string,
+      body:
+        | { mode: "public" }
+        | { mode: "basic"; username: string; password: string },
+    ) => put<Site>(`/sites/${enc(id)}/auth`, body),
+    siteSuspension: (id: string, suspended: boolean, reason: string) =>
+      put<Site>(`/admin/sites/${enc(id)}/suspension`, { suspended, reason }),
+    siteAccessSync: (id: string) =>
+      post<Site>(`/sites/${enc(id)}/access-sync`, {}),
     deleteSite: (id: string) => del(`/sites/${enc(id)}`),
     siteDeploys: (id: string, p: ListParams = {}) =>
       get<{ deploys: SiteDeploy[] }>(`/sites/${enc(id)}/deploys${qs(p)}`).then(

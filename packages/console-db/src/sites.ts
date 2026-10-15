@@ -50,6 +50,8 @@ export const SITE_DEPLOY_STATUSES = [
 export type SiteDeployStatus = (typeof SITE_DEPLOY_STATUSES)[number];
 
 export interface SiteRow {
+  /** Private; only the access controller may read this. */
+  accessJson?: string | null;
   id: string;
   /** Unique within the team (case-insensitive), like a bundle name. */
   name: string;
@@ -88,6 +90,7 @@ export interface SiteInput {
 }
 
 export interface SitePatch {
+  accessJson?: string | null;
   name?: string;
   description?: string | null;
   currentDeployId?: string | null;
@@ -375,6 +378,7 @@ export interface SitesDb {
 }
 
 type SiteModel = {
+  access_json?: string | null;
   id: string;
   team_id: string;
   project_id: string;
@@ -421,6 +425,7 @@ type DeployModel = {
 };
 
 const toSite = (r: SiteModel): SiteRow => ({
+  accessJson: r.access_json,
   id: r.id,
   name: r.name,
   slug: r.slug,
@@ -488,6 +493,18 @@ const deployData = (patch: SiteDeployPatch) => ({
   ...(patch.error !== undefined ? { error: patch.error } : {}),
 });
 
+function assertNotSuspended(value: string | null | undefined): void {
+  if (!value) return;
+  let state: { suspended?: unknown };
+  try {
+    state = JSON.parse(value) as { suspended?: unknown };
+  } catch {
+    throw new AppError("unavailable", "invalid site access configuration");
+  }
+  if (state.suspended !== false)
+    throw new AppError("forbidden", "site is suspended");
+}
+
 export function createSitesDb(prisma: PrismaClient): SitesDb {
   return {
     insertSite: (s) =>
@@ -552,6 +569,9 @@ export function createSitesDb(prisma: PrismaClient): SitesDb {
           where: { id },
           data: {
             ...(patch.name !== undefined ? { name: patch.name } : {}),
+            ...(patch.accessJson !== undefined
+              ? { access_json: patch.accessJson }
+              : {}),
             ...(patch.description !== undefined
               ? { description: patch.description }
               : {}),
@@ -566,16 +586,22 @@ export function createSitesDb(prisma: PrismaClient): SitesDb {
         return r.count > 0;
       }),
     claimSite: (id, holder, at) =>
-      run(async () => {
-        const r = await prisma.sites.updateMany({
-          where: {
-            id,
-            OR: [{ active_deploy_id: null }, { active_deploy_id: holder }],
-          },
-          data: { active_deploy_id: holder, updated_at: at },
-        });
-        return r.count > 0;
-      }),
+      run(() =>
+        prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM sites WHERE id = ${id} FOR UPDATE`;
+          const site = await tx.sites.findUnique({ where: { id } });
+          if (!site) return false;
+          if (!holder.startsWith("sa_")) assertNotSuspended(site.access_json);
+          const r = await tx.sites.updateMany({
+            where: {
+              id,
+              OR: [{ active_deploy_id: null }, { active_deploy_id: holder }],
+            },
+            data: { active_deploy_id: holder, updated_at: at },
+          });
+          return r.count > 0;
+        }),
+      ),
     releaseSite: (id, holder, at) =>
       run(async () => {
         const r = await prisma.sites.updateMany({
@@ -926,6 +952,7 @@ async function releasePrefix(
 async function renameIn(tx: Tx, o: SiteRenameInput): Promise<SiteRenameResult> {
   const s = await lockSite(tx, o.teamId, o.siteId);
   if (!s) return { status: "gone" };
+  assertNotSuspended(s.access_json);
   if (
     s.active_deploy_id !== null ||
     s.slug !== o.expectSlug ||
@@ -1210,6 +1237,9 @@ export function createMemorySitesDb(
       sites.set(id, {
         ...s,
         ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.accessJson !== undefined
+          ? { accessJson: patch.accessJson }
+          : {}),
         ...(patch.description !== undefined
           ? { description: patch.description }
           : {}),
@@ -1222,6 +1252,7 @@ export function createMemorySitesDb(
     },
     claimSite: async (id, holder, at) => {
       const s = sites.get(id);
+      if (s && !holder.startsWith("sa_")) assertNotSuspended(s.accessJson);
       if (!s || (s.activeDeployId !== null && s.activeDeployId !== holder))
         return false;
       sites.set(id, { ...s, activeDeployId: holder, updatedAt: at });
@@ -1245,6 +1276,7 @@ export function createMemorySitesDb(
     },
     renameSite: async (o) => {
       const s = sites.get(o.siteId);
+      if (s) assertNotSuspended(s.accessJson);
       if (!s || s.teamId !== o.teamId || !teamExists(o.teamId))
         return { status: "gone" };
       if (

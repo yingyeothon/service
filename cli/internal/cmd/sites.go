@@ -23,21 +23,22 @@ import (
 
 // Views mirror services/console/src/sites.ts.
 type site struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	Slug            string  `json:"slug"`
-	Description     *string `json:"description"`
-	TeamID          *string `json:"teamId"`
-	TeamName        *string `json:"teamName"`
-	ProjectID       *string `json:"projectId"`
-	ProjectName     *string `json:"projectName"`
-	CreatedBy       *string `json:"createdBy"`
-	PublicURL       string  `json:"publicUrl"`
-	BasePath        string  `json:"basePath"`
-	CurrentDeployID *string `json:"currentDeployId"`
-	Busy            bool    `json:"busy"`
-	CreatedAt       int64   `json:"createdAt"`
-	UpdatedAt       int64   `json:"updatedAt"`
+	Access          *siteAccess `json:"access,omitempty"`
+	ID              string      `json:"id"`
+	Name            string      `json:"name"`
+	Slug            string      `json:"slug"`
+	Description     *string     `json:"description"`
+	TeamID          *string     `json:"teamId"`
+	TeamName        *string     `json:"teamName"`
+	ProjectID       *string     `json:"projectId"`
+	ProjectName     *string     `json:"projectName"`
+	CreatedBy       *string     `json:"createdBy"`
+	PublicURL       string      `json:"publicUrl"`
+	BasePath        string      `json:"basePath"`
+	CurrentDeployID *string     `json:"currentDeployId"`
+	Busy            bool        `json:"busy"`
+	CreatedAt       int64       `json:"createdAt"`
+	UpdatedAt       int64       `json:"updatedAt"`
 	// Site names (docs/decisions.md *Site domains* §10): the claimed name, the
 	// site's own origin and its host suffix (null on a stage without the
 	// per-site host), and the target of a move in flight.
@@ -83,7 +84,7 @@ type siteName struct {
 // domains* §10): its own host only once it has a name, because an unnamed
 // site may be a `/<slug>/` build that works on the path URL alone.
 func (s site) primaryURL() string {
-	if s.Domain != nil && s.HostURL != nil {
+	if (s.Domain != nil || (s.Access != nil && s.Access.Mode == "basic")) && s.HostURL != nil {
 		return *s.HostURL
 	}
 	return s.PublicURL
@@ -159,6 +160,9 @@ func newSites(a *App) *cobra.Command {
 		newSiteDeploy(a, siteID),
 		newSiteDeploys(a, siteID),
 		newSiteNames(a),
+		newSiteAuth(a, siteID),
+		newSiteSuspension(a, siteID, true),
+		newSiteSuspension(a, siteID, false),
 	)
 	return group(c)
 }
@@ -189,6 +193,9 @@ func (a *App) printSite(s site) error {
 		{"updated", output.Time(s.UpdatedAt)},
 		{"live", output.Str(s.CurrentDeployID)},
 		{"busy", fmt.Sprint(s.Busy)},
+	}
+	if s.Access != nil {
+		pairs = append(pairs, [2]string{"access", s.Access.Mode}, [2]string{"suspended", fmt.Sprint(s.Access.Suspended)}, [2]string{"accessSync", s.Access.Sync})
 	}
 	if err := a.printer().KV(pairs); err != nil {
 		return err

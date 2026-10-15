@@ -58,6 +58,8 @@ custom:
   # `*.dev-g.yyt.life` in SSM by hand (rules/deployment.md); empty = none of
   # the SiteHost* resources exist and `hostUrl` is null.
   siteHostCertArn: ${ssm:${self:custom.stageSsm}/site-host-cert-arn, ""}
+  siteAccessEnabled: ${ssm:${self:custom.ssm}/site-access-enabled, "false"}
+  siteAccessPepper: ${ssm:${self:custom.ssm}/site-access-pepper, ""}
   siteHostSuffix:
     dev: dev-g.yyt.life
     prod: g.yyt.life
@@ -75,7 +77,16 @@ custom:
     format: esm
     outputFileExtension: .mjs
     exclude:
-      - "@aws-sdk/*"
+      # KVS and its SigV4a signer are bundled together. The runtime SDK may
+      # lack the optional signer; all other clients keep using Lambda's SDK.
+      - "@aws-sdk/client-cloudfront"
+      - "@aws-sdk/client-cloudwatch"
+      - "@aws-sdk/client-lambda"
+      - "@aws-sdk/client-s3"
+      - "@aws-sdk/client-scheduler"
+      - "@aws-sdk/client-sns"
+      - "@aws-sdk/client-ssm"
+      - "@aws-sdk/s3-request-presigner"
     banner:
       js: import { createRequire } from 'module'; const require = createRequire(import.meta.url);
   # The custom domain is served by CloudFront (SPA under /ui, API at the root)
@@ -197,10 +208,19 @@ provider:
     # A reference to the wildcard record: CloudFormation then updates the
     # functions only after the record exists, so no API answers a `hostUrl`
     # the DNS cannot resolve yet (and resolvers would cache the miss).
+    SITE_ACCESS_KVS_ARN: !GetAtt SiteAccessStore.Arn
+    SITE_ACCESS_ENABLED: ${self:custom.siteAccessEnabled}
     SITE_HOST_RECORD: !If [HasSiteHost, !Ref SiteHostDnsA, ""]
   iam:
     role:
       statements:
+        - Effect: Allow
+          Action:
+            [
+              cloudfront-keyvaluestore:DescribeKeyValueStore,
+              cloudfront-keyvaluestore:UpdateKeys,
+            ]
+          Resource: !GetAtt SiteAccessStore.Arn
         # Posters: presigned PUT/GET are signed with this role, so it needs the
         # object permissions plus KMS for the bucket's SSE-KMS key.
         - Effect: Allow
@@ -378,6 +398,9 @@ functions:
     # without it deployable, and the routes that need it answer 503
     # (docs/decisions.md *Live and encrypted asset bundles* #4).
     environment:
+      SITE_ACCESS_KVS_ARN: !GetAtt SiteAccessStore.Arn
+      SITE_ACCESS_ENABLED: ${self:custom.siteAccessEnabled}
+      SITE_ACCESS_PEPPER: ${self:custom.siteAccessPepper}
       ASSET_KEK: ${ssm:${self:custom.ssm}/asset-kek, ""}
       # The stage's pool of Firebase projects: one SecureString per slot under
       # this path, read at run time (never resolved into the template, so a
@@ -882,7 +905,12 @@ resources:
         FunctionConfig:
           Comment: Path host over the site bucket's REST endpoint
           Runtime: cloudfront-js-2.0
+          KeyValueStoreAssociations:
+            - KeyValueStoreARN: !GetAtt SiteAccessStore.Arn
         FunctionCode: |
+          import cf from 'cloudfront';
+          var ACCESS = '${self:custom.siteAccessEnabled}' === 'true';
+          var kvs = ACCESS ? cf.kvs() : null;
           var ROOT = /^\/[a-z0-9][a-z0-9-]*$/;
           function query(q) {
             var parts = [];
@@ -894,7 +922,7 @@ resources:
             }
             return parts.length ? '?' + parts.join('&') : '';
           }
-          function handler(event) {
+          function route(event) {
             var req = event.request;
             var uri = req.uri;
             if (ROOT.test(uri)) {
@@ -908,6 +936,24 @@ resources:
             req.uri = uri.replace(/\+/g, '%2B');
             req.querystring = {};
             return req;
+          }
+          function handler(event) {
+            if (!ACCESS) return route(event);
+            return gate(event);
+          }
+          async function gate(event) {
+            var req = event.request;
+            var match = /^\/([a-z0-9][a-z0-9-]{1,30}[a-z0-9])(?:\/|$)/.exec(req.uri);
+            try {
+              if (!match || /%|\\|\/\/|\/\.\.?(\/|$)/.test(req.uri)) throw 0;
+              var raw = await kvs.get(match[1]);
+              var policy = JSON.parse(raw);
+              if (policy.mode !== 'public') throw 0;
+              delete req.headers.authorization;
+              return route(event);
+            } catch (_) {
+              return { statusCode: 404, headers: { 'cache-control': { value: 'no-store' }, 'x-content-type-options': { value: 'nosniff' } } };
+            }
           }
     # The hand-made artifact CDN over its bucket's REST endpoint, attached by
     # scripts/origin-oac.sh: a literal `+` (build metadata in an APK name) is
@@ -942,6 +988,11 @@ resources:
     # The function and both policies exist on every stage (free while nothing
     # uses them), so `aws cloudfront test-function` can exercise the real
     # runtime before any certificate or distribution exists.
+    SiteAccessStore:
+      Type: AWS::CloudFront::KeyValueStore
+      Properties:
+        Name: ${self:service}-${self:custom.stage}-site-access
+        Comment: Explicit site access policies
     SiteHostRequestFunction:
       Type: AWS::CloudFront::Function
       Properties:
@@ -950,7 +1001,12 @@ resources:
         FunctionConfig:
           Comment: Map a per-site host to its prefix in the site bucket
           Runtime: cloudfront-js-2.0
+          KeyValueStoreAssociations:
+            - KeyValueStoreARN: !GetAtt SiteAccessStore.Arn
         FunctionCode: |
+          import cf from 'cloudfront';
+          var ACCESS = '${self:custom.siteAccessEnabled}' === 'true';
+          var kvs = ACCESS ? cf.kvs() : null;
           var SUFFIX = '.${self:custom.siteHostSuffix.${self:custom.stage}}';
           var LABEL = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
           var PATH = /^\/[A-Za-z0-9._@~+=()\[\]\/-]*$/;
@@ -965,7 +1021,7 @@ resources:
               }
             };
           }
-          function handler(event) {
+          function route(event) {
             var req = event.request;
             var host = req.headers.host ? req.headers.host.value.toLowerCase() : '';
             if (host.length <= SUFFIX.length || host.slice(-SUFFIX.length) !== SUFFIX) return notFound();
@@ -982,9 +1038,65 @@ resources:
             req.uri = '/' + label + uri.replace(/\+/g, '%2B');
             return req;
           }
+          var crypto = require('crypto');
+          var PEPPER = '${self:custom.siteAccessPepper}';
+          function handler(event) {
+            if (!ACCESS) return route(event);
+            return gate(event);
+          }
+          async function gate(event) {
+            var result = route(event);
+            if (result.statusCode) return result;
+            var label = result.uri.split('/')[1];
+            try {
+              var raw = await kvs.get(label);
+              var p = JSON.parse(raw);
+              if (p.mode === 'public') { delete result.headers.authorization; return result; }
+              if (p.mode !== 'basic' || PEPPER.length < 32 || !/^[a-f0-9]{64}$/.test(p.digest) || !/^[a-f0-9]{32}$/.test(p.salt) || typeof p.username !== 'string') return notFound();
+              var a = result.headers.authorization;
+              if (a && !a.multiValue && /^Basic [A-Za-z0-9+/]+=*$/i.test(a.value) && a.value.length <= 512) {
+                var plain = Buffer.from(a.value.slice(6), 'base64').toString('utf8');
+                var i = plain.indexOf(':');
+                var digest = crypto.createHmac('sha256', PEPPER).update(JSON.stringify([p.salt, plain.slice(0,i), plain.slice(i+1)])).digest('hex');
+                var diff = 0;
+                for (var n = 0; n < 64; n++) diff |= digest.charCodeAt(n) ^ p.digest.charCodeAt(n);
+                if (i > 0 && diff === 0 && plain.slice(0,i) === p.username) { delete result.headers.authorization; return result; }
+              }
+              return { statusCode: 401, headers: { 'www-authenticate': { value: 'Basic realm="Site", charset="UTF-8"' }, 'cache-control': { value: 'no-store' }, 'x-content-type-options': { value: 'nosniff' } } };
+            } catch (_) { return notFound(); }
+          }
     # MinTTL 0 so `no-cache` HTML revalidates; MaxTTL 300 bounds how long a
     # deploy, move or delete takes to show without an invalidation. The query
     # string stays out of the key, like the hand-made path host.
+    SiteHostResponseFunction:
+      Type: AWS::CloudFront::Function
+      Properties:
+        Name: ${self:service}-${self:custom.stage}-site-response
+        AutoPublish: true
+        FunctionConfig:
+          Comment: Browser cache protection for authenticated sites
+          Runtime: cloudfront-js-2.0
+          KeyValueStoreAssociations:
+            - KeyValueStoreARN: !GetAtt SiteAccessStore.Arn
+        FunctionCode: |
+          import cf from 'cloudfront';
+          var ACCESS = '${self:custom.siteAccessEnabled}' === 'true';
+          var kvs = ACCESS ? cf.kvs() : null;
+          async function handler(event) {
+            var res = event.response;
+            if (!ACCESS) return res;
+            try {
+              var label = event.request.headers.host.value.split('.')[0];
+              var raw = await kvs.get(label);
+              var p = JSON.parse(raw);
+              if (p.mode === 'public') return res;
+              if (p.mode === 'basic') {
+                res.headers['cache-control'] = { value: 'private, no-store' };
+                return res;
+              }
+            } catch (_) {}
+            return { statusCode: 404, headers: { 'cache-control': { value: 'no-store' } } };
+          }
     SiteHostCachePolicy:
       Type: AWS::CloudFront::CachePolicy
       Properties:
@@ -1059,6 +1171,8 @@ resources:
             FunctionAssociations:
               - EventType: viewer-request
                 FunctionARN: !GetAtt SiteHostRequestFunction.FunctionARN
+              - EventType: viewer-response
+                FunctionARN: !GetAtt SiteHostResponseFunction.FunctionARN
     SiteHostDnsA:
       Type: AWS::Route53::RecordSet
       Condition: HasSiteHost
@@ -1225,6 +1339,13 @@ resources:
               Statement:
                 - Effect: Allow
                   Action:
+                    [
+                      cloudfront-keyvaluestore:DescribeKeyValueStore,
+                      cloudfront-keyvaluestore:UpdateKeys,
+                    ]
+                  Resource: !GetAtt SiteAccessStore.Arn
+                - Effect: Allow
+                  Action:
                     - logs:CreateLogStream
                     - logs:PutLogEvents
                   Resource: arn:aws:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/${self:service}-${self:custom.stage}-siteDeploy:*
@@ -1293,6 +1414,8 @@ resources:
                     Resource: ${self:custom.alarmTopic}
                   - !Ref AWS::NoValue
   Outputs:
+    SiteAccessStoreArn:
+      Value: !GetAtt SiteAccessStore.Arn
     WebBucketName:
       Value: !Ref WebBucket
     WebDistributionId:

@@ -567,29 +567,32 @@ export function LimitsSection({
     notify.done(`${limitLabel(l.key)} override revoked`);
     await afterOverride();
   };
-  const adminItems = (l: LimitRow): RowMenuItem[] => [
-    { label: "Set limit", disabled: act.busy, onClick: () => openSet(l) },
-    ...(l.override
-      ? [
-          {
-            label: "Revoke override",
-            danger: true,
-            disabled: act.busy,
-            onClick: (note?: string) => revoke(l, note),
-            confirm: {
-              title: `Revoke the ${limitLabel(l.key)} override?`,
-              message:
-                l.unit === "seconds"
-                  ? "The channel expires again, 28 days from now. Nothing stored is deleted."
-                  : `New writes meet the default (${fmtLimit(l.unit, l.soft)}) again. Stored data stays, even above it.`,
-              confirmLabel: "Revoke override",
-              danger: true,
-              reason: { required: true, maxLength: NOTE_MAX },
-            },
-          },
-        ]
-      : []),
-  ];
+  const adminItems = (l: LimitRow): RowMenuItem[] =>
+    l.key === "site.basicAuth"
+      ? []
+      : [
+          { label: "Set limit", disabled: act.busy, onClick: () => openSet(l) },
+          ...(l.override
+            ? [
+                {
+                  label: "Revoke override",
+                  danger: true,
+                  disabled: act.busy,
+                  onClick: (note?: string) => revoke(l, note),
+                  confirm: {
+                    title: `Revoke the ${limitLabel(l.key)} override?`,
+                    message:
+                      l.unit === "seconds"
+                        ? "The channel expires again, 28 days from now. Nothing stored is deleted."
+                        : `New writes meet the default (${fmtLimit(l.unit, l.soft)}) again. Stored data stays, even above it.`,
+                    confirmLabel: "Revoke override",
+                    danger: true,
+                    reason: { required: true, maxLength: NOTE_MAX },
+                  },
+                },
+              ]
+            : []),
+        ];
 
   return (
     <Section

@@ -1,3 +1,4 @@
+import type { SiteAccess } from "./site-access.js";
 import {
   CHANNEL_SORT_KEYS,
   MEMBER_SORT_KEYS,
@@ -194,6 +195,7 @@ export interface ConsoleAppOptions {
   cdnBaseUrl?: string;
   /** Omit when no site bucket is configured: site deploy routes answer 503. */
   siteStore?: SiteStore;
+  siteAccess?: SiteAccess;
   /** Async invoke of the `siteDeploy` worker; omit = deploys answer 503. */
   siteInvoke?: SiteDeployInvoker;
   /** The shared static host, e.g. `https://dev-g.yyt.life`. */
@@ -296,6 +298,7 @@ export function createConsoleApp({
   assetKek,
   cdnBaseUrl,
   siteStore,
+  siteAccess,
   siteInvoke,
   siteCdnUrl,
   siteHostSuffix,
@@ -1295,6 +1298,8 @@ export function createConsoleApp({
   });
 
   const siteRoutes = createSiteRoutes({
+    writeSlot,
+    siteAccess,
     sites,
     limits,
     access,

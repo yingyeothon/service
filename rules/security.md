@@ -240,3 +240,9 @@
 - **A value substituted into a checked template is checked again.** A template refuses control characters, but a CSV field may hold any byte, so the rendered row is held to the same rule (title: none; body and data values: `\n` and `\t` only) and a row that breaks it is `skipped` / `invalid-value` — otherwise a quoted CSV field carries ESC or CR into a notification past the template check.
 - **A worker's own progress note stays out of the job view.** A running broadcast keeps the projects it sent to in `error_detail` as 12-hex hashes of the project ids; the view answers `errorDetails` only for a `failed` job, and both ways of ending a job (the worker's finish, the sweep's `expired`) clear the note first.
 - **A report names a channel's players: a member's read.** `GET …/report` takes the member-write access level (a seatless platform admin gets 403) although it writes nothing; job counts stay readable like every project read.
+
+## Site edge authentication
+
+- Approval is a durable `site.basicAuth` override created only by the request approval route. Never derive entitlement from retained request rows: the 90-day purge removes them. Suspension is a separate audited operation, never a public transition.
+- Queueing an edge policy must compare access JSON, slug and active holder under the site row lock. Serializing KVS writes alone does not stop a stale public snapshot from reopening a protected site. Check suspension again at the claim/rename transaction boundary.
+- Keep move targets blocked during copying and retire the old prefix before switching. An in-place domain claim has no old prefix to block.

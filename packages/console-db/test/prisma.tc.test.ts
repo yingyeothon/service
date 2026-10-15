@@ -1,3 +1,4 @@
+import { createSiteEdgeDb } from "../src/site-edge.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppError } from "@yyt/core";
 import {
@@ -234,6 +235,60 @@ describe.skipIf(!dockerAvailable())(
           },
         },
       );
+    });
+
+    describe("site edge policy persistence", () => {
+      it("retains reservations after network failure, rejects stale sources and backward months", async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        await db.client.site_edge_policies.deleteMany();
+        await db.client.site_edge_control.upsert({
+          where: { id: 1 },
+          create: { id: 1, month: "", used: 0 },
+          update: { month: "", used: 0 },
+        });
+        const sites = createSitesDb(db.client),
+          edge = createSiteEdgeDb(db.client);
+        await sites.insertSite(SITE);
+        const old = (await sites.findSite(SITE.id))!;
+        await edge.queue(
+          [{ prefix: old.slug, payload: '{"mode":"public"}' }],
+          old,
+        );
+        await expect(
+          edge.flush("2026-10", 90, async () => {
+            throw new Error("lost reply");
+          }),
+        ).rejects.toThrow();
+        expect(
+          (
+            await db.client.site_edge_control.findUniqueOrThrow({
+              where: { id: 1 },
+            })
+          ).used,
+        ).toBe(2);
+        expect(await edge.pending(old.slug)).toBe(true);
+        await sites.updateSite(
+          SITE.id,
+          { accessJson: '{"mode":"public","suspended":true}' },
+          10,
+        );
+        await expect(
+          edge.queue([{ prefix: old.slug, payload: '{"mode":"public"}' }], old),
+        ).rejects.toThrow("site access changed");
+        await edge.flush("2026-11", 90, async () => {});
+        await edge.queue([{ prefix: old.slug, payload: '{"mode":"blocked"}' }]);
+        await expect(edge.flush("2026-10", 90, async () => {})).rejects.toThrow(
+          "stale management budget month",
+        );
+        expect(
+          (
+            await db.client.site_edge_control.findUniqueOrThrow({
+              where: { id: 1 },
+            })
+          ).used,
+        ).toBe(2);
+      });
     });
 
     describe("state contract", () => {

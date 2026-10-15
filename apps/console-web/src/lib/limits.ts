@@ -34,6 +34,7 @@ export const LIMIT_LABELS: Record<string, string> = {
   "kv.maxEntries": "Entries cap",
   "kv.maxEntriesPerOwner": "Entries per owner cap",
   "kv.collections": "Collections",
+  "site.basicAuth": "Basic Auth approval (0 = required, 1 = approved)",
   "site.zipBytes": "Zip size",
   "site.files": "Files",
   "site.extractedBytes": "Extracted size",

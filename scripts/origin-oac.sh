@@ -42,6 +42,12 @@ APPLY="${3:-}"
 case "$STAGE" in dev | prod) ;; *) echo "$usage" >&2; exit 2 ;; esac
 case "$MODE" in status | apply | revert | check-deploy) ;; *) echo "$usage" >&2; exit 2 ;; esac
 if [ -n "$APPLY" ] && [ "$APPLY" != "--apply" ]; then echo "$usage" >&2; exit 2; fi
+# Reopening an origin bypasses every site authentication and suspension gate.
+if [[ "$MODE" == "revert" && "$APPLY" == "--apply" ]]; then
+  node "$(dirname "$0")/site-access-bootstrap.mjs" "$STAGE" revert-check
+  ACCESS=$(aws ssm get-parameter --region ap-northeast-2 --name "/yyt-service/$STAGE/console/site-access-enabled" --query Parameter.Value --output text 2>/dev/null) || { echo "Cannot establish site access status; refusing origin revert" >&2; exit 1; }
+  if [[ "$ACCESS" == "true" ]]; then echo "Site access enforcement is enabled; refusing public origin revert" >&2; exit 1; fi
+fi
 DRY=true
 [ "$APPLY" = "--apply" ] && DRY=false
 export AWS_PROFILE="${AWS_PROFILE:-yyt}"

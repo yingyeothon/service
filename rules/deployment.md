@@ -191,3 +191,9 @@
 - **Rollback** past `m0029_push_campaigns` needs no data step: no older bundle reads the tables. Jobs left `queued` never run; uploads and reports expire by lifecycle.
 - First deploy checks: the `pushJob` function exists with `ReservedConcurrentExecutions` 1 and `RecursiveLoop` `Allow`; `api` shows 9; `aws s3api get-bucket-lifecycle-configuration` on the stack's private bucket lists `push-uploads` and `push-reports`.
 - **A rollout script must not read its confirmations from stdin, and must not treat `migrate.sh <stage> status` as a gate** (prod rollout 2026-10-11, two aborted runs before anything was applied). `pnpm install` inside the script swallowed the piped `y`, so the `read` got EOF; and `prisma migrate status` exits 1 while a migration is pending, which `set -e` turns into an abort. Take approval from an environment variable (`APPLY_MIGRATIONS=1`), run the status with `|| true`, and put the abort points before the first write so a failed run leaves the stage untouched.
+
+## Approved site access
+
+- Follow [site-access.md](../docs/site-access.md): deploy disabled infrastructure, seed existing policies, enable SSM, then redeploy console and web. Never publish missing-policy enforcement before backfilling existing prefixes. Prod still requires an explicit request.
+- Bundle the KVS SDK with its optional SigV4a signer; Lambda's default SDK is not evidence that the optional signer exists. Exercise a real CloudFront function: its runtime rejects `JSON.parse(await read())` although Node accepts it. Use separate await/parse statements.
+- KVS attempt reservations commit before network calls and survive rollback/timeouts. Reserve capacity for admin emergency operations; normal moves/deletes must not consume it. Never rewind the stored budget month.

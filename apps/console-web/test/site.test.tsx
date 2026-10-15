@@ -15,6 +15,10 @@ const mockApi = {
   updateSite: vi.fn(),
   deleteSite: vi.fn(),
   deploySite: vi.fn(),
+  siteAuth: vi.fn(),
+  siteSuspension: vi.fn(),
+  siteAccessSync: vi.fn(),
+  limits: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -113,10 +117,49 @@ describe("SitePage", () => {
       via: "session",
     });
     vi.mocked(mockApi.team).mockResolvedValue(TEAM);
+    vi.mocked(mockApi.limits).mockResolvedValue({
+      scope: { kind: "site", id: "site_1" },
+      limits: [],
+      pending: [],
+    } as unknown as Awaited<ReturnType<ApiClient["limits"]>>);
   });
   afterEach(() => {
     vi.useRealTimers();
   });
+
+  it.each([false, true])(
+    "keeps management controls on a protected site (suspended=%s)",
+    async (suspended) => {
+      vi.mocked(mockApi.me).mockResolvedValue({
+        id: "u1",
+        login: "alice",
+        role: "admin",
+        via: "session",
+      });
+      open({
+        ...NAMED_API,
+        access: {
+          mode: "basic",
+          username: "viewer",
+          suspended,
+          sync: "pending",
+          available: true,
+        },
+      });
+      expect(
+        await screen.findByRole("heading", { name: "game-web" }),
+      ).toBeVisible();
+      expect(
+        await screen.findByRole("button", {
+          name: suspended ? "Resume access" : "Suspend access",
+        }),
+      ).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Retry synchronization" }),
+      ).toBeVisible();
+      expect(screen.queryByText("Path URL")).not.toBeInTheDocument();
+    },
+  );
 
   /** Fake timers that still advance on their own, so `find*` keeps working. */
   function pollClock() {

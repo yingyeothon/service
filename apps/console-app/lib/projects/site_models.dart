@@ -49,7 +49,10 @@ class Site {
     this.hostUrl,
     this.hostSuffix,
     this.movingTo,
+    this.access,
   });
+
+  final Map<String, dynamic>? access;
 
   final String id;
   final String name;
@@ -87,11 +90,17 @@ class Site {
   /// The primary link (docs/decisions.md *Site domains* §10): a named site's
   /// own host; an unnamed site's path URL, since it may be a `/{slug}/` build
   /// that only works there.
-  String get displayUrl => domain != null ? (hostUrl ?? publicUrl) : publicUrl;
+  String get displayUrl => domain != null || access?['mode'] == 'basic'
+      ? (hostUrl ?? publicUrl)
+      : publicUrl;
 
   /// The other address of the site, when it has two.
   String? get otherUrl {
-    if (hostUrl == null) return null;
+    if (hostUrl == null ||
+        access?['mode'] == 'basic' ||
+        access?['suspended'] == true) {
+      return null;
+    }
     return displayUrl == hostUrl ? publicUrl : hostUrl;
   }
 
@@ -127,6 +136,9 @@ class Site {
     hostUrl: _str(j['hostUrl']),
     hostSuffix: _str(j['hostSuffix']),
     movingTo: _str(j['movingTo']),
+    access: j['access'] is Map
+        ? Map<String, dynamic>.from(j['access'] as Map)
+        : null,
   );
 }
 

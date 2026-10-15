@@ -1086,6 +1086,13 @@ export interface SiteDeploy {
 }
 
 export interface Site extends ResourceCrumbs {
+  access?: {
+    mode: "public" | "basic";
+    username: string | null;
+    suspended: boolean;
+    sync: "pending" | "submitted";
+    available: boolean;
+  };
   id: string;
   name: string;
   slug: string;

@@ -544,3 +544,13 @@ Token storage and durable offline store/remove queues are opt-in. The current
 state API has no 304 reads, so content compares ETag versions after full GETs.
 This is a client-library contract, not a new deployed service feature;
 publication and the other-language ports are separate work.
+
+## Approved site Basic Auth — decided 2026-10-15
+
+Implemented and verified on dev; prod not deployed. Site-scoped `site.basicAuth` has soft 0 and hard 1. Only an approved limit request grants this permanent capability; rejection never enables protection. Direct override, expiry and revocation are refused for this key. Approval does not activate authentication. A seated team member explicitly sets one shared username/password or explicitly returns the site to public access. Passwords are write-only.
+
+Protected sites serve only on their independent host; the shared path host denies them. Both viewer-request functions consult explicit public/basic/blocked policies before cache access; missing, invalid or unavailable policies deny access. Private S3 origins remain required. Existing public and legacy prefixes must be registered before enforcement is enabled. Authentication changes propagate asynchronously, and previously downloaded content cannot be recalled.
+
+Platform admins separately suspend/resume any site with an audited reason. Suspension preserves credentials and approval and dominates member operations. No automatic transition publishes protected content. Edge policy synchronization reports pending/submitted/error; submitted does not assert worldwide propagation.
+
+Use existing CloudFront Functions and a stage KVS, with no per-visit backend calls. The management budget is at most 1,000 attempts per UTC month across stages, conservatively partitioned as dev 100 (90 routine, 10 emergency), prod 900 (810 routine, 90 emergency). Reservations survive failed or ambiguous attempts; automatic SDK retries are disabled. The partition avoids cross-stage database credentials. Emergency reserve is for suspension and repair, not resume or routine changes. The existing CDN guard bounds traffic operationally, not as an exact billing ceiling. Direct operator AWS calls are outside application accounting and must be recorded against the same operational allowance.

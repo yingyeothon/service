@@ -1,3 +1,4 @@
+import { siteAccessState } from "./site-access.js";
 import { GRANT_SORT_KEYS } from "@yyt/console-db";
 import { AppError, nowSec, ulid, type Clock, type Logger } from "@yyt/core";
 import type {
@@ -552,7 +553,10 @@ export function createShowRoutes({
         // A site links live: its whole content is one mutable tree.
         // A named site links its own host; an unnamed one may be a
         // `/{slug}/` build that only works on the path host.
-        const own = s?.named ? siteHostUrl(siteHostSuffix, s.slug) : null;
+        const own =
+          s && (s.named || siteAccessState(s).mode === "basic")
+            ? siteHostUrl(siteHostSuffix, s.slug)
+            : null;
         url = !s
           ? null
           : (own ?? (siteCdnUrl ? sitePublicUrl(siteCdnUrl, s) : null));

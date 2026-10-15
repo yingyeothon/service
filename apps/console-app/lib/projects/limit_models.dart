@@ -10,6 +10,10 @@ Object limitValueWire(int? v) => v ?? 'unlimited';
 
 /// Korean labels for the registry keys; an unknown key shows as itself.
 String limitLabel(String key) => switch (key) {
+  'site.basicAuth' => 'Basic Auth 승인 (0: 필요, 1: 승인)',
+  'site.zipBytes' => 'ZIP 크기',
+  'site.files' => '사이트 파일 수',
+  'site.extractedBytes' => '압축 해제 크기',
   'asset.fileBytes' => '파일 크기',
   'asset.bundleBytes' => '번들 크기',
   'asset.projectBytes' => '프로젝트 자산 크기',

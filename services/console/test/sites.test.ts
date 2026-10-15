@@ -443,6 +443,7 @@ describe("sites", () => {
       );
     // The three keys with their soft values; no live upload, no usage.
     expect((await limitsOf()).limits).toMatchObject([
+      { key: "site.basicAuth", soft: 0, hard: 1 },
       { key: "site.zipBytes", soft: 5 * MiB, hard: 64 * MiB, usage: null },
       { key: "site.files", soft: 2000, hard: 10_000, usage: null },
       { key: "site.extractedBytes", soft: 50 * MiB, hard: 256 * MiB },
@@ -478,7 +479,11 @@ describe("sites", () => {
       }),
     );
     expect(ok.statusCode, ok.body).toBe(200);
-    expect((await limitsOf()).limits[0]).toMatchObject({
+    expect(
+      (await limitsOf()).limits.find(
+        (l: { key: string }) => l.key === "site.zipBytes",
+      ),
+    ).toMatchObject({
       key: "site.zipBytes",
       effective: 16 * MiB,
     });
@@ -510,6 +515,7 @@ describe("sites", () => {
     expect(await work(h, deployId)).toMatchObject({ status: "live", files: 3 });
     // The live tree is the usage.
     expect((await limitsOf()).limits).toMatchObject([
+      { key: "site.basicAuth", soft: 0, hard: 1 },
       { key: "site.zipBytes", effective: 5 * MiB, usage: siteZip().length },
       { key: "site.files", usage: 3 },
       { key: "site.extractedBytes", usage: expect.any(Number) },

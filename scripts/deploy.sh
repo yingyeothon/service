@@ -21,6 +21,7 @@ pnpm -r --filter "./packages/**" build
 # Console owns the schema: apply pending Prisma migrations before deploying it.
 if [[ "${SERVICE}" == "console" ]]; then
   scripts/migrate.sh "${STAGE}"
+  node scripts/site-access-bootstrap.mjs "${STAGE}" check
 fi
 cd "services/${SERVICE}"
 shift 2

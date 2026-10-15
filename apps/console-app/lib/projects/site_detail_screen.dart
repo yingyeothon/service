@@ -1,3 +1,5 @@
+import 'package:yyt_console/projects/site_access_section.dart';
+import 'package:yyt_console/projects/limits_section.dart';
 import 'dart:async';
 
 import 'package:yyt_console/app_theme.dart';
@@ -278,6 +280,24 @@ class _SiteDetailScreenState extends State<SiteDetailScreen> {
             const HintText('이름을 정하면 사이트 주소가 그 이름으로 바뀝니다. 편집에서 바꿀 수 있습니다.'),
           ],
         ),
+        if (site.access != null) ...[
+          SiteAccessSection(
+            site: site,
+            api: _api,
+            canWrite: widget.team.canWrite,
+            reload: _load,
+            onUnauthorized: () => widget.authState.invalidate(_api.token),
+          ),
+          LimitsSection(
+            api: _api,
+            scopeKind: 'site',
+            scopeId: site.id,
+            team: widget.team,
+            currentLogin: widget.authState.username,
+            onUnauthorized: () => widget.authState.invalidate(_api.token),
+            reloadToken: site,
+          ),
+        ],
         SectionCard(
           title: '현재 배포',
           children: [
