@@ -555,8 +555,8 @@ Platform admins separately suspend/resume any site with an audited reason. Suspe
 
 Use existing CloudFront Functions and a stage KVS, with no per-visit backend calls. The management budget is at most 1,000 attempts per UTC month across stages, conservatively partitioned as dev 100 (90 routine, 10 emergency), prod 900 (810 routine, 90 emergency). Reservations survive failed or ambiguous attempts; automatic SDK retries are disabled. The partition avoids cross-stage database credentials. Emergency reserve is for suspension and repair, not resume or routine changes. The existing CDN guard bounds traffic operationally, not as an exact billing ceiling. Direct operator AWS calls are outside application accounting and must be recorded against the same operational allowance.
 
-Site access request entry (2026-10-15): the web console opens Edit access before
-approval. Selecting Basic Auth offers Request approval, which opens the shared
-limit-request drawer with `site.basicAuth = 1` preselected. Credential inputs
-remain hidden until approved; a pending request is shown at the same point and
-cannot be submitted again.
+Site access request entry (2026-10-15, corrected): the web Access section offers
+Request Basic Auth before approval and opens the shared limit-request drawer
+with `site.basicAuth = 1` preselected. Pending requests show a disabled Approval
+pending action. Edit access, the settings drawer and credential inputs are
+available only after approval, including for platform admins.

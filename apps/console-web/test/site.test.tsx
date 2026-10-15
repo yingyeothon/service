@@ -181,7 +181,7 @@ describe("SitePage", () => {
       available: true,
     },
   };
-  it("requests Basic Auth from Edit access using the shared request drawer", async () => {
+  it("requests Basic Auth from Access without exposing the settings editor", async () => {
     vi.mocked(mockApi.limits).mockResolvedValue(authLimit);
     vi.mocked(mockApi.requestLimit).mockImplementation(async () => {
       vi.mocked(mockApi.limits).mockResolvedValue({
@@ -191,17 +191,16 @@ describe("SitePage", () => {
       return authRequest;
     });
     open(publicAccess);
+    expect(
+      screen.queryByRole("button", { name: "Edit access" }),
+    ).not.toBeInTheDocument();
     await userEvent.click(
-      await screen.findByRole("button", { name: "Edit access" }),
+      await screen.findByRole("button", { name: "Request Basic Auth" }),
     );
-    await userEvent.selectOptions(
-      screen.getByRole("combobox", { name: "Access mode" }),
-      "basic",
-    );
+    expect(
+      screen.queryByRole("dialog", { name: "Edit site access" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Request approval" }),
-    );
     const dialog = await screen.findByRole("dialog", {
       name: "Request increase",
     });
@@ -230,14 +229,37 @@ describe("SitePage", () => {
     expect(
       await screen.findByText(/Basic Auth approval is pending\./),
     ).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Edit access" }));
-    await userEvent.selectOptions(
-      screen.getByRole("combobox", { name: "Access mode" }),
-      "basic",
-    );
     expect(
-      screen.getByRole("button", { name: "Approval pending" }),
+      screen.queryByRole("button", { name: "Edit access" }),
+    ).not.toBeInTheDocument();
+    const pending = screen.getByRole("button", { name: "Approval pending" });
+    expect(pending).toBeDisabled();
+    await userEvent.click(pending);
+    expect(
+      screen.queryByRole("dialog", { name: "Edit site access" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+  });
+  it("shows only pending approval on a fresh page, including for a platform admin", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "u1",
+      login: "alice",
+      role: "admin",
+      via: "session",
+    });
+    vi.mocked(mockApi.limits).mockResolvedValue({
+      ...authLimit,
+      pending: [authRequest],
+    });
+    open(publicAccess);
+    expect(
+      await screen.findByRole("button", { name: "Approval pending" }),
     ).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Edit access" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Access mode")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
   });
   it("requires credentials after approval instead of opening another request", async () => {
     vi.mocked(mockApi.limits).mockResolvedValue({
