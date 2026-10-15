@@ -246,3 +246,5 @@
 - Approval is a durable `site.basicAuth` override created only by the request approval route. Never derive entitlement from retained request rows: the 90-day purge removes them. Suspension is a separate audited operation, never a public transition.
 - Queueing an edge policy must compare access JSON, slug and active holder under the site row lock. Serializing KVS writes alone does not stop a stale public snapshot from reopening a protected site. Check suspension again at the claim/rename transaction boundary.
 - Keep move targets blocked during copying and retire the old prefix before switching. An in-place domain claim has no old prefix to block.
+
+- Count password length in the same Unicode code points on every surface; UTF-16 length and UTF-8 header bytes are different bounds. Size the edge Authorization limit for the longest accepted encoded credential and test non-ASCII boundary values. Strength grades are local advice, never validation or a remote scoring request.

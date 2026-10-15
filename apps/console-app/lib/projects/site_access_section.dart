@@ -1,3 +1,4 @@
+import 'package:yyt_console/projects/site_password.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
 import 'package:flutter/material.dart';
 import 'package:yyt_console/projects/projects_api.dart';
@@ -79,65 +80,13 @@ class _SiteAccessSectionState extends State<SiteAccessSection> {
   }
 
   Future<void> _edit() async {
-    final username = TextEditingController(
-      text: widget.site.access?['username'] as String? ?? '',
-    );
-    final passInput = TextEditingController();
-    final key = GlobalKey<FormState>();
-    final ok = await showDialog<bool>(
+    final body = await showDialog<Map<String, Object?>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Basic Auth 설정'),
-        content: Form(
-          key: key,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('전용 주소에서만 열립니다. 경로 주소는 차단됩니다. 변경은 CDN에 순차 반영됩니다.'),
-              TextFormField(
-                controller: username,
-                decoration: const InputDecoration(labelText: 'ID'),
-                validator: (v) =>
-                    RegExp(r'^[\x21-\x39\x3b-\x7e]{1,64}$').hasMatch(v ?? '')
-                    ? null
-                    : '공백·콜론 없이 1–64자로 입력하세요.',
-              ),
-              TextFormField(
-                controller: passInput,
-                obscureText: true,
-                enableSuggestions: false,
-                autocorrect: false,
-                decoration: const InputDecoration(labelText: '새 비밀번호'),
-                validator: (v) =>
-                    RegExp(r'^[\x20-\x7e]{16,128}$').hasMatch(v ?? '')
-                    ? null
-                    : 'ASCII 16–128자를 입력하세요.',
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () {
-              if (key.currentState!.validate()) Navigator.pop(context, true);
-            },
-            child: const Text('저장'),
-          ),
-        ],
+      builder: (_) => _SitePasswordDialog(
+        username: widget.site.access?['username'] as String? ?? '',
       ),
     );
-    final body = {
-      'mode': 'basic',
-      'username': username.text,
-      'password': passInput.text,
-    };
-    username.dispose();
-    passInput.dispose();
-    if (ok == true && mounted) {
+    if (body != null && mounted) {
       await _run(() => widget.api.setSiteAuth(widget.site.id, body));
     }
   }
@@ -245,4 +194,101 @@ class _SiteAccessSectionState extends State<SiteAccessSection> {
       ],
     );
   }
+}
+
+class _SitePasswordDialog extends StatefulWidget {
+  const _SitePasswordDialog({required this.username});
+  final String username;
+  @override
+  State<_SitePasswordDialog> createState() => _SitePasswordDialogState();
+}
+
+class _SitePasswordDialogState extends State<_SitePasswordDialog> {
+  late final TextEditingController _username = TextEditingController(
+    text: widget.username,
+  );
+  final _passInput = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+  @override
+  void dispose() {
+    _username.dispose();
+    _passInput.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Basic Auth 설정'),
+    scrollable: true,
+    content: Form(
+      key: _formKey,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('전용 주소에서만 열립니다. 경로 주소는 차단됩니다. 변경은 CDN에 순차 반영됩니다.'),
+          TextFormField(
+            controller: _username,
+            decoration: const InputDecoration(labelText: 'ID'),
+            validator: (v) =>
+                RegExp(r'^[\x21-\x39\x3b-\x7e]{1,64}$').hasMatch(v ?? '')
+                ? null
+                : '공백·콜론 없이 1–64자로 입력하세요.',
+          ),
+          TextFormField(
+            controller: _passInput,
+            obscureText: true,
+            enableSuggestions: false,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              labelText: '새 비밀번호',
+              helperText: '4글자 이상. 강도 등급은 참고용입니다.',
+            ),
+            validator: (v) => sitePasswordIssue(v ?? ''),
+          ),
+          ValueListenableBuilder<TextEditingValue>(
+            valueListenable: _passInput,
+            builder: (context, input, _) {
+              if (input.text.isEmpty) return const SizedBox.shrink();
+              final grade = sitePasswordStrength(input.text);
+              return Semantics(
+                liveRegion: true,
+                label: 'Password strength: $grade',
+                child: ExcludeSemantics(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: StatusChip(
+                      label: grade,
+                      tone: grade == 'Too easy'
+                          ? ChipTone.danger
+                          : grade == 'Medium'
+                          ? ChipTone.warn
+                          : ChipTone.ok,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('취소'),
+      ),
+      TextButton(
+        onPressed: () {
+          if (_formKey.currentState!.validate()) {
+            Navigator.pop(context, <String, Object?>{
+              'mode': 'basic',
+              'username': _username.text,
+              'password': _passInput.text,
+            });
+          }
+        },
+        child: const Text('저장'),
+      ),
+    ],
+  );
 }

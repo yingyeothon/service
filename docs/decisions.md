@@ -560,3 +560,12 @@ Request Basic Auth before approval and opens the shared limit-request drawer
 with `site.basicAuth = 1` preselected. Pending requests show a disabled Approval
 pending action. Edit access, the settings drawer and credential inputs are
 available only after approval, including for platform admins.
+
+Site passwords (2026-10-15): accept 4–128 Unicode code points, including spaces
+and non-ASCII text, without composition requirements. Reject control characters
+and malformed Unicode; retain the upper bound for request-size protection. Web
+and Flutter show a local advisory Too easy (red), Medium (amber), or Strong
+(green) grade below the input. Grades never prevent a valid password from being
+saved and never send plaintext to a scoring service. Use length, distinct
+characters, character classes and simple common/repeated/sequential patterns;
+this is guidance, not an entropy or breach guarantee.

@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { createMemorySiteEdgeDb } from "@yyt/console-db";
 import { ev, harness, parse } from "./helpers.js";
+import { siteAuthBody } from "../src/site-access.js";
 
 const credentials = {
   mode: "basic",
   username: "viewer",
-  password: "0123456789abcdef0123456789abcdef",
+  password: "1234",
 };
 describe("approved site access", () => {
   it("requires approval, preserves protection across suspension, and never exposes credentials", async () => {
@@ -64,10 +65,20 @@ describe("approved site access", () => {
       username: "viewer",
       sync: "submitted",
     });
-    expect(enabled.body).not.toContain(credentials.password);
+    expect(enabled.body).not.toContain(JSON.stringify(credentials.password));
     expect(enabled.body).not.toContain("digest");
     const secret = (await h.sites.findSite(site))!.accessJson;
-    expect(secret).not.toContain(credentials.password);
+    const stored = JSON.parse(secret!) as Record<string, unknown>;
+    expect(stored).toMatchObject({
+      mode: "basic",
+      suspended: false,
+      username: "viewer",
+    });
+    expect(Object.keys(stored).sort()).toEqual(
+      ["mode", "suspended", "username", "salt", "digest"].sort(),
+    );
+    expect(stored.salt).toMatch(/^[0-9a-f]{32}$/);
+    expect(stored.digest).toMatch(/^[0-9a-f]{64}$/);
     const suspended = await call(
       "PUT",
       `/admin/sites/${site}/suspension`,
@@ -105,7 +116,9 @@ describe("approved site access", () => {
       ).statusCode,
     ).toBe(400);
     expect((await call("PUT", path, { mode: "public" })).statusCode).toBe(202);
-    expect(JSON.stringify(h.db.audits)).not.toContain(credentials.password);
+    expect(JSON.stringify(h.db.audits)).not.toContain(
+      JSON.stringify(credentials.password),
+    );
   });
   it("refuses an old public snapshot after authentication or suspension changes", async () => {
     const h = harness(),
@@ -272,5 +285,43 @@ describe("edge management budget", () => {
       "stale management budget month",
     );
     expect(db.used()).toBe(2);
+  });
+});
+
+describe("site password policy", () => {
+  it("accepts four characters without composition rules and bounds Unicode length", () => {
+    for (const value of [
+      "1234",
+      "aaaa",
+      "    ",
+      "가나다라",
+      "🔑🌿🌙🍀",
+      "🔑".repeat(128),
+    ]) {
+      expect(
+        siteAuthBody.safeParse({
+          mode: "basic",
+          username: "viewer",
+          password: value,
+        }).success,
+      ).toBe(true);
+    }
+    for (const value of [
+      "",
+      "abc",
+      "🔑🔑🔑",
+      "x".repeat(129),
+      "🔑".repeat(129),
+      "ab\ncd",
+      "abc\ud800",
+    ]) {
+      expect(
+        siteAuthBody.safeParse({
+          mode: "basic",
+          username: "viewer",
+          password: value,
+        }).success,
+      ).toBe(false);
+    }
   });
 });

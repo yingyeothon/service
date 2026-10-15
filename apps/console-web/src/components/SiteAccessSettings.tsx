@@ -14,7 +14,8 @@ import { useAction } from "../lib/query";
 import { notify } from "../lib/notify";
 import { ResourceDrawer, useDrawerForm } from "./ResourceDrawer";
 import { Section } from "./Section";
-import { Notice } from "./ui";
+import { Badge, Notice } from "./ui";
+import { passwordStrength, sitePasswordIssue } from "../lib/password-strength";
 
 export function SiteAccessSettings({
   site,
@@ -39,6 +40,9 @@ export function SiteAccessSettings({
     username: site.access?.username ?? "",
     password: "",
   }));
+  const strength = auth.form.password
+    ? passwordStrength(auth.form.password)
+    : null;
   const stop = useDrawerForm(() => ({ reason: "" }));
   const access = site.access;
   if (!access) return null;
@@ -149,7 +153,8 @@ export function SiteAccessSettings({
         disabled={
           !canEdit ||
           (auth.form.mode === "basic" &&
-            (!auth.form.username || auth.form.password.length < 16))
+            (!auth.form.username ||
+              sitePasswordIssue(auth.form.password) !== undefined))
         }
       >
         <NativeSelect
@@ -178,7 +183,12 @@ export function SiteAccessSettings({
             />
             <PasswordInput
               label="New password"
-              description="16–128 printable ASCII characters. Use a unique, randomly generated password."
+              description="At least 4 characters. Strength is guidance only."
+              error={
+                auth.form.password
+                  ? sitePasswordIssue(auth.form.password)
+                  : undefined
+              }
               autoComplete="new-password"
               value={auth.form.password}
               onChange={(e) => {
@@ -186,6 +196,26 @@ export function SiteAccessSettings({
                 auth.setForm((f) => ({ ...f, password: value }));
               }}
             />
+            <div role="status" aria-live="polite" aria-atomic="true">
+              {strength && (
+                <>
+                  <Text component="span" size="sm">
+                    Password strength:{" "}
+                  </Text>
+                  <Badge
+                    tone={
+                      strength === "Too easy"
+                        ? "danger"
+                        : strength === "Medium"
+                          ? "warn"
+                          : "ok"
+                    }
+                  >
+                    {strength}
+                  </Badge>
+                </>
+              )}
+            </div>
             <Text size="sm">
               Only the independent site host will work. The shared path URL will
               be blocked; use a relative build base.

@@ -1054,7 +1054,7 @@ resources:
               if (p.mode === 'public') { delete result.headers.authorization; return result; }
               if (p.mode !== 'basic' || PEPPER.length < 32 || !/^[a-f0-9]{64}$/.test(p.digest) || !/^[a-f0-9]{32}$/.test(p.salt) || typeof p.username !== 'string') return notFound();
               var a = result.headers.authorization;
-              if (a && !a.multiValue && /^Basic [A-Za-z0-9+/]+=*$/i.test(a.value) && a.value.length <= 512) {
+              if (a && !a.multiValue && /^Basic [A-Za-z0-9+/]+=*$/i.test(a.value) && a.value.length <= 1024) {
                 var plain = Buffer.from(a.value.slice(6), 'base64').toString('utf8');
                 var i = plain.indexOf(':');
                 var digest = crypto.createHmac('sha256', PEPPER).update(JSON.stringify([p.salt, plain.slice(0,i), plain.slice(i+1)])).digest('hex');

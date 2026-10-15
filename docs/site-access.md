@@ -9,9 +9,14 @@ only after approval. Approval is permanent until the site is deleted; the generi
 limit set/revoke routes cannot change this capability.
 
 A seated team member can then use **Edit access** to set one shared ID/password.
-The password is write-only, 16–128 printable ASCII characters; use a unique
-random password. The ID is 1–64 printable non-space ASCII characters without a
-colon. Only the independent host works for a protected site. Rebuild a
+The password is write-only and accepts 4–128 Unicode characters, including
+spaces, without letter/number/symbol requirements. Control characters and
+malformed Unicode are refused. The ID is 1–64 printable non-space ASCII characters without a
+colon. The web and app show a local advisory grade below the password input:
+**Too easy** (red), **Medium** (yellow/amber), or **Strong** (green). The grade
+uses length, character variety and simple common/repeated/sequential patterns;
+it does not block saving, and no scoring service receives the password.
+Only the independent host works for a protected site. Rebuild a
 path-specific build with a relative base before enabling protection.
 
 ```sh

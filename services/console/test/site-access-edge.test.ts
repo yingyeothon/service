@@ -60,6 +60,26 @@ describe("site access edge enforcement", () => {
       expect((await handler(req(path))).statusCode).toBe(401);
     }
   });
+  it("authenticates four-character and full-length Unicode credentials", async () => {
+    for (const value of ["1234", "가나다라", "🔑".repeat(128)]) {
+      const username = "u".repeat(64);
+      const p = {
+        ...policy,
+        username,
+        digest: createHmac("sha256", pepper)
+          .update(JSON.stringify([salt, username, value]))
+          .digest("hex"),
+      };
+      const header = `Basic ${Buffer.from(`${username}:${value}`).toString("base64")}`;
+      expect(
+        (
+          await edge("SiteHostRequestFunction", async () => JSON.stringify(p))(
+            req("/", header),
+          )
+        ).statusCode,
+      ).toBeUndefined();
+    }
+  });
   it("denies shared paths, malformed policies, missing keys and store failures", async () => {
     const shared = edge("PathHostRequestFunction", async () =>
       JSON.stringify(policy),

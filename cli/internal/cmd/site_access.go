@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"github.com/yingyeothon/service/cli/internal/api"
@@ -19,7 +21,7 @@ type siteAccess struct {
 }
 
 func newSiteAuth(a *App, resolve siteResolver) *cobra.Command {
-	c := &cobra.Command{Use: "auth", Short: "Approved Basic Auth: enable, change credentials, make public, or retry synchronization", Long: "Request site.basicAuth=1 with yyt limit request and obtain admin approval first.\nProtected sites serve only on their independent host. Changes propagate asynchronously.\nPasswords must be 16-128 printable ASCII characters; never pass passwords in arguments."}
+	c := &cobra.Command{Use: "auth", Short: "Approved Basic Auth: enable, change credentials, make public, or retry synchronization", Long: "Request site.basicAuth=1 with yyt limit request and obtain admin approval first.\nProtected sites serve only on their independent host. Changes propagate asynchronously.\nPasswords must be 4-128 Unicode characters; never pass passwords in arguments."}
 	var username string
 	var stdin bool
 	set := &cobra.Command{Use: "set <site> --username <id> --password-stdin", Short: "Enable Basic Auth or replace its credentials", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
@@ -31,12 +33,12 @@ func newSiteAuth(a *App, resolve siteResolver) *cobra.Command {
 			return fmt.Errorf("cannot read password input")
 		}
 		password := strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
-		if len(password) < 16 || len(password) > 128 {
-			return fmt.Errorf("password must be 16-128 printable ASCII characters")
+		if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 4 || utf8.RuneCountInString(password) > 128 {
+			return fmt.Errorf("password must be 4-128 Unicode characters")
 		}
 		for _, c := range password {
-			if c < 32 || c > 126 {
-				return fmt.Errorf("password must contain printable ASCII characters only")
+			if unicode.IsControl(c) {
+				return fmt.Errorf("password must not contain control characters")
 			}
 		}
 		cc, id, err := resolve(cmd, args[0], true)

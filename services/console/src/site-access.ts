@@ -18,9 +18,23 @@ const credential = z
       .regex(/^[\x21-\x39\x3b-\x7e]+$/),
     password: z
       .string()
-      .min(16)
-      .max(128)
-      .regex(/^[\x20-\x7e]+$/),
+      .max(256)
+      .refine(
+        (v) => Array.from(v).length >= 4 && Array.from(v).length <= 128,
+        "Use 4–128 characters",
+      )
+      .refine(
+        (v) =>
+          Array.from(v).every((c) => {
+            const cp = c.codePointAt(0)!;
+            return (
+              cp >= 32 &&
+              !(cp >= 127 && cp <= 159) &&
+              !(cp >= 0xd800 && cp <= 0xdfff)
+            );
+          }),
+        "Use text without control characters or malformed Unicode",
+      ),
   })
   .strict();
 export const siteAuthBody = z.discriminatedUnion("mode", [

@@ -283,6 +283,57 @@ describe("SitePage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("updates colored strength advice while allowing a four-character weak password", async () => {
+    vi.mocked(mockApi.limits).mockResolvedValue({
+      ...authLimit,
+      limits: [{ ...authLimit.limits[0]!, effective: 1 }],
+    });
+    vi.mocked(mockApi.siteAuth).mockResolvedValue({
+      ...publicAccess,
+      access: { ...publicAccess.access, mode: "basic", username: "viewer" },
+    });
+    open(publicAccess);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit access" }),
+    );
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Access mode" }),
+      "basic",
+    );
+    await userEvent.type(screen.getByRole("textbox", { name: "ID" }), "viewer");
+    const input = screen.getByLabelText("New password");
+    await userEvent.type(input, "123");
+    expect(
+      screen.getByRole("button", { name: "Save Basic Auth" }),
+    ).toBeDisabled();
+    await userEvent.type(input, "4");
+    expect(screen.getByText("Too easy")).toBeVisible();
+    expect(
+      screen.getByText("Too easy").closest(".mantine-Badge-root"),
+    ).toHaveAttribute("style", expect.stringContaining("red"));
+    expect(
+      screen.getByRole("button", { name: "Save Basic Auth" }),
+    ).toBeEnabled();
+    await userEvent.clear(input);
+    await userEvent.type(input, "cedarFox");
+    expect(screen.getByText("Medium")).toBeVisible();
+    await userEvent.clear(input);
+    await userEvent.type(input, "Mango!River83");
+    expect(screen.getByText("Strong")).toBeVisible();
+    await userEvent.clear(input);
+    await userEvent.type(input, "1234");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save Basic Auth" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.siteAuth).toHaveBeenCalledWith("site_1", {
+        mode: "basic",
+        username: "viewer",
+        password: "1234",
+      }),
+    );
+  });
+
   it.each([false, true])(
     "keeps management controls on a protected site (suspended=%s)",
     async (suspended) => {

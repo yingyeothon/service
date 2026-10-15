@@ -2,7 +2,6 @@
 // Dev-only approval -> deploy -> edge authentication -> suspend/resume -> rename.
 // YYT_DEBUG_KEY is read from the environment, never printed or sent in argv.
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
   asUser,
   createChecker,
@@ -24,8 +23,8 @@ const write = async (path, body, user = member, method = "POST") => {
   await sleep(600);
   return call(path, { method, headers: as(user), body });
 };
-const password = randomBytes(24).toString("hex");
-const auth = "Basic " + Buffer.from("viewer:" + password).toString("base64");
+const password = "1234"; // Deliberately weak: strength is advisory.
+let auth = "Basic " + Buffer.from("viewer:" + password).toString("base64");
 let id;
 async function edge(url, status, authorization) {
   for (let i = 0; i < 45; i++) {
@@ -164,6 +163,27 @@ try {
   check("renamed site protected and old alias denied", true);
   await edge(site.publicUrl, 404, auth);
   check("new shared path denied", true);
+  for (const value of ["가나다라", "🔑".repeat(128)]) {
+    const previous = auth;
+    r = await write(
+      `/sites/${id}/auth`,
+      { mode: "basic", username: "viewer", password: value },
+      member,
+      "PUT",
+    );
+    check(
+      "configure Unicode credentials",
+      r.status === 202 && r.body.access?.sync === "submitted",
+      String(r.status),
+    );
+    auth = "Basic " + Buffer.from("viewer:" + value).toString("base64");
+    await edge(site.hostUrl, 200, auth);
+    await edge(site.hostUrl, 401, previous);
+    check(
+      "Unicode credentials authenticate and previous credentials stop working",
+      true,
+    );
+  }
   r = await write(`/sites/${id}/auth`, { mode: "public" }, member, "PUT");
   check("explicit public transition", r.status === 202, String(r.status));
   await edge(site.hostUrl, 200);
