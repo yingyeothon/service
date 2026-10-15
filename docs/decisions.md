@@ -569,3 +569,10 @@ and Flutter show a local advisory Too easy (red), Medium (amber), or Strong
 saved and never send plaintext to a scoring service. Use length, distinct
 characters, character classes and simple common/repeated/sequential patterns;
 this is guidance, not an entropy or breach guarantee.
+
+Site access save feedback (2026-10-15): after a submitted access mutation, the
+web console shows a dismissible informational dialog explaining that propagation
+may take tens of seconds and previous settings, including a Basic Auth prompt
+after switching to Public, can remain temporarily. Pending synchronization gets
+a separate retry message; failed writes get no saved dialog. The dialog is
+after the write and is not a confirmation or a claim of global completion.

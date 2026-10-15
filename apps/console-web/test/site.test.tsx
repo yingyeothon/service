@@ -332,6 +332,88 @@ describe("SitePage", () => {
         password: "1234",
       }),
     );
+    expect(
+      await screen.findByRole("dialog", { name: "Access settings saved" }),
+    ).toBeVisible();
+  });
+
+  it.each(["submitted", "pending"] as const)(
+    "explains propagation after switching to Public (%s)",
+    async (sync) => {
+      vi.mocked(mockApi.limits).mockResolvedValue({
+        ...authLimit,
+        limits: [{ ...authLimit.limits[0]!, effective: 1 }],
+      });
+      vi.mocked(mockApi.siteAuth).mockResolvedValue({
+        ...publicAccess,
+        access: { ...publicAccess.access, sync },
+      });
+      open({
+        ...publicAccess,
+        access: { ...publicAccess.access, mode: "basic", username: "viewer" },
+      });
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Edit access" }),
+      );
+      await userEvent.selectOptions(
+        screen.getByRole("combobox", { name: "Access mode" }),
+        "public",
+      );
+      await userEvent.click(
+        screen.getByRole("button", { name: "Make public" }),
+      );
+      const notice = await screen.findByRole("dialog", {
+        name:
+          sync === "submitted"
+            ? "Access settings saved"
+            : "Synchronization pending",
+      });
+      expect(within(notice).getByText(/tens of seconds/)).toBeVisible();
+      if (sync === "submitted")
+        expect(
+          within(notice).getByText(
+            /ID\/password prompt after switching to Public/,
+          ),
+        ).toBeVisible();
+      else
+        expect(
+          within(notice).getByText(/Use Retry synchronization/),
+        ).toBeVisible();
+      await userEvent.click(
+        within(notice).getByRole("button", {
+          name: sync === "submitted" ? "Got it" : "Close access notice",
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", {
+            name:
+              sync === "submitted"
+                ? "Access settings saved"
+                : "Synchronization pending",
+          }),
+        ).not.toBeInTheDocument(),
+      );
+    },
+  );
+  it("keeps errors inline without presenting a saved notice", async () => {
+    vi.mocked(mockApi.limits).mockResolvedValue({
+      ...authLimit,
+      limits: [{ ...authLimit.limits[0]!, effective: 1 }],
+    });
+    vi.mocked(mockApi.siteAuth).mockRejectedValue(new Error("Change rejected"));
+    open(publicAccess);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit access" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Make public" }));
+    expect(await screen.findByText("Change rejected")).toBeVisible();
+    expect(
+      screen.queryByRole("dialog", { name: "Access settings saved" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("dialog", { name: "Synchronization pending" }),
+    ).not.toBeInTheDocument();
   });
 
   it.each([false, true])(

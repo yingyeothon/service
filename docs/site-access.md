@@ -53,6 +53,11 @@ preserve access settings.
 
 Desired state is durable before publication. `pending` requires retry through
 `POST /sites/{site}/access-sync` with `{}` (or the UI/CLI retry action).
+After a successful change, the web console shows a dismissible notice that
+propagation may take tens of seconds and the previous settings may still apply,
+including an ID/password prompt after switching to Public. A pending result
+shows retry instructions instead.
+
 `submitted` means the policy was accepted, not that every edge has received it.
 There is no global propagation-complete signal. The dev smoke observed changes
 taking tens of seconds. Previously downloaded files and browser/service-worker

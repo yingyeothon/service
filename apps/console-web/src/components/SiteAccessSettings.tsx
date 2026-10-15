@@ -1,17 +1,17 @@
 import {
   Button,
   Group,
+  Modal,
   NativeSelect,
   PasswordInput,
   Text,
   TextInput,
   Textarea,
 } from "@mantine/core";
-import type { FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { api } from "../api";
 import type { Site } from "../types";
 import { useAction } from "../lib/query";
-import { notify } from "../lib/notify";
 import { ResourceDrawer, useDrawerForm } from "./ResourceDrawer";
 import { Section } from "./Section";
 import { Badge, Notice } from "./ui";
@@ -35,6 +35,15 @@ export function SiteAccessSettings({
   reload: () => void;
 }) {
   const act = useAction();
+  const [saved, setSaved] = useState<{
+    siteId: string;
+    submitted: boolean;
+  } | null>(null);
+  const showSaved = (result: Site) =>
+    setSaved({
+      siteId: site.id,
+      submitted: result.access?.sync === "submitted",
+    });
   const auth = useDrawerForm(() => ({
     mode: site.access?.mode ?? "public",
     username: site.access?.username ?? "",
@@ -72,7 +81,7 @@ export function SiteAccessSettings({
     reload();
     if (result) {
       closeAuth();
-      notify.saved("Access settings");
+      showSaved(result);
     }
   };
   return (
@@ -125,7 +134,12 @@ export function SiteAccessSettings({
             variant="default"
             loading={act.busy}
             onClick={() => {
-              void act.run(() => api.siteAccessSync(site.id)).then(reload);
+              void act
+                .run(() => api.siteAccessSync(site.id))
+                .then((result) => {
+                  reload();
+                  if (result) showSaved(result);
+                });
             }}
           >
             Retry synchronization
@@ -140,6 +154,25 @@ export function SiteAccessSettings({
       {!auth.opened && !stop.opened && act.error && (
         <Notice kind="error">{act.error}</Notice>
       )}
+      <Modal
+        opened={saved?.siteId === site.id}
+        onClose={() => setSaved(null)}
+        closeButtonProps={{ "aria-label": "Close access notice" }}
+        title={
+          saved?.submitted ? "Access settings saved" : "Synchronization pending"
+        }
+        zIndex={300}
+        centered
+      >
+        <Text>
+          {saved?.submitted
+            ? "Changes may take tens of seconds to reach all CDN locations. Until then, the previous access settings may still apply, including an ID/password prompt after switching to Public. Wait briefly, then reload the site."
+            : "Settings were saved, but CDN synchronization is still pending. Use Retry synchronization in Access. Once submitted, changes may take tens of seconds to reach all CDN locations."}
+        </Text>
+        <Group justify="flex-end" mt="md">
+          <Button onClick={() => setSaved(null)}>Got it</Button>
+        </Group>
+      </Modal>
       <ResourceDrawer
         opened={auth.opened && canEdit}
         onClose={closeAuth}
@@ -243,7 +276,7 @@ export function SiteAccessSettings({
           reload();
           if (result) {
             stop.close();
-            notify.saved("Access settings");
+            showSaved(result);
           }
         }}
       >

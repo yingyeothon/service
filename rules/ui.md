@@ -44,3 +44,5 @@ with the probe writing `getBoundingClientRect()` widths, row heights, `scrollWid
 - A `Badge` is `inline-grid` with `overflow: hidden`: as a flex item (inside `Group wrap="nowrap"`) it shrinks before the table widens and ellipses its own label (`pending` → "p…", `cancelled` → "cancell…" on the limit-request tables, 2026-09-28 — jsdom cannot see it). Put it in plain inline content, or give its wrapper `flex-shrink: 0`.
 
 - An approval-gated feature must expose its request action at the point of use. Keep the approval request reachable, reuse the shared limit-request drawer with the relevant key/value selected, and show a disabled pending action there. Configuration/edit controls appear only after approval. Do not send users to a distant Limits section or collect credentials before approval.
+
+- A saved setting with delayed propagation needs feedback at the save action, not only static explanatory text elsewhere. State the expected delay without claiming global completion; distinguish submitted changes from synchronization failures that need a retry.
