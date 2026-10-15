@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -28,7 +29,11 @@ func newSiteAuth(a *App, resolve siteResolver) *cobra.Command {
 		if !stdin || username == "" {
 			return fmt.Errorf("--username and --password-stdin are required")
 		}
-		raw, err := io.ReadAll(io.LimitReader(a.In, 1025))
+		in := a.In
+		if in == nil {
+			in = os.Stdin
+		}
+		raw, err := io.ReadAll(io.LimitReader(in, 1025))
 		if err != nil {
 			return fmt.Errorf("cannot read password input")
 		}

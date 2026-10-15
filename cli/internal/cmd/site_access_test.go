@@ -1,9 +1,43 @@
 package cmd
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestSiteAuthDefaultsToProcessStdin(t *testing.T) {
+	input, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	if _, err := input.WriteString("1234\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := input.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdin
+	os.Stdin = input
+	defer func() { os.Stdin = previous }()
+	called := false
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"PUT /sites/st_1/auth": func(r recorded) (int, any) {
+			called = true
+			if r.Body["password"] != "1234" {
+				t.Fatal("process stdin was not read")
+			}
+			return 202, sampleSite
+		},
+	}, nil, nil, nil))
+	if _, _, err := run(t, f, "site", "auth", "set", "st_1", "--username", "viewer", "--password-stdin"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("authentication request was not sent")
+	}
+}
 
 func TestSiteAuthInputAndRedaction(t *testing.T) {
 	password := "1234"
