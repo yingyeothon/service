@@ -110,3 +110,15 @@ back to a pre-authentication template while protected/suspended sites exist.
 Deployment and origin-revert scripts enforce this for the current workflow.
 The pepper is stored at `console/site-access-pepper` under the stage SSM path;
 losing it requires credential resets. Do not rotate it as a routine deploy.
+
+## Release status
+
+Production API, CDN enforcement and web console were released on 2026-10-15.
+Existing shared-path sites, including registered 64-character legacy prefixes,
+were verified unchanged. Production acceptance covered pending-approval denial,
+authenticated access, shared-path blocking, Public restoration, suspension and
+resume; the temporary site was deleted afterward.
+
+The console app is available as 1.6.6+32 and the CLI as 0.17.1.
+The unpublished 0.17.0 CLI build was cancelled after acceptance found a process
+stdin initialization bug; 0.17.1 includes the fix and regression coverage.
