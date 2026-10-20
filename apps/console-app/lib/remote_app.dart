@@ -14,6 +14,10 @@ class RemoteApp {
   /// checks must consider all of them, not just the latest artifact's id.
   final List<String> applicationIds;
 
+  /// Distinct bundle ids (`bundle_id` tags) across the app's iOS artifacts;
+  /// empty from a console that predates them.
+  final List<String> bundleIds;
+
   /// Team + project of the app, when the server sent the breadcrumb.
   final AppHome? home;
 
@@ -33,10 +37,12 @@ class RemoteApp {
     required this.description,
     required this.latestArtifact,
     List<String>? applicationIds,
+    List<String>? bundleIds,
     this.home,
     this.shared = false,
     this.topic,
-  }) : applicationIds = applicationIds ?? const <String>[];
+  }) : applicationIds = applicationIds ?? const <String>[],
+       bundleIds = bundleIds ?? const <String>[];
 
   Map<String, dynamic> toJson() {
     return {
@@ -48,13 +54,13 @@ class RemoteApp {
     };
   }
 
-  String get version => latestArtifact.version;
+  String get version => latestArtifact.comparableVersion;
   String get apkUrl => latestArtifact.url;
-  String get applicationId => latestArtifact.applicationId.isNotEmpty
-      ? latestArtifact.applicationId
-      : package;
+  String get applicationId =>
+      latestArtifact.installId.isNotEmpty ? latestArtifact.installId : package;
 
-  /// applicationIds to probe for installation, latest artifact's id first.
+  /// Ids to probe for installation, latest artifact's id first: the bundle
+  /// ids for an iOS build, the applicationIds for the rest.
   List<String> get installCheckApplicationIds {
     final ids = <String>[];
     void add(String id) {
@@ -64,7 +70,7 @@ class RemoteApp {
     }
 
     add(applicationId);
-    for (final id in applicationIds) {
+    for (final id in latestArtifact.isIos ? bundleIds : applicationIds) {
       add(id);
     }
     return ids;

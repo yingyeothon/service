@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/self_update_check.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -196,5 +198,88 @@ void main() {
       ),
       isNull,
     );
+  });
+
+  group('iOS', () {
+    const install =
+        'itms-services://?action=download-manifest&url=https%3A%2F%2Fcdn.example%2Fm.plist';
+    Map<String, Object?> ipa(
+      String version,
+      String build, {
+      String manifest = 'https://cdn.example/m.plist',
+      String? bundleId = 'life.yyt.console',
+    }) => {
+      'url': 'https://cdn.example/console-$version.ipa',
+      'filename': 'console.ipa',
+      'platform': 'ios',
+      'version': version,
+      'buildNumber': build,
+      'bundleId': bundleId,
+      'ios': {'manifestUrl': manifest, 'installUrl': install},
+      'createdAt': 1756400000,
+    };
+    final body = {
+      'downloads': [
+        // The newest row per platform: the Android one must not be picked.
+        {
+          'url': 'https://cdn.example/console-9.apk',
+          'platform': 'android',
+          'version': '9.0.0+90',
+          'applicationId': 'life.yyt.console',
+          'ios': null,
+        },
+        ipa('1.7.0', '40'),
+      ],
+    };
+
+    test('picks the iOS row with an https manifest and this bundle id', () {
+      const pkg = 'life.yyt.console';
+      expect(
+        pickLatestConsoleDownload(
+          body,
+          packageName: pkg,
+          platform: 'ios',
+        )!['version'],
+        '1.7.0',
+      );
+      for (final row in [
+        ipa('1.7.0', '40', manifest: 'http://cdn.example/m.plist'),
+        ipa('1.7.0', '40', bundleId: 'life.yyt.console.dev'),
+        {...ipa('1.7.0', '40'), 'ios': null},
+      ]) {
+        expect(
+          pickLatestConsoleDownload(
+            {
+              'downloads': [row],
+            },
+            packageName: pkg,
+            platform: 'ios',
+          ),
+          isNull,
+        );
+      }
+    });
+
+    test('compares version and build with the running app, and offers the '
+        'OTA link', () async {
+      Future<ConsoleAppUpdate?> check(String running) => checkConsoleAppUpdate(
+        token: 'yyt_t',
+        baseUrl: base,
+        client: serving(200, body),
+        currentVersion: () async => running,
+        currentPackageName: () async => 'life.yyt.console',
+        platform: CatalogPlatform.ios,
+      );
+      // Same version, lower build: the build decides.
+      final update = (await check('1.7.0+39'))!;
+      expect(update.version, '1.7.0+40');
+      expect(update.artifact.isIos, isTrue);
+      expect(update.artifact.ios!.installUrl, install);
+      expect(update.artifact.bundleId, 'life.yyt.console');
+      expect(update.artifact.buildNumber, '40');
+      expect(update.artifact.isInstallableOn(TargetPlatform.iOS), isTrue);
+      expect(await check('1.7.0+40'), isNull);
+      expect(await check('1.8.0+1'), isNull);
+    });
   });
 }

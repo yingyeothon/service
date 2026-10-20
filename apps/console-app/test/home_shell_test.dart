@@ -7,7 +7,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/home_shell.dart';
+import 'package:yyt_console/install_button.dart';
 
 import 'projects/widget_test_support.dart';
 
@@ -141,7 +143,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(paths.where((p) => p == '/catalog/listings'), hasLength(1));
-    expect(find.text('게시된 앱이 없습니다'), findsOneWidget);
+    expect(find.text('게시된 Android 앱이 없습니다'), findsOneWidget);
     // Coming back does not reload it.
     await tester.tap(find.text('앱'));
     await tester.pump();
@@ -167,5 +169,145 @@ void main() {
     await tester.pump();
     expect(find.text('앱 목록을 불러오지 못했습니다'), findsOneWidget);
     expect(paths, ['/catalog/apps', '/catalog/installer/downloads']);
+  });
+
+  Map<String, Object?> listed(String id, String platform, String file) => {
+    'id': id,
+    'name': 'app-$id',
+    'path': 'pkg.$id',
+    'description': '',
+    'latestArtifact': {
+      'id': 'art_$id',
+      'url': 'https://cdn.example/$file',
+      'platform': platform,
+      'size': 1,
+      'tags': {'version': '1.0.0'},
+      'createdAt': 10,
+    },
+    'applicationIds': [],
+  };
+
+  testWidgets('the filter starts from the stored choice, and a new choice '
+      'reloads the list and is stored', (tester) async {
+    await signIn(tester);
+    final queries = <Map<String, String>>[];
+    final store = MemoryCatalogPlatformStore(CatalogPlatform.ios);
+    final client = MockClient((req) async {
+      if (req.url.path == '/catalog/apps') {
+        queries.add(req.url.queryParameters);
+        return _json({'apps': [], 'teams': []});
+      }
+      return http.Response('', 404);
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeShell(authState: auth, client: client, platformStore: store),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(queries, [
+      {'artifacts': 'summary', 'platform': 'ios'},
+    ]);
+    expect(find.text('설치 가능한 iOS 앱이 없습니다'), findsOneWidget);
+
+    await tester.tap(find.text('Android'));
+    await tester.pump();
+    await tester.pump();
+    expect(store.value, CatalogPlatform.android);
+    expect(queries.last, {'artifacts': 'summary', 'platform': 'android'});
+    expect(find.text('설치 가능한 Android 앱이 없습니다'), findsOneWidget);
+  });
+
+  testWidgets('all lists builds this device cannot install, without an '
+      'install button', (tester) async {
+    await signIn(tester);
+    final client = MockClient((req) async {
+      if (req.url.path == '/catalog/apps') {
+        expect(req.url.queryParameters, {'artifacts': 'summary'});
+        return _json({
+          'apps': [
+            listed('apk', 'android', 'a.apk'),
+            listed('bin', 'bin', 'tool.tar.gz'),
+            listed('srv', 'server', 'srv.zip'),
+            listed('ipa', 'ios', 'a.ipa'),
+          ],
+          'teams': [],
+        });
+      }
+      return http.Response('', 404);
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeShell(
+          authState: auth,
+          client: client,
+          platformStore: MemoryCatalogPlatformStore(CatalogPlatform.all),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    for (final id in ['apk', 'bin', 'srv', 'ipa']) {
+      expect(find.text('app-$id'), findsOneWidget);
+    }
+    // Only the APK: on Android, an iOS build is as foreign as a server one.
+    expect(find.byType(InstallButton), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('apk')),
+        matching: find.byType(InstallButton),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a slow load of an earlier filter does not overwrite the '
+      'newer filter\'s list', (tester) async {
+    await signIn(tester);
+    final slowIos = Completer<http.Response>();
+    final client = MockClient((req) {
+      if (req.url.path != '/catalog/apps') {
+        return Future.value(http.Response('', 404));
+      }
+      return switch (req.url.queryParameters['platform']) {
+        'ios' => slowIos.future,
+        'android' => Future.value(_json({'apps': [], 'teams': []})),
+        _ => Future.value(
+          _json({
+            'apps': [listed('fast', 'bin', 'f.tar.gz')],
+            'teams': [],
+          }),
+        ),
+      };
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeShell(
+          authState: auth,
+          client: client,
+          platformStore: MemoryCatalogPlatformStore(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('iOS'));
+    await tester.pump();
+    await tester.tap(find.text('전체'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('app-fast'), findsOneWidget);
+
+    slowIos.complete(
+      _json({
+        'apps': [listed('slow', 'ios', 's.ipa')],
+        'teams': [],
+      }),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('app-fast'), findsOneWidget);
+    expect(find.text('app-slow'), findsNothing);
   });
 }

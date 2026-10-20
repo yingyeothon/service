@@ -4,6 +4,7 @@ import 'package:yyt_console/app_detail_view.dart';
 import 'package:yyt_console/app_info.dart';
 import 'package:yyt_console/auth/auth_state.dart';
 import 'package:yyt_console/browse_screen.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
 import 'package:yyt_console/load_app_info.dart';
@@ -23,6 +24,7 @@ class HomeShell extends StatefulWidget {
     this.client,
     this.push,
     this.detailBuilder,
+    this.platformStore = const SecureCatalogPlatformStore(),
   });
 
   final AuthState authState;
@@ -36,6 +38,9 @@ class HomeShell extends StatefulWidget {
 
   /// The screen a tapped notice opens; tests replace the real detail view.
   final Widget Function(AppInfo app)? detailBuilder;
+
+  /// Where the app and browse tabs' platform filter is kept.
+  final CatalogPlatformStore platformStore;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -59,11 +64,11 @@ class _HomeShellState extends State<HomeShell> {
   /// update check waits for it so the launch is one request at a time.
   final Completer<void> _firstLoad = Completer<void>();
 
-  /// The first list load, then [_refreshBrowse]: what the update check waits
-  /// for, so the launch stays one request at a time.
-  late final Future<void> _launch = _firstLoad.future.then(
-    (_) => _refreshBrowse(),
-  );
+  /// The first list load, then [_refreshApps] and [_refreshBrowse]: what the
+  /// update check waits for, so the launch stays one request at a time.
+  late final Future<void> _launch = _firstLoad.future
+      .then((_) => _refreshApps())
+      .then((_) => _refreshBrowse());
 
   /// The profile this shell was built for: the scope its topics belong to.
   late final String? _scope = widget.authState.activeProfile?.id;
@@ -76,9 +81,31 @@ class _HomeShellState extends State<HomeShell> {
   StreamSubscription<CatalogPush>? _notices;
   bool _opening = false;
 
+  /// The app and browse tabs' platform filter; `null` until the stored
+  /// choice is read, so the first list request already uses it.
+  ValueNotifier<CatalogPlatform>? _platform;
+
+  /// The filter the app tab's first load used.
+  CatalogPlatform? _launchPlatform;
+
+  Future<void> _loadPlatform() async {
+    CatalogPlatform? stored;
+    try {
+      stored = await widget.platformStore.read();
+    } catch (_) {
+      stored = null;
+    }
+    if (!mounted) return;
+    final notifier = ValueNotifier(stored ?? deviceCatalogPlatform());
+    _launchPlatform = notifier.value;
+    notifier.addListener(() => widget.platformStore.write(notifier.value));
+    setState(() => _platform = notifier);
+  }
+
   @override
   void initState() {
     super.initState();
+    _loadPlatform();
     final push = widget.push;
     if (push == null) return;
     _notices = push.foreground.listen(_onForegroundNotice);
@@ -92,12 +119,21 @@ class _HomeShellState extends State<HomeShell> {
     _notices?.cancel();
     widget.push?.pendingOpen.removeListener(_openPending);
     _reload.dispose();
+    _platform?.dispose();
     if (widget.client == null) _client.close();
     super.dispose();
   }
 
-  /// Reports the installed apps of one list: each is a topic to follow.
-  void _onAppsLoaded(String source, List<AppInfo> apps) {
+  /// Reports the installed apps of one list: each is a topic to follow. A
+  /// list loaded under another platform's filter (or `all`) says nothing
+  /// about what this device follows or installs, so it is neither synced nor
+  /// kept for opening notices.
+  void _onAppsLoaded(
+    String source,
+    List<AppInfo> apps, [
+    CatalogPlatform? platform,
+  ]) {
+    if (platform != null && platform != deviceCatalogPlatform()) return;
     _loaded[source] = apps;
     final scope = _scope;
     if (scope == null) return;
@@ -110,6 +146,34 @@ class _HomeShellState extends State<HomeShell> {
             if (app.topic case final topic?) topic: app.id,
       },
     );
+  }
+
+  /// Once per launch, when the app tab's first load used another platform's
+  /// filter (a stored choice): reads this device's list for the topic sync
+  /// alone, so installs and removals since the last launch are still
+  /// followed. Nothing extra is requested under the device's own filter.
+  Future<void> _refreshApps() async {
+    final scope = _scope;
+    if (widget.push == null || scope == null) return;
+    if (_launchPlatform == deviceCatalogPlatform()) return;
+    if (!mounted || _loaded.containsKey('apps')) return;
+    try {
+      final token = widget.authState.token;
+      final apps = await loadAppInfo(
+        ({String? token}) => fetchRemoteApps(
+          token: token,
+          client: _client,
+          platform: deviceCatalogPlatform(),
+        ),
+        findInstalledVersion,
+        token: token,
+      );
+      // The tab switched to the device's filter meanwhile: its load is newer.
+      if (!mounted || _loaded.containsKey('apps')) return;
+      _onAppsLoaded('apps', apps, deviceCatalogPlatform());
+    } catch (_) {
+      // Offline or revoked: the next launch tries again.
+    }
   }
 
   /// Once per launch, when an earlier launch followed an app through the
@@ -224,12 +288,19 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    final platform = _platform;
+    if (platform == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     return Scaffold(
       body: SelfUpdateBanner(
         authState: widget.authState,
         startAfter: _launch,
-        check: ({required String? token}) =>
-            checkConsoleAppUpdate(token: token, client: _client),
+        check: ({required String? token}) => checkConsoleAppUpdate(
+          token: token,
+          client: _client,
+          platform: deviceCatalogPlatform(),
+        ),
         child: IndexedStack(
           index: _index,
           children: [
@@ -237,7 +308,8 @@ class _HomeShellState extends State<HomeShell> {
               authState: widget.authState,
               client: _client,
               reload: _reload,
-              onAppsLoaded: (apps) => _onAppsLoaded('apps', apps),
+              platform: platform,
+              onAppsLoaded: (apps, p) => _onAppsLoaded('apps', apps, p),
               onFirstLoadDone: () {
                 if (!_firstLoad.isCompleted) _firstLoad.complete();
               },
@@ -246,7 +318,8 @@ class _HomeShellState extends State<HomeShell> {
                 ? BrowseScreen(
                     authState: widget.authState,
                     client: _client,
-                    onAppsLoaded: (apps) => _onAppsLoaded('browse', apps),
+                    platform: platform,
+                    onAppsLoaded: (apps, p) => _onAppsLoaded('browse', apps, p),
                   )
                 : const SizedBox.shrink(),
             _projectsVisited

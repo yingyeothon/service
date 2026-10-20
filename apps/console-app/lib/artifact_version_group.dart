@@ -1,4 +1,6 @@
+import 'package:yyt_console/app_install_state.dart';
 import 'package:yyt_console/artifact_info.dart';
+import 'package:yyt_console/catalog_platform.dart';
 
 const unknownArtifactVersion = 'unknown';
 
@@ -15,9 +17,30 @@ class ArtifactVersionGroup {
 
   DateTime get createdAt => topArtifact.createdAt;
   int get artifactCount => artifacts.length;
-  int get installableCount =>
-      artifacts.where((artifact) => artifact.isInstallableAndroidApk).length;
+  int installableCount(String latestVersion) => artifacts
+      .where((artifact) => canInstallArtifact(artifact, latestVersion))
+      .length;
 }
+
+/// The newest artifact this device can install; `null` when there is none.
+/// Under the `all` filter the newest build overall may be another
+/// platform's, which must not decide what this device calls latest.
+ArtifactInfo? latestInstallableArtifact(Iterable<ArtifactInfo> artifacts) {
+  ArtifactInfo? latest;
+  for (final a in artifacts) {
+    if (!a.isInstallableOnThisDevice) continue;
+    if (latest == null || _compareUploadOrder(a, latest) > 0) latest = a;
+  }
+  return latest;
+}
+
+/// Whether the detail screen offers [artifact] for install: it must install
+/// on this device, and on iOS only the newest version is offered — whether
+/// iOS installs a lower build over a higher one is unverified (todo/79).
+bool canInstallArtifact(ArtifactInfo artifact, String latestVersion) =>
+    artifact.isInstallableOnThisDevice &&
+    !(isIosDevice() &&
+        isOlderArtifactVersion(artifact.comparableVersion, latestVersion));
 
 List<ArtifactVersionGroup> groupArtifactsByVersion(
   List<ArtifactInfo> artifacts,

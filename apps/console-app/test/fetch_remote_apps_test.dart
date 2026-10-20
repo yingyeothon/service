@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:yyt_console/auth/auth_config.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -405,5 +406,142 @@ void main() {
       {for (final a in listed) a.id: a.topic},
       {'l1': 'yyt.catalog.prod.l1', 'l2': null},
     );
+  });
+
+  group('platform filter', () {
+    Map<String, Object?> art(
+      String id,
+      String platform,
+      int createdAt, {
+      Map<String, String> tags = const {},
+    }) => {
+      'id': id,
+      'url': 'https://cdn.example/$id',
+      'platform': platform,
+      'size': 1,
+      'tags': {'version': '1.0.0', ...tags},
+      'createdAt': createdAt,
+    };
+
+    test('the app list sends the chosen platform, and all omits it', () async {
+      final queries = <Map<String, String>>[];
+      final client = MockClient((req) async {
+        queries.add(req.url.queryParameters);
+        return _json({
+          'apps': [
+            _app('i', 't', latest: art('ai', 'ios', 3)),
+            _app('b', 't', latest: art('ab', 'bin', 2)),
+          ],
+          'teams': [],
+        });
+      });
+      final ios = await fetchRemoteApps(
+        token: 'tok',
+        client: client,
+        platform: CatalogPlatform.ios,
+      );
+      // An older console ignores the filter: the other platform is dropped.
+      expect(ios.map((a) => a.id), ['i']);
+      final all = await fetchRemoteApps(
+        token: 'tok',
+        client: client,
+        platform: CatalogPlatform.all,
+      );
+      expect(all.map((a) => a.id), ['i', 'b']);
+      expect(queries, [
+        {'artifacts': 'summary', 'platform': 'ios'},
+        {'artifacts': 'summary'},
+      ]);
+    });
+
+    test('bundleIds are read next to applicationIds', () async {
+      final client = MockClient(
+        (req) async => _json({
+          'apps': [
+            {
+              ..._app(
+                'i',
+                't',
+                latest: art('ai', 'ios', 3, tags: {'bundle_id': 'life.yyt.i'}),
+                applicationIds: ['p.i'],
+              ),
+              'bundleIds': ['life.yyt.i', 'life.yyt.i.beta', 7, ''],
+            },
+          ],
+          'teams': [],
+        }),
+      );
+      final app = (await fetchRemoteApps(
+        token: 'tok',
+        client: client,
+        platform: CatalogPlatform.ios,
+      )).single;
+      expect(app.bundleIds, ['life.yyt.i', 'life.yyt.i.beta']);
+      expect(app.applicationIds, ['p.i']);
+      expect(app.installCheckApplicationIds, ['life.yyt.i', 'life.yyt.i.beta']);
+    });
+
+    test('artifacts and listings send the chosen platform; all omits '
+        'it', () async {
+      final seen = <Uri>[];
+      final client = MockClient((req) async {
+        seen.add(req.url);
+        if (req.url.path == '/catalog/listings') {
+          return _json({
+            'listings': [
+              {
+                'appId': 'ca_1',
+                'appName': 'one',
+                'title': 'One',
+                'artifacts': [
+                  art('a', 'android', 1),
+                  art('w', 'windows', 5),
+                  art('i', 'ios', 3, tags: {'bundle_id': 'life.yyt.one'}),
+                ],
+                'latestArtifact': art('w', 'windows', 5),
+                'applicationIds': ['p.one'],
+                'bundleIds': ['life.yyt.one'],
+              },
+            ],
+          });
+        }
+        return _json({'artifacts': []});
+      });
+      for (final p in CatalogPlatform.values) {
+        await fetchAppArtifacts(
+          appId: 'ca_1',
+          token: 'tok',
+          client: client,
+          platform: p,
+        );
+      }
+      expect(seen.map((u) => u.queryParameters), [
+        {'platform': 'ios'},
+        {'platform': 'android'},
+        <String, String>{},
+      ]);
+      expect(seen.last.hasQuery, isFalse);
+
+      seen.clear();
+      final ios = (await fetchPublicListings(
+        token: 'tok',
+        client: client,
+        platform: CatalogPlatform.ios,
+      )).single;
+      expect(ios.latestArtifact.id, 'i');
+      expect(ios.package, 'life.yyt.one');
+      expect(ios.bundleIds, ['life.yyt.one']);
+      // `all` takes the newest build of any platform.
+      final all = (await fetchPublicListings(
+        token: 'tok',
+        client: client,
+        platform: CatalogPlatform.all,
+      )).single;
+      expect(all.latestArtifact.id, 'w');
+      expect(seen.map((u) => u.queryParameters), [
+        {'platform': 'ios'},
+        <String, String>{},
+      ]);
+    });
   });
 }

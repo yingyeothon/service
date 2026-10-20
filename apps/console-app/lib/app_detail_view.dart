@@ -8,21 +8,32 @@ import 'package:yyt_console/api/artifacts_api.dart';
 import 'package:yyt_console/artifact_info.dart';
 import 'package:yyt_console/artifact_version_group.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/check_if_need_to_update.dart';
 import 'package:yyt_console/download_install_launch.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
 import 'package:yyt_console/install_progress_dialog.dart';
+import 'package:yyt_console/ios_install_ledger.dart';
 import 'package:yyt_console/listing/listing_section.dart';
+import 'package:yyt_console/open_app_button.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/project_issues_button.dart';
 import 'package:flutter/material.dart';
 
 class AppDetailView extends StatefulWidget {
-  const AppDetailView({super.key, required this.app, required this.authState});
+  const AppDetailView({
+    super.key,
+    required this.app,
+    required this.authState,
+    this.platform,
+  });
 
   final AppInfo app;
   final AuthState authState;
+
+  /// Whose builds the version list shows; `null` = this device's.
+  final CatalogPlatform? platform;
 
   @override
   State<AppDetailView> createState() => _AppDetailViewState();
@@ -108,7 +119,11 @@ class _AppDetailViewState extends State<AppDetailView>
       // the team's (404 to a viewer), so the newest build is the whole list.
       final artifacts = widget.app.shared
           ? [widget.app.latestArtifact]
-          : await fetchAppArtifacts(appId: widget.app.id, token: token);
+          : await fetchAppArtifacts(
+              appId: widget.app.id,
+              token: token,
+              platform: _platform,
+            );
       final installedVersions = await _resolveInstalledVersions(artifacts);
       if (!mounted) {
         return;
@@ -128,6 +143,23 @@ class _AppDetailViewState extends State<AppDetailView>
         _error = e.toString();
       });
     }
+  }
+
+  CatalogPlatform get _platform => widget.platform ?? deviceCatalogPlatform();
+
+  /// iOS: forgets this device's install requests of the app, so it reads as
+  /// not installed again (the app was deleted, or the install never ran).
+  Future<void> _clearLedger() async {
+    final ids = [
+      for (final e in _installedVersions.entries)
+        if (e.value != null) e.key,
+    ];
+    for (final id in ids) {
+      await IosInstallLedger.instance.remove(id);
+    }
+    if (!mounted) return;
+    _showSnack('설치 기록을 지웠습니다.');
+    await _loadArtifacts();
   }
 
   Future<void> _installArtifact(ArtifactInfo artifact) async {
@@ -150,11 +182,13 @@ class _AppDetailViewState extends State<AppDetailView>
       final attempt = await installArtifact(
         artifactUrl: artifact.url,
         packageName: _packageNameForArtifact(artifact),
-        targetVersion: artifact.version,
+        targetVersion: artifact.comparableVersion,
         installedVersionBefore: _installedVersionForArtifact(artifact),
         beginInstallerReturnWatch: _beginInstallerReturnWatch,
         cancellationController: cancellationController,
         onProgress: _updateProgressDialog,
+        artifact: artifact,
+        topic: widget.app.topic,
       );
 
       if (!mounted) {
@@ -181,7 +215,7 @@ class _AppDetailViewState extends State<AppDetailView>
       final reinstall = await reinstallAfterUninstall(
         downloadedPath: attempt.downloadedPath!,
         packageName: _packageNameForArtifact(artifact),
-        targetVersion: artifact.version,
+        targetVersion: artifact.comparableVersion,
         beginInstallerReturnWatch: _beginInstallerReturnWatch,
         cancellationController: cancellationController,
         onProgress: _updateProgressDialog,
@@ -311,8 +345,8 @@ class _AppDetailViewState extends State<AppDetailView>
   }
 
   String _packageNameForArtifact(ArtifactInfo artifact) {
-    return artifact.applicationId.isNotEmpty
-        ? artifact.applicationId
+    return artifact.installId.isNotEmpty
+        ? artifact.installId
         : widget.app.applicationId;
   }
 
@@ -416,10 +450,15 @@ class _AppDetailViewState extends State<AppDetailView>
       );
     }
 
-    final latestArtifact = _versionGroups.isEmpty
-        ? null
-        : _versionGroups.first.topArtifact;
-    final latestVersion = latestArtifact?.version ?? widget.app.version;
+    // What this device installs decides "latest"; another platform's newer
+    // build (the `all` filter) only stands in when nothing installs here.
+    final latestArtifact =
+        latestInstallableArtifact(
+          _versionGroups.expand((group) => group.artifacts),
+        ) ??
+        (_versionGroups.isEmpty ? null : _versionGroups.first.topArtifact);
+    final latestVersion =
+        latestArtifact?.comparableVersion ?? widget.app.version;
     final heroInstalledVersion = _summaryInstalledVersion(latestArtifact);
     final state = resolveAppInstallState(latestVersion, heroInstalledVersion);
     final currentApp = AppInfo(
@@ -432,8 +471,21 @@ class _AppDetailViewState extends State<AppDetailView>
       needsUpdate: checkIfNeedToUpdate(latestVersion, heroInstalledVersion),
       home: widget.app.home,
       shared: widget.app.shared,
+      topic: widget.app.topic,
     );
     final home = widget.app.home;
+    final ios = isIosDevice();
+    final openScheme = ios && currentApp.latestArtifact.isIos
+        ? currentApp.latestArtifact.urlScheme
+        : '';
+    final recorded = ios && heroInstalledVersion != null;
+    final actions = <Widget>[
+      if (openScheme.isNotEmpty) OpenAppButton(scheme: openScheme),
+      if (recorded)
+        TextButton(onPressed: _clearLedger, child: const Text('기록 지우기')),
+      if (home != null)
+        ProjectIssuesButton(authState: widget.authState, home: home),
+    ];
 
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(
@@ -446,10 +498,16 @@ class _AppDetailViewState extends State<AppDetailView>
           title: appHeroTitle(currentApp),
           state: state,
           installedVersion: heroInstalledVersion,
-          // Straight to the app's project issues — the app *is* the project.
-          action: home == null
+          // Straight to the app's project issues — the app *is* the project;
+          // on iOS also open the app and forget its install requests.
+          action: actions.isEmpty
               ? null
-              : ProjectIssuesButton(authState: widget.authState, home: home),
+              : Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.end,
+                  children: actions,
+                ),
           extraChips: [
             if (widget.app.shared)
               const CatalogStateChip(label: '공유됨', color: CatalogPalette.ocean),
@@ -467,9 +525,9 @@ class _AppDetailViewState extends State<AppDetailView>
         ),
         const SizedBox(height: 12),
         if (latestArtifact == null)
-          const _DetailStateCard(
+          _DetailStateCard(
             icon: Icons.archive_outlined,
-            title: '사용 가능한 Android 아티팩트가 없습니다',
+            title: noArtifactTitle(_platform),
             body: '새 빌드가 업로드되면 이 화면에 표시됩니다.',
           )
         else
@@ -533,6 +591,12 @@ class _AppDetailViewState extends State<AppDetailView>
     );
   }
 }
+
+/// The detail screen's empty state for [platform].
+String noArtifactTitle(CatalogPlatform platform) =>
+    platform == CatalogPlatform.all
+    ? '사용 가능한 아티팩트가 없습니다'
+    : '사용 가능한 ${platform.label} 아티팩트가 없습니다';
 
 class _DetailStateCard extends StatelessWidget {
   const _DetailStateCard({

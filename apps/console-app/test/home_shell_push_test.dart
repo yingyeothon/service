@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/home_shell.dart';
 import 'package:yyt_console/profile_menu.dart';
 import 'package:yyt_console/push/push_service.dart';
@@ -132,7 +133,11 @@ void main() {
     platform.uninstall();
   });
 
-  Future<void> launch(WidgetTester tester, {MemoryPushStore? store}) async {
+  Future<void> launch(
+    WidgetTester tester, {
+    MemoryPushStore? store,
+    CatalogPlatform? filter,
+  }) async {
     auth = AuthState();
     await tester.runAsync(() async {
       if (store != null) {
@@ -151,6 +156,7 @@ void main() {
           authState: auth,
           client: client(),
           push: push,
+          platformStore: MemoryCatalogPlatformStore(filter),
           detailBuilder: (app) =>
               Scaffold(body: Text('detail ${app.id} ${app.version}')),
         ),
@@ -164,6 +170,56 @@ void main() {
     await launch(tester);
     expect(fcm.calls, ['sub $_topicA']);
     expect(fcm.permissionRequests, 1);
+  });
+
+  testWidgets('changing the platform filter leaves the followed topics as '
+      'they are', (tester) async {
+    await launch(tester);
+    expect(fcm.calls, ['sub $_topicA']);
+    final lists = paths.where((p) => p == '/catalog/apps').length;
+
+    // Under iOS the Android apps drop out of the list; a sync of that list
+    // would unsubscribe A.
+    await tester.tap(find.text('iOS'));
+    await settle(tester);
+    expect(paths.where((p) => p == '/catalog/apps').length, lists + 1);
+    expect(find.text('app-ca_a'), findsNothing);
+    await tester.tap(find.text('전체'));
+    await settle(tester);
+    expect(fcm.calls, ['sub $_topicA']);
+    expect(fcm.topics, {_topicA});
+
+    // Back on the device's own platform the list speaks for the device again.
+    await tester.tap(find.text('Android'));
+    await settle(tester);
+    expect(fcm.calls, ['sub $_topicA']);
+  });
+
+  testWidgets('a launch under a stored non-device filter still follows '
+      'installs and drops removals, from a device-filtered read', (
+    tester,
+  ) async {
+    // An earlier launch followed B, which is not installed any more.
+    final store = MemoryPushStore();
+    await tester.runAsync(() async {
+      final earlier = PushService(connect: () async => fcm, store: store);
+      await earlier.start();
+      await earlier.setScope('p_1');
+      await earlier.sync(
+        scope: 'p_1',
+        source: 'apps',
+        topics: {_topicB: 'ca_b'},
+      );
+      earlier.dispose();
+    });
+    fcm.calls.clear();
+
+    await launch(tester, store: store, filter: CatalogPlatform.ios);
+    // The tab shows iOS builds (none); a second, device-filtered read syncs.
+    expect(find.text('app-ca_a'), findsNothing);
+    expect(paths.where((p) => p == '/catalog/apps'), hasLength(2));
+    expect(fcm.calls.toSet(), {'sub $_topicA', 'unsub $_topicB'});
+    expect(fcm.topics, {_topicA});
   });
 
   testWidgets('a server that names no topic for an installed app: nothing '

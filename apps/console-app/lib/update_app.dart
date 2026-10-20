@@ -5,6 +5,8 @@ import 'package:yyt_console/app_install_state.dart';
 import 'package:yyt_console/app_list_view.dart';
 import 'package:yyt_console/app_theme.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/catalog_platform.dart';
+import 'package:yyt_console/catalog_platform_selector.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:yyt_console/filter_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
@@ -23,6 +25,7 @@ class UpdaterApp extends StatefulWidget {
     this.onFirstLoadDone,
     this.onAppsLoaded,
     this.reload,
+    this.platform,
   });
 
   final AuthState authState;
@@ -33,11 +36,17 @@ class UpdaterApp extends StatefulWidget {
   /// Called once, when the first list load has ended — loaded or failed.
   final VoidCallback? onFirstLoadDone;
 
-  /// Called after every successful load with the list and its install state.
-  final ValueChanged<List<AppInfo>>? onAppsLoaded;
+  /// Called after every successful load with the list, its install state
+  /// and the platform filter it was loaded with.
+  final void Function(List<AppInfo> apps, CatalogPlatform platform)?
+  onAppsLoaded;
 
   /// Reloads the list when it notifies (an update notice arrived).
   final Listenable? reload;
+
+  /// The platform filter, shared with the browse tab (HomeShell); `null` =
+  /// a filter of this list's own, starting at this device's platform.
+  final ValueNotifier<CatalogPlatform>? platform;
 
   @override
   State<UpdaterApp> createState() => _UpdaterAppState();
@@ -51,6 +60,13 @@ class _UpdaterAppState extends State<UpdaterApp> {
   String _searchQuery = '';
   bool _refreshing = false;
 
+  late final ValueNotifier<CatalogPlatform> _platform =
+      widget.platform ?? ValueNotifier(deviceCatalogPlatform());
+
+  /// Bumped per load: a slower load of an earlier filter must not overwrite
+  /// the newer one's list.
+  int _loadSeq = 0;
+
   /// The list reloads on refresh, pull-to-refresh and after every install;
   /// only the first load is reported.
   bool _firstLoadReported = false;
@@ -62,11 +78,14 @@ class _UpdaterAppState extends State<UpdaterApp> {
     _checkPendingSelfUpdate();
     _searchController.addListener(_onSearchChanged);
     widget.reload?.addListener(checkUpdates);
+    _platform.addListener(checkUpdates);
   }
 
   @override
   void dispose() {
     widget.reload?.removeListener(checkUpdates);
+    _platform.removeListener(checkUpdates);
+    if (widget.platform == null) _platform.dispose();
     _debounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
@@ -96,27 +115,30 @@ class _UpdaterAppState extends State<UpdaterApp> {
     final client = widget.client;
     final onFirstLoadDone = widget.onFirstLoadDone;
     final onAppsLoaded = widget.onAppsLoaded;
+    final platform = _platform.value;
+    final seq = ++_loadSeq;
     try {
       final infos = await loadAppInfo(
-        ({String? token}) => fetchRemoteApps(token: token, client: client),
+        ({String? token}) =>
+            fetchRemoteApps(token: token, client: client, platform: platform),
         findInstalledVersion,
         token: token,
       );
-      if (!mounted) {
+      if (!mounted || seq != _loadSeq) {
         return;
       }
       setState(() {
         apps = infos;
         errorMessage = null;
       });
-      onAppsLoaded?.call(infos);
+      onAppsLoaded?.call(infos, platform);
     } on UnauthorizedException {
       // Keyed by the token this load used: the user may have switched
       // profiles meanwhile, and the revoked one is what must go.
       if (mounted) await widget.authState.invalidate(token);
       return;
     } catch (e) {
-      if (!mounted) {
+      if (!mounted || seq != _loadSeq) {
         return;
       }
       setState(() {
@@ -125,7 +147,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
             '앱 목록을 불러오지 못했습니다.\n네트워크를 확인하거나 나중에 다시 시도해주세요.\n\n오류: $e';
       });
     } finally {
-      if (mounted) {
+      if (mounted && seq == _loadSeq) {
         setState(() {
           _refreshing = false;
         });
@@ -197,7 +219,8 @@ class _UpdaterAppState extends State<UpdaterApp> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(20),
           children: [
-            const SizedBox(height: 100),
+            CatalogPlatformSelector(platform: _platform),
+            const SizedBox(height: 80),
             CatalogStateCard(
               icon: Icons.cloud_off_rounded,
               title: '앱 목록을 불러오지 못했습니다',
@@ -223,10 +246,11 @@ class _UpdaterAppState extends State<UpdaterApp> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(20),
           children: [
-            const SizedBox(height: 100),
+            CatalogPlatformSelector(platform: _platform),
+            const SizedBox(height: 80),
             CatalogStateCard(
               icon: Icons.check_circle_outline_rounded,
-              title: '설치 가능한 앱이 없습니다',
+              title: noAppsTitle(_platform.value),
               body: '새 앱이 게시되면 이 화면에 표시됩니다.',
               actionLabel: '새로고침',
               onPressed: checkUpdates,
@@ -256,6 +280,8 @@ class _UpdaterAppState extends State<UpdaterApp> {
         ),
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
         children: [
+          CatalogPlatformSelector(platform: _platform),
+          const SizedBox(height: 10),
           _SummaryStrip(
             totalApps: apps!.length,
             updateCount: updateCount,
@@ -298,6 +324,7 @@ class _UpdaterAppState extends State<UpdaterApp> {
               apps: filteredApps,
               authState: widget.authState,
               onAppsChanged: checkUpdates,
+              platform: _platform.value,
             ),
         ],
       ),

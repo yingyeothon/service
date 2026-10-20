@@ -10,7 +10,8 @@ import 'package:flutter/material.dart';
 /// The window is marked secure before the first frame that renders the value
 /// and unmarked on dispose; the value is plain [Text] (no selection toolbar,
 /// no share), copied only through [SecureWindow.copySensitive], which wipes
-/// it from the clipboard after [sensitiveClipboardTtl] if it is still there.
+/// it from the clipboard after [platformClipboardTtl] (iOS: the pasteboard's
+/// own expiry) if it is still there.
 /// It is never stored or logged.
 class SecretOnceScreen extends StatefulWidget {
   const SecretOnceScreen({
@@ -18,7 +19,7 @@ class SecretOnceScreen extends StatefulWidget {
     required this.created,
     required this.detailBuilder,
     this.secureWindow = const PlatformSecureWindow(),
-    this.clipboardTtl = sensitiveClipboardTtl,
+    this.clipboardTtl,
   });
 
   final CreatedChannel created;
@@ -26,7 +27,9 @@ class SecretOnceScreen extends StatefulWidget {
   /// The channel screen that replaces this one.
   final WidgetBuilder detailBuilder;
   final SecureWindow secureWindow;
-  final Duration clipboardTtl;
+
+  /// `null` = [platformClipboardTtl], what this device applies.
+  final Duration? clipboardTtl;
 
   @override
   State<SecretOnceScreen> createState() => _SecretOnceScreenState();
@@ -57,17 +60,13 @@ class _SecretOnceScreenState extends State<SecretOnceScreen> {
   }
 
   Future<void> _copy(String value) async {
-    await widget.secureWindow.copySensitive(
-      value,
-      clearAfter: widget.clipboardTtl,
-    );
+    final ttl = widget.clipboardTtl ?? platformClipboardTtl();
+    await widget.secureWindow.copySensitive(value, clearAfter: ttl);
     if (!mounted) return;
     setState(() => _copied = true);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          '복사했습니다. 클립보드는 ${widget.clipboardTtl.inSeconds}초 뒤에 비웁니다.',
-        ),
+        content: Text('복사했습니다. 클립보드는 ${clipboardTtlText(ttl)} 뒤에 비웁니다.'),
       ),
     );
   }

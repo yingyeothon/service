@@ -1,17 +1,36 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:yyt_console/catalog_platform.dart';
 
 /// How long a copied credential may stay on the clipboard.
 const sensitiveClipboardTtl = Duration(seconds: 60);
 
+/// The iOS pasteboard expiry, fixed in ios/Runner/AppDelegate.swift
+/// (docs/decisions.md *Console app and push on iOS* #6).
+const iosSensitiveClipboardTtl = Duration(minutes: 2);
+
+/// The clipboard lifetime this device actually applies.
+Duration platformClipboardTtl() =>
+    isIosDevice() ? iosSensitiveClipboardTtl : sensitiveClipboardTtl;
+
+/// [ttl] as the copy notice says it: whole minutes from two up, else seconds.
+String clipboardTtlText(Duration ttl) =>
+    ttl.inMinutes >= 2 && ttl.inSeconds % 60 == 0
+    ? '${ttl.inMinutes}분'
+    : '${ttl.inSeconds}초';
+
 /// Screen and clipboard protection for a one-time credential.
 ///
-/// `setSecure(true)` sets `FLAG_SECURE` on the (single) activity, which blanks
-/// screenshots, screen recording and the recents thumbnail for the whole app
-/// — so every `true` must be paired with a `false`. `copySensitive` marks the
-/// clip as sensitive so the Android 13+ clipboard preview does not echo it,
-/// and clears it after [clearAfter] if it is still the clip this call wrote.
+/// `setSecure(true)` sets `FLAG_SECURE` on the (single) Android activity,
+/// which blanks screenshots, screen recording and the recents thumbnail for
+/// the whole app; on iOS, which cannot block screenshots, it covers the
+/// window while the app is inactive so the app switcher snapshot shows
+/// nothing. Every `true` must be paired with a `false`. `copySensitive`
+/// marks the clip as sensitive so the Android 13+ clipboard preview does not
+/// echo it and clears it after [clearAfter] if it is still the clip this call
+/// wrote; on iOS the item is local-only (no Universal Clipboard) and expires
+/// after [iosSensitiveClipboardTtl] whatever [clearAfter] says.
 abstract class SecureWindow {
   Future<void> setSecure(bool secure);
   Future<void> copySensitive(
@@ -20,9 +39,9 @@ abstract class SecureWindow {
   });
 }
 
-/// `life.yyt.console/window` (android/…/MainActivity.kt). Platforms without
-/// the channel (tests, iOS today) fall back to a plain clipboard write and a
-/// Dart timer.
+/// `life.yyt.console/window` (android/…/MainActivity.kt,
+/// ios/Runner/AppDelegate.swift). Platforms without the channel (tests) fall
+/// back to a plain clipboard write and a Dart timer.
 class PlatformSecureWindow implements SecureWindow {
   const PlatformSecureWindow();
 
@@ -39,7 +58,9 @@ class PlatformSecureWindow implements SecureWindow {
 
   /// The timed clear runs natively: from Android 10 a backgrounded app
   /// cannot read the clipboard, so a Dart timer comparing its text would
-  /// never clear it once the user switched to the app they paste into.
+  /// never clear it once the user switched to the app they paste into; iOS
+  /// suspends a backgrounded app, so the pasteboard expires the item itself
+  /// (fixed two minutes there, docs/decisions.md iOS #6).
   @override
   Future<void> copySensitive(
     String text, {

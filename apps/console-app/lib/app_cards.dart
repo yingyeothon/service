@@ -2,9 +2,11 @@ import 'package:yyt_console/app_info.dart';
 import 'package:yyt_console/app_install_state.dart';
 import 'package:yyt_console/app_theme.dart';
 import 'package:yyt_console/artifact_info.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/format_bytes.dart';
 import 'package:yyt_console/format_time.dart';
 import 'package:yyt_console/artifact_version_group.dart';
+import 'package:yyt_console/open_app_button.dart';
 import 'package:flutter/material.dart';
 
 /// Hero title: the human description first, the catalog name in parentheses
@@ -295,11 +297,11 @@ class ArtifactReleaseCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final tone = _buildTone(artifact.buildType);
     final isInstalled = isInstalledTargetVersion(
-      artifact.version,
+      artifact.comparableVersion,
       installedVersion,
     );
     final isOldVersion = isOlderArtifactVersion(
-      artifact.version,
+      artifact.comparableVersion,
       latestVersion,
     );
     final publishedAt = formatLocalTime(artifact.createdAt);
@@ -344,8 +346,8 @@ class ArtifactReleaseCard extends StatelessWidget {
                                 color: CatalogPalette.slate,
                               ),
                             if (isInstalled)
-                              const CatalogStateChip(
-                                label: '현재 설치됨',
+                              CatalogStateChip(
+                                label: installedLabel(),
                                 color: CatalogPalette.mint,
                               ),
                           ],
@@ -378,6 +380,10 @@ class ArtifactReleaseCard extends StatelessWidget {
                     crossAxisAlignment: WrapCrossAlignment.center,
                     alignment: WrapAlignment.end,
                     children: [
+                      if (isIosDevice() &&
+                          artifact.isIos &&
+                          artifact.urlScheme.isNotEmpty)
+                        OpenAppButton(scheme: artifact.urlScheme),
                       if (onDelete != null)
                         IconButton.filledTonal(
                           tooltip: '아티팩트 삭제',
@@ -480,7 +486,7 @@ class ArtifactVersionGroupCard extends StatelessWidget {
     // installed when any of its artifacts matches its own installed version.
     final isInstalled = group.artifacts.any(
       (artifact) => isInstalledTargetVersion(
-        artifact.version,
+        artifact.comparableVersion,
         installedVersionForArtifact(artifact),
       ),
     );
@@ -520,8 +526,8 @@ class ArtifactVersionGroupCard extends StatelessWidget {
                     color: CatalogPalette.slate,
                   ),
                 if (isInstalled)
-                  const CatalogStateChip(
-                    label: '현재 설치됨',
+                  CatalogStateChip(
+                    label: installedLabel(),
                     color: CatalogPalette.mint,
                   ),
               ],
@@ -540,10 +546,10 @@ class ArtifactVersionGroupCard extends StatelessWidget {
                     icon: Icons.inventory_2_rounded,
                     value: '${group.artifactCount}개',
                   ),
-                  if (group.installableCount > 0)
+                  if (group.installableCount(latestVersion) > 0)
                     CatalogValueChip(
                       icon: Icons.download_done_rounded,
-                      value: '설치 가능 ${group.installableCount}개',
+                      value: '설치 가능 ${group.installableCount(latestVersion)}개',
                     ),
                 ],
               ),
@@ -561,7 +567,7 @@ class ArtifactVersionGroupCard extends StatelessWidget {
                   installedVersion: installedVersionForArtifact(artifact),
                   busy: busy,
                   deleting: deletingArtifactId == artifact.id,
-                  installable: artifact.isInstallableAndroidApk,
+                  installable: canInstallArtifact(artifact, latestVersion),
                   onInstall: () => onInstallArtifact(artifact),
                   onDelete: onDeleteArtifact == null
                       ? null
@@ -697,11 +703,15 @@ String _stateLabel(AppInstallState state) {
     case AppInstallState.old:
       return '업데이트 필요';
     case AppInstallState.latest:
-      return '현재 설치됨';
+      return installedLabel();
     case AppInstallState.newerInstalled:
       return '로컬이 더 최신';
   }
 }
+
+/// What an installed-at-this-version app is called: iOS shows only what this
+/// device asked for (the install ledger), never a verified install.
+String installedLabel() => isIosDevice() ? '설치 요청됨(확인 불가)' : '현재 설치됨';
 
 Color _stateColor(AppInstallState state) {
   switch (state) {

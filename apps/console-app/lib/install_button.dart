@@ -77,7 +77,7 @@ class _InstallButtonState extends State<InstallButton>
 
   @override
   Widget build(BuildContext context) {
-    final installable = widget.app.latestArtifact.isInstallableAndroidApk;
+    final installable = widget.app.latestArtifact.isInstallableOnThisDevice;
     final disabled = _running || !installable;
     final label = installable
         ? widget.label ??
@@ -175,6 +175,8 @@ class _InstallButtonState extends State<InstallButton>
         onProgress: (progress) {
           notifier.value = progress;
         },
+        artifact: widget.app.latestArtifact,
+        topic: widget.app.topic,
       );
     } finally {
       _installerReturnCompleter = null;

@@ -213,8 +213,59 @@ only to the console API.
      --tag application_id=life.yyt.console --tag title=잉여톤
    ```
 
-4. Confirm `GET /catalog/installer/downloads` lists the new version first on
-   both stages; devices running the previous build show the update banner.
+4. Confirm `GET /catalog/installer/downloads` (newest build per platform)
+   shows the new version in its platform's row on both stages; devices
+   running the previous build show the update banner. Upload only the release
+   APK and the ad-hoc IPA to this app: a later `.debug` APK or AAB would
+   become the Android row and hide the update.
+
+### iOS (ad-hoc, built on a Mac)
+
+The iOS target (`ios/`, bundle id `life.yyt.console`, iOS 15.5+) is
+distributed ad hoc through the catalog: the app and the web open the IPA's
+`itms-services` install link (docs/decisions.md _Console app and push on iOS_).
+This Linux host cannot build it; build on the Mac with Xcode and Flutter.
+
+1. On the Mac: a clone of this repo at the commit to ship, plus the gitignored
+   inputs copied next to it — `local/console-app/firebase.prod.json` (push
+   defines, as for Android) and `local/console-app/ios.env` with
+   `IOS_TEAM_ID=<team>`. The team id is an identifier: it never enters the
+   repo, `ios/build.env` or the export plists; the build script injects it
+   (`FLUTTER_XCODE_DEVELOPMENT_TEAM`, a temporary export plist).
+2. Compile check without signing (no Apple portal needed):
+
+   ```sh
+   flutter build ios --release --no-codesign \
+     --dart-define-from-file=../../local/console-app/firebase.prod.json
+   ```
+
+3. Signed ad-hoc IPA (needs the App ID, the test devices and an ad-hoc
+   profile on the Mac): `make ios-ipa` (= `tools/build_ios.sh ad-hoc`). The IPA
+   lands in `build/ios/ipa/`. Check it before any upload:
+
+   ```sh
+   unzip -oq build/ios/ipa/*.ipa -d /tmp/ipa
+   codesign -d --entitlements :- /tmp/ipa/Payload/Runner.app
+   security cms -D -i /tmp/ipa/Payload/Runner.app/embedded.mobileprovision \
+     | plutil -extract ProvisionedDevices raw -o - - | head
+   ```
+
+4. Upload (same version as the APK of the release):
+
+   ```sh
+   yyt --profile <dev|prod> --team platform --project console \
+     catalog artifact upload ios console build/ios/ipa/<name>.ipa \
+     --version <x.y.z+build> --bundle-id life.yyt.console --build-number <build> \
+     --distribution-method ad-hoc --minimum-os-version 15.5 --tag title=잉여톤
+   ```
+
+   `YYT_PROFILE=<dev|prod> tools/build_ios.sh upload-ad-hoc` runs the same
+   upload from the recorded build manifest.
+
+On iOS the app cannot see what is installed: an install opens the system
+installer through the manifest link, and the app keeps a device-local ledger
+of what it asked to install ("설치 요청됨(확인 불가)"). The catalog list
+defaults to this device's platform and has an iOS / Android / 전체 switch.
 
 ## Build
 

@@ -4,6 +4,8 @@ import 'package:yyt_console/app_info.dart';
 import 'package:yyt_console/app_list_view.dart';
 import 'package:yyt_console/app_theme.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/catalog_platform.dart';
+import 'package:yyt_console/catalog_platform_selector.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:yyt_console/filter_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
@@ -23,13 +25,19 @@ class BrowseScreen extends StatefulWidget {
     required this.authState,
     this.client,
     this.onAppsLoaded,
+    this.platform,
   });
 
   final AuthState authState;
   final http.Client? client;
 
-  /// Called after every successful load with the list and its install state.
-  final ValueChanged<List<AppInfo>>? onAppsLoaded;
+  /// Called after every successful load with the list, its install state
+  /// and the platform filter it was loaded with.
+  final void Function(List<AppInfo> apps, CatalogPlatform platform)?
+  onAppsLoaded;
+
+  /// See [UpdaterApp.platform].
+  final ValueNotifier<CatalogPlatform>? platform;
 
   @override
   State<BrowseScreen> createState() => _BrowseScreenState();
@@ -43,15 +51,24 @@ class _BrowseScreenState extends State<BrowseScreen> {
   Timer? _debounceTimer;
   String _searchQuery = '';
 
+  late final ValueNotifier<CatalogPlatform> _platform =
+      widget.platform ?? ValueNotifier(deviceCatalogPlatform());
+
+  /// See [UpdaterApp]'s: only the newest load lands.
+  int _loadSeq = 0;
+
   @override
   void initState() {
     super.initState();
     load();
     _searchController.addListener(_onSearchChanged);
+    _platform.addListener(load);
   }
 
   @override
   void dispose() {
+    _platform.removeListener(load);
+    if (widget.platform == null) _platform.dispose();
     _debounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
@@ -73,30 +90,36 @@ class _BrowseScreenState extends State<BrowseScreen> {
     final token = widget.authState.token;
     final client = widget.client;
     final onAppsLoaded = widget.onAppsLoaded;
+    final platform = _platform.value;
+    final seq = ++_loadSeq;
     try {
       final infos = await loadAppInfo(
-        ({String? token}) => fetchPublicListings(token: token, client: client),
+        ({String? token}) => fetchPublicListings(
+          token: token,
+          client: client,
+          platform: platform,
+        ),
         findInstalledVersion,
         token: token,
       );
-      if (!mounted) return;
+      if (!mounted || seq != _loadSeq) return;
       setState(() {
         apps = infos;
         errorMessage = null;
       });
-      onAppsLoaded?.call(infos);
+      onAppsLoaded?.call(infos, platform);
     } on UnauthorizedException {
       if (mounted) await widget.authState.invalidate(token);
       return;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || seq != _loadSeq) return;
       setState(() {
         apps = null;
         errorMessage =
             '게시된 앱을 불러오지 못했습니다.\n네트워크를 확인하거나 나중에 다시 시도해주세요.\n\n오류: $e';
       });
     } finally {
-      if (mounted) setState(() => _refreshing = false);
+      if (mounted && seq == _loadSeq) setState(() => _refreshing = false);
     }
   }
 
@@ -137,7 +160,8 @@ class _BrowseScreenState extends State<BrowseScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(20),
           children: [
-            const SizedBox(height: 100),
+            CatalogPlatformSelector(platform: _platform),
+            const SizedBox(height: 80),
             CatalogStateCard(
               icon: Icons.cloud_off_rounded,
               title: '게시된 앱을 불러오지 못했습니다',
@@ -157,10 +181,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(20),
           children: [
-            const SizedBox(height: 100),
+            CatalogPlatformSelector(platform: _platform),
+            const SizedBox(height: 80),
             CatalogStateCard(
               icon: Icons.storefront_outlined,
-              title: '게시된 앱이 없습니다',
+              title: noListingsTitle(_platform.value),
               body: '팀이 앱을 게시하거나 나에게 공유하면 여기에 표시됩니다.',
               actionLabel: '새로고침',
               onPressed: load,
@@ -178,6 +203,8 @@ class _BrowseScreenState extends State<BrowseScreen> {
         ),
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
         children: [
+          CatalogPlatformSelector(platform: _platform),
+          const SizedBox(height: 10),
           TextField(
             controller: _searchController,
             decoration: InputDecoration(
@@ -214,6 +241,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
               apps: filtered,
               authState: widget.authState,
               onAppsChanged: load,
+              platform: _platform.value,
             ),
         ],
       ),

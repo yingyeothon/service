@@ -1,9 +1,13 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:yyt_console/artifact_info.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/check_if_need_to_update.dart';
 import 'package:yyt_console/device_apps.dart';
+import 'package:yyt_console/external_launcher.dart';
 import 'package:yyt_console/find_installed_version.dart';
+import 'package:yyt_console/ios_install_ledger.dart';
 import 'package:yyt_console/self_update_state.dart';
 import 'package:dio/dio.dart';
 import 'package:open_filex/open_filex.dart';
@@ -93,6 +97,13 @@ class InstallVerificationResult {
 const installerReturnedWithoutInstallMessage =
     '설치가 완료되지 않았습니다. 설치 화면에서 취소되었거나 실패했을 수 있습니다.';
 
+/// Shown once iOS accepted the OTA link: the install itself runs on the
+/// home screen, out of the app's sight.
+const iosInstallRequestedMessage = '설치는 홈 화면에서 진행됩니다';
+
+/// On iOS, [artifact] (its `ios.installUrl`) is what installs: the link is
+/// handed to iOS and the request recorded in the [IosInstallLedger] with
+/// [topic]; nothing is downloaded, verified or uninstalled.
 Future<InstallAttemptResult> installArtifact({
   required String artifactUrl,
   required String packageName,
@@ -108,7 +119,24 @@ Future<InstallAttemptResult> installArtifact({
       isSelfUpdatePackage,
   Future<void> Function(String targetVersion) markPendingSelfUpdateFn =
       markPendingSelfUpdate,
+  ArtifactInfo? artifact,
+  String? topic,
+  bool? iosDevice,
+  ExternalLauncher launcher = launchExternal,
+  IosInstallLedger? ledger,
 }) async {
+  if (iosDevice ?? isIosDevice()) {
+    return _requestIosInstall(
+      artifact: artifact,
+      bundleId: packageName,
+      targetVersion: targetVersion,
+      installedVersionBefore: installedVersionBefore,
+      topic: topic,
+      launcher: launcher,
+      ledger: ledger ?? IosInstallLedger.instance,
+      isSelfUpdatePackageFn: isSelfUpdatePackageFn,
+    );
+  }
   String? downloadedPath;
 
   try {
@@ -250,6 +278,67 @@ Future<InstallAttemptResult> installArtifact({
       cancelledByUser: true,
     );
   }
+}
+
+Future<InstallAttemptResult> _requestIosInstall({
+  required ArtifactInfo? artifact,
+  required String bundleId,
+  required String targetVersion,
+  required String? installedVersionBefore,
+  required String? topic,
+  required ExternalLauncher launcher,
+  required IosInstallLedger ledger,
+  required Future<bool> Function(String packageName) isSelfUpdatePackageFn,
+}) async {
+  InstallAttemptResult failed(String message) => InstallAttemptResult(
+    success: false,
+    installedVersion: installedVersionBefore,
+    needsDowngradeFallback: false,
+    downloadedPath: null,
+    message: message,
+    cancelledByUser: false,
+  );
+
+  final installUrl = artifact?.ios?.installUrl;
+  if (artifact == null || !artifact.isIos || installUrl == null) {
+    return failed('이 빌드는 iOS 에 설치할 수 없습니다.');
+  }
+  bool opened;
+  try {
+    opened = await launcher(Uri.parse(installUrl));
+  } catch (_) {
+    opened = false;
+  }
+  if (!opened) return failed('설치 화면을 열 수 없습니다.');
+
+  var selfUpdate = false;
+  try {
+    selfUpdate = await isSelfUpdatePackageFn(bundleId);
+  } catch (_) {
+    selfUpdate = false;
+  }
+  // The app's own update shows in its version after a restart; the ledger is
+  // for the apps it cannot see.
+  if (!selfUpdate) {
+    try {
+      await ledger.record(
+        bundleId,
+        version: targetVersion,
+        build: artifact.buildNumber,
+        topic: topic,
+      );
+    } catch (_) {
+      // iOS has the request either way; only the "requested" mark is lost.
+    }
+  }
+  return InstallAttemptResult(
+    success: true,
+    installedVersion: targetVersion,
+    needsDowngradeFallback: false,
+    downloadedPath: null,
+    message: iosInstallRequestedMessage,
+    cancelledByUser: false,
+  );
 }
 
 Future<InstallAttemptResult> reinstallAfterUninstall({

@@ -3,6 +3,7 @@ import 'package:yyt_console/app_detail_view.dart';
 import 'package:yyt_console/app_info.dart';
 import 'package:yyt_console/app_install_state.dart';
 import 'package:yyt_console/auth/auth_state.dart';
+import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/install_button.dart';
 import 'package:flutter/material.dart';
 
@@ -13,11 +14,16 @@ class AppListView extends StatelessWidget {
     required this.apps,
     required this.authState,
     required this.onAppsChanged,
+    this.platform,
   });
 
   final List<AppInfo> apps;
   final AuthState authState;
   final Future<void> Function() onAppsChanged;
+
+  /// The filter the list was loaded with; the detail screen lists the same
+  /// platform's builds. `null` = this device's.
+  final CatalogPlatform? platform;
 
   @override
   Widget build(BuildContext context) {
@@ -63,17 +69,25 @@ class AppListView extends StatelessWidget {
         await Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => AppDetailView(app: app, authState: authState),
+            builder: (context) => AppDetailView(
+              app: app,
+              authState: authState,
+              platform: platform,
+            ),
           ),
         );
         await onAppsChanged();
       },
-      action: InstallButton(
-        state: state,
-        app: app,
-        onFinished: onAppsChanged,
-        compact: true,
-      ),
+      // A build for another platform (desktop, server, the other mobile OS)
+      // is listed for information only.
+      action: deviceCatalogPlatform().matches(app.latestArtifact.platform)
+          ? InstallButton(
+              state: state,
+              app: app,
+              onFinished: onAppsChanged,
+              compact: true,
+            )
+          : null,
     );
   }
 }

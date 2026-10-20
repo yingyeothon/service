@@ -33,14 +33,13 @@ class AppInfo {
     this.topic,
   });
 
-  String get version => latestArtifact.version;
+  String get version => latestArtifact.comparableVersion;
   String get apkUrl => latestArtifact.url;
   Map<String, String> get tags => latestArtifact.tags;
   String get releaseNote => latestArtifact.changelog.isNotEmpty
       ? latestArtifact.changelog
       : description;
   String get buildType => latestArtifact.buildType;
-  String get applicationId => latestArtifact.applicationId.isNotEmpty
-      ? latestArtifact.applicationId
-      : package;
+  String get applicationId =>
+      latestArtifact.installId.isNotEmpty ? latestArtifact.installId : package;
 }
