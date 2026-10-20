@@ -298,6 +298,57 @@ describe("ChannelNewPage", () => {
       expect(screen.queryByText(/already has 2 push apps/)).toBeNull();
     });
 
+    it("checks an optional iOS bundle id before the request and sends it", async () => {
+      vi.mocked(mockApi.createChannel).mockResolvedValue({
+        ...AUTH,
+        id: "push_1",
+        kind: "push",
+        apiKey: "k",
+      });
+      await fill("com.example.game");
+      const ios = screen.getByLabelText(/^iOS bundle id/);
+      expect(ios).not.toBeRequired();
+      await userEvent.type(ios, "game");
+      await create();
+      expect(ios).toBeInvalid();
+      expect(ios).toHaveAccessibleDescription(/two or more dot-separated/);
+      expect(mockApi.createChannel).not.toHaveBeenCalled();
+
+      await userEvent.clear(ios);
+      await userEvent.type(ios, "com.example.game-ios");
+      await create();
+      await waitFor(() =>
+        expect(mockApi.createChannel).toHaveBeenCalledWith("prj_1", {
+          kind: "push",
+          name: "alerts",
+          config: {
+            authChannelId: "auth_1",
+            packageName: "com.example.game",
+            sender: "platform",
+            iosBundleId: "com.example.game-ios",
+          },
+        }),
+      );
+    });
+
+    it("shows a taken bundle id under the iOS field", async () => {
+      vi.mocked(mockApi.createChannel).mockRejectedValue(
+        refusal(409, { reason: "bundle_taken" }),
+      );
+      await fill("com.example.game");
+      await userEvent.type(
+        screen.getByLabelText(/^iOS bundle id/),
+        "com.example.game",
+      );
+      await create();
+      const ios = screen.getByLabelText(/^iOS bundle id/);
+      await waitFor(() => expect(ios).toBeInvalid());
+      expect(ios).toHaveAccessibleDescription(
+        /bundle id is already registered/,
+      );
+      expect(screen.getByLabelText(/^Package name/)).toBeValid();
+    });
+
     it.each([
       ["push_not_configured", /Push is not set up on this stage/],
       ["push_pool_full", /no registration slot is free/],

@@ -20,6 +20,7 @@ import {
 import { errorMessage } from "../lib/format";
 import { notify } from "../lib/notify";
 import {
+  bundleIdProblem,
   packageNameProblem,
   pushProblem,
   serviceAccountProblem,
@@ -69,14 +70,16 @@ export function ChannelNewPage() {
     setFieldErrors({});
     if (kind === "push") {
       // The same grammar the server applies, reported under the field.
+      const ios = form.iosBundleId.trim();
       const errors: ChannelFieldErrors = {
         packageName: packageNameProblem(form.packageName.trim()),
         serviceAccount:
           form.pushSender === "team"
             ? serviceAccountProblem(form.teamServiceAccount)
             : null,
+        iosBundleId: ios === "" ? null : bundleIdProblem(ios),
       };
-      if (errors.packageName || errors.serviceAccount) {
+      if (errors.packageName || errors.serviceAccount || errors.iosBundleId) {
         setLocalError(null);
         act.clear();
         setFieldErrors(errors);
@@ -123,6 +126,8 @@ export function ChannelNewPage() {
         if (p.at === "packageName") setFieldErrors({ packageName: p.message });
         else if (p.at === "serviceAccount")
           setFieldErrors({ serviceAccount: p.message });
+        else if (p.at === "iosBundleId")
+          setFieldErrors({ iosBundleId: p.message });
         else setRefusal(p);
         return undefined;
       }

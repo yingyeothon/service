@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { HttpEvent } from "@yyt/http";
 import { pushAppMarker } from "../src/push.js";
 import { runPushSweep } from "../src/push-sweep.js";
+import { runUsageDigest } from "../src/usage-digest.js";
+import { nullLogger } from "@yyt/core";
+import { createMemoryKv } from "@yyt/redis";
 import { ev, harness, parse, STAGE, type Team } from "./helpers.js";
 
 /*
@@ -400,5 +403,52 @@ describe("push sweep: iOS apps", () => {
     expect(ids).not.toContain(left);
     expect(ids).toContain(byHand);
     expect((await h.push.findApp(ch.id))?.iosFirebaseAppId).toMatch(/:ios:/);
+  });
+
+  it("releases the iOS half of a claim whose iOS app was purged, so it can be added again", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const auth = await authFor(h, a);
+    const ch = parse(await create(h, a, auth, { iosBundleId: BUNDLE }));
+    const iosId = (await h.push.findApp(ch.id))!.iosFirebaseAppId!;
+    await h.fcm.google.management(P1).removeIosApp(iosId, { immediate: true });
+    const r = await runPushSweep({
+      push: h.push,
+      pool: h.fcm.pool,
+      stage: STAGE,
+      db: h.db,
+      clock: h.clock,
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      audit: async () => {},
+    });
+    expect(r.reconcile?.slots[0]).toMatchObject({ lost: 1, missing: 1 });
+    expect(await h.push.findApp(ch.id)).toMatchObject({
+      firebaseAppId: expect.any(String),
+      iosBundleId: null,
+    });
+    const view = await send(
+      h,
+      ev("GET", `/channels/${ch.id}`, { headers: a.cookie }),
+    );
+    expect(parse(view).apnsState).toBeUndefined();
+    const again = await addIos(h, a, ch.id, BUNDLE);
+    expect(again.statusCode, again.body).toBe(200);
+    expect(parse(again).apnsState).toBe("pending");
+  });
+
+  it("names the APNs-pending channels in the daily digest", async () => {
+    const h = harness();
+    const a = await h.team("alice");
+    const auth = await authFor(h, a);
+    await create(h, a, auth, { iosBundleId: BUNDLE });
+    const d = await runUsageDigest({
+      stage: "dev",
+      push: { db: h.push },
+      kv: createMemoryKv({ clock: h.clock }),
+      notify: async () => {},
+      clock: h.clock,
+      logger: nullLogger,
+    });
+    expect(d.announced.map((w) => w.kind)).toContain("push:apns:pending:1");
   });
 });

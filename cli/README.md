@@ -129,14 +129,18 @@ yyt channels create … --config '{…}' | --config @file.json        # raw conf
 yyt channels create --kind push  --name n --auth-channel <auth-id|name> --package com.example.game   # same as `yyt push channel create`
 
 yyt push channel create --name n --auth <auth-id|name> --package com.example.game \
+                        [--ios-bundle-id com.example.game] \
                         [--sender platform|team] [--service-account <file|->]   # apiKey printed once; the key file only with --sender team
 yyt push channel ls | get|extend|rotate [--save]|delete <channel>   # `yyt channels …` with the kind fixed
 yyt push channel update <channel> [--name n] [--auth <auth-id|name>]   # the package and the sender are fixed at creation
 yyt push channel config <channel> [-o <file>|-] [--force]        # google-services.json; default ./google-services.json, kept unless --force
+yyt push channel config <channel> --ios [-o <file>|-] [--force]  # GoogleService-Info.plist; default ./GoogleService-Info.plist
+yyt push channel ios add <channel> <bundleId>                    # add the iOS app later; fixed once set
 yyt push channel sender-key set <channel> --service-account <file|->   # the team's own Firebase project as a second sender
 yyt push channel sender-key rm <channel>                         # refused on a --sender team channel
 yyt push pool [ls] | close <slot> | open <slot>                  # platform admin: registration slots (p1, p2, …)
 yyt push pool sweep                                              # platform admin: what the last daily sweep found per slot
+yyt push pool apns <push-id> ready|pending                       # platform admin: the team's APNs certificate is (not) uploaded
 yyt push channel stats <channel> [--days 14]                     # device tokens against push.tokensPerChannel, sends per UTC day
 yyt push upload ls <channel> | rm <channel> <upload>             # recipient CSVs; rm frees one of the 20 pending places (--as-server too)
 yyt push template ls <channel> | get|rm <channel> <template>      # <template>: id (pt_…) or name; get prints the variables = CSV columns
@@ -310,6 +314,8 @@ A `push_…` argument is always an id: a channel name may not have that shape. A
 **Upkeep.** `push channel stats` prints the channel's device tokens against `push.tokensPerChannel` (soft 10,000, hard 100,000; a new token past it is refused 409, a refresh never is — `yyt limit request push.tokensPerChannel <n> --channel …`) and, per UTC day of the last 14 (`--days` up to 30), the targeted sends. `push upload ls` lists the recipient CSVs with their state (`pending` and `in use` hold one of the 20 places, `free` no longer does) and `push upload rm` removes one no running job reads. `push pool sweep` (platform admin) shows the last daily sweep: stale tokens, claims released or kept, and per slot the reconciliation's orphans, missing and foreign apps, apps restored after a failed restore, claims released because their app was purged (`LOST`, with a note on stderr: those channels must be recreated) and any auto-close.
 
 `yyt push pool close <slot>` on a slot the platform closed itself (`CLOSED BY auto:firebase-limit`) takes the closure over: it prints `closed`, and the daily sweep no longer reopens the slot.
+
+**iOS** (`docs/decisions.md` _Console app and push on iOS_ #8). A push channel may hold one iOS app beside the Android one: `--ios-bundle-id` on `create`, or `push channel ios add <channel> <bundleId>` later (the same id again is a no-op; another is `ios_immutable`). The bundle id is checked locally (`^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`, at most 155 characters) and, like the package, is unique per stage among platform-sender channels (`bundle_taken`). Both apps live in the channel's slot and each counts toward its 20; a slot without room for the iOS app answers 503 `push_slot_full`, and the channel never moves. `get` prints `ios` (the bundle id and how to fetch its config) and `apns`: on the platform sender `pending` until the platform owner uploads the team's per-app APNs certificate (`.p12`) to the slot's iOS app, then `ready` — hand the `.p12` and its password to the owner out of band (in person or encrypted), never through the console; it expires yearly and renewal is a request to the owner; `team` on a team sender, whose own Firebase project holds the iOS app and its APNs credential (so `config --ios` refuses with `not_registered`). `push pool` adds an APNs pending table (channel, team, bundle id, slot) when there is one; `push pool apns <push-id> ready|pending` takes the channel id, as an admin is not resolved into the channel's team.
 
 **Campaigns** (`docs/push.md` _Campaigns_). A template is a message with `{{variables}}` in its title, body and data values (`--file` takes `{name, title, body, data}`, e.g. an edited `template get --json`; flags beside it win; `--data` replaces the whole data set). `job submit` sends one template to the users a recipient CSV lists — a `userId` column plus one column per variable:
 

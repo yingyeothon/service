@@ -21,6 +21,8 @@ const mockApi = {
   setChannelSenderKey: vi.fn(),
   removeChannelSenderKey: vi.fn(),
   channelGoogleServices: vi.fn(),
+  channelGoogleServiceInfo: vi.fn(),
+  addChannelIos: vi.fn(),
   pushTemplates: vi.fn(),
   pushJobs: vi.fn(),
   pushUploads: vi.fn(),
@@ -82,6 +84,15 @@ function mount() {
     { client: mockApi, path: "/channels/push_9" },
   );
 }
+
+const iosSection = async () =>
+  (await screen.findByRole("heading", { name: "iOS app" })).closest("section")!;
+const WITH_IOS: Channel = {
+  ...CHANNEL,
+  config: { ...CHANNEL.config, iosBundleId: "com.example.game-ios" },
+  iosRegistered: true,
+  apnsState: "pending",
+};
 
 const senderSection = async () =>
   (await screen.findByRole("heading", { name: "Team sender key" })).closest(
@@ -481,5 +492,169 @@ describe("push channel page", () => {
     expect(
       within(s).queryByRole("button", { name: "Register key" }),
     ).toBeNull();
+  });
+
+  describe("iOS app", () => {
+    it("adds an iOS app from the drawer, refusals under the field", async () => {
+      vi.mocked(mockApi.addChannelIos)
+        .mockRejectedValueOnce(refusal(409, { reason: "bundle_taken" }))
+        .mockRejectedValueOnce(refusal(503, { reason: "push_slot_full" }))
+        .mockResolvedValueOnce(WITH_IOS);
+      mount();
+      const s = await iosSection();
+      expect(within(s).getByText(/No iOS app/)).toBeInTheDocument();
+      await userEvent.click(
+        await within(s).findByRole("button", { name: "Add iOS app" }),
+      );
+      const drawer = await screen.findByRole("dialog");
+      const field = within(drawer).getByLabelText(/^iOS bundle id/);
+      expect(field).toHaveAccessibleDescription(/Fixed once added/);
+      const submit = within(drawer).getByRole("button", {
+        name: "Add iOS app",
+      });
+      expect(submit).toBeDisabled();
+      // The grammar is checked before any request.
+      await userEvent.type(field, "game");
+      await userEvent.click(submit);
+      await waitFor(() => expect(field).toBeInvalid());
+      expect(mockApi.addChannelIos).not.toHaveBeenCalled();
+
+      await userEvent.clear(field);
+      await userEvent.type(field, " com.example.game-ios ");
+      await userEvent.click(submit);
+      await waitFor(() =>
+        expect(field).toHaveAccessibleDescription(
+          /bundle id is already registered/,
+        ),
+      );
+      expect(mockApi.addChannelIos).toHaveBeenLastCalledWith(
+        "push_9",
+        "com.example.game-ios",
+      );
+
+      // A full slot is not the field's: it goes to the drawer's notice.
+      await userEvent.click(submit);
+      expect(
+        (
+          await within(drawer).findByText(/never moves to another project/)
+        ).closest('[role="alert"]'),
+      ).not.toBeNull();
+      expect(field).toBeValid();
+
+      await userEvent.click(submit);
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(
+        await within(s).findByText("com.example.game-ios"),
+      ).toBeInTheDocument();
+      expect(
+        within(s).queryByRole("button", { name: "Add iOS app" }),
+      ).toBeNull();
+      expect(within(s).getByText("APNs pending")).toBeInTheDocument();
+    });
+
+    it("shows the pending notice and downloads the plist", async () => {
+      vi.mocked(mockApi.channel).mockResolvedValue(WITH_IOS);
+      const blob = new Blob(["<plist/>"], { type: "application/x-plist" });
+      vi.mocked(mockApi.channelGoogleServiceInfo).mockResolvedValue({
+        blob,
+        filename: "GoogleService-Info.plist",
+      });
+      mount();
+      const s = await iosSection();
+      expect(within(s).getByText("com.example.game-ios")).toBeInTheDocument();
+      const notice = within(s)
+        .getByText(/has to upload this app's own APNs certificate \(\.p12\)/)
+        .closest('[role="status"]');
+      expect(notice).toHaveTextContent(
+        /Do not upload the certificate to the console/,
+      );
+      await userEvent.click(
+        within(s).getByRole("button", {
+          name: "Download GoogleService-Info.plist",
+        }),
+      );
+      await waitFor(() =>
+        expect(saveBlob).toHaveBeenCalledWith(blob, "GoogleService-Info.plist"),
+      );
+      expect(mockApi.channelGoogleServiceInfo).toHaveBeenCalledWith("push_9");
+    });
+
+    it("explains a plist the platform has not got", async () => {
+      vi.mocked(mockApi.channel).mockResolvedValue({
+        ...WITH_IOS,
+        apnsState: "ready",
+      });
+      vi.mocked(mockApi.channelGoogleServiceInfo).mockRejectedValue(
+        refusal(409, { reason: "not_registered" }),
+      );
+      mount();
+      const s = await iosSection();
+      expect(within(s).getByText("APNs ready")).toBeInTheDocument();
+      expect(within(s).getByText(/expires yearly/)).toBeInTheDocument();
+      expect(within(s).queryByText(/Do not upload the certificate/)).toBeNull();
+      await userEvent.click(
+        within(s).getByRole("button", {
+          name: "Download GoogleService-Info.plist",
+        }),
+      );
+      expect(
+        await within(s).findByText(/no GoogleService-Info.plist to download/),
+      ).toBeInTheDocument();
+      expect(saveBlob).not.toHaveBeenCalled();
+    });
+
+    it("disables the plist while the iOS app is not registered", async () => {
+      vi.mocked(mockApi.channel).mockResolvedValue({
+        ...WITH_IOS,
+        iosRegistered: false,
+      });
+      mount();
+      const s = await iosSection();
+      expect(
+        within(s).getByRole("button", {
+          name: "Download GoogleService-Info.plist",
+        }),
+      ).toBeDisabled();
+      expect(
+        within(s).getByText(/not registered on the platform/),
+      ).toBeInTheDocument();
+    });
+
+    it("tells a team sender its APNs credential is its own", async () => {
+      vi.mocked(mockApi.channel).mockResolvedValue({
+        ...TEAM_SENDER,
+        config: { ...TEAM_SENDER.config, iosBundleId: "com.example.game" },
+        iosRegistered: false,
+        apnsState: "team",
+      });
+      mount();
+      const s = await iosSection();
+      expect(within(s).getByText("APNs: team")).toBeInTheDocument();
+      expect(
+        within(s).getByText(
+          /uploads its own APNs credential in its own Firebase project/,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(s).queryByRole("button", {
+          name: "Download GoogleService-Info.plist",
+        }),
+      ).toBeNull();
+      expect(within(s).queryByText(/Do not upload the certificate/)).toBeNull();
+    });
+
+    it("offers no add to a seatless admin", async () => {
+      vi.mocked(mockApi.team).mockResolvedValue({
+        id: "team_1",
+        name: "studio",
+        role: "admin",
+      });
+      mount();
+      const s = await iosSection();
+      expect(await screen.findByText(/Read-only/)).toBeInTheDocument();
+      expect(
+        within(s).queryByRole("button", { name: "Add iOS app" }),
+      ).toBeNull();
+    });
   });
 });

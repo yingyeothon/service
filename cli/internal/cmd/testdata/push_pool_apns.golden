@@ -1,0 +1,6 @@
+SLOT  STATE  APPS  CLOSED BY  CLOSED AT
+p1    open   4/20  -          -
+
+APNs pending (upload the team's .p12 to the slot's iOS app, then `yyt push pool apns <push-id> ready`):
+CHANNEL                TEAM    BUNDLE ID             SLOT
+push_0123456789abcdef  team_1  com.example.game-ios  p1

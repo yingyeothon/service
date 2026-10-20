@@ -227,10 +227,13 @@ export type PushAppClaim = {
       /** Every slot of the pool, in placement order (pack: first with room). */
       slots: readonly string[];
       /**
-       * An iOS app follows at once ({@link PushDb.claimIosApp}): the slot
-       * must have room for two Firebase apps, not one.
+       * The channel's iOS app, claimed in the same transaction: the slot
+       * must have room for two Firebase apps, both seats are held at once,
+       * and the bundle id must be free (`bundle_taken`). The iOS app starts
+       * `pending`; {@link PushDb.claimIosApp} with the same bundle id then
+       * answers `ok`.
        */
-      withIos?: boolean;
+      iosBundleId?: string;
     }
 );
 
@@ -254,11 +257,13 @@ export type PushAppClaimResult =
   | { ok: true; slot: string | null }
   /** Another `platform` claim of the stage holds the package name. */
   | { ok: false; reason: "package_taken" }
+  /** Another `platform` claim of the stage holds the claim's iOS bundle id. */
+  | { ok: false; reason: "bundle_taken" }
   /** The team already holds `usage >= limit` platform registrations. */
   | { ok: false; reason: "team_cap"; usage: number; limit: number }
   /**
    * Every slot named is closed or holds {@link PUSH_APPS_PER_PROJECT} apps
-   * (less one for a claim `withIos`).
+   * (less one for a claim with an `iosBundleId`).
    */
   | { ok: false; reason: "pool_full" };
 
@@ -505,6 +510,8 @@ interface PlatformClaim {
   slots: string[];
   /** Firebase apps the claim adds to its slot. */
   need: 1 | 2;
+  /** Claimed with the Android app ({@link PushAppClaim} `iosBundleId`). */
+  iosBundleId: string | undefined;
 }
 
 function checkClaim(c: PushAppClaim): {
@@ -518,7 +525,15 @@ function checkClaim(c: PushAppClaim): {
   if (slots.length > PUSH_POOL_SLOTS_MAX) throw bad("too many slots");
   return {
     packageName,
-    platform: { limit: c.limit, slots, need: c.withIos ? 2 : 1 },
+    platform: {
+      limit: c.limit,
+      slots,
+      need: c.iosBundleId === undefined ? 1 : 2,
+      iosBundleId:
+        c.iosBundleId === undefined
+          ? undefined
+          : checkPushBundleId(c.iosBundleId),
+    },
   };
 }
 
@@ -907,6 +922,14 @@ export function createPushDb(prisma: PrismaClient): PushDb {
                 select: { channel_id: true },
               });
               if (taken) return { ok: false, reason: "package_taken" };
+              if (
+                platform.iosBundleId !== undefined &&
+                (await t.push_apps.findUnique({
+                  where: { ios_platform_bundle: platform.iosBundleId },
+                  select: { channel_id: true },
+                }))
+              )
+                return { ok: false, reason: "bundle_taken" };
               const usage = await t.push_apps.count({
                 where: { team_id: teamId, sender: "platform" },
               });
@@ -935,15 +958,30 @@ export function createPushDb(prisma: PrismaClient): PushDb {
                 sender: c.sender,
                 slot,
                 created_at: c.at,
+                ...(platform?.iosBundleId === undefined
+                  ? {}
+                  : {
+                      ios_bundle_id: platform.iosBundleId,
+                      ios_platform_bundle: platform.iosBundleId,
+                      apns_state: "pending" as const,
+                    }),
               },
             });
             return { ok: true, slot };
           });
         } catch (e) {
           // The channel's own claim was ruled out under its row lock, so a
-          // duplicate key here is `push_apps_package`: the race lost.
-          if (!(e instanceof AppError) && isConflict(e))
-            return { ok: false, reason: "package_taken" };
+          // duplicate key here is one of the two names: the race lost.
+          if (!(e instanceof AppError) && isConflict(e)) {
+            const bundle = platform?.iosBundleId;
+            const byPackage = await prisma.push_apps.findUnique({
+              where: { platform_package: packageName },
+              select: { channel_id: true },
+            });
+            return !byPackage && bundle !== undefined
+              ? { ok: false, reason: "bundle_taken" }
+              : { ok: false, reason: "package_taken" };
+          }
           throw e;
         }
       }),
@@ -996,10 +1034,11 @@ export function createPushDb(prisma: PrismaClient): PushDb {
             const again = reclaimIos(toApp(held), bundleId);
             if (again) return again;
             if (held.sender === "team") {
-              await t.push_apps.update({
+              const done = await t.push_apps.updateMany({
                 where: { channel_id: c.channelId },
                 data: { ios_bundle_id: bundleId, apns_state: "team" },
               });
+              if (done.count === 0) throw channelGone();
               return { ok: true, apnsState: "team" };
             }
             const taken = await t.push_apps.findUnique({
@@ -1012,7 +1051,7 @@ export function createPushDb(prisma: PrismaClient): PushDb {
             const apps = (await slotApps(t, [slot])).get(slot) ?? 0;
             if (closed.has(slot) || apps + 1 > PUSH_APPS_PER_PROJECT)
               return { ok: false, reason: "slot_full" };
-            await t.push_apps.update({
+            const done = await t.push_apps.updateMany({
               where: { channel_id: c.channelId },
               data: {
                 ios_bundle_id: bundleId,
@@ -1020,6 +1059,7 @@ export function createPushDb(prisma: PrismaClient): PushDb {
                 apns_state: "pending",
               },
             });
+            if (done.count === 0) throw channelGone();
             return { ok: true, apnsState: "pending" };
           });
         } catch (e) {
@@ -1551,6 +1591,11 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
           )
         )
           return { ok: false, reason: "package_taken" };
+        if (
+          platform.iosBundleId !== undefined &&
+          platformIos(platform.iosBundleId)
+        )
+          return { ok: false, reason: "bundle_taken" };
         const usage = appRows().filter(
           (a) => ci(a.teamId) === ci(teamId) && a.sender === "platform",
         ).length;
@@ -1578,9 +1623,9 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
         slot,
         firebaseAppId: null,
         createdAt: c.at,
-        iosBundleId: null,
+        iosBundleId: platform?.iosBundleId ?? null,
         iosFirebaseAppId: null,
-        apnsState: null,
+        apnsState: platform?.iosBundleId === undefined ? null : "pending",
       });
       return { ok: true, slot };
     },

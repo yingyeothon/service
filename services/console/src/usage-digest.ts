@@ -223,7 +223,11 @@ export interface UsageDigestOptions {
   push?: {
     db: Pick<
       PushDb,
-      "topPushChannels" | "countAppsBySlot" | "listPool" | "topSendFailures"
+      | "topPushChannels"
+      | "countAppsBySlot"
+      | "listPool"
+      | "topSendFailures"
+      | "listApnsPending"
     >;
     /** The sweep that ran before this digest; absent when it failed. */
     sweep?: PushSweepResult;
@@ -658,6 +662,18 @@ export async function runUsageDigest({
           jobDb.jobStatsOfDay(yesterday, PUSH_TOP_FAILURES),
         )
       : undefined;
+    // iOS apps waiting for the owner's APNs certificate upload
+    // (docs/push.md *APNs certificates*): a level, so it repeats until done.
+    const apnsPending = await attempt(
+      "push-apns",
+      async () => (await push.db.listApnsPending()).length,
+    );
+    if (apnsPending)
+      warnings.push({
+        kind: `push:apns:pending:${apnsPending}`,
+        type: "level",
+        text: `${apnsPending} push channel(s) wait for the owner's upload of their APNs certificate (.p12); see GET /admin/push/pool, then yyt push pool apns <push-id> ready`,
+      });
     const reconcile = push.sweep?.reconcile?.slots;
     result.push = {
       top: top ?? [],

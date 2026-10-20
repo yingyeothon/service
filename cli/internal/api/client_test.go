@@ -125,3 +125,33 @@ func TestDoErrorPlainIsCappedAndCleaned(t *testing.T) {
 		t.Fatalf("message %q", ae.Message)
 	}
 }
+
+func TestDoRawKeepsBodyAndDecodesErrors(t *testing.T) {
+	const plist = "<?xml version=\"1.0\"?>\n<plist/>\n"
+	var accept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accept = r.Header.Get("Accept")
+		if r.URL.Path == "/missing" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"error":{"code":"conflict","message":"no","details":{"reason":"not_registered"}}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-plist")
+		_, _ = w.Write([]byte(plist))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "tok")
+	raw, err := c.DoRaw(context.Background(), "GET", "/file", nil, "application/x-plist")
+	if err != nil || string(raw) != plist {
+		t.Fatalf("%v %q", err, raw)
+	}
+	if accept != "application/x-plist, application/json" {
+		t.Errorf("accept = %q", accept)
+	}
+	_, err = c.DoRaw(context.Background(), "GET", "/missing", nil, "application/x-plist")
+	var ae *Error
+	if !errors.As(err, &ae) || ae.Status != 409 || !strings.Contains(string(ae.Details), "not_registered") {
+		t.Fatalf("error = %v", err)
+	}
+}

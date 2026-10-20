@@ -868,7 +868,10 @@ export function patchChannel(
           "bad_request",
           `${field} cannot be changed after creation`,
         );
-    if (p.iosBundleId !== undefined && p.iosBundleId !== cur.iosBundleId)
+    if (
+      p.iosBundleId !== undefined &&
+      p.iosBundleId.toLowerCase() !== cur.iosBundleId?.toLowerCase()
+    )
       throw new AppError(
         "bad_request",
         cur.iosBundleId === undefined

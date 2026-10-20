@@ -79,6 +79,8 @@
 
 ## Go CLI (`cli/`)
 
+- A Go file named `*_ios.go` (or any `_GOOS` suffix) is built only for that OS: name an iOS feature file `push_iosapp.go`. Raw (non-JSON) downloads go through `api.Client.DoRaw`; the test fake serves them with `rawBody{Type, Body}` (2026-10-20, `todo/75`).
+
 - A flag that _removes_ an optional config object on update (`--aoi-range 0`) must put an **untyped** `nil` into the `map[string]any` body: a typed nil map (`var m map[string]any; body["aoi"] = m`) does not compare equal to `nil` through the interface, so the merge loop keeps the key and the server sees `{}` or the old object. `channels update` drops nil-valued keys from the fetched config before PATCHing (full replace for every kind but `auth`), and nested objects (`capabilities`, `aoi`) merge one level deep so a single flag does not reset its siblings.
 
 - Shared shapes (dedup pass 2026-09-02, `todo/29`): a resource addressed as `/<base>/{id}` with a name + optional description gets its `get`/`update`/`delete` from `internal/cmd/resource.go` (`newResourceGet/Update/Delete`, generic over the row type — `write` is still the caller's argument); per-channel credentials (`redis-user`, `doc-key`) are one `credentialCmd[T]` spec; presign → PUT → commit is `uploadFile[T]`; a `--body <md|@file>` reader is `readBody`; terminal-escape stripping is `internal/textsafe.Clean`, a leaf package both `api` and `output` import — never make `api` import `output` (a printer that renders `api.Error` would then be a cycle). Golden files are the proof that such a fold changed nothing: never regenerate them (`-update`) during a refactor.

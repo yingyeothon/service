@@ -12,7 +12,11 @@ import {
   type SayScope,
   type TopicConfig,
 } from "../types";
-import { packageNameProblem, serviceAccountProblem } from "./push";
+import {
+  bundleIdProblem,
+  packageNameProblem,
+  serviceAccountProblem,
+} from "./push";
 
 export const SAY_SCOPES: readonly SayScope[] = ["zone", "party", "user"];
 
@@ -75,6 +79,8 @@ export interface ChannelFormState {
   pushSender: PushSender;
   /** push, sender `team`: write-only, sent on create and never read back. */
   teamServiceAccount: string;
+  /** push, create only: empty = no iOS app (it can be added later). */
+  iosBundleId: string;
 }
 
 export const emptyForm: ChannelFormState = {
@@ -118,6 +124,7 @@ export const emptyForm: ChannelFormState = {
   packageName: "",
   pushSender: "platform",
   teamServiceAccount: "",
+  iosBundleId: "",
 };
 
 /** Pre-fills the form from an existing channel (secrets are never returned, so they stay blank). */
@@ -167,6 +174,7 @@ export function formFromChannel(ch: Channel): ChannelFormState {
       authChannelId: c.authChannelId,
       packageName: c.packageName,
       pushSender: c.sender,
+      iosBundleId: c.iosBundleId ?? "",
     };
   }
   const c = ch.config as MatchConfig;
@@ -448,11 +456,17 @@ export function buildConfig(
     const packageName = f.packageName.trim();
     const problem = packageNameProblem(packageName);
     if (problem) throw new Error(`Package name: ${problem}`);
+    // Optional: a blank field sends no key, and the app can be added later.
+    const iosBundleId = f.iosBundleId.trim();
+    const iosProblem = iosBundleId === "" ? null : bundleIdProblem(iosBundleId);
+    if (iosProblem) throw new Error(`iOS bundle id: ${iosProblem}`);
+    const ios = iosBundleId === "" ? {} : { iosBundleId };
     if (f.pushSender === "platform")
       return {
         authChannelId: f.authChannelId,
         packageName,
         sender: "platform",
+        ...ios,
       } satisfies PushConfig;
     const keyProblem = serviceAccountProblem(f.teamServiceAccount);
     if (keyProblem) throw new Error(keyProblem);
@@ -460,6 +474,7 @@ export function buildConfig(
       authChannelId: f.authChannelId,
       packageName,
       sender: "team",
+      ...ios,
       teamServiceAccount: f.teamServiceAccount.trim(),
     };
   }

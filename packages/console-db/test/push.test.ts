@@ -54,7 +54,7 @@ export interface PushHarness {
 const platform = (
   channelId: string,
   packageName: string,
-  o: { limit?: number; slots?: string[]; at?: number; withIos?: boolean } = {},
+  o: { limit?: number; slots?: string[]; at?: number; ios?: string } = {},
 ): PushAppClaim => ({
   channelId,
   packageName,
@@ -62,7 +62,7 @@ const platform = (
   limit: o.limit ?? 100,
   slots: o.slots ?? ["p1"],
   at: o.at ?? NOW,
-  ...(o.withIos ? { withIos: true } : {}),
+  ...(o.ios === undefined ? {} : { iosBundleId: o.ios }),
 });
 
 const put = (
@@ -490,6 +490,25 @@ export function pushContract(make: () => PushHarness | Promise<PushHarness>) {
     expect(await h.db.findPlatformIosApp("com.example.MY-IOS")).toMatchObject({
       channelId: CH,
     });
+    // A create naming it with its package is refused as a whole.
+    await h.seedChannel("push_c", "team_c");
+    expect(
+      await h.db.claimApp(
+        platform("push_c", "com.example.c", { ios: "com.example.MY-IOS" }),
+      ),
+    ).toEqual({ ok: false, reason: "bundle_taken" });
+    expect(await h.db.findApp("push_c")).toBeUndefined();
+    // With a free one both seats are held at once, `pending`.
+    expect(
+      await h.db.claimApp(
+        platform("push_c", "com.example.c", { ios: "com.example.c-ios" }),
+      ),
+    ).toEqual({ ok: true, slot: "p1" });
+    expect(await h.db.findApp("push_c")).toMatchObject({
+      iosBundleId: "com.example.c-ios",
+      apnsState: "pending",
+    });
+    expect(await h.db.deleteApp("push_c")).toBe(true);
 
     // The id, the APNs state and the pending list.
     expect(await h.db.setIosFirebaseAppId(CH, "1:1:ios:abc")).toBe(true);
@@ -550,7 +569,7 @@ export function pushContract(make: () => PushHarness | Promise<PushHarness>) {
       await h.seedChannel(id, `team_i${i}`);
       expect(
         await h.db.claimApp(
-          platform(id, `com.example.i${i}`, { withIos: true }),
+          platform(id, `com.example.i${i}`, { ios: `com.example.ios${i}` }),
         ),
       ).toEqual({ ok: true, slot: "p1" });
       expect(
@@ -575,14 +594,14 @@ export function pushContract(make: () => PushHarness | Promise<PushHarness>) {
     expect(await h.db.releaseIosApp("push_i0")).toBe(true);
     expect(
       await h.db.claimApp(
-        platform("push_x", "com.example.x", { withIos: true }),
+        platform("push_x", "com.example.x", { ios: "com.example.iosx" }),
       ),
     ).toEqual({ ok: false, reason: "pool_full" });
     expect(
       await h.db.claimApp(
         platform("push_x", "com.example.x", {
           slots: ["p1", "p2"],
-          withIos: true,
+          ios: "com.example.iosx",
         }),
       ),
     ).toEqual({ ok: true, slot: "p2" });

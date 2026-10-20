@@ -97,6 +97,10 @@ type recorded struct {
 	Body               map[string]any
 }
 
+// rawBody is a fake route's non-JSON answer (a plist download), written as
+// it is with its content type.
+type rawBody struct{ Type, Body string }
+
 func newFake(t *testing.T, routes map[string]func(r recorded) (int, any)) *fakeConsole {
 	f := &fakeConsole{t: t}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +116,12 @@ func newFake(t *testing.T, routes map[string]func(r recorded) (int, any)) *fakeC
 			return
 		}
 		status, body := h(rec)
+		if rb, ok := body.(rawBody); ok {
+			w.Header().Set("Content-Type", rb.Type)
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(rb.Body))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		if body != nil {

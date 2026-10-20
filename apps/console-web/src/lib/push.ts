@@ -23,6 +23,20 @@ export function packageNameProblem(name: string): string | null {
   return PACKAGE_NAME.test(name) ? null : PACKAGE_NAME_HINT;
 }
 
+/** The server's iOS bundle id grammar (hyphens allowed, Apple's 155 at most). */
+const BUNDLE_ID = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+export const BUNDLE_ID_MAX = 155;
+
+export const BUNDLE_ID_HINT =
+  "An iOS bundle identifier: two or more dot-separated segments of letters, digits and - (com.example.game).";
+
+/** Why `id` is not a bundle id the server takes, or `null`. */
+export function bundleIdProblem(id: string): string | null {
+  if (id === "") return "The bundle id is required.";
+  if (id.length > BUNDLE_ID_MAX) return `At most ${BUNDLE_ID_MAX} characters.`;
+  return BUNDLE_ID.test(id) ? null : BUNDLE_ID_HINT;
+}
+
 /** Why the pasted key cannot be sent, or `null`. Its content is the server's to judge. */
 export function serviceAccountProblem(key: string): string | null {
   if (key.trim() === "") return "The service-account key is required.";
@@ -45,7 +59,10 @@ const SERVICE_ACCOUNT_FIELDS: Record<string, string> = {
 
 /** Where a push refusal is shown: under a field, as the cap, or as a notice. */
 export type PushProblem =
-  | { at: "packageName" | "serviceAccount"; message: string }
+  | {
+      at: "packageName" | "serviceAccount" | "iosBundleId";
+      message: string;
+    }
   /** `push.appsPerTeam` reached: the team's Limits section takes the request. */
   | { at: "limit"; message: string; value: number | null }
   /** A condition of the platform, not of what was typed. */
@@ -60,10 +77,11 @@ interface ErrorShape {
 
 /**
  * What was asked when the refusal came. `not_registered` is one reason with
- * two meanings: a download that has no file to give, and an edit of a channel
- * whose registration is still under way.
+ * several meanings: a download that has no file to give, and an edit or an
+ * iOS app added to a channel whose registration is still under way.
  */
-export type PushAction = "create" | "download" | "update" | "senderKey";
+export type PushAction =
+  "create" | "download" | "iosDownload" | "update" | "senderKey" | "ios";
 
 /**
  * A push create, edit, sender-key or download refusal as the sentence to show
@@ -81,7 +99,7 @@ export function pushProblem(
     return {
       at: "platform",
       message:
-        action === "download"
+        action === "download" || action === "iosDownload"
           ? "Too many requests in a row: each download is a call to Firebase and counts as a write. Nothing is wrong with the channel; try again in a second."
           : "Too many writes in a row. Nothing was changed; try again in a second.",
     };
@@ -114,6 +132,30 @@ export function pushProblem(
         message:
           "Firebase refused this package name. Use the exact applicationId of the Android build.",
       };
+    case "bundle_taken":
+      return {
+        at: "iosBundleId",
+        message:
+          "This bundle id is already registered on this stage. A bundle id has one platform-sender push channel; delete the other channel first, or use this build's own bundle identifier.",
+      };
+    case "bundle_refused":
+      return {
+        at: "iosBundleId",
+        message:
+          "Firebase refused this bundle id. Use the exact bundle identifier of the iOS build.",
+      };
+    case "ios_immutable":
+      return {
+        at: "iosBundleId",
+        message:
+          "This channel already has an iOS app with another bundle id, and it cannot be changed. To use another bundle id, delete the channel and create it again.",
+      };
+    case "push_slot_full":
+      return {
+        at: "platform",
+        message:
+          "The platform's Firebase project that holds this channel has no room for its iOS app, and a channel never moves to another project. Nothing in the form is wrong; only a platform admin can make room.",
+      };
     case "service_account": {
       const field = typeof d.field === "string" ? d.field : "";
       return {
@@ -142,17 +184,25 @@ export function pushProblem(
           "Firebase did not answer the platform, or refused its call. Nothing in the form is wrong and nothing was changed; try again in a minute.",
       };
     case "not_registered":
-      return action === "update"
-        ? {
-            at: "platform",
-            message:
-              "This channel's registration with Firebase is not finished, so its settings cannot be changed yet (the name still can). Try again in a minute; if it still shows as not registered tomorrow, delete the channel and create it again.",
-          }
-        : {
-            at: "form",
-            message:
-              "This channel has no platform registration, so there is no google-services.json to download.",
-          };
+      if (action === "update")
+        return {
+          at: "platform",
+          message:
+            "This channel's registration with Firebase is not finished, so its settings cannot be changed yet (the name still can). Try again in a minute; if it still shows as not registered tomorrow, delete the channel and create it again.",
+        };
+      if (action === "ios")
+        return {
+          at: "platform",
+          message:
+            "This channel's registration with Firebase is not finished, so an iOS app cannot be added yet. Try again in a minute; if it still shows as not registered tomorrow, delete the channel and create it again.",
+        };
+      return {
+        at: "form",
+        message:
+          action === "iosDownload"
+            ? "This channel has no platform iOS registration, so there is no GoogleService-Info.plist to download."
+            : "This channel has no platform registration, so there is no google-services.json to download.",
+      };
     case "registration_missing":
       return {
         at: "platform",

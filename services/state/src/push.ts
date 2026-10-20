@@ -585,7 +585,8 @@ export function createPushRoutes({
         const deviceToken = deviceTokenOf(body);
         // `android` unless said otherwise; `ios` only for a channel that
         // holds an iOS app (decisions *Console app and push on iOS* #8).
-        const tokenPlatform = body.platform ?? "android";
+        const tokenPlatform =
+          body.platform === undefined ? "android" : body.platform;
         if (tokenPlatform !== "android" && tokenPlatform !== "ios")
           throw bad("platform must be android or ios");
         if (tokenPlatform === "ios" && ch.config.iosBundleId === undefined)

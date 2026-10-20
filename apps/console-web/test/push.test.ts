@@ -5,6 +5,7 @@ import {
   formFromChannel,
 } from "../src/lib/channelForm";
 import {
+  bundleIdProblem,
   channelDeleteNote,
   packageNameProblem,
   pushProblem,
@@ -256,5 +257,101 @@ describe("buildConfig push", () => {
     expect(
       buildConfig("push", { ...form, authChannelId: "auth_2" }, "patch", ch),
     ).toEqual({ authChannelId: "auth_2" });
+  });
+});
+
+describe("bundleIdProblem", () => {
+  it("applies the server's grammar, hyphens and leading digits included", () => {
+    for (const ok of ["com.example.game", "a.b", "life.yyt.smoke-ios", "1x.2y"])
+      expect(bundleIdProblem(ok)).toBeNull();
+    for (const bad of [
+      "game",
+      "com..game",
+      ".com.game",
+      "com.game.",
+      "com.ga_me",
+    ])
+      expect(bundleIdProblem(bad)).toMatch(/two or more dot-separated/);
+    expect(bundleIdProblem("")).toMatch(/required/);
+    expect(bundleIdProblem(`a.${"b".repeat(153)}`)).toBeNull();
+    expect(bundleIdProblem(`a.${"b".repeat(154)}`)).toMatch(/At most 155/);
+  });
+});
+
+describe("pushProblem iOS", () => {
+  it("puts a bundle refusal under the bundle field", () => {
+    for (const [reason, text] of [
+      ["bundle_taken", /already registered on this stage/],
+      ["bundle_refused", /Firebase refused this bundle id/],
+      ["ios_immutable", /cannot be changed/],
+    ] as const) {
+      const p = pushProblem(refusal(409, { reason }), "ios");
+      expect(p.at).toBe("iosBundleId");
+      expect(p.message).toMatch(text);
+    }
+  });
+
+  it("says a full slot is the platform's, not the form's", () => {
+    const p = pushProblem(refusal(503, { reason: "push_slot_full" }), "ios");
+    expect(p).toMatchObject({ at: "platform" });
+    expect(p.message).toMatch(/never moves.*only a platform admin/);
+  });
+
+  it("reads not_registered for an iOS add and a plist download", () => {
+    const nr = refusal(409, { reason: "not_registered" });
+    const add = pushProblem(nr, "ios");
+    expect(add.at).toBe("platform");
+    expect(add.message).toMatch(/an iOS app cannot be added yet/);
+    const plist = pushProblem(nr, "iosDownload");
+    expect(plist.at).toBe("form");
+    expect(plist.message).toMatch(/no GoogleService-Info.plist/);
+    expect(pushProblem(refusal(429, {}), "iosDownload").message).toMatch(
+      /each download is a call to Firebase/,
+    );
+  });
+});
+
+describe("buildConfig push iOS", () => {
+  const f = {
+    ...emptyForm,
+    authChannelId: "auth_1",
+    packageName: "com.example.game",
+  };
+
+  it("sends a trimmed bundle id only when one is given, on either sender", () => {
+    expect(buildConfig("push", f, "create")).not.toHaveProperty("iosBundleId");
+    expect(
+      buildConfig(
+        "push",
+        { ...f, iosBundleId: " com.example.game-ios " },
+        "create",
+      ),
+    ).toEqual({
+      authChannelId: "auth_1",
+      packageName: "com.example.game",
+      sender: "platform",
+      iosBundleId: "com.example.game-ios",
+    });
+    expect(
+      buildConfig(
+        "push",
+        {
+          ...f,
+          pushSender: "team",
+          teamServiceAccount: KEY,
+          iosBundleId: "com.example.game",
+        },
+        "create",
+      ),
+    ).toMatchObject({ sender: "team", iosBundleId: "com.example.game" });
+    expect(() =>
+      buildConfig("push", { ...f, iosBundleId: "game" }, "create"),
+    ).toThrow(/iOS bundle id/);
+  });
+
+  it("never sends the bundle id on an edit", () => {
+    expect(
+      buildConfig("push", { ...f, iosBundleId: "com.example.game" }, "patch"),
+    ).toEqual({ authChannelId: "auth_1" });
   });
 });

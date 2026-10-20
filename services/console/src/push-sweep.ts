@@ -252,6 +252,8 @@ export async function runPushSweep({
   let truncated = false;
   /** App ids a restore was tried for: one try per app and run. */
   const handled = new Set<string>();
+  /** iOS claims released as purged on this run, per slot. */
+  const lostIos = new Map<string, number>();
 
   const phase = async (
     name: PushSweepPhase,
@@ -716,6 +718,15 @@ export async function runPushSweep({
       if (restored?.kind === "restored") {
         f.restored++;
         if (app) byId.set(app.appId, { ...app, state: "active" });
+      } else if (
+        restored?.kind === "not_found" &&
+        app === undefined &&
+        (await releaseLostIos(row, slot, appId))
+      ) {
+        // Purged for good: the iOS claim and the channel's iOS fields go,
+        // so the bundle id is free and the team may add the app again.
+        f.lost++;
+        f.missing++;
       } else {
         f.missing++;
         logger.error("push reconciliation: claimed app not restored", {
@@ -767,6 +778,44 @@ export async function runPushSweep({
       }
     }
     return byId;
+  }
+
+  /**
+   * Gives back the iOS half of a live claim whose iOS app Firebase purged
+   * (not listed, and `:undelete` found nothing), after reading the claim
+   * once more; at most {@link PUSH_LOST_PER_SLOT_MAX} a run, like Android.
+   */
+  async function releaseLostIos(
+    row: PushAppRow,
+    slot: string,
+    appId: string,
+  ): Promise<boolean> {
+    if ((lostIos.get(slot) ?? 0) >= PUSH_LOST_PER_SLOT_MAX) return false;
+    const now = await push.findApp(row.channelId);
+    if (now?.slot !== slot || now.iosFirebaseAppId !== appId) return false;
+    if (!(await push.releaseIosApp(row.channelId))) return false;
+    lostIos.set(slot, (lostIos.get(slot) ?? 0) + 1);
+    await db.editChannel(row.channelId, (cur) => {
+      const config = configOf(cur);
+      if (!config) return undefined;
+      const {
+        iosBundleId: _b,
+        iosFirebaseAppId: _i,
+        apnsState: _a,
+        ...rest
+      } = config;
+      return { config: rest };
+    });
+    logger.error("push reconciliation: claimed app purged, claim released", {
+      slot,
+      channelId: row.channelId,
+      platform: "ios",
+    });
+    await audit(null, "push.app.lost", row.channelId, {
+      slot,
+      platform: "ios",
+    });
+    return true;
   }
 
   /** Merges the claim's iOS app id into the channel's config; `true` when changed. */
@@ -853,6 +902,16 @@ export async function runPushSweep({
     }
     const now = await push.findApp(row.channelId);
     if (now?.slot !== slot || now.firebaseAppId !== appId) return "missing";
+    // The claim also names the channel's iOS app, which may be alive: it is
+    // not released with the Android one. Reported until an operator acts.
+    if (now.iosBundleId !== null) {
+      logger.error("push reconciliation: release withheld", {
+        slot,
+        channelId: row.channelId,
+        reason: "ios_app",
+      });
+      return "missing";
+    }
     if (!(await push.deleteApp(row.channelId))) return "missing";
     logger.error("push reconciliation: claimed app purged, claim released", {
       slot,

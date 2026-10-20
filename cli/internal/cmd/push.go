@@ -39,6 +39,8 @@ const serviceAccountMax = 16 << 10
 type pushPool struct {
 	Configured bool           `json:"configured"`
 	Slots      []pushPoolSlot `json:"slots"`
+	// iOS apps waiting for the owner's upload of the team's APNs certificate.
+	APNsPending []pushAPNsPending `json:"apnsPending"`
 }
 
 type pushPoolSlot struct {
@@ -109,6 +111,10 @@ var pushHints = map[string]string{
 	"not_registered":       "no platform registration: a team-sender channel takes google-services.json from its own Firebase project",
 	"registration_missing": "the registration is gone from Firebase; delete the channel and create it again",
 	"service_account":      "pass the service-account key file Firebase downloaded, unedited",
+	"bundle_taken":         "another push channel on this stage holds that bundle id; a bundle id belongs to one platform-sender channel",
+	"bundle_refused":       "Firebase refused the bundle id; use the app's own bundle identifier",
+	"ios_immutable":        "the channel already holds an iOS app and its bundle id cannot change; make a new push channel for another one",
+	"push_slot_full":       "the channel's registration slot has no room for an iOS app, and a channel never moves; a platform admin frees room (yyt push pool)",
 }
 
 // pushUpdateHints replaces a hint whose reason means something else on
@@ -173,10 +179,12 @@ func withPushHint(err error, scopeFlag string, over ...map[string]string) error 
 func newPush(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "push",
-		Short: "Push notifications (Android, FCM): push channels, their client config and sender key, campaigns and broadcasts",
-		Long: "Push notifications (Android, FCM).\n\n" +
+		Short: "Push notifications (FCM, Android and iOS): push channels, their client config and sender key, campaigns and broadcasts",
+		Long: "Push notifications (FCM, Android and iOS).\n\n" +
 			"A push channel registers one Android application id with the platform's\n" +
-			"Firebase sender and yields the google-services.json the app embeds. The app\n" +
+			"Firebase sender and yields the google-services.json the app embeds; an iOS\n" +
+			"app beside it (`push channel ios add`) yields GoogleService-Info.plist\n" +
+			"(`push channel config --ios`). The app\n" +
 			"registers its FCM token with a player JWT of the channel's auth channel, and\n" +
 			"a game server sends with the channel apiKey; both go to the `apiBase` that\n" +
 			"`channel get` prints (PUT|DELETE /push/{channel}/token, POST /push/{channel}/send).\n" +
@@ -202,27 +210,31 @@ func newPush(a *App) *cobra.Command {
 	}
 	a.addChannelCommands(ch, "push")
 	resolve := a.channelResolver("push")
-	ch.AddCommand(a.pushConfigCmd(resolve), a.pushSenderKeyCmd(resolve), a.pushStatsCmd(resolve))
+	ch.AddCommand(a.pushConfigCmd(resolve), a.pushIOSCmd(resolve), a.pushSenderKeyCmd(resolve), a.pushStatsCmd(resolve))
 	c.AddCommand(a.pushKeyCmd(resolve), a.pushSendCmd(resolve), a.pushUploadCmd(resolve))
 	c.AddCommand(group(ch), a.pushPoolCmd())
 	a.addPushCampaignCommands(c, resolve)
 	return group(c)
 }
 
-// pushConfigCmd downloads the channel's google-services.json. The file is
-// the app's public client config (it ships inside the APK), so `-o -` may
-// print it.
+// pushConfigCmd downloads the channel's google-services.json, or with
+// --ios its GoogleService-Info.plist. Both are the app's public client
+// config (they ship inside the APK / IPA), so `-o -` may print them.
 func (a *App) pushConfigCmd(resolve channelResolver) *cobra.Command {
 	var out string
-	var force bool
+	var force, ios bool
 	c := &cobra.Command{
-		Use:   "config <channel>",
-		Short: "Download the channel's " + googleServicesFile + " (the Android app embeds it)",
+		Use:   "config <channel> [--ios]",
+		Short: "Download the channel's " + googleServicesFile + " (the Android app embeds it), or with --ios its " + googleServiceInfoFile,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			name := googleServicesFile
+			if ios {
+				name = googleServiceInfoFile
+			}
 			dst := out
 			if dst == "" {
-				dst = googleServicesFile
+				dst = name
 			}
 			// Before any request: an existing file is the app's current config.
 			if dst != "-" && !force {
@@ -234,12 +246,25 @@ func (a *App) pushConfigCmd(resolve channelResolver) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var raw json.RawMessage
-			if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(id)+"/"+googleServicesFile, nil, &raw); err != nil {
-				return withPushHint(err, "")
+			var raw []byte
+			if ios {
+				// A plist, not JSON: the body is written as it came.
+				raw, err = cc.cl.DoRaw(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(id)+"/"+googleServiceInfoFile, nil, "application/x-plist")
+				if err != nil {
+					return withPushHint(err, "", pushPlistHints)
+				}
+				if len(bytes.TrimSpace(raw)) > 0 && !looksLikePlist(raw) {
+					return errors.New("the console did not answer with a plist (is --api the console base URL?)")
+				}
+			} else {
+				var j json.RawMessage
+				if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/channels/"+api.PathID(id)+"/"+googleServicesFile, nil, &j); err != nil {
+					return withPushHint(err, "")
+				}
+				raw = j
 			}
-			if len(raw) == 0 {
-				return errors.New("the console answered with an empty " + googleServicesFile)
+			if len(bytes.TrimSpace(raw)) == 0 {
+				return errors.New("the console answered with an empty " + name)
 			}
 			body := append(bytes.TrimRight(raw, "\n"), '\n')
 			if dst == "-" {
@@ -253,7 +278,8 @@ func (a *App) pushConfigCmd(resolve channelResolver) *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVarP(&out, "output", "o", "", "where to write (default: ./"+googleServicesFile+"; - is stdout)")
+	c.Flags().StringVarP(&out, "output", "o", "", "where to write (default: ./"+googleServicesFile+", with --ios ./"+googleServiceInfoFile+"; - is stdout)")
+	c.Flags().BoolVar(&ios, "ios", false, "download the iOS app's "+googleServiceInfoFile+" (the channel needs an iOS app: `push channel ios add`)")
 	c.Flags().BoolVar(&force, "force", false, "replace an existing file")
 	return c
 }
@@ -378,7 +404,20 @@ func (a *App) pushPoolCmd() *cobra.Command {
 				s.Slot, state, strconv.Itoa(s.Apps) + "/" + strconv.Itoa(s.Capacity), by, output.TimePtr(s.ClosedAt),
 			})
 		}
-		return a.printer().Table([]string{"SLOT", "STATE", "APPS", "CLOSED BY", "CLOSED AT"}, rows)
+		if err := a.printer().Table([]string{"SLOT", "STATE", "APPS", "CLOSED BY", "CLOSED AT"}, rows); err != nil {
+			return err
+		}
+		if len(res.APNsPending) == 0 {
+			return nil
+		}
+		// A second table only when there is something to do, so the slot
+		// table alone stays what it was.
+		fmt.Fprintln(a.Out, "\nAPNs pending (upload the team's .p12 to the slot's iOS app, then `yyt push pool apns <push-id> ready`):")
+		pending := make([][]string, 0, len(res.APNsPending))
+		for _, p := range res.APNsPending {
+			pending = append(pending, []string{p.ChannelID, p.TeamID, p.IOSBundleID, p.Slot})
+		}
+		return a.printer().Table([]string{"CHANNEL", "TEAM", "BUNDLE ID", "SLOT"}, pending)
 	}
 	c := &cobra.Command{
 		Use:   "pool",
@@ -390,7 +429,9 @@ func (a *App) pushPoolCmd() *cobra.Command {
 			"The platform closes a slot itself when its Firebase project nears the app\n" +
 			"limit (CLOSED BY auto:firebase-limit) and reopens it once there is room.\n" +
 			"`pool close` on such a slot takes the closure over: it reports `closed`, and\n" +
-			"the slot then stays closed until `pool open`.",
+			"the slot then stays closed until `pool open`.\n\n" +
+			"APNS PENDING lists the platform channels whose iOS app waits for the team's\n" +
+			"APNs certificate; `pool apns <push-id> ready` marks one once it is uploaded.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return list(cmd) },
 	}
@@ -435,6 +476,7 @@ func (a *App) pushPoolCmd() *cobra.Command {
 		toggle("close", "Stop placing new push channels in a slot (its channels keep working); on a slot the platform closed, keep it closed", "closed"),
 		toggle("open", "Let a closed slot take new push channels again", "open"),
 		a.pushSweepCmd(),
+		a.pushAPNsCmd(),
 	)
 	return c
 }

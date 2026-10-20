@@ -1,7 +1,7 @@
 import { Code, Table, Text } from "@mantine/core";
 import { api } from "../api";
 import { Clipped } from "../components/Clipped";
-import { DataTable } from "../components/DataTable";
+import { DataTable, NameCell } from "../components/DataTable";
 import { FoldCell } from "../components/FoldCell";
 import { PageHeader } from "../components/PageHeader";
 import { RowMenu, type RowMenuItem } from "../components/RowMenu";
@@ -10,7 +10,12 @@ import { Badge, Notice } from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
-import type { PushPoolSlot, PushSweepRecord, PushSweepSlot } from "../types";
+import type {
+  PushApnsPending,
+  PushPoolSlot,
+  PushSweepRecord,
+  PushSweepSlot,
+} from "../types";
 
 /*
  * The platform admin's view of the push pool (docs/decisions.md *Push
@@ -89,6 +94,84 @@ export function sweepSummary(r: PushSweepRecord): string[] {
   for (const k of r.pool?.skipped ?? [])
     lines.push(`Parameter ${k.slot} was skipped: ${k.reason}.`);
   return lines;
+}
+
+/**
+ * Platform iOS apps waiting for the owner's per-app APNs certificate
+ * (docs/decisions.md *Console app and push on iOS* #8). The certificate goes
+ * into the slot's Firebase project by hand; this only records that it did.
+ */
+function ApnsPending({
+  rows,
+  loading,
+  onReload,
+}: {
+  rows: PushApnsPending[] | undefined;
+  loading: boolean;
+  onReload: () => Promise<void>;
+}) {
+  const act = useAction();
+  const markReady = async (a: PushApnsPending) => {
+    const r = await act.run(() => api.setPushApnsState(a.channelId, "ready"));
+    if (!r) return;
+    notify.done(`APNs ready on ${a.channelId}`);
+    await onReload();
+  };
+  return (
+    <Section
+      title="APNs pending"
+      description="Platform-sender channels whose iOS app waits for its own APNs certificate (.p12). Upload it in the slot's Firebase project (Project settings → Cloud Messaging → Apple app configuration), then mark the channel ready. The certificate never goes through the console."
+    >
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      <DataTable
+        columns={[
+          { key: "channel", label: "Channel" },
+          { key: "bundle", label: "Bundle id" },
+          { key: "slot", label: "Slot" },
+          { key: "team", label: "Team" },
+        ]}
+        rows={rows}
+        loading={loading}
+        rowKey={(a) => a.channelId}
+        minWidth={560}
+        empty={{ title: "No iOS app is waiting for its certificate." }}
+        render={(a) => (
+          <>
+            <NameCell to={`/channels/${encodeURIComponent(a.channelId)}`}>
+              {a.channelId}
+            </NameCell>
+            <Table.Td style={NOWRAP}>
+              {a.iosBundleId === null ? "—" : <Code>{a.iosBundleId}</Code>}
+            </Table.Td>
+            <Table.Td style={NOWRAP}>
+              {a.slot === null ? "—" : <Code>{a.slot}</Code>}
+            </Table.Td>
+            <Table.Td style={NOWRAP}>
+              <Code>{a.teamId}</Code>
+            </Table.Td>
+          </>
+        )}
+        actions={(a) => (
+          <RowMenu
+            name={`channel ${a.channelId}`}
+            items={[
+              {
+                label: "Mark APNs ready",
+                disabled: act.busy,
+                onClick: () => markReady(a),
+                confirm: {
+                  title: `Mark APNs ready on ${a.channelId}?`,
+                  message:
+                    "Only once this app's APNs certificate (.p12) is uploaded in the slot's Firebase project. The team's channel page then says iOS delivery is set up.",
+                  confirmLabel: "Mark APNs ready",
+                },
+              },
+            ]}
+          />
+        )}
+      />
+    </Section>
+  );
 }
 
 /** `GET /admin/push/sweep`: what the last daily sweep found per slot. */
@@ -347,6 +430,13 @@ export function PushPoolPage() {
           the database, but its parameter is gone: nothing can be registered in
           it or sent through it.
         </Text>
+      )}
+      {pool.data?.configured !== false && (
+        <ApnsPending
+          rows={pool.data ? (pool.data.apnsPending ?? []) : undefined}
+          loading={pool.loading}
+          onReload={pool.reload}
+        />
       )}
       <LastSweep />
     </>

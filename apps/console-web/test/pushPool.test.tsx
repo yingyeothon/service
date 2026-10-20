@@ -12,6 +12,7 @@ const mockApi = {
   pushPool: vi.fn(),
   pushSweep: vi.fn(),
   setPushSlotClosed: vi.fn(),
+  setPushApnsState: vi.fn(),
 } as unknown as ApiClient;
 
 vi.mock("../src/api", () => ({
@@ -379,5 +380,62 @@ describe("sweep notes", () => {
     expect(sweepNotes({ ...base, restored: 2, lost: 1 })).toBe(
       "2 restored, 1 lost: recreate",
     );
+  });
+
+  it("lists iOS apps waiting for APNs and marks one ready after a confirm", async () => {
+    vi.mocked(mockApi.pushPool)
+      .mockResolvedValueOnce({
+        ...pool([slot()]),
+        apnsPending: [
+          {
+            channelId: "push_9",
+            teamId: "team_1",
+            iosBundleId: "com.example.game",
+            slot: "p1",
+          },
+        ],
+      })
+      .mockResolvedValue({ ...pool([slot()]), apnsPending: [] });
+    vi.mocked(mockApi.setPushApnsState).mockResolvedValue({
+      channelId: "push_9",
+      apnsState: "ready",
+    });
+    mount(<PushPoolPage />, { client: mockApi });
+    const s = (
+      await screen.findByRole("heading", { name: "APNs pending" })
+    ).closest("section")!;
+    expect(s).toHaveTextContent(/never goes through the console/);
+    const link = await within(s).findByRole("link", { name: "push_9" });
+    expect(link).toHaveAttribute("href", "/channels/push_9");
+    const tr = link.closest("tr")!;
+    expect(tr).toHaveTextContent("com.example.game");
+    expect(tr).toHaveTextContent("team_1");
+    await userEvent.click(
+      within(s).getByRole("button", { name: "Actions for channel push_9" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Mark APNs ready" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/uploaded in the slot's Firebase project/);
+    expect(mockApi.setPushApnsState).not.toHaveBeenCalled();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Mark APNs ready" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.setPushApnsState).toHaveBeenCalledWith("push_9", "ready"),
+    );
+    expect(await screen.findByText("APNs ready on push_9")).toBeInTheDocument();
+    expect(
+      await within(s).findByText("No iOS app is waiting for its certificate."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows an older API without the APNs list as empty", async () => {
+    vi.mocked(mockApi.pushPool).mockResolvedValue(pool([slot()]));
+    mount(<PushPoolPage />, { client: mockApi });
+    expect(
+      await screen.findByText("No iOS app is waiting for its certificate."),
+    ).toBeInTheDocument();
   });
 });

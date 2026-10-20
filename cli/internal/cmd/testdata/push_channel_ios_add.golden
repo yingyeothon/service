@@ -1,0 +1,12 @@
+id:         push_0123456789abcdef
+kind:       push
+name:       alerts
+status:     active
+project:    dooroo/game
+created:    2025-08-24T01:46:40Z
+expires:    2025-08-31T01:46:40Z
+apiBase:    https://state.example
+registered: true (yyt push channel config push_0123456789abcdef)
+ios:        com.example.game-ios (yyt push channel config push_0123456789abcdef --ios)
+apns:       pending (the platform owner has yet to upload the team's APNs certificate (.p12), handed over out of band, never through the console; iOS devices receive nothing until ready)
+config:     {"authChannelId":"auth_0123","iosBundleId":"com.example.game-ios","packageName":"com.example.game","sender":"platform"}

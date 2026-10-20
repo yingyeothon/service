@@ -23,13 +23,19 @@ import {
   type ChannelFormState,
   type MatchFieldErrors,
 } from "../lib/channelForm";
-import { PACKAGE_NAME_HINT, PACKAGE_NAME_MAX } from "../lib/push";
+import {
+  BUNDLE_ID_HINT,
+  BUNDLE_ID_MAX,
+  PACKAGE_NAME_HINT,
+  PACKAGE_NAME_MAX,
+} from "../lib/push";
 import { ServiceAccountField } from "./ServiceAccountField";
 
 /** A refusal that belongs to one push or match field, shown under it. */
 export interface ChannelFieldErrors extends MatchFieldErrors {
   packageName?: string | null;
   serviceAccount?: string | null;
+  iosBundleId?: string | null;
 }
 
 /**
@@ -355,6 +361,20 @@ export function ChannelForm({
             spellCheck={false}
             placeholder="com.example.game"
           />
+          {!editing && (
+            <TextInput
+              label="iOS bundle id (optional)"
+              description={`${BUNDLE_ID_HINT} Leave it empty for an Android-only channel; the iOS app can be added from the channel page later, and is fixed once set.`}
+              value={form.iosBundleId}
+              onChange={(e) => set("iosBundleId", e.target.value)}
+              error={errors?.iosBundleId ?? undefined}
+              maxLength={BUNDLE_ID_MAX}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              placeholder="com.example.game"
+            />
+          )}
           <NativeSelect
             label="Sender"
             description={

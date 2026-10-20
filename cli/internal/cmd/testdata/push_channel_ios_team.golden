@@ -1,0 +1,12 @@
+id:         push_0123456789abcdef
+kind:       push
+name:       alerts
+status:     active
+project:    dooroo/game
+created:    2025-08-24T01:46:40Z
+expires:    2025-08-31T01:46:40Z
+apiBase:    https://state.example
+registered: false (no platform registration: google-services.json comes from your own Firebase project)
+ios:        com.example.game-ios (team sender: GoogleService-Info.plist comes from your own Firebase project)
+apns:       team (the team uploads its own APNs credential in its Firebase project)
+config:     {"authChannelId":"auth_0123","iosBundleId":"com.example.game-ios","packageName":"com.example.game","sender":"team"}

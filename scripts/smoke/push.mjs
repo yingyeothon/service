@@ -56,6 +56,8 @@ const login = debugLogin(con, consoleBase, debugKey, check);
 const as = asUser(consoleBase);
 const stamp = Date.now().toString(36);
 const pkg = process.env.PUSH_SMOKE_PACKAGE || "life.yyt.smoke.push";
+// Fixed for the reason the package is: a run that dies early leaves one app.
+const iosBundle = process.env.PUSH_SMOKE_IOS_BUNDLE || "life.yyt.smoke-ios";
 const deviceToken = process.env.PUSH_DEVICE_TOKEN || "";
 
 const bearer = (token) => ({ authorization: `Bearer ${token}` });
@@ -355,6 +357,40 @@ async function consoleHalf(created, authId) {
       onlySender.status === 409,
       brief(onlySender),
     );
+    // Its iOS app is the team's own: recorded, nothing registered, no plist.
+    const teamIos = await con(`/channels/${teamId}/push/ios`, {
+      method: "PUT",
+      headers: as(owner),
+      body: { iosBundleId: `${iosBundle}-team` },
+    });
+    check(
+      "a team-sender iOS app: apnsState team, no platform registration",
+      teamIos.status === 200 &&
+        teamIos.body?.apnsState === "team" &&
+        teamIos.body?.iosRegistered === false,
+      brief(teamIos),
+    );
+    const teamPlist = await con(
+      `/channels/${teamId}/GoogleService-Info.plist`,
+      {
+        headers: as(owner),
+      },
+    );
+    check(
+      "and its plist download: 409 not_registered",
+      teamPlist.status === 409 && why(teamPlist) === "not_registered",
+      brief(teamPlist),
+    );
+    const teamApns = await con(`/admin/push/channels/${teamId}/apns`, {
+      method: "POST",
+      headers: as(admin),
+      body: { state: "ready" },
+    });
+    check(
+      "and the admin APNs route: 409 team_sender",
+      teamApns.status === 409 && why(teamApns) === "team_sender",
+      brief(teamApns),
+    );
     const gone = await deleteChannel(teamId);
     check("delete the team-sender channel", gone.status === 204, brief(gone));
   }
@@ -435,6 +471,104 @@ async function consoleHalf(created, authId) {
   );
 
   return project;
+}
+
+/**
+ * The iOS app (docs/push.md *iOS apps*): added to the registered channel,
+ * its plist, an iOS token, and the owner's APNs state through the admin
+ * route. Leaves the channel at `pending`, as a new one would be.
+ */
+async function iosHalf(id, project, authId) {
+  const ta = await mintToken(api, authBase, debugKey, authId)(A);
+  const early = await api(`/push/${id}/token`, {
+    method: "PUT",
+    headers: bearer(ta),
+    body: { token: fakeToken("ios"), project, platform: "ios" },
+  });
+  check(
+    "an iOS token before the iOS app: 409 ios_not_registered",
+    early.status === 409 && why(early) === "ios_not_registered",
+    brief(early),
+  );
+  const addIos = (iosBundleId) =>
+    con(`/channels/${id}/push/ios`, {
+      method: "PUT",
+      headers: as(owner),
+      body: { iosBundleId },
+    });
+  const added = await addIos(iosBundle);
+  check(
+    "add the iOS app: pending, plist ready",
+    added.status === 200 &&
+      added.body?.config?.iosBundleId === iosBundle &&
+      added.body?.iosRegistered === true &&
+      added.body?.apnsState === "pending",
+    brief(added),
+  );
+  const again = await addIos(iosBundle);
+  check("the same bundle id again: 200", again.status === 200, brief(again));
+  const other = await addIos("life.yyt.smoke-other");
+  check(
+    "another bundle id: 409 ios_immutable",
+    other.status === 409 && why(other) === "ios_immutable",
+    brief(other),
+  );
+  await new Promise((r) => setTimeout(r, 550));
+  const plist = await con(`/channels/${id}/GoogleService-Info.plist`, {
+    headers: as(owner),
+  });
+  check(
+    "GoogleService-Info.plist downloads and names the bundle id",
+    plist.status === 200 &&
+      (plist.headers.get("content-disposition") ?? "").includes(
+        "GoogleService-Info.plist",
+      ) &&
+      (plist.cache ?? "").includes("no-store") &&
+      plist.text.includes(iosBundle),
+    brief(plist),
+  );
+
+  const put = await api(`/push/${id}/token`, {
+    method: "PUT",
+    headers: bearer(ta),
+    body: { token: fakeToken("ios"), project, platform: "ios" },
+  });
+  check("an iOS token registers: 204", put.status === 204, brief(put));
+  const gone = await api(`/push/${id}/token`, {
+    method: "DELETE",
+    headers: bearer(ta),
+    body: { token: fakeToken("ios") },
+  });
+  check("and unregisters: 204", gone.status === 204, brief(gone));
+
+  const pool = await con("/admin/push/pool", { headers: as(admin) });
+  check(
+    "the admin pool view lists it as APNs-pending",
+    pool.status === 200 &&
+      (pool.body?.apnsPending ?? []).some((p) => p.channelId === id),
+    String(pool.status),
+  );
+  const apns = (who, state) =>
+    con(`/admin/push/channels/${id}/apns`, {
+      method: "POST",
+      headers: as(who),
+      body: { state },
+    });
+  const member = await apns(owner, "ready");
+  check(
+    "a member cannot set the APNs state",
+    member.status === 403,
+    brief(member),
+  );
+  const ready = await apns(admin, "ready");
+  const view = await con(`/channels/${id}`, { headers: as(owner) });
+  check(
+    "an admin marks it ready, and the view says so",
+    ready.status === 200 && view.body?.apnsState === "ready",
+    brief(ready),
+  );
+  const back = await apns(admin, "pending");
+  check("and back to pending", back.status === 200, brief(back));
 }
 
 /** `true` when the route answered the missing-grant 503. */
@@ -774,6 +908,7 @@ try {
       authId,
       otherAuthId,
     );
+    await iosHalf(id, project, authId);
 
     /* --- delete, and the registration comes back --- */
 
@@ -813,6 +948,19 @@ try {
       recreated.status === 201 && recreated.body?.registered === true,
       brief(recreated),
     );
+    if (recreated.status === 201) {
+      // The delete removed the iOS app too: its bundle id is free.
+      const iosAgain = await con(`/channels/${recreated.body.id}/push/ios`, {
+        method: "PUT",
+        headers: as(owner),
+        body: { iosBundleId: iosBundle },
+      });
+      check(
+        "and the iOS bundle id is free again (the claim was released)",
+        iosAgain.status === 200 && iosAgain.body?.iosRegistered === true,
+        brief(iosAgain),
+      );
+    }
     if (recreated.status === 409)
       console.log(
         "     the claim was kept: Firebase did not confirm the removal (console log: push app removal failed); the daily sweep retries",

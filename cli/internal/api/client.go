@@ -80,19 +80,41 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 // DoStatus is Do that also returns the success status, for the routes whose
 // 2xx answers differ in meaning (202 "not done yet" vs 204 "done").
 func (c *Client) DoStatus(ctx context.Context, method, path string, in, out any) (int, error) {
+	status, raw, err := c.send(ctx, method, path, in, "application/json")
+	if err != nil {
+		return 0, err
+	}
+	if out == nil || status == http.StatusNoContent || len(raw) == 0 {
+		return status, nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return status, fmt.Errorf("decode %s %s: %w (is --api the console base URL?)", method, path, err)
+	}
+	return status, nil
+}
+
+// DoRaw is Do for a route whose success body is a file rather than JSON (a
+// `GoogleService-Info.plist`): it returns the body as it came. Errors are
+// still the JSON envelope, decoded into *Error as Do does.
+func (c *Client) DoRaw(ctx context.Context, method, path string, in any, accept string) ([]byte, error) {
+	_, raw, err := c.send(ctx, method, path, in, accept+", application/json")
+	return raw, err
+}
+
+func (c *Client) send(ctx context.Context, method, path string, in any, accept string) (int, []byte, error) {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, body)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "yyt-cli/"+Version)
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -102,12 +124,12 @@ func (c *Client) DoStatus(ctx context.Context, method, path string, in, out any)
 	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer res.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if res.StatusCode >= 400 {
 		e := &Error{Status: res.StatusCode}
@@ -133,15 +155,9 @@ func (c *Client) DoStatus(ctx context.Context, method, path string, in, out any)
 				e.Message += " (is --api the console base URL?)"
 			}
 		}
-		return 0, e
+		return 0, nil, e
 	}
-	if out == nil || res.StatusCode == http.StatusNoContent || len(raw) == 0 {
-		return res.StatusCode, nil
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return res.StatusCode, fmt.Errorf("decode %s %s: %w (is --api the console base URL?)", method, path, err)
-	}
-	return res.StatusCode, nil
+	return res.StatusCode, raw, nil
 }
 
 // sanitize caps an opaque error body and strips control characters so a

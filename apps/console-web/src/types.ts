@@ -400,6 +400,23 @@ export interface PushConfig {
   authChannelId: string;
   packageName: string;
   sender: PushSender;
+  /** The channel's iOS app (decisions *Console app and push on iOS* #8); fixed once set. */
+  iosBundleId?: string;
+}
+
+/**
+ * A push channel's iOS delivery: `team` (the team's own APNs credential in
+ * its own Firebase project), `pending` (the owner has yet to upload the
+ * app's APNs certificate) or `ready`.
+ */
+export type ApnsState = "team" | "pending" | "ready";
+
+/** A platform iOS app waiting for the owner's APNs certificate. */
+export interface PushApnsPending {
+  channelId: string;
+  teamId: string;
+  iosBundleId: string | null;
+  slot: string | null;
 }
 
 /** One Firebase project of the stage's pool, named by its label only. */
@@ -421,6 +438,8 @@ export interface PushPoolView {
   /** `false`: no Firebase project is provisioned on this stage. */
   configured: boolean;
   slots: PushPoolSlot[];
+  /** Since 2026-10-20 (`todo/75`); optional so an older API still renders. */
+  apnsPending?: PushApnsPending[];
 }
 
 /** One pool slot as the daily sweep found it. Counts only. */
@@ -517,6 +536,10 @@ export interface Channel extends ResourceCrumbs {
   // push
   /** The platform registration exists: `google-services.json` can be downloaded. */
   registered?: boolean;
+  /** push: the iOS app is registered on the platform, so its plist can be downloaded. */
+  iosRegistered?: boolean;
+  /** push: absent without an iOS app. */
+  apnsState?: ApnsState;
   /** The team's own Firebase project, once a team sender key is registered. */
   teamProject?: string;
   /** The FCM topic a broadcast goes to; the app subscribes to it. */

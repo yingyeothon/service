@@ -145,6 +145,7 @@ const firebaseUnavailable = () =>
 
 /** A refused claim as the caller's error (`PushDb.claimApp`). */
 function claimRefused(r: Exclude<PushAppClaimResult, { ok: true }>): AppError {
+  if (r.reason === "bundle_taken") return iosClaimRefused(r);
   if (r.reason === "package_taken")
     return new AppError(
       "conflict",
@@ -567,7 +568,9 @@ export function createPushRegistrar({
         limit,
         slots,
         at,
-        withIos: config.iosBundleId !== undefined,
+        ...(config.iosBundleId === undefined
+          ? {}
+          : { iosBundleId: config.iosBundleId }),
       });
       if (!claim.ok) throw claimRefused(claim);
       const slot = claim.slot;
@@ -641,8 +644,9 @@ export function createPushRegistrar({
    * The iOS app of a platform channel that holds its Android registration:
    * the claim (bundle id, the slot's room), then Firebase, in the channel's
    * own slot -- a channel never moves (decisions *Console app and push on
-   * iOS* #8). A failure releases the iOS claim; the caller removes the
-   * Firebase app `made` records.
+   * iOS* #8). On a failure the caller removes the Firebase app `made`
+   * records **before** it gives the claim back, so no other channel can
+   * adopt that app in between.
    */
   async function registerIos(
     channelId: string,
@@ -656,7 +660,7 @@ export function createPushRegistrar({
     const at = nowSec(clock);
     const claim = await store.claimIosApp({ channelId, bundleId, at });
     if (!claim.ok) throw iosClaimRefused(claim);
-    try {
+    {
       const outcome = await createOrAdopt(
         appsApi(management, "ios"),
         bundleId,
@@ -691,14 +695,11 @@ export function createPushRegistrar({
           ...(JSON.parse(row.configJson) as PushChannelConfig),
           iosBundleId: bundleId,
           iosFirebaseAppId: outcome.appId,
-          apnsState: "pending",
+          apnsState: claim.apnsState,
         } satisfies PushChannelConfig,
       }));
       if (!after) throw new AppError("unavailable", "channel vanished");
       return JSON.parse(after.configJson) as PushChannelConfig;
-    } catch (e) {
-      await store.releaseIosApp(channelId).catch(() => false);
-      throw e;
     }
   }
 
@@ -827,7 +828,9 @@ export function createPushRegistrar({
           clock.now() + budgetMs,
         );
       } catch (e) {
+        // The Firebase app first, then the claim (see `registerIos`).
         await removeMade(channelId, { ...made, appId: undefined }, deadline);
+        await push.releaseIosApp(channelId).catch(() => false);
         throw e;
       }
     },

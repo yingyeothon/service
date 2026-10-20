@@ -13,6 +13,7 @@ import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { PushCampaigns } from "../components/PushCampaigns";
 import {
   PushDetails,
+  PushIosSection,
   PushSenderKeyCard,
   PushStatsSection,
 } from "../components/PushChannel";
@@ -306,6 +307,9 @@ export function ChannelDetailPage() {
         {c.kind === "push" && <PushDetails c={c} />}
       </Section>
 
+      {c.kind === "push" && (
+        <PushIosSection channel={c} owner={owner} onChanged={ch.set} />
+      )}
       {c.kind === "push" && (
         <PushSenderKeyCard
           channel={c}

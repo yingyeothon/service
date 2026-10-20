@@ -47,6 +47,12 @@ type channel struct {
 	// Firebase project of the team's own sender key, never the key.
 	Registered  *bool  `json:"registered,omitempty"`
 	TeamProject string `json:"teamProject,omitempty"`
+	// `push` with an iOS app (config.iosBundleId): IOSRegistered says the
+	// platform's iOS registration exists (`config --ios` has a plist to
+	// fetch); APNsState is team, pending (the platform owner has yet to
+	// upload the team's APNs certificate) or ready.
+	IOSRegistered *bool  `json:"iosRegistered,omitempty"`
+	APNsState     string `json:"apnsState,omitempty"`
 	// `q` only: Redis names derived from the channel id. They must match the
 	// participant's tslib configuration and their scoped ACL exactly, so the
 	// CLI prints them verbatim rather than reformatting them.
@@ -157,6 +163,7 @@ type configFlags struct {
 	packageName    string
 	sender         string
 	serviceAccount string
+	iosBundleID    string
 	// app is where `--service-account -` finds stdin.
 	app *App
 }
@@ -220,6 +227,7 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.StringVar(&f.packageName, "package", "", "push: Android application id, e.g. com.example.game (fixed at creation)")
 	fl.StringVar(&f.sender, "sender", "", "push: platform|team (default platform; fixed at creation)")
 	fl.StringVar(&f.serviceAccount, "service-account", "", "push: the team's Firebase service-account key file, or - for stdin (create with --sender team only)")
+	fl.StringVar(&f.iosBundleID, "ios-bundle-id", "", "push: iOS bundle id, e.g. com.example.game, for an iOS app beside the Android one (create only; fixed once set)")
 }
 
 // bindPush registers only what a push channel takes (`yyt push channel
@@ -236,6 +244,7 @@ func (f *configFlags) bindPush(c *cobra.Command, create bool) {
 	fl.StringVar(&f.packageName, "package", "", "Android application id, e.g. com.example.game (fixed at creation)")
 	fl.StringVar(&f.sender, "sender", "", "platform|team (default platform; fixed at creation)")
 	fl.StringVar(&f.serviceAccount, "service-account", "", "the team's Firebase service-account key file, or - for stdin (--sender team only)")
+	fl.StringVar(&f.iosBundleID, "ios-bundle-id", "", "iOS bundle id, e.g. com.example.game, for an iOS app beside the Android one (fixed once set; later: `yyt push channel ios add`)")
 }
 
 // build turns the flags into the JSON `config` for the given kind. For PATCH
@@ -485,10 +494,19 @@ func (f *configFlags) build(c *cobra.Command, kind string, patch bool) (map[stri
 			if set("service-account") {
 				return nil, errors.New("--service-account is for create: use `yyt push channel sender-key set <channel> --service-account <file>`")
 			}
+			if set("ios-bundle-id") {
+				return nil, errors.New("--ios-bundle-id is for create: use `yyt push channel ios add <channel> <bundleId>` (fixed once set)")
+			}
 			break
 		}
 		if set("package") {
 			m["packageName"] = f.packageName
+		}
+		if set("ios-bundle-id") {
+			if err := checkIOSBundleID(f.iosBundleID); err != nil {
+				return nil, fmt.Errorf("--ios-bundle-id: %w", err)
+			}
+			m["iosBundleId"] = f.iosBundleID
 		}
 		if set("sender") {
 			if f.sender != "platform" && f.sender != "team" {
@@ -698,7 +716,7 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 	_ = create.MarkFlagRequired("name")
 	create.Flags().BoolVar(&saveKey, "save", false, "push: store the apiKey in the config file (`yyt push key`) instead of printing it")
 	if fixedKind == "push" {
-		create.Use = "create --name <name> --auth <auth channel> --package <com.example.app> [--sender platform|team] [--service-account <file|->] [--save]"
+		create.Use = "create --name <name> --auth <auth channel> --package <com.example.app> [--ios-bundle-id <com.example.app>] [--sender platform|team] [--service-account <file|->] [--save]"
 		create.Short = "Create a push channel in the project context (explicit); the apiKey is printed once"
 		cf.bindPush(create, true)
 	} else {
@@ -929,7 +947,7 @@ var kindConfigFlags = func() map[string][]string {
 		},
 		"q": {"auth-channel"},
 		// `auth` exists only under `yyt push channel` (bindPush).
-		"push": {"auth", "auth-channel", "package", "sender", "service-account"},
+		"push": {"auth", "auth-channel", "package", "sender", "service-account", "ios-bundle-id"},
 	}
 	for n := range lobbyCapFlags {
 		m["lobby"] = append(m["lobby"], n)
@@ -1244,6 +1262,7 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 	if ch.TeamProject != "" {
 		pairs = append(pairs, [2]string{"teamProject", ch.TeamProject})
 	}
+	pairs = append(pairs, pushIOSPairs(ch)...)
 	if len(ch.Config) > 0 {
 		pairs = append(pairs, [2]string{"config", string(ch.Config)})
 	}

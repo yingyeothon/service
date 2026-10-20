@@ -512,6 +512,15 @@ export function createApiClient({
         `/channels/${enc(id)}/google-services.json`,
         "google-services.json",
       ),
+    /** The platform iOS app's client config; 409 `not_registered` without one. */
+    channelGoogleServiceInfo: (id: string) =>
+      download(
+        `/channels/${enc(id)}/GoogleService-Info.plist`,
+        "GoogleService-Info.plist",
+      ),
+    /** Adds the channel's iOS app; the same bundle id again is a no-op. */
+    addChannelIos: (id: string, iosBundleId: string) =>
+      put<Channel>(`/channels/${enc(id)}/push/ios`, { iosBundleId }),
     // ---- push campaigns (docs/push.md *Campaigns*) -------------------------
     pushTemplates: (id: string) =>
       get<PushTemplateList>(`/channels/${enc(id)}/push/templates`),
@@ -572,6 +581,12 @@ export function createApiClient({
     setPushSlotClosed: (slot: string, closed: boolean) =>
       post<{ slot: string; closed: boolean; changed: boolean }>(
         `/admin/push/pool/${enc(slot)}/${closed ? "close" : "open"}`,
+      ),
+    /** Platform admin: the owner uploaded (or withdrew) the app's APNs certificate. */
+    setPushApnsState: (channelId: string, state: "pending" | "ready") =>
+      post<{ channelId: string; apnsState: "pending" | "ready" }>(
+        `/admin/push/channels/${enc(channelId)}/apns`,
+        { state },
       ),
     channelRedisUser: (id: string) =>
       get<ChannelRedisUser>(`/channels/${enc(id)}/redis-user`),
