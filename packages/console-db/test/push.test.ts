@@ -54,7 +54,7 @@ export interface PushHarness {
 const platform = (
   channelId: string,
   packageName: string,
-  o: { limit?: number; slots?: string[]; at?: number } = {},
+  o: { limit?: number; slots?: string[]; at?: number; withIos?: boolean } = {},
 ): PushAppClaim => ({
   channelId,
   packageName,
@@ -62,6 +62,7 @@ const platform = (
   limit: o.limit ?? 100,
   slots: o.slots ?? ["p1"],
   at: o.at ?? NOW,
+  ...(o.withIos ? { withIos: true } : {}),
 });
 
 const put = (
@@ -198,6 +199,9 @@ export function pushContract(make: () => PushHarness | Promise<PushHarness>) {
       slot: "p1",
       firebaseAppId: null,
       createdAt: NOW,
+      iosBundleId: null,
+      iosFirebaseAppId: null,
+      apnsState: null,
     });
     expect(await h.db.countTeamApps("team_1")).toBe(1);
     expect(await h.db.countAppsBySlot()).toEqual([{ slot: "p1", apps: 1 }]);
@@ -422,6 +426,218 @@ export function pushContract(make: () => PushHarness | Promise<PushHarness>) {
         platform("push_z", "com.example.z", { slots: ["p2", "p1"] }),
       ),
     ).toEqual({ ok: true, slot: "p1" });
+  });
+
+  it("adds an iOS app to a claim: pending in the channel's slot, immutable, unique per stage", async () => {
+    const h = await make();
+    for (const id of [CH, CH2, "push_3"]) await h.seedChannel(id);
+    // No claim yet: nothing to add an iOS app to.
+    await expect(
+      h.db.claimIosApp({ channelId: CH, bundleId: "com.example.ios", at: NOW }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(await h.db.claimApp(platform(CH, "com.example.a"))).toEqual({
+      ok: true,
+      slot: "p1",
+    });
+    await expect(
+      h.db.claimIosApp({ channelId: CH, bundleId: "bad", at: NOW }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(
+      await h.db.claimIosApp({
+        channelId: CH,
+        bundleId: "com.example.my-ios",
+        at: NOW,
+      }),
+    ).toEqual({ ok: true, apnsState: "pending" });
+    expect(await h.db.findApp(CH)).toMatchObject({
+      iosBundleId: "com.example.my-ios",
+      iosFirebaseAppId: null,
+      apnsState: "pending",
+    });
+    // Two Firebase apps in the slot, still one seat of the team.
+    expect(await h.db.countAppsBySlot()).toEqual([{ slot: "p1", apps: 2 }]);
+    expect(await h.db.countTeamApps("team_1")).toBe(1);
+    // The same bundle id again (any case) answers the stored state.
+    expect(
+      await h.db.claimIosApp({
+        channelId: CH,
+        bundleId: "COM.example.MY-ios",
+        at: NOW,
+      }),
+    ).toEqual({ ok: true, apnsState: "pending" });
+    await expect(
+      h.db.claimIosApp({
+        channelId: CH,
+        bundleId: "com.example.other",
+        at: NOW,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    // Another platform claim cannot take it, in any case.
+    expect(await h.db.claimApp(platform(CH2, "com.example.b"))).toMatchObject({
+      ok: true,
+    });
+    expect(
+      await h.db.claimIosApp({
+        channelId: CH2,
+        bundleId: "com.EXAMPLE.my-ios",
+        at: NOW,
+      }),
+    ).toEqual({ ok: false, reason: "bundle_taken" });
+    expect(await h.db.findApp(CH2)).toMatchObject({
+      iosBundleId: null,
+      apnsState: null,
+    });
+    expect(await h.db.findPlatformIosApp("com.example.MY-IOS")).toMatchObject({
+      channelId: CH,
+    });
+
+    // The id, the APNs state and the pending list.
+    expect(await h.db.setIosFirebaseAppId(CH, "1:1:ios:abc")).toBe(true);
+    expect(await h.db.setIosFirebaseAppId(CH2, "1:1:ios:abc")).toBe(false);
+    expect((await h.db.listApnsPending()).map((a) => a.channelId)).toEqual([
+      CH,
+    ]);
+    expect(await h.db.setApnsState(CH, "ready")).toBe(true);
+    expect(await h.db.findApp(CH)).toMatchObject({
+      iosFirebaseAppId: "1:1:ios:abc",
+      apnsState: "ready",
+    });
+    expect(await h.db.listApnsPending()).toEqual([]);
+    expect(await h.db.setApnsState(CH2, "ready")).toBe(false);
+
+    // A rollback drops the iOS app alone and frees its seat and its name.
+    expect(await h.db.releaseIosApp(CH)).toBe(true);
+    expect(await h.db.releaseIosApp(CH)).toBe(false);
+    expect(await h.db.findApp(CH)).toMatchObject({
+      packageName: "com.example.a",
+      iosBundleId: null,
+      iosFirebaseAppId: null,
+      apnsState: null,
+    });
+    expect(
+      await h.db.claimIosApp({
+        channelId: CH2,
+        bundleId: "com.example.my-ios",
+        at: NOW,
+      }),
+    ).toEqual({ ok: true, apnsState: "pending" });
+
+    // A team claim: `team` at once, no seat, no name taken from the stage.
+    expect(
+      await h.db.claimApp({
+        channelId: "push_3",
+        packageName: "com.example.t",
+        sender: "team",
+        at: NOW,
+      }),
+    ).toEqual({ ok: true, slot: null });
+    expect(
+      await h.db.claimIosApp({
+        channelId: "push_3",
+        bundleId: "com.example.my-ios",
+        at: NOW,
+      }),
+    ).toEqual({ ok: true, apnsState: "team" });
+    expect(await h.db.setApnsState("push_3", "ready")).toBe(false);
+    expect(await h.db.setIosFirebaseAppId("push_3", "1:1:ios:x")).toBe(false);
+    expect(await h.db.countAppsBySlot()).toEqual([{ slot: "p1", apps: 3 }]);
+  });
+
+  it("counts Firebase apps per slot: ten channels with iOS fill it", async () => {
+    const h = await make();
+    for (let i = 0; i < PUSH_APPS_PER_PROJECT / 2; i++) {
+      const id = `push_i${i}`;
+      await h.seedChannel(id, `team_i${i}`);
+      expect(
+        await h.db.claimApp(
+          platform(id, `com.example.i${i}`, { withIos: true }),
+        ),
+      ).toEqual({ ok: true, slot: "p1" });
+      expect(
+        await h.db.claimIosApp({
+          channelId: id,
+          bundleId: `com.example.ios${i}`,
+          at: NOW,
+        }),
+      ).toMatchObject({ ok: true });
+    }
+    expect(await h.db.countAppsBySlot()).toEqual([
+      { slot: "p1", apps: PUSH_APPS_PER_PROJECT },
+    ]);
+    await h.seedChannel("push_x", "team_x");
+    expect(await h.db.claimApp(platform("push_x", "com.example.x"))).toEqual({
+      ok: false,
+      reason: "pool_full",
+    });
+
+    // One seat left: a claim with iOS needs two, the iOS add of a channel
+    // in the slot takes the last, and then the slot is full for iOS too.
+    expect(await h.db.releaseIosApp("push_i0")).toBe(true);
+    expect(
+      await h.db.claimApp(
+        platform("push_x", "com.example.x", { withIos: true }),
+      ),
+    ).toEqual({ ok: false, reason: "pool_full" });
+    expect(
+      await h.db.claimApp(
+        platform("push_x", "com.example.x", {
+          slots: ["p1", "p2"],
+          withIos: true,
+        }),
+      ),
+    ).toEqual({ ok: true, slot: "p2" });
+    await h.seedChannel("push_y", "team_y");
+    expect(await h.db.claimApp(platform("push_y", "com.example.y"))).toEqual({
+      ok: true,
+      slot: "p1",
+    });
+    expect(
+      await h.db.claimIosApp({
+        channelId: "push_i0",
+        bundleId: "com.example.ios0",
+        at: NOW,
+      }),
+    ).toEqual({ ok: false, reason: "slot_full" });
+    // A closed slot takes no iOS app either, even with room; the channel
+    // never moves.
+    expect(await h.db.deleteApp("push_y")).toBe(true);
+    expect(await h.db.closeSlot("p1", "m1", NOW)).toBe(true);
+    expect(
+      await h.db.claimIosApp({
+        channelId: "push_i0",
+        bundleId: "com.example.ios0",
+        at: NOW,
+      }),
+    ).toEqual({ ok: false, reason: "slot_full" });
+    expect(await h.db.findApp("push_i0")).toMatchObject({
+      slot: "p1",
+      iosBundleId: null,
+    });
+  });
+
+  it("lets exactly one of two channels racing for an iOS bundle id have it", async () => {
+    const h = await make();
+    for (const id of [CH, CH2]) {
+      await h.seedChannel(id, `team_${id}`);
+      await h.db.claimApp(platform(id, `com.example.${id.replace("_", "")}`));
+    }
+    const results = await Promise.all([
+      h.db.claimIosApp({
+        channelId: CH,
+        bundleId: "com.example.race",
+        at: NOW,
+      }),
+      h.peer.claimIosApp({
+        channelId: CH2,
+        bundleId: "com.example.race",
+        at: NOW,
+      }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.find((r) => !r.ok)).toEqual({
+      ok: false,
+      reason: "bundle_taken",
+    });
   });
 
   it("lets exactly one of two teams racing for a slot's last seat have it", async () => {
@@ -827,7 +1043,7 @@ export function pushContract(make: () => PushHarness | Promise<PushHarness>) {
       put("not an id", tok(1)),
       put(A, "a b"),
       { ...put(A, tok(1)), firebaseProject: "Example Project" },
-      { ...put(A, tok(1)), platform: "ios" as "android" },
+      { ...put(A, tok(1)), platform: "windows" as "android" },
     ];
     for (const p of refused)
       await expect(h.db.putToken(p)).rejects.toMatchObject({

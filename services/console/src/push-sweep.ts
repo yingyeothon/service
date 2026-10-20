@@ -1,5 +1,6 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
 import {
+  PUSH_BUNDLE_ID,
   PUSH_DELETE_BATCH,
   PUSH_PACKAGE_NAME,
   PUSH_STATS_RETAIN_DAYS,
@@ -13,13 +14,16 @@ import {
 } from "@yyt/console-db";
 import type {
   AndroidAppInfo,
+  IosAppInfo,
   ManagementClient,
   PushPool,
   SkippedSlot,
 } from "@yyt/push";
 import type { Kv } from "@yyt/redis";
 import {
+  appsApi,
   isPlatformApp,
+  type AppsApi,
   PUSH_AUTO_CLOSE_BY,
   PUSH_SWEEP_LAST_KEY,
   PUSH_SWEEP_LAST_TTL_SEC,
@@ -159,7 +163,7 @@ export interface PushSweepResult {
   pool?: {
     /** The SSM path could not be read, so nothing was reconciled. */
     unreadable: boolean;
-    /** Slots holding claims that the pool did not return, with their claim count. */
+    /** Slots holding claims that the pool did not return, with their Firebase app count. */
     unprovisioned: { slot: string; claims: number }[];
     /** Parameters under the path the pool left out as malformed or duplicate. */
     skipped: SkippedSlot[];
@@ -455,9 +459,14 @@ export async function runPushSweep({
 
       const management = (await pool.bySlot(slot))?.management;
       if (left() <= 0) truncated = true;
-      const list =
-        management &&
-        (await within(() => management.listAndroidApps(), left()));
+      // Both collections at once, under the same deadline: one project's
+      // 30 apps are its Android and iOS apps together.
+      const [list, iosList] = management
+        ? await Promise.all([
+            within(() => management.listAndroidApps(), left()),
+            within(() => management.listIosApps(), left()),
+          ])
+        : [undefined, undefined];
       if (!management || list?.kind !== "ok") {
         f.unread = true;
         logger.warn("push reconciliation: app list unread", {
@@ -466,8 +475,17 @@ export async function runPushSweep({
         });
         continue;
       }
+      if (iosList?.kind !== "ok") {
+        f.unread = true;
+        logger.warn("push reconciliation: app list unread", {
+          slot,
+          platform: "ios",
+          outcome: iosList?.kind ?? "timeout",
+        });
+        continue;
+      }
       const apps = list.apps;
-      const active = (a: AndroidAppInfo) => a.state !== "deleted";
+      const active = (a: { state: string }) => a.state !== "deleted";
       const byId = new Map(apps.map((a) => [a.appId, a]));
       // A slot whose list names none of its claimed apps (two or more) reads like another
       // project (a slot key replaced by one of a different project): every
@@ -564,7 +582,22 @@ export async function runPushSweep({
           continue;
         }
         removals++;
-        const outcome = await removeUnclaimed(management, slot, app);
+        const outcome = await removeUnclaimed(
+          appsApi(management, "android"),
+          slot,
+          app,
+          async () => {
+            const again = PUSH_PACKAGE_NAME.test(app.packageName)
+              ? await push.findPlatformApp(app.packageName)
+              : undefined;
+            return (
+              again?.slot === slot ||
+              (await push.listSlotApps(slot)).some(
+                (r) => r.firebaseAppId === app.appId,
+              )
+            );
+          },
+        );
         if (outcome === "removed") {
           f.removed++;
           byId.delete(app.appId);
@@ -578,7 +611,15 @@ export async function runPushSweep({
         // claim's create purged and re-registered it instead, this entry
         // stands for the new app.
       }
-      const listed = [...byId.values()];
+      const iosById = await reconcileIos(
+        management,
+        slot,
+        f,
+        live.map((l) => l.row),
+        dead,
+        iosList.apps,
+      );
+      const listed = [...byId.values(), ...iosById.values()];
       f.firebaseApps = listed.length;
       f.pendingDeletion = listed.filter((a) => !active(a)).length;
 
@@ -607,6 +648,143 @@ export async function runPushSweep({
       }
     }
     return { slots: findings, truncated };
+  }
+
+  /**
+   * The slot's iOS apps (decisions *Console app and push on iOS* #8), by
+   * the Android pass's rules where they apply: a claim without an app id
+   * takes the marked app of its bundle id, a claimed app pending deletion is
+   * restored, a marked app no claim names is removed in two steps, and an
+   * app without this stage's marker is counted and never touched. Unlike
+   * Android, a claimed iOS app Firebase purged is reported (`missing`) and
+   * not released. Answers the iOS apps still listed, by id.
+   */
+  async function reconcileIos(
+    management: ManagementClient,
+    slot: string,
+    f: PushSlotFinding,
+    live: PushAppRow[],
+    dead: PushAppRow[],
+    listedApps: IosAppInfo[],
+  ): Promise<Map<string, IosAppInfo>> {
+    const api = appsApi(management, "ios");
+    const active = (a: { state: string }) => a.state !== "deleted";
+    const byId = new Map(listedApps.map((a) => [a.appId, a]));
+    for (const row of live) {
+      if (row.sender !== "platform" || row.iosBundleId === null) continue;
+      if (row.iosFirebaseAppId === null) {
+        const app = listedApps.find(
+          (a) => a.bundleId === row.iosBundleId && active(a),
+        );
+        if (app && !isPlatformApp(app, stage)) {
+          f.foreign++;
+          f.missing++;
+        } else if (
+          !app ||
+          !(await push.setIosFirebaseAppId(row.channelId, app.appId))
+        )
+          f.missing++;
+        else {
+          row.iosFirebaseAppId = app.appId;
+          await writeIosRegistration(row.channelId, app.appId);
+          f.filled++;
+        }
+        continue;
+      }
+      const app = byId.get(row.iosFirebaseAppId);
+      if (app && active(app)) {
+        if (await writeIosRegistration(row.channelId, row.iosFirebaseAppId))
+          f.repaired++;
+        continue;
+      }
+      if (
+        handled.has(row.iosFirebaseAppId) ||
+        removals >= PUSH_RECONCILE_RELEASES_MAX ||
+        left() <= 0
+      ) {
+        if (!handled.has(row.iosFirebaseAppId)) truncated = true;
+        f.missing++;
+        continue;
+      }
+      handled.add(row.iosFirebaseAppId);
+      removals++;
+      const appId = row.iosFirebaseAppId;
+      const restored = await within(
+        () => api.undelete(appId),
+        Math.min(PUSH_REMOVE_BUDGET_MS, left()),
+      );
+      if (restored?.kind === "restored") {
+        f.restored++;
+        if (app) byId.set(app.appId, { ...app, state: "active" });
+      } else {
+        f.missing++;
+        logger.error("push reconciliation: claimed app not restored", {
+          slot,
+          platform: "ios",
+          outcome: restored?.kind ?? "timeout",
+          listed: app !== undefined,
+        });
+      }
+    }
+    const claimed = new Set(
+      [...live, ...dead].flatMap((r) => r.iosFirebaseAppId ?? []),
+    );
+    for (const app of listedApps) {
+      if (claimed.has(app.appId)) continue;
+      if (!isPlatformApp(app, stage)) {
+        if (active(app)) f.orphans++;
+        continue;
+      }
+      const claim = PUSH_BUNDLE_ID.test(app.bundleId)
+        ? await push.findPlatformIosApp(app.bundleId)
+        : undefined;
+      if (claim?.slot === slot) continue;
+      if (removals >= PUSH_RECONCILE_RELEASES_MAX || left() <= 0) {
+        truncated = true;
+        if (active(app)) f.orphans++;
+        continue;
+      }
+      removals++;
+      const outcome = await removeUnclaimed(api, slot, app, async () => {
+        const again = PUSH_BUNDLE_ID.test(app.bundleId)
+          ? await push.findPlatformIosApp(app.bundleId)
+          : undefined;
+        return (
+          again?.slot === slot ||
+          (await push.listSlotApps(slot)).some(
+            (r) => r.iosFirebaseAppId === app.appId,
+          )
+        );
+      });
+      if (outcome === "removed") {
+        f.removed++;
+        byId.delete(app.appId);
+      } else if (outcome === "kept") {
+        if (active(app)) f.orphans++;
+      } else if (outcome === "pending" || outcome === "unrestored") {
+        byId.set(app.appId, { ...app, state: "deleted" });
+        if (outcome === "unrestored") f.missing++;
+      }
+    }
+    return byId;
+  }
+
+  /** Merges the claim's iOS app id into the channel's config; `true` when changed. */
+  async function writeIosRegistration(
+    channelId: string,
+    iosFirebaseAppId: string,
+  ): Promise<boolean> {
+    let changed = false;
+    const after = await db.editChannel(channelId, (cur) => {
+      const config = configOf(cur);
+      if (!config || config.iosFirebaseAppId === iosFirebaseAppId)
+        return undefined;
+      changed = true;
+      return {
+        config: { ...config, iosFirebaseAppId } satisfies PushChannelConfig,
+      };
+    });
+    return after !== undefined && changed;
   }
 
   /**
@@ -693,9 +871,11 @@ export async function runPushSweep({
    * names by then -- adopted before the soft removal landed -- is restored.
    */
   async function removeUnclaimed(
-    management: ManagementClient,
+    api: AppsApi,
     slot: string,
-    app: AndroidAppInfo,
+    app: { appId: string },
+    /** The claim read again after the soft removal: does one name the app? */
+    claimedNow: () => Promise<boolean>,
   ): Promise<
     | "removed"
     /** Not removed at all: still active (or as it was listed). */
@@ -708,10 +888,7 @@ export async function runPushSweep({
     | "unrestored"
   > {
     const budget = () => Math.min(PUSH_REMOVE_BUDGET_MS, left());
-    const soft = await within(
-      () => management.removeAndroidApp(app.appId),
-      budget(),
-    );
+    const soft = await within(() => api.remove(app.appId), budget());
     if (soft?.kind !== "removed") {
       logger.warn("push reconciliation: unclaimed app not removed", {
         slot,
@@ -721,14 +898,7 @@ export async function runPushSweep({
     }
     let claimed: boolean;
     try {
-      const claim = PUSH_PACKAGE_NAME.test(app.packageName)
-        ? await push.findPlatformApp(app.packageName)
-        : undefined;
-      claimed =
-        claim?.slot === slot ||
-        (await push.listSlotApps(slot)).some(
-          (r) => r.firebaseAppId === app.appId,
-        );
+      claimed = await claimedNow();
     } catch (e) {
       // Unknown is not unclaimed: put it back, tomorrow decides.
       claimed = true;
@@ -739,7 +909,7 @@ export async function runPushSweep({
     }
     if (!claimed) {
       const purged = await within(
-        () => management.removeAndroidApp(app.appId, { immediate: true }),
+        () => api.remove(app.appId, { immediate: true }),
         budget(),
       );
       if (purged?.kind === "removed") return "removed";
@@ -752,7 +922,7 @@ export async function runPushSweep({
     // Not bounded by the run's deadline: a restore that is skipped leaves a
     // live channel pointing at an app pending deletion.
     const restored = await within(
-      () => management.undeleteAndroidApp(app.appId),
+      () => api.undelete(app.appId),
       PUSH_REMOVE_BUDGET_MS,
     );
     // `not_found`: the claim's create met the app pending deletion, purged

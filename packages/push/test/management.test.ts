@@ -634,3 +634,96 @@ describe("listAndroidApps", () => {
     });
   });
 });
+
+describe("iOS apps", () => {
+  const IOS = { bundleId: "com.example.my-game", displayName: "Game" };
+
+  it("registers, configures, lists, removes and restores an iOS app", async () => {
+    const { google, management } = setup();
+    const created = await management.createIosApp(IOS);
+    expect(created).toEqual({
+      kind: "created",
+      appId: expect.stringMatching(/^1:\d+:ios:[0-9a-f]+$/) as string,
+    });
+    const appId = (created as { appId: string }).appId;
+    expect(google.calls.create).toBe(1);
+
+    const config = await management.getIosAppConfig(appId);
+    expect(config).toMatchObject({
+      kind: "ok",
+      filename: "GoogleService-Info.plist",
+    });
+    expect((config as { contents: string }).contents).toContain(
+      `<key>BUNDLE_ID</key><string>${IOS.bundleId}</string>`,
+    );
+
+    expect(await management.listIosApps()).toEqual({
+      kind: "ok",
+      apps: [
+        {
+          appId,
+          bundleId: IOS.bundleId,
+          displayName: "Game",
+          state: "active",
+        },
+      ],
+    });
+    // The collections are apart: no Android app, no cross-kind lookup.
+    expect(await management.listAndroidApps()).toEqual({
+      kind: "ok",
+      apps: [],
+    });
+    expect(await management.getAndroidAppConfig(appId)).toEqual({
+      kind: "invalid",
+      reason: "app_id",
+    });
+
+    expect(await management.removeIosApp(appId)).toEqual({ kind: "removed" });
+    expect(await management.listIosApps()).toMatchObject({
+      apps: [{ appId, state: "deleted" }],
+    });
+    expect(await management.undeleteIosApp(appId)).toEqual({
+      kind: "restored",
+    });
+    expect(await management.removeIosApp(appId, { immediate: true })).toEqual({
+      kind: "removed",
+    });
+    expect(google.apps(PROJECT)).toEqual([]);
+  });
+
+  it("refuses a bad bundle id without a request, and a duplicate per kind only", async () => {
+    const { google, management } = setup();
+    for (const bundleId of ["nodot", "com.ex_ample", "a." + "b".repeat(160)])
+      expect(await management.createIosApp({ ...IOS, bundleId })).toEqual({
+        kind: "invalid",
+        reason: "bundle_id",
+      });
+    expect(google.calls.create).toBe(0);
+    // An Android app of the same name does not collide; a second iOS one does.
+    expect(
+      (
+        await management.createAndroidApp({
+          ...APP,
+          packageName: "com.example.same",
+        })
+      ).kind,
+    ).toBe("created");
+    expect(
+      (await management.createIosApp({ ...IOS, bundleId: "com.example.same" }))
+        .kind,
+    ).toBe("created");
+    expect(
+      await management.createIosApp({ ...IOS, bundleId: "com.example.same" }),
+    ).toEqual({ kind: "already_exists" });
+  });
+
+  it("counts iOS apps against the project's cap with the Android ones", async () => {
+    const { google, management } = setup();
+    google.appLimit = 2;
+    google.seedApp(PROJECT, "com.example.a");
+    google.seedApp(PROJECT, "com.example.b", "ACTIVE", undefined, "ios");
+    expect(await management.createIosApp(IOS)).toEqual({
+      kind: "limit_reached",
+    });
+  });
+});

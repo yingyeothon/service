@@ -1346,6 +1346,7 @@ export function createConsoleApp({
     access,
     kv,
     db,
+    registrar: pushRegistrar,
     view,
     writeSlot,
     clock,

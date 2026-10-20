@@ -39,9 +39,20 @@ export const PUSH_SENDERS = ["platform", "team"] as const;
 export type PushSender = (typeof PUSH_SENDERS)[number];
 
 /**
- * Registrations one Firebase project of the pool takes. Firebase fixes a
- * project at 30 apps and the other 10 are reserve; a code constant no limit
- * request can raise (decisions #4).
+ * `push_apps_apns_state` in declaration order (`m0034_push_ios`). `team`: a
+ * team-sender iOS app, whose APNs credential is the team's own; `pending`
+ * until the owner uploaded the team's per-app certificate in the slot's
+ * Firebase project; `ready` afterwards (decisions *Console app and push on
+ * iOS* #8).
+ */
+export const PUSH_APNS_STATES = ["team", "pending", "ready"] as const;
+export type PushApnsState = (typeof PUSH_APNS_STATES)[number];
+
+/**
+ * Firebase apps one project of the pool takes -- a channel's Android app and
+ * its iOS app count one each (decisions *Console app and push on iOS* #8).
+ * Firebase fixes a project at 30 apps and the other 10 are reserve; a code
+ * constant no limit request can raise (decisions #4).
  */
 export const PUSH_APPS_PER_PROJECT = 20;
 /** Slots one claim may name: the pool is a handful of projects. */
@@ -85,7 +96,7 @@ export const pushTokenCapReached = (cap: number): AppError =>
     { details: { limit: "push.tokensPerChannel", value: cap } },
   );
 /** `push_tokens`.`platform` is a VARCHAR; this is what may be written today. */
-export const PUSH_PLATFORMS = ["android"] as const;
+export const PUSH_PLATFORMS = ["android", "ios"] as const;
 export type PushPlatform = (typeof PUSH_PLATFORMS)[number];
 
 /** Rows the sweep and a channel purge delete per statement. */
@@ -116,6 +127,12 @@ export const pushDay = (nowSec: number): number => Math.floor(nowSec / 86_400);
 export const PUSH_PACKAGE_NAME =
   /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
 export const PUSH_PACKAGE_NAME_MAX = 255;
+/**
+ * An iOS bundle id: two or more dot-separated segments of letters, digits
+ * and hyphens, at most 155 characters (Apple's limit).
+ */
+export const PUSH_BUNDLE_ID = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+export const PUSH_BUNDLE_ID_MAX = 155;
 /** Printable ASCII without blanks: what an FCM registration token is made of. */
 const PUSH_TOKEN = /^[\x21-\x7e]+$/;
 const PUSH_TOKEN_HASH = /^[0-9a-f]{64}$/;
@@ -127,6 +144,12 @@ const bad = (message: string) => new AppError("bad_request", message);
 export function checkPushSlot(slot: string): string {
   if (!PUSH_SLOT.test(slot)) throw bad("invalid slot");
   return slot;
+}
+
+export function checkPushBundleId(id: string): string {
+  if (id.length > PUSH_BUNDLE_ID_MAX || !PUSH_BUNDLE_ID.test(id))
+    throw bad("invalid iosBundleId");
+  return id;
 }
 
 export function checkPushPackageName(name: string): string {
@@ -169,6 +192,12 @@ export interface PushAppRow {
   /** Null until Firebase answered the registration. */
   firebaseAppId: string | null;
   createdAt: number;
+  /** The channel's iOS app; null without one. */
+  iosBundleId: string | null;
+  /** Null until Firebase answered the iOS registration (always for `team`). */
+  iosFirebaseAppId: string | null;
+  /** Null exactly when {@link iosBundleId} is. */
+  apnsState: PushApnsState | null;
 }
 
 export interface PushPoolRow {
@@ -197,8 +226,28 @@ export type PushAppClaim = {
       limit: number;
       /** Every slot of the pool, in placement order (pack: first with room). */
       slots: readonly string[];
+      /**
+       * An iOS app follows at once ({@link PushDb.claimIosApp}): the slot
+       * must have room for two Firebase apps, not one.
+       */
+      withIos?: boolean;
     }
 );
+
+/** Adds an iOS app to a channel that holds a claim. */
+export interface PushIosClaim {
+  channelId: string;
+  bundleId: string;
+  at: number;
+}
+
+export type PushIosClaimResult =
+  /** The channel holds the iOS app; `apnsState` is `team` or `pending`. */
+  | { ok: true; apnsState: PushApnsState }
+  /** Another `platform` claim of the stage holds the bundle id. */
+  | { ok: false; reason: "bundle_taken" }
+  /** The channel's slot is closed or holds {@link PUSH_APPS_PER_PROJECT} apps. */
+  | { ok: false; reason: "slot_full" };
 
 export type PushAppClaimResult =
   /** The claim is held. `slot` is null for a `team`-sender channel. */
@@ -207,11 +256,15 @@ export type PushAppClaimResult =
   | { ok: false; reason: "package_taken" }
   /** The team already holds `usage >= limit` platform registrations. */
   | { ok: false; reason: "team_cap"; usage: number; limit: number }
-  /** Every slot named is closed or holds {@link PUSH_APPS_PER_PROJECT}. */
+  /**
+   * Every slot named is closed or holds {@link PUSH_APPS_PER_PROJECT} apps
+   * (less one for a claim `withIos`).
+   */
   | { ok: false; reason: "pool_full" };
 
 export interface PushSlotUsage {
   slot: string;
+  /** Firebase apps: each claim's Android app plus its iOS app. */
   apps: number;
 }
 
@@ -302,18 +355,55 @@ export interface PushDb {
   /** Records the id Firebase returned; `false` when the claim is gone. */
   setFirebaseAppId(channelId: string, firebaseAppId: string): Promise<boolean>;
   /**
+   * Adds an iOS app to the channel's claim, in one transaction under the
+   * locks of {@link claimApp} (team row, channel row, the slot's pool row).
+   * The channel must hold a claim (`not_found` otherwise). An iOS app once
+   * set is immutable: the same bundle id again answers `ok` with the stored
+   * state, another one is a `conflict`. A `team` claim takes the bundle id
+   * out of nothing and is `team` at once; a `platform` claim needs the
+   * bundle id free among the stage's `platform` claims and room for one more
+   * app in the channel's own slot -- a channel never moves -- and starts
+   * `pending`.
+   */
+  claimIosApp(c: PushIosClaim): Promise<PushIosClaimResult>;
+  /** The `platform` claim holding an iOS bundle id, if any (case-insensitive). */
+  findPlatformIosApp(bundleId: string): Promise<PushAppRow | undefined>;
+  /** Records the iOS app id Firebase returned; `false` without an iOS app. */
+  setIosFirebaseAppId(
+    channelId: string,
+    firebaseAppId: string,
+  ): Promise<boolean>;
+  /**
+   * Drops the channel's iOS app from its claim (the rollback of a failed
+   * iOS registration); `false` when there was none.
+   */
+  releaseIosApp(channelId: string): Promise<boolean>;
+  /**
+   * Moves a `platform` claim's iOS app between `pending` and `ready`;
+   * `false` when the channel has no platform iOS app.
+   */
+  setApnsState(
+    channelId: string,
+    state: Exclude<PushApnsState, "team">,
+  ): Promise<boolean>;
+  /** Platform claims whose iOS app waits for the owner, by channel id. */
+  listApnsPending(): Promise<PushAppRow[]>;
+  /**
    * Releases a claim: the rollback of a failed registration, and a channel
    * delete. `false` when there was none. The purge of the channel row
    * cascades a claim nobody released.
    */
   deleteApp(channelId: string): Promise<boolean>;
-  /** Platform claims per slot, by slot; a slot without one is absent. */
+  /**
+   * Firebase apps per slot (a claim's Android app plus its iOS app), by
+   * slot; a slot without one is absent.
+   */
   countAppsBySlot(): Promise<PushSlotUsage[]>;
   /** A team's `platform` claims: the usage of `push.appsPerTeam`. */
   countTeamApps(teamId: string): Promise<number>;
   /**
    * A slot's claims by channel id, for the daily reconciliation against
-   * Firebase's app list; at most {@link PUSH_APPS_PER_PROJECT} by construction.
+   * Firebase's app lists; at most {@link PUSH_APPS_PER_PROJECT} by construction.
    */
   listSlotApps(slot: string): Promise<PushAppRow[]>;
 
@@ -413,6 +503,8 @@ export interface PushDb {
 interface PlatformClaim {
   limit: number;
   slots: string[];
+  /** Firebase apps the claim adds to its slot. */
+  need: 1 | 2;
 }
 
 function checkClaim(c: PushAppClaim): {
@@ -424,7 +516,21 @@ function checkClaim(c: PushAppClaim): {
   if (!Number.isInteger(c.limit) || c.limit < 0) throw bad("invalid limit");
   const slots = [...new Set(c.slots.map(checkPushSlot))];
   if (slots.length > PUSH_POOL_SLOTS_MAX) throw bad("too many slots");
-  return { packageName, platform: { limit: c.limit, slots } };
+  return {
+    packageName,
+    platform: { limit: c.limit, slots, need: c.withIos ? 2 : 1 },
+  };
+}
+
+/** A second iOS claim for a channel: the same one again, or a conflict. */
+function reclaimIos(
+  held: Pick<PushAppRow, "iosBundleId" | "apnsState">,
+  bundleId: string,
+): PushIosClaimResult | undefined {
+  if (held.iosBundleId === null || held.apnsState === null) return undefined;
+  if (samePackage(held.iosBundleId, bundleId))
+    return { ok: true, apnsState: held.apnsState };
+  throw new AppError("conflict", "channel already holds an iOS app");
 }
 
 const samePackage = (a: string, b: string) =>
@@ -445,11 +551,16 @@ function pickSlot(
   slots: readonly string[],
   closed: ReadonlySet<string>,
   apps: ReadonlyMap<string, number>,
+  need: number,
 ): string | undefined {
   return slots.find(
-    (s) => !closed.has(s) && (apps.get(s) ?? 0) < PUSH_APPS_PER_PROJECT,
+    (s) => !closed.has(s) && (apps.get(s) ?? 0) + need <= PUSH_APPS_PER_PROJECT,
   );
 }
+
+/** Firebase apps of one claim: its Android app plus its iOS app. */
+const appsOf = (a: Pick<PushAppRow, "iosBundleId" | "sender">): number =>
+  a.sender === "platform" && a.iosBundleId !== null ? 2 : 1;
 
 function checkTokenPut(t: PushTokenPut): string {
   checkKvOwnerId(t.userId);
@@ -520,6 +631,9 @@ type AppModel = {
   slot: string | null;
   firebase_app_id: string | null;
   created_at: bigint | number;
+  ios_bundle_id: string | null;
+  ios_firebase_app_id: string | null;
+  apns_state: string | null;
 };
 
 const COUNT_MAX = 1_000_000;
@@ -615,6 +729,9 @@ const toApp = (r: AppModel): PushAppRow => ({
   slot: r.slot,
   firebaseAppId: r.firebase_app_id,
   createdAt: num(r.created_at),
+  iosBundleId: r.ios_bundle_id,
+  iosFirebaseAppId: r.ios_firebase_app_id,
+  apnsState: r.apns_state as PushApnsState | null,
 });
 
 const toStats = (r: {
@@ -688,19 +805,44 @@ export function createPushDb(prisma: PrismaClient): PushDb {
       });
   }
 
-  /** The first open slot with room, under the pool rows' locks. */
-  async function placeInPool(
+  /**
+   * Firebase apps per slot among `slots` (or every slot): a claim's row
+   * plus its platform iOS app.
+   */
+  async function slotApps(
+    t: Tx | PrismaClient,
+    slots?: readonly string[],
+  ): Promise<Map<string, number>> {
+    const where = slots
+      ? { slot: { in: [...slots] } }
+      : { slot: { not: null } };
+    const [rows, ios] = await Promise.all([
+      t.push_apps.groupBy({ by: ["slot"], where, _count: { _all: true } }),
+      t.push_apps.groupBy({
+        by: ["slot"],
+        where: { ...where, ios_platform_bundle: { not: null } },
+        _count: { _all: true },
+      }),
+    ]);
+    const apps = new Map<string, number>();
+    for (const g of [...rows, ...ios])
+      if (g.slot !== null)
+        apps.set(g.slot, (apps.get(g.slot) ?? 0) + g._count._all);
+    return apps;
+  }
+
+  /** Locks the named pool rows in slot order; the closed ones among them. */
+  async function lockPool(
     t: Tx,
     slots: readonly string[],
-  ): Promise<string | undefined> {
-    if (slots.length === 0) return undefined;
+  ): Promise<Set<string>> {
     // One statement over the primary key, so every claim takes the rows in
     // slot order whatever order its caller fills them in.
     await t.$queryRaw`
       SELECT 1 FROM \`push_pool\`
       WHERE \`slot\` IN (${Prisma.join([...slots])})
       ORDER BY \`slot\` FOR UPDATE`;
-    const closed = new Set(
+    return new Set(
       (
         await t.push_pool.findMany({
           where: { slot: { in: [...slots] }, closed_at: { not: null } },
@@ -708,16 +850,37 @@ export function createPushDb(prisma: PrismaClient): PushDb {
         })
       ).map((r) => r.slot),
     );
-    const apps = new Map(
-      (
-        await t.push_apps.groupBy({
-          by: ["slot"],
-          where: { slot: { in: [...slots] } },
-          _count: { _all: true },
-        })
-      ).map((g) => [g.slot ?? "", g._count._all]),
-    );
-    return pickSlot(slots, closed, apps);
+  }
+
+  /** The first open slot with room, under the pool rows' locks. */
+  async function placeInPool(
+    t: Tx,
+    slots: readonly string[],
+    need: number,
+  ): Promise<string | undefined> {
+    if (slots.length === 0) return undefined;
+    const closed = await lockPool(t, slots);
+    return pickSlot(slots, closed, await slotApps(t, slots), need);
+  }
+
+  /**
+   * The team row, then the channel row, as every claim takes them; the
+   * channel's team.
+   */
+  async function lockChannel(t: Tx, channelId: string): Promise<string> {
+    // `team_id` is immutable, so it may be read before the locks.
+    const ch = await t.channels.findUnique({
+      where: { id: channelId },
+      select: { team_id: true, kind: true, deleted_at: true },
+    });
+    if (!ch || ch.kind !== "push" || ch.deleted_at !== null)
+      throw channelGone();
+    if (!(await lockTeamRow(t, ch.team_id))) throw channelGone();
+    const live = await t.$queryRaw<{ id: string }[]>`
+      SELECT id FROM channels
+      WHERE id = ${channelId} AND deleted_at IS NULL FOR UPDATE`;
+    if (live.length === 0) throw channelGone();
+    return ch.team_id;
   }
 
   return {
@@ -727,20 +890,9 @@ export function createPushDb(prisma: PrismaClient): PushDb {
         if (platform) await ensurePoolRows(platform.slots, c.at);
         try {
           return await inTx<PushAppClaimResult>(async (t) => {
-            // `team_id` is immutable, so it may be read before the locks.
-            const ch = await t.channels.findUnique({
-              where: { id: c.channelId },
-              select: { team_id: true, kind: true, deleted_at: true },
-            });
-            if (!ch || ch.kind !== "push" || ch.deleted_at !== null)
-              throw channelGone();
-            if (!(await lockTeamRow(t, ch.team_id))) throw channelGone();
             // The channel row after the team's: a delete landing here must
             // not leave a claim on a channel nobody can see.
-            const live = await t.$queryRaw<{ id: string }[]>`
-              SELECT id FROM channels
-              WHERE id = ${c.channelId} AND deleted_at IS NULL FOR UPDATE`;
-            if (live.length === 0) throw channelGone();
+            const teamId = await lockChannel(t, c.channelId);
 
             const held = await t.push_apps.findUnique({
               where: { channel_id: c.channelId },
@@ -756,7 +908,7 @@ export function createPushDb(prisma: PrismaClient): PushDb {
               });
               if (taken) return { ok: false, reason: "package_taken" };
               const usage = await t.push_apps.count({
-                where: { team_id: ch.team_id, sender: "platform" },
+                where: { team_id: teamId, sender: "platform" },
               });
               if (usage >= platform.limit)
                 return {
@@ -765,7 +917,11 @@ export function createPushDb(prisma: PrismaClient): PushDb {
                   usage,
                   limit: platform.limit,
                 };
-              const placed = await placeInPool(t, platform.slots);
+              const placed = await placeInPool(
+                t,
+                platform.slots,
+                platform.need,
+              );
               if (placed === undefined)
                 return { ok: false, reason: "pool_full" };
               slot = placed;
@@ -773,7 +929,7 @@ export function createPushDb(prisma: PrismaClient): PushDb {
             await t.push_apps.create({
               data: {
                 channel_id: c.channelId,
-                team_id: ch.team_id,
+                team_id: teamId,
                 package_name: packageName,
                 platform_package: platform ? packageName : null,
                 sender: c.sender,
@@ -819,6 +975,113 @@ export function createPushDb(prisma: PrismaClient): PushDb {
         return done.count > 0;
       }),
 
+    claimIosApp: (c) =>
+      run(async () => {
+        const bundleId = checkPushBundleId(c.bundleId);
+        // The pool row must exist to be locked; outside the transaction for
+        // the reason `ensurePoolRows` gives.
+        const pre = await prisma.push_apps.findUnique({
+          where: { channel_id: c.channelId },
+          select: { slot: true },
+        });
+        if (pre?.slot) await ensurePoolRows([pre.slot], c.at);
+        try {
+          return await inTx<PushIosClaimResult>(async (t) => {
+            await lockChannel(t, c.channelId);
+            const held = await t.push_apps.findUnique({
+              where: { channel_id: c.channelId },
+            });
+            if (!held)
+              throw new AppError("not_found", "push channel not registered");
+            const again = reclaimIos(toApp(held), bundleId);
+            if (again) return again;
+            if (held.sender === "team") {
+              await t.push_apps.update({
+                where: { channel_id: c.channelId },
+                data: { ios_bundle_id: bundleId, apns_state: "team" },
+              });
+              return { ok: true, apnsState: "team" };
+            }
+            const taken = await t.push_apps.findUnique({
+              where: { ios_platform_bundle: bundleId },
+              select: { channel_id: true },
+            });
+            if (taken) return { ok: false, reason: "bundle_taken" };
+            const slot = held.slot ?? "";
+            const closed = await lockPool(t, [slot]);
+            const apps = (await slotApps(t, [slot])).get(slot) ?? 0;
+            if (closed.has(slot) || apps + 1 > PUSH_APPS_PER_PROJECT)
+              return { ok: false, reason: "slot_full" };
+            await t.push_apps.update({
+              where: { channel_id: c.channelId },
+              data: {
+                ios_bundle_id: bundleId,
+                ios_platform_bundle: bundleId,
+                apns_state: "pending",
+              },
+            });
+            return { ok: true, apnsState: "pending" };
+          });
+        } catch (e) {
+          // As in `claimApp`: the channel's own row was ruled out under its
+          // lock, so a duplicate key is `push_apps_ios_bundle`.
+          if (!(e instanceof AppError) && isConflict(e))
+            return { ok: false, reason: "bundle_taken" };
+          throw e;
+        }
+      }),
+
+    findPlatformIosApp: (bundleId) =>
+      run(async () => {
+        const r = await prisma.push_apps.findUnique({
+          where: { ios_platform_bundle: checkPushBundleId(bundleId) },
+        });
+        return r ? toApp(r) : undefined;
+      }),
+
+    setIosFirebaseAppId: (channelId, firebaseAppId) =>
+      run(async () => {
+        if (!PUSH_FIREBASE_APP_ID.test(firebaseAppId))
+          throw bad("invalid firebaseAppId");
+        const done = await prisma.push_apps.updateMany({
+          where: { channel_id: channelId, ios_platform_bundle: { not: null } },
+          data: { ios_firebase_app_id: firebaseAppId },
+        });
+        return done.count > 0;
+      }),
+
+    releaseIosApp: (channelId) =>
+      run(async () => {
+        const done = await prisma.push_apps.updateMany({
+          where: { channel_id: channelId, ios_bundle_id: { not: null } },
+          data: {
+            ios_bundle_id: null,
+            ios_platform_bundle: null,
+            ios_firebase_app_id: null,
+            apns_state: null,
+          },
+        });
+        return done.count > 0;
+      }),
+
+    setApnsState: (channelId, state) =>
+      run(async () => {
+        if (state !== "pending" && state !== "ready")
+          throw bad("invalid apnsState");
+        const done = await prisma.push_apps.updateMany({
+          where: { channel_id: channelId, ios_platform_bundle: { not: null } },
+          data: { apns_state: state },
+        });
+        return done.count > 0;
+      }),
+
+    listApnsPending: () =>
+      run(async () =>
+        (await prisma.push_apps.findMany({ where: { apns_state: "pending" } }))
+          .map(toApp)
+          .sort((a, b) => cmpBin(a.channelId, b.channelId)),
+      ),
+
     deleteApp: (channelId) =>
       run(async () => {
         const gone = await prisma.push_apps.deleteMany({
@@ -828,18 +1091,11 @@ export function createPushDb(prisma: PrismaClient): PushDb {
       }),
 
     countAppsBySlot: () =>
-      run(async () => {
-        const groups = await prisma.push_apps.groupBy({
-          by: ["slot"],
-          where: { slot: { not: null } },
-          _count: { _all: true },
-        });
-        return groups
-          .flatMap((g) =>
-            g.slot === null ? [] : [{ slot: g.slot, apps: g._count._all }],
-          )
-          .sort(bySlot);
-      }),
+      run(async () =>
+        [...(await slotApps(prisma))]
+          .map(([slot, apps]) => ({ slot, apps }))
+          .sort(bySlot),
+      ),
 
     countTeamApps: (teamId) =>
       run(() =>
@@ -1227,6 +1483,25 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
   const statKey = (channelId: string, day: number) => `${day}|${ci(channelId)}`;
 
   const appRows = () => [...apps.values()];
+  /** Firebase apps per slot, as `slotApps` counts them. */
+  const slotCounts = () => {
+    const counts = new Map<string, number>();
+    for (const a of appRows())
+      if (a.slot !== null)
+        counts.set(a.slot, (counts.get(a.slot) ?? 0) + appsOf(a));
+    return counts;
+  };
+  const closedSlots = () =>
+    new Set(
+      [...pool.values()].filter((r) => r.closedAt !== null).map((r) => r.slot),
+    );
+  const platformIos = (bundleId: string) =>
+    appRows().find(
+      (a) =>
+        a.sender === "platform" &&
+        a.iosBundleId !== null &&
+        samePackage(a.iosBundleId, bundleId),
+    );
   const tokensOf = (channelId: string, userId?: string) =>
     [...tokens.values()].filter(
       (r) =>
@@ -1286,16 +1561,12 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
             usage,
             limit: platform.limit,
           };
-        const counts = new Map<string, number>();
-        for (const a of appRows())
-          if (a.slot !== null)
-            counts.set(a.slot, (counts.get(a.slot) ?? 0) + 1);
-        const closed = new Set(
-          [...pool.values()]
-            .filter((r) => r.closedAt !== null)
-            .map((r) => r.slot),
+        const placed = pickSlot(
+          platform.slots,
+          closedSlots(),
+          slotCounts(),
+          platform.need,
         );
-        const placed = pickSlot(platform.slots, closed, counts);
         if (placed === undefined) return { ok: false, reason: "pool_full" };
         slot = placed;
       }
@@ -1307,9 +1578,92 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
         slot,
         firebaseAppId: null,
         createdAt: c.at,
+        iosBundleId: null,
+        iosFirebaseAppId: null,
+        apnsState: null,
       });
       return { ok: true, slot };
     },
+
+    claimIosApp: async (c) => {
+      const bundleId = checkPushBundleId(c.bundleId);
+      const ch = deps.channel?.(c.channelId);
+      if (!ch || ch.kind !== "push" || ch.deletedAt !== null || !ch.teamId)
+        throw channelGone();
+      const held = apps.get(ci(c.channelId));
+      if (!held) throw new AppError("not_found", "push channel not registered");
+      const again = reclaimIos(held, bundleId);
+      if (again) return again;
+      if (held.sender === "team") {
+        apps.set(ci(c.channelId), {
+          ...held,
+          iosBundleId: bundleId,
+          apnsState: "team",
+        });
+        return { ok: true, apnsState: "team" };
+      }
+      if (platformIos(bundleId)) return { ok: false, reason: "bundle_taken" };
+      const slot = held.slot ?? "";
+      if (!pool.has(slot))
+        pool.set(slot, {
+          slot,
+          closedAt: null,
+          closedBy: null,
+          updatedAt: c.at,
+        });
+      if (
+        closedSlots().has(slot) ||
+        (slotCounts().get(slot) ?? 0) + 1 > PUSH_APPS_PER_PROJECT
+      )
+        return { ok: false, reason: "slot_full" };
+      apps.set(ci(c.channelId), {
+        ...held,
+        iosBundleId: bundleId,
+        apnsState: "pending",
+      });
+      return { ok: true, apnsState: "pending" };
+    },
+
+    findPlatformIosApp: async (bundleId) => {
+      const a = platformIos(checkPushBundleId(bundleId));
+      return a && { ...a };
+    },
+
+    setIosFirebaseAppId: async (channelId, firebaseAppId) => {
+      if (!PUSH_FIREBASE_APP_ID.test(firebaseAppId))
+        throw bad("invalid firebaseAppId");
+      const a = apps.get(ci(channelId));
+      if (!a || a.sender !== "platform" || a.iosBundleId === null) return false;
+      apps.set(ci(channelId), { ...a, iosFirebaseAppId: firebaseAppId });
+      return true;
+    },
+
+    releaseIosApp: async (channelId) => {
+      const a = apps.get(ci(channelId));
+      if (!a || a.iosBundleId === null) return false;
+      apps.set(ci(channelId), {
+        ...a,
+        iosBundleId: null,
+        iosFirebaseAppId: null,
+        apnsState: null,
+      });
+      return true;
+    },
+
+    setApnsState: async (channelId, state) => {
+      if (state !== "pending" && state !== "ready")
+        throw bad("invalid apnsState");
+      const a = apps.get(ci(channelId));
+      if (!a || a.sender !== "platform" || a.iosBundleId === null) return false;
+      apps.set(ci(channelId), { ...a, apnsState: state });
+      return true;
+    },
+
+    listApnsPending: async () =>
+      appRows()
+        .filter((a) => a.apnsState === "pending")
+        .map((a) => ({ ...a }))
+        .sort((a, b) => cmpBin(a.channelId, b.channelId)),
 
     findApp: async (channelId) => {
       const a = apps.get(ci(channelId));
@@ -1336,12 +1690,8 @@ export function createMemoryPushDb(deps: MemoryPushDeps = {}): PushDb & {
 
     deleteApp: async (channelId) => apps.delete(ci(channelId)),
 
-    countAppsBySlot: async () => {
-      const counts = new Map<string, number>();
-      for (const a of appRows())
-        if (a.slot !== null) counts.set(a.slot, (counts.get(a.slot) ?? 0) + 1);
-      return [...counts].map(([slot, n]) => ({ slot, apps: n })).sort(bySlot);
-    },
+    countAppsBySlot: async () =>
+      [...slotCounts()].map(([slot, n]) => ({ slot, apps: n })).sort(bySlot),
 
     countTeamApps: async (teamId) =>
       appRows().filter(

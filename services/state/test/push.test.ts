@@ -200,6 +200,54 @@ describe("push token registration", () => {
     ]);
   });
 
+  it("takes `platform: ios` for a channel with an iOS app only", async () => {
+    const h = await build();
+    await seedPush(h);
+    const plain = await put(h, OWNER, { token: device(1), platform: "ios" });
+    expect(status(plain)).toBe(409);
+    expect(errorOf(plain)?.details?.reason).toBe("ios_not_registered");
+    expect(
+      status(await put(h, OWNER, { token: device(1), platform: "web" })),
+    ).toBe(400);
+    expect(status(await put(h, OWNER, { token: device(1), platform: 1 }))).toBe(
+      400,
+    );
+    expect(await rowsOf(h, OWNER)).toEqual([]);
+
+    await seedPush(h, {
+      id: "push_ios",
+      config: { iosBundleId: "com.example.ios", apnsState: "pending" },
+    });
+    // Registered while the APNs certificate is still pending: the send then
+    // fails at FCM, never here.
+    const ok = await put(
+      h,
+      OWNER,
+      { token: device(2), platform: "ios" },
+      { channel: "push_ios" },
+    );
+    expect(status(ok)).toBe(204);
+    const android = await put(
+      h,
+      OWNER,
+      { token: device(3) },
+      { channel: "push_ios" },
+    );
+    expect(status(android)).toBe(204);
+    expect(
+      [
+        ...(
+          h.push as unknown as {
+            tokens: Map<string, { channelId: string; platform: string }>;
+          }
+        ).tokens.values(),
+      ]
+        .filter((t) => t.channelId === "push_ios")
+        .map((t) => t.platform)
+        .sort(),
+    ).toEqual(["android", "ios"]);
+  });
+
   it("refuses a body that names a user: identity is the claim alone", async () => {
     const h = await build();
     await seedPush(h);
@@ -268,7 +316,7 @@ describe("push token registration", () => {
       { token: "x".repeat(513) },
       { token: device(1), project: 7 },
       { token: device(1), project: "Not_A_Project" },
-      { token: device(1), platform: "ios" },
+      { token: device(1), platform: "windows" },
     ])
       expect(status(await put(h, OWNER, body)), JSON.stringify(body)).toBe(400);
     expect(await rowsOf(h, OWNER)).toEqual([]);

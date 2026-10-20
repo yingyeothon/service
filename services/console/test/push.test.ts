@@ -1453,6 +1453,7 @@ describe("push pool admin", () => {
     expect(r.statusCode, r.body).toBe(200);
     expect(parse(r)).toEqual({
       configured: true,
+      apnsPending: [],
       slots: [
         {
           slot: "p1",
@@ -1501,7 +1502,11 @@ describe("push pool admin", () => {
         ev("GET", "/admin/push/pool", { headers: boss.cookie }),
       );
       expect(r.statusCode, r.body).toBe(200);
-      expect(parse(r)).toEqual({ configured: false, slots: [] });
+      expect(parse(r)).toEqual({
+        configured: false,
+        slots: [],
+        apnsPending: [],
+      });
     }
     const h = harness({ push: undefined });
     const boss = await h.login("boss", "admin");

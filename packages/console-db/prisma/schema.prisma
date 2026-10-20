@@ -1403,23 +1403,39 @@ enum limit_requests_status {
 /// `package_name` for a `platform` row and is NULL for a `team` row -- two
 /// CHECKs in the migration, which this schema file cannot express.
 model push_apps {
-  channel_id       String           @id @db.VarChar(64)
-  team_id          String           @db.VarChar(64)
+  channel_id          String                @id @db.VarChar(64)
+  team_id             String                @db.VarChar(64)
   /// Database default collation: case-variants of one name collide.
-  package_name     String           @db.VarChar(255)
+  package_name        String                @db.VarChar(255)
   /// The name again for a `platform` claim, NULL for a `team` one: the unique
   /// index covers platform claims only, so a team sender cannot squat a name.
-  platform_package String?          @unique(map: "push_apps_package") @db.VarChar(255)
-  sender           push_apps_sender
-  slot             String?          @db.VarChar(32)
+  platform_package    String?               @unique(map: "push_apps_package") @db.VarChar(255)
+  sender              push_apps_sender
+  slot                String?               @db.VarChar(32)
   /// Null until Firebase answered the registration.
-  firebase_app_id  String?          @db.VarChar(255)
-  created_at       BigInt
+  firebase_app_id     String?               @db.VarChar(255)
+  created_at          BigInt
+  /// The channel's iOS app (migration `m0034_push_ios`); NULL without one.
+  ios_bundle_id       String?               @db.VarChar(255)
+  /// The bundle id again for a `platform` claim, NULL for a `team` one, like
+  /// `platform_package`.
+  ios_platform_bundle String?               @unique(map: "push_apps_ios_bundle") @db.VarChar(255)
+  /// Null until Firebase answered the iOS registration; always for `team`.
+  ios_firebase_app_id String?               @db.VarChar(255)
+  /// NULL exactly when `ios_bundle_id` is (CHECKs in the migration).
+  apns_state          push_apps_apns_state?
   /// The safety net: the purge of a channel row drops a claim nobody released.
-  channels         channels         @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "push_apps_channel_fk")
+  channels            channels              @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "push_apps_channel_fk")
 
   @@index([slot], map: "push_apps_slot")
   @@index([team_id, sender], map: "push_apps_team")
+}
+
+/// `push_apps`.`apns_state`, in declaration order (`PUSH_APNS_STATES`).
+enum push_apps_apns_state {
+  team
+  pending
+  ready
 }
 
 /// A pool slot closed to new registrations, by an operator or by the platform
@@ -1592,13 +1608,13 @@ enum push_apps_sender {
 }
 
 model site_edge_policies {
-  prefix String @id @db.VarChar(64)
-  payload String @db.Text
+  prefix  String  @id @db.VarChar(64)
+  payload String  @db.Text
   pending Boolean @default(true)
 }
 
 model site_edge_control {
-  id Int @id
+  id    Int    @id
   month String @db.VarChar(7)
-  used Int @default(0)
+  used  Int    @default(0)
 }

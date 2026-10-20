@@ -581,8 +581,17 @@ export function createPushRoutes({
       handler: async (ctx) => {
         const ch = await channelOf(ctx);
         const userId = playerOf(ctx, ch);
-        const body = strictBody(ctx.body, ["token", "project"]);
+        const body = strictBody(ctx.body, ["token", "project", "platform"]);
         const deviceToken = deviceTokenOf(body);
+        // `android` unless said otherwise; `ios` only for a channel that
+        // holds an iOS app (decisions *Console app and push on iOS* #8).
+        const tokenPlatform = body.platform ?? "android";
+        if (tokenPlatform !== "android" && tokenPlatform !== "ios")
+          throw bad("platform must be android or ios");
+        if (tokenPlatform === "ios" && ch.config.iosBundleId === undefined)
+          throw new AppError("conflict", "the channel has no iOS app", {
+            details: { reason: "ios_not_registered" },
+          });
         if (
           body.project !== undefined &&
           (typeof body.project !== "string" ||
@@ -621,7 +630,7 @@ export function createPushRoutes({
           userId,
           token: deviceToken,
           firebaseProject,
-          platform: "android",
+          platform: tokenPlatform,
           at: nowSec(clock),
           // `push.tokensPerChannel`: console mirrors a grant into the
           // config, since this account cannot read `limit_overrides`.

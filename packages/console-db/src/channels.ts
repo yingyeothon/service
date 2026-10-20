@@ -86,7 +86,7 @@ import {
   type Tx,
 } from "./prisma.js";
 import { decodeHistoryCursor, encodeHistoryCursor } from "./team.js";
-import type { PushSender } from "./push.js";
+import type { PushApnsState, PushSender } from "./push.js";
 
 export interface OAuthAppPublic {
   clientId: string;
@@ -260,6 +260,15 @@ export interface PushChannelConfig {
   firebaseAppId?: string;
   /** Firebase project id of the registered team-owned service account. */
   teamProject?: string;
+  /**
+   * The channel's iOS app (docs/decisions.md *Console app and push on iOS*
+   * #8): set at creation or added once later, immutable after.
+   */
+  iosBundleId?: string;
+  /** The iOS app's Firebase app id; platform sender only, once registered. */
+  iosFirebaseAppId?: string;
+  /** Mirrors `push_apps`.`apns_state`; absent without an iOS app. */
+  apnsState?: PushApnsState;
   /**
    * The granted `push.tokensPerChannel`, written by console with the limit
    * override in one transaction; absent = the soft default

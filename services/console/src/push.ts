@@ -16,6 +16,7 @@ import {
   type ConsoleDb,
   type LimitsDb,
   type PushAppClaimResult,
+  type PushIosClaimResult,
   type PushChannelConfig,
   type PushChannelSecret,
   type PushDb,
@@ -30,7 +31,11 @@ import {
 } from "@yyt/push";
 import type { Kv } from "@yyt/redis";
 import { z } from "zod";
-import { readServiceAccount, serviceAccountIn } from "./channels.js";
+import {
+  pushIosBody,
+  readServiceAccount,
+  serviceAccountIn,
+} from "./channels.js";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
 import { overLimit, resolveLimits } from "./limits.js";
 import {
@@ -194,23 +199,82 @@ export interface PushDeps {
   clock?: Clock;
 }
 
+/** Which of a channel's two Firebase apps a call is about. */
+export type PushAppPlatform = "android" | "ios";
+
+/** One Firebase app as both collections list it; `key` is the package or bundle id. */
+export interface PushFirebaseApp {
+  appId: string;
+  key: string;
+  displayName: string;
+  state: "active" | "deleted" | "unknown";
+}
+
+/**
+ * The Management calls of one app collection behind one shape, so creating,
+ * adopting, finding and removing read the same for an Android package and an
+ * iOS bundle id.
+ */
+export function appsApi(m: ManagementClient, platform: PushAppPlatform) {
+  if (platform === "android")
+    return {
+      create: (key: string, displayName: string) =>
+        m.createAndroidApp({ packageName: key, displayName }),
+      list: async (): Promise<
+        { kind: "ok"; apps: PushFirebaseApp[] } | ManagementFailure
+      > => {
+        const r = await m.listAndroidApps();
+        return r.kind !== "ok"
+          ? r
+          : {
+              kind: "ok",
+              apps: r.apps.map(({ packageName, ...a }) => ({
+                ...a,
+                key: packageName,
+              })),
+            };
+      },
+      remove: (appId: string, opts?: { immediate?: boolean }) =>
+        m.removeAndroidApp(appId, opts),
+      undelete: (appId: string) => m.undeleteAndroidApp(appId),
+      config: (appId: string) => m.getAndroidAppConfig(appId),
+    };
+  return {
+    create: (key: string, displayName: string) =>
+      m.createIosApp({ bundleId: key, displayName }),
+    list: async (): Promise<
+      { kind: "ok"; apps: PushFirebaseApp[] } | ManagementFailure
+    > => {
+      const r = await m.listIosApps();
+      return r.kind !== "ok"
+        ? r
+        : {
+            kind: "ok",
+            apps: r.apps.map(({ bundleId, ...a }) => ({ ...a, key: bundleId })),
+          };
+    },
+    remove: (appId: string, opts?: { immediate?: boolean }) =>
+      m.removeIosApp(appId, opts),
+    undelete: (appId: string) => m.undeleteIosApp(appId),
+    config: (appId: string) => m.getIosAppConfig(appId),
+  };
+}
+export type AppsApi = ReturnType<typeof appsApi>;
+
 /**
  * The Firebase app id of a claim that never recorded one (its create was cut
- * off): the slot's app of that package, if this stage registered it.
+ * off): the slot's app of that package or bundle id, if this stage
+ * registered it.
  */
 async function findAppId(
-  management: ManagementClient,
-  packageName: string,
+  apps: AppsApi,
+  key: string,
   stage: string,
   left: () => number,
 ): Promise<string | undefined | ManagementFailure> {
-  const list = (await within(() => management.listAndroidApps(), left())) ?? {
-    ...TIMED_OUT,
-  };
+  const list = (await within(() => apps.list(), left())) ?? { ...TIMED_OUT };
   if (list.kind !== "ok") return list;
-  return list.apps.find(
-    (a) => a.packageName === packageName && isPlatformApp(a, stage),
-  )?.appId;
+  return list.apps.find((a) => a.key === key && isPlatformApp(a, stage))?.appId;
 }
 
 export type PushRelease =
@@ -264,17 +328,32 @@ export async function releasePushApp(
       }
       if (provisioned && !management) return kept("slot_missing");
       if (management) {
-        const client = management;
-        const appId =
-          app.firebaseAppId ??
-          (await findAppId(client, app.packageName, stage, left));
-        if (typeof appId === "object") return kept(appId.kind);
-        if (appId !== undefined) {
+        // Both of the channel's apps, the iOS one first; a removal Firebase
+        // does not confirm keeps the whole claim, which names them both.
+        const apps: [PushAppPlatform, string, string | null][] = [
+          ...(app.iosBundleId === null
+            ? []
+            : [
+                ["ios", app.iosBundleId, app.iosFirebaseAppId] as [
+                  PushAppPlatform,
+                  string,
+                  string | null,
+                ],
+              ]),
+          ["android", app.packageName, app.firebaseAppId],
+        ];
+        for (const [platform, key, known] of apps) {
+          const api = appsApi(management, platform);
+          const appId = known ?? (await findAppId(api, key, stage, left));
+          if (typeof appId === "object") return kept(appId.kind);
+          if (appId === undefined) continue;
           const r = await within(
-            () => client.removeAndroidApp(appId, { immediate: true }),
+            () => api.remove(appId, { immediate: true }),
             left(),
           );
           if (r?.kind !== "removed") return kept(r?.kind ?? "timeout");
+          // A retry need not remove the iOS app again.
+          if (platform === "ios") await push.releaseIosApp(channelId);
         }
       }
     }
@@ -385,10 +464,13 @@ export function createPushRegistrar({
   audit,
   budgetMs = PUSH_REGISTER_BUDGET_MS,
 }: PushRegistrarOptions) {
-  /** Registers in `management`'s project, adopting an app that is already there. */
+  /**
+   * Registers in `apps`' project, adopting an app that is already there.
+   * `key` is the Android package name or the iOS bundle id.
+   */
   async function createOrAdopt(
-    management: ManagementClient,
-    packageName: string,
+    apps: AppsApi,
+    key: string,
     displayName: string,
     deadline: number,
   ): Promise<FirebaseOutcome> {
@@ -396,8 +478,7 @@ export function createPushRegistrar({
       work: () => Promise<T>,
     ): Promise<T | ManagementFailure> =>
       (await within(work, deadline - clock.now())) ?? { ...TIMED_OUT };
-    const create = () =>
-      timed(() => management.createAndroidApp({ packageName, displayName }));
+    const create = () => timed(() => apps.create(key, displayName));
     const created = await create();
     if (created.kind === "created") return { kind: "ok", appId: created.appId };
     if (created.kind !== "already_exists") return created;
@@ -406,9 +487,9 @@ export function createPushRegistrar({
     // platform claim for it, so it is adopted: a create whose answer was
     // lost. Without it somebody registered it by hand, or another stage
     // did, and it is not this channel's to take.
-    const list = await timed(() => management.listAndroidApps());
+    const list = await timed(() => apps.list());
     if (list.kind !== "ok") return list;
-    const app = list.apps.find((a) => a.packageName === packageName);
+    const app = list.apps.find((a) => a.key === key);
     if (!app) return { kind: "unavailable", reason: "server" };
     if (!isPlatformApp(app, stage)) return { kind: "foreign" };
     if (app.state !== "deleted") return { kind: "ok", appId: app.appId };
@@ -418,7 +499,7 @@ export function createPushRegistrar({
     // is: purge it and register anew, under a new app id. The sweep's own
     // purge or restore of the old id then finds nothing.
     const purged = await timed(() =>
-      management.removeAndroidApp(app.appId, { immediate: true }),
+      apps.remove(app.appId, { immediate: true }),
     );
     if (purged.kind !== "removed") return purged;
     const again = await create();
@@ -432,6 +513,7 @@ export function createPushRegistrar({
     outcome: ManagementFailure,
     channelId: string,
     slot: string,
+    platform: PushAppPlatform = "android",
   ): AppError {
     const line = {
       channelId,
@@ -442,12 +524,17 @@ export function createPushRegistrar({
     if (
       outcome.kind === "invalid" &&
       (outcome.reason === "package_name" ||
+        outcome.reason === "bundle_id" ||
         outcome.reason === "invalid_argument")
     ) {
-      logger.warn("push registration refused", line);
-      return new AppError("bad_request", "Firebase refused the package name", {
-        details: { reason: "package_refused" },
-      });
+      logger.warn("push registration refused", { ...line, platform });
+      return platform === "ios"
+        ? new AppError("bad_request", "Firebase refused the bundle id", {
+            details: { reason: "bundle_refused" },
+          })
+        : new AppError("bad_request", "Firebase refused the package name", {
+            details: { reason: "package_refused" },
+          });
     }
     // A key that stopped working, a disabled API or a project that is gone
     // is the operator's to fix; a timeout or a 5xx may have registered the
@@ -480,6 +567,7 @@ export function createPushRegistrar({
         limit,
         slots,
         at,
+        withIos: config.iosBundleId !== undefined,
       });
       if (!claim.ok) throw claimRefused(claim);
       const slot = claim.slot;
@@ -489,7 +577,7 @@ export function createPushRegistrar({
       // No member's text reaches the Firebase console: the stage's marker
       // and the channel id.
       const outcome = await createOrAdopt(
-        management,
+        appsApi(management, "android"),
         config.packageName,
         `${pushAppMarker(stage)}${channel.id}`,
         deadline,
@@ -521,7 +609,18 @@ export function createPushRegistrar({
           } satisfies PushChannelConfig,
         }));
         if (!after) throw new AppError("unavailable", "channel vanished");
-        return JSON.parse(after.configJson) as PushChannelConfig;
+        const registered = JSON.parse(after.configJson) as PushChannelConfig;
+        return registered.iosBundleId === undefined
+          ? registered
+          : registerIos(
+              channel.id,
+              registered.iosBundleId,
+              slot,
+              management,
+              store,
+              made,
+              deadline,
+            );
       }
       if (outcome.kind !== "limit_reached")
         throw refused(outcome, channel.id, slot);
@@ -538,10 +637,105 @@ export function createPushRegistrar({
     throw pushPoolFull();
   }
 
-  /** The Firebase app a failed registration is known to have left. */
+  /**
+   * The iOS app of a platform channel that holds its Android registration:
+   * the claim (bundle id, the slot's room), then Firebase, in the channel's
+   * own slot -- a channel never moves (decisions *Console app and push on
+   * iOS* #8). A failure releases the iOS claim; the caller removes the
+   * Firebase app `made` records.
+   */
+  async function registerIos(
+    channelId: string,
+    bundleId: string,
+    slot: string,
+    management: ManagementClient,
+    store: PushDb,
+    made: Made,
+    deadline: number,
+  ): Promise<PushChannelConfig> {
+    const at = nowSec(clock);
+    const claim = await store.claimIosApp({ channelId, bundleId, at });
+    if (!claim.ok) throw iosClaimRefused(claim);
+    try {
+      const outcome = await createOrAdopt(
+        appsApi(management, "ios"),
+        bundleId,
+        `${pushAppMarker(stage)}${channelId}`,
+        deadline,
+      );
+      if (outcome.kind === "foreign") {
+        logger.warn(
+          "push registration refused: bundle id held by a foreign app",
+          { channelId, slot },
+        );
+        throw iosClaimRefused({ ok: false, reason: "bundle_taken" });
+      }
+      if (outcome.kind === "limit_reached") {
+        // Firebase's own cap before ours. The channel cannot move, so the
+        // slot is closed to others and this iOS app is refused.
+        if (await store.closeSlot(slot, PUSH_AUTO_CLOSE_BY, at))
+          await audit(null, "push.pool.close", slot, {
+            by: PUSH_AUTO_CLOSE_BY,
+            reason: "limit_reached",
+          });
+        logger.warn("push slot closed at the firebase app limit", { slot });
+        throw pushSlotFull();
+      }
+      if (outcome.kind !== "ok") throw refused(outcome, channelId, slot, "ios");
+      made.management = management;
+      made.iosAppId = outcome.appId;
+      if (!(await store.setIosFirebaseAppId(channelId, outcome.appId)))
+        throw firebaseUnavailable();
+      const after = await db.editChannel(channelId, (row) => ({
+        config: {
+          ...(JSON.parse(row.configJson) as PushChannelConfig),
+          iosBundleId: bundleId,
+          iosFirebaseAppId: outcome.appId,
+          apnsState: "pending",
+        } satisfies PushChannelConfig,
+      }));
+      if (!after) throw new AppError("unavailable", "channel vanished");
+      return JSON.parse(after.configJson) as PushChannelConfig;
+    } catch (e) {
+      await store.releaseIosApp(channelId).catch(() => false);
+      throw e;
+    }
+  }
+
+  /** The Firebase apps a failed registration is known to have left. */
   interface Made {
     management?: ManagementClient;
     appId?: string;
+    iosAppId?: string;
+  }
+
+  /** Best effort: removes what `made` names, inside `deadline`. */
+  async function removeMade(
+    channelId: string,
+    made: Made,
+    deadline: number,
+  ): Promise<void> {
+    const { management } = made;
+    if (!management) return;
+    const pairs: [PushAppPlatform, string | undefined][] = [
+      ["ios", made.iosAppId],
+      ["android", made.appId],
+    ];
+    for (const [platform, appId] of pairs) {
+      if (appId === undefined) continue;
+      // An app left here carries the marker and no claim, which the daily
+      // reconciliation removes.
+      const r = await within(
+        () => appsApi(management, platform).remove(appId, { immediate: true }),
+        deadline - clock.now(),
+      );
+      if (r?.kind !== "removed")
+        logger.warn("push rollback left a firebase app", {
+          channelId,
+          platform,
+          outcome: r?.kind ?? "timeout",
+        });
+    }
   }
 
   async function rollback(
@@ -550,21 +744,9 @@ export function createPushRegistrar({
     deadline: number,
   ): Promise<void> {
     try {
-      const { management, appId } = made;
-      if (management && appId !== undefined) {
-        // Best effort inside what is left of the create's budget: the claim
-        // goes with the row either way, and an app left here carries the
-        // marker and no claim, which the daily reconciliation removes.
-        const r = await within(
-          () => management.removeAndroidApp(appId, { immediate: true }),
-          deadline - clock.now(),
-        );
-        if (r?.kind !== "removed")
-          logger.warn("push rollback left a firebase app", {
-            channelId,
-            outcome: r?.kind ?? "timeout",
-          });
-      }
+      // Best effort inside what is left of the create's budget: the claim
+      // goes with the row either way.
+      await removeMade(channelId, made, deadline);
       await push?.deleteApp(channelId);
       await db.removeChannel(channelId);
     } catch (e) {
@@ -577,7 +759,79 @@ export function createPushRegistrar({
     }
   }
 
+  /** A team-sender channel's iOS app: a claim, no Firebase call. */
+  async function addTeamIos(
+    channelId: string,
+    bundleId: string,
+    store: PushDb,
+  ): Promise<PushChannelConfig> {
+    const claim = await store.claimIosApp({
+      channelId,
+      bundleId,
+      at: nowSec(clock),
+    });
+    if (!claim.ok) throw iosClaimRefused(claim);
+    const after = await db.editChannel(channelId, (row) => ({
+      config: {
+        ...(JSON.parse(row.configJson) as PushChannelConfig),
+        iosBundleId: bundleId,
+        apnsState: "team",
+      } satisfies PushChannelConfig,
+    }));
+    if (!after) throw new AppError("not_found", "channel not found");
+    return JSON.parse(after.configJson) as PushChannelConfig;
+  }
+
   return {
+    /**
+     * Adds an iOS app to a registered channel (`PUT /channels/{id}/push/ios`).
+     * Immutable once set: the same bundle id answers the stored config, any
+     * other is a `conflict`. A failure leaves the channel as it was.
+     */
+    async addIos(
+      channelId: string,
+      config: PushChannelConfig,
+      bundleId: string,
+    ): Promise<PushChannelConfig> {
+      if (!push) throw pushNotConfigured();
+      if (config.iosBundleId !== undefined) {
+        if (config.iosBundleId.toLowerCase() === bundleId.toLowerCase())
+          return config;
+        throw new AppError(
+          "conflict",
+          "the channel already holds an iOS app; it cannot be changed",
+          { details: { reason: "ios_immutable" } },
+        );
+      }
+      if (config.sender === "team")
+        return addTeamIos(channelId, bundleId, push);
+      if (config.slot === undefined || config.firebaseAppId === undefined)
+        throw new AppError(
+          "conflict",
+          "the channel has no platform registration",
+          { details: { reason: "not_registered" } },
+        );
+      if (!pool) throw pushNotConfigured();
+      const management = (await pool.bySlot(config.slot))?.management;
+      if (!management) throw firebaseUnavailable();
+      const made: Made = {};
+      const deadline = clock.now() + budgetMs + PUSH_ROLLBACK_BUDGET_MS;
+      try {
+        return await registerIos(
+          channelId,
+          bundleId,
+          config.slot,
+          management,
+          push,
+          made,
+          clock.now() + budgetMs,
+        );
+      } catch (e) {
+        await removeMade(channelId, { ...made, appId: undefined }, deadline);
+        throw e;
+      }
+    },
+
     /**
      * Refuses a create no registration could follow, before any row exists:
      * a stage without the tables, or -- for the platform sender -- without
@@ -608,7 +862,9 @@ export function createPushRegistrar({
             at: nowSec(clock),
           });
           if (!claim.ok) throw claimRefused(claim);
-          return config;
+          return config.iosBundleId === undefined
+            ? config
+            : await addTeamIos(channel.id, config.iosBundleId, push);
         }
         if (!pool) throw pushNotConfigured();
         return await registerPlatform(channel, config, push, pool, made);
@@ -622,6 +878,26 @@ export function createPushRegistrar({
 
 export type PushRegistrar = ReturnType<typeof createPushRegistrar>;
 
+/** The 503 of a full slot for an iOS app: the channel never moves (decisions *iOS* #8). */
+export const pushSlotFull = () =>
+  unavailable(
+    "push_slot_full",
+    "the channel's push registration slot has no room for an iOS app",
+  );
+
+/** A refused iOS claim as the caller's error (`PushDb.claimIosApp`). */
+function iosClaimRefused(
+  r: Exclude<PushIosClaimResult, { ok: true }>,
+): AppError {
+  if (r.reason === "bundle_taken")
+    return new AppError(
+      "conflict",
+      "iosBundleId is already registered on this stage",
+      { details: { reason: "bundle_taken" } },
+    );
+  return pushSlotFull();
+}
+
 /* ------------------------------------------------------------------ */
 /* routes                                                              */
 /* ------------------------------------------------------------------ */
@@ -631,6 +907,8 @@ export interface PushRoutesOptions extends PushDeps {
   /** Console Redis: the last sweep's record ({@link PUSH_SWEEP_LAST_KEY}). */
   kv: Pick<Kv, "get">;
   db: Pick<ConsoleDb, "editChannel" | "findMembersByIds">;
+  /** Adds a channel's iOS app (`PUT /channels/{id}/push/ios`). */
+  registrar: Pick<PushRegistrar, "addIos">;
   /** The channel view (`app.ts`): what a sender-key write answers. */
   view: (row: ChannelRow) => Promise<Record<string, unknown>>;
   writeSlot: (id: ConsoleIdentity) => Promise<void>;
@@ -640,6 +918,7 @@ export interface PushRoutesOptions extends PushDeps {
 }
 
 const senderKeyBody = z.object({ serviceAccount: serviceAccountIn }).strict();
+const apnsBody = z.object({ state: z.enum(["pending", "ready"]) }).strict();
 const statsQuery = z
   .object({
     days: z.coerce.number().int().min(1).max(PUSH_STATS_DAYS_MAX).optional(),
@@ -659,6 +938,7 @@ export function createPushRoutes({
   access,
   kv,
   db,
+  registrar,
   push,
   pool,
   view,
@@ -694,7 +974,7 @@ export function createPushRoutes({
 
   async function poolView() {
     const store = push;
-    if (!store) return { configured: false, slots: [] };
+    if (!store) return { configured: false, slots: [], apnsPending: [] };
     const provisioned = pool ? (await pool.slots()).map((s) => s.slot) : [];
     const rows = new Map((await store.listPool()).map((r) => [r.slot, r]));
     const apps = new Map(
@@ -734,6 +1014,80 @@ export function createPushRoutes({
         ...provisioned.map((slot) => line(slot, true)),
         ...stray.map((slot) => line(slot, false)),
       ],
+      // iOS apps waiting for the owner's upload of the team's APNs
+      // certificate (`POST /admin/push/channels/{id}/apns`).
+      apnsPending: (await store.listApnsPending()).map((a) => ({
+        channelId: a.channelId,
+        teamId: a.teamId,
+        iosBundleId: a.iosBundleId,
+        slot: a.slot,
+      })),
+    };
+  }
+
+  /** A client config file of the platform registration, Android or iOS. */
+  async function configFile(
+    ctx: Parameters<typeof pushChannel>[0],
+    platform: PushAppPlatform,
+  ): Promise<HttpResult> {
+    const { id, row } = await pushChannel(ctx, false);
+    const { config } = stored(row);
+    const appId =
+      platform === "ios" ? config.iosFirebaseAppId : config.firebaseAppId;
+    if (config.slot === undefined || appId === undefined)
+      throw new AppError(
+        "conflict",
+        config.sender === "team"
+          ? `a team-sender channel has no platform registration; use the ${platform === "ios" ? "GoogleService-Info.plist" : "google-services.json"} of your own Firebase project`
+          : platform === "ios"
+            ? "the channel has no platform iOS registration"
+            : "the channel has no platform registration",
+        { details: { reason: "not_registered" } },
+      );
+    if (!pool) throw pushNotConfigured();
+    // Every download is a Firebase Management call against a quota the
+    // whole pool project shares, so it takes the member's write slot like
+    // the create does: a loop cannot burn it.
+    await writeSlot(id);
+    // Rejects with "push not configured" when the pool is empty.
+    const entry = await pool.bySlot(config.slot);
+    if (!entry) throw firebaseUnavailable();
+    const api = appsApi(entry.management, platform);
+    const r = (await within(
+      () => api.config(appId),
+      PUSH_REMOVE_BUDGET_MS,
+    )) ?? {
+      ...TIMED_OUT,
+    };
+    if (r.kind === "not_found")
+      throw new AppError(
+        "conflict",
+        "the registration is missing in Firebase",
+        {
+          details: { reason: "registration_missing" },
+        },
+      );
+    if (r.kind !== "ok") {
+      logger.warn("push config read failed", {
+        channelId: row.id,
+        slot: config.slot,
+        platform,
+        outcome: r.kind,
+      });
+      throw firebaseUnavailable();
+    }
+    const [type, name] =
+      platform === "ios"
+        ? ["application/x-plist", "GoogleService-Info.plist"]
+        : ["application/json; charset=utf-8", "google-services.json"];
+    return {
+      statusCode: 200,
+      headers: {
+        "content-type": type,
+        "content-disposition": `attachment; filename="${name}"`,
+        "cache-control": "no-store",
+      },
+      body: r.contents,
     };
   }
 
@@ -832,54 +1186,41 @@ export function createPushRoutes({
       method: "GET",
       path: "/channels/{id}/google-services.json",
       auth: true,
+      handler: (ctx) => configFile(ctx, "android"),
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/channels/{id}/GoogleService-Info.plist",
+      auth: true,
+      handler: (ctx) => configFile(ctx, "ios"),
+    }),
+    // ---- the channel's iOS app (decisions *Console app and push on iOS* #8)
+    defineRoute({
+      method: "PUT",
+      path: "/channels/{id}/push/ios",
+      auth: true,
+      body: pushIosBody,
       handler: async (ctx) => {
-        const { id, row } = await pushChannel(ctx, false);
+        const { id, row } = await pushChannel(ctx, true);
         const { config } = stored(row);
-        if (config.slot === undefined || config.firebaseAppId === undefined)
-          throw new AppError(
-            "conflict",
-            config.sender === "team"
-              ? "a team-sender channel has no platform registration; use the google-services.json of your own Firebase project"
-              : "the channel has no platform registration",
-            { details: { reason: "not_registered" } },
-          );
-        if (!pool) throw pushNotConfigured();
-        // Every download is a Firebase Management call against a quota the
-        // whole pool project shares, so it takes the member's write slot
-        // like the create does: a loop cannot burn it.
+        // A claim transaction and, on the platform sender, Firebase
+        // Management calls against the slot project's quota.
         await writeSlot(id);
-        // Rejects with "push not configured" when the pool is empty.
-        const entry = await pool.bySlot(config.slot);
-        if (!entry) throw firebaseUnavailable();
-        const appId = config.firebaseAppId;
-        const r = (await within(
-          () => entry.management.getAndroidAppConfig(appId),
-          PUSH_REMOVE_BUDGET_MS,
-        )) ?? { ...TIMED_OUT };
-        if (r.kind === "not_found")
-          throw new AppError(
-            "conflict",
-            "the registration is missing in Firebase",
-            { details: { reason: "registration_missing" } },
-          );
-        if (r.kind !== "ok") {
-          logger.warn("push config read failed", {
-            channelId: row.id,
-            slot: config.slot,
-            outcome: r.kind,
+        const before = config.iosBundleId;
+        const after = await registrar.addIos(
+          row.id,
+          config,
+          ctx.body.iosBundleId,
+        );
+        if (before === undefined)
+          await audit(id.subject, "channel.push.ios.add", row.id, {
+            sender: after.sender,
+            slot: after.slot ?? null,
           });
-          throw firebaseUnavailable();
-        }
-        return {
-          statusCode: 200,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "content-disposition":
-              'attachment; filename="google-services.json"',
-            "cache-control": "no-store",
-          },
-          body: r.contents,
-        } satisfies HttpResult;
+        // The stored config as the registrar left it, under the row it read.
+        return noStore(
+          await view({ ...row, configJson: JSON.stringify(after) }),
+        );
       },
     }),
     // ---- the channel's numbers (decisions #11c) -------------------------
@@ -945,5 +1286,44 @@ export function createPushRoutes({
     }),
     poolWrite("close"),
     poolWrite("open"),
+    defineRoute({
+      method: "POST",
+      path: "/admin/push/channels/{id}/apns",
+      auth: true,
+      body: apnsBody,
+      handler: async (ctx) => {
+        const admin = requireRole(ctx, "admin");
+        if (!push) throw pushNotConfigured();
+        const channelId = ctx.params.id ?? "";
+        const app = await push.findApp(channelId);
+        if (!app) throw new AppError("not_found", "push channel not found");
+        if (app.iosBundleId === null)
+          throw new AppError("conflict", "the channel has no iOS app", {
+            details: { reason: "ios_not_registered" },
+          });
+        if (app.sender === "team")
+          throw new AppError(
+            "conflict",
+            "a team-sender channel's APNs credential is the team's own",
+            { details: { reason: "team_sender" } },
+          );
+        await writeSlot(admin);
+        const state = ctx.body.state;
+        if (!(await push.setApnsState(channelId, state)))
+          throw new AppError("not_found", "push channel not found");
+        // The config mirrors the claim for the channel view.
+        await db.editChannel(channelId, (row) => ({
+          config: {
+            ...(JSON.parse(row.configJson) as PushChannelConfig),
+            apnsState: state,
+          } satisfies PushChannelConfig,
+        }));
+        await audit(admin.subject, "push.apns.set", channelId, {
+          state,
+          previous: app.apnsState,
+        });
+        return { channelId, apnsState: state };
+      },
+    }),
   ];
 }

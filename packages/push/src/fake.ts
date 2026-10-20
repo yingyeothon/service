@@ -64,10 +64,28 @@ export type FakeFailure =
 
 export interface FakeApp {
   appId: string;
+  /** The Android package name, or the iOS bundle id. */
   packageName: string;
   displayName: string;
   state: "ACTIVE" | "DELETED";
+  /** Absent: Android. Both kinds count against the project's 30. */
+  platform?: "ios";
 }
+
+type FakeAppKind = "android" | "ios";
+const FAKE_KINDS = {
+  android: {
+    path: "androidApps",
+    key: "packageName",
+    keyRe: /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/,
+  },
+  ios: {
+    path: "iosApps",
+    key: "bundleId",
+    keyRe: /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/,
+  },
+} as const;
+const kindOf = (a: FakeApp): FakeAppKind => a.platform ?? "android";
 
 /** Why the fake refuses a device token. */
 export type FakeDeviceTokenState =
@@ -119,6 +137,8 @@ export interface FakeGoogle {
     state?: FakeApp["state"],
     /** Default: the package name, as an app added by hand would carry. */
     displayName?: string,
+    /** Default Android; `packageName` is then the bundle id. */
+    platform?: FakeAppKind,
   ): string;
   /** Apps a project may hold, `DELETED` ones included (Firebase: 30). */
   appLimit: number;
@@ -260,8 +280,21 @@ export function createFakeGoogle(
     if (!list) apps.set(projectId, (list = []));
     return list;
   };
-  const newAppId = (projectId: string): string =>
-    `1:${parseInt(sha256Hex(projectId).slice(0, 10), 16)}:android:${randomHex(8)}`;
+  const newAppId = (projectId: string, kind: FakeAppKind = "android"): string =>
+    `1:${parseInt(sha256Hex(projectId).slice(0, 10), 16)}:${kind}:${randomHex(8)}`;
+  /** The apps of one kind: the other collection's ids are not found here. */
+  const appsOfKind = (projectId: string, kind: FakeAppKind) =>
+    projectApps(projectId).filter((a) => kindOf(a) === kind);
+  const appView = (projectId: string, a: FakeApp) => {
+    const kind = kindOf(a);
+    const { platform: _platform, packageName, ...rest } = a;
+    return {
+      ...rest,
+      [FAKE_KINDS[kind].key]: packageName,
+      projectId,
+      name: `projects/${projectId}/${FAKE_KINDS[kind].path}/${a.appId}`,
+    };
+  };
 
   /** The scripted failure for this request, if one is queued for `when`. */
   const takeScripted = (
@@ -501,6 +534,7 @@ export function createFakeGoogle(
   const operationPolls = (): number => google.operationPolls;
 
   const createEndpoint = (
+    kind: FakeAppKind,
     projectId: string,
     body: string | undefined,
     lost: FakeFailure | undefined,
@@ -511,28 +545,27 @@ export function createFakeGoogle(
     } catch {
       input = undefined;
     }
-    if (
-      !isRecord(input) ||
-      typeof input.packageName !== "string" ||
-      !/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(
-        input.packageName,
-      )
-    )
-      return fail(400, "Invalid package name");
-    const { packageName } = input;
+    const field = FAKE_KINDS[kind].key;
+    const raw = isRecord(input) ? input[field] : undefined;
+    if (typeof raw !== "string" || !FAKE_KINDS[kind].keyRe.test(raw))
+      return fail(400, `Invalid ${field}`);
+    const packageName = raw;
     const displayName =
-      typeof input.displayName === "string" ? input.displayName : "";
+      isRecord(input) && typeof input.displayName === "string"
+        ? input.displayName
+        : "";
     const list = projectApps(projectId);
-    if (list.some((a) => a.packageName === packageName))
+    if (list.some((a) => kindOf(a) === kind && a.packageName === packageName))
       return fail(409, "Requested entity already exists");
     if (list.length >= google.appLimit)
-      return fail(429, "Quota exceeded for Android apps in the project");
+      return fail(429, "Quota exceeded for apps in the project");
     const add = (): FakeApp => {
       const app: FakeApp = {
-        appId: newAppId(projectId),
+        appId: newAppId(projectId, kind),
         packageName,
         displayName,
         state: "ACTIVE",
+        ...(kind === "ios" ? { platform: "ios" as const } : {}),
       };
       list.push(app);
       return app;
@@ -541,17 +574,11 @@ export function createFakeGoogle(
       add();
       return play(lost, "create");
     }
-    return startOperation(() => {
-      const app = add();
-      return {
-        ...app,
-        projectId,
-        name: `projects/${projectId}/androidApps/${app.appId}`,
-      };
-    });
+    return startOperation(() => appView(projectId, add()));
   };
 
   const removeEndpoint = (
+    kind: FakeAppKind,
     projectId: string,
     appId: string,
     body: string | undefined,
@@ -565,7 +592,7 @@ export function createFakeGoogle(
     }
     const flags = isRecord(input) ? input : {};
     const list = projectApps(projectId);
-    const at = list.findIndex((a) => a.appId === appId);
+    const at = list.findIndex((a) => a.appId === appId && kindOf(a) === kind);
     if (at < 0 && flags.allowMissing !== true)
       return fail(404, "Requested entity was not found.");
     const apply = (): void => {
@@ -585,11 +612,12 @@ export function createFakeGoogle(
   };
 
   const undeleteEndpoint = (
+    kind: FakeAppKind,
     projectId: string,
     appId: string,
     lost: FakeFailure | undefined,
   ): PushHttpResponse => {
-    const app = projectApps(projectId).find((a) => a.appId === appId);
+    const app = appsOfKind(projectId, kind).find((a) => a.appId === appId);
     if (!app) return fail(404, "Requested entity was not found.");
     if (app.state !== "DELETED") return fail(400, "App is not deleted");
     const apply = (): FakeApp => {
@@ -600,16 +628,16 @@ export function createFakeGoogle(
       apply();
       return play(lost, "undelete");
     }
-    return startOperation(() => ({
-      ...apply(),
-      projectId,
-      name: `projects/${projectId}/androidApps/${appId}`,
-    }));
+    return startOperation(() => appView(projectId, apply()));
   };
 
-  const listEndpoint = (projectId: string, query: URLSearchParams) => {
+  const listEndpoint = (
+    kind: FakeAppKind,
+    projectId: string,
+    query: URLSearchParams,
+  ) => {
     const showDeleted = query.get("showDeleted") === "true";
-    const all = projectApps(projectId).filter(
+    const all = appsOfKind(projectId, kind).filter(
       (a) => showDeleted || a.state === "ACTIVE",
     );
     const size = Math.max(
@@ -624,11 +652,7 @@ export function createFakeGoogle(
     return respond(200, {
       ...(page.length > 0
         ? {
-            apps: page.map((a) => ({
-              ...a,
-              projectId,
-              name: `projects/${projectId}/androidApps/${a.appId}`,
-            })),
+            apps: page.map((a) => appView(projectId, a)),
           }
         : {}),
       ...(start + size < all.length
@@ -637,11 +661,29 @@ export function createFakeGoogle(
     });
   };
 
-  const configEndpoint = (projectId: string, appId: string) => {
-    const app = projectApps(projectId).find(
+  const configEndpoint = (
+    kind: FakeAppKind,
+    projectId: string,
+    appId: string,
+  ) => {
+    const app = appsOfKind(projectId, kind).find(
       (a) => a.appId === appId && a.state === "ACTIVE",
     );
     if (!app) return fail(404, "Requested entity was not found.");
+    if (kind === "ios") {
+      const plist = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<plist version="1.0"><dict>',
+        `<key>BUNDLE_ID</key><string>${app.packageName}</string>`,
+        `<key>GOOGLE_APP_ID</key><string>${app.appId}</string>`,
+        `<key>PROJECT_ID</key><string>${projectId}</string>`,
+        "</dict></plist>",
+      ].join("\n");
+      return respond(200, {
+        configFilename: "GoogleService-Info.plist",
+        configFileContents: Buffer.from(plist).toString("base64"),
+      });
+    }
     const config = {
       project_info: { project_id: projectId },
       client: [
@@ -704,31 +746,33 @@ export function createFakeGoogle(
           return respond(200, operationView(op[1]!, record));
         });
       const m =
-        /^\/v1beta1\/projects\/([^/]+)\/androidApps(?:\/([^/]+?)(\/config|:remove|:undelete))?$/.exec(
+        /^\/v1beta1\/projects\/([^/]+)\/(androidApps|iosApps)(?:\/([^/]+?)(\/config|:remove|:undelete))?$/.exec(
           path,
         );
       if (m) {
-        const [, projectId, appId, action] = m as unknown as [
+        const [, projectId, collection, appId, action] = m as unknown as [
+          string,
           string,
           string,
           string | undefined,
           string | undefined,
         ];
+        const kind: FakeAppKind = collection === "iosApps" ? "ios" : "android";
         if (appId === undefined && method === "POST")
           return guarded("create", headers, projectId, SCOPE_FIREBASE, (lost) =>
-            createEndpoint(projectId, body, lost),
+            createEndpoint(kind, projectId, body, lost),
           );
         if (appId === undefined && method === "GET")
           return guarded("list", headers, projectId, SCOPE_FIREBASE, () =>
-            listEndpoint(projectId, parsed.searchParams),
+            listEndpoint(kind, projectId, parsed.searchParams),
           );
         if (appId !== undefined && action === "/config" && method === "GET")
           return guarded("config", headers, projectId, SCOPE_FIREBASE, () =>
-            configEndpoint(projectId, appId),
+            configEndpoint(kind, projectId, appId),
           );
         if (appId !== undefined && action === ":remove" && method === "POST")
           return guarded("remove", headers, projectId, SCOPE_FIREBASE, (lost) =>
-            removeEndpoint(projectId, appId, body, lost),
+            removeEndpoint(kind, projectId, appId, body, lost),
           );
         if (appId !== undefined && action === ":undelete" && method === "POST")
           return guarded(
@@ -736,7 +780,7 @@ export function createFakeGoogle(
             headers,
             projectId,
             SCOPE_FIREBASE,
-            (lost) => undeleteEndpoint(projectId, appId, lost),
+            (lost) => undeleteEndpoint(kind, projectId, appId, lost),
           );
       }
     }
@@ -811,13 +855,20 @@ export function createFakeGoogle(
       if (account) account.revoked = true;
     },
     apps: (projectId) => projectApps(projectId).map((a) => ({ ...a })),
-    seedApp: (projectId, packageName, state = "ACTIVE", displayName) => {
-      const appId = newAppId(projectId);
+    seedApp: (
+      projectId,
+      packageName,
+      state = "ACTIVE",
+      displayName,
+      platform = "android",
+    ) => {
+      const appId = newAppId(projectId, platform);
       projectApps(projectId).push({
         appId,
         packageName,
         displayName: displayName ?? packageName,
         state,
+        ...(platform === "ios" ? { platform: "ios" as const } : {}),
       });
       return appId;
     },

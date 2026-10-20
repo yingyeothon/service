@@ -1280,6 +1280,9 @@ describe("usage digest: push lines", () => {
         sender: "platform",
         slot: "p2",
         firebaseAppId: null,
+        iosBundleId: null,
+        iosFirebaseAppId: null,
+        apnsState: null,
         createdAt: NOW_SEC,
       });
     // Yesterday's sends: one channel with failures, one without, and a

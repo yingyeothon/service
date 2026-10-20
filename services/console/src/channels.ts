@@ -1,6 +1,8 @@
 import { AppError, randomHex, type ChannelKind } from "@yyt/core";
 import {
   channelStatus,
+  PUSH_BUNDLE_ID,
+  PUSH_BUNDLE_ID_MAX,
   PUSH_PACKAGE_NAME,
   PUSH_PACKAGE_NAME_MAX,
   PUSH_SENDERS,
@@ -571,12 +573,21 @@ const packageName = z
  * to `secret_json`; a platform channel gains a team key through
  * `PUT /channels/{id}/sender-key`.
  */
+/** An iOS bundle id (decisions *Console app and push on iOS* #8; hyphens allowed). */
+const iosBundleId = z
+  .string()
+  .max(PUSH_BUNDLE_ID_MAX)
+  .regex(
+    PUSH_BUNDLE_ID,
+    "iosBundleId must be an iOS bundle id such as com.example.game",
+  );
 const pushConfig = z
   .object({
     authChannelId,
     packageName,
     sender: z.enum(PUSH_SENDERS).default("platform"),
     teamServiceAccount: serviceAccountIn.optional(),
+    iosBundleId: iosBundleId.optional(),
   })
   .strict();
 /**
@@ -589,8 +600,12 @@ const pushConfigPatch = z
     authChannelId,
     packageName: z.string().max(PUSH_PACKAGE_NAME_MAX).optional(),
     sender: z.string().max(16).optional(),
+    iosBundleId: z.string().max(PUSH_BUNDLE_ID_MAX).optional(),
   })
   .strict();
+
+/** Adds the iOS app to a push channel (`PUT /channels/{id}/push/ios`). */
+export const pushIosBody = z.object({ iosBundleId }).strict();
 
 /** Channel kinds served by the self-hosted gateway; neither carries a secret. */
 export const GATEWAY_KINDS = ["lobby", "q"] as const;
@@ -752,6 +767,8 @@ export function buildChannel(
       authChannelId: c.authChannelId,
       packageName: c.packageName,
       sender: c.sender,
+      // Registered with the Android app; the APNs state follows.
+      ...(c.iosBundleId === undefined ? {} : { iosBundleId: c.iosBundleId }),
     } satisfies PushChannelConfig;
     const apiKey = randomHex(32);
     if (c.sender === "platform") {
@@ -851,6 +868,13 @@ export function patchChannel(
           "bad_request",
           `${field} cannot be changed after creation`,
         );
+    if (p.iosBundleId !== undefined && p.iosBundleId !== cur.iosBundleId)
+      throw new AppError(
+        "bad_request",
+        cur.iosBundleId === undefined
+          ? "add the iOS app with PUT /channels/{id}/push/ios"
+          : "iosBundleId cannot be changed once set",
+      );
     return {
       config: {
         ...cur,
@@ -1004,9 +1028,15 @@ export function channelView(
         authChannelId: c.authChannelId,
         packageName: c.packageName,
         sender: c.sender,
+        ...(c.iosBundleId === undefined ? {} : { iosBundleId: c.iosBundleId }),
       },
       // The platform registration exists, so its config can be downloaded.
       registered: typeof c.firebaseAppId === "string",
+      // The same for the iOS app's `GoogleService-Info.plist`.
+      iosRegistered: typeof c.iosFirebaseAppId === "string",
+      // `team`, `pending` (the owner has yet to upload the team's APNs
+      // certificate) or `ready`; absent without an iOS app.
+      ...(c.apnsState === undefined ? {} : { apnsState: c.apnsState }),
       // The FCM topic a broadcast goes to; the app subscribes to it once its
       // token is registered (`docs/push.md` *Broadcast*).
       ...(topic === undefined ? {} : { topic }),
