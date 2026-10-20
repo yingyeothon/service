@@ -16,7 +16,7 @@ abstract class PushMessaging {
   Future<void> subscribe(String topic);
   Future<void> unsubscribe(String topic);
 
-  /// Shows the system prompt where the platform has one (Android 13+);
+  /// Shows the system prompt where the platform has one (Android 13+, iOS);
   /// whether notifications may be shown afterwards.
   Future<bool> requestPermission();
 

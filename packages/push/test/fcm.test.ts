@@ -1,5 +1,5 @@
 import { isAppError } from "@yyt/core";
-import { fakeClock } from "@yyt/testing";
+import { fakeClock, NOW_SEC as TESTING_NOW_SEC } from "@yyt/testing";
 import { describe, expect, it } from "vitest";
 import { mapSendReply, parseRetryAfter, toWireMessage } from "../src/fcm.js";
 import {
@@ -18,6 +18,11 @@ import { json, queueFetch, staticTokens } from "./helpers.js";
 
 const PROJECT = "example-project";
 const DEVICE = "device-token-AAAA:bbbb_cccc";
+const NOW_SEC = 1_800_000_000;
+const BACKGROUND = {
+  headers: { "apns-push-type": "background", "apns-priority": "5" },
+  payload: { aps: { "content-available": 1 } },
+};
 const to = (token: string, data: Record<string, string> = {}): PushMessage => ({
   target: { token },
   data,
@@ -101,13 +106,104 @@ describe("send", () => {
       data: {},
       priority: "normal",
     });
-    expect(toWireMessage({ target: { topic: "t" } })).toEqual({
-      message: { topic: "t" },
+    expect(toWireMessage({ target: { topic: "t" } }, NOW_SEC)).toEqual({
+      message: { topic: "t", apns: BACKGROUND },
     });
     expect(
-      toWireMessage({ target: { token: "x" }, ttlSec: 0, collapseKey: "k" }),
+      toWireMessage(
+        { target: { token: "x" }, ttlSec: 0, collapseKey: "k" },
+        NOW_SEC,
+      ),
     ).toEqual({
-      message: { token: "x", android: { ttl: "0s", collapse_key: "k" } },
+      message: {
+        token: "x",
+        android: { ttl: "0s", collapse_key: "k" },
+        apns: {
+          headers: {
+            ...BACKGROUND.headers,
+            "apns-expiration": "0",
+            // sha256("k"), first 32 hex digits.
+            "apns-collapse-id": "8254c329a92850f6d539dd376f4816ee",
+          },
+          payload: BACKGROUND.payload,
+        },
+      },
+    });
+  });
+
+  describe("apns block", () => {
+    const notification = { title: "T", body: "B" };
+    const apns = (m: Omit<PushMessage, "target">) =>
+      (
+        toWireMessage({ target: { topic: "t" }, ...m }, NOW_SEC) as {
+          message: { apns: unknown };
+        }
+      ).message.apns;
+
+    it("is an alert at priority 10 for a high notification", () => {
+      expect(apns({ notification, priority: "high" })).toEqual({
+        headers: { "apns-push-type": "alert", "apns-priority": "10" },
+        payload: { aps: { sound: "default" } },
+      });
+    });
+
+    it("is an alert at priority 10 without a priority (FCM's default)", () => {
+      expect(apns({ notification })).toMatchObject({
+        headers: { "apns-push-type": "alert", "apns-priority": "10" },
+      });
+    });
+
+    it("is an alert at priority 5 for a normal notification", () => {
+      expect(apns({ notification, priority: "normal" })).toEqual({
+        headers: { "apns-push-type": "alert", "apns-priority": "5" },
+        payload: { aps: { sound: "default" } },
+      });
+    });
+
+    it("is a background push at priority 5 for data-only, even when high", () => {
+      expect(apns({ data: { a: "1" }, priority: "high" })).toEqual(BACKGROUND);
+    });
+
+    it("turns a TTL into an absolute expiration and omits it without one", () => {
+      expect(apns({ ttlSec: 120 })).toMatchObject({
+        headers: { "apns-expiration": String(NOW_SEC + 120) },
+      });
+      expect(apns({ ttlSec: 0 })).toMatchObject({
+        headers: { "apns-expiration": "0" },
+      });
+      expect((apns({}) as { headers: object }).headers).not.toHaveProperty(
+        "apns-expiration",
+      );
+    });
+
+    it("hashes any collapse key to 32 hex digits", () => {
+      for (const collapseKey of ["앱".repeat(100), "x".repeat(500), "a"]) {
+        const id = (
+          apns({ collapseKey }) as { headers: Record<string, string> }
+        ).headers["apns-collapse-id"];
+        expect(id).toMatch(/^[0-9a-f]{32}$/);
+      }
+      expect(apns({ collapseKey: "앱" })).toMatchObject({
+        headers: { "apns-collapse-id": "1ccc7940a43ac2d86d04aeea1cc65db2" },
+      });
+    });
+
+    it("reaches FCM with the sender's clock as the expiration anchor", async () => {
+      const bodies: unknown[] = [];
+      const { sender } = setup({
+        wrap: (inner) => async (url, init) => {
+          if (url.endsWith("messages:send"))
+            bodies.push(JSON.parse(String(init.body)));
+          return inner(url, init);
+        },
+      });
+      expect(
+        (await sender.send({ target: { token: DEVICE }, ttlSec: 60 })).kind,
+      ).toBe("sent");
+      const headers = (
+        bodies[0] as { message: { apns: { headers: Record<string, string> } } }
+      ).message.apns.headers;
+      expect(Number(headers["apns-expiration"])).toBe(TESTING_NOW_SEC + 60);
     });
   });
 
@@ -635,7 +731,7 @@ describe("sendMany", () => {
       { kind: "sent", messageId: "projects/p/messages/1" },
     ]);
     expect(answers.bodies[0]).toEqual({
-      message: { token: DEVICE, data: {} },
+      message: { token: DEVICE, data: {}, apns: BACKGROUND },
     });
   });
 });

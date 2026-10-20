@@ -412,6 +412,23 @@ export function createFakeGoogle(
       android.priority !== "NORMAL"
     )
       return invalid("Invalid value at 'message.android.priority'");
+    // `apns.headers` is a string map; APNs takes priority 5 or 10 only.
+    if (message.apns !== undefined && !isRecord(message.apns))
+      return invalid("Invalid value at 'message.apns'");
+    const apns = isRecord(message.apns) ? message.apns : {};
+    const apnsHeaders = apns.headers ?? {};
+    if (
+      !isRecord(apnsHeaders) ||
+      Object.values(apnsHeaders).some((v) => typeof v !== "string")
+    )
+      return invalid("Invalid value at 'message.apns.headers'");
+    const apnsPriority = apnsHeaders["apns-priority"];
+    if (
+      apnsPriority !== undefined &&
+      apnsPriority !== "5" &&
+      apnsPriority !== "10"
+    )
+      return invalid("Invalid value at 'message.apns.headers'");
 
     if (typeof token === "string") {
       const state = deviceTokens.get(token);

@@ -68,8 +68,12 @@ typedef PushErrorSink =
 /// The only topic names the app follows: the server's catalog topics
 /// (`yyt.catalog.{stage}.{appId}`). Anything else a server names is ignored.
 final RegExp catalogTopicPattern = RegExp(
-  r'^yyt\.catalog\.[a-z0-9-]+\.[A-Za-z0-9_-]+$',
+  r'^yyt\.catalog\.[a-z0-9-]+\.([A-Za-z0-9_-]+)$',
 );
+
+/// The app id a catalog topic names, or `null` for any other name.
+String? catalogTopicAppId(String topic) =>
+    catalogTopicPattern.firstMatch(topic)?.group(1);
 
 /// Everything the app does with push (docs/push.md *Console app*): one FCM
 /// topic per catalog app **installed on this device**, named by the server,

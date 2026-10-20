@@ -108,7 +108,9 @@ class ProfileMenuButton extends StatelessWidget {
           enabled: false,
           height: 32,
           child: Text(
-            pushBuildLabel(pushConfigured ?? PushConfig.fromBuild.isComplete),
+            pushBuildLabel(
+              pushConfigured ?? PushConfig.fromBuild.isCompleteOnThisDevice,
+            ),
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),

@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 import 'package:yyt_console/auth/auth_state.dart';
 import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/home_shell.dart';
+import 'package:yyt_console/ios_install_ledger.dart';
 import 'package:yyt_console/profile_menu.dart';
 import 'package:yyt_console/push/push_service.dart';
 
@@ -361,6 +362,28 @@ void main() {
     expect(find.textContaining('detail'), findsNothing);
     expect(find.byType(SnackBar), findsNothing);
   });
+
+  testWidgets('on iOS the install ledger names the followed topics, under '
+      'any filter, and a cleared entry is dropped', (tester) async {
+    final ledger = IosInstallLedger(storage: MemoryLedgerStorage());
+    final previous = IosInstallLedger.instance;
+    IosInstallLedger.instance = ledger;
+    addTearDown(() => IosInstallLedger.instance = previous);
+    await tester.runAsync(() async {
+      await ledger.record('pkg.ca_b', version: '1.0.0', topic: _topicB);
+      // A name that is not a catalog topic, and an entry without a topic.
+      await ledger.record('pkg.x', version: '1.0.0', topic: 'other');
+      await ledger.record('pkg.y', version: '1.0.0');
+    });
+    await launch(tester, filter: CatalogPlatform.all);
+    expect(fcm.topics, {_topicB});
+    expect(fcm.permissionRequests, 1);
+
+    await tester.runAsync(() => ledger.remove('pkg.ca_b'));
+    await tester.tap(find.text('iOS'));
+    await settle(tester);
+    expect(fcm.topics, isEmpty);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
 }
 
 /// Lets the real async work (platform channels, the mock client) finish.

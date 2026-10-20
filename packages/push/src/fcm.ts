@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { AppError, systemClock } from "@yyt/core";
 import type { Clock } from "@yyt/core";
 import type { AccessTokenProvider } from "./accessToken.js";
@@ -31,7 +32,11 @@ export interface PushMessage {
   /** Values must be strings; FCM caps the whole payload at 4096 bytes. */
   data?: Record<string, string>;
   notification?: { title: string; body: string };
-  /** Android delivery priority. Omitted: FCM's default (normal for data messages). */
+  /**
+   * Android delivery priority. Omitted: FCM's default (normal for data
+   * messages). On APNs a notification message is priority 10 unless `normal`;
+   * a data-only message is always 5.
+   */
   priority?: "high" | "normal";
   /** How long FCM keeps the message for an offline device. Omitted: 4 weeks. */
   ttlSec?: number;
@@ -139,8 +144,43 @@ function checkMessage(message: PushMessage): SendResult | undefined {
   return undefined;
 }
 
-/** The `messages:send` request body. */
-export function toWireMessage(message: PushMessage): unknown {
+/**
+ * The `apns` block: Apple's priority and push type follow the message kind
+ * (a background push must be priority 5), the expiration is absolute, and
+ * the collapse id is a fixed-length hash (APNs caps it at 64 bytes).
+ */
+function toApns(message: PushMessage, nowSec: number) {
+  const alert = message.notification !== undefined;
+  const headers: Record<string, string> = {
+    "apns-push-type": alert ? "alert" : "background",
+    // A notification without a priority is high, as FCM treats it on Android.
+    "apns-priority": alert && message.priority !== "normal" ? "10" : "5",
+    ...(message.ttlSec === undefined
+      ? {}
+      : {
+          "apns-expiration":
+            message.ttlSec === 0 ? "0" : String(nowSec + message.ttlSec),
+        }),
+    ...(message.collapseKey === undefined
+      ? {}
+      : {
+          "apns-collapse-id": createHash("sha256")
+            .update(message.collapseKey)
+            .digest("hex")
+            .slice(0, 32),
+        }),
+  };
+  return {
+    headers,
+    payload: { aps: alert ? { sound: "default" } : { "content-available": 1 } },
+  };
+}
+
+/** The `messages:send` request body; `nowSec` anchors `apns-expiration`. */
+export function toWireMessage(
+  message: PushMessage,
+  nowSec: number = Math.floor(systemClock.now() / 1000),
+): unknown {
   const android = {
     ...(message.priority ? { priority: message.priority.toUpperCase() } : {}),
     ...(message.ttlSec === undefined ? {} : { ttl: `${message.ttlSec}s` }),
@@ -161,6 +201,7 @@ export function toWireMessage(message: PushMessage): unknown {
           }
         : {}),
       ...(Object.keys(android).length > 0 ? { android } : {}),
+      apns: toApns(message, nowSec),
     },
   };
 }
@@ -263,7 +304,7 @@ export function createFcmSender(options: FcmSenderOptions): FcmSender {
       {
         method: "POST",
         url,
-        body: toWireMessage(message),
+        body: toWireMessage(message, Math.floor(clock.now() / 1000)),
         timeoutMs:
           typeof timeout === "number"
             ? timeout

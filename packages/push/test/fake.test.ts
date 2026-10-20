@@ -187,6 +187,15 @@ describe("fake APIs", () => {
         },
       }),
     ).toBe(400);
+    expect(await status({ message: { token: "a", apns: "odd" } })).toBe(400);
+    expect(
+      await status({ message: { token: "a", apns: { headers: { a: 1 } } } }),
+    ).toBe(400);
+    expect(
+      await status({
+        message: { token: "a", apns: { headers: { "apns-priority": "7" } } },
+      }),
+    ).toBe(400);
     expect(await status({ message: { topic: "news", android: "odd" } })).toBe(
       200,
     );
@@ -198,7 +207,7 @@ describe("fake APIs", () => {
         messageId: `projects/${PROJECT}/messages/0:1`,
       },
     ]);
-    expect(google.calls.send).toBe(11);
+    expect(google.calls.send).toBe(14);
   });
 
   it("answers 404 for what it does not serve", async () => {

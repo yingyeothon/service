@@ -7,6 +7,7 @@ import 'package:yyt_console/browse_screen.dart';
 import 'package:yyt_console/catalog_platform.dart';
 import 'package:yyt_console/fetch_remote_apps.dart';
 import 'package:yyt_console/find_installed_version.dart';
+import 'package:yyt_console/ios_install_ledger.dart';
 import 'package:yyt_console/load_app_info.dart';
 import 'package:yyt_console/projects/projects_screen.dart';
 import 'package:yyt_console/push/push_service.dart';
@@ -133,6 +134,7 @@ class _HomeShellState extends State<HomeShell> {
     List<AppInfo> apps, [
     CatalogPlatform? platform,
   ]) {
+    _syncLedger();
     if (platform != null && platform != deviceCatalogPlatform()) return;
     _loaded[source] = apps;
     final scope = _scope;
@@ -144,6 +146,28 @@ class _HomeShellState extends State<HomeShell> {
         for (final app in apps)
           if (app.installedVersion != null)
             if (app.topic case final topic?) topic: app.id,
+      },
+    );
+  }
+
+  /// iOS: the install ledger is what this device asked iOS to install,
+  /// whatever filter a list was loaded under (docs/decisions.md *Console app
+  /// and push on iOS* #4, #7), so its topics are a source of their own. Read
+  /// on every list load, which follows an install, a cleared entry and a
+  /// profile switch.
+  Future<void> _syncLedger() async {
+    final scope = _scope;
+    final push = widget.push;
+    if (push == null || scope == null || !isIosDevice()) return;
+    final entries = await IosInstallLedger.instance.readAll();
+    if (!mounted) return;
+    await push.sync(
+      scope: scope,
+      source: 'ios-ledger',
+      topics: {
+        for (final e in entries.values)
+          if (e.topic case final topic?)
+            if (catalogTopicAppId(topic) case final appId?) topic: appId,
       },
     );
   }

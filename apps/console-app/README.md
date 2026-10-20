@@ -279,9 +279,13 @@ Release signing reads `android/key.properties` (gitignored); the release
 keystore and that file live outside the repo with the operator. Without it the
 release build falls back to the debug key for local checks.
 
-Update notices need the Firebase app's four values at build time. They are
-not in the repo — no `google-services.json`, no Google Services Gradle
-plugin:
+Update notices need the Firebase project's values at build time: project id
+and sender id, plus each platform's own app id and API key
+(`FIREBASE_APP_ID`/`FIREBASE_API_KEY` for Android,
+`FIREBASE_IOS_APP_ID`/`FIREBASE_IOS_API_KEY` for iOS — the `GOOGLE_APP_ID`
+and `API_KEY` of the iOS app's `GoogleService-Info.plist`). They are not in
+the repo — no `google-services.json`, no `GoogleService-Info.plist`, no
+Google Services Gradle plugin:
 
 ```sh
 # keys: firebase.example.json; the real file is gitignored (repo local/)
@@ -291,7 +295,8 @@ flutter build apk --release \
 
 Without the flag (CI, a contributor, `flutter test`) the build is the same app
 with push switched off: Firebase is never initialised, nothing is asked of the
-user and nothing is stored. A partial file counts as none.
+user and nothing is stored. A partial file counts as none, per platform: a
+file without the two iOS values builds an iOS app with push off.
 
 ## Update notices
 
@@ -328,14 +333,27 @@ receives nothing.
 - Self-heal: on an FCM token refresh, and once every 7 days, nothing counts
   as confirmed and the wanted topics are subscribed again (a no-op when they
   still are), so a restored or reset installation converges.
-- Permission (Android 13+): asked once, the first time a loaded list has an
+- Permission (Android 13+, iOS — alert, badge, sound): asked once, the first time a loaded list has an
   installed app to follow — never at launch, on the sign-in screen, or
   against a console that names no topic. The flag (`push_permission_asked`)
   is written when the prompt returns, so an answer is not asked again while
   a prompt the app was killed under is; topics are followed either way, so
   an open app still shows notices.
 - Build state: the profile menu ends with `알림: 켜짐` or
-  `알림: 꺼짐(빌드에 설정 없음)` (`PushConfig.fromBuild.isComplete`).
+  `알림: 꺼짐(빌드에 설정 없음)` (`PushConfig.fromBuild.isCompleteOnThisDevice`:
+  this platform's app id and API key are both in the build).
+- iOS: the same Firebase project holds an iOS app (`life.yyt.console`)
+  registered by the owner, who also uploads the APNs key there. A topic
+  operation waits for iOS to hand Firebase the APNs token (ten reads a second
+  apart, one wait shared by the operations of a sync); without one it fails
+  and stays pending for the next sync.
+  The followed apps are those of the install ledger (each entry keeps the
+  server's topic), whatever the list's platform filter — iOS cannot report
+  what is installed. The ledger is device-wide: every profile follows its
+  entries. A foreground message is the SnackBar only, as on Android. `ios/Runner/Runner.entitlements`
+  carries `aps-environment` (`development` in the file; the ad-hoc export's
+  profile decides the signed value) and `Info.plist` the
+  `remote-notification` background mode.
 - Background / closed: Android shows the notification (channel _앱 업데이트_,
   created in `MainActivity`). The title is the app's name for a publicly
   listed app and `앱 업데이트` otherwise; the body is the version. A tap opens

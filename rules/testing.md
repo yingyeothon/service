@@ -95,6 +95,7 @@
 
 - An object that keeps a `Future` chain (`PushService`'s operation queue) and is **constructed in the test body** belongs to the fake-async zone; awaiting it inside `tester.runAsync` hangs until the test times out, with no output. Construct it in `setUp` or inside the `runAsync` callback. Symptom: the first tests pass (object from `setUp`), the one that builds its own hangs.
 - Push in the app is tested through `PushMessaging` (`test/push/fake_push.dart`), never through Firebase: the build defines are absent under `flutter test`, which is itself the "disabled without config" test.
+- iOS-only app paths: `testWidgets(..., variant: TargetPlatformVariant.only(TargetPlatform.iOS))` (the framework resets the override), swap singletons such as `IosInstallLedger.instance` with `addTearDown`, and give polling helpers (`waitForApnsToken`, `ApnsGate`) an injected `delay` so tests never sleep. On iOS an FCM topic operation needs the APNs token first: share one wait per transport, or a missing token stalls the serial push queue once per topic (2026-10-20, `todo/74`).
 
 ## A fake of a third-party API sits behind the injected `fetch` (2026-10-06, `@yyt/push`)
 

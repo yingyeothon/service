@@ -2,5 +2,7 @@
   "FIREBASE_PROJECT_ID": "your-project-id",
   "FIREBASE_SENDER_ID": "000000000000",
   "FIREBASE_APP_ID": "1:000000000000:android:0000000000000000000000",
-  "FIREBASE_API_KEY": "your-android-api-key"
+  "FIREBASE_API_KEY": "your-android-api-key",
+  "FIREBASE_IOS_APP_ID": "1:000000000000:ios:0000000000000000000000",
+  "FIREBASE_IOS_API_KEY": "your-ios-api-key"
 }
