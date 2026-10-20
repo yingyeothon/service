@@ -209,4 +209,59 @@ describe("app handoff", () => {
       },
     ]);
   });
+
+  it("burns a code a browser loads through the link, so the app cannot spend it", async () => {
+    const h = harness();
+    const a = await h.login("alice", "member");
+    const code = await start(h, a.cookie);
+    const r = await h.app(ev("GET", "/app-open", { query: { code } }));
+    expect(r.statusCode).toBe(302);
+    expect(r.headers?.location).toBe(`${BASE}/installer?app=missing`);
+    expect(await h.kv.get(`handoff:${sha256Hex(code)}`)).toBeNull();
+    expect((await exchange(h, code)).statusCode).toBe(410);
+    // A malformed code reads nothing and still redirects.
+    const odd = await h.app(ev("GET", "/app-open", { query: { code: "x" } }));
+    expect(odd.statusCode).toBe(302);
+  });
+
+  it("names the link host in the handoff answer only where it is enabled", async () => {
+    const off = harness();
+    const a = await off.login("alice", "member");
+    const r1 = await off.app(
+      ev("POST", "/auth/app-handoff", { headers: a.cookie }),
+    );
+    expect(parse(r1)).not.toHaveProperty("linkHost");
+    const on = harness({ linkHost: "link-dev.yyt.life" });
+    const b = await on.login("bob", "member");
+    const r2 = await on.app(
+      ev("POST", "/auth/app-handoff", { headers: b.cookie }),
+    );
+    expect(parse(r2)).toMatchObject({ linkHost: "link-dev.yyt.life" });
+  });
+
+  it("serves the apple-app-site-association only once an app id is configured", async () => {
+    const none = harness();
+    expect(
+      (await none.app(ev("GET", "/.well-known/apple-app-site-association")))
+        .statusCode,
+    ).toBe(404);
+    const h = harness({
+      iosAppIds: [" ABCDE12345.life.yyt.console ", "abcde12345.x", "nodot"],
+    });
+    const r = await h.app(ev("GET", "/.well-known/apple-app-site-association"));
+    expect(r.statusCode).toBe(200);
+    expect(r.headers?.["content-type"]).toBe("application/json");
+    expect(r.headers?.["cache-control"]).toBe("public, max-age=3600");
+    expect(r.headers?.location).toBeUndefined();
+    expect(JSON.parse(r.body ?? "")).toEqual({
+      applinks: {
+        details: [
+          {
+            appIDs: ["ABCDE12345.life.yyt.console"],
+            components: [{ "/": "/app-open", "?": { code: "hoff_*" } }],
+          },
+        ],
+      },
+    });
+  });
 });

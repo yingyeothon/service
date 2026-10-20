@@ -10,7 +10,7 @@
 # console only (optional): redis-acl-{user,password} — the account that mints per-channel
 #   participant Redis credentials (todo/16 §B). Absent = those routes answer 503.
 # Stage-wide keys (uploaded only when set): DEBUG_KEY (dev only; generated when absent), SESSION_SECRET,
-#   GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET/ADMIN_GITHUB_LOGINS and ANDROID_CERT_SHA256 (the console app's
+#   GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET/ADMIN_GITHUB_LOGINS, IOS_APP_IDS, LINK_HOST_ENABLED and ANDROID_CERT_SHA256 (the console app's
 #   release-signing fingerprint for /.well-known/assetlinks.json) — taken from the shell environment, else
 #   from local/env/console.<stage>.env (console owns the operator OAuth app).
 # Stage-wide, gateway (todo/14): gateway-token is generated when absent and kept across re-runs
@@ -182,7 +182,7 @@ if [ -f "$CONSOLE_ENV" ]; then
     done
   fi
 fi
-for var in GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET ADMIN_GITHUB_LOGINS ANDROID_CERT_SHA256; do
+for var in GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET ADMIN_GITHUB_LOGINS ANDROID_CERT_SHA256 IOS_APP_IDS LINK_HOST_ENABLED; do
   if [ -z "${!var:-}" ] && [ -f "$CONSOLE_ENV" ]; then
     declare "$var=$(envval "$CONSOLE_ENV" "$var")"
   fi
@@ -197,6 +197,12 @@ put session-secret "${SESSION_SECRET:-}"
 # Console app release-signing certificate SHA-256 (`keytool -list -v`, AA:BB:… form,
 # comma separated when more than one), served on /.well-known/assetlinks.json.
 put android-cert-sha256 "${ANDROID_CERT_SHA256:-}"
+# The console app's iOS `<Team ID>.<bundle id>` (comma separated), served in the link
+# host's apple-app-site-association; and whether the stage serves its link host
+# (`link{-dev}.yyt.life`: exactly 1 turns it on, any other value off). Both opt-in, empty = skipped
+# (turning the host off again: set 0, or `aws ssm delete-parameter`, then redeploy console).
+put ios-app-ids "${IOS_APP_IDS:-}"
+put link-host-enabled "${LINK_HOST_ENABLED:-}"
 
 # Realtime gateway (todo/14): the console checks GATEWAY_TOKEN on
 # GET /gw/channels/{id}. Generated once per stage and kept across re-runs, the

@@ -54,3 +54,48 @@ export function appOpenIntentUrl(origin: string, code: string): string {
     `S.browser_fallback_url=${fallback};end`
   );
 }
+
+/**
+ * True on an iPhone/iPad (desktop-mode iPads included), where "Open app" is
+ * a Universal Link on the stage's link host (decisions, _Console app and
+ * push on iOS_ #9). In-app browsers (a chat app's WebView) are not told
+ * apart: they may ignore Universal Links, and a missed link only lands on
+ * the Installer page with its code already burnt by the server.
+ */
+export function isIosSafariLike(nav: Partial<Navigator> = navigator): boolean {
+  return isIosUserAgent(nav.userAgent ?? "", nav.maxTouchPoints ?? 0);
+}
+
+/**
+ * The stage's link host, derived from the console host the SPA is served
+ * from. The bundle is shared by both stages and carries no env, so the
+ * console host is the only stage signal; any other host (a local dev
+ * server, a preview) has none and the iOS button stays hidden.
+ */
+const LINK_HOSTS: Readonly<Record<string, string>> = {
+  "console-dev.yyt.life": "link-dev.yyt.life",
+  "console.yyt.life": "link.yyt.life",
+};
+
+export function linkHostFor(consoleHost: string): string | null {
+  return LINK_HOSTS[consoleHost.toLowerCase()] ?? null;
+}
+
+/** Which handoff this browser can attempt, or `null` for no Open app. */
+export function appOpenPlatform(
+  nav: Partial<Navigator> = navigator,
+  consoleHost: string = window.location.host,
+): "android" | "ios" | null {
+  if (isAndroidBrowser(nav)) return "android";
+  if (isIosSafariLike(nav) && linkHostFor(consoleHost)) return "ios";
+  return null;
+}
+
+/**
+ * The Universal Link the iOS "Open app" anchor points at. A browser that
+ * loads it instead of the app makes the server burn the code and redirect
+ * to the Installer page, so a code that reached a browser is dead.
+ */
+export function appOpenLinkUrl(linkHost: string, code: string): string {
+  return `https://${linkHost}/app-open?code=${encodeURIComponent(code)}`;
+}

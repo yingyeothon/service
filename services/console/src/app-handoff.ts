@@ -27,6 +27,26 @@ export const HANDOFF_CODE = /^hoff_[0-9a-f]{32}$/;
 /** The Android package the SPA's intent URL pins and `assetlinks.json` names. */
 export const ANDROID_PACKAGE = "life.yyt.console";
 const FINGERPRINT = /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/;
+/** `<Team ID>.<bundle id>`, as the AASA `appIDs` list takes it. */
+const IOS_APP_ID = /^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$/;
+
+/**
+ * The Apple App Site Association document of a link host
+ * (docs/decisions.md *Console app and push on iOS* #9): `/app-open` with a
+ * `hoff_` code opens the app; nothing else is associated.
+ */
+export function appleAppSiteAssociation(appIds: readonly string[]): unknown {
+  return {
+    applinks: {
+      details: [
+        {
+          appIDs: [...appIds],
+          components: [{ "/": "/app-open", "?": { code: "hoff_*" } }],
+        },
+      ],
+    },
+  };
+}
 
 const exchangeBody = z
   .object({ code: z.string().regex(HANDOFF_CODE) })
@@ -70,6 +90,8 @@ export function createAppHandoffRoutes({
   logger,
   webUrl,
   androidCertFingerprints = [],
+  iosAppIds = [],
+  linkHost = "",
 }: {
   kv: Kv;
   db: Pick<ConsoleDb, "findMember" | "listApiTokens">;
@@ -80,6 +102,14 @@ export function createAppHandoffRoutes({
   /** SPA base (`…/ui`), where a browser that loads the https form is sent. */
   webUrl: string;
   androidCertFingerprints?: readonly string[];
+  /** `<Team ID>.<bundle id>` entries the AASA names; empty = 404. */
+  iosAppIds?: readonly string[];
+  /**
+   * The stage's link host (`link-dev.yyt.life`), when it is enabled: the
+   * handoff answer names it, so an iOS browser never builds a link to a host
+   * that is not there. Empty = none.
+   */
+  linkHost?: string;
 }): AnyRoute[] {
   const key = (code: string) => `handoff:${sha256Hex(code)}`;
   // `keytool -list -v` form: 32 colon-separated bytes. A pasted value in any
@@ -95,6 +125,17 @@ export function createAppHandoffRoutes({
       });
       return false;
     });
+  const appIds = iosAppIds
+    .map((a) => a.trim())
+    .filter((a) => {
+      if (a === "") return false;
+      if (IOS_APP_ID.test(a)) return true;
+      logger.warn("ios app id ignored: not TEAMID.bundle form", {
+        length: a.length,
+      });
+      return false;
+    });
+  const host = linkHost.trim();
   return [
     {
       method: "POST",
@@ -124,7 +165,11 @@ export function createAppHandoffRoutes({
           ex: HANDOFF_TTL_SEC,
         });
         return json(
-          { code, expiresInSec: HANDOFF_TTL_SEC },
+          {
+            code,
+            expiresInSec: HANDOFF_TTL_SEC,
+            ...(host === "" ? {} : { linkHost: host }),
+          },
           { status: 201, noStore: true },
         );
       },
@@ -167,13 +212,39 @@ export function createAppHandoffRoutes({
       },
     }),
     {
-      // The https form of the intent target. Only a browser without the app
-      // (or a link pasted elsewhere) ever loads it; the code in its query is
-      // not read here and the request log keeps the path pattern only.
+      // The https form of the intent target and the iOS Universal Link. A
+      // browser loads it only when no app took the link (none installed, or
+      // a link pasted elsewhere), so a well-formed code in it is burnt at
+      // once (decisions *iOS* #9): whatever kept the URL holds nothing. The
+      // request log keeps the path pattern only.
       method: "GET",
       path: "/app-open",
-      handler: async () =>
-        redirect(`${webUrl.replace(/\/+$/, "")}/installer?app=missing`),
+      handler: async (ctx) => {
+        const code: unknown = (ctx.query as Record<string, unknown>).code;
+        if (typeof code === "string" && HANDOFF_CODE.test(code))
+          await kv.del(key(code)).catch(() => {
+            // No code or digest in the line: only that one stayed live.
+            logger.warn("app handoff code not burnt", { reason: "kv" });
+            return 0;
+          });
+        return redirect(`${webUrl.replace(/\/+$/, "")}/installer?app=missing`);
+      },
+    },
+    {
+      method: "GET",
+      path: "/.well-known/apple-app-site-association",
+      handler: async () => {
+        if (appIds.length === 0)
+          throw new AppError("not_found", "no ios app id configured");
+        return {
+          statusCode: 200,
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "public, max-age=3600",
+          },
+          body: JSON.stringify(appleAppSiteAssociation(appIds)),
+        };
+      },
     },
     {
       method: "GET",

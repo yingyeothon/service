@@ -8,7 +8,7 @@ import { OpenAppButton } from "../components/OpenAppButton";
 import { PageHeader } from "../components/PageHeader";
 import { Section } from "../components/Section";
 import { Notice } from "../components/ui";
-import { isAndroidBrowser } from "../lib/appHandoff";
+import { appOpenPlatform } from "../lib/appHandoff";
 import { useAction } from "../lib/query";
 
 /** The payload the 잉여톤 app's QR scanner accepts (apps/console-app). */
@@ -38,9 +38,8 @@ export function AppLoginPage() {
         title="App login"
         description={
           <>
-            The <strong>잉여톤</strong> Android app signs in by scanning a QR
-            code made here. Each QR mints a new API token in your name (it
-            appears under{" "}
+            The <strong>잉여톤</strong> app signs in by scanning a QR code made
+            here. Each QR mints a new API token in your name (it appears under{" "}
             <Anchor component={Link} to="/tokens">
               API tokens
             </Anchor>
@@ -49,9 +48,10 @@ export function AppLoginPage() {
             <Anchor component={Link} to="/installer">
               Installer
             </Anchor>
-            . Opened on an Android phone without a usable camera, this page also
-            offers <strong>Open app</strong>, which signs the app in from this
-            browser session instead.
+            . Opened on the phone itself (Android, or an iPhone on a console
+            with an app link host), this page also offers{" "}
+            <strong>Open app</strong>, which signs the app in from this browser
+            session instead.
           </>
         }
       />
@@ -88,7 +88,7 @@ export function AppLoginPage() {
           </Button>
         )}
       </Section>
-      {isAndroidBrowser() && (
+      {appOpenPlatform() && (
         <Section title="This phone">
           <OpenAppButton />
         </Section>

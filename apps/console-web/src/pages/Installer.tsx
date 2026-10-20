@@ -123,11 +123,23 @@ export function InstallerPage() {
         title="Installer"
         description="The newest build of the device installer per platform."
       />
-      {appMissing && (
+      {appMissing && !ios && (
         <Notice kind="warn">
           This phone has no 잉여톤 app that can take a sign-in from the web
           (none installed, or older than 1.6.1). Install or update from the APK
           below, then tap <strong>Open app</strong> again.
+        </Notice>
+      )}
+      {appMissing && ios && (
+        <Notice kind="warn">
+          Safari opened the sign-in link instead of the 잉여톤 app, so the link
+          is spent. Either the app is not installed (install it below), or iOS
+          stopped opening the app from links after{" "}
+          <strong>Open in Safari</strong> was chosen once. To turn that back on,
+          tap <strong>Open app</strong>, long-press the link and choose{" "}
+          <strong>Open in 잉여톤</strong> (that attempt may fail), then tap{" "}
+          <strong>Open app</strong> again for a fresh link. In an in-app browser
+          (KakaoTalk and the like), open this page in Safari.
         </Notice>
       )}
       {list.error && <Notice kind="error">{list.error}</Notice>}

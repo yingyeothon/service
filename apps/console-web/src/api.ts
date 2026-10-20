@@ -327,9 +327,14 @@ export function createApiClient({
     createToken: (name: string) =>
       post<ApiToken & { token: string }>("/tokens", { name }),
     revokeToken: (id: string) => del(`/tokens/${enc(id)}`),
-    /** A 120 s single-use code the 잉여톤 app exchanges for a token (todo/49). */
+    /**
+     * A 120 s single-use code the 잉여톤 app exchanges for a token (todo/49);
+     * `linkHost` is the stage's iOS link host, absent when it has none (todo/76).
+     */
     createAppHandoff: () =>
-      post<{ code: string; expiresInSec: number }>("/auth/app-handoff"),
+      post<{ code: string; expiresInSec: number; linkHost?: string }>(
+        "/auth/app-handoff",
+      ),
 
     // ---- teams -------------------------------------------------------------
     teams: (scope?: "mine" | "all", p: ListParams = {}) =>

@@ -32,6 +32,18 @@ only to the console API.
   checks: Chrome and Samsung Internet, cold and warm start, one task in
   Recents, the Installer fallback with the app uninstalled,
   `adb shell pm get-app-links life.yyt.console` once the fingerprint is in SSM.
+- Handoff on iOS (2026-10-20, `todo/76`, decisions _Console app and push on
+  iOS_ #9): a Universal Link `https://link{-dev}.yyt.life/app-open?code=hoff_…`
+  (`ios/Runner/Runner.entitlements` associated domains: the two link hosts
+  only). `AppHandoffLink.tryParse` accepts a link host under `https` only and
+  maps it to its console host (`link-dev` → `console-dev`, `link` →
+  `console`), so the exchange and the saved profile use the console host.
+  iOS has no `yytconsole` URL type (another app could claim the scheme).
+  `app_links` delivers the launch link on `uriLinkStream` like a warm one;
+  `Info.plist` sets `FlutterDeepLinkingEnabled` to `false`, otherwise Flutter
+  would also route the URL, fail (the app has no named routes) and hand a
+  Universal Link back to Safari, which loads `/app-open` and burns the code.
+  On-device checks are `todo/79`.
 - Limits (2026-09-29, `todo/54`, 1.6.2): a **한도** card on the channel detail
   screen and in each team's accordion (`lib/projects/limits_section.dart`,
   `GET /limits?scope=channel:<id>` / `team:<id>`): usage, the effective value

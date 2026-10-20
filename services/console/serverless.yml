@@ -29,6 +29,13 @@ custom:
     dev: "-dev"
     prod: ""
   domain: console${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  # The iOS Universal Link host (docs/decisions.md *Console app and push on
+  # iOS* #9): an alias of the console distribution, because iOS opens a link
+  # in the app only when a tap crosses domains. Opt-in per stage through SSM
+  # `link-host-enabled` (exactly `1`; anything else is off); the wildcard certificate of
+  # `cloudfrontCertArn` covers it.
+  linkDomain: link${self:custom.domainSuffix.${self:custom.stage}}.yyt.life
+  linkHostEnabled: ${ssm:${self:custom.stageSsm}/link-host-enabled, ""}
   # Binary catalog (docs/decisions.md): pre-existing public distribution bucket
   # fronted by the manually managed CDN, outside this stack (surveyed in
   # todo/12); the stack only grants IAM on it. The name is an infra identifier
@@ -174,6 +181,13 @@ provider:
     # https://console…/app-open link (todo/49). Not a secret, but an identifier
     # of the owner's keystore, so it lives in SSM; empty answers 404.
     ANDROID_APP_CERT_SHA256: ${ssm:${self:custom.stageSsm}/android-cert-sha256, ""}
+    # `<Team ID>.<bundle id>` list served on the link host's
+    # /.well-known/apple-app-site-association; empty answers 404. The Team ID
+    # is public in every IPA, kept out of the repo as hygiene.
+    IOS_APP_IDS: ${ssm:${self:custom.stageSsm}/ios-app-ids, ""}
+    # The link host while it is enabled, else empty: the handoff answer names
+    # it so an iOS browser never builds a link to a host that is not served.
+    LINK_HOST: !If [HasLinkHost, "${self:custom.linkDomain}", ""]
     # Where the gateway probe publishes its down/recovered edges (no CloudWatch
     # alarm involved). Empty means the probe logs and notifies nobody.
     ALARM_TOPIC_ARN: ${self:custom.alarmTopic}
@@ -586,6 +600,7 @@ resources:
     HasSiteDistribution:
       !Not [!Equals ["${self:custom.siteDistributionId}", ""]]
     HasSiteHost: !Not [!Equals ["${self:custom.siteHostCertArn}", ""]]
+    HasLinkHost: !Equals ["${self:custom.linkHostEnabled}", "1"]
     # CloudWatch's free tier is 10 alarms account-wide; see rules/serverless-aws.md.
     IsProd: !Equals ["${self:custom.stage}", "prod"]
   Resources:
@@ -731,12 +746,23 @@ resources:
         Name: ${self:service}-${self:custom.stage}-spa-rewrite
         AutoPublish: true
         FunctionConfig:
-          Comment: Redirect / to /ui/; rewrite extension-less /ui routes to /ui/index.html
+          Comment: Redirect / to /ui/; rewrite extension-less /ui routes to /ui/index.html; the link host's SPA paths go to the console host
           Runtime: cloudfront-js-2.0
         FunctionCode: |
           function handler(event) {
             var req = event.request;
             var uri = req.uri;
+            var host = req.headers && req.headers.host ? req.headers.host.value.toLowerCase() : '';
+            // The link host serves /app-open and /.well-known/* (the API
+            // behavior); its SPA paths belong to the console host, where the
+            // session cookie and CORS live. The query is not carried over.
+            if (host === '${self:custom.linkDomain}') {
+              return {
+                statusCode: 302,
+                statusDescription: 'Found',
+                headers: { location: { value: 'https://${self:custom.domain}' + uri } }
+              };
+            }
             if (uri === '/') {
               return {
                 statusCode: 302,
@@ -801,8 +827,10 @@ resources:
         DistributionConfig:
           Enabled: true
           Comment: ${self:custom.domain}
-          Aliases:
-            - ${self:custom.domain}
+          Aliases: !If
+            - HasLinkHost
+            - ["${self:custom.domain}", "${self:custom.linkDomain}"]
+            - ["${self:custom.domain}"]
           HttpVersion: http2and3
           IPV6Enabled: true
           PriceClass: PriceClass_200
@@ -1192,6 +1220,26 @@ resources:
         Type: AAAA
         AliasTarget:
           DNSName: !GetAtt SiteHostDistribution.DomainName
+          HostedZoneId: Z2FDTNDATAQYW2
+    LinkDnsA:
+      Condition: HasLinkHost
+      Type: AWS::Route53::RecordSet
+      Properties:
+        HostedZoneName: yyt.life.
+        Name: ${self:custom.linkDomain}
+        Type: A
+        AliasTarget:
+          DNSName: !GetAtt WebDistribution.DomainName
+          HostedZoneId: Z2FDTNDATAQYW2
+    LinkDnsAAAA:
+      Condition: HasLinkHost
+      Type: AWS::Route53::RecordSet
+      Properties:
+        HostedZoneName: yyt.life.
+        Name: ${self:custom.linkDomain}
+        Type: AAAA
+        AliasTarget:
+          DNSName: !GetAtt WebDistribution.DomainName
           HostedZoneId: Z2FDTNDATAQYW2
     WebDnsA:
       Type: AWS::Route53::RecordSet

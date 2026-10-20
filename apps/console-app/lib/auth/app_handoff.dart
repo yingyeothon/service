@@ -11,7 +11,10 @@ import 'auth_config.dart';
 /// `intent://` URL whose target is `yytconsole://<console host>/app-open?code=…`
 /// (the custom scheme is routed without App Links verification, which an
 /// `https` target needs on Android 12+; a verified `https` link is accepted
-/// too).
+/// too). On iOS (todo/76) the SPA links to
+/// `https://<link host>/app-open?code=…`, a Universal Link on the stage's
+/// dedicated link host (`link{-dev}.yyt.life`, `Runner.entitlements`); iOS
+/// gets no custom scheme because it cannot pin one to this app.
 /// The code is a 120-second single-use claim the app exchanges for a
 /// `yyt_` token at `POST /auth/app-handoff/exchange`; the profile is then
 /// added exactly as a scanned QR would be.
@@ -27,6 +30,13 @@ class AppHandoffLink {
     'console-dev.yyt.life',
   ];
 
+  /// Universal Link hosts (iOS) → the console host that issued the code.
+  /// `https` only; the server, and so the saved profile, is the console host.
+  static const Map<String, String> linkHosts = <String, String>{
+    'link.yyt.life': 'console.yyt.life',
+    'link-dev.yyt.life': 'console-dev.yyt.life',
+  };
+
   /// The custom scheme the SPA's intent URL targets (`AndroidManifest.xml`).
   static const String customScheme = 'yytconsole';
   static final RegExp _codePattern = RegExp(r'^hoff_[0-9a-f]{32}$');
@@ -37,20 +47,30 @@ class AppHandoffLink {
 
   const AppHandoffLink({required this.server, required this.code});
 
-  /// Null for anything that is not `yytconsole://<allowed host>/app-open?code=…`
-  /// or its `https` App Link twin. The server is always `https://<host>`.
+  /// Null for anything that is not `yytconsole://<allowed host>/app-open?code=…`,
+  /// its `https` App Link twin, or `https://<link host>/app-open?code=…`.
+  /// The server is always `https://<console host>`.
   static AppHandoffLink? tryParse(
     Uri uri, {
     List<String> hosts = consoleHosts,
+    Map<String, String> links = linkHosts,
   }) {
     if (uri.scheme != 'https' && uri.scheme != customScheme) return null;
     if (uri.userInfo.isNotEmpty || uri.hasPort) return null;
-    if (!hosts.contains(uri.host.toLowerCase())) return null;
+    final host = uri.host.toLowerCase();
+    final String server;
+    if (hosts.contains(host)) {
+      server = host;
+    } else if (uri.scheme == 'https' && links.containsKey(host)) {
+      server = links[host]!;
+    } else {
+      return null;
+    }
     if (uri.path != '/app-open') return null;
     final code = uri.queryParameters['code']?.trim() ?? '';
     if (!_codePattern.hasMatch(code)) return null;
     return AppHandoffLink(
-      server: AuthConfig.normalizeServerUrl('https://${uri.host}'),
+      server: AuthConfig.normalizeServerUrl('https://$server'),
       code: code,
     );
   }

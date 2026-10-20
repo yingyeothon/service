@@ -241,6 +241,11 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    iosAppIds: (process.env.IOS_APP_IDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    linkHost: process.env.LINK_HOST ?? "",
   };
   const {
     stage,

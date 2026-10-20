@@ -9,7 +9,12 @@ import { functionCode, loadFunction } from "./cf-function.js";
 function loadHandler(): (event: { request: { uri: string } }) => {
   uri: string;
 } {
-  return loadFunction(functionCode("SpaRewriteFunction"));
+  return loadFunction(
+    functionCode("SpaRewriteFunction", {
+      "${self:custom.linkDomain}": "link-dev.yyt.life",
+      "${self:custom.domain}": "console-dev.yyt.life",
+    }),
+  );
 }
 
 describe("CloudFront SPA rewrite", () => {
@@ -43,5 +48,40 @@ describe("CloudFront SPA rewrite", () => {
   it("never touches non-/ui paths (API routes are a different behavior anyway)", () => {
     expect(rewrite("/events")).toBe("/events");
     expect(rewrite("/uix/foo")).toBe("/uix/foo");
+  });
+
+  it("sends the link host's SPA paths to the console host, and nothing else of it", () => {
+    const linked = loadFunction<
+      (event: {
+        request: { uri: string; headers: Record<string, { value: string }> };
+      }) => {
+        statusCode?: number;
+        uri?: string;
+        headers?: { location?: { value: string } };
+      }
+    >(
+      functionCode("SpaRewriteFunction", {
+        "${self:custom.linkDomain}": "link-dev.yyt.life",
+        "${self:custom.domain}": "console-dev.yyt.life",
+      }),
+    );
+    for (const uri of ["/", "/ui", "/ui/channels/x"]) {
+      const res = linked({
+        request: { uri, headers: { host: { value: "link-dev.yyt.life" } } },
+      });
+      expect(res.statusCode).toBe(302);
+      expect(res.headers?.location?.value).toBe(
+        `https://console-dev.yyt.life${uri}`,
+      );
+    }
+    // The console host is untouched.
+    expect(
+      linked({
+        request: {
+          uri: "/ui/x",
+          headers: { host: { value: "console-dev.yyt.life" } },
+        },
+      }).uri,
+    ).toBe("/ui/index.html");
   });
 });

@@ -369,6 +369,25 @@ describe("installer downloads", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("db down");
   });
 
+  it("tells an iPhone that landed on app=missing to fetch a fresh link", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue(member as never);
+    const ua = vi
+      .spyOn(navigator, "userAgent", "get")
+      .mockReturnValue(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1",
+      );
+    try {
+      mount("/installer?app=missing");
+      const notice = await screen.findByText(/Safari opened the sign-in link/);
+      expect(notice).toHaveTextContent("Open in 잉여톤");
+      expect(notice).toHaveTextContent("again for a fresh link");
+      expect(notice).toHaveTextContent("open this page in Safari");
+      expect(notice).not.toHaveTextContent("choose to open it in 잉여톤");
+    } finally {
+      ua.mockRestore();
+    }
+  });
+
   it("denies /installer to pending members", async () => {
     vi.mocked(mockApi.me).mockResolvedValue({
       ...member,

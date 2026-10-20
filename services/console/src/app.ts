@@ -236,6 +236,10 @@ export interface ConsoleAppOptions {
    * separated). Empty: the route answers 404 and App Links stay unverified.
    */
   androidCertFingerprints?: string[];
+  /** AASA `appIDs` (`IOS_APP_IDS`). */
+  iosAppIds?: string[];
+  /** The stage's enabled link host (`LINK_HOST`); empty = none. */
+  linkHost?: string;
 }
 
 const NEXT_PATH = /^\/[^/\\][^\\]{0,255}$|^\/$/;
@@ -315,6 +319,8 @@ export function createConsoleApp({
   state,
   stage,
   androidCertFingerprints = [],
+  iosAppIds = [],
+  linkHost = "",
 }: ConsoleAppOptions): (event: HttpEvent) => Promise<HttpResult> {
   const base = baseUrl.replace(/\/+$/, "");
   const web = webUrl.replace(/\/+$/, "");
@@ -1425,6 +1431,8 @@ export function createConsoleApp({
     logger,
     webUrl: web,
     androidCertFingerprints,
+    iosAppIds,
+    linkHost,
   });
 
   const listingRoutes = createListingRoutes({

@@ -3,7 +3,9 @@
 // *Console app*, todo/49): anonymous refusal → a member's code → the app's
 // exchange → the minted token works on /me → the code is spent → a pending
 // member is refused without a token → /app-open redirects → assetlinks.json
-// is either served as JSON or 404 (fingerprint not configured yet).
+// is either served as JSON or 404 (fingerprint not configured yet) → a code
+// loaded through /app-open is burnt → the link host (if enabled) serves the
+// AASA without a redirect and sends its SPA paths to the console host.
 // Usage: scripts/smoke/app-handoff.mjs <baseUrl> <debugKey>
 // Needs the console stack deployed with `--param debugHooks=1`. Never prints
 // codes, tokens or cookies: statuses only.
@@ -128,6 +130,74 @@ if (al.status === 404)
   console.log(
     "note: assetlinks.json 404 — SSM android-cert-sha256 not set on this stage",
   );
+
+/* --- iOS (docs/decisions.md *Console app and push on iOS* #9) --- */
+
+// A code a browser loads through the link is burnt: the app cannot spend it.
+await sleep(550);
+const burn = await call("/auth/app-handoff", {
+  method: "POST",
+  headers: as(member),
+});
+const linkHost = burn.body?.linkHost;
+const burnt = await anon(
+  `/app-open?code=${encodeURIComponent(burn.body?.code ?? "")}`,
+  { headers: {} },
+);
+const spent = await anon("/auth/app-handoff/exchange", {
+  method: "POST",
+  body: { code: burn.body?.code },
+});
+check(
+  "a code loaded through /app-open is burnt (302, then exchange 410)",
+  burn.status === 201 && burnt.status === 302 && spent.status === 410,
+  `${burn.status} ${burnt.status} ${spent.status}`,
+);
+if (typeof linkHost !== "string") {
+  console.log(
+    "note: no linkHost in the handoff answer — SSM link-host-enabled not set",
+  );
+} else {
+  // The link host is another name of this distribution: AASA as JSON, no
+  // redirect (Apple's CDN follows none), and the SPA sent to the console host.
+  const link = jsonClient({ base: `https://${linkHost}`, redirect: "manual" });
+  for (const ua of [undefined, "AASA-Bot/1.0.0"]) {
+    const aasa = await link("/.well-known/apple-app-site-association", {
+      headers: ua ? { "user-agent": ua } : {},
+    });
+    const details = aasa.body?.applinks?.details ?? [];
+    check(
+      `the link host serves the AASA${ua ? ` to ${ua}` : ""}`,
+      aasa.status === 200 &&
+        (aasa.headers.get("content-type") ?? "").startsWith(
+          "application/json",
+        ) &&
+        details[0]?.components?.[0]?.["/"] === "/app-open",
+      String(aasa.status),
+    );
+    if (aasa.status === 404)
+      console.log(
+        "note: AASA 404 — a link host without SSM ios-app-ids serves no app",
+      );
+  }
+  const linkOpen = await link("/app-open?code=x", { headers: {} });
+  check(
+    "the link host's /app-open → 302 to the installer",
+    linkOpen.status === 302 &&
+      /\/ui\/installer\?app=missing$/.test(
+        linkOpen.headers.get("location") ?? "",
+      ),
+    String(linkOpen.status),
+  );
+  const linkUi = await link("/ui/", { headers: {} });
+  check(
+    "the link host's /ui/ → 302 to the console host",
+    linkUi.status === 302 &&
+      (linkUi.headers.get("location") ?? "") ===
+        `${base.replace(/\/+$/, "")}/ui/`,
+    `${linkUi.status} ${linkUi.headers.get("location") ?? ""}`,
+  );
+}
 
 // Cleanup: revoke the token the exchange minted.
 await sleep(550);

@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:app_links/app_links.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -9,6 +12,8 @@ const code = 'hoff_0123456789abcdef0123456789abcdef';
 final token = 'yyt_${'0123456789abcdef' * 3}';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('AppHandoffLink.tryParse', () {
     test('accepts the console hosts and derives the server from the host', () {
       final l = AppHandoffLink.tryParse(
@@ -39,6 +44,65 @@ void main() {
         ),
         isNull,
       );
+    });
+
+    test('maps each iOS link host to its console host', () {
+      expect(AppHandoffLink.linkHosts, {
+        'link.yyt.life': 'console.yyt.life',
+        'link-dev.yyt.life': 'console-dev.yyt.life',
+      });
+      for (final e in AppHandoffLink.linkHosts.entries) {
+        expect(AppHandoffLink.consoleHosts, contains(e.value));
+        final l = AppHandoffLink.tryParse(
+          Uri.parse('https://${e.key}/app-open?code=$code'),
+        );
+        expect(l, isNotNull, reason: e.key);
+        expect(l!.server, 'https://${e.value}');
+        expect(l.code, code);
+      }
+      expect(
+        AppHandoffLink.tryParse(
+          Uri.parse('https://LINK-DEV.yyt.life/app-open?code=$code'),
+        )?.server,
+        'https://console-dev.yyt.life',
+      );
+    });
+
+    test('refuses a link host on anything but https /app-open', () {
+      final bad = <String>[
+        // iOS gets no custom scheme: another app could claim it.
+        'yytconsole://link.yyt.life/app-open?code=$code',
+        'yytconsole://link-dev.yyt.life/app-open?code=$code',
+        'http://link.yyt.life/app-open?code=$code',
+        'https://link.yyt.life.evil.example/app-open?code=$code',
+        'https://evil-link.yyt.life/app-open?code=$code',
+        'https://link-prod.yyt.life/app-open?code=$code',
+        'https://link.yyt.life/ui/app-open?code=$code',
+        'https://link.yyt.life/app-open/?code=$code',
+        'https://link.yyt.life/?code=$code',
+        'https://link-dev.yyt.life:8443/app-open?code=$code',
+        'https://user@link.yyt.life/app-open?code=$code',
+        'https://user:pw@link-dev.yyt.life/app-open?code=$code',
+        'https://link.yyt.life/app-open?code=hoff_short',
+        'https://link.yyt.life/app-open?code=${code.toUpperCase()}',
+        'https://link.yyt.life/app-open?code=$token',
+        'https://link.yyt.life/app-open',
+      ];
+      for (final u in bad) {
+        expect(AppHandoffLink.tryParse(Uri.parse(u)), isNull, reason: u);
+      }
+    });
+
+    test('keeps the Android links unchanged', () {
+      for (final scheme in ['https', 'yytconsole']) {
+        for (final host in AppHandoffLink.consoleHosts) {
+          final l = AppHandoffLink.tryParse(
+            Uri.parse('$scheme://$host/app-open?code=$code'),
+          );
+          expect(l?.server, 'https://$host', reason: '$scheme://$host');
+          expect(l?.code, code);
+        }
+      }
     });
 
     test('ignores anything an exported activity might be handed', () {
@@ -171,6 +235,35 @@ void main() {
       expect(q.offer(uri), isTrue);
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(handled, [code, other, code]);
+    });
+
+    test('takes the launch link from uriLinkStream (iOS cold start)', () async {
+      // The iOS plugin stores the Universal Link that launched the app and
+      // emits it to the first listener of its event channel.
+      const events = EventChannel('com.llfbandit.app_links/events');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockStreamHandler(
+        events,
+        MockStreamHandler.inline(
+          onListen: (_, sink) =>
+              sink.success('https://link-dev.yyt.life/app-open?code=$code'),
+        ),
+      );
+      addTearDown(() => messenger.setMockStreamHandler(events, null));
+      final handled = <AppHandoffLink>[];
+      final q = AppHandoffQueue((l) async => handled.add(l));
+      final offered = Completer<bool>();
+      final sub = AppLinks().uriLinkStream.listen(
+        (uri) => offered.complete(q.offer(uri)),
+      );
+      addTearDown(sub.cancel);
+      expect(await offered.future, isTrue);
+      expect(handled, isEmpty); // held until the profiles are loaded
+      q.ready();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(handled.single.server, 'https://console-dev.yyt.life');
+      expect(handled.single.code, code);
     });
   });
 }
