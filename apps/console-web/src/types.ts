@@ -871,7 +871,10 @@ export interface CatalogListingTakedown {
 export interface AdminCatalogListing
   extends
     CatalogListing,
-    Pick<PublicListing, "artifacts" | "latestArtifact" | "applicationIds"> {
+    Pick<
+      PublicListing,
+      "artifacts" | "latestArtifact" | "applicationIds" | "bundleIds"
+    > {
   takedown: CatalogListingTakedown | null;
 }
 
@@ -896,6 +899,8 @@ export interface PublicListing {
   artifacts: Omit<CatalogArtifact, "objectKey">[];
   latestArtifact: Omit<CatalogArtifact, "objectKey"> | null;
   applicationIds: string[];
+  /** Distinct `bundle_id` tags of the app's iOS artifacts. */
+  bundleIds: string[];
 }
 
 /**
@@ -941,11 +946,17 @@ export interface CatalogCleanupResult {
   s3Failures?: number;
 }
 
+/** The newest installer build of one platform. */
 export interface InstallerDownload {
   url: string;
   filename: string;
   platform: CatalogPlatform;
   version: string | null;
+  applicationId: string | null;
+  bundleId: string | null;
+  buildNumber: string | null;
+  /** Set on an iOS ad-hoc build: what an iPhone installs through. */
+  ios: { manifestUrl: string; installUrl: string } | null;
   createdAt: number;
 }
 

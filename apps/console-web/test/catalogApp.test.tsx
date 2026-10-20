@@ -371,6 +371,57 @@ describe("CatalogAppPage", () => {
     expect(tip).not.toHaveTextContent("1.0.0");
   });
 
+  it("sends an iOS build's optional URL scheme as the url_scheme tag", async () => {
+    vi.mocked(mockApi.uploadCatalogArtifact).mockResolvedValue({
+      ...ARTIFACTS[0]!,
+      version: null,
+    });
+    open();
+    await screen.findByRole("button", { name: "Choose or drop a file" });
+    // Android (the default) has no scheme field.
+    expect(screen.queryByLabelText("URL scheme")).toBeNull();
+    const file = new File(["x"], "game.ipa");
+    await userEvent.upload(
+      document.querySelector('input[type="file"]') as HTMLInputElement,
+      file,
+    );
+    await userEvent.type(screen.getByLabelText(/^Version/), "2.0.0");
+    await userEvent.type(screen.getByLabelText("URL scheme"), "mygame");
+    await userEvent.click(screen.getByRole("button", { name: "Upload" }));
+    await waitFor(() =>
+      expect(mockApi.uploadCatalogArtifact).toHaveBeenCalledWith(
+        "ca_1",
+        file,
+        "ios",
+        { version: "2.0.0", url_scheme: "mygame" },
+      ),
+    );
+  });
+
+  it("lists the url_scheme tag in the artifact's metadata", async () => {
+    vi.mocked(mockApi.catalogApp).mockResolvedValue(APP);
+    vi.mocked(mockApi.catalogArtifacts).mockResolvedValue([
+      {
+        ...ARTIFACTS[0]!,
+        platform: "ios",
+        objectKey: "apps/ca_1/1.0.0/a.ipa",
+        tags: { ...ARTIFACTS[0]!.tags, url_scheme: "mygame" },
+      },
+    ]);
+    mount(
+      <Routes>
+        <Route path="/catalog/apps/:id" element={<CatalogAppPage />} />
+      </Routes>,
+      { client: mockApi, path: "/catalog/apps/ca_1" },
+    );
+    await userEvent.hover(
+      await screen.findByRole("button", { name: "first release" }),
+    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "url_scheme mygame",
+    );
+  });
+
   it("folds the whole metadata out under the cell on a tap, and back in", async () => {
     open();
     const toggle = await screen.findByRole("button", { name: "first release" });

@@ -63,6 +63,7 @@ const ROW: PublicListing = {
   ],
   latestArtifact: null,
   applicationIds: [],
+  bundleIds: [],
 };
 
 describe("ListingsPage", () => {
@@ -195,6 +196,7 @@ const ADMIN_ROW: AdminCatalogListing = {
   artifacts: [ROW.artifacts[0]!],
   latestArtifact: ROW.artifacts[0]!,
   applicationIds: [],
+  bundleIds: [],
 };
 
 async function rowAction(name: string, verb: string) {

@@ -259,44 +259,87 @@ describe("installer downloads", () => {
     memberId: "m_1",
     teams: [],
   };
+  const installUrl =
+    "itms-services://?action=download-manifest&url=https%3A%2F%2Fd.example%2Fmanifest.plist";
+  // The newest build per platform, newest first: here the IPA is newer.
   const builds = [
+    {
+      url: "https://d.example/installer-1.2.1.ipa",
+      filename: "installer-1.2.1.ipa",
+      platform: "ios" as const,
+      version: "1.2.1",
+      applicationId: null,
+      bundleId: "life.yyt.console",
+      buildNumber: "15",
+      ios: { manifestUrl: "https://d.example/manifest.plist", installUrl },
+      createdAt: 1_787_757_700,
+    },
     {
       url: "https://d.example/installer-1.2.0.apk",
       filename: "installer-1.2.0.apk",
       platform: "android" as const,
       version: "1.2.0+14",
+      applicationId: "life.yyt.console",
+      bundleId: null,
+      buildNumber: null,
+      ios: null,
       createdAt: 1_787_757_641,
-    },
-    {
-      url: "https://d.example/app-release.apk",
-      filename: "app-release.apk",
-      platform: "android" as const,
-      version: "1.1.0+13",
-      createdAt: 1_787_550_897,
     },
   ];
 
-  it("puts the latest build on the home page and in the navigation", async () => {
+  it("puts the newest non-iOS build on the home page and in the navigation", async () => {
     vi.mocked(mockApi.me).mockResolvedValue(member as never);
     vi.mocked(mockApi.installerDownloads).mockResolvedValue(builds);
     mount("/");
     const btn = await screen.findByRole("link", {
       name: /Download installer v1\.2\.0\+14/,
     });
-    expect(btn.getAttribute("href")).toBe(builds[0]!.url);
+    expect(btn.getAttribute("href")).toBe(builds[1]!.url);
     expect(screen.getAllByRole("link", { name: "Installer" }).length).toBe(2);
   });
 
-  it("lists every build on /installer, newest marked", async () => {
+  it("offers an iPhone the iOS build's install link", async () => {
+    const ua = vi
+      .spyOn(navigator, "userAgent", "get")
+      .mockReturnValue(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+      );
+    try {
+      vi.mocked(mockApi.me).mockResolvedValue(member as never);
+      vi.mocked(mockApi.installerDownloads).mockResolvedValue(builds);
+      mount("/installer");
+      const btn = await screen.findByRole("link", {
+        name: /Install app v1\.2\.1/,
+      });
+      expect(btn.getAttribute("href")).toBe(installUrl);
+      // The table keeps the file link and puts the install link beside it.
+      const install = screen.getByRole("link", {
+        name: "Install on this device",
+      });
+      expect(install.getAttribute("href")).toBe(installUrl);
+      expect(install.closest("td")).toBe(
+        screen.getByRole("link", { name: "installer-1.2.1.ipa" }).closest("td"),
+      );
+      expect(screen.getByText("1.2.1 (15)")).toBeInTheDocument();
+    } finally {
+      ua.mockRestore();
+    }
+  });
+
+  it("lists the newest build of every platform on /installer", async () => {
     vi.mocked(mockApi.me).mockResolvedValue(member as never);
     vi.mocked(mockApi.installerDownloads).mockResolvedValue(builds);
     mount("/installer");
     expect(
-      await screen.findByRole("link", { name: "app-release.apk" }),
+      await screen.findByRole("link", { name: "installer-1.2.1.ipa" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: "installer-1.2.0.apk (latest)" }),
+      screen.getByRole("link", { name: "installer-1.2.0.apk" }),
     ).toBeInTheDocument();
+    // Off an iOS device there is nothing to install over the air.
+    expect(
+      screen.queryByRole("link", { name: "Install on this device" }),
+    ).toBeNull();
   });
 
   it("explains an empty list and an untrusted installer app differently", async () => {

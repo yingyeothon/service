@@ -204,14 +204,14 @@ yyt catalog artifact upload <app> <file> --platform p --version v [--tag k=v]…
 yyt catalog artifact upload android <app> <file> --version v --application-id id --build-type t \
     [--build n --commit h --min-sdk n --target-sdk n --abi a --stage s --changelog c]
 yyt catalog artifact upload ios <app> <file> --version v --bundle-id id --build-number n \
-    [--distribution-method ad-hoc --minimum-os-version 12.0 --stage s --changelog c]
+    [--distribution-method ad-hoc|app-store|development --minimum-os-version 12.0 --url-scheme s --stage s --changelog c]
 yyt catalog bump [--bump major|minor|patch] [--project-path .]          # pubspec only; git stays with your script
 yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|appbundle|aab|all]… \   # explicit team required
     [--description d] \
     [--split-per-abi] [--target-platform android-arm64] [--stage s] [--note changelog] \
     [--build n] [--commit h] [--min-sdk n] [--target-sdk n] [--abi a] [--tag k=v]… \
     [--do-bump [--bump patch]] [--no-verify]
-yyt catalog installer
+yyt catalog installer                                   # newest installer build per platform; INSTALL = an iOS build's itms-services link
 yyt catalog publish <app> --title t --audience public|members [--summary s] [--tag t]…   # publish the newest artifact per platform; replaces the listing whole
 yyt catalog unpublish <app>
 yyt catalog listing <app>                               # how the app is published (takenDown shows an admin's takedown)

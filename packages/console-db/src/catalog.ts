@@ -128,6 +128,8 @@ export interface CatalogArtifactSummary {
   latest: CatalogArtifactRow;
   /** Distinct `application_id` tags, ordered by their newest artifact. */
   applicationIds: string[];
+  /** Distinct `bundle_id` tags of iOS artifacts, ordered the same way. */
+  bundleIds: string[];
 }
 
 export interface CatalogArtifactInput {
@@ -512,7 +514,8 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
                 from catalog_artifacts where ${where}) t
           join catalog_artifacts a on a.id = t.id
           where t.rn = 1`;
-        // Distinct `application_id` per app, each represented by its newest
+        // Distinct `application_id` (any platform) and `bundle_id` (iOS
+        // rows) per app in one statement, each id represented by its newest
         // artifact and ordered by that artifact — what the fake computes by
         // walking the rows newest first. Partitioning on the bytes keeps ids
         // case-sensitive (Android application ids are; a `char` expression
@@ -520,17 +523,26 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
         // returning the JSON scalar as a Buffer. A `tags_json` that is not a
         // JSON object yields NULL here (MariaDB warns rather than errors).
         const ids = await prisma.$queryRaw<
-          { app_id: string; application_id: string }[]
-        >`select app_id, application_id
-          from (select app_id, created_at, id,
+          { kind: string; app_id: string; value: string }[]
+        >`select kind, app_id, value
+          from (select 'a' as kind, app_id, created_at, id,
                   cast(json_unquote(json_extract(tags_json, '$.application_id'))
-                       as char character set utf8mb4) as application_id,
+                       as char character set utf8mb4) as value,
                   row_number() over (
                     partition by app_id,
                       cast(json_unquote(json_extract(tags_json, '$.application_id')) as binary)
                     order by created_at desc, id desc) as rn
-                from catalog_artifacts where ${where}) t
-          where rn = 1 and application_id is not null and application_id <> ''
+                from catalog_artifacts where ${where}
+                union all
+                select 'b' as kind, app_id, created_at, id,
+                  cast(json_unquote(json_extract(tags_json, '$.bundle_id'))
+                       as char character set utf8mb4) as value,
+                  row_number() over (
+                    partition by app_id,
+                      cast(json_unquote(json_extract(tags_json, '$.bundle_id')) as binary)
+                    order by created_at desc, id desc) as rn
+                from catalog_artifacts where ${where} and platform = 'ios') t
+          where rn = 1 and value is not null and value <> ''
           order by created_at desc, id desc`;
         const byApp = new Map<string, CatalogArtifactSummary>();
         for (const r of latest)
@@ -538,9 +550,13 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
             appId: r.app_id,
             latest: toArtifact(r),
             applicationIds: [],
+            bundleIds: [],
           });
-        for (const r of ids)
-          byApp.get(r.app_id)?.applicationIds.push(r.application_id);
+        for (const r of ids) {
+          const s = byApp.get(r.app_id);
+          if (!s) continue;
+          (r.kind === "b" ? s.bundleIds : s.applicationIds).push(r.value);
+        }
         return [...byApp.values()];
       }),
     newestArtifactsPerPlatform: (appIds, filter = {}) =>
@@ -798,11 +814,14 @@ export function createMemoryCatalogDb(
             appId: a.appId,
             latest: { ...a, tags: { ...a.tags } },
             applicationIds: [],
+            bundleIds: [],
           };
           byApp.set(a.appId, s);
         }
         const id = a.tags.application_id;
         if (id && !s.applicationIds.includes(id)) s.applicationIds.push(id);
+        const bundle = a.platform === "ios" ? a.tags.bundle_id : undefined;
+        if (bundle && !s.bundleIds.includes(bundle)) s.bundleIds.push(bundle);
       }
       return [...byApp.values()];
     },

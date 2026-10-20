@@ -1,4 +1,4 @@
-import { Anchor, Badge, Button, Card, Group, Table, Text } from "@mantine/core";
+import { Anchor, Button, Card, Group, Table, Text } from "@mantine/core";
 import { IconDownload } from "@tabler/icons-react";
 import { Link, useSearchParams } from "react-router";
 import { api, ApiError } from "../api";
@@ -7,6 +7,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { OpenAppButton } from "../components/OpenAppButton";
 import { Notice } from "../components/ui";
+import { isIosUserAgent } from "../lib/catalog";
 import { fmtTime } from "../lib/format";
 import { useApiQuery } from "../lib/query";
 import type { InstallerDownload } from "../types";
@@ -40,10 +41,25 @@ export function useInstallerDownloads() {
   });
 }
 
-/** The newest build (the route lists newest first). */
+const onIosDevice = (): boolean =>
+  isIosUserAgent(navigator.userAgent, navigator.maxTouchPoints);
+
+/**
+ * The build this device should take (the route lists the newest build per
+ * platform, newest first): an iPhone/iPad gets the iOS build it can install
+ * over the air, anything else the newest build that is not iOS. Falls back
+ * to the newest build of all.
+ */
 export const latestDownload = (
   list: InstallerList | undefined,
-): InstallerDownload | undefined => list?.downloads[0];
+  ios = false,
+): InstallerDownload | undefined => {
+  const d = list?.downloads;
+  return (
+    (ios ? d?.find((x) => x.ios) : d?.find((x) => x.platform !== "ios")) ??
+    d?.[0]
+  );
+};
 
 const platformLabel = (p: InstallerDownload["platform"]): string =>
   p === "android" ? "Android" : p === "ios" ? "iOS" : p;
@@ -55,8 +71,11 @@ const platformLabel = (p: InstallerDownload["platform"]): string =>
  */
 export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
   const list = useInstallerDownloads();
-  const latest = latestDownload(list.data);
+  const ios = onIosDevice();
+  const latest = latestDownload(list.data, ios);
   if (!latest) return null;
+  const installUrl = ios ? latest.ios?.installUrl : undefined;
+  const href = installUrl ?? latest.url;
   return (
     <Card padding="md" mb="md">
       <Group justify="space-between" align="center" wrap="wrap">
@@ -72,11 +91,11 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
         <Group gap="sm">
           <Button
             component="a"
-            href={latest.url}
+            href={href}
             variant="default"
             leftSection={<IconDownload size={16} aria-hidden="true" />}
           >
-            Download installer
+            {installUrl ? "Install app" : "Download installer"}
             {latest.version ? ` v${latest.version}` : ""}
           </Button>
           <OpenAppButton />
@@ -94,6 +113,7 @@ export function InstallerDownloadCard({ compact }: { compact?: boolean }) {
 export function InstallerPage() {
   const list = useInstallerDownloads();
   const downloads = list.data?.downloads;
+  const ios = onIosDevice();
   const [params] = useSearchParams();
   // Where "Open app" lands on a phone without the app (lib/appHandoff.ts).
   const appMissing = params.get("app") === "missing";
@@ -101,7 +121,7 @@ export function InstallerPage() {
     <>
       <PageHeader
         title="Installer"
-        description="Every published build of the device installer, newest first."
+        description="The newest build of the device installer per platform."
       />
       {appMissing && (
         <Notice kind="warn">
@@ -149,27 +169,32 @@ export function InstallerPage() {
           rowKey={(d) => d.url}
           minWidth={560}
           empty={{ title: "No installer build is published yet." }}
-          render={(d) => {
-            const i = downloads?.indexOf(d) ?? -1;
-            return (
-              <>
-                <Table.Td>
-                  <Anchor
-                    href={d.url}
-                    size="sm"
-                    fw={500}
-                    aria-label={i === 0 ? `${d.filename} (latest)` : undefined}
+          render={(d) => (
+            <>
+              <Table.Td>
+                <Anchor href={d.url} size="sm" fw={500}>
+                  {d.filename}
+                </Anchor>
+                {ios && d.ios && (
+                  <Button
+                    component="a"
+                    href={d.ios.installUrl}
+                    size="compact-sm"
+                    variant="default"
+                    ml="sm"
                   >
-                    {d.filename}
-                  </Anchor>{" "}
-                  {i === 0 && <Badge size="xs">latest</Badge>}
-                </Table.Td>
-                <Table.Td>{d.version ?? "—"}</Table.Td>
-                <Table.Td>{platformLabel(d.platform)}</Table.Td>
-                <Table.Td>{fmtTime(d.createdAt)}</Table.Td>
-              </>
-            );
-          }}
+                    Install on this device
+                  </Button>
+                )}
+              </Table.Td>
+              <Table.Td>
+                {d.version ?? "—"}
+                {d.buildNumber ? ` (${d.buildNumber})` : ""}
+              </Table.Td>
+              <Table.Td>{platformLabel(d.platform)}</Table.Td>
+              <Table.Td>{fmtTime(d.createdAt)}</Table.Td>
+            </>
+          )}
         />
       )}
     </>

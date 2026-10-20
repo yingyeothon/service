@@ -152,7 +152,7 @@ const PLACES: {
   {
     to: "/installer",
     label: "Installer",
-    text: "Every published build of the device installer.",
+    text: "The newest build of the device installer per platform.",
   },
   {
     to: "/members",

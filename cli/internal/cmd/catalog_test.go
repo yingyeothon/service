@@ -239,3 +239,91 @@ func TestDeviceLogin(t *testing.T) {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
+
+func TestCatalogUploadIOSSendsURLScheme(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "game.ipa")
+	if err := os.WriteFile(file, []byte("ipa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var sent map[string]any
+	var f *fakeConsole
+	withProject(t)
+	f = newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /catalog/apps/ca_1/artifacts": func(r recorded) (int, any) {
+			sent, _ = r.Body["tags"].(map[string]any)
+			return 201, map[string]any{
+				"uploadId": "u1", "key": "uploads/u1/game.ipa",
+				"url": f.srv.URL + "/s3put", "method": "PUT",
+				"headers": map[string]string{"content-length": "3"}, "expiresAt": 1756003600,
+			}
+		},
+		"PUT /s3put": func(recorded) (int, any) { return 200, nil },
+		"POST /catalog/uploads/u1/commit": func(recorded) (int, any) {
+			return 200, map[string]any{
+				"id": "art_1", "appId": "ca_1", "platform": "ios",
+				"url": "https://dev-d.yyt.life/apps/ca_1/u1/game.ipa", "tags": map[string]string{"version": "1.0.0"},
+				"createdAt": 1756000200,
+			}
+		},
+	}, nil, []any{sampleApp}, nil))
+	if _, _, err := run(t, f, "catalog", "artifact", "upload", "ios", "my-game", file,
+		"--version", "1.0.0", "--bundle-id", "life.yyt.game", "--build-number", "7",
+		"--distribution-method", "ad-hoc", "--url-scheme", "mygame"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"version": "1.0.0", "bundle_id": "life.yyt.game", "build_number": "7",
+		"distribution_method": "ad-hoc", "url_scheme": "mygame",
+	}
+	if len(sent) != len(want) {
+		t.Fatalf("tags = %v, want %v", sent, want)
+	}
+	for k, v := range want {
+		if sent[k] != v {
+			t.Fatalf("tags = %v, want %v", sent, want)
+		}
+	}
+	// The help no longer offers the enterprise method the server rejects.
+	out, _, err := run(t, f, "catalog", "artifact", "upload", "ios", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "enterprise") || !strings.Contains(out, "--url-scheme") {
+		t.Fatalf("help:\n%s", out)
+	}
+}
+
+func TestCatalogInstallerShowsIOSInstallURL(t *testing.T) {
+	const install = "itms-services://?action=download-manifest&url=https%3A%2F%2Fd.example%2Fmanifest.plist"
+	f := newFake(t, map[string]func(recorded) (int, any){
+		"GET /catalog/installer/downloads": func(recorded) (int, any) {
+			return 200, map[string]any{"downloads": []any{
+				map[string]any{
+					"url": "https://d.example/app.apk", "filename": "app.apk", "platform": "android",
+					"version": "1.2.0", "applicationId": "life.yyt.console", "bundleId": nil,
+					"buildNumber": nil, "ios": nil, "createdAt": 1756000300,
+				},
+				map[string]any{
+					"url": "https://d.example/app.ipa", "filename": "app.ipa", "platform": "ios",
+					"version": "1.1.0", "applicationId": nil, "bundleId": "life.yyt.console",
+					"buildNumber": "14", "createdAt": 1756000200,
+					"ios": map[string]any{"manifestUrl": "https://d.example/manifest.plist", "installUrl": install},
+				},
+			}}
+		},
+	})
+	out, _, err := run(t, f, "catalog", "installer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "catalog_installer", out)
+	out, _, err = run(t, f, "catalog", "installer", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{`"installUrl"`, `"buildNumber": "14"`, `"bundleId": "life.yyt.console"`} {
+		if !strings.Contains(out, w) {
+			t.Fatalf("json lacks %s:\n%s", w, out)
+		}
+	}
+}

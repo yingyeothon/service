@@ -75,6 +75,7 @@ const TAG_ORDER = [
   "build_number",
   "build_type",
   "distribution_method",
+  "url_scheme",
   "package_type",
   "type",
   "abi",

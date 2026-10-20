@@ -36,7 +36,11 @@ async function seedArtifacts(h: H, appId: string, prefix: string) {
       appId,
       platform,
       url: `https://dev-d.yyt.life/${id}`,
-      tags: { version: "1", application_id: appl },
+      tags: {
+        version: "1",
+        application_id: appl,
+        ...(platform === "ios" ? { bundle_id: `${prefix}.bundle` } : {}),
+      },
       createdAt: at,
     });
 }
@@ -369,11 +373,13 @@ describe("catalog listings — reading", () => {
       ],
       latestArtifact: expect.objectContaining({ id: "p_a2" }) as unknown,
       applicationIds: ["p.release", "p.ios", "p.debug"],
+      bundleIds: ["p.bundle"],
     });
     expect(rows[0]).toMatchObject({
       artifacts: [],
       latestArtifact: null,
       applicationIds: [],
+      bundleIds: [],
     });
     // Nothing a viewer must not learn rides along: no project or team ids,
     // no settings, no storage keys.
@@ -490,6 +496,7 @@ describe("catalog listings — reading", () => {
       ],
       latestArtifact: expect.objectContaining({ id: "p_a2" }) as unknown,
       applicationIds: ["p.release", "p.ios", "p.debug"],
+      bundleIds: ["p.bundle"],
     });
     expect(JSON.stringify(all)).not.toMatch(/objectKey/);
     const adminIos = await adminList({ platform: "ios" });
@@ -608,6 +615,7 @@ describe("catalog listings — reading", () => {
       },
       latestArtifact: expect.objectContaining({ id: "s_a2" }) as unknown,
       applicationIds: ["s.release", "s.ios", "s.debug"],
+      bundleIds: ["s.bundle"],
     });
     expect(parse(list).teams).toEqual([
       { id: viewer.teamId, name: "viewer-team", role: "owner" },

@@ -25,7 +25,7 @@ Not ported on purpose: inline settings flags on `deploy` (use `catalog app setti
 
 - Common: `version`, `stage`, `build`, `commit`, `changelog`, `package_type`, `title`
 - `android`: `application_id`, `build_type`, `min_sdk`, `target_sdk`, `abi`
-- `ios`: `bundle_id`, `build_number`, `distribution_method`, `minimum_os_version` — `ad-hoc` requires `bundle_id` + `build_number` and makes the server publish an OTA `manifest.plist` (`ios.manifestUrl` / `ios.installUrl` in the response)
+- `ios`: `bundle_id`, `build_number`, `distribution_method`, `minimum_os_version`, `url_scheme` — `ad-hoc` requires `bundle_id` + `build_number` and makes the server publish an OTA `manifest.plist` (`ios.manifestUrl` / `ios.installUrl` in the response); `url_scheme` (optional, what the console app's **Open** launches) matches `^[a-z][a-z0-9+.-]{1,31}$` and may not be `http(s)`, an `itms*` scheme, `yytconsole` or an Apple system scheme (`tel`, `sms`, `mailto`, `facetime`, `maps`, `shortcuts`, `prefs`, …; the full list is `URL_SCHEME_DENYLIST`)
 - `web`: removed 2026-08-30 (`m0011_catalog_drop_web`) — static builds are the `site` resource (`docs/decisions.md` _Static sites_)
 - `bin`: `content_type`, `sha256`, `filename`
 - `server`: `content_type`, `sha256`, `filename`, `entrypoint`, `type`

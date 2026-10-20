@@ -143,7 +143,8 @@ describe("query budget", () => {
   });
 
   it("the console app's whole list is one request of seven repository calls", async () => {
-    // Eight statements on MariaDB (`summarizeArtifacts` runs two), whatever
+    // Eight statements on MariaDB (`summarizeArtifacts` runs two: the newest
+    // artifact, then the application and bundle ids in one), whatever
     // the number of teams.
     const h = harness();
     const alice = await h.team("alice", "member", 9101);

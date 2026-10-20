@@ -461,7 +461,7 @@ describe("catalog apps", () => {
     expect((await get({ artifacts: "all" })).statusCode).toBe(400);
   });
 
-  it("embeds the newest artifact and application ids per app on request", async () => {
+  it("embeds the newest artifact, application ids and bundle ids per app on request", async () => {
     const h = harness();
     const owner = await h.team("owner");
     const app = await makeApp(h, owner);
@@ -489,7 +489,11 @@ describe("catalog apps", () => {
       appId: app.id,
       platform: "ios",
       url: "https://dev-d.yyt.life/art_ios.ipa",
-      tags: { version: "3", application_id: "life.yyt.myapp.ios" },
+      tags: {
+        version: "3",
+        application_id: "life.yyt.myapp.ios",
+        bundle_id: "life.yyt.myapp",
+      },
       createdAt: NOW_SEC + 5,
     });
     const list = async (query: Record<string, string>) =>
@@ -506,6 +510,7 @@ describe("catalog apps", () => {
             id: string;
             latestArtifact?: { id: string } | null;
             applicationIds?: string[];
+            bundleIds?: string[];
           }>;
         }
       ).apps;
@@ -520,16 +525,26 @@ describe("catalog apps", () => {
     expect(byId.get(app.id)).toMatchObject({
       latestArtifact: { id: "art_new" },
       applicationIds: ["life.yyt.myapp", "life.yyt.myapp.debug"],
+      bundleIds: [],
     });
     expect(byId.get(bare.id)).toMatchObject({
       latestArtifact: null,
       applicationIds: [],
+      bundleIds: [],
     });
-    // Without `platform` the iOS build is the newest one.
+    // Without `platform` the iOS build is the newest one, and its bundle id
+    // sits beside the application ids.
     expect(
-      (await list({ artifacts: "summary" })).find((a) => a.id === app.id)
-        ?.latestArtifact,
-    ).toMatchObject({ id: "art_ios" });
+      (await list({ artifacts: "summary" })).find((a) => a.id === app.id),
+    ).toMatchObject({
+      latestArtifact: { id: "art_ios" },
+      applicationIds: [
+        "life.yyt.myapp.ios",
+        "life.yyt.myapp",
+        "life.yyt.myapp.debug",
+      ],
+      bundleIds: ["life.yyt.myapp"],
+    });
     expect(
       (
         await h.app(
@@ -1212,7 +1227,7 @@ describe("catalog sweep", () => {
 });
 
 describe("installer downloads", () => {
-  it("serves the configured app's two newest artifacts only while its team is admin-locked", async () => {
+  it("serves the configured app's newest artifact per platform only while its team is admin-locked", async () => {
     const h = harness();
     const admin = await h.team("Boss", "admin");
     const member = await h.login("someone", "member");
@@ -1232,6 +1247,21 @@ describe("installer downloads", () => {
         createdAt: at,
       });
     }
+    // An older ad-hoc IPA: the APKs above are newer, yet it keeps its row.
+    await h.catalog.insertArtifact({
+      id: "ipa1",
+      appId: app.id,
+      platform: "ios",
+      url: "https://dev-d.yyt.life/installer/ipa1/app.ipa",
+      objectKey: "installer/ipa1/app.ipa",
+      tags: {
+        version: "1.7.0",
+        distribution_method: "ad-hoc",
+        bundle_id: "life.yyt.console",
+        build_number: "40",
+      },
+      createdAt: NOW_SEC - 30,
+    });
     const downloads = () =>
       h.app(
         ev("GET", "/catalog/installer/downloads", { headers: member.cookie }),
@@ -1272,11 +1302,59 @@ describe("installer downloads", () => {
         )
       ).statusCode,
     ).toBe(200);
-    const r = j(await downloads()) as {
-      downloads: Array<{ version: string; filename: string }>;
+    const r = j(await downloads()) as { downloads: unknown[] };
+    expect(r.downloads).toEqual([
+      {
+        url: "https://dev-d.yyt.life/installer/i3/app.apk",
+        filename: "app.apk",
+        platform: "android",
+        version: "i3",
+        applicationId: null,
+        bundleId: null,
+        buildNumber: null,
+        ios: null,
+        createdAt: NOW_SEC,
+      },
+      {
+        url: "https://dev-d.yyt.life/installer/ipa1/app.ipa",
+        filename: "app.ipa",
+        platform: "ios",
+        version: "1.7.0",
+        applicationId: null,
+        bundleId: "life.yyt.console",
+        buildNumber: "40",
+        ios: {
+          manifestUrl: "https://dev-d.yyt.life/installer/ipa1/manifest.plist",
+          installUrl: installUrl(
+            "https://dev-d.yyt.life/installer/ipa1/manifest.plist",
+          ),
+        },
+        createdAt: NOW_SEC - 30,
+      },
+    ]);
+    // A re-uploaded APK replaces the Android row and leaves the IPA alone.
+    await h.catalog.insertArtifact({
+      id: "i4",
+      appId: app.id,
+      platform: "android",
+      url: "https://dev-d.yyt.life/installer/i4/app.apk",
+      objectKey: "installer/i4/app.apk",
+      tags: { version: "i4", application_id: "life.yyt.console" },
+      createdAt: NOW_SEC + 10,
+    });
+    const again = j(await downloads()) as {
+      downloads: Array<{
+        version: string;
+        platform: string;
+        applicationId: string | null;
+      }>;
     };
-    expect(r.downloads.map((d) => d.version)).toEqual(["i3", "i2"]);
-    expect(r.downloads[0]!.filename).toBe("app.apk");
+    expect(
+      again.downloads.map((d) => [d.platform, d.version, d.applicationId]),
+    ).toEqual([
+      ["android", "i4", "life.yyt.console"],
+      ["ios", "1.7.0", null],
+    ]);
     // Unlocking the team afterwards stops the route rather than serving a
     // member-pushed APK to every device.
     h.clock.tick(0.5);
@@ -1336,6 +1414,41 @@ describe("upload metadata validation", () => {
     ).toThrow();
     // Static builds are the `site` resource (docs/decisions.md *Static sites*).
     expect(CATALOG_PLATFORMS).not.toContain("web");
+  });
+  it("checks the iOS url_scheme tag's grammar, denylist and platform", () => {
+    const ios = (url_scheme: string) => () =>
+      validateUploadMetadata("ios", "app.ipa", { version: "1", url_scheme });
+    for (const ok of ["myapp", "yyt-game", "life.yyt.app", "a+b", "ab"])
+      expect(ios(ok)).not.toThrow();
+    for (const bad of [
+      "a",
+      "1app",
+      "-app",
+      "MyApp",
+      "my_app",
+      "my app",
+      "app://",
+      "a".repeat(33),
+    ])
+      expect(ios(bad)).toThrow(/url_scheme" must be/);
+    for (const reserved of [
+      "http",
+      "https",
+      "itms-services",
+      "itms-appss",
+      "yytconsole",
+      "tel",
+      "facetime-audio",
+      "app-settings",
+      "javascript",
+    ])
+      expect(ios(reserved)).toThrow(/reserved/);
+    expect(() =>
+      validateUploadMetadata("android", "app.apk", {
+        version: "1",
+        url_scheme: "myapp",
+      }),
+    ).toThrow('tag "url_scheme" is not allowed for platform android');
   });
 });
 

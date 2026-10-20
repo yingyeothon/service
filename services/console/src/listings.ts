@@ -254,6 +254,7 @@ export function createListingRoutes({
           artifacts: (per.get(r.appId) ?? []).map(publicArtifact),
           latestArtifact: s ? publicArtifact(artifactView(s.latest)) : null,
           applicationIds: s?.applicationIds ?? [],
+          bundleIds: s?.bundleIds ?? [],
         };
       });
   }

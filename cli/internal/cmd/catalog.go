@@ -586,13 +586,21 @@ func newCatalog(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The newest build per platform; JSON output passes every field.
 			var res struct {
 				Downloads []struct {
-					URL       string  `json:"url"`
-					Filename  string  `json:"filename"`
-					Platform  string  `json:"platform"`
-					Version   *string `json:"version"`
-					CreatedAt int64   `json:"createdAt"`
+					URL           string  `json:"url"`
+					Filename      string  `json:"filename"`
+					Platform      string  `json:"platform"`
+					Version       *string `json:"version"`
+					ApplicationID *string `json:"applicationId"`
+					BundleID      *string `json:"bundleId"`
+					BuildNumber   *string `json:"buildNumber"`
+					IOS           *struct {
+						ManifestURL string `json:"manifestUrl"`
+						InstallURL  string `json:"installUrl"`
+					} `json:"ios"`
+					CreatedAt int64 `json:"createdAt"`
 				} `json:"downloads"`
 			}
 			if err := cl.Do(cmd.Context(), http.MethodGet, "/catalog/installer/downloads", nil, &res); err != nil {
@@ -603,9 +611,14 @@ func newCatalog(a *App) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Downloads))
 			for _, d := range res.Downloads {
-				rows = append(rows, []string{d.Filename, output.Str(d.Version), d.Platform, d.URL})
+				// An iOS ad-hoc build installs through its itms-services link.
+				install := "-"
+				if d.IOS != nil {
+					install = d.IOS.InstallURL
+				}
+				rows = append(rows, []string{d.Filename, output.Str(d.Version), output.Str(d.BuildNumber), d.Platform, d.URL, install})
 			}
-			return p().Table([]string{"FILE", "VERSION", "PLATFORM", "URL"}, rows)
+			return p().Table([]string{"FILE", "VERSION", "BUILD", "PLATFORM", "URL", "INSTALL"}, rows)
 		},
 	})
 
@@ -1145,7 +1158,8 @@ func newUploadIOS(a *App, appID appResolver) *cobra.Command {
 	return typedUpload(a, appID, "ios", []struct{ flag, tag, usage string }{
 		{"bundle-id", "bundle_id", "iOS bundle identifier"},
 		{"build-number", "build_number", "build number"},
-		{"distribution-method", "distribution_method", "ad-hoc|app-store|enterprise|development"},
+		{"distribution-method", "distribution_method", "ad-hoc|app-store|development"},
 		{"minimum-os-version", "minimum_os_version", "minimum iOS version"},
+		{"url-scheme", "url_scheme", "URL scheme the console app's Open launches (e.g. mygame)"},
 	}, []string{"bundle-id", "build-number"})
 }

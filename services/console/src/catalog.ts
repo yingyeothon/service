@@ -53,7 +53,6 @@ import {
 import { notifyNewArtifact } from "./slack.js";
 import { createVersionLinker } from "./version-link.js";
 
-const INSTALLER_DOWNLOAD_LIMIT = 2;
 /**
  * Legacy object keys start with the app *name*, so these would collide with
  * prefixes another owner already governs: `uploads` with the catalog staging
@@ -150,6 +149,7 @@ const PLATFORM_TAGS: Record<CatalogPlatform, readonly string[]> = {
     "build_number",
     "distribution_method",
     "minimum_os_version",
+    "url_scheme",
   ],
   bin: ["content_type", "sha256", "filename"],
   server: ["content_type", "sha256", "filename", "entrypoint", "type"],
@@ -157,6 +157,31 @@ const PLATFORM_TAGS: Record<CatalogPlatform, readonly string[]> = {
   osx: ["arch", "sha256", "filename", "entrypoint"],
   linux: ["arch", "sha256", "filename", "entrypoint"],
 };
+/** `url_scheme`: what the console app opens an installed iOS app with. */
+const URL_SCHEME = /^[a-z][a-z0-9+.-]{1,31}$/;
+/** Schemes iOS or the console app own: opening one would not reach the app. */
+const URL_SCHEME_DENYLIST = new Set([
+  "http",
+  "https",
+  "itms",
+  "itms-services",
+  "itms-apps",
+  "itms-appss",
+  "yytconsole",
+  "tel",
+  "telprompt",
+  "sms",
+  "mailto",
+  "facetime",
+  "facetime-audio",
+  "maps",
+  "shortcuts",
+  "prefs",
+  "app-settings",
+  "file",
+  "data",
+  "javascript",
+]);
 const EXTENSIONS: Partial<Record<CatalogPlatform, readonly string[]>> = {
   android: [".apk", ".aab"],
   ios: [".ipa"],
@@ -188,6 +213,16 @@ export function validateUploadMetadata(
     !["debug", "release", "appbundle"].includes(tags.build_type)
   )
     throw bad('tag "build_type" must be one of: debug, release, appbundle');
+  if (tags.url_scheme !== undefined) {
+    if (!URL_SCHEME.test(tags.url_scheme))
+      throw bad(
+        'tag "url_scheme" must be 2-32 chars of a-z, 0-9, "+", ".", "-", starting with a letter',
+      );
+    if (URL_SCHEME_DENYLIST.has(tags.url_scheme))
+      throw bad(
+        `tag "url_scheme" may not be the reserved "${tags.url_scheme}"`,
+      );
+  }
   if (platform === "ios" && tags.distribution_method !== undefined) {
     if (
       !["ad-hoc", "app-store", "development"].includes(tags.distribution_method)
@@ -447,9 +482,9 @@ export function createCatalogRoutes({
   /**
    * `artifacts=summary`: what a list screen needs per app, in one query
    * instead of one `/artifacts` round trip per app — the newest artifact
-   * (`platform` narrows) and every distinct `application_id`. Build variants
-   * install under different ids, so an installer must probe every
-   * `application_id` the app ever shipped.
+   * (`platform` narrows), every distinct `application_id` and every distinct
+   * iOS `bundle_id`. Build variants install under different ids, so an
+   * installer must probe every id the app ever shipped.
    */
   async function withSummary<V extends { id: string }>(
     apps: V[],
@@ -466,12 +501,17 @@ export function createCatalogRoutes({
         {
           latestArtifact: artifactView(s.latest),
           applicationIds: s.applicationIds,
+          bundleIds: s.bundleIds,
         },
       ]),
     );
     return apps.map((app) => ({
       ...app,
-      ...(summary.get(app.id) ?? { latestArtifact: null, applicationIds: [] }),
+      ...(summary.get(app.id) ?? {
+        latestArtifact: null,
+        applicationIds: [],
+        bundleIds: [],
+      }),
     }));
   }
 
@@ -996,10 +1036,10 @@ export function createCatalogRoutes({
             "the installer app's team is not admin-locked",
             { details: { reason: "installer_untrusted" } },
           );
-        const rows = (await catalog.listArtifacts(app.id)).slice(
-          0,
-          INSTALLER_DOWNLOAD_LIMIT,
-        );
+        // The newest build per platform, newest first: a fresh APK must not
+        // push the IPA out of the list (docs/decisions.md *Console app and
+        // push on iOS* #5). Fields are additive so old app builds keep working.
+        const rows = await catalog.newestArtifactsPerPlatform([app.id]);
         return {
           downloads: rows.map((a) => ({
             url: a.url,
@@ -1009,6 +1049,9 @@ export function createCatalogRoutes({
             platform: a.platform,
             version: a.tags.version ?? null,
             applicationId: a.tags.application_id ?? null,
+            bundleId: a.tags.bundle_id ?? null,
+            buildNumber: a.tags.build_number ?? null,
+            ios: artifactView(a).ios ?? null,
             createdAt: a.createdAt,
           })),
         };

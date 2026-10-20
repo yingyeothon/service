@@ -1,0 +1,3 @@
+FILE     VERSION  BUILD  PLATFORM  URL                        INSTALL
+app.apk  1.2.0    -      android   https://d.example/app.apk  -
+app.ipa  1.1.0    14     ios       https://d.example/app.ipa  itms-services://?action=download-manifest&url=https%3A%2F%2Fd.example%2Fmanifest.plist

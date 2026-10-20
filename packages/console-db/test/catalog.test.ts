@@ -279,7 +279,7 @@ export function catalogContract(
     expect((await db.findNewestArtifact("ca_1"))?.id).toBe("art_2");
   });
 
-  it("summarizeArtifacts: newest per app, distinct application ids, platform narrow", async () => {
+  it("summarizeArtifacts: newest per app, distinct application and bundle ids, platform narrow", async () => {
     const db = await make();
     await db.insertApp(app("s1"));
     await db.insertApp(app("s2"));
@@ -320,6 +320,32 @@ export function catalogContract(
       ...art("g1b", "s1", 2),
       tags: { version: "2", application_id: "id.debug" },
     });
+    // Bundle ids come from iOS rows only, distinct and case-sensitive,
+    // ordered by each id's newest artifact (g4 at t=3 leads).
+    await db.insertArtifact({
+      ...art("b1", "s1", 1),
+      platform: "ios",
+      tags: { version: "1", bundle_id: "life.yyt.old" },
+    });
+    await db.insertArtifact({
+      ...art("b2", "s1", 2),
+      platform: "ios",
+      tags: { version: "2", bundle_id: "life.yyt.app" },
+    });
+    await db.insertArtifact({
+      ...art("b3", "s1", 1),
+      platform: "ios",
+      tags: { version: "1", bundle_id: "life.yyt.app" },
+    });
+    await db.insertArtifact({
+      ...art("b4", "s1", 1),
+      platform: "ios",
+      tags: { version: "1", bundle_id: "LIFE.YYT.APP" },
+    });
+    await db.insertArtifact({
+      ...art("b5", "s2", 0),
+      tags: { version: "0", bundle_id: "android.stray" },
+    });
     const byApp = async (filter?: { platform?: "android" | "ios" }) =>
       new Map(
         (await db.summarizeArtifacts(["s1", "s2", "s3"], filter)).map((s) => [
@@ -336,9 +362,15 @@ export function catalogContract(
       "id.debug",
       "ID.RELEASE",
     ]);
+    expect(all.get("s1")?.bundleIds).toEqual([
+      "life.yyt.app",
+      "LIFE.YYT.APP",
+      "life.yyt.old",
+    ]);
     expect(all.get("s2")).toMatchObject({
       latest: { id: "g6" },
       applicationIds: [],
+      bundleIds: [],
     });
     const android = await byApp({ platform: "android" });
     expect(android.get("s1")?.latest.id).toBe("g3");
@@ -346,6 +378,13 @@ export function catalogContract(
       "id.release",
       "id.debug",
       "ID.RELEASE",
+    ]);
+    expect(android.get("s1")?.bundleIds).toEqual([]);
+    const ios = await byApp({ platform: "ios" });
+    expect(ios.get("s1")?.bundleIds).toEqual([
+      "life.yyt.app",
+      "LIFE.YYT.APP",
+      "life.yyt.old",
     ]);
     expect(await db.summarizeArtifacts([])).toEqual([]);
   });

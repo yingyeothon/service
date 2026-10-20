@@ -72,6 +72,7 @@ function UploadSection({
   const [distribution, setDistribution] = useState<string | null>(null);
   const [bundleId, setBundleId] = useState("");
   const [buildNumber, setBuildNumber] = useState("");
+  const [urlScheme, setUrlScheme] = useState("");
 
   const pick = (f: File | null) => {
     setFile(f);
@@ -93,6 +94,8 @@ function UploadSection({
         tags.build_number = buildNumber.trim();
       }
     }
+    if (platform === "ios" && urlScheme.trim())
+      tags.url_scheme = urlScheme.trim();
     const r = await act.run(() =>
       api.uploadCatalogArtifact(app.id, file, platform, tags),
     );
@@ -180,6 +183,19 @@ function UploadSection({
                 w={120}
               />
             </>
+          )}
+          {platform === "ios" && (
+            <TextInput
+              label="URL scheme"
+              description="Optional: what the console app's Open launches"
+              placeholder="mygame"
+              value={urlScheme}
+              onChange={(e) => setUrlScheme(e.target.value)}
+              pattern="[a-z][a-z0-9+.\-]{1,31}"
+              w={160}
+              autoComplete="off"
+              spellCheck={false}
+            />
           )}
           <Button
             type="submit"
