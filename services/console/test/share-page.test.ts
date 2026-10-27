@@ -71,6 +71,8 @@ function run(ua: string, loc: { search?: string; hash?: string } = {}) {
     replace: (v: string) => nav.push(v),
   };
   const store = new Map<string, string>();
+  // The page runs the script as an inline element; this is that, minus a DOM.
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call
   new Function(
     "document",
     "navigator",
