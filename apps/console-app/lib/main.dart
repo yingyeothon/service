@@ -11,7 +11,7 @@ import 'package:yyt_console/login_screen.dart';
 import 'package:yyt_console/home_shell.dart';
 import 'package:yyt_console/push/firebase_push_messaging.dart';
 import 'package:yyt_console/push/push_service.dart';
-import 'package:yyt_console/share/shared_app_screen.dart';
+import 'package:yyt_console/share/share_route.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -79,6 +79,7 @@ class _CatalogAppState extends State<CatalogApp> {
   late final AuthState _authState;
   final _navigatorKey = GlobalKey<NavigatorState>();
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+  final _routes = RouteStackObserver();
   String? _shownProfileId;
   late final AppHandoffQueue _handoffs;
   StreamSubscription<Uri>? _links;
@@ -123,9 +124,8 @@ class _CatalogAppState extends State<CatalogApp> {
     );
   }
 
-  /// A share link (`/i/{ref}`) waiting for the saved profiles to load:
-  /// the load's first `_onAuthStateChanged` pops to the root route, which
-  /// would close a screen pushed before it.
+  /// A share link (`/i/{ref}`) waiting for the saved profiles to load, so it
+  /// opens above the loaded home rather than the loading placeholder.
   ShareLink? _pendingShare;
   String? _lastShareRef;
   DateTime? _lastShareAt;
@@ -149,9 +149,7 @@ class _CatalogAppState extends State<CatalogApp> {
     // After the frame that swaps `home`, when the load itself triggered
     // this; ensureVisualUpdate schedules that frame on a warm start too.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _navigatorKey.currentState?.push(
-        MaterialPageRoute<void>(builder: (_) => SharedAppScreen(link: link)),
-      );
+      _navigatorKey.currentState?.push(sharedAppRoute(link));
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
@@ -168,9 +166,11 @@ class _CatalogAppState extends State<CatalogApp> {
   void _onAuthStateChanged() {
     // `home` only swaps the root route; pushed screens (issue detail, app
     // detail) would otherwise stay on top after a profile switch or removal.
+    // A share screen reads no profile and stays (share_route.dart).
     if (_authState.activeProfile?.id != _shownProfileId) {
       _shownProfileId = _authState.activeProfile?.id;
-      _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+      final nav = _navigatorKey.currentState;
+      if (nav != null) popToRootKeepingShares(nav, _routes.routes);
     }
     if (_authState.loaded) {
       _handoffs.ready();
@@ -280,6 +280,7 @@ class _CatalogAppState extends State<CatalogApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
+      navigatorObservers: [_routes],
       scaffoldMessengerKey: _messengerKey,
       theme: buildCatalogTheme(),
       home: !_authState.loaded

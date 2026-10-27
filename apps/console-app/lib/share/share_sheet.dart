@@ -77,6 +77,7 @@ class _AppShareSheetState extends State<AppShareSheet> {
   int _days = shareLinkDefaultExpiryDays;
   final _label = TextEditingController();
   bool _creating = false;
+  bool get _labelTooLong => _label.text.length > shareLinkLabelMaxLength;
   String? _createError;
   ShareLinkView? _created;
   String? _note;
@@ -275,10 +276,16 @@ class _AppShareSheetState extends State<AppShareSheet> {
       TextField(
         controller: _label,
         enabled: !_creating,
-        maxLength: shareLinkLabelMaxLength,
-        decoration: const InputDecoration(
+        // Counted in UTF-16 code units like the server's `.max(100)`, not
+        // in graphemes as `maxLength` would.
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
           labelText: '메모 (선택)',
           helperText: '팀에게만 보입니다. 받는 사람에게는 보이지 않습니다.',
+          counterText: '${_label.text.length}/$shareLinkLabelMaxLength',
+          errorText: _labelTooLong
+              ? '메모는 $shareLinkLabelMaxLength자 이하로 입력하세요.'
+              : null,
         ),
       ),
       const SizedBox(height: 8),
@@ -288,7 +295,9 @@ class _AppShareSheetState extends State<AppShareSheet> {
       ],
       Builder(
         builder: (bctx) => FilledButton.icon(
-          onPressed: _creating ? null : () => _create(_originOf(bctx)),
+          onPressed: _creating || _labelTooLong
+              ? null
+              : () => _create(_originOf(bctx)),
           icon: _creating
               ? const SizedBox.square(
                   dimension: 16,

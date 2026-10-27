@@ -402,12 +402,13 @@ class _AppDetailViewState extends State<AppDetailView>
   }
 
   Future<void> _openShareSheet(ProjectsApi api, AppHome home, String version) {
-    final description = widget.app.description.trim();
     return showAppShareSheet(
       context: context,
       api: api,
       appId: widget.app.id,
-      title: description.isEmpty ? widget.app.name : description,
+      // The app's name: its description is the team's own text, which a
+      // token link does not publish (decision #1).
+      title: widget.app.name,
       version: version,
       canCreate: home.team.canPublish,
       onUnauthorized: () => widget.authState.invalidate(api.token),

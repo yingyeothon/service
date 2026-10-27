@@ -122,7 +122,9 @@ class _SharedAppScreenState extends State<SharedAppScreen>
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = '$e';
+        // A fetch failure carries its own message; anything else (a malformed
+        // body) gets a plain one, never a Dart `Exception: ` prefix.
+        _error = e is ShareFetchException ? e.message : '공유 정보 응답을 읽을 수 없습니다.';
       });
     }
   }
@@ -157,7 +159,8 @@ class _SharedAppScreenState extends State<SharedAppScreen>
         cancellationController: cancel,
         onProgress: (p) => _progress.value = p,
         artifact: artifact,
-        topic: _app?.topic,
+        // No update-notice subscription for a link recipient (decision).
+        topic: null,
       );
       if (!mounted) return;
       if (attempt.needsDowngradeFallback && attempt.downloadedPath != null) {

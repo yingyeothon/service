@@ -123,6 +123,34 @@ void main() {
     expect(shared, isEmpty);
   });
 
+  testWidgets('a label over 100 UTF-16 units blocks create', (tester) async {
+    final client = MockClient(
+      (r) async => jsonResponse({'links': [], 'publicUrl': null, 'limit': 20}),
+    );
+    await pump(tester, client);
+
+    // 50 emoji: 50 graphemes, 100 UTF-16 units — the server's limit exactly.
+    await tester.enterText(find.byType(TextField), '😀' * 50);
+    await tester.pump();
+    expect(find.text('100/100'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '새 링크 만들기'))
+          .onPressed,
+      isNotNull,
+    );
+
+    await tester.enterText(find.byType(TextField), '${'😀' * 50}a');
+    await tester.pump();
+    expect(find.textContaining('100자 이하'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '새 링크 만들기'))
+          .onPressed,
+      isNull,
+    );
+  });
+
   test('shareMessage drops an unknown version', () {
     expect(shareMessage('게임', 'unknown', 'u'), '게임 설치: u');
     expect(shareMessage('게임', '1.0.0', 'u'), '게임 1.0.0 설치: u');

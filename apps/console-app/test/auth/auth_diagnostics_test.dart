@@ -112,4 +112,12 @@ void main() {
       'link hoff_...(redacted)',
     );
   });
+
+  test('redacts a catalog share token', () {
+    const token = 'shr_0123456789abcdef0123456789abcdef';
+    expect(
+      AuthDiagnosticLogger.redact('uri=yytconsole://console.yyt.life/i/$token'),
+      'uri=yytconsole://console.yyt.life/i/shr_...(redacted)',
+    );
+  });
 }

@@ -449,6 +449,11 @@ class AuthDiagnosticLogger {
       RegExp(r'hoff_[0-9a-f]{32}'),
       (match) => 'hoff_...(redacted)',
     );
+    // Catalog share tokens: a bearer capability until the link expires.
+    result = result.replaceAllMapped(
+      RegExp(r'shr_[0-9a-f]{32}'),
+      (match) => 'shr_...(redacted)',
+    );
     result = result.replaceAllMapped(
       RegExp(r'(Bearer\s+)\S+'),
       (match) => '${match.group(1)}***',

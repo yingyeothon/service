@@ -166,6 +166,14 @@ class ShareUnavailableException implements Exception {
   String toString() => '링크를 사용할 수 없습니다';
 }
 
+/// Any other failure to read the twin; [toString] is the Korean message.
+class ShareFetchException implements Exception {
+  const ShareFetchException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 /// `GET {server}/catalog/share/{ref}` without credentials: a recipient may
 /// be signed out, or signed in to another console.
 Future<SharedApp> fetchSharedApp({
@@ -183,22 +191,22 @@ Future<SharedApp> fetchSharedApp({
         )
         .timeout(timeout);
   } on TimeoutException {
-    throw Exception('콘솔 서버가 응답하지 않습니다. 잠시 후 다시 시도해주세요.');
+    throw ShareFetchException('콘솔 서버가 응답하지 않습니다. 잠시 후 다시 시도해주세요.');
   } on http.ClientException catch (e) {
-    throw Exception('콘솔 서버에 연결하지 못했습니다: ${e.message}');
+    throw ShareFetchException('콘솔 서버에 연결하지 못했습니다: ${e.message}');
   }
   if (r.statusCode == 404) throw const ShareUnavailableException();
   if (r.statusCode != 200) {
-    throw Exception('공유 정보를 불러오지 못했습니다: ${r.statusCode}');
+    throw ShareFetchException('공유 정보를 불러오지 못했습니다: ${r.statusCode}');
   }
   final Object? body;
   try {
     body = jsonDecode(utf8.decode(r.bodyBytes));
   } on FormatException {
-    throw Exception('공유 정보 응답을 읽을 수 없습니다.');
+    throw ShareFetchException('공유 정보 응답을 읽을 수 없습니다.');
   }
   if (body is! Map<String, dynamic>) {
-    throw Exception('공유 정보 응답을 읽을 수 없습니다.');
+    throw ShareFetchException('공유 정보 응답을 읽을 수 없습니다.');
   }
   return SharedApp.fromJson(body);
 }

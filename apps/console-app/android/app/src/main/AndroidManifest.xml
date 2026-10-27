@@ -22,6 +22,13 @@
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme"
             />
+            <!-- app_links delivers incoming links; without this the engine
+                 would also pushNamed() the URL (and log it, share token
+                 included). Info.plist sets FlutterDeepLinkingEnabled=false. -->
+            <meta-data
+                android:name="flutter_deeplinking_enabled"
+                android:value="false"
+            />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
