@@ -8,6 +8,7 @@
 4. Apply the review feedback.
 5. Record reusable lessons in `rules/*.md`; update `rules/index.md` if files changed. Update `todo/index.md` (status table, progress log with absolute date, next work) and tick the area checklist.
 6. Commit to `main` with an imperative message and push to `origin` (`git@github.com:yingyeothon/service.git`). No PRs unless branch protection appears.
+7. **A failure found along the way is fixed at once, pre-existing or not** (owner instruction, 2026-10-27). A red gate (lint, typecheck, coverage, a flaky test, CI on `main`) is never reported as "unrelated" and left: fix it in its own commit in the same session, before declaring the task done, and run the whole CI command list (`.github/workflows/ci.yml`: `pnpm lint`, `format:check`, `typecheck`, `coverage` — not `pnpm test` — plus the Go jobs) locally first. What happened: `main` CI failed from 2026-10-20 to 2026-10-27 on two `@smithy/types` versions under `aws-sdk-client-mock` (lint/typecheck) and on `site-edge.ts` coverage (57 %, its memory fake had no contract test), and a session noticed and moved on. Fixed by a workspace `overrides` pin and a shared `siteEdgeContract`.
 
 ## Documentation discipline
 
