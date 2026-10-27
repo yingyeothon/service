@@ -8,14 +8,20 @@ import (
 func TestCatalogShareCreate(t *testing.T) {
 	withProject(t)
 	var post recorded
-	full := false
+	full := 0
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"POST /catalog/apps/ca_1/share-links": func(r recorded) (int, any) {
 			post = r
-			if full {
+			if full == 20 {
 				return 409, map[string]any{"error": map[string]any{
 					"code": "conflict", "message": "too many live share links (max 20 per app)",
 					"details": map[string]any{"limit": 20, "value": 20},
+				}}
+			}
+			if full == 100 {
+				return 409, map[string]any{"error": map[string]any{
+					"code": "conflict", "message": "too many share links kept",
+					"details": map[string]any{"limit": 100, "value": 100},
 				}}
 			}
 			return 201, map[string]any{
@@ -63,6 +69,10 @@ func TestCatalogShareCreate(t *testing.T) {
 	if _, _, err := run(t, f, "catalog", "share", "create", "ca_1", "--label", strings.Repeat("x", 101)); err == nil || !strings.Contains(err.Error(), "--label") {
 		t.Fatalf("want label error, got %v", err)
 	}
+	// The server counts UTF-16 units: 51 emoji are 102 units, 50 are 100.
+	if _, _, err := run(t, f, "catalog", "share", "create", "ca_1", "--label", strings.Repeat("\U0001F600", 51)); err == nil || !strings.Contains(err.Error(), "--label") {
+		t.Fatalf("want UTF-16 label error, got %v", err)
+	}
 	if _, _, err := run(t, f, "catalog", "share", "create", "ca_1", "--label", "a\x1bb"); err == nil || !strings.Contains(err.Error(), "control") {
 		t.Fatalf("want control error, got %v", err)
 	}
@@ -70,10 +80,23 @@ func TestCatalogShareCreate(t *testing.T) {
 		t.Fatalf("validation must not call the console, got %d requests", len(f.reqs))
 	}
 	// The cap answer keeps the server's message and points at revoke.
-	full = true
+	f.reqs = nil
+	if _, _, err := run(t, f, "catalog", "share", "create", "ca_1", "--label", strings.Repeat("\U0001F600", 50)); err != nil {
+		t.Fatal(err)
+	}
+	if last := f.reqs[len(f.reqs)-1]; last.Method != "POST" || last.Body["label"] != strings.Repeat("\U0001F600", 50) {
+		t.Fatalf("50 emoji must be sent, got %+v", last)
+	}
+	// The cap answers keep the server's message and say what frees a slot.
+	full = 20
 	_, _, err = run(t, f, "catalog", "share", "create", "ca_1")
 	if err == nil || !strings.Contains(err.Error(), "too many live share links") || !strings.Contains(err.Error(), "share rm") {
-		t.Fatalf("want conflict hint, got %v", err)
+		t.Fatalf("want live-cap hint, got %v", err)
+	}
+	full = 100
+	_, _, err = run(t, f, "catalog", "share", "create", "ca_1")
+	if err == nil || !strings.Contains(err.Error(), "too many share links kept") || !strings.Contains(err.Error(), "30 days") || strings.Contains(err.Error(), "share rm") {
+		t.Fatalf("want kept-cap hint, got %v", err)
 	}
 }
 

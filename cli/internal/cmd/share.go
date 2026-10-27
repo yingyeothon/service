@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"unicode"
-	"unicode/utf8"
+	"unicode/utf16"
 
 	"github.com/spf13/cobra"
 
@@ -47,6 +47,23 @@ func shareStatus(l shareLink) string {
 	default:
 		return "expired"
 	}
+}
+
+// shareCapError explains which of the two per-app caps a create hit: 20 live
+// links (revoking one frees a slot) or 100 kept rows (dead links count until
+// the daily sweep purges them 30 days past their expiry; revoking does not help).
+func shareCapError(err error, ae *api.Error, app string) error {
+	var d struct {
+		Limit int `json:"limit"`
+	}
+	_ = json.Unmarshal(ae.Details, &d)
+	if d.Limit == 20 {
+		return fmt.Errorf("%w\nrevoke a live link first: yyt catalog share ls %s; yyt catalog share rm %s <id>", err, app, app)
+	}
+	if d.Limit == 100 {
+		return fmt.Errorf("%w\nexpired and revoked links count toward this cap until they are purged 30 days after their expiry; revoking does not free a slot", err)
+	}
+	return fmt.Errorf("%w\nan app holds at most 20 live links (revoke one with `yyt catalog share rm %s <id>`) and 100 kept links (dead ones are purged 30 days after expiry)", err, app)
 }
 
 func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
@@ -94,8 +111,10 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 			body := map[string]any{"expiresInDays": days}
 			if cmd.Flags().Changed("label") {
 				l := strings.TrimSpace(label)
-				if utf8.RuneCountInString(l) > 100 {
-					return errors.New("--label is at most 100 characters")
+				// The server's zod .max(100) counts UTF-16 code units, so an
+				// emoji counts twice.
+				if len(utf16.Encode([]rune(l))) > 100 {
+					return errors.New("--label is at most 100 characters (UTF-16 units: an emoji counts as 2)")
 				}
 				if strings.IndexFunc(l, unicode.IsControl) >= 0 {
 					return errors.New("--label must not contain control characters")
@@ -108,7 +127,7 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 			if err := shareDo(cmd, true, http.MethodPost, args[0], "", body, &raw); err != nil {
 				var ae *api.Error
 				if errors.As(err, &ae) && ae.Status == http.StatusConflict {
-					return fmt.Errorf("%w\nrevoke one first: yyt catalog share ls %s; yyt catalog share rm %s <id>", err, args[0], args[0])
+					return shareCapError(err, ae, args[0])
 				}
 				return err
 			}
