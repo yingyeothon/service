@@ -10,7 +10,7 @@ import {
   sortRows,
   type ListOrder,
 } from "./list.js";
-import { num, run, type PrismaClient } from "./prisma.js";
+import { nul, num, run, type PrismaClient } from "./prisma.js";
 
 /*
  * Catalog listings (docs/decisions.md *Catalog listings*): a listing
@@ -124,6 +124,24 @@ export interface ListingFilter extends ListOrder<ListingSortKey> {
   limit?: number;
 }
 
+/**
+ * A share link (docs/decisions.md *Catalog share links*): a bearer token that
+ * reads what a listing reads. The repository sees the token's SHA-256 only.
+ */
+export interface ShareLinkRow {
+  id: string;
+  appId: string;
+  tokenHash: string;
+  label: string | null;
+  /** Display only: the member who created it. */
+  createdBy: string | null;
+  createdAt: number;
+  expiresAt: number;
+  revokedAt: number | null;
+}
+
+export type ShareLinkInput = Omit<ShareLinkRow, "revokedAt">;
+
 export interface ListingsDb {
   /** Creates or replaces the listing (tags wholesale); `created` on a first publish. */
   upsertListing(l: ListingInput): Promise<"created" | "updated">;
@@ -144,6 +162,25 @@ export interface ListingsDb {
   setTakedown(t: ListingTakedownInput): Promise<boolean>;
   clearTakedown(appId: string): Promise<boolean>;
   findTakedown(appId: string): Promise<ListingTakedown | undefined>;
+
+  insertShareLink(l: ShareLinkInput): Promise<void>;
+  /** The row whatever its expiry or revocation; the caller decides what they mean. */
+  findShareLinkByHash(tokenHash: string): Promise<ShareLinkRow | undefined>;
+  /** Newest first. */
+  listShareLinks(appId: string): Promise<ShareLinkRow[]>;
+  /** Links neither revoked nor expired at `now`. */
+  countLiveShareLinks(appId: string, now: number): Promise<number>;
+  /**
+   * `revoked` the first time, `already` when it was revoked before,
+   * `missing` when the app has no such link.
+   */
+  revokeShareLink(
+    appId: string,
+    id: string,
+    at: number,
+  ): Promise<"revoked" | "already" | "missing">;
+  /** Deletes links that expired before `before` (revoked ones included); returns the count. */
+  purgeShareLinks(before: number): Promise<number>;
 }
 
 const byAppId = (a: { appId: string }, b: { appId: string }) =>
@@ -427,8 +464,85 @@ export function createListingsDb(prisma: PrismaClient): ListingsDb {
         });
         return r ? toTakedown(r) : undefined;
       }),
+
+    insertShareLink: (l) =>
+      run(async () => {
+        await prisma.catalog_share_links.create({
+          data: {
+            id: l.id,
+            app_id: l.appId,
+            token_hash: l.tokenHash,
+            label: l.label,
+            created_by: l.createdBy,
+            created_at: l.createdAt,
+            expires_at: l.expiresAt,
+          },
+        });
+      }),
+    findShareLinkByHash: (tokenHash) =>
+      run(async () => {
+        const r = await prisma.catalog_share_links.findUnique({
+          where: { token_hash: tokenHash },
+        });
+        return r ? toShareLink(r) : undefined;
+      }),
+    listShareLinks: (appId) =>
+      run(async () =>
+        (
+          await prisma.catalog_share_links.findMany({
+            where: { app_id: appId },
+            orderBy: [{ created_at: "desc" }, { id: "desc" }],
+          })
+        ).map(toShareLink),
+      ),
+    countLiveShareLinks: (appId, now) =>
+      run(() =>
+        prisma.catalog_share_links.count({
+          where: { app_id: appId, revoked_at: null, expires_at: { gt: now } },
+        }),
+      ),
+    revokeShareLink: (appId, id, at) =>
+      run(async () => {
+        const r = await prisma.catalog_share_links.updateMany({
+          where: { id, app_id: appId, revoked_at: null },
+          data: { revoked_at: at },
+        });
+        if (r.count > 0) return "revoked";
+        const row = await prisma.catalog_share_links.findFirst({
+          where: { id, app_id: appId },
+          select: { id: true },
+        });
+        return row ? "already" : "missing";
+      }),
+    purgeShareLinks: (before) =>
+      run(async () => {
+        const r = await prisma.catalog_share_links.deleteMany({
+          where: { expires_at: { lt: before } },
+        });
+        return r.count;
+      }),
   };
 }
+
+const toShareLink = (r: {
+  id: string;
+  app_id: string;
+  token_hash: string;
+  label: string | null;
+  created_by: string | null;
+  created_at: bigint | number;
+  expires_at: bigint | number;
+  revoked_at: bigint | number | null;
+}): ShareLinkRow => ({
+  id: r.id,
+  appId: r.app_id,
+  tokenHash: r.token_hash,
+  label: r.label,
+  createdBy: r.created_by,
+  createdAt: num(r.created_at),
+  expiresAt: num(r.expires_at),
+  revokedAt: nul(r.revoked_at),
+});
 
 export interface MemoryListingsDeps {
   /** The app a listing hangs off (its foreign key); `undefined` = no such app. */
@@ -454,6 +568,7 @@ export function createMemoryListingsDb(deps: MemoryListingsDeps): ListingsDb & {
   >;
   viewers: Map<string, ListingViewerRow>;
   takedowns: Map<string, ListingTakedown>;
+  shareLinks: Map<string, ShareLinkRow>;
   /** The `ON DELETE CASCADE` from `catalog_apps`: the catalog fake calls it. */
   appDeleted(appId: string): void;
 } {
@@ -466,6 +581,7 @@ export function createMemoryListingsDb(deps: MemoryListingsDeps): ListingsDb & {
   >();
   const viewers = new Map<string, ListingViewerRow>();
   const takedowns = new Map<string, ListingTakedown>();
+  const shareLinks = new Map<string, ShareLinkRow>();
   const fk = () => new AppError("unavailable", "database error");
   const memberExists = deps.memberExists ?? (() => true);
   const vkey = (appId: string, memberId: string) => `${appId}\u0000${memberId}`;
@@ -488,9 +604,12 @@ export function createMemoryListingsDb(deps: MemoryListingsDeps): ListingsDb & {
     listings,
     viewers,
     takedowns,
+    shareLinks,
     appDeleted: (appId) => {
       listings.delete(appId);
       takedowns.delete(appId);
+      for (const [k, v] of shareLinks)
+        if (v.appId === appId) shareLinks.delete(k);
       for (const [k, v] of viewers) if (v.appId === appId) viewers.delete(k);
     },
     upsertListing: async (l) => {
@@ -588,6 +707,46 @@ export function createMemoryListingsDb(deps: MemoryListingsDeps): ListingsDb & {
     findTakedown: async (appId) => {
       const t = takedowns.get(appId);
       return t && { ...t };
+    },
+
+    insertShareLink: async (l) => {
+      if (!deps.appOf(l.appId)) throw fk();
+      if (l.createdBy !== null && !memberExists(l.createdBy)) throw fk();
+      if (
+        shareLinks.has(l.id) ||
+        [...shareLinks.values()].some((x) => x.tokenHash === l.tokenHash)
+      )
+        throw new AppError("conflict", "duplicate");
+      shareLinks.set(l.id, { ...l, revokedAt: null });
+    },
+    findShareLinkByHash: async (tokenHash) => {
+      const r = [...shareLinks.values()].find((x) => x.tokenHash === tokenHash);
+      return r && { ...r };
+    },
+    listShareLinks: async (appId) =>
+      [...shareLinks.values()]
+        .filter((x) => x.appId === appId)
+        .sort((a, b) => b.createdAt - a.createdAt || cmpBin(b.id, a.id))
+        .map((x) => ({ ...x })),
+    countLiveShareLinks: async (appId, now) =>
+      [...shareLinks.values()].filter(
+        (x) => x.appId === appId && x.revokedAt === null && x.expiresAt > now,
+      ).length,
+    revokeShareLink: async (appId, id, at) => {
+      const r = shareLinks.get(id);
+      if (!r || r.appId !== appId) return "missing";
+      if (r.revokedAt !== null) return "already";
+      r.revokedAt = at;
+      return "revoked";
+    },
+    purgeShareLinks: async (before) => {
+      let n = 0;
+      for (const [k, v] of shareLinks)
+        if (v.expiresAt < before) {
+          shareLinks.delete(k);
+          n++;
+        }
+      return n;
     },
   };
 }

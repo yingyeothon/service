@@ -80,6 +80,7 @@ import {
 import { createCatalogRoutes } from "./catalog.js";
 import type { CatalogPushSchedule } from "./catalog-push.js";
 import { createListingRoutes } from "./listings.js";
+import { createShareLinkRoutes } from "./share-links.js";
 import { createKvStoreRoutes, deleteChannelKvEntries } from "./kvstore.js";
 import {
   createLeaderboardRoutes,
@@ -1448,6 +1449,21 @@ export function createConsoleApp({
     stage,
   });
 
+  const shareLinkRoutes = createShareLinkRoutes({
+    listings,
+    catalog,
+    db,
+    team,
+    access,
+    history,
+    writeSlot: createWriteSlot({ kv, clock }),
+    clock,
+    audit,
+    stage,
+    baseUrl,
+    webUrl: web,
+  });
+
   const catalogRoutes = createCatalogRoutes({
     catalog,
     listings,
@@ -1477,6 +1493,7 @@ export function createConsoleApp({
       ...teamRoutes,
       ...catalogRoutes,
       ...listingRoutes,
+      ...shareLinkRoutes,
       ...assetRoutes,
       ...siteRoutes,
       ...kvStoreRoutes,

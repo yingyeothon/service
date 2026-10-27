@@ -280,6 +280,8 @@ export {
   type ListingViewerRow,
   type ListingsDb,
   type MemoryListingsDeps,
+  type ShareLinkInput,
+  type ShareLinkRow,
 } from "./listings.js";
 export {
   createMemoryShowsDb,

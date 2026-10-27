@@ -338,6 +338,60 @@ export function listingsContract(
     expect(await db.listViewers("ca_1")).toEqual([]);
     expect(await db.listListings()).toEqual([]);
   });
+
+  it("stores share links by hash, counts the live ones, revokes once, purges and cascades", async () => {
+    const { db, seedApp, deleteApp } = await make();
+    await seedApp("ca_1");
+    await seedApp("ca_2");
+    const link = (id: string, appId: string, expiresAt: number, at = 1) => ({
+      id,
+      appId,
+      tokenHash: id.padEnd(64, "0"),
+      label: id === "sl_1" ? "testers" : null,
+      createdBy: "m1",
+      createdAt: at,
+      expiresAt,
+    });
+    await db.insertShareLink(link("sl_1", "ca_1", 100, 1));
+    await db.insertShareLink(link("sl_2", "ca_1", 50, 2));
+    await db.insertShareLink(link("sl_3", "ca_2", 100, 3));
+    await expect(
+      db.insertShareLink({
+        ...link("sl_4", "ca_1", 100),
+        tokenHash: link("sl_1", "", 0).tokenHash,
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      db.insertShareLink(link("sl_5", "ca_ghost", 100)),
+    ).rejects.toBeDefined();
+    expect(await db.findShareLinkByHash("sl_1".padEnd(64, "0"))).toEqual({
+      ...link("sl_1", "ca_1", 100, 1),
+      revokedAt: null,
+    });
+    expect(await db.findShareLinkByHash("x".padEnd(64, "0"))).toBeUndefined();
+    expect((await db.listShareLinks("ca_1")).map((l) => l.id)).toEqual([
+      "sl_2",
+      "sl_1",
+    ]);
+    expect(await db.countLiveShareLinks("ca_1", 10)).toBe(2);
+    expect(await db.countLiveShareLinks("ca_1", 50)).toBe(1);
+    expect(await db.revokeShareLink("ca_1", "sl_1", 20)).toBe("revoked");
+    expect(await db.revokeShareLink("ca_1", "sl_1", 21)).toBe("already");
+    expect(await db.revokeShareLink("ca_2", "sl_1", 21)).toBe("missing");
+    expect(
+      (await db.findShareLinkByHash("sl_1".padEnd(64, "0")))?.revokedAt,
+    ).toBe(20);
+    expect(await db.countLiveShareLinks("ca_1", 10)).toBe(1);
+    expect(await db.purgeShareLinks(60)).toBe(1);
+    expect((await db.listShareLinks("ca_1")).map((l) => l.id)).toEqual([
+      "sl_1",
+    ]);
+    await deleteApp("ca_1");
+    expect(await db.listShareLinks("ca_1")).toEqual([]);
+    expect((await db.listShareLinks("ca_2")).map((l) => l.id)).toEqual([
+      "sl_3",
+    ]);
+  });
 }
 
 describe("memory listings db", () => {

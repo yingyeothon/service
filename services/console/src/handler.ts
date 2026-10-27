@@ -74,6 +74,7 @@ import {
 } from "./expire.js";
 import { runEventSweep } from "./events.js";
 import { runShowSweep } from "./shows.js";
+import { runShareLinkSweep } from "./share-links.js";
 import { runLimitSweep } from "./limits.js";
 import { runPushSweep, type PushSweepResult } from "./push-sweep.js";
 import { runPushJobSweep, type PushJobSweepResult } from "./push-job-sweep.js";
@@ -654,6 +655,7 @@ export const expire = async (): Promise<void> => {
     events,
     shows,
     catalog,
+    listings,
     assets,
     sites,
     team,
@@ -843,6 +845,7 @@ export const expire = async (): Promise<void> => {
         logger,
       }),
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
+    () => runShareLinkSweep({ listings, clock: systemClock, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),
     // Expired zip grants and deploys whose worker died; nothing else looks
     // at a site nobody polls.

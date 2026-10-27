@@ -80,7 +80,8 @@ export interface ArtifactObject {
 /** Metadata forced onto the destination object by `copy`. */
 export interface ObjectMetadata {
   contentType: string;
-  cacheControl: string;
+  /** Omitted = the object carries none (a catalog artifact). */
+  cacheControl?: string;
 }
 
 /**
@@ -356,7 +357,9 @@ export function createS3ArtifactStore({
               ? {
                   MetadataDirective: "REPLACE" as const,
                   ContentType: metadata.contentType,
-                  CacheControl: metadata.cacheControl,
+                  ...(metadata.cacheControl
+                    ? { CacheControl: metadata.cacheControl }
+                    : {}),
                 }
               : {}),
             ...(o.ifMatch ? { IfMatch: `"${o.ifMatch}"` } : {}),

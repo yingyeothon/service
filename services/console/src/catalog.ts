@@ -239,6 +239,8 @@ export function validateUploadMetadata(
 
 // ---- helpers ---------------------------------------------------------------
 
+export const APK_CONTENT_TYPE = "application/vnd.android.package-archive";
+
 export function artifactUrl(cdnBaseUrl: string, objectKey: string): string {
   const base = cdnBaseUrl.replace(/\/+$/, "");
   const key = objectKey.replace(/^\/+|\/+$/g, "");
@@ -902,7 +904,16 @@ export function createCatalogRoutes({
         }
         let manifest: string | null = null;
         try {
-          await store.copy(stagingKey, finalKey);
+          // An APK is stored with the Android package type so every
+          // Android browser treats the download as one (decisions *Catalog
+          // share links* #6); the uploader's presigned type is a generic one.
+          await store.copy(
+            stagingKey,
+            finalKey,
+            /\.apk$/i.test(finalKey)
+              ? { contentType: APK_CONTENT_TYPE }
+              : undefined,
+          );
           if (
             upload.platform === "ios" &&
             tags.distribution_method === IOS_AD_HOC

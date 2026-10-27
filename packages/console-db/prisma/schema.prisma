@@ -174,6 +174,7 @@ model catalog_apps {
   catalog_pending_uploads  catalog_pending_uploads[]
   catalog_listing          catalog_listings?
   catalog_listing_takedown catalog_listing_takedowns?
+  catalog_share_links      catalog_share_links[]
 
   @@unique([team_id, name], map: "catalog_apps_team_name")
   @@index([owner_id], map: "catalog_apps_owner")
@@ -270,6 +271,26 @@ model catalog_listing_takedowns {
   admin         members?     @relation("listing_takedown_admin", fields: [taken_down_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_listing_takedowns_admin")
 
   @@index([taken_down_by], map: "catalog_listing_takedowns_admin")
+}
+
+/// A share link (docs/decisions.md *Catalog share links*): a bearer token
+/// that reads what a listing reads, until it expires or is revoked. Only the
+/// token's SHA-256 is stored. Goes with its app.
+model catalog_share_links {
+  id           String       @id @db.VarChar(64)
+  app_id       String       @db.VarChar(64)
+  token_hash   String       @unique(map: "catalog_share_links_token") @db.Char(64)
+  label        String?      @db.VarChar(255)
+  created_by   String?      @db.VarChar(64)
+  created_at   BigInt
+  expires_at   BigInt
+  revoked_at   BigInt?
+  catalog_apps catalog_apps @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_share_links_app")
+  creator      members?     @relation("share_link_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_share_links_creator")
+
+  @@index([app_id, created_at], map: "catalog_share_links_app")
+  @@index([expires_at], map: "catalog_share_links_expires")
+  @@index([created_by], map: "catalog_share_links_creator")
 }
 
 model channels {
@@ -455,6 +476,7 @@ model members {
   catalog_listing_viewers       catalog_listing_viewers[]   @relation("listing_viewer")
   catalog_listing_viewers_added catalog_listing_viewers[]   @relation("listing_viewer_adder")
   catalog_listing_takedowns     catalog_listing_takedowns[] @relation("listing_takedown_admin")
+  catalog_share_links           catalog_share_links[]       @relation("share_link_creator")
 }
 
 model schema_migrations {

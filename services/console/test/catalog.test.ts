@@ -706,6 +706,11 @@ describe("catalog uploads", () => {
     expect(art.hash).toBe("abc123");
     // Final object exists, staging object removed.
     expect(h.artifacts.objects.has(art.objectKey)).toBe(true);
+    // An APK is stored with the Android package type (decisions *Catalog
+    // share links* #6); nothing else changes the object's metadata.
+    expect(h.artifacts.objects.get(art.objectKey)?.metadata).toEqual({
+      contentType: "application/vnd.android.package-archive",
+    });
     expect(h.artifacts.objects.has(up.key)).toBe(false);
     expect(slack).toMatchObject({ text: "myapp 1.2.3 out" });
 
