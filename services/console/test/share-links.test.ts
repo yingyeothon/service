@@ -1,7 +1,10 @@
 import { sha256Hex } from "@yyt/core";
 import { describe, expect, it } from "vitest";
 import { SHARE_PAGE_CSP } from "../src/share-page.js";
-import { SHARE_LINKS_PER_APP } from "../src/share-links.js";
+import {
+  SHARE_LINK_ROWS_PER_APP,
+  SHARE_LINKS_PER_APP,
+} from "../src/share-links.js";
 import { ev, harness, NOW_SEC, parse, type Team } from "./helpers.js";
 
 /*
@@ -334,5 +337,44 @@ describe("catalog share links", () => {
     // Expired links stop counting.
     h.clock.tick(86_400);
     expect((await create(h, owner, app.id)).statusCode).toBe(201);
+  });
+
+  it("bounds rows per app, dead ones included, and shows a members listing's text to nobody", async () => {
+    const h = harness();
+    const owner = await h.team("owner", "member", 9241);
+    const app = await makeApp(h, owner);
+    h.clock.tick(1);
+    await h.app(
+      ev("PUT", `/catalog/apps/${app.id}/listing`, {
+        headers: owner.cookie,
+        body: {
+          title: "Members only",
+          summary: "secret plan",
+          audience: "members",
+        },
+      }),
+    );
+    let last = "";
+    for (let i = 0; i < SHARE_LINK_ROWS_PER_APP; i++) {
+      const l = parse<Link>(await create(h, owner, app.id));
+      last = l.url;
+      h.clock.tick(1);
+      if (i < SHARE_LINK_ROWS_PER_APP - 1)
+        await h.app(
+          ev("DELETE", `/catalog/apps/${app.id}/share-links/${l.id}`, {
+            headers: owner.cookie,
+          }),
+        );
+    }
+    const over = await create(h, owner, app.id);
+    expect(over.statusCode).toBe(409);
+    expect(parse<{ error: { details: unknown } }>(over).error.details).toEqual({
+      limit: SHARE_LINK_ROWS_PER_APP,
+      value: SHARE_LINK_ROWS_PER_APP,
+    });
+    const shared = parse<{ title: string; summary: string | null }>(
+      await twin(h, tokenOf(last)),
+    );
+    expect(shared).toMatchObject({ title: "myapp", summary: null });
   });
 });

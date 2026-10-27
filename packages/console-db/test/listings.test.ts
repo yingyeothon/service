@@ -374,6 +374,7 @@ export function listingsContract(
       "sl_1",
     ]);
     expect(await db.countLiveShareLinks("ca_1", 10)).toBe(2);
+    expect(await db.countShareLinks("ca_1")).toBe(2);
     expect(await db.countLiveShareLinks("ca_1", 50)).toBe(1);
     expect(await db.revokeShareLink("ca_1", "sl_1", 20)).toBe("revoked");
     expect(await db.revokeShareLink("ca_1", "sl_1", 21)).toBe("already");

@@ -168,6 +168,8 @@ export interface ListingsDb {
   findShareLinkByHash(tokenHash: string): Promise<ShareLinkRow | undefined>;
   /** Newest first. */
   listShareLinks(appId: string): Promise<ShareLinkRow[]>;
+  /** Every row the app holds, dead ones included (the per-app row cap). */
+  countShareLinks(appId: string): Promise<number>;
   /** Links neither revoked nor expired at `now`. */
   countLiveShareLinks(appId: string, now: number): Promise<number>;
   /**
@@ -495,6 +497,8 @@ export function createListingsDb(prisma: PrismaClient): ListingsDb {
           })
         ).map(toShareLink),
       ),
+    countShareLinks: (appId) =>
+      run(() => prisma.catalog_share_links.count({ where: { app_id: appId } })),
     countLiveShareLinks: (appId, now) =>
       run(() =>
         prisma.catalog_share_links.count({
@@ -728,6 +732,8 @@ export function createMemoryListingsDb(deps: MemoryListingsDeps): ListingsDb & {
         .filter((x) => x.appId === appId)
         .sort((a, b) => b.createdAt - a.createdAt || cmpBin(b.id, a.id))
         .map((x) => ({ ...x })),
+    countShareLinks: async (appId) =>
+      [...shareLinks.values()].filter((x) => x.appId === appId).length,
     countLiveShareLinks: async (appId, now) =>
       [...shareLinks.values()].filter(
         (x) => x.appId === appId && x.revokedAt === null && x.expiresAt > now,

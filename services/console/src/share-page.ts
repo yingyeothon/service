@@ -138,7 +138,7 @@ function scriptJson(v: unknown): string {
 }
 
 const STYLE = `:root{color-scheme:light dark;--fg:#1d1d1f;--mut:#6b6b70;--bg:#fff;--box:#f4f4f6;--acc:#2f6fed}
-@media (prefers-color-scheme:dark){:root{--fg:#ececf0;--mut:#a0a0a8;--bg:#121214;--box:#1e1e22;--acc:#6f9bff}}
+@media (prefers-color-scheme:dark){:root{--fg:#ececf0;--mut:#a0a0a8;--bg:#121214;--box:#1e1e22;--acc:#3567d6}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.5 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;color:var(--fg);background:var(--bg)}
 main{max-width:34rem;margin:0 auto;padding:1.5rem 1rem 3rem}h1{font-size:1.5rem;margin:0 0 .25rem;overflow-wrap:anywhere}
 .meta{color:var(--mut);font-size:.875rem;margin:0 0 1rem}.sum{white-space:pre-line;margin:0 0 1rem;overflow-wrap:anywhere}
@@ -167,10 +167,10 @@ if(kakao){esc.href="kakaotalk://web/openExternal?url="+encodeURIComponent(d.page
 else if(line){var lu=d.pageUrl+(d.pageUrl.indexOf("?")<0?"?":"&")+"openExternalBrowser=1";esc.href=lu;show("escape");show("escape-open");
  if(location.search.indexOf("openExternalBrowser")<0)location.replace(lu)}
 else if(wv){esc.href="intent://"+hostPath+"#Intent;scheme=https;package=com.android.chrome;end";show("escape");show("escape-open")}
-if(iosApp&&!kakao&&!line){show("escape");show("escape-ios")}
+if(iosApp){show("escape");show("escape-ios")}
 if(android||ios)$("desktop").hidden=true;
-if(android){show("android");var c=$("via-console");if(c)c.href="intent://"+hostPath+"#Intent;scheme=yytconsole;package=life.yyt.console;S.browser_fallback_url="+encodeURIComponent(d.pageUrl+"#noapp")+";end";
- if(location.hash==="#noapp")show("noapp")}
+if(android){show("android");var c=$("via-console");if(c)c.href="intent://"+hostPath+"#Intent;scheme=yytconsole;package=life.yyt.console;S.browser_fallback_url="+encodeURIComponent(d.pageUrl+"?noapp=1")+";end";
+ if(/[?&]noapp=1/.test(location.search))show("noapp")}
 else if(ios){show("ios")}
 var cp=$("copy");cp.addEventListener("click",function(){var done=function(){cp.textContent=d.copied};
  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(d.pageUrl).then(done,function(){show("link");$("link").select()})}
@@ -234,6 +234,7 @@ function date(sec: number, lang: ShareLang): string {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZoneName: "short",
   }).format(d);
 }
 
@@ -244,7 +245,8 @@ export function renderSharePage(
   const t = T[lang];
   const version = m.android?.version ?? m.ios?.version ?? null;
   const heading = version ? `${m.title} ${version}` : m.title;
-  const description = m.summary?.split("\n")[0]?.slice(0, 200) || t.install;
+  const description =
+    [...(m.summary?.split("\n")[0] ?? "")].slice(0, 200).join("") || t.install;
   const meta = [
     m.teamName ? `${t.by} ${escapeHtml(m.teamName)}` : "",
     m.expiresAt !== null
@@ -274,10 +276,10 @@ export function renderSharePage(
       ? `<a class="btn" href="${escapeHtml(i.url)}">${t.ios}</a><p class="hint">${t.iosHint}</p>`
       : `<p>${t.noBuild}</p>`
   }</section>
-<section id="desktop"><p>${t.desktop}</p><div class="qr">${m.qrSvg}</div>${downloads}${
+<section id="desktop"><p>${t.desktop}</p><div class="qr" role="img" aria-label="QR">${m.qrSvg}</div>${downloads}${
     !a && !i ? `<p>${t.noBuild}</p>` : ""
   }</section>
-<button id="copy" class="btn alt" type="button">${t.copy}</button><input id="link" readonly value="${escapeHtml(m.pageUrl)}" hidden>`;
+<button id="copy" class="btn alt" type="button" aria-live="polite">${t.copy}</button><input id="link" readonly value="${escapeHtml(m.pageUrl)}" hidden>`;
   // Desktop is visible without JavaScript; the script hides it on a phone.
   const html = shell(
     lang,

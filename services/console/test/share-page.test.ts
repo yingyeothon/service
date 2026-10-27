@@ -100,7 +100,6 @@ describe("share bridge script", () => {
       expect(r.el["escape-open"]!.href).toBe(target);
       expect(r.nav).toEqual([target]);
       expect(r.shown).toContain("escape");
-      expect(r.shown).not.toContain("escape-ios");
     }
   });
 
@@ -125,9 +124,9 @@ describe("share bridge script", () => {
     const r = run(UA.chrome);
     expect(r.shown).toEqual(["android", "via-console", "copy"]);
     expect(r.el["via-console"]!.href).toBe(
-      `intent://console.yyt.life/i/shr_0123456789abcdef0123456789abcdef#Intent;scheme=yytconsole;package=life.yyt.console;S.browser_fallback_url=${encodeURIComponent(`${PAGE}#noapp`)};end`,
+      `intent://console.yyt.life/i/shr_0123456789abcdef0123456789abcdef#Intent;scheme=yytconsole;package=life.yyt.console;S.browser_fallback_url=${encodeURIComponent(`${PAGE}?noapp=1`)};end`,
     );
-    expect(run(UA.chrome, { hash: "#noapp" }).shown).toContain("noapp");
+    expect(run(UA.chrome, { search: "?noapp=1" }).shown).toContain("noapp");
   });
 
   it("iOS Safari shows the iOS section; another iOS app is told to open Safari", () => {

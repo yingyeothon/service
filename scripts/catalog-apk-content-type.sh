@@ -20,6 +20,12 @@ BUCKET="$(aws ssm get-parameter --region "$REGION" --name "/yyt-service/${STAGE}
   --query Parameter.Value --output text)"
 [[ -n "$BUCKET" && "$BUCKET" != "None" ]] || { echo "no artifact-bucket for ${STAGE}" >&2; exit 1; }
 
+# Listed up front so a failed listing stops the script (a process
+# substitution would hide its exit status); `.apk` in any case, as the
+# commit matches it.
+KEYS="$(aws s3api list-objects-v2 --region "$REGION" --bucket "$BUCKET" --prefix apps/ \
+  --output json | jq -r '.Contents // [] | .[].Key | select(test("\\.apk$"; "i"))')"
+
 changed=0; ok=0
 while IFS= read -r key; do
   [[ -z "$key" || "$key" == "None" ]] && continue
@@ -39,7 +45,6 @@ while IFS= read -r key; do
   aws s3api copy-object --region "$REGION" --bucket "$BUCKET" --key "$key" \
     --copy-source "${BUCKET}/$(jq -rn --arg k "$key" '$k|@uri' | sed 's/%2F/\//g')" \
     "${args[@]}" --output text --query CopyObjectResult.ETag >/dev/null
-done < <(aws s3api list-objects-v2 --region "$REGION" --bucket "$BUCKET" --prefix apps/ \
-  --query "Contents[?ends_with(Key, '.apk')].Key" --output text | tr '\t' '\n')
+done <<<"$KEYS"
 
 echo "already set: ${ok}; $([[ "$MODE" == "--apply" ]] && echo updated || echo "would update"): ${changed}"

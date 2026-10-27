@@ -42,6 +42,11 @@ import type { ResourceAccess, TeamAccessHelpers } from "./team-access.js";
 export const SHARE_TOKEN = /^shr_[0-9a-f]{32}$/;
 /** Live (unexpired, unrevoked) links per app (decision #2). */
 export const SHARE_LINKS_PER_APP = 20;
+/**
+ * Rows per app, dead ones included: a create-and-revoke loop is bounded by
+ * this, not by the write slot (a row stays until 30 days past its expiry).
+ */
+export const SHARE_LINK_ROWS_PER_APP = 100;
 export const SHARE_LINK_DAYS = [1, 7, 30] as const;
 /** Rows stay this long past their expiry so the team's list still shows them. */
 export const SHARE_LINK_PURGE_SEC = 30 * 86_400;
@@ -180,6 +185,8 @@ export function createShareLinkRoutes({
       return undefined;
     const app = await catalog.findApp(appId);
     if (!app?.teamId) return undefined;
+    const pub =
+      listing?.audience === "public" && !listing.takedown ? listing : undefined;
     const [names, artifacts] = await Promise.all([
       team.findTeamNamesByIds([app.teamId]),
       catalog.newestArtifactsPerPlatform([app.id]),
@@ -188,10 +195,11 @@ export function createShareLinkRoutes({
       kind: link ? "token" : "public",
       appId: app.id,
       appName: app.name,
-      title: listing?.title ?? app.name,
-      // The listing's summary is publication text; an unlisted app's own
-      // description is the team's, and a token link does not publish it.
-      summary: listing?.summary ?? null,
+      // A public listing's title and summary are publication text for
+      // anyone; a `members` listing's are not, and an unlisted app's own
+      // description is the team's, so a token link shows the app's name only.
+      title: pub?.title ?? app.name,
+      summary: pub?.summary ?? null,
       teamName: names[0]?.name ?? null,
       expiresAt: link ? link.expiresAt : null,
       topic: catalogTopicOf(stage, app.id) ?? null,
@@ -237,6 +245,13 @@ export function createShareLinkRoutes({
         // Count-then-insert: the write slot serialises one member, and two
         // members racing can overshoot the cap by one, which bounds nothing
         // that matters.
+        const rows = await listings.countShareLinks(app.id);
+        if (rows >= SHARE_LINK_ROWS_PER_APP)
+          throw new AppError(
+            "conflict",
+            `too many share links kept (max ${SHARE_LINK_ROWS_PER_APP} per app, dead ones included until 30 days past their expiry)`,
+            { details: { limit: SHARE_LINK_ROWS_PER_APP, value: rows } },
+          );
         const live = await listings.countLiveShareLinks(app.id, now);
         if (live >= SHARE_LINKS_PER_APP)
           throw new AppError(
@@ -338,7 +353,9 @@ export function createShareLinkRoutes({
         const ref = ctx.params.ref!;
         const shared = await resolve(ref);
         if (!shared) return renderShareUnavailable(lang);
-        const url = pageUrl(ref);
+        // The canonical form: the database collation would also resolve a
+        // case or trailing-space variant of an app id.
+        const url = pageUrl(shared.kind === "public" ? shared.appId : ref);
         const android = installableAndroid(shared.artifacts);
         const ios = installableIos(shared.artifacts);
         return renderSharePage(
