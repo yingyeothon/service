@@ -144,6 +144,50 @@ describe("CatalogAppPage", () => {
     expect(mockApi.shareLinks).toHaveBeenCalledWith("ca_1");
   });
 
+  it("lets a seatless admin share, and a reader only look", async () => {
+    vi.mocked(mockApi.shareLinks).mockResolvedValue({
+      links: [
+        {
+          id: "shl_1",
+          label: "for bob",
+          createdBy: "alice",
+          createdAt: 0,
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          revokedAt: null,
+          live: true,
+        },
+      ],
+      publicUrl: null,
+      limit: 20,
+    });
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+    const view = open();
+    await userEvent.click(await screen.findByRole("button", { name: "Share" }));
+    let dialog = await screen.findByRole("dialog", { name: "Share my-game" });
+    expect(
+      within(dialog).getByRole("button", { name: "Create link" }),
+    ).toBeInTheDocument();
+    expect(
+      await within(dialog).findByRole("button", {
+        name: "Actions for for bob",
+      }),
+    ).toBeInTheDocument();
+    view.unmount();
+
+    // Any other standing that reads the page: the dialog without verbs.
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "pending" });
+    open();
+    await userEvent.click(await screen.findByRole("button", { name: "Share" }));
+    dialog = await screen.findByRole("dialog", { name: "Share my-game" });
+    expect(await within(dialog).findByText("for bob")).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: "Create link" }),
+    ).toBeNull();
+    expect(
+      within(dialog).queryByRole("button", { name: "Actions for for bob" }),
+    ).toBeNull();
+  });
+
   it("publishes from the listing section, names a member, and unpublishes", async () => {
     const listing: CatalogListing = {
       appId: "ca_1",

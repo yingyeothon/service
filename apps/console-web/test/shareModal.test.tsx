@@ -255,6 +255,44 @@ describe("ShareModal", () => {
     await waitFor(() => expect(mockApi.shareLinks).toHaveBeenCalledTimes(2));
   });
 
+  it("shows a failed list load instead of waiting forever", async () => {
+    vi.mocked(mockApi.shareLinks).mockRejectedValue(new Error("boom"));
+    open();
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("boom")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Loading…")).toBeNull();
+  });
+
+  it("fits a phone: two columns and the row menu", async () => {
+    const real = window.matchMedia;
+    window.matchMedia = (query: string) => ({
+      ...real(query),
+      matches: query.includes("max-width"),
+    });
+    try {
+      open();
+      const dialog = await screen.findByRole("dialog");
+      const row = (await within(dialog).findByText("for bob")).closest("tr")!;
+      expect(
+        within(dialog)
+          .getAllByRole("columnheader")
+          .map((h) => h.textContent),
+      ).toEqual(["Label", "Expires", expect.anything()]);
+      expect(within(row).queryByText("alice")).toBeNull();
+      // Status merges into Expires for a link that is not live.
+      expect(
+        within(within(dialog).getByText("old one").closest("tr")!).getByText(
+          "revoked",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(row).getByRole("button", { name: "Actions for for bob" }),
+      ).toBeInTheDocument();
+    } finally {
+      window.matchMedia = real;
+    }
+  });
+
   it("offers no create form or revoke to a reader", async () => {
     open(false);
     const dialog = await screen.findByRole("dialog");

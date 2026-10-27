@@ -583,19 +583,25 @@ export function CatalogAppPage() {
   // The drawer seeds its settings fields from `s`; opening it before the
   // settings arrived would diff blanks against them and wipe them on save.
   const settingsPending = canWrite && settings.data === undefined;
-  const actions: HeaderAction[] = canWrite
-    ? [
-        {
-          label: "Edit",
-          onClick: () => {
-            act.clear();
-            edit.open();
+  // A seatless platform admin may mint and revoke links (the server's
+  // `projectResource` lets the admin through), as the console app's
+  // `canPublish` does; everyone who reads this page may open the dialog.
+  const canShare = canWrite || standing.standing === "admin";
+  const actions: HeaderAction[] = [
+    ...(canWrite
+      ? [
+          {
+            label: "Edit",
+            onClick: () => {
+              act.clear();
+              edit.open();
+            },
+            disabled: settingsPending,
           },
-          disabled: settingsPending,
-        },
-        { label: "Share", onClick: () => setSharing(true) },
-      ]
-    : [];
+        ]
+      : []),
+    { label: "Share", onClick: () => setSharing(true) },
+  ];
 
   return (
     <>
@@ -615,7 +621,7 @@ export function CatalogAppPage() {
         app={a}
         opened={sharing}
         onClose={() => setSharing(false)}
-        canWrite={canWrite}
+        canWrite={canShare}
       />
       {!canWrite && !standing.loading && <ReadOnlyBanner />}
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}

@@ -11,6 +11,7 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api";
@@ -160,6 +161,9 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
   const [label, setLabel] = useState("");
   const [created, setCreated] = useState<CreatedShareLink | null>(null);
   const refresh = () => queryClient.invalidateQueries({ queryKey: key });
+  // A phone (390 px) cannot hold four columns plus the row menu inside the
+  // dialog: below `sm` the creator is dropped and status merges into Expires.
+  const narrow = useMediaQuery("(max-width: 48em)") ?? false;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -214,11 +218,13 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
             <CopyField label="Public link" value={publicUrl} />
             <ShareButtons url={publicUrl} title={app.name} />
           </>
+        ) : list.error ? (
+          <Notice kind="error">{list.error}</Notice>
         ) : (
           <Text size="sm" c="dimmed">
             {list.data
               ? "Publish the app for everyone to get a permanent link. Until then, share a link below."
-              : "…"}
+              : "Loading…"}
           </Text>
         )}
       </Stack>
@@ -304,15 +310,24 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
         </Title>
         {revokeAct.error && <Notice kind="error">{revokeAct.error}</Notice>}
         <DataTable
-          columns={[
-            { key: "label", label: "Label" },
-            { key: "createdBy", label: "Created by" },
-            { key: "expires", label: "Expires" },
-            { key: "status", label: "Status" },
-          ]}
+          columns={
+            narrow
+              ? [
+                  { key: "label", label: "Label" },
+                  { key: "expires", label: "Expires" },
+                ]
+              : [
+                  { key: "label", label: "Label" },
+                  { key: "createdBy", label: "Created by" },
+                  { key: "expires", label: "Expires" },
+                  { key: "status", label: "Status" },
+                ]
+          }
+          minWidth={narrow ? 0 : 560}
           rows={list.data?.links}
           loading={list.loading}
-          error={list.error}
+          // The public-link section already shows the error.
+          error={list.error ? "Could not load the links." : null}
           rowKey={(l) => l.id}
           empty={{ title: "No share links yet." }}
           render={(l) => {
@@ -320,7 +335,12 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
             return (
               <>
                 <Table.Td style={NOWRAP}>
-                  <Text span size="sm" style={clip(180)} title={nameOf(l)}>
+                  <Text
+                    span
+                    size="sm"
+                    style={clip(narrow ? 120 : 180)}
+                    title={nameOf(l)}
+                  >
                     {l.label ?? (
                       <Text span size="sm" c="dimmed">
                         —
@@ -328,19 +348,27 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
                     )}
                   </Text>
                 </Table.Td>
+                {!narrow && (
+                  <Table.Td style={NOWRAP}>
+                    <Text span size="sm" style={clip(110)}>
+                      {l.createdBy ?? "—"}
+                    </Text>
+                  </Table.Td>
+                )}
                 <Table.Td style={NOWRAP}>
-                  <Text span size="sm" style={clip(110)}>
-                    {l.createdBy ?? "—"}
-                  </Text>
+                  {narrow && !l.live ? (
+                    <Badge tone={st.tone}>{st.label}</Badge>
+                  ) : (
+                    <Text span size="sm" title={fmtTime(l.expiresAt)}>
+                      {fmtRelative(l.expiresAt)}
+                    </Text>
+                  )}
                 </Table.Td>
-                <Table.Td style={NOWRAP}>
-                  <Text span size="sm" title={fmtTime(l.expiresAt)}>
-                    {fmtRelative(l.expiresAt)}
-                  </Text>
-                </Table.Td>
-                <Table.Td style={NOWRAP}>
-                  <Badge tone={st.tone}>{st.label}</Badge>
-                </Table.Td>
+                {!narrow && (
+                  <Table.Td style={NOWRAP}>
+                    <Badge tone={st.tone}>{st.label}</Badge>
+                  </Table.Td>
+                )}
               </>
             );
           }}
@@ -398,12 +426,15 @@ export function ShareModal({
   onClose: () => void;
   canWrite: boolean;
 }) {
+  const narrow = useMediaQuery("(max-width: 48em)") ?? false;
   return (
     <Modal
       opened={opened}
       onClose={onClose}
       title={`Share ${app.name}`}
       size="lg"
+      // Full width on a phone: every pixel goes to the links table.
+      fullScreen={narrow}
       zIndex={300}
       closeButtonProps={{ "aria-label": "Close share dialog" }}
     >
