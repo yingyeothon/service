@@ -5,7 +5,9 @@
 # committed before 2026-10-27 carry the uploader's generic type, so this
 # copies each one onto itself with the new type (MetadataDirective REPLACE),
 # keeping its storage class, Cache-Control and Content-Disposition. Same key,
-# same bytes, same ETag: every stored URL stays valid. Idempotent.
+# same bytes, same ETag: every stored URL stays valid. Idempotent. The CLI
+# URL-encodes `--copy-source` itself: pre-encoding a `+` made it `%252B`
+# (NoSuchKey on prod, 2026-10-27).
 # Usage: scripts/catalog-apk-content-type.sh <stage> [--apply]
 #   Without --apply: lists what would change. The bucket is the stage's SSM
 #   pointer `/yyt-service/<stage>/artifact-bucket`. CDN copies cached with the
@@ -43,7 +45,7 @@ while IFS= read -r key; do
   cd="$(jq -r '.ContentDisposition // ""' <<<"$head")"
   [[ -n "$cd" ]] && args+=(--content-disposition "$cd")
   aws s3api copy-object --region "$REGION" --bucket "$BUCKET" --key "$key" \
-    --copy-source "${BUCKET}/$(jq -rn --arg k "$key" '$k|@uri' | sed 's/%2F/\//g')" \
+    --copy-source "${BUCKET}/${key}" \
     "${args[@]}" --output text --query CopyObjectResult.ETag >/dev/null
 done <<<"$KEYS"
 
