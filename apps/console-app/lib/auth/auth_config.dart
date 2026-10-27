@@ -119,6 +119,10 @@ class AuthConfig {
       '$base/auth/app-handoff/exchange';
   static String tokenUrlOf(String base, String tokenId) =>
       '$base/tokens/${Uri.encodeComponent(tokenId)}';
+  static String appShareLinksUrlOf(String base, String appId) =>
+      '${catalogAppsUrlOf(base)}/${Uri.encodeComponent(appId)}/share-links';
+  static String catalogShareUrlOf(String base, String ref) =>
+      '$base/catalog/share/${Uri.encodeComponent(ref)}';
   static String appArtifactsUrlOf(String base, String appId) =>
       '$base/catalog/apps/${Uri.encodeComponent(appId)}/artifacts';
 

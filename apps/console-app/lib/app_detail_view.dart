@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:yyt_console/app_cards.dart';
+import 'package:yyt_console/app_home.dart';
 import 'package:yyt_console/app_info.dart';
 import 'package:yyt_console/app_install_state.dart';
 import 'package:yyt_console/app_theme.dart';
@@ -19,6 +20,7 @@ import 'package:yyt_console/listing/listing_section.dart';
 import 'package:yyt_console/open_app_button.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/project_issues_button.dart';
+import 'package:yyt_console/share/share_sheet.dart';
 import 'package:flutter/material.dart';
 
 class AppDetailView extends StatefulWidget {
@@ -399,6 +401,19 @@ class _AppDetailViewState extends State<AppDetailView>
     return null;
   }
 
+  Future<void> _openShareSheet(ProjectsApi api, AppHome home, String version) {
+    final description = widget.app.description.trim();
+    return showAppShareSheet(
+      context: context,
+      api: api,
+      appId: widget.app.id,
+      title: description.isEmpty ? widget.app.name : description,
+      version: version,
+      canCreate: home.team.canPublish,
+      onUnauthorized: () => widget.authState.invalidate(api.token),
+    );
+  }
+
   void _showSnack(String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -485,6 +500,14 @@ class _AppDetailViewState extends State<AppDetailView>
         TextButton(onPressed: _clearLedger, child: const Text('기록 지우기')),
       if (home != null)
         ProjectIssuesButton(authState: widget.authState, home: home),
+      // The team's own app: its public link and new token links (decision
+      // *Catalog share links* #7). A shared row has no team seat to ask with.
+      if (_listingApi case final api? when home != null)
+        TextButton.icon(
+          onPressed: () => _openShareSheet(api, home, latestVersion),
+          icon: const Icon(Icons.share_rounded, size: 18),
+          label: const Text('공유'),
+        ),
     ];
 
     return ListView(

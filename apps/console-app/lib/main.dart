@@ -11,6 +11,7 @@ import 'package:yyt_console/login_screen.dart';
 import 'package:yyt_console/home_shell.dart';
 import 'package:yyt_console/push/firebase_push_messaging.dart';
 import 'package:yyt_console/push/push_service.dart';
+import 'package:yyt_console/share/shared_app_screen.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -92,18 +93,27 @@ class _CatalogAppState extends State<CatalogApp> {
     // nothing is asked of the user here (the permission prompt waits for an
     // installed app, see PushService.sync).
     widget.push?.start();
-    // Web → app sign-in links (todo/49). The stream carries the launch link
-    // too; the queue holds it until the saved profiles are loaded.
+    // Web → app sign-in links (todo/49) and catalog share links (`/i/…`).
+    // The stream carries the launch link too; the queue (and _pendingShare)
+    // holds it until the saved profiles are loaded.
     _links = AppLinks().uriLinkStream.listen(
       (uri) {
-        if (!_handoffs.offer(uri)) {
-          AuthDiagnosticLogger.logUiFailure(
-            scope: 'app_link_ignored',
-            error: StateError('not a console handoff link'),
-            stackTrace: StackTrace.current,
-            extras: {'scheme': uri.scheme, 'host': uri.host, 'path': uri.path},
-          );
+        if (_handoffs.offer(uri)) return;
+        if (ShareLink.tryParse(uri) case final share?) {
+          _openShare(share);
+          return;
         }
+        AuthDiagnosticLogger.logUiFailure(
+          scope: 'app_link_ignored',
+          error: StateError('not a console handoff or share link'),
+          stackTrace: StackTrace.current,
+          // A rejected `/i/…` path may still be someone's share token.
+          extras: {
+            'scheme': uri.scheme,
+            'host': uri.host,
+            'path': uri.path.startsWith('/i/') ? '/i/<ref>' : uri.path,
+          },
+        );
       },
       onError: (Object e, StackTrace st) => AuthDiagnosticLogger.logUiFailure(
         scope: 'app_link_stream',
@@ -111,6 +121,39 @@ class _CatalogAppState extends State<CatalogApp> {
         stackTrace: st,
       ),
     );
+  }
+
+  /// A share link (`/i/{ref}`) waiting for the saved profiles to load:
+  /// the load's first `_onAuthStateChanged` pops to the root route, which
+  /// would close a screen pushed before it.
+  ShareLink? _pendingShare;
+  String? _lastShareRef;
+  DateTime? _lastShareAt;
+
+  void _openShare(ShareLink link) {
+    // `app_links` may deliver the launch link twice (initial link + stream).
+    final now = DateTime.now();
+    if (link.ref == _lastShareRef &&
+        _lastShareAt != null &&
+        now.difference(_lastShareAt!) < const Duration(seconds: 3)) {
+      return;
+    }
+    _lastShareRef = link.ref;
+    _lastShareAt = now;
+    if (!_authState.loaded) {
+      _pendingShare = link;
+      return;
+    }
+    // Pushed on the root navigator, so it sits above LoginScreen as well as
+    // HomeShell: installing from a share needs no sign-in.
+    // After the frame that swaps `home`, when the load itself triggered
+    // this; ensureVisualUpdate schedules that frame on a warm start too.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _navigatorKey.currentState?.push(
+        MaterialPageRoute<void>(builder: (_) => SharedAppScreen(link: link)),
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
@@ -131,6 +174,11 @@ class _CatalogAppState extends State<CatalogApp> {
     }
     if (_authState.loaded) {
       _handoffs.ready();
+      if (_pendingShare case final share?) {
+        _pendingShare = null;
+        _lastShareRef = null;
+        _openShare(share);
+      }
       // Topics belong to a profile: signing out or switching drops them.
       widget.push?.setScope(_authState.activeProfile?.id);
     }

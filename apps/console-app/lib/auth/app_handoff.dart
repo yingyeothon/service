@@ -79,6 +79,61 @@ class AppHandoffLink {
   String toString() => 'AppHandoffLink($server, code: <redacted>)';
 }
 
+/// A catalog share link (docs/decisions.md *Catalog share links and install
+/// bridge* #1, #7): `https://<console host>/i/<ref>` as an App Link, or
+/// `yytconsole://<console host>/i/<ref>` from the bridge page's intent URL.
+/// `ref` is a public listing's app id or a share token `shr_<32 hex>`.
+///
+/// The same exported activity receives it, so the same allowlist applies:
+/// any other scheme, host, port, user info or path is ignored. The link only
+/// names what to read; the screen fetches `GET /catalog/share/{ref}` from
+/// the console host without credentials.
+class ShareLink {
+  static final RegExp _tokenPattern = RegExp(r'^shr_[0-9a-f]{32}$');
+  static final RegExp _appIdPattern = RegExp(r'^[A-Za-z0-9_-]{1,64}$');
+
+  /// `https://<console host>`, the API origin the share is read from.
+  final String server;
+
+  /// The app id or the share token.
+  final String ref;
+
+  const ShareLink({required this.server, required this.ref});
+
+  bool get isToken => ref.startsWith('shr_');
+
+  /// Null for anything but `https|yytconsole://<console host>/i/<ref>`.
+  static ShareLink? tryParse(
+    Uri uri, {
+    List<String> hosts = AppHandoffLink.consoleHosts,
+  }) {
+    if (uri.scheme != 'https' && uri.scheme != AppHandoffLink.customScheme) {
+      return null;
+    }
+    if (uri.userInfo.isNotEmpty || uri.hasPort) return null;
+    final host = uri.host.toLowerCase();
+    if (!hosts.contains(host)) return null;
+    final segments = uri.pathSegments;
+    if (segments.length != 2 || segments[0] != 'i') return null;
+    if (uri.path != '/i/${segments[1]}') return null;
+    final ref = segments[1];
+    // A `shr_` ref that is not a well-formed token is never an app id.
+    final ok = ref.startsWith('shr_')
+        ? _tokenPattern.hasMatch(ref)
+        : _appIdPattern.hasMatch(ref);
+    if (!ok) return null;
+    return ShareLink(
+      server: AuthConfig.normalizeServerUrl('https://$host'),
+      ref: ref,
+    );
+  }
+
+  /// The token is a bearer capability: never printed whole.
+  @override
+  String toString() =>
+      'ShareLink($server, ${isToken ? 'shr_<redacted>' : ref})';
+}
+
 /// What the exchange route answered with.
 class AppHandoffResult {
   final String apiKey;

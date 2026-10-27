@@ -7,6 +7,7 @@ import 'package:yyt_console/projects/limit_models.dart';
 import 'package:yyt_console/projects/channel_models.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/projects/site_models.dart';
+import 'package:yyt_console/share/share_models.dart';
 import 'package:http/http.dart' as http;
 
 /// A console API error with the server's message (`{error:{code,message,
@@ -473,6 +474,32 @@ class ProjectsApi {
 
   Future<void> removeListingViewer(String appId, String login) =>
       _delete(AuthConfig.appListingViewerUrlOf(baseUrl, appId, login));
+
+  // ---- catalog share links (docs/decisions.md *Catalog share links*) ------
+
+  /// The app's token links (never the token) and its public link, if any.
+  Future<ShareLinksView> listShareLinks(String appId) async =>
+      ShareLinksView.fromJson(
+        await _get(AuthConfig.appShareLinksUrlOf(baseUrl, appId)),
+      );
+
+  /// A new token link; the answer is the only one that carries its `url`.
+  /// The 21st live link is a 409 `conflict`.
+  Future<ShareLinkView> createShareLink(
+    String appId, {
+    required int expiresInDays,
+    String? label,
+  }) async {
+    final body = await _post(AuthConfig.appShareLinksUrlOf(baseUrl, appId), {
+      'expiresInDays': expiresInDays,
+      if (label != null && label.trim().isNotEmpty) 'label': label.trim(),
+    });
+    final link = ShareLinkView.fromJson(_object(body));
+    if (link.url == null) {
+      throw const ApiException(200, '서버 응답에 링크가 없습니다. 다시 시도해주세요.');
+    }
+    return link;
+  }
 
   /// A single-entity response must carry an id; an empty 2xx (the row vanished
   /// between write and re-read) is reported instead of crashing on a cast.

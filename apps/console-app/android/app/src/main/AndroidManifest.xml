@@ -42,10 +42,13 @@
                 <data android:host="console.yyt.life" />
                 <data android:host="console-dev.yyt.life" />
                 <data android:path="/app-open" />
+                <!-- Catalog share links (/i/<ref>) from the install bridge
+                     page's intent URL. -->
+                <data android:pathPrefix="/i/" />
             </intent-filter>
-            <!-- The same link as a verified App Link (autoVerify against the
-                 console's /.well-known/assetlinks.json), so a plain https link
-                 from another app can open here too. -->
+            <!-- The same links (/app-open, /i/<ref>) as verified App Links
+                 (autoVerify against the console's /.well-known/assetlinks.json),
+                 so a plain https link from another app can open here too. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -54,6 +57,7 @@
                 <data android:host="console.yyt.life" />
                 <data android:host="console-dev.yyt.life" />
                 <data android:path="/app-open" />
+                <data android:pathPrefix="/i/" />
             </intent-filter>
         </activity>
         <!-- Update notices (docs/push.md, Console app). FCM draws a

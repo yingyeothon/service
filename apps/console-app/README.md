@@ -44,6 +44,19 @@ only to the console API.
   would also route the URL, fail (the app has no named routes) and hand a
   Universal Link back to Safari, which loads `/app-open` and burns the code.
   On-device checks are `todo/79`.
+- Share links (2026-10-27, `todo/80`, decisions _Catalog share links and
+  install bridge_ #7): the app detail hero's **공유** button (team apps only)
+  opens a sheet with the public link when the listing is public
+  (`GET /catalog/apps/{app}/share-links` → `publicUrl`) and, for a member who
+  may publish, **새 링크 만들기** (1/7/30 days, optional team-only label,
+  `POST …/share-links`) whose URL is shown once and handed to the system share
+  sheet (`share_plus`; no messenger SDK) or copied. Incoming
+  `https|yytconsole://console{-dev}.yyt.life/i/<ref>` links
+  (`ShareLink.tryParse` in `lib/auth/app_handoff.dart`; `ref` is an app id or
+  `shr_<32 hex>`) open `SharedAppScreen` above whatever is showing, signed in
+  or not: it reads `GET /catalog/share/{ref}` without credentials and installs
+  the newest `.apk` (Android) or ad-hoc build (iOS) through the normal install
+  flow; a 404 reads "링크를 사용할 수 없습니다". Listing rows get no share action.
 - Limits (2026-09-29, `todo/54`, 1.6.2): a **한도** card on the channel detail
   screen and in each team's accordion (`lib/projects/limits_section.dart`,
   `GET /limits?scope=channel:<id>` / `team:<id>`): usage, the effective value
