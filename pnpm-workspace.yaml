@@ -15,3 +15,9 @@ allowBuilds:
 # @yingyeothon/* is our own library; skip pnpm's release-age gate for it.
 minimumReleaseAgeExclude:
   - "@yingyeothon/*"
+# One @smithy/types for every AWS SDK client: clients resolved at different
+# times pulled 4.17.2 and 4.19.0, and aws-sdk-client-mock's typed mocks then
+# saw two incompatible `Client` types (CI lint/typecheck failed from
+# 2026-10-20 until 2026-10-27).
+overrides:
+  "@smithy/types@^4": 4.19.0

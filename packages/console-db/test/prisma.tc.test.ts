@@ -1,4 +1,5 @@
 import { createSiteEdgeDb } from "../src/site-edge.js";
+import { siteEdgeContract } from "./siteEdge.test.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppError } from "@yyt/core";
 import {
@@ -238,6 +239,16 @@ describe.skipIf(!dockerAvailable())(
     });
 
     describe("site edge policy persistence", () => {
+      describe("contract", () => {
+        siteEdgeContract(async () => {
+          await resetTestDb(db.client);
+          await db.client.site_edge_control.create({
+            data: { id: 1, month: "", used: 0 },
+          });
+          return createSiteEdgeDb(db.client);
+        });
+      });
+
       it("stores legacy prefixes without truncation and refuses oversized keys", async () => {
         await resetTestDb(db.client);
         await db.client.site_edge_control.create({
