@@ -145,7 +145,7 @@ main{max-width:34rem;margin:0 auto;padding:1.5rem 1rem 3rem}h1{font-size:1.5rem;
 section{background:var(--box);border-radius:12px;padding:1rem;margin:0 0 1rem}section p{margin:.25rem 0 .75rem}
 .btn{display:block;width:100%;text-align:center;padding:.8rem 1rem;border-radius:10px;border:0;font:inherit;font-weight:600;text-decoration:none;cursor:pointer;margin:.5rem 0;background:var(--acc);color:#fff}
 .btn.alt{background:transparent;color:var(--acc);border:1px solid var(--acc)}.hint{color:var(--mut);font-size:.875rem}
-ol{padding-left:1.25rem;margin:.5rem 0}li{margin:.25rem 0}details summary{cursor:pointer;color:var(--acc)}
+a{color:var(--acc)}ol{padding-left:1.25rem;margin:.5rem 0}li{margin:.25rem 0}details summary{cursor:pointer;color:var(--acc)}
 .qr{display:flex;justify-content:center;margin:.5rem 0}.qr svg{width:200px;height:200px;background:#fff;padding:8px;border-radius:8px}
 input{width:100%;font:inherit;padding:.5rem;border-radius:8px;border:1px solid var(--mut);background:var(--bg);color:var(--fg)}
 [hidden]{display:none!important}`;
@@ -301,3 +301,5 @@ export function renderShareUnavailable(lang: ShareLang): HttpResult {
 }
 
 export const SHARE_PAGE_CSP = CSP;
+/** The bridge script, exported for the user-agent tests. */
+export const SHARE_PAGE_SCRIPT = SCRIPT;

@@ -1,4 +1,5 @@
 import { Anchor, Table, Text } from "@mantine/core";
+import { modals } from "@mantine/modals";
 import { Link } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../auth";
@@ -7,8 +8,8 @@ import { EnumFilter, FilterBar, TextFilter } from "../components/FilterBar";
 import { FoldCell } from "../components/FoldCell";
 import { AUDIENCE_LABEL } from "../components/ListingSection";
 import { PageHeader } from "../components/PageHeader";
-import { RowMenu } from "../components/RowMenu";
-import { Badge, Notice } from "../components/ui";
+import { RowMenu, type RowMenuItem } from "../components/RowMenu";
+import { Badge, CopyField, Notice } from "../components/ui";
 import { fmtRelative, fmtTime } from "../lib/format";
 import { noMatch, useListQuery } from "../lib/listQuery";
 import { notify } from "../lib/notify";
@@ -199,6 +200,25 @@ function AudienceCell({ l }: { l: BrowseListing }) {
   );
 }
 
+/** The permanent install-bridge link of a public listing (`/i/{appId}`). */
+export const publicShareUrl = (appId: string) =>
+  `${window.location.origin}/i/${encodeURIComponent(appId)}`;
+
+/** Clipboard first; where it is refused, show the link to copy by hand. */
+async function copyShareLink(l: BrowseListing) {
+  const url = publicShareUrl(l.appId);
+  try {
+    await navigator.clipboard.writeText(url);
+    notify.done(`Share link of ${l.title} copied`);
+  } catch {
+    modals.open({
+      title: `Share link of ${l.title}`,
+      zIndex: 300,
+      children: <CopyField label="Share link" value={url} />,
+    });
+  }
+}
+
 export function ListingsPage() {
   const { me, loading } = useAuth();
   const admin = me?.role === "admin";
@@ -322,42 +342,44 @@ export function ListingsPage() {
             </Table.Td>
           </>
         )}
-        actions={
-          admin
-            ? (l) => (
-                <RowMenu
-                  name={l.title}
-                  items={[
-                    l.takedown
-                      ? {
-                          label: "Clear takedown",
-                          disabled: act.busy,
-                          onClick: () => restore(l),
-                          confirm: {
-                            title: `Clear the takedown of ${l.title}?`,
-                            message: "Readers see the listing again at once.",
-                            confirmLabel: "Clear takedown",
-                          },
-                        }
-                      : {
-                          label: "Take down",
-                          danger: true,
-                          disabled: act.busy,
-                          onClick: (reason) => takedown(l, reason),
-                          confirm: {
-                            title: `Take down ${l.title}?`,
-                            message:
-                              "Every reader loses it until an admin clears the takedown. The team keeps its artifacts.",
-                            confirmLabel: "Take down",
-                            danger: true,
-                            reason: { label: "Reason", required: false },
-                          },
-                        },
-                  ]}
-                />
-              )
-            : undefined
-        }
+        actions={(l) => {
+          const items: RowMenuItem[] = [];
+          // A taken-down listing's link answers "unavailable": not offered.
+          if (l.audience === "public" && !l.takedown)
+            items.push({
+              label: "Copy share link",
+              onClick: () => copyShareLink(l),
+            });
+          if (admin)
+            items.push(
+              l.takedown
+                ? {
+                    label: "Clear takedown",
+                    disabled: act.busy,
+                    onClick: () => restore(l),
+                    confirm: {
+                      title: `Clear the takedown of ${l.title}?`,
+                      message: "Readers see the listing again at once.",
+                      confirmLabel: "Clear takedown",
+                    },
+                  }
+                : {
+                    label: "Take down",
+                    danger: true,
+                    disabled: act.busy,
+                    onClick: (reason) => takedown(l, reason),
+                    confirm: {
+                      title: `Take down ${l.title}?`,
+                      message:
+                        "Every reader loses it until an admin clears the takedown. The team keeps its artifacts.",
+                      confirmLabel: "Take down",
+                      danger: true,
+                      reason: { label: "Reason", required: false },
+                    },
+                  },
+            );
+          return <RowMenu name={l.title} items={items} />;
+        }}
       />
     </>
   );

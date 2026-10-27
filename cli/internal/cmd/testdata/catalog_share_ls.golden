@@ -1,0 +1,5 @@
+ID     LABEL     BY     CREATED               EXPIRES               STATUS
+shl_1  playtest  octo   2025-08-24T01:46:40Z  2025-08-31T01:46:40Z  live
+shl_2  -         -      2025-08-12T12:00:00Z  2025-08-13T12:00:00Z  expired
+shl_3  old       alice  2025-08-24T01:46:40Z  2025-09-23T01:46:40Z  revoked
+public link: https://console.example/i/ca_1

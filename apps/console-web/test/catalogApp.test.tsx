@@ -31,6 +31,7 @@ const mockApi = {
   catalogListingViewers: vi.fn(),
   addCatalogListingViewer: vi.fn(),
   removeCatalogListingViewer: vi.fn(),
+  shareLinks: vi.fn(),
 } as unknown as ApiClient;
 
 class MockApiError extends Error {
@@ -126,6 +127,21 @@ describe("CatalogAppPage", () => {
     // Not published: the listing route answers 404 until the team publishes.
     vi.mocked(mockApi.catalogListing).mockRejectedValue(new MockApiError(404));
     vi.mocked(mockApi.catalogListingViewers).mockResolvedValue([]);
+  });
+
+  it("opens the Share dialog from the header", async () => {
+    vi.mocked(mockApi.shareLinks).mockResolvedValue({
+      links: [],
+      publicUrl: null,
+      limit: 20,
+    });
+    open();
+    await userEvent.click(await screen.findByRole("button", { name: "Share" }));
+    const dialog = await screen.findByRole("dialog", { name: "Share my-game" });
+    expect(
+      await within(dialog).findByText("No share links yet."),
+    ).toBeInTheDocument();
+    expect(mockApi.shareLinks).toHaveBeenCalledWith("ca_1");
   });
 
   it("publishes from the listing section, names a member, and unpublishes", async () => {

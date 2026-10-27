@@ -880,6 +880,35 @@ export interface CatalogListing {
   takenDown: boolean;
 }
 
+/** Share link expiry choices (docs/decisions.md *Catalog share links* #2). */
+export const SHARE_LINK_DAYS = [1, 7, 30] as const;
+export type ShareLinkDays = (typeof SHARE_LINK_DAYS)[number];
+
+/** A token share link as the team's list shows it — never the token. */
+export interface ShareLink {
+  id: string;
+  label: string | null;
+  /** GitHub login of the member who made it. */
+  createdBy: string | null;
+  createdAt: number;
+  expiresAt: number;
+  revokedAt: number | null;
+  live: boolean;
+}
+
+/** The create answer: the only one that carries the URL (shown once). */
+export interface CreatedShareLink extends ShareLink {
+  url: string;
+}
+
+export interface ShareLinkList {
+  links: ShareLink[];
+  /** `/i/{appId}` while the listing is public and not taken down. */
+  publicUrl: string | null;
+  /** Live links allowed per app. */
+  limit: number;
+}
+
 export interface CatalogListingTakedown {
   by: string | null;
   at: number;

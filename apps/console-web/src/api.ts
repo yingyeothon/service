@@ -117,7 +117,10 @@ import type {
   CatalogListing,
   CatalogListingTakedown,
   CatalogListingViewer,
+  CreatedShareLink,
   ListingAudience,
+  ShareLinkDays,
+  ShareLinkList,
   ListingListParams,
   PublicListing,
 } from "./types";
@@ -913,6 +916,16 @@ export function createApiClient({
       ),
     removeCatalogListingViewer: (id: string, login: string) =>
       del(`/catalog/apps/${enc(id)}/listing/viewers/${enc(login)}`),
+    // ---- catalog share links (the URL comes back once, from create) ------
+    createShareLink: (
+      id: string,
+      body: { expiresInDays: ShareLinkDays; label?: string },
+    ) => post<CreatedShareLink>(`/catalog/apps/${enc(id)}/share-links`, body),
+    shareLinks: (id: string) =>
+      get<ShareLinkList>(`/catalog/apps/${enc(id)}/share-links`),
+    /** 204; revoking twice is a no-op. */
+    revokeShareLink: (id: string, linkId: string) =>
+      del(`/catalog/apps/${enc(id)}/share-links/${enc(linkId)}`),
     /** Anonymous-friendly: public listings plus, signed in, the named and seated ones. */
     catalogListings: (p: ListingListParams = {}) =>
       get<{ listings: PublicListing[] }>(`/catalog/listings${qs(p)}`).then(

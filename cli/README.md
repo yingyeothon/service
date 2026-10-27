@@ -221,6 +221,10 @@ yyt catalog unpublish <app>
 yyt catalog listing <app>                               # how the app is published (takenDown shows an admin's takedown)
 yyt catalog viewer add|rm|ls <app> [<github-login>]     # the members a `members` listing names (a read, never a seat)
 yyt catalog listings [--q s] [--tag t] [--platform p] [--sort publishedAt|title] [--order asc|desc]   # browse what you may read
+yyt catalog share create <app> [--days 1|7|30] [--label text]   # an expiring install page link; the URL is printed once
+yyt catalog share ls <app>                              # token links (live/expired/revoked) and the public link, if any
+yyt catalog share rm <app> <id>                         # revoke a token link
+yyt catalog share public <app>                          # the permanent link of a public listing
 # A platform admin's list of every listing and its takedown/restore are console-web only (`/ui/listings` signed in as admin).
 ```
 

@@ -27,6 +27,7 @@ import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
+import { ShareModal } from "../components/ShareModal";
 import { Badge, DropZone, Notice } from "../components/ui";
 import {
   artifactLabels,
@@ -468,6 +469,7 @@ export function CatalogAppPage() {
     { enabled: standing.canWrite },
   );
   const act = useAction();
+  const [sharing, setSharing] = useState(false);
   const iosDevice = isIosUserAgent(
     navigator.userAgent,
     navigator.maxTouchPoints,
@@ -591,6 +593,7 @@ export function CatalogAppPage() {
           },
           disabled: settingsPending,
         },
+        { label: "Share", onClick: () => setSharing(true) },
       ]
     : [];
 
@@ -607,6 +610,12 @@ export function CatalogAppPage() {
           </>
         }
         actions={actions}
+      />
+      <ShareModal
+        app={a}
+        opened={sharing}
+        onClose={() => setSharing(false)}
+        canWrite={canWrite}
       />
       {!canWrite && !standing.loading && <ReadOnlyBanner />}
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}

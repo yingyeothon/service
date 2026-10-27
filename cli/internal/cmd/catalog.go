@@ -624,6 +624,7 @@ func newCatalog(a *App) *cobra.Command {
 
 	c.AddCommand(group(app), group(artifact), newCatalogDeploy(a), newCatalogBump(a))
 	c.AddCommand(newCatalogListingCommands(a, appID)...)
+	c.AddCommand(newCatalogShareCommand(a, appID))
 	return group(c)
 }
 

@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type { AdminCatalogListing, PublicListing } from "../src/types";
 
@@ -66,7 +66,19 @@ const ROW: PublicListing = {
   bundleIds: [],
 };
 
+/** jsdom has no clipboard: install one for a test, removed after it. */
+function stubClipboard(writeText: (s: string) => Promise<void>) {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+}
+
 describe("ListingsPage", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(mockApi.catalogListings).mockResolvedValue([ROW]);
@@ -123,11 +135,71 @@ describe("ListingsPage", () => {
       ).getByRole("link", { name: "ios 1.4.1 of My Game" }),
     ).toHaveAttribute("href", expect.stringMatching(/^itms-services:/));
     expect(vi.mocked(mockApi.catalogListings)).toHaveBeenLastCalledWith({});
-    // No admin affordance for a visitor: no row menu, no admin route.
+    // No admin affordance for a visitor: only the public link to copy, no
+    // admin route.
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for My Game" }),
+    );
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Copy share link",
+    ]);
+    expect(mockApi.adminCatalogListings).not.toHaveBeenCalled();
+  });
+
+  it("copies the permanent share link of a public listing", async () => {
+    vi.mocked(mockApi.me).mockRejectedValue(new Error("401"));
+    const writeText = vi.fn(async () => undefined);
+    stubClipboard(writeText);
+    mount(<ListingsPage />, { client: mockApi, path: "/listings" });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Actions for My Game" }),
+    );
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Copy share link" }),
+    );
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        `${window.location.origin}/i/ca_1`,
+      ),
+    );
+    expect(
+      await screen.findByText("Share link of My Game copied"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the link to copy by hand when the clipboard refuses", async () => {
+    vi.mocked(mockApi.me).mockRejectedValue(new Error("401"));
+    stubClipboard(vi.fn(() => Promise.reject(new Error("denied"))));
+    mount(<ListingsPage />, { client: mockApi, path: "/listings" });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Actions for My Game" }),
+    );
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Copy share link" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Share link of My Game",
+    });
+    expect(
+      within(dialog).getByText(`${window.location.origin}/i/ca_1`),
+    ).toBeInTheDocument();
+  });
+
+  it("offers no share link for a members-only listing", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "u1",
+      login: "alice",
+      role: "member",
+      via: "session",
+    });
+    vi.mocked(mockApi.catalogListings).mockResolvedValue([
+      { ...ROW, audience: "members" },
+    ]);
+    mount(<ListingsPage />, { client: mockApi, path: "/listings" });
+    expect(await screen.findByText("members")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Actions for My Game" }),
     ).toBeNull();
-    expect(mockApi.adminCatalogListings).not.toHaveBeenCalled();
   });
 
   it("hands search, platform and sort to the server", async () => {
