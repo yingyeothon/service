@@ -217,6 +217,18 @@ export function catalogContract(
     );
     expect(await db.updateApp("a1", { name: "a-a1" }, 8)).toBe(true);
     expect(await db.updateApp("nope", { name: "q" }, 8)).toBe(false);
+    // The preview image: all four columns together, and `null` clears them.
+    expect(await db.findApp("a1")).toMatchObject({ image: null });
+    const image = {
+      key: "apps/a1/images/" + "a".repeat(64) + ".png",
+      sha256: "a".repeat(64),
+      width: 1024,
+      height: 500,
+    };
+    expect(await db.updateApp("a1", { image }, 9)).toBe(true);
+    expect((await db.findApp("a1"))?.image).toEqual(image);
+    expect(await db.updateApp("a1", { image: null }, 10)).toBe(true);
+    expect((await db.findApp("a1"))?.image).toBeNull();
     await db.insertArtifact(art("f1", "a1"));
     expect(await db.deleteApp("a1")).toBe(true);
     expect(await db.deleteApp("a1")).toBe(false);

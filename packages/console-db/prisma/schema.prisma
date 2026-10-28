@@ -167,6 +167,10 @@ model catalog_apps {
   updated_at               BigInt
   team_id                  String                     @db.VarChar(64)
   project_id               String                     @db.VarChar(64)
+  image_key                String?                    @db.VarChar(512)
+  image_sha256             String?                    @db.Char(64)
+  image_width              Int?
+  image_height             Int?
   members                  members?                   @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_owner")
   teams                    teams                      @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_team_fk")
   projects                 projects                   @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_apps_project_fk")

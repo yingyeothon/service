@@ -28,6 +28,8 @@ export interface SharePageModel {
   summary: string | null;
   /** The one build kind a link grants (decision #10), shown beside the title. */
   buildKind?: ShareBuildKind | null;
+  /** The app's preview image on the artifact CDN (decision #11). */
+  image?: { url: string; width: number; height: number } | null;
   teamName: string | null;
   /** Epoch seconds; `null` for a public link. */
   expiresAt: number | null;
@@ -161,7 +163,7 @@ section{background:var(--box);border-radius:12px;padding:1rem;margin:0 0 1rem}se
 a{color:var(--acc)}ol{padding-left:1.25rem;margin:.5rem 0}li{margin:.25rem 0}details summary{cursor:pointer;color:var(--acc)}
 .qr{display:flex;justify-content:center;margin:.5rem 0}.qr svg{width:200px;height:200px;background:#fff;padding:8px;border-radius:8px}
 input{width:100%;font:inherit;padding:.5rem;border-radius:8px;border:1px solid var(--mut);background:var(--bg);color:var(--fg)}
-[hidden]{display:none!important}`;
+[hidden]{display:none!important}.hero{display:block;max-width:100%;max-height:40vh;width:auto;height:auto;object-fit:contain;border-radius:12px;margin:0 auto 1rem;background:var(--box)}`;
 
 // Runs once on load. Every target URL is built from the page data, never
 // from `location`, so a crafted query cannot steer it.
@@ -192,15 +194,19 @@ var cp=$("copy");cp.addEventListener("click",function(){var done=function(){cp.t
 
 const sha = (s: string) =>
   `'sha256-${createHash("sha256").update(s).digest("base64")}'`;
-const CSP = [
-  "default-src 'none'",
-  `script-src ${sha(SCRIPT)}`,
-  `style-src ${sha(STYLE)}`,
-  "img-src data:",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join("; ");
+/** The page's CSP; an app image adds its CDN origin (only that origin) to `img-src`. */
+function csp(imageOrigin?: string): string {
+  return [
+    "default-src 'none'",
+    `script-src ${sha(SCRIPT)}`,
+    `style-src ${sha(STYLE)}`,
+    `img-src data:${imageOrigin ? ` ${imageOrigin}` : ""}`,
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+const CSP = csp();
 
 const HEADERS = {
   "content-type": "text/html; charset=utf-8",
@@ -214,7 +220,12 @@ const HEADERS = {
 
 function shell(
   lang: ShareLang,
-  head: { title: string; description: string; url: string | null },
+  head: {
+    title: string;
+    description: string;
+    url: string | null;
+    image?: { url: string; width: number; height: number } | null;
+  },
   body: string,
   data: unknown,
 ): string {
@@ -226,7 +237,21 @@ function shell(
     head.url
       ? `<meta property="og:url" content="${escapeHtml(head.url)}">`
       : "",
-    `<meta name="twitter:card" content="summary">`,
+    ...(head.image
+      ? [
+          `<meta property="og:image" content="${escapeHtml(head.image.url)}">`,
+          `<meta property="og:image:width" content="${head.image.width}">`,
+          `<meta property="og:image:height" content="${head.image.height}">`,
+          `<meta property="og:image:alt" content="${escapeHtml(head.title)}">`,
+          `<meta name="twitter:image" content="${escapeHtml(head.image.url)}">`,
+        ]
+      : []),
+    // A wide image (a store feature graphic) gets the large card.
+    `<meta name="twitter:card" content="${
+      head.image && head.image.width > head.image.height
+        ? "summary_large_image"
+        : "summary"
+    }">`,
     `<meta name="twitter:title" content="${escapeHtml(head.title)}">`,
     `<meta name="twitter:description" content="${escapeHtml(head.description)}">`,
   ].join("");
@@ -274,7 +299,12 @@ export function renderSharePage(
   const downloads = [
     a ? `<a class="btn" href="${escapeHtml(a.url)}" download>${t.apk}</a>` : "",
   ].join("");
-  const body = `<h1>${escapeHtml(heading)}</h1>${meta ? `<p class="meta">${meta}</p>` : ""}${
+  const image = m.image ?? null;
+  const body = `${
+    image
+      ? `<img class="hero" src="${escapeHtml(image.url)}" width="${image.width}" height="${image.height}" alt="">`
+      : ""
+  }<h1>${escapeHtml(heading)}</h1>${meta ? `<p class="meta">${meta}</p>` : ""}${
     m.summary ? `<p class="sum">${escapeHtml(m.summary)}</p>` : ""
   }
 <section id="escape" hidden><p>${t.escapeLead}</p><a id="escape-open" class="btn" href="#" hidden>${t.escapeOpen}</a><p id="escape-ios" class="hint" hidden>${t.escapeIos}</p></section>
@@ -297,11 +327,20 @@ export function renderSharePage(
   // Desktop is visible without JavaScript; the script hides it on a phone.
   const html = shell(
     lang,
-    { title: heading, description, url: m.pageUrl },
+    { title: heading, description, url: m.pageUrl, image },
     body,
     { pageUrl: m.pageUrl, copied: t.copied },
   );
-  return { statusCode: 200, headers: { ...HEADERS }, body: html };
+  return {
+    statusCode: 200,
+    headers: {
+      ...HEADERS,
+      "content-security-policy": csp(
+        image ? new URL(image.url).origin : undefined,
+      ),
+    },
+    body: html,
+  };
 }
 
 /** One page for every link that does not resolve, whatever the reason. */

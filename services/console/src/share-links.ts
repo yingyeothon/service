@@ -20,7 +20,7 @@ import { defineRoute, json, type AnyRoute, type RouteContext } from "@yyt/http";
 import QRCode from "qrcode";
 import { z } from "zod";
 import { catalogTopicOf } from "./catalog-push.js";
-import { artifactView } from "./catalog.js";
+import { appImageView, artifactView } from "./catalog.js";
 import type { ConsoleIdentity } from "./identity.js";
 import { listingSummary } from "./listings.js";
 import type { ResourceHistory } from "./resources.js";
@@ -105,6 +105,8 @@ export interface ShareLinkRoutesOptions {
   baseUrl: string;
   /** The SPA root, `https://console-dev.yyt.life/ui`. */
   webUrl: string;
+  /** The artifact CDN (`https://dev-d.yyt.life`): the app image's host. */
+  cdnBaseUrl: string;
 }
 
 type PublicArtifact = Omit<ReturnType<typeof artifactView>, "objectKey">;
@@ -121,6 +123,8 @@ export interface SharedApp {
   topic: string | null;
   /** The one kind a token link grants (decision #10); `null` = newest per platform. */
   buildKind: ShareBuildKind | null;
+  /** The app's public preview image (decision #11), or none. */
+  image: ReturnType<typeof appImageView>;
   artifacts: PublicArtifact[];
 }
 
@@ -183,6 +187,7 @@ export function createShareLinkRoutes({
   stage,
   baseUrl,
   webUrl,
+  cdnBaseUrl,
 }: ShareLinkRoutesOptions): AnyRoute[] {
   const origin = baseUrl.replace(/\/+$/, "");
   const web = webUrl.replace(/\/+$/, "");
@@ -275,6 +280,7 @@ export function createShareLinkRoutes({
       expiresAt: link ? link.expiresAt : null,
       topic: catalogTopicOf(stage, app.id) ?? null,
       buildKind: kind,
+      image: appImageView(cdnBaseUrl, app),
       artifacts,
     };
   }
@@ -438,6 +444,7 @@ export function createShareLinkRoutes({
             title: shared.title,
             summary: shared.summary,
             buildKind: shared.buildKind,
+            image: shared.image,
             teamName: shared.teamName,
             expiresAt: shared.expiresAt,
             pageUrl: url,

@@ -7,6 +7,7 @@
 // Usage: scripts/smoke/catalog-share.mjs <baseUrl> <debugKey>
 // Needs the console stack deployed with `--param debugHooks=1`. Never prints
 // cookies, presigned URLs or share tokens.
+import { createHash } from "node:crypto";
 import { ensureTeam, settle } from "./_team.mjs";
 import {
   asUser,
@@ -204,6 +205,87 @@ check(
   dp.status === 200 && !dp.text.includes("smoke-release.apk"),
   String(dp.status),
 );
+
+// The app's preview image (decision #11): signed PUT to staging, commit
+// copies it to the served key, the page names it as og:image.
+const u32 = (n) => {
+  const b = Buffer.alloc(4);
+  b.writeUInt32BE(n);
+  return b;
+};
+const png = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  u32(13),
+  Buffer.from("IHDR", "latin1"),
+  u32(1024),
+  u32(500),
+  Buffer.from(suffix),
+]);
+const pngSha = createHash("sha256").update(png).digest("hex");
+await settle();
+const imgGrant = await call(`/catalog/apps/${appId}/image`, {
+  method: "POST",
+  headers: as(owner),
+  body: { size: png.length, sha256: pngSha },
+});
+check("presign app image", imgGrant.status === 201, String(imgGrant.status));
+if (imgGrant.status === 201) {
+  const { "content-length": _len, ...imgHeaders } = imgGrant.body.headers;
+  const swapped = await fetch(imgGrant.body.url, {
+    method: "PUT",
+    headers: { ...imgHeaders, "content-type": "text/html" },
+    body: png,
+  });
+  check(
+    "a substituted type is refused by S3",
+    swapped.status === 403,
+    String(swapped.status),
+  );
+  const put = await fetch(imgGrant.body.url, {
+    method: "PUT",
+    headers: imgHeaders,
+    body: png,
+  });
+  check("PUT app image", put.ok, String(put.status));
+  await settle();
+  const commit = await call(`/catalog/apps/${appId}/image/commit`, {
+    method: "POST",
+    headers: as(owner),
+    body: { sha256: pngSha },
+  });
+  check(
+    "commit app image",
+    commit.status === 200 && commit.body?.image?.width === 1024,
+    String(commit.status),
+  );
+  const imgUrl = commit.body?.image?.url ?? "";
+  const cdnImg = imgUrl ? await fetch(imgUrl, { method: "HEAD" }) : null;
+  check(
+    "CDN serves the image as immutable image/png",
+    cdnImg?.status === 200 &&
+      cdnImg.headers.get("content-type") === "image/png" &&
+      (cdnImg.headers.get("cache-control") ?? "").includes("immutable"),
+    `${cdnImg?.status} ${cdnImg?.headers.get("content-type")}`,
+  );
+  const ip = await page(
+    (kinded.body?.url ?? "").split("/i/")[1] ?? "shr_missing",
+  );
+  check(
+    "kind page names the image",
+    ip.text.includes(`og:image" content="${imgUrl}"`) &&
+      ip.text.includes("summary_large_image"),
+  );
+  await settle();
+  check(
+    "delete app image",
+    (
+      await call(`/catalog/apps/${appId}/image`, {
+        method: "DELETE",
+        headers: as(owner),
+      })
+    ).status === 204,
+  );
+}
 
 // A public listing has a permanent link.
 const listingPath = `/catalog/apps/${appId}/listing`;

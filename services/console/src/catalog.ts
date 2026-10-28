@@ -3,6 +3,7 @@ import {
   AppError,
   nowSec,
   randomHex,
+  sha256Hex,
   type Clock,
   type Logger,
 } from "@yyt/core";
@@ -26,6 +27,18 @@ import {
   type ArtifactStore,
   uploadGrant,
 } from "./artifact-store.js";
+import {
+  APP_IMAGE_CACHE_CONTROL,
+  APP_IMAGE_MAX_BYTES,
+  APP_IMAGE_TYPE,
+  appImageBody,
+  appImageCommitBody,
+  appImageKey,
+  appImagePrefix,
+  appImageStagingKey,
+  appImageUploadId,
+  pngDimensions,
+} from "./app-image.js";
 import { buildPreview, planDeletions } from "./catalog-cleanup.js";
 import { requireRole } from "./identity.js";
 import {
@@ -241,6 +254,21 @@ export function validateUploadMetadata(
 
 export const APK_CONTENT_TYPE = "application/vnd.android.package-archive";
 
+/** The image as views show it: its CDN URL and what og:image needs. */
+export function appImageView(
+  cdnBaseUrl: string,
+  a: Pick<CatalogAppRow, "image">,
+) {
+  return a.image
+    ? {
+        url: artifactUrl(cdnBaseUrl, a.image.key),
+        sha256: a.image.sha256,
+        width: a.image.width,
+        height: a.image.height,
+      }
+    : null;
+}
+
 export function artifactUrl(cdnBaseUrl: string, objectKey: string): string {
   const base = cdnBaseUrl.replace(/\/+$/, "");
   const key = objectKey.replace(/^\/+|\/+$/g, "");
@@ -353,6 +381,26 @@ export function createCatalogRoutes({
   const { teamAccess, projectAccess, projectResource, memberSeats } = access;
   const versions = createVersionLinker({ team, clock, logger });
 
+  /** Deletes the app's image objects except `keep`; failures are logged, not thrown. */
+  async function pruneAppImages(
+    appId: string,
+    keep: (string | undefined)[],
+  ): Promise<void> {
+    try {
+      const store = requireStore();
+      const stale = (await store.list(appImagePrefix(appId)))
+        .map((o) => o.key)
+        .filter((k) => !keep.includes(k));
+      if (stale.length > 0) {
+        const { failed } = await store.deleteMany(stale);
+        for (const f of failed)
+          logger.warn("app image delete failed", { key: f.key, code: f.code });
+      }
+    } catch (e) {
+      logger.warn("app image prune failed", { appId, error: String(e) });
+    }
+  }
+
   function requireStore(): ArtifactStore {
     if (!artifacts)
       throw new AppError("unavailable", "artifact storage is not configured");
@@ -434,7 +482,11 @@ export function createCatalogRoutes({
     app: CatalogAppRow,
     patch: Parameters<CatalogDb["updateApp"]>[1],
     actorId: string,
-    action: "catalog.app.update" | "catalog.app.settings",
+    action:
+      | "catalog.app.update"
+      | "catalog.app.settings"
+      | "catalog.app.image"
+      | "catalog.app.image.delete",
   ): Promise<CatalogAppRow> {
     await catalog.updateApp(app.id, patch, nowSec(clock));
     await audit(actorId, action, app.id, { fields: Object.keys(patch) });
@@ -461,6 +513,8 @@ export function createCatalogRoutes({
       createdAt: a.createdAt,
       updatedAt: a.updatedAt,
       topic: topicOf(a.id),
+      // The public preview image (decision *Catalog share links* #11).
+      image: appImageView(cdnBaseUrl, a),
       // Slack settings and retention stay behind /settings (members only).
     }));
   }
@@ -725,10 +779,101 @@ export function createCatalogRoutes({
             "app has artifacts; delete them first",
           );
         await catalog.deleteApp(app.id);
+        // The images are public on the CDN: they go with their app.
+        if (artifacts) await pruneAppImages(app.id, []);
         await audit(id.subject, "catalog.app.delete", app.id, {
           name: app.name,
         });
         await appHistory(app, id.subject, "resource.delete");
+        return undefined;
+      },
+    },
+    // ---- the app's preview image (decision #11) -------------------------------
+    defineRoute({
+      method: "POST",
+      path: "/catalog/apps/{app}/image",
+      auth: true,
+      body: appImageBody,
+      handler: async (ctx) => {
+        await appWith(ctx, true);
+        const store = requireStore();
+        // Staged under `uploads/` like an artifact: no row names it, so the
+        // daily sweep deletes it unless the commit copies it out first.
+        const key = appImageStagingKey(ctx.body.sha256);
+        const url = await store.presignPut({
+          key,
+          contentLength: ctx.body.size,
+          contentType: APP_IMAGE_TYPE,
+          sha256: ctx.body.sha256,
+        });
+        return uploadGrant({
+          uploadId: appImageUploadId(ctx.body.sha256),
+          key,
+          url,
+          contentType: APP_IMAGE_TYPE,
+          size: ctx.body.size,
+          expiresAt: nowSec(clock) + ARTIFACT_UPLOAD_URL_TTL_SEC,
+          sha256: ctx.body.sha256,
+        });
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/catalog/apps/{app}/image/commit",
+      auth: true,
+      body: appImageCommitBody,
+      handler: async (ctx) => {
+        const { id, row: app } = await appWith(ctx, true);
+        const store = requireStore();
+        const staged = appImageStagingKey(ctx.body.sha256);
+        const head = await store.head(staged);
+        if (!head) throw new AppError("bad_request", "image not uploaded");
+        const refuse = async (message: string): Promise<never> => {
+          await store.delete(staged);
+          throw new AppError("bad_request", message);
+        };
+        if (head.contentLength > APP_IMAGE_MAX_BYTES)
+          return refuse("image is larger than 2 MB");
+        const bytes = await store.readRange(staged, 0, head.contentLength - 1);
+        if (!bytes || sha256Hex(bytes) !== ctx.body.sha256)
+          return refuse("image does not match its sha256");
+        const dims = pngDimensions(bytes);
+        if ("error" in dims) return refuse(dims.error);
+        // The served object's headers are set here, not inherited from the
+        // staging PUT (rules/security.md, Public CDN assets).
+        const key = appImageKey(app.id, ctx.body.sha256);
+        await store.copy(staged, key, {
+          contentType: APP_IMAGE_TYPE,
+          cacheControl: APP_IMAGE_CACHE_CONTROL,
+        });
+        await store.delete(staged);
+        const image = { key, sha256: ctx.body.sha256, ...dims };
+        const row = await applyAppPatch(
+          app,
+          { image },
+          id.subject,
+          "catalog.app.image",
+        );
+        // Keep the image just replaced (messenger cards already shared point
+        // at it) and drop anything older, so an app holds at most two.
+        await pruneAppImages(app.id, [key, app.image?.key]);
+        return appView(row);
+      },
+    }),
+    {
+      method: "DELETE",
+      path: "/catalog/apps/{app}/image",
+      auth: true,
+      handler: async (ctx) => {
+        const { id, row: app } = await appWith(ctx, true);
+        if (!app.image) return undefined;
+        await applyAppPatch(
+          app,
+          { image: null },
+          id.subject,
+          "catalog.app.image.delete",
+        );
+        await pruneAppImages(app.id, []);
         return undefined;
       },
     },

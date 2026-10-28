@@ -1462,6 +1462,7 @@ export function createConsoleApp({
     stage,
     baseUrl,
     webUrl: web,
+    cdnBaseUrl: cdn,
   });
 
   const catalogRoutes = createCatalogRoutes({

@@ -148,3 +148,44 @@ describe("share bridge script", () => {
     expect(shareLang(undefined)).toBe("ko");
   });
 });
+
+describe("share page image (decision #11)", () => {
+  const model = {
+    title: "앱",
+    summary: null,
+    teamName: null,
+    expiresAt: null,
+    pageUrl: "https://console-dev.yyt.life/i/x",
+    android: null,
+    ios: null,
+    installerUrl: "https://console-dev.yyt.life/ui/installer",
+    qrSvg: "<svg></svg>",
+  };
+
+  it("adds escaped og/twitter image tags and widens only img-src to the CDN", async () => {
+    const { renderSharePage, SHARE_PAGE_CSP } =
+      await import("../src/share-page.js");
+    const url = 'https://dev-d.yyt.life/apps/a/images/x.png?"><script>';
+    const r = renderSharePage(
+      { ...model, image: { url, width: 1024, height: 500 } },
+      "ko",
+    );
+    const html = r.body as string;
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain(
+      'content="https://dev-d.yyt.life/apps/a/images/x.png?&quot;&gt;&lt;script&gt;"',
+    );
+    expect(html).toContain('<meta property="og:image:alt" content="앱">');
+    expect(html).toContain('<meta name="twitter:image"');
+    expect(html).toContain('content="summary_large_image"');
+    expect(r.headers?.["content-security-policy"]).toBe(
+      SHARE_PAGE_CSP.replace(
+        "img-src data:",
+        "img-src data: https://dev-d.yyt.life",
+      ),
+    );
+    const plain = renderSharePage(model, "ko");
+    expect(plain.headers?.["content-security-policy"]).toBe(SHARE_PAGE_CSP);
+    expect(plain.body).not.toContain("og:image");
+  });
+});

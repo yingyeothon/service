@@ -85,6 +85,16 @@ export interface CatalogAppRow {
   keepRecentVersions: number;
   createdAt: number;
   updatedAt: number;
+  /** The public preview image (decision *Catalog share links* #11), or none. */
+  image: CatalogAppImage | null;
+}
+
+export interface CatalogAppImage {
+  /** CDN object key, `apps/{appId}/images/{sha256}.png`. */
+  key: string;
+  sha256: string;
+  width: number;
+  height: number;
 }
 
 export interface CatalogAppInput {
@@ -107,6 +117,8 @@ export interface CatalogAppPatch {
   slackChannel?: string | null;
   messageTemplate?: string | null;
   keepRecentVersions?: number;
+  /** `null` clears the image. */
+  image?: CatalogAppImage | null;
 }
 
 export interface CatalogArtifactRow {
@@ -297,6 +309,10 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
     keep_recent_versions: number;
     created_at: bigint | number;
     updated_at: bigint | number;
+    image_key: string | null;
+    image_sha256: string | null;
+    image_width: number | null;
+    image_height: number | null;
   }): CatalogAppRow => ({
     id: r.id,
     name: r.name,
@@ -311,6 +327,16 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
     keepRecentVersions: num(r.keep_recent_versions),
     createdAt: num(r.created_at),
     updatedAt: num(r.updated_at),
+    // All four or none: the commit writes them together.
+    image:
+      r.image_key && r.image_sha256 && r.image_width && r.image_height
+        ? {
+            key: r.image_key,
+            sha256: r.image_sha256,
+            width: r.image_width,
+            height: r.image_height,
+          }
+        : null,
   });
   const toArtifact = (r: {
     id: string;
@@ -431,6 +457,12 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
           data.message_template = patch.messageTemplate;
         if (patch.keepRecentVersions !== undefined)
           data.keep_recent_versions = patch.keepRecentVersions;
+        if (patch.image !== undefined) {
+          data.image_key = patch.image?.key ?? null;
+          data.image_sha256 = patch.image?.sha256 ?? null;
+          data.image_width = patch.image?.width ?? null;
+          data.image_height = patch.image?.height ?? null;
+        }
         const r = await prisma.catalog_apps.updateMany({ where: { id }, data });
         return r.count > 0;
       }),
@@ -711,6 +743,7 @@ export function createMemoryCatalogDb(
         keepRecentVersions: 3,
         createdAt: a.createdAt,
         updatedAt: a.createdAt,
+        image: null,
       });
     },
     findApp: async (id) => {
@@ -758,6 +791,8 @@ export function createMemoryCatalogDb(
         if (patch[k] !== undefined)
           (next as Record<string, unknown>)[k] = patch[k];
       }
+      // A fresh object, as the database gives every reader.
+      if (patch.image) next.image = { ...patch.image };
       apps.set(id, next);
       return true;
     },
