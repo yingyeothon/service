@@ -282,6 +282,8 @@ export {
   type MemoryListingsDeps,
   type ShareLinkInput,
   type ShareLinkRow,
+  type ShareBuildKind,
+  SHARE_BUILD_KINDS,
 } from "./listings.js";
 export {
   createMemoryShowsDb,

@@ -6,13 +6,15 @@ import {
   ulid,
   type Clock,
 } from "@yyt/core";
-import type {
-  CatalogAppRow,
-  CatalogDb,
-  ConsoleDb,
-  ListingsDb,
-  ShareLinkRow,
-  TeamDb,
+import {
+  SHARE_BUILD_KINDS,
+  type CatalogAppRow,
+  type CatalogDb,
+  type ConsoleDb,
+  type ListingsDb,
+  type ShareBuildKind,
+  type ShareLinkRow,
+  type TeamDb,
 } from "@yyt/console-db";
 import { defineRoute, json, type AnyRoute, type RouteContext } from "@yyt/http";
 import QRCode from "qrcode";
@@ -20,6 +22,7 @@ import { z } from "zod";
 import { catalogTopicOf } from "./catalog-push.js";
 import { artifactView } from "./catalog.js";
 import type { ConsoleIdentity } from "./identity.js";
+import { listingSummary } from "./listings.js";
 import type { ResourceHistory } from "./resources.js";
 import {
   renderSharePage,
@@ -65,6 +68,20 @@ export const shareLinkBody = z
       .union([z.literal(1), z.literal(7), z.literal(30)])
       .default(7),
     label: label.optional(),
+    // Decision #10: one build kind, and the link's own text for recipients.
+    buildKind: z.enum(SHARE_BUILD_KINDS).optional(),
+    // Blank reads as unset. Format characters (bidi overrides, zero-width)
+    // are refused too: the title reaches messenger previews.
+    title: z
+      .string()
+      .trim()
+      .max(100)
+      .refine(
+        (s) => !/[\p{Cc}\p{Cf}]/u.test(s),
+        "no control or format characters",
+      )
+      .optional(),
+    summary: listingSummary.optional(),
   })
   .strict();
 
@@ -102,6 +119,8 @@ export interface SharedApp {
   teamName: string | null;
   expiresAt: number | null;
   topic: string | null;
+  /** The one kind a token link grants (decision #10); `null` = newest per platform. */
+  buildKind: ShareBuildKind | null;
   artifacts: PublicArtifact[];
 }
 
@@ -119,6 +138,37 @@ export function installableIos(artifacts: PublicArtifact[]) {
   const a = artifacts.find((x) => x.platform === "ios");
   return a?.ios ? a : undefined;
 }
+
+/**
+ * The newest artifact of `kind` among `artifacts` (newest first), decision
+ * #10: an Android kind is the `build_type` tag on an `.apk`; `ios-ad-hoc` is
+ * an iOS build that carries an ad-hoc install URL.
+ */
+export function artifactOfKind(
+  kind: ShareBuildKind,
+  artifacts: PublicArtifact[],
+): PublicArtifact | undefined {
+  if (kind === "ios-ad-hoc")
+    return artifacts.find((a) => a.platform === "ios" && a.ios);
+  const type = kind === "android-debug" ? "debug" : "release";
+  return artifacts.find(
+    (a) =>
+      a.platform === "android" &&
+      a.tags.build_type === type &&
+      /\.apk$/i.test(filenameOf(a)),
+  );
+}
+
+/** How many of the platform's newest builds a kind link looks through. */
+const KIND_SCAN = 100;
+
+const isShareBuildKind = (k: string | null): k is ShareBuildKind =>
+  (SHARE_BUILD_KINDS as readonly (string | null)[]).includes(k);
+
+const publicView = (a: Parameters<typeof artifactView>[0]): PublicArtifact => {
+  const { objectKey: _k, ...v } = artifactView(a);
+  return v;
+};
 
 export function createShareLinkRoutes({
   listings,
@@ -187,26 +237,45 @@ export function createShareLinkRoutes({
     if (!app?.teamId) return undefined;
     const pub =
       listing?.audience === "public" && !listing.takedown ? listing : undefined;
+    const stored = link?.buildKind ?? null;
+    // A kind this code does not know (a newer console wrote it) grants
+    // nothing, never the wider newest-per-platform default.
+    const kind = isShareBuildKind(stored) ? stored : null;
     const [names, artifacts] = await Promise.all([
       team.findTeamNamesByIds([app.teamId]),
-      catalog.newestArtifactsPerPlatform([app.id]),
+      stored !== null && kind === null
+        ? Promise.resolve([] as PublicArtifact[])
+        : kind
+          ? // The platform's newest builds: the kind is among them unless the
+            // app uploaded more than this many other builds since.
+            catalog
+              .listArtifacts(app.id, {
+                platform: kind === "ios-ad-hoc" ? "ios" : "android",
+                take: KIND_SCAN,
+              })
+              .then((rows) => {
+                const a = artifactOfKind(kind, rows.map(publicView));
+                return a ? [a] : [];
+              })
+          : catalog
+              .newestArtifactsPerPlatform([app.id])
+              .then((rows) => rows.map(publicView)),
     ]);
     return {
       kind: link ? "token" : "public",
       appId: app.id,
       appName: app.name,
-      // A public listing's title and summary are publication text for
-      // anyone; a `members` listing's are not, and an unlisted app's own
-      // description is the team's, so a token link shows the app's name only.
-      title: pub?.title ?? app.name,
-      summary: pub?.summary ?? null,
+      // The link's own text was written for its recipients (decision #10). A
+      // public listing's title and summary are publication text for anyone;
+      // a `members` listing's are not, and an unlisted app's own description
+      // is the team's, so a token link without text shows the app's name.
+      title: link?.title ?? pub?.title ?? app.name,
+      summary: link?.summary ?? pub?.summary ?? null,
       teamName: names[0]?.name ?? null,
       expiresAt: link ? link.expiresAt : null,
       topic: catalogTopicOf(stage, app.id) ?? null,
-      artifacts: artifacts.map((a) => {
-        const { objectKey: _k, ...v } = artifactView(a);
-        return v;
-      }),
+      buildKind: kind,
+      artifacts,
     };
   }
 
@@ -222,6 +291,8 @@ export function createShareLinkRoutes({
     return rows.map((r) => ({
       id: r.id,
       label: r.label,
+      buildKind: r.buildKind,
+      title: r.title,
       createdBy:
         r.createdBy === null ? null : (members.get(r.createdBy) ?? null),
       createdAt: r.createdAt,
@@ -268,11 +339,15 @@ export function createShareLinkRoutes({
           createdBy: id.subject,
           createdAt: now,
           expiresAt: now + ctx.body.expiresInDays * 86_400,
+          buildKind: ctx.body.buildKind ?? null,
+          title: ctx.body.title || null,
+          summary: ctx.body.summary || null,
         };
         await listings.insertShareLink(row);
         await audit(id.subject, "catalog.share.create", app.id, {
           linkId: row.id,
           expiresInDays: ctx.body.expiresInDays,
+          buildKind: row.buildKind,
         });
         await linkHistory(app, id.subject, "resource.create", row.id);
         const [view] = await linkViews([{ ...row, revokedAt: null }]);
@@ -362,6 +437,7 @@ export function createShareLinkRoutes({
           {
             title: shared.title,
             summary: shared.summary,
+            buildKind: shared.buildKind,
             teamName: shared.teamName,
             expiresAt: shared.expiresAt,
             pageUrl: url,

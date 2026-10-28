@@ -138,7 +138,23 @@ export interface ShareLinkRow {
   createdAt: number;
   expiresAt: number;
   revokedAt: number | null;
+  /**
+   * The one build kind the link grants (`SHARE_BUILD_KINDS`); `null` = the
+   * newest build per platform. Stored as written: a kind this code does not
+   * know grants nothing (the route checks it), never the wider default.
+   */
+  buildKind: string | null;
+  /** The link's own title and summary for recipients (decision #10). */
+  title: string | null;
+  summary: string | null;
 }
+
+export const SHARE_BUILD_KINDS = [
+  "android-debug",
+  "android-release",
+  "ios-ad-hoc",
+] as const;
+export type ShareBuildKind = (typeof SHARE_BUILD_KINDS)[number];
 
 export type ShareLinkInput = Omit<ShareLinkRow, "revokedAt">;
 
@@ -478,6 +494,9 @@ export function createListingsDb(prisma: PrismaClient): ListingsDb {
             created_by: l.createdBy,
             created_at: l.createdAt,
             expires_at: l.expiresAt,
+            build_kind: l.buildKind,
+            title: l.title,
+            summary: l.summary,
           },
         });
       }),
@@ -537,6 +556,9 @@ const toShareLink = (r: {
   created_at: bigint | number;
   expires_at: bigint | number;
   revoked_at: bigint | number | null;
+  build_kind: string | null;
+  title: string | null;
+  summary: string | null;
 }): ShareLinkRow => ({
   id: r.id,
   appId: r.app_id,
@@ -546,6 +568,9 @@ const toShareLink = (r: {
   createdAt: num(r.created_at),
   expiresAt: num(r.expires_at),
   revokedAt: nul(r.revoked_at),
+  buildKind: r.build_kind,
+  title: r.title,
+  summary: r.summary,
 });
 
 export interface MemoryListingsDeps {

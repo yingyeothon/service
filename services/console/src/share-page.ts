@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ShareBuildKind } from "@yyt/console-db";
 import type { HttpResult } from "@yyt/http";
 
 /*
@@ -23,8 +24,10 @@ export interface SharePageBuild {
 
 export interface SharePageModel {
   title: string;
-  /** The listing's summary on a public link; `null` otherwise. */
+  /** The link's own summary, else a public listing's; `null` otherwise. */
   summary: string | null;
+  /** The one build kind a link grants (decision #10), shown beside the title. */
+  buildKind?: ShareBuildKind | null;
   teamName: string | null;
   /** Epoch seconds; `null` for a public link. */
   expiresAt: number | null;
@@ -75,6 +78,11 @@ const T = {
     desktop:
       "휴대폰 카메라로 QR 코드를 찍어 휴대폰에서 여세요. 파일을 직접 받을 수도 있습니다.",
     noBuild: "아직 설치할 수 있는 빌드가 없습니다.",
+    kind: {
+      "android-debug": "Android 디버그 빌드",
+      "android-release": "Android 릴리스 빌드",
+      "ios-ad-hoc": "iOS Ad-hoc 빌드",
+    },
   },
   en: {
     unavailableTitle: "This link is not available",
@@ -110,6 +118,11 @@ const T = {
     desktop:
       "Scan the QR code with your phone to open this page there, or download the files directly.",
     noBuild: "No installable build yet.",
+    kind: {
+      "android-debug": "Android debug build",
+      "android-release": "Android release build",
+      "ios-ad-hoc": "iOS ad-hoc build",
+    },
   },
 } as const;
 
@@ -248,6 +261,7 @@ export function renderSharePage(
   const description =
     [...(m.summary?.split("\n")[0] ?? "")].slice(0, 200).join("") || t.install;
   const meta = [
+    m.buildKind ? t.kind[m.buildKind] : "",
     m.teamName ? `${t.by} ${escapeHtml(m.teamName)}` : "",
     m.expiresAt !== null
       ? `${t.expires} ${escapeHtml(date(m.expiresAt, lang))}`

@@ -50,7 +50,7 @@ const up = await call(`/catalog/apps/${appId}/artifacts`, {
     platform: "android",
     filename: "smoke-release.apk",
     size: payload.length,
-    tags: { version },
+    tags: { version, build_type: "release" },
   },
 });
 check("presign upload", up.status === 201, String(up.status));
@@ -154,6 +154,56 @@ check(
   gone.status === 404 && missing.status === 404 && gone.text === missing.text,
 );
 check("unlisted app id is unavailable", (await page(appId)).status === 404);
+
+// A build kind with the link's own text (decision #10).
+await settle();
+const kinded = await call(links, {
+  method: "POST",
+  headers: as(owner),
+  body: {
+    expiresInDays: 1,
+    buildKind: "android-release",
+    title: "스모크 앱",
+    summary: "스모크 소개",
+  },
+});
+check(
+  "mint a release-kind link with its own title",
+  kinded.status === 201 &&
+    kinded.body?.buildKind === "android-release" &&
+    kinded.body?.title === "스모크 앱",
+  String(kinded.status),
+);
+const kp = await page(
+  (kinded.body?.url ?? "").split("/i/")[1] ?? "shr_missing",
+);
+check(
+  "kind page: the link's title, summary and the release APK",
+  kp.status === 200 &&
+    kp.text.includes(`og:title" content="스모크 앱 ${version}"`) &&
+    kp.text.includes(`og:description" content="스모크 소개"`) &&
+    kp.text.includes("smoke-release.apk"),
+  String(kp.status),
+);
+await settle();
+const debugKind = await call(links, {
+  method: "POST",
+  headers: as(owner),
+  body: { expiresInDays: 1, buildKind: "android-debug" },
+});
+check(
+  "mint a debug-kind link",
+  debugKind.status === 201,
+  String(debugKind.status),
+);
+const dp = await page(
+  (debugKind.body?.url ?? "").split("/i/")[1] ?? "shr_missing",
+);
+check(
+  "a kind with no build resolves and offers nothing",
+  dp.status === 200 && !dp.text.includes("smoke-release.apk"),
+  String(dp.status),
+);
 
 // A public listing has a permanent link.
 const listingPath = `/catalog/apps/${appId}/listing`;

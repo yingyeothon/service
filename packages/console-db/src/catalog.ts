@@ -219,10 +219,16 @@ export interface CatalogDb {
    */
   listArtifactsByIds(ids: readonly string[]): Promise<CatalogArtifactRow[]>;
   /** Newest first; `platform` narrows. */
-  /** Newest first; `version` orders by the artifact's `version` tag (byte order, missing first). */
+  /**
+   * Newest first; `version` orders by the artifact's `version` tag (byte order, missing first).
+   * `take` bounds the default newest-first read; the unauthenticated share page uses it.
+   */
   listArtifacts(
     appId: string,
-    filter?: { platform?: CatalogPlatform } & ListOrder<ArtifactSortKey>,
+    filter?: {
+      platform?: CatalogPlatform;
+      take?: number;
+    } & ListOrder<ArtifactSortKey>,
   ): Promise<CatalogArtifactRow[]>;
   /**
    * Per app (only apps that have at least one matching artifact): the newest
@@ -486,6 +492,9 @@ export function createCatalogDb(prisma: PrismaClient): CatalogDb {
                         { created_at: "desc" as const },
                         { id: "desc" as const },
                       ],
+            ...(filter.take !== undefined && !filter.sort
+              ? { take: filter.take }
+              : {}),
           })
         ).map(toArtifact);
         // The version tag lives inside `tags_json`, so it orders here.
@@ -797,6 +806,9 @@ export function createMemoryCatalogDb(
         filter,
         byId,
         artifactsNewestFirst,
+      ).slice(
+        0,
+        filter.take !== undefined && !filter.sort ? filter.take : undefined,
       ),
     summarizeArtifacts: async (appIds, filter = {}) => {
       const rows = [...artifacts.values()]

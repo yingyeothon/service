@@ -144,6 +144,7 @@ describe("catalog share links", () => {
       title: "myapp",
       summary: null,
       expiresAt: link.expiresAt,
+      buildKind: null,
     });
     expect(shared.artifacts).toHaveLength(2);
     expect(JSON.stringify(shared)).not.toContain("objectKey");
@@ -202,6 +203,186 @@ describe("catalog share links", () => {
     const hist = JSON.stringify([...h.teamDb.history.values()]);
     expect(hist).toContain("share_link");
     expect(hist).not.toContain(token);
+  });
+
+  it("grants one build kind with the link's own title and summary (decision #10)", async () => {
+    const h = harness();
+    const owner = await h.team("owner", "member", 9206);
+    const app = await makeApp(h, owner);
+    const add = (
+      id: string,
+      platform: "android" | "ios",
+      file: string,
+      tags: Record<string, string>,
+      at: number,
+    ) =>
+      h.catalog.insertArtifact({
+        id: `${app.id}_${id}`,
+        appId: app.id,
+        platform,
+        url: `https://dev-d.yyt.life/apps/${app.id}/${id}/${file}`,
+        tags,
+        createdAt: NOW_SEC + at,
+      });
+    await add(
+      "rel",
+      "android",
+      "app-release.apk",
+      { version: "1.0.0+1", build_type: "release" },
+      1,
+    );
+    await add(
+      "dbg",
+      "android",
+      "app-debug.apk",
+      { version: "1.0.1+2", build_type: "debug" },
+      2,
+    );
+    // Newer, but neither kind: an untagged APK and an AAB.
+    await add("old", "android", "app.apk", { version: "1.0.2+3" }, 3);
+    await add(
+      "aab",
+      "android",
+      "app.aab",
+      { version: "1.0.2+3", build_type: "appbundle" },
+      4,
+    );
+    await add(
+      "adhoc",
+      "ios",
+      "Runner.ipa",
+      { version: "1.0.1+2", distribution_method: "ad-hoc" },
+      2,
+    );
+    // Newer, but without a manifest: never an ad-hoc install.
+    await add(
+      "rt",
+      "ios",
+      "Runner.ipa",
+      { version: "1.0.2+3", distribution_method: "release-testing" },
+      5,
+    );
+
+    const mint = async (body: object) => {
+      const r = await create(h, owner, app.id, body);
+      expect(r.statusCode, r.body).toBe(201);
+      return parse<Link & { buildKind: string | null; title: string | null }>(
+        r,
+      );
+    };
+    const rel = await mint({
+      buildKind: "android-release",
+      title: "  마이앱  ",
+      summary: "한 줄 소개\n두 번째 줄",
+    });
+    expect(rel).toMatchObject({
+      buildKind: "android-release",
+      title: "마이앱",
+    });
+    const html = (await page(h, tokenOf(rel.url))).body as string;
+    expect(html).toContain(
+      '<meta property="og:title" content="마이앱 1.0.0+1">',
+    );
+    expect(html).toContain(
+      '<meta property="og:description" content="한 줄 소개">',
+    );
+    expect(html).toContain("Android 릴리스 빌드");
+    expect(html).toContain(`/apps/${app.id}/rel/app-release.apk"`);
+    expect(html).not.toContain("app-debug.apk");
+    expect(html).not.toContain("itms-services");
+    const twinRel = parse<{
+      title: string;
+      summary: string;
+      buildKind: string;
+      artifacts: { id: string }[];
+    }>(await twin(h, tokenOf(rel.url)));
+    expect(twinRel).toMatchObject({
+      title: "마이앱",
+      summary: "한 줄 소개\n두 번째 줄",
+      buildKind: "android-release",
+    });
+    // Only the chosen build: an older app recomputing "newest" lands on it.
+    expect(twinRel.artifacts.map((a) => a.id)).toEqual([`${app.id}_rel`]);
+
+    const dbg = await mint({ buildKind: "android-debug" });
+    const dbgHtml = (await page(h, tokenOf(dbg.url))).body as string;
+    expect(dbgHtml).toContain(`/apps/${app.id}/dbg/app-debug.apk"`);
+    // No text of its own: the app's name, as before.
+    expect(dbgHtml).toContain(
+      '<meta property="og:title" content="myapp 1.0.1+2">',
+    );
+
+    const ios = await mint({ buildKind: "ios-ad-hoc" });
+    const iosTwin = parse<{ artifacts: { id: string }[] }>(
+      await twin(h, tokenOf(ios.url)),
+    );
+    expect(iosTwin.artifacts.map((a) => a.id)).toEqual([`${app.id}_adhoc`]);
+    expect((await page(h, tokenOf(ios.url))).body).toContain(
+      "itms-services://",
+    );
+
+    // The kind follows new uploads for the link's lifetime.
+    await add(
+      "rel2",
+      "android",
+      "app-release.apk",
+      { version: "1.1.0+9", build_type: "release" },
+      9,
+    );
+    expect((await page(h, tokenOf(rel.url))).body).toContain(
+      `/apps/${app.id}/rel2/app-release.apk"`,
+    );
+
+    // A kind with no build still resolves and says so.
+    const other = await makeApp(h, owner, "other");
+    const r = await create(h, owner, other.id, { buildKind: "ios-ad-hoc" });
+    const empty = await page(h, tokenOf(parse<Link>(r).url));
+    expect(empty.statusCode).toBe(200);
+    expect(empty.body).toContain("아직 설치할 수 있는 빌드가 없습니다.");
+
+    // The list shows the kind and title, never the summary or the token.
+    const list = parse<{ links: (Link & { buildKind: string | null })[] }>(
+      await h.app(
+        ev("GET", `/catalog/apps/${app.id}/share-links`, {
+          headers: owner.cookie,
+        }),
+      ),
+    );
+    expect(list.links.map((l) => l.buildKind)).toEqual([
+      "ios-ad-hoc",
+      "android-debug",
+      "android-release",
+    ]);
+    expect(JSON.stringify(list)).not.toContain("두 번째 줄");
+
+    for (const body of [
+      { buildKind: "android-aab" },
+      { title: "두\n줄" },
+      { title: "\u202e앱" },
+      { summary: "x".repeat(2001) },
+    ]) {
+      const bad = await create(h, owner, app.id, body);
+      expect(bad.statusCode, JSON.stringify(body)).toBe(400);
+    }
+    // A blank title is no title.
+    expect(
+      parse<Link & { title: string | null }>(
+        await create(h, owner, app.id, { title: "   " }),
+      ).title,
+    ).toBeNull();
+
+    // A kind this code does not know (a newer console wrote it) grants
+    // nothing, never the newest build per platform.
+    const future = await mint({ buildKind: "android-release" });
+    const row = [...h.listings.shareLinks.values()].find(
+      (l) => l.id === future.id,
+    )!;
+    row.buildKind = "android-universal";
+    const futureTwin = parse<{ artifacts: object[] }>(
+      await twin(h, tokenOf(future.url)),
+    );
+    expect(futureTwin.artifacts).toEqual([]);
+    expect((await page(h, tokenOf(future.url))).body).not.toContain(".apk");
   });
 
   it("renders one unavailable page for every case it must not tell apart", async () => {

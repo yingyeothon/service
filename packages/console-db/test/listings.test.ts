@@ -351,6 +351,10 @@ export function listingsContract(
       createdBy: "m1",
       createdAt: at,
       expiresAt,
+      // The kind, title and summary round-trip; NULL reads back as null.
+      buildKind: id === "sl_1" ? ("android-release" as const) : null,
+      title: id === "sl_1" ? "어드벤트트리" : null,
+      summary: id === "sl_1" ? "첫 줄\n둘째 줄" : null,
     });
     await db.insertShareLink(link("sl_1", "ca_1", 100, 1));
     await db.insertShareLink(link("sl_2", "ca_1", 50, 2));

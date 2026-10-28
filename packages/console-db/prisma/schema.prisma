@@ -285,6 +285,9 @@ model catalog_share_links {
   created_at   BigInt
   expires_at   BigInt
   revoked_at   BigInt?
+  build_kind   String?      @db.VarChar(32)
+  title        String?      @db.VarChar(255)
+  summary      String?      @db.VarChar(2000)
   catalog_apps catalog_apps @relation(fields: [app_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "catalog_share_links_app")
   creator      members?     @relation("share_link_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "catalog_share_links_creator")
 

@@ -42,13 +42,13 @@ export const LISTINGS_PAGE_MAX = 200;
 // Served back to every reader and printed by the CLI: no control characters
 // in a title (a newline would forge a row in a terminal), and only newlines
 // and tabs in a summary (rules/security.md, the event force-close lesson).
-const title = z
+const listingTitle = z
   .string()
   .trim()
   .min(1)
   .max(100)
   .refine((s) => !/\p{Cc}/u.test(s), "no control characters");
-const summary = z
+export const listingSummary = z
   .string()
   .trim()
   .max(2000)
@@ -62,8 +62,8 @@ const audience = z.enum(LISTING_AUDIENCES);
 
 export const listingPutBody = z
   .object({
-    title,
-    summary: summary.nullable().optional(),
+    title: listingTitle,
+    summary: listingSummary.nullable().optional(),
     tags: tags.optional(),
     audience,
   })

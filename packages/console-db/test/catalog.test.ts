@@ -262,6 +262,10 @@ export function catalogContract(
     expect(
       (await db.listArtifacts("a1", { platform: "ios" })).map((a) => a.id),
     ).toEqual(["f2"]);
+    // `take` keeps the newest rows of the default order.
+    expect(
+      (await db.listArtifacts("a1", { take: 1 })).map((a) => a.id),
+    ).toEqual(["f2"]);
     expect(await db.findArtifact("f2")).toMatchObject({
       tags: { version: "1.1.0", buildType: "release" },
       size: 10,
