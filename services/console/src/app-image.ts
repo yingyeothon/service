@@ -33,9 +33,11 @@ export const appImageKey = (appId: string, hash: string) =>
  * The staging "upload id": no pending-upload row carries it, so the daily
  * `uploads/` sweep removes an image that was never committed.
  */
-export const appImageUploadId = (hash: string) => `img-${hash}`;
-export const appImageStagingKey = (hash: string) =>
-  `uploads/${appImageUploadId(hash)}/image.png`;
+export const appImageUploadId = (appId: string, hash: string) =>
+  `img-${appId}-${hash}`;
+/** Scoped to the app: another app's upload of the same bytes is its own object. */
+export const appImageStagingKey = (appId: string, hash: string) =>
+  `uploads/${appImageUploadId(appId, hash)}/image.png`;
 
 const PNG_SIGNATURE = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,

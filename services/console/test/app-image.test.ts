@@ -54,7 +54,7 @@ async function upload(h: H, u: Team, appId: string, bytes: Buffer) {
   );
   expect(grant.statusCode, grant.body).toBe(201);
   const g = parse<{ key: string; headers: Record<string, string> }>(grant);
-  expect(g.key).toBe(appImageStagingKey(sha256));
+  expect(g.key).toBe(appImageStagingKey(appId, sha256));
   expect(g.headers).toMatchObject({
     "content-type": "image/png",
     "content-length": String(bytes.length),
@@ -133,7 +133,7 @@ describe("app preview image", () => {
 
     // Committed: copied out of staging with its type and cache policy.
     expect(
-      h.artifacts.objects.has(appImageStagingKey(sha256Hex(feature))),
+      h.artifacts.objects.has(appImageStagingKey(app.id, sha256Hex(feature))),
     ).toBe(false);
     expect(h.artifacts.copies.at(-1)?.dst).toBe(key);
     // A square icon replaces it: the card is a summary, the replaced image
@@ -177,7 +177,7 @@ describe("app preview image", () => {
 
     // Bytes that do not match the hash the commit names.
     const good = png(1024, 500);
-    h.artifacts.putObject(appImageStagingKey(sha256Hex(good)), {
+    h.artifacts.putObject(appImageStagingKey(app.id, sha256Hex(good)), {
       contentLength: 10,
       bytes: Buffer.alloc(10),
     });

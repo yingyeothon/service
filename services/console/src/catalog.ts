@@ -795,11 +795,11 @@ export function createCatalogRoutes({
       auth: true,
       body: appImageBody,
       handler: async (ctx) => {
-        await appWith(ctx, true);
+        const { row: app } = await appWith(ctx, true);
         const store = requireStore();
         // Staged under `uploads/` like an artifact: no row names it, so the
         // daily sweep deletes it unless the commit copies it out first.
-        const key = appImageStagingKey(ctx.body.sha256);
+        const key = appImageStagingKey(app.id, ctx.body.sha256);
         const url = await store.presignPut({
           key,
           contentLength: ctx.body.size,
@@ -807,7 +807,7 @@ export function createCatalogRoutes({
           sha256: ctx.body.sha256,
         });
         return uploadGrant({
-          uploadId: appImageUploadId(ctx.body.sha256),
+          uploadId: appImageUploadId(app.id, ctx.body.sha256),
           key,
           url,
           contentType: APP_IMAGE_TYPE,
@@ -825,7 +825,7 @@ export function createCatalogRoutes({
       handler: async (ctx) => {
         const { id, row: app } = await appWith(ctx, true);
         const store = requireStore();
-        const staged = appImageStagingKey(ctx.body.sha256);
+        const staged = appImageStagingKey(app.id, ctx.body.sha256);
         const head = await store.head(staged);
         if (!head) throw new AppError("bad_request", "image not uploaded");
         const refuse = async (message: string): Promise<never> => {
