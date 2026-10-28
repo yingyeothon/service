@@ -511,8 +511,18 @@ functions:
     handler: src/handler.gatewayProbe
     reservedConcurrency: 1
     role: GatewayProbeRole
-    memorySize: 128
+    # It loads the whole console bundle: at 128 MB it ran at the cap, cold
+    # init outgrew the 10 s init limit (2026-10-27) and the starved fetch
+    # timed out against a healthy gateway. It uses ~240 MB; at 512 MB a cold
+    # run takes ~2 s and a warm one ~50 ms, fewer GB-s than 128 MB timing out.
+    memorySize: 512
     timeout: 20
+    # A retry repeats a tick ~1 min later and was what turned a timed-out
+    # tick into a "recovered" mail without a "down" one; the next tick is
+    # 5 minutes away anyway.
+    maximumRetryAttempts: 0
+    # A throttled tick (reservedConcurrency 1) is dropped, not run hours late.
+    maximumEventAge: 240
     events:
       # docs/decisions.md *Realtime gateway* → Monitoring: GET /livez on the
       # self-hosted gateway, SNS on the down/recovered edge only. A 5-minute

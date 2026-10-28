@@ -26,8 +26,7 @@ const DOWN_KEY_TTL_SEC = 30 * 24 * 3600;
 /** Longer than the tick interval by a margin, so a missed tick does not restart the count. */
 const FAIL_KEY_TTL_SEC = 15 * 60;
 /**
- * A single failed tick is not an outage: a cold 128 MB Lambda against a 5 s
- * budget, a DNS hiccup or a planned gateway restart all produce one. Two in
+ * A single failed tick is not an outage: a slow cold start, a DNS hiccup or a planned gateway restart all produce one. Two in
  * a row (≈10 min) is the accepted blind spot.
  */
 export const DEFAULT_FAILURES_TO_ANNOUNCE = 2;
