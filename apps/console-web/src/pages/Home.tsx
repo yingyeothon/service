@@ -84,7 +84,7 @@ function Hero({ signedIn, pending }: { signedIn: boolean; pending: boolean }) {
       mb="xl"
       style={{
         background: "var(--yyt-signature-forest)",
-        color: "#ffffff",
+        color: "var(--yyt-canvas)",
         borderRadius: 12,
       }}
     >
@@ -95,7 +95,18 @@ function Hero({ signedIn, pending }: { signedIn: boolean; pending: boolean }) {
         <Text size="md" style={{ color: "inherit", opacity: 0.9 }}>
           Operator console for the yyt.life contest services: teams and projects
           with their channels, app catalog, asset bundles and sites, API tokens
-          for the <Code>yyt</Code> CLI, hackathon events and shows.
+          for the{" "}
+          <Code
+            style={{
+              // DESIGN.md button-secondary-on-dark: canvas over the signature
+              // surface, never a translucent on-dark inversion.
+              color: "var(--yyt-ink)",
+              background: "var(--yyt-canvas)",
+            }}
+          >
+            yyt
+          </Code>{" "}
+          CLI, hackathon events and shows.
         </Text>
         <div>
           {!signedIn ? (
@@ -182,11 +193,11 @@ export function HomePage() {
         <Notice kind="warn">
           Signed in as <strong>{me.login}</strong>. Your membership is{" "}
           <strong>pending</strong> — an admin has to approve it before you can
-          join a team and create channels. Hackathon{" "}
+          join a team and create channels. Published hackathon{" "}
           <Anchor component={Link} to="/events">
             events
           </Anchor>{" "}
-          (date votes, comments) are open to you already.
+          are open to read; date votes and comments open once you are approved.
         </Notice>
       )}
       {active && (

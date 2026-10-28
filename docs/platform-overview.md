@@ -13,7 +13,7 @@ decisions, the contract), `rules/*.md` (engineering rules) and the design record
 in §9. Where this file and `docs/decisions.md` disagree, `docs/decisions.md` wins.
 
 **Status vocabulary**, used throughout: **live** = deployed on `dev` and `prod`;
-**merged** = in `main`, not yet running; **designed** = decided and documented, not built.
+**merged** = in `main`, not yet running (nothing at the moment); **designed** = decided and documented, not built.
 Unmarked means live.
 
 ## 1. What it is for
@@ -48,18 +48,18 @@ Four consequences run through everything below:
 
 ## 2. Shape at a glance
 
-| Piece                      | Runtime                                       | Where                                                                           | Holds                                                                  |
-| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                                 | OAuth → per-channel JWT                                                |
-| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front)              | schema owner, every management route                                   |
-| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)                          | short-lived broadcast rooms                                            |
-| `match`                    | Lambda + API Gateway WebSocket + HTTP API     | `match.yyt.life` (sockets), `match-api.yyt.life` (deferred tickets, **merged**) | FIFO matchmaker                                                        |
-| `state`                    | Lambda                                        | `doc.yyt.life`                                                                  | `/s` documents, `/kv`, `/lb`, `/social`, `/time`, `/push` (**merged**) |
-| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                                   | `lobby` relay, `q` actor bridge, `/presence`                           |
-| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                                      | immutable game data; static web builds                                 |
-| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                                | all durable and all volatile state                                     |
-| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                                 | every console API as subcommands                                       |
-| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                                          | installer + project issues, sites, channels                            |
+| Piece                      | Runtime                                       | Where                                                               | Holds                                                     |
+| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
+| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                     | OAuth → per-channel JWT                                   |
+| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front)  | schema owner, every management route                      |
+| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)              | short-lived broadcast rooms                               |
+| `match`                    | Lambda + API Gateway WebSocket + HTTP API     | `match.yyt.life` (sockets), `match-api.yyt.life` (deferred tickets) | FIFO matchmaker                                           |
+| `state`                    | Lambda                                        | `doc.yyt.life`                                                      | `/s` documents, `/kv`, `/lb`, `/social`, `/time`, `/push` |
+| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                       | `lobby` relay, `q` actor bridge, `/presence`              |
+| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                          | immutable game data; static web builds                    |
+| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                    | all durable and all volatile state                        |
+| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                     | every console API as subcommands                          |
+| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                              | installer + project issues, sites, channels               |
 
 Two deployment classes, and the rule that sorts them: **anything that must hold a socket
 runs as a container; everything else is a Lambda stack.** Region `ap-northeast-2`, stages
@@ -113,7 +113,7 @@ comparison is therefore per capability, never per product.
 ### Identity
 
 - A **channel** is the unit of configuration and of blast radius. Kinds: `auth`, `topic`,
-  `match`, `lobby`, `q`. Every non-auth channel names an `auth` channel in the same
+  `match`, `lobby`, `q`, `push`. Every non-auth channel names an `auth` channel in the same
   project.
 - The team registers **their own OAuth app** (GitHub or Google) and the platform mints an
   HS256 JWT: `iss = yyt-auth/{channelId}`, `aud`, `sub = userId`, 24 h by default. A game
@@ -150,8 +150,7 @@ it. Control frames are never dropped for room; a socket that cannot keep up is c
 (`4005 too_slow`) rather than silently desynced. Model-checked under `-race`.
 
 Two HTTP reads sit beside the sockets: `GET /parties/{partyId}` (a member proving its own
-roster, which a participant's Redis credential cannot read) and `GET /presence` (**merged**,
-answering only once the container is recreated) — up to 50 ids, a hint for a friends list
+roster, which a participant's Redis credential cannot read) and `GET /presence` — up to 50 ids, a hint for a friends list
 and never an input to an authorization decision. `/presence` is a **widening**: it answers
 for any id a valid JWT on that lobby's auth channel names, it is not block-aware, and
 `online` means a session key exists, which survives an ungraceful stop for up to 15
@@ -319,25 +318,25 @@ The rules that generalize, each earned from a specific failure:
 
 Where the platform binds first, and what binds it:
 
-| Ceiling                            | Value                                                                                                                                                                                                                 | Bound by                                                                   |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Concurrent players (gateway)       | design ~10; socket cap 64; 256 MB container                                                                                                                                                                           | one process on a shared box                                                |
-| MariaDB connections                | 57 reserved of 60                                                                                                                                                                                                     | `reservedConcurrency` summed across five stacks                            |
-| Redis                              | 256 MB, `allkeys-lru`, shared by both stages and every participant                                                                                                                                                    | no per-account quota exists                                                |
-| Deferred match channel             | 500 waiting tickets, 50 open proposals; a timeout is acted on within a minute                                                                                                                                         | code constants; the 1-minute schedule                                      |
-| Match containers                   | sockets 6 (+ authorizer 5), ticket API 3, worker 2                                                                                                                                                                    | the stack's 18 MariaDB connections                                         |
-| API throttles                      | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`, `/push`); console 50 / 100; match ticket API 20 / 40                                                                                                | one stage's whole surface                                                  |
-| CloudWatch alarms                  | 10 (8 prod + 2 dev)                                                                                                                                                                                                   | account free tier; adding one means dropping one                           |
-| Public CDN traffic                 | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day                                                                                                                                     | the CDN guard disables it (console: alert only)                            |
-| Frames                             | 16 KB inbound, 32 KB outbound; topic 16 KB                                                                                                                                                                            | refused, not truncated                                                     |
-| Document / kv value                | 64 KB per document, 10 000 documents per channel                                                                                                                                                                      | refused, not trimmed                                                       |
-| Leaderboard                        | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                                                                                                                                                           | worst case `maxEntries × (1 + 2 × (retain + 1))` rows                      |
-| Per-project and per-team scope     | 5 teams/member, 20 projects/team (raised 5 at a time on request, up to 1,000), ~50 resources of each kind per project                                                                                                 | list scans stay bounded without an index                                   |
-| Asset storage                      | 2 MiB per file, 20 MiB per bundle, 400 MiB per project; an admin may grant up to 256 MiB per file, 3 GiB per bundle and 5 GiB per project                                                                             | the CDN guard's lines; totals from a covering index, not scans             |
-| Recorded writes                    | 2/s per member                                                                                                                                                                                                        | every team, event and show write takes the slot                            |
-| Push registrations (**merged**)    | 2 apps per team on the platform sender (raised 1 at a time on request, up to 5); 20 per Firebase project                                                                                                              | Firebase's fixed 30 apps per project; the pool grows only by a new project |
-| Push campaigns (**merged**)        | 10,000 rows per job and 10 jobs per channel a day (an admin may grant up to 100,000 and 100); 20 templates per channel; a 1,024-byte CSV row                                                                          | one worker container per stage; a crash may repeat one batch of 500        |
-| Push tokens and sends (**merged**) | 5 tokens per user and 10,000 per channel (up to 100,000 on request), a token at most 512 characters, dropped after 60 days without a refresh; 500 user ids per send; payload 4096 bytes; 2 concurrent sends per stage | FCM's payload limit; one send call's 20 s                                  |
+| Ceiling                        | Value                                                                                                                                                                                                                 | Bound by                                                                   |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Concurrent players (gateway)   | design ~10; socket cap 64; 256 MB container                                                                                                                                                                           | one process on a shared box                                                |
+| MariaDB connections            | 57 reserved of 60                                                                                                                                                                                                     | `reservedConcurrency` summed across five stacks                            |
+| Redis                          | 256 MB, `allkeys-lru`, shared by both stages and every participant                                                                                                                                                    | no per-account quota exists                                                |
+| Deferred match channel         | 500 waiting tickets, 50 open proposals; a timeout is acted on within a minute                                                                                                                                         | code constants; the 1-minute schedule                                      |
+| Match containers               | sockets 6 (+ authorizer 5), ticket API 3, worker 2                                                                                                                                                                    | the stack's 18 MariaDB connections                                         |
+| API throttles                  | state 20 rps / 40 burst (shared by `/s`, `/kv`, `/lb`, `/social`, `/push`); console 50 / 100; match ticket API 20 / 40                                                                                                | one stage's whole surface                                                  |
+| CloudWatch alarms              | 10 (8 prod + 2 dev)                                                                                                                                                                                                   | account free tier; adding one means dropping one                           |
+| Public CDN traffic             | per distribution: 10 GiB or 2 M requests in 5 min, 100 GiB or 20 M requests a day                                                                                                                                     | the CDN guard disables it (console: alert only)                            |
+| Frames                         | 16 KB inbound, 32 KB outbound; topic 16 KB                                                                                                                                                                            | refused, not truncated                                                     |
+| Document / kv value            | 64 KB per document, 10 000 documents per channel                                                                                                                                                                      | refused, not trimmed                                                       |
+| Leaderboard                    | 2 000 entries per bucket (hard 10 000), retain ≤ 12 periods                                                                                                                                                           | worst case `maxEntries × (1 + 2 × (retain + 1))` rows                      |
+| Per-project and per-team scope | 5 teams/member, 20 projects/team (raised 5 at a time on request, up to 1,000), ~50 resources of each kind per project                                                                                                 | list scans stay bounded without an index                                   |
+| Asset storage                  | 2 MiB per file, 20 MiB per bundle, 400 MiB per project; an admin may grant up to 256 MiB per file, 3 GiB per bundle and 5 GiB per project                                                                             | the CDN guard's lines; totals from a covering index, not scans             |
+| Recorded writes                | 2/s per member                                                                                                                                                                                                        | every team, event and show write takes the slot                            |
+| Push registrations             | 2 apps per team on the platform sender (raised 1 at a time on request, up to 5); 20 per Firebase project                                                                                                              | Firebase's fixed 30 apps per project; the pool grows only by a new project |
+| Push campaigns                 | 10,000 rows per job and 10 jobs per channel a day (an admin may grant up to 100,000 and 100); 20 templates per channel; a 1,024-byte CSV row                                                                          | one worker container per stage; a crash may repeat one batch of 500        |
+| Push tokens and sends          | 5 tokens per user and 10,000 per channel (up to 100,000 on request), a token at most 512 characters, dropped after 60 days without a refresh; 500 user ids per send; payload 4096 bytes; 2 concurrent sends per stage | FCM's payload limit; one send call's 20 s                                  |
 
 Monitoring is one liveness probe reporting only the down and recovered edges after two
 consecutive failures, plus one daily usage digest (Redis memory, evictions, per-channel

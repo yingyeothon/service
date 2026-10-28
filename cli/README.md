@@ -1,6 +1,6 @@
 # `yyt` — CLI for the yingyeothon service console
 
-Single Go binary that drives the console API (`https://console.yyt.life`): teams and projects, auth/topic/match/lobby/q channels, the binary catalog, game asset bundles, members, API tokens, hackathon events, plus WebSocket smoke helpers for the match and topic services.
+Single Go binary that drives the console API (`https://console.yyt.life`): teams and projects, auth/topic/match/lobby/q/push channels, the binary catalog, game asset bundles, members, API tokens, hackathon events, plus WebSocket smoke helpers for the match and topic services.
 
 ## Install
 

@@ -113,7 +113,8 @@ export interface AuthChannelSecret {
    * Server-side credential for the state service (`docs/decisions.md` *state
    * service*), absent until the owner issues one. A **second** secret rather
    * than a reuse of `secret`: this one is pasted into a participant's Lambda
-   * while the signing key never leaves the platform, and rotating either must
+   * while the signing key goes only to the team's own game stack (returned once
+   * at creation and per `rotate-secret`), and rotating either must
    * not invalidate the other. Self-identifying (`yds.{channelId}.{random}`)
    * because the state routes carry no channel segment.
    */

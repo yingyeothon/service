@@ -432,7 +432,7 @@ export function createConsoleApp({
     );
 
   /**
-   * topic/match/lobby/q must point at an auth channel **in the same project**
+   * topic/match/lobby/q/push must point at an auth channel **in the same project**
    * (`docs/decisions.md` *Console permission model*; the former admin
    * exception is withdrawn). 400 rather than 404: the caller already proved
    * membership of the project, so naming a wrong id reveals nothing.

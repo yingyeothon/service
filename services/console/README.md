@@ -1,6 +1,6 @@
 # services/console — `console.yyt.life`
 
-Operator console API: GitHub sign-in, member roles, API tokens, channel CRUD for the auth/topic/match stacks, and the daily expiry sweep. Contract: `docs/decisions.md` §"Console permission model". The console account is the only writer of the console database and runs `migrateConsoleDb` at cold start.
+Operator console API: GitHub sign-in, member roles, API tokens, channel CRUD for every kind (auth/topic/match/lobby/q/push), and the daily expiry sweep. Contract: `docs/decisions.md` §"Console permission model". The console account is the only writer of the console database and runs `migrateConsoleDb` at cold start.
 
 ## Endpoints
 

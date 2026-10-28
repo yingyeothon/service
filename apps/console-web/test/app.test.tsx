@@ -88,6 +88,22 @@ describe("App", () => {
     expect(screen.queryByRole("link", { name: "Members" })).toBeNull();
   });
 
+  it("tells a pending member that voting and comments wait for approval", async () => {
+    vi.mocked(mockApi.me).mockResolvedValue({
+      id: "m_1",
+      login: "someone",
+      role: "pending",
+      via: "session",
+    });
+    mount("/");
+    expect(
+      await screen.findByText(
+        /date votes and comments open once you are approved/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/open to you already/)).toBeNull();
+  });
+
   it("shows the public events list without a session", async () => {
     vi.mocked(mockApi.me).mockResolvedValue(null);
     vi.mocked(mockApi.events).mockResolvedValue([

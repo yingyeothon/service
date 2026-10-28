@@ -409,11 +409,10 @@ platform; `board` needs `todo/36`, `mail`'s stamp and `counter`'s range need
 `todo/37`, `matchmaking`'s room forming needs `todo/38`, `friends` needs
 `todo/39`. **All four shipped on dev and prod by 2026-09-10**
 (`docs/leaderboard.md`, `docs/kvstore.md` _Mail_, `docs/decisions.md` #8,
-`docs/social.md`), so every wave is unblocked on the server side. One
-exception, and it is not a deploy: `friends`'s online dots call the gateway's
-`GET /presence`, which is in the merged image and answers only after the
-gateway container is recreated — a restart that disconnects every player, so it
-waits for a quiet day rather than for code. The capability groups are
+`docs/social.md`), so every wave is unblocked on the server side. `friends`'s online dots call
+the gateway's `GET /presence`, live since the gateway container was recreated
+(checked 2026-10-29: prod answers 400 for a malformed query, 404 for unknown
+routes). The capability groups are
 **A** session/content/save/room/turns, **B** board/mail, and **C**
 friends/matchmaking/push. They are implementation milestones, not intermediate
 release gates. TypeScript completes the remaining groups before one consolidated

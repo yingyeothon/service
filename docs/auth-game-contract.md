@@ -17,15 +17,17 @@ Owned by the **service layer**. tslib (`@yingyeothon/*`) only provides the verif
 
 ## Claims
 
-| Claim    | Value                                       | Verified | Why                                                                                                        |
-| -------- | ------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `sub`    | `memberId`                                  | required | The identity. Must equal `GameActorStartEvent.members[].memberId` byte-for-byte; missing `sub` → rejected. |
-| `iss`    | channel issuer, e.g. `yyt-auth/ch_a1b2c3`   | required | A valid signature only proves "someone with this secret"; `iss` pins the channel.                          |
-| `aud`    | deployment id, e.g. `instant-dungeon-teamA` | required | Stops a token for deployment A working on B.                                                               |
-| `exp`    | match time + 60 min                         | required | Tokens without `exp` are rejected (`requireExpiry` default `true`).                                        |
-| `iat`    | issued at                                   | auto     |                                                                                                            |
-| `jti`    | unique id                                   | optional | Unused now; handle for revocation lists later.                                                             |
-| `gameId` | match id                                    | optional | To bind a token to one match (see "Later").                                                                |
+The generic contract column is what any lobby that signs its own tokens must meet. The yyt auth service (`packages/jwt` `channelToken.ts`) issues every token in the right column, and its tokens satisfy the left one unchanged as long as the auth channel's `tokenTtlSec` (default 24 h, 1 s – 30 days) covers the match plus 60 min (_Reusing the auth service token_ below).
+
+| Claim    | Generic contract                            | yyt auth token                                                                 | Verified                        | Why                                                                                                        |
+| -------- | ------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `sub`    | `memberId`                                  | `userId` (salted per auth channel; channels made before the salt are unsalted) | required                        | The identity. Must equal `GameActorStartEvent.members[].memberId` byte-for-byte; missing `sub` → rejected. |
+| `iss`    | channel issuer, e.g. `yyt-auth/ch_a1b2c3`   | `yyt-auth/{channelId}`                                                         | required                        | A valid signature only proves "someone with this secret"; `iss` pins the channel.                          |
+| `aud`    | deployment id, e.g. `instant-dungeon-teamA` | the auth channel's `audience`                                                  | required                        | Stops a token for deployment A working on B.                                                               |
+| `exp`    | at least match time + 60 min                | `iat` + the channel's `tokenTtlSec`                                            | required                        | Tokens without `exp` are rejected (`requireExpiry` default `true`).                                        |
+| `iat`    | issued at                                   | always set; platform verifiers require it                                      | auto (required by yyt services) |                                                                                                            |
+| `jti`    | unique id                                   | not set                                                                        | optional                        | Unused now; handle for revocation lists later.                                                             |
+| `gameId` | match id                                    | not set                                                                        | optional                        | To bind a token to one match (see "Later").                                                                |
 
 **Never include PII** (`name`, `email`). Claims flow into the authorizer context, and API Gateway can log `$context.authorizer.*` — anything in a claim may end up in logs. The default context is `{ memberId }` only (also the policy `principalId`); the raw token is never put in the context.
 
@@ -78,7 +80,7 @@ export const handler = (event) =>
 
 ## Reusing the auth service token (verified 2026-08-23)
 
-The auth service's JWT (`iss = yyt-auth/{channelId}`, `aud = channel.audience`, `sub = userId`) passes `createJwtRequestAuthorizer` unchanged, so the lobby step "sign JWT" disappears: the match callback returns `{wsUrl, gameId}` without a `token`, and the client connects to the game with the JWT it already used for the match socket. The game stack's `JWT_SECRET_KEY`/`JWT_ISSUER`/`JWT_AUDIENCE` are the auth channel's secret, `yyt-auth/{channelId}` and audience. `exp` is then the channel TTL rather than "match + 60 min" — longer, never shorter, which is the only direction the contract cares about. Reference implementation: `sample-dungeon` in [`yingyeothon/examples`](https://github.com/yingyeothon/examples).
+The auth service's JWT (`iss = yyt-auth/{channelId}`, `aud = channel.audience`, `sub = userId`) passes `createJwtRequestAuthorizer` unchanged, so the lobby step "sign JWT" disappears: the match callback returns `{wsUrl, gameId}` without a `token`, and the client connects to the game with the JWT it already used for the match socket. The game stack's `JWT_SECRET_KEY`/`JWT_ISSUER`/`JWT_AUDIENCE` are the auth channel's secret, `yyt-auth/{channelId}` and audience. `exp` is then the channel TTL rather than "match + 60 min" — longer at the default 24 h, which is the only direction the contract cares about; a channel that sets a `tokenTtlSec` shorter than match + 60 min breaks that, so keep it at least that long. Reference implementation: `sample-dungeon` in [`yingyeothon/examples`](https://github.com/yingyeothon/examples).
 
 ## Handshake
 
