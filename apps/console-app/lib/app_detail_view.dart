@@ -401,7 +401,23 @@ class _AppDetailViewState extends State<AppDetailView>
     return null;
   }
 
-  Future<void> _openShareSheet(ProjectsApi api, AppHome home, String version) {
+  Future<void> _openShareSheet(
+    ProjectsApi api,
+    AppHome home,
+    String version,
+  ) async {
+    // The build-kind choice spans every platform (an Android phone may share
+    // the iOS ad-hoc build), while the screen lists this device's platform
+    // only: read all of them, falling back to what is on screen.
+    var artifacts = _versionGroups.expand((g) => g.artifacts).toList();
+    try {
+      artifacts = await fetchAppArtifacts(
+        appId: widget.app.id,
+        token: api.token,
+        baseUrl: api.baseUrl,
+      );
+    } catch (_) {}
+    if (!mounted) return;
     return showAppShareSheet(
       context: context,
       api: api,
@@ -411,6 +427,8 @@ class _AppDetailViewState extends State<AppDetailView>
       title: widget.app.name,
       version: version,
       canCreate: home.team.canPublish,
+      artifacts: artifacts,
+      seatless: home.team.isSeatlessAdmin,
       onUnauthorized: () => widget.authState.invalidate(api.token),
     );
   }

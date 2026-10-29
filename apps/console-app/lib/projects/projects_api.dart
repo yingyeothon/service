@@ -489,10 +489,21 @@ class ProjectsApi {
     String appId, {
     required int expiresInDays,
     String? label,
+    String? buildKind,
+    String? title,
+    String? summary,
+    String? reason,
   }) async {
+    // Only the keys the user set (decision #10): blank means "not given".
+    String? set(String? v) =>
+        v != null && v.trim().isNotEmpty ? v.trim() : null;
     final body = await _post(AuthConfig.appShareLinksUrlOf(baseUrl, appId), {
       'expiresInDays': expiresInDays,
-      if (label != null && label.trim().isNotEmpty) 'label': label.trim(),
+      if (set(label) case final v?) 'label': v,
+      if (set(buildKind) case final v?) 'buildKind': v,
+      if (set(title) case final v?) 'title': v,
+      if (set(summary) case final v?) 'summary': v,
+      if (set(reason) case final v?) 'reason': v,
     });
     final link = ShareLinkView.fromJson(_object(body));
     if (link.url == null) {

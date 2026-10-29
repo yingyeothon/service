@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:yyt_console/artifact_info.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/share/share_models.dart';
 import 'package:yyt_console/share/share_sheet.dart';
@@ -22,6 +23,8 @@ void main() {
     WidgetTester tester,
     MockClient client, {
     bool canCreate = true,
+    List<ArtifactInfo> artifacts = const [],
+    bool seatless = false,
   }) async {
     final shared = <String>[];
     await tester.pumpWidget(
@@ -33,6 +36,8 @@ void main() {
             title: '테스트 게임',
             version: '1.2.0',
             canCreate: canCreate,
+            artifacts: artifacts,
+            seatless: seatless,
             share: (text, _) async => shared.add(text),
           ),
         ),
@@ -88,7 +93,7 @@ void main() {
     expect(find.text('공개 링크 공유'), findsNothing);
 
     await tester.tap(find.text('30일'));
-    await tester.enterText(find.byType(TextField), ' QA ');
+    await tester.enterText(find.widgetWithText(TextField, '메모 (선택)'), ' QA ');
     await tester.tap(find.widgetWithText(FilledButton, '새 링크 만들기'));
     await tester.pumpAndSettle();
 
@@ -130,7 +135,10 @@ void main() {
     await pump(tester, client);
 
     // 50 emoji: 50 graphemes, 100 UTF-16 units — the server's limit exactly.
-    await tester.enterText(find.byType(TextField), '😀' * 50);
+    await tester.enterText(
+      find.widgetWithText(TextField, '메모 (선택)'),
+      '😀' * 50,
+    );
     await tester.pump();
     expect(find.text('100/100'), findsOneWidget);
     expect(
@@ -140,7 +148,10 @@ void main() {
       isNotNull,
     );
 
-    await tester.enterText(find.byType(TextField), '${'😀' * 50}a');
+    await tester.enterText(
+      find.widgetWithText(TextField, '메모 (선택)'),
+      '${'😀' * 50}a',
+    );
     await tester.pump();
     expect(find.textContaining('100자 이하'), findsOneWidget);
     expect(
@@ -149,6 +160,136 @@ void main() {
           .onPressed,
       isNull,
     );
+  });
+
+  ArtifactInfo art(
+    String platform,
+    String url,
+    Map<String, String> tags, {
+    IosInstallLinks? ios,
+  }) => ArtifactInfo(
+    id: url,
+    url: url,
+    platform: platform,
+    size: 1,
+    tags: tags,
+    createdAt: DateTime.utc(2026),
+    ios: ios,
+  );
+
+  test('availableShareKinds follows the server rule', () {
+    expect(
+      availableShareKinds([
+        art('android', 'https://d/x/app-release.apk', {
+          'build_type': 'release',
+        }),
+        // An .aab is not installable: no debug kind from it.
+        art('android', 'https://d/x/app-debug.aab', {'build_type': 'debug'}),
+        art('ios', 'https://d/x/a.ipa', {}),
+      ]),
+      ['android-release'],
+    );
+    expect(
+      availableShareKinds([
+        art('android', 'https://d/x/app-debug.apk', {'build_type': 'debug'}),
+        // The server reads the last segment as it is: a query hides `.apk`.
+        art('android', 'https://d/x/app-release.apk?v=1', {
+          'build_type': 'release',
+        }),
+        art(
+          'ios',
+          'https://d/x/a.ipa',
+          {},
+          ios: const IosInstallLinks(manifestUrl: 'm', installUrl: 'i'),
+        ),
+      ]),
+      ['android-debug', 'ios-ad-hoc'],
+    );
+  });
+
+  testWidgets('sends the kind, title and summary only when set', (
+    tester,
+  ) async {
+    final posts = <http.Request>[];
+    final client = MockClient((r) async {
+      if (r.method == 'GET') {
+        return jsonResponse({'links': [], 'publicUrl': null, 'limit': 20});
+      }
+      posts.add(r);
+      return jsonResponse({
+        'id': 'shl_2',
+        'label': null,
+        'createdBy': 'alice',
+        'createdAt': 1790000000,
+        'expiresAt': 1790000000 + 7 * 86400,
+        'revokedAt': null,
+        'live': true,
+        'url': _url,
+      }, 201);
+    });
+    await pump(
+      tester,
+      client,
+      artifacts: [
+        art('android', 'https://d/x/app-release.apk', {
+          'build_type': 'release',
+        }),
+      ],
+    );
+    expect(find.text('사유 (필수)'), findsNothing);
+    await tester.tap(find.text('플랫폼별 최신 빌드'));
+    await tester.pumpAndSettle();
+    expect(find.text('Android debug APK'), findsNothing);
+    await tester.tap(find.text('Android release APK').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, '링크 제목 (선택)'),
+      ' 베타 ',
+    );
+    await tester.ensureVisible(find.widgetWithText(FilledButton, '새 링크 만들기'));
+    await tester.tap(find.widgetWithText(FilledButton, '새 링크 만들기'));
+    await tester.pumpAndSettle();
+    expect(jsonDecode(posts.single.body), {
+      'expiresInDays': 7,
+      'buildKind': 'android-release',
+      'title': '베타',
+    });
+  });
+
+  testWidgets('a seatless admin must give a reason', (tester) async {
+    final posts = <http.Request>[];
+    final client = MockClient((r) async {
+      if (r.method == 'GET') {
+        return jsonResponse({'links': [], 'publicUrl': null, 'limit': 20});
+      }
+      posts.add(r);
+      return jsonResponse({
+        'id': 'shl_3',
+        'label': null,
+        'createdBy': 'boss',
+        'createdAt': 1790000000,
+        'expiresAt': 1790000000 + 7 * 86400,
+        'revokedAt': null,
+        'live': true,
+        'url': _url,
+      }, 201);
+    });
+    await pump(tester, client, seatless: true);
+    final create = find.widgetWithText(FilledButton, '새 링크 만들기');
+    expect(tester.widget<FilledButton>(create).onPressed, isNull);
+    await tester.enterText(
+      find.widgetWithText(TextField, '사유 (필수)'),
+      ' 문의 12 ',
+    );
+    await tester.pump();
+    expect(tester.widget<FilledButton>(create).onPressed, isNotNull);
+    await tester.ensureVisible(create);
+    await tester.tap(create);
+    await tester.pumpAndSettle();
+    expect(jsonDecode(posts.single.body), {
+      'expiresInDays': 7,
+      'reason': '문의 12',
+    });
   });
 
   test('shareMessage drops an unknown version', () {

@@ -42,6 +42,10 @@ class Team {
   /// `secret`), which the server also grants a seatless platform admin.
   bool get canPublish => canWrite || role == 'admin';
 
+  /// A platform admin with no seat in the team: a share link to its app
+  /// needs a reason (decisions *Catalog share links* #12).
+  bool get isSeatlessAdmin => role == 'admin';
+
   static Team fromJson(Map<String, dynamic> j) => Team(
     id: j['id'] as String,
     name: j['name'] as String,

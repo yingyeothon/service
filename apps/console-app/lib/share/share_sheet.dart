@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:yyt_console/artifact_info.dart';
 import 'package:yyt_console/fetch_remote_apps.dart' show UnauthorizedException;
 import 'package:yyt_console/format_time.dart';
 import 'package:yyt_console/projects/projects_api.dart';
@@ -25,6 +26,8 @@ Future<void> showAppShareSheet({
   required String title,
   required String version,
   required bool canCreate,
+  List<ArtifactInfo> artifacts = const [],
+  bool seatless = false,
   VoidCallback? onUnauthorized,
   ShareTextFn share = shareTextWithSystem,
 }) => showModalBottomSheet<void>(
@@ -37,6 +40,8 @@ Future<void> showAppShareSheet({
     title: title,
     version: version,
     canCreate: canCreate,
+    artifacts: artifacts,
+    seatless: seatless,
     onUnauthorized: onUnauthorized,
     share: share,
   ),
@@ -50,6 +55,8 @@ class AppShareSheet extends StatefulWidget {
     required this.title,
     required this.version,
     required this.canCreate,
+    this.artifacts = const [],
+    this.seatless = false,
     this.onUnauthorized,
     this.share = shareTextWithSystem,
   });
@@ -61,6 +68,12 @@ class AppShareSheet extends StatefulWidget {
 
   /// May create a token link (the listing panel's `canPublish`).
   final bool canCreate;
+
+  /// The detail screen's loaded builds, for the build-kind choice.
+  final List<ArtifactInfo> artifacts;
+
+  /// A platform admin with no seat in the team: asks for a reason.
+  final bool seatless;
   final VoidCallback? onUnauthorized;
   final ShareTextFn share;
 
@@ -76,8 +89,30 @@ class _AppShareSheetState extends State<AppShareSheet> {
 
   int _days = shareLinkDefaultExpiryDays;
   final _label = TextEditingController();
+  final _title = TextEditingController();
+  final _summary = TextEditingController();
+  final _reason = TextEditingController();
+  String _kind = '';
   bool _creating = false;
+  // Counted in UTF-16 code units like the server's zod `.max()`.
   bool get _labelTooLong => _label.text.length > shareLinkLabelMaxLength;
+  bool get _titleTooLong => _title.text.trim().length > shareLinkTitleMaxLength;
+  bool get _summaryTooLong =>
+      _summary.text.trim().length > shareLinkSummaryMaxLength;
+  bool get _reasonMissing => widget.seatless && _reason.text.trim().isEmpty;
+  bool get _reasonTooLong =>
+      _reason.text.trim().length > shareLinkReasonMaxLength;
+  // The server refuses control and format characters (bidi overrides,
+  // zero-width joiners) in a title: messenger previews show it.
+  static final _controlOrFormat = RegExp(r'[\p{Cc}\p{Cf}]', unicode: true);
+  bool get _titleBadChars => _controlOrFormat.hasMatch(_title.text.trim());
+  bool get _blocked =>
+      _labelTooLong ||
+      _titleTooLong ||
+      _titleBadChars ||
+      _summaryTooLong ||
+      _reasonMissing ||
+      _reasonTooLong;
   String? _createError;
   ShareLinkView? _created;
   String? _note;
@@ -91,6 +126,9 @@ class _AppShareSheetState extends State<AppShareSheet> {
   @override
   void dispose() {
     _label.dispose();
+    _title.dispose();
+    _summary.dispose();
+    _reason.dispose();
     super.dispose();
   }
 
@@ -133,6 +171,10 @@ class _AppShareSheetState extends State<AppShareSheet> {
         widget.appId,
         expiresInDays: _days,
         label: _label.text,
+        buildKind: _kind,
+        title: _title.text,
+        summary: _summary.text,
+        reason: widget.seatless ? _reason.text : null,
       );
       if (!mounted) return;
       setState(() {
@@ -289,13 +331,72 @@ class _AppShareSheetState extends State<AppShareSheet> {
         ),
       ),
       const SizedBox(height: 8),
+      DropdownButtonFormField<String>(
+        initialValue: _kind,
+        decoration: const InputDecoration(labelText: '빌드'),
+        items: [
+          const DropdownMenuItem(value: '', child: Text('플랫폼별 최신 빌드')),
+          for (final k in availableShareKinds(widget.artifacts))
+            DropdownMenuItem(value: k, child: Text(shareBuildKindLabels[k]!)),
+        ],
+        onChanged: _creating ? null : (v) => setState(() => _kind = v ?? ''),
+      ),
+      const SizedBox(height: 8),
+      TextField(
+        controller: _title,
+        enabled: !_creating,
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
+          labelText: '링크 제목 (선택)',
+          helperText: '받는 사람에게 앱 이름 대신 보입니다.',
+          errorText: _titleTooLong
+              ? '제목은 $shareLinkTitleMaxLength자 이하로 입력하세요.'
+              : _titleBadChars
+              ? '제목에 제어 문자나 서식 문자(이모지 결합 문자 등)는 쓸 수 없습니다.'
+              : null,
+        ),
+      ),
+      const SizedBox(height: 8),
+      TextField(
+        controller: _summary,
+        enabled: !_creating,
+        minLines: 2,
+        maxLines: 6,
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
+          labelText: '링크 소개 (선택)',
+          helperText: '설치 페이지에 보입니다.',
+          errorText: _summaryTooLong
+              ? '소개는 $shareLinkSummaryMaxLength자 이하로 입력하세요.'
+              : null,
+        ),
+      ),
+      if (widget.seatless) ...[
+        const SizedBox(height: 8),
+        TextField(
+          controller: _reason,
+          enabled: !_creating,
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            labelText: '사유 (필수)',
+            helperText: '이 팀의 좌석이 없는 관리자입니다. 사유는 감사 기록에 남습니다.',
+            // UTF-16 units, like the server's `.max(500)`.
+            counterText:
+                '${_reason.text.trim().length}/$shareLinkReasonMaxLength',
+            errorText: _reasonTooLong
+                ? '사유는 $shareLinkReasonMaxLength자 이하로 입력하세요.'
+                : null,
+          ),
+        ),
+      ],
+      const SizedBox(height: 8),
       if (_createError case final e?) ...[
         Text(e, style: TextStyle(color: theme.colorScheme.error)),
         const SizedBox(height: 8),
       ],
       Builder(
         builder: (bctx) => FilledButton.icon(
-          onPressed: _creating || _labelTooLong
+          onPressed: _creating || _blocked
               ? null
               : () => _create(_originOf(bctx)),
           icon: _creating

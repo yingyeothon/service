@@ -13,6 +13,38 @@ import 'package:yyt_console/auth/auth_config.dart';
 const shareLinkExpiryDays = <int>[1, 7, 30];
 const shareLinkDefaultExpiryDays = 7;
 const shareLinkLabelMaxLength = 100;
+const shareLinkTitleMaxLength = 100;
+const shareLinkSummaryMaxLength = 2000;
+const shareLinkReasonMaxLength = 500;
+
+/// The one build a token link may grant (decision #10), in display order.
+const shareBuildKindLabels = <String, String>{
+  'android-release': 'Android release APK',
+  'android-debug': 'Android debug APK',
+  'ios-ad-hoc': 'iOS ad-hoc',
+};
+
+/// The kinds [artifacts] hold a build for, by the server's rule
+/// (`artifactOfKind` in services/console/src/share-links.ts): an `.apk`
+/// tagged `build_type` debug/release, or an iOS build with an ad-hoc install
+/// link.
+List<String> availableShareKinds(Iterable<ArtifactInfo> artifacts) {
+  bool has(String kind) => artifacts.any((a) {
+    if (kind == 'ios-ad-hoc') return a.platform == 'ios' && a.ios != null;
+    final type = kind == 'android-debug' ? 'debug' : 'release';
+    // The server's `filenameOf`: the URL's last `/` segment as it is
+    // (a query string included), decoded.
+    final last = a.url.substring(a.url.lastIndexOf('/') + 1);
+    final name = Uri.decodeComponent(last);
+    return a.platform == 'android' &&
+        a.tags['build_type'] == type &&
+        name.toLowerCase().endsWith('.apk');
+  });
+  return [
+    for (final k in shareBuildKindLabels.keys)
+      if (has(k)) k,
+  ];
+}
 
 DateTime? _unix(Object? v) => v is num
     ? DateTime.fromMillisecondsSinceEpoch(v.toInt() * 1000, isUtc: true)
