@@ -120,6 +120,7 @@ import type {
   CreatedShareLink,
   ListingAudience,
   ShareLinkDays,
+  ShareBuildKind,
   ShareLinkList,
   ListingListParams,
   PublicListing,
@@ -919,7 +920,15 @@ export function createApiClient({
     // ---- catalog share links (the URL comes back once, from create) ------
     createShareLink: (
       id: string,
-      body: { expiresInDays: ShareLinkDays; label?: string },
+      body: {
+        expiresInDays: ShareLinkDays;
+        label?: string;
+        buildKind?: ShareBuildKind;
+        title?: string;
+        summary?: string;
+        /** Required from a platform admin with no seat on the team (#12). */
+        reason?: string;
+      },
     ) => post<CreatedShareLink>(`/catalog/apps/${enc(id)}/share-links`, body),
     shareLinks: (id: string) =>
       get<ShareLinkList>(`/catalog/apps/${enc(id)}/share-links`),

@@ -24,6 +24,7 @@ import {
   type SitesDb,
 } from "@yyt/console-db";
 import { defineRoute, type AnyRoute, type RouteContext, json } from "@yyt/http";
+import { adminReason } from "./admin-reason.js";
 import { z } from "zod";
 import { listParams, listQuery } from "./list-query.js";
 import { requireRole } from "./identity.js";
@@ -592,7 +593,7 @@ export function createSiteRoutes({
       method: "POST",
       path: "/admin/site-names/{name}/release",
       auth: true,
-      body: z.object({ reason: z.string().trim().min(1).max(500) }).strict(),
+      body: z.object({ reason: adminReason }).strict(),
       handler: async (ctx) => {
         const id = requireRole(ctx, "admin");
         const row = await adminName(ctx);

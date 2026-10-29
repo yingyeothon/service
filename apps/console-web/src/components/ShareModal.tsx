@@ -8,6 +8,7 @@ import {
   Stack,
   Table,
   Text,
+  Textarea,
   TextInput,
   Title,
 } from "@mantine/core";
@@ -19,8 +20,11 @@ import { fmtRelative, fmtTime } from "../lib/format";
 import { notify } from "../lib/notify";
 import { useAction, useApiQuery } from "../lib/query";
 import {
+  SHARE_BUILD_KINDS,
   SHARE_LINK_DAYS,
   type CatalogApp,
+  type CatalogArtifact,
+  type ShareBuildKind,
   type CreatedShareLink,
   type ShareLink,
   type ShareLinkDays,
@@ -54,6 +58,35 @@ const DAYS_LABEL: Record<ShareLinkDays, string> = {
   7: "7 days",
   30: "30 days",
 };
+
+const KIND_LABEL: Record<ShareBuildKind, string> = {
+  "android-release": "Android release APK",
+  "android-debug": "Android debug APK",
+  "ios-ad-hoc": "iOS ad-hoc",
+};
+
+/**
+ * The kinds the app has a build for, by the server's rule (`artifactOfKind`
+ * in services/console/src/share-links.ts): an `.apk` tagged `build_type`
+ * debug/release, or an iOS build with an ad-hoc install URL.
+ */
+export function availableKinds(
+  artifacts: CatalogArtifact[] | undefined,
+): ShareBuildKind[] {
+  if (!artifacts) return [];
+  const has = (k: ShareBuildKind) =>
+    artifacts.some((a) => {
+      if (k === "ios-ad-hoc") return a.platform === "ios" && !!a.ios;
+      const type = k === "android-debug" ? "debug" : "release";
+      const file = (a.objectKey ?? a.url).split("?")[0] ?? "";
+      return (
+        a.platform === "android" &&
+        a.tags.build_type === type &&
+        /\.apk$/i.test(file)
+      );
+    });
+  return SHARE_BUILD_KINDS.filter(has);
+}
 
 export const shareLinksKey = (appId: string) => [
   "catalog",
@@ -151,7 +184,17 @@ function statusOf(l: ShareLink): { label: string; tone: string } {
   return { label: "live", tone: "ok" };
 }
 
-function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
+function ShareBody({
+  app,
+  canWrite,
+  artifacts,
+  seatless,
+}: {
+  app: CatalogApp;
+  canWrite: boolean;
+  artifacts?: CatalogArtifact[];
+  seatless: boolean;
+}) {
   const queryClient = useQueryClient();
   const key = shareLinksKey(app.id);
   const list = useApiQuery(key, () => api.shareLinks(app.id));
@@ -159,6 +202,11 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
   const revokeAct = useAction();
   const [days, setDays] = useState<ShareLinkDays>(7);
   const [label, setLabel] = useState("");
+  const [kind, setKind] = useState<ShareBuildKind | "">("");
+  const [title, setTitle] = useState("");
+  const [summary, setSummary] = useState("");
+  const [reason, setReason] = useState("");
+  const kinds = availableKinds(artifacts);
   const [created, setCreated] = useState<CreatedShareLink | null>(null);
   const refresh = () => queryClient.invalidateQueries({ queryKey: key });
   // A phone (390 px) cannot hold four columns plus the row menu inside the
@@ -168,11 +216,19 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const trimmed = label.trim();
+    // Only the keys the user set (decision #10): blank means "not given".
+    const t = title.trim();
+    const sm = summary.trim();
+    const why = reason.trim();
     const r = await create.run(async () => {
       try {
         return await api.createShareLink(app.id, {
           expiresInDays: days,
           ...(trimmed ? { label: trimmed } : {}),
+          ...(kind ? { buildKind: kind } : {}),
+          ...(t ? { title: t } : {}),
+          ...(sm ? { summary: sm } : {}),
+          ...(seatless && why ? { reason: why } : {}),
         });
       } catch (err) {
         const status = (err as { status?: number }).status;
@@ -186,6 +242,9 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
     if (!r) return;
     setCreated(r);
     setLabel("");
+    setTitle("");
+    setSummary("");
+    setReason("");
     notify.created("share link");
     await refresh();
   };
@@ -202,7 +261,7 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
 
   const publicUrl = list.data?.publicUrl ?? null;
   const nameOf = (l: ShareLink) =>
-    l.label ?? `link created ${fmtTime(l.createdAt)}`;
+    l.label ?? l.title ?? `link created ${fmtTime(l.createdAt)}`;
 
   return (
     <Stack gap="md">
@@ -238,7 +297,8 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
             </Title>
             <Text size="sm" c="dimmed">
               Anyone holding the link installs the newest build of each platform
-              until it expires or is revoked.
+              — or only the build kind you pick — until it expires or is
+              revoked.
             </Text>
             {create.error && <Notice kind="error">{create.error}</Notice>}
             {created ? (
@@ -271,32 +331,85 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
               </Paper>
             ) : (
               <form onSubmit={(e) => void submit(e)}>
-                <Group align="end" wrap="wrap">
-                  <NativeSelect
-                    label="Expires in"
-                    value={String(days)}
-                    data={SHARE_LINK_DAYS.map((d) => ({
-                      value: String(d),
-                      label: DAYS_LABEL[d],
-                    }))}
-                    onChange={(e) =>
-                      setDays(Number(e.currentTarget.value) as ShareLinkDays)
-                    }
-                    w={120}
-                  />
+                <Stack gap="xs">
+                  <Group align="end" wrap="wrap">
+                    <NativeSelect
+                      label="Build"
+                      value={kind}
+                      data={[
+                        { value: "", label: "Newest of each platform" },
+                        ...kinds.map((k) => ({
+                          value: k,
+                          label: KIND_LABEL[k],
+                        })),
+                      ]}
+                      onChange={(e) =>
+                        setKind(e.currentTarget.value as ShareBuildKind | "")
+                      }
+                      w={220}
+                    />
+                    <NativeSelect
+                      label="Expires in"
+                      value={String(days)}
+                      data={SHARE_LINK_DAYS.map((d) => ({
+                        value: String(d),
+                        label: DAYS_LABEL[d],
+                      }))}
+                      onChange={(e) =>
+                        setDays(Number(e.currentTarget.value) as ShareLinkDays)
+                      }
+                      w={120}
+                    />
+                    <TextInput
+                      label="Label"
+                      placeholder="Optional: who it is for"
+                      value={label}
+                      maxLength={100}
+                      onChange={(e) => setLabel(e.currentTarget.value)}
+                      w={240}
+                      autoComplete="off"
+                    />
+                  </Group>
                   <TextInput
-                    label="Label"
-                    placeholder="Optional: who it is for"
-                    value={label}
+                    label="Link title"
+                    description="Shown to recipients instead of the app name. Optional."
+                    value={title}
                     maxLength={100}
-                    onChange={(e) => setLabel(e.currentTarget.value)}
-                    w={240}
+                    onChange={(e) => setTitle(e.currentTarget.value)}
                     autoComplete="off"
                   />
-                  <Button type="submit" variant="default" loading={create.busy}>
-                    Create link
-                  </Button>
-                </Group>
+                  <Textarea
+                    label="Link summary"
+                    description="Shown on the install page. Optional."
+                    value={summary}
+                    maxLength={2000}
+                    autosize
+                    minRows={2}
+                    maxRows={6}
+                    onChange={(e) => setSummary(e.currentTarget.value)}
+                  />
+                  {seatless && (
+                    <TextInput
+                      label="Reason"
+                      description="You hold no seat on this team: the reason goes to the audit log."
+                      value={reason}
+                      maxLength={500}
+                      required
+                      onChange={(e) => setReason(e.currentTarget.value)}
+                      autoComplete="off"
+                    />
+                  )}
+                  <Group>
+                    <Button
+                      type="submit"
+                      variant="default"
+                      loading={create.busy}
+                      disabled={seatless && !reason.trim()}
+                    >
+                      Create link
+                    </Button>
+                  </Group>
+                </Stack>
               </form>
             )}
           </Stack>
@@ -341,12 +454,22 @@ function ShareBody({ app, canWrite }: { app: CatalogApp; canWrite: boolean }) {
                     style={clip(narrow ? 120 : 180)}
                     title={nameOf(l)}
                   >
-                    {l.label ?? (
+                    {l.label ?? l.title ?? (
                       <Text span size="sm" c="dimmed">
                         —
                       </Text>
                     )}
                   </Text>
+                  {l.buildKind && (
+                    <Text
+                      span
+                      size="xs"
+                      c="dimmed"
+                      style={clip(narrow ? 120 : 180)}
+                    >
+                      {KIND_LABEL[l.buildKind] ?? l.buildKind}
+                    </Text>
+                  )}
                 </Table.Td>
                 {!narrow && (
                   <Table.Td style={NOWRAP}>
@@ -420,11 +543,17 @@ export function ShareModal({
   opened,
   onClose,
   canWrite,
+  artifacts,
+  seatless = false,
 }: {
   app: CatalogApp;
   opened: boolean;
   onClose: () => void;
   canWrite: boolean;
+  /** The app page's loaded builds, for the build-kind choice. */
+  artifacts?: CatalogArtifact[];
+  /** A platform admin with no seat on the app's team (asks for a reason). */
+  seatless?: boolean;
 }) {
   const narrow = useMediaQuery("(max-width: 48em)") ?? false;
   return (
@@ -438,7 +567,14 @@ export function ShareModal({
       zIndex={300}
       closeButtonProps={{ "aria-label": "Close share dialog" }}
     >
-      {opened && <ShareBody app={app} canWrite={canWrite} />}
+      {opened && (
+        <ShareBody
+          app={app}
+          canWrite={canWrite}
+          artifacts={artifacts}
+          seatless={seatless}
+        />
+      )}
     </Modal>
   );
 }

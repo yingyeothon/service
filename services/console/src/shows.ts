@@ -32,6 +32,7 @@ import {
   json,
 } from "@yyt/http";
 import type { Kv } from "@yyt/redis";
+import { adminReason, requireSeatlessReason } from "./admin-reason.js";
 import { z } from "zod";
 import { listParams, listQuery, q } from "./list-query.js";
 import { artifactUrl } from "./catalog.js";
@@ -110,7 +111,7 @@ const title = z.string().trim().min(1).max(200);
 const bodyMd = z.string().max(MD_BODY_MAX);
 const acl = z.enum(["public", "member_only"]);
 /** Why an admin acted beyond their own content (decision 12). */
-const reason = z.string().trim().min(1).max(500);
+const reason = adminReason;
 
 const showCreateBody = z
   .object({
@@ -1523,14 +1524,13 @@ export function createShowRoutes({
         );
         // The bare admin override lets an admin publish any team's private
         // work, which is a larger act than reading it (decision 12).
-        const seatless =
-          id.role === "admin" &&
-          !(await memberTeamIds(id)).includes(target.team.id);
-        if (seatless && b.reason === undefined)
-          throw new AppError(
-            "bad_request",
-            "reason is required to submit another team's resource",
-          );
+        const seatless = await requireSeatlessReason(
+          id,
+          target.team.id,
+          b.reason,
+          memberTeamIds,
+          "submit another team's resource",
+        );
         // Ciphertext is not an exhibit (docs/decisions.md *Live and
         // encrypted asset bundles* #2): the gallery would link bytes no
         // browser can render.

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
 import type {
   CatalogApp,
+  CatalogArtifact,
   CreatedShareLink,
   ShareLink,
   ShareLinkList,
@@ -27,7 +28,8 @@ vi.mock("qrcode", () => {
   };
 });
 
-const { ShareModal } = await import("../src/components/ShareModal");
+const { ShareModal, availableKinds } =
+  await import("../src/components/ShareModal");
 const { mount } = await import("./wrap");
 
 const APP: CatalogApp = {
@@ -214,6 +216,126 @@ describe("ShareModal", () => {
     expect(
       within(dialog).getByRole("button", { name: "Create link" }),
     ).toBeInTheDocument();
+  });
+
+  it("offers only the build kinds the app has, by the server's rule", () => {
+    const art = (over: Partial<CatalogArtifact>): CatalogArtifact => ({
+      id: "a",
+      appId: "ca_1",
+      platform: "android",
+      url: "https://cdn.example/apps/ca_1/u/app-release.apk",
+      objectKey: null,
+      size: 1,
+      hash: null,
+      tags: {},
+      createdAt: 0,
+      ...over,
+    });
+    expect(availableKinds(undefined)).toEqual([]);
+    expect(
+      availableKinds([
+        art({ tags: { build_type: "release" } }),
+        // An .aab is not installable, so no debug kind from it.
+        art({
+          url: "https://cdn.example/apps/ca_1/u/app-debug.aab",
+          tags: { build_type: "debug" },
+        }),
+        art({ platform: "ios", url: "https://cdn.example/x.ipa" }),
+      ]),
+    ).toEqual(["android-release"]);
+    expect(
+      availableKinds([
+        art({ tags: { build_type: "debug" } }),
+        art({
+          platform: "ios",
+          url: "https://cdn.example/x.ipa",
+          ios: { manifestUrl: "m", installUrl: "i" },
+        }),
+      ]),
+    ).toEqual(["android-debug", "ios-ad-hoc"]);
+  });
+
+  it("sends the build kind, the link's title and summary only when set", async () => {
+    vi.mocked(mockApi.createShareLink).mockResolvedValue({
+      ...LIVE,
+      id: "shl_8",
+      url: TOKEN_URL,
+    });
+    mount(
+      <ShareModal
+        app={APP}
+        opened
+        onClose={() => undefined}
+        canWrite
+        artifacts={[
+          {
+            id: "a",
+            appId: "ca_1",
+            platform: "android",
+            url: "https://cdn.example/apps/ca_1/u/app-release.apk",
+            objectKey: null,
+            size: 1,
+            hash: null,
+            tags: { build_type: "release" },
+            createdAt: 0,
+          },
+        ]}
+      />,
+      { client: mockApi, auth: false },
+    );
+    const dialog = await screen.findByRole("dialog");
+    const build = within(dialog).getByLabelText("Build");
+    expect(
+      within(build)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["Newest of each platform", "Android release APK"]);
+    fireEvent.change(build, { target: { value: "android-release" } });
+    await userEvent.type(within(dialog).getByLabelText("Link title"), " Beta ");
+    expect(within(dialog).queryByLabelText(/Reason/)).toBeNull();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Create link" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.createShareLink).toHaveBeenCalledWith("ca_1", {
+        expiresInDays: 7,
+        buildKind: "android-release",
+        title: "Beta",
+      }),
+    );
+  });
+
+  it("asks a seatless admin for a reason and sends it", async () => {
+    vi.mocked(mockApi.createShareLink).mockResolvedValue({
+      ...LIVE,
+      id: "shl_7",
+      url: TOKEN_URL,
+    });
+    mount(
+      <ShareModal
+        app={APP}
+        opened
+        onClose={() => undefined}
+        canWrite
+        seatless
+      />,
+      { client: mockApi, auth: false },
+    );
+    const dialog = await screen.findByRole("dialog");
+    const create = within(dialog).getByRole("button", { name: "Create link" });
+    expect(create).toBeDisabled();
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: /Reason/ }),
+      " support 12 ",
+    );
+    expect(create).toBeEnabled();
+    await userEvent.click(create);
+    await waitFor(() =>
+      expect(mockApi.createShareLink).toHaveBeenCalledWith("ca_1", {
+        expiresInDays: 7,
+        reason: "support 12",
+      }),
+    );
   });
 
   it("explains the live-link cap on a 409", async () => {

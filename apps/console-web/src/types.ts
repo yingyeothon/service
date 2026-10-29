@@ -884,10 +884,22 @@ export interface CatalogListing {
 export const SHARE_LINK_DAYS = [1, 7, 30] as const;
 export type ShareLinkDays = (typeof SHARE_LINK_DAYS)[number];
 
+/** One build a token link may grant (docs/decisions.md *Catalog share links* #10). */
+export const SHARE_BUILD_KINDS = [
+  "android-release",
+  "android-debug",
+  "ios-ad-hoc",
+] as const;
+export type ShareBuildKind = (typeof SHARE_BUILD_KINDS)[number];
+
 /** A token share link as the team's list shows it — never the token. */
 export interface ShareLink {
   id: string;
   label: string | null;
+  /** The one build the link grants; null = the newest of each platform. */
+  buildKind?: ShareBuildKind | null;
+  /** The link's own title for recipients; null = the app name. */
+  title?: string | null;
   /** GitHub login of the member who made it. */
   createdBy: string | null;
   createdAt: number;

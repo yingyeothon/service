@@ -468,6 +468,58 @@ describe("catalog share links", () => {
     expect(list.publicUrl).toMatch(new RegExp(`/i/${app.id}$`));
   });
 
+  it("asks a seatless admin for a reason and audits it (decision #12)", async () => {
+    const h = harness();
+    const owner = await h.team("owner", "member", 9241);
+    const app = await makeApp(h, owner);
+    const boss = await h.login("Boss", "admin", 9242);
+    const seated = await h.team("Seated", "admin", 9243);
+    await h.seat(owner, owner.teamId, "Seated");
+    const shareAs = (u: { cookie: Record<string, string> }, body: object) => {
+      h.clock.tick(1);
+      return h.app(
+        ev("POST", `/catalog/apps/${app.id}/share-links`, {
+          headers: u.cookie,
+          body,
+        }),
+      );
+    };
+    const missing = await shareAs(boss, {});
+    expect(missing.statusCode).toBe(400);
+    expect(missing.body).toContain("reason is required");
+    for (const bad of [
+      { reason: "" },
+      { reason: "  " },
+      { reason: "x".repeat(501) },
+    ])
+      expect((await shareAs(boss, bad)).statusCode, JSON.stringify(bad)).toBe(
+        400,
+      );
+    expect(
+      (await shareAs(boss, { reason: " support ticket 12 " })).statusCode,
+    ).toBe(201);
+    const audited = h.db.audits.filter(
+      (a) => a.action === "catalog.share.create",
+    );
+    expect(audited).toHaveLength(1);
+    expect(audited[0]).toMatchObject({
+      actorId: boss.id,
+      detail: { reason: "support ticket 12" },
+    });
+    // A seat, admin or not, needs no reason, and none is recorded.
+    expect((await shareAs(seated, {})).statusCode).toBe(201);
+    // A seated caller's reason is validated, then not recorded.
+    expect((await shareAs(owner, { reason: "not needed" })).statusCode).toBe(
+      201,
+    );
+    const later = h.db.audits.filter(
+      (a) => a.action === "catalog.share.create",
+    );
+    expect(later).toHaveLength(3);
+    for (const a of later.slice(1))
+      expect(a.detail, a.actorId ?? "").not.toHaveProperty("reason");
+  });
+
   it("keeps outsiders out, validates the body and caps live links per app", async () => {
     const h = harness();
     const owner = await h.team("owner", "member", 9231);

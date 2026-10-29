@@ -622,6 +622,8 @@ export function CatalogAppPage() {
         opened={sharing}
         onClose={() => setSharing(false)}
         canWrite={canShare}
+        artifacts={artifacts.data}
+        seatless={!canWrite && standing.standing === "admin"}
       />
       {!canWrite && !standing.loading && <ReadOnlyBanner />}
       {act.error && !edit.opened && <Notice kind="error">{act.error}</Notice>}

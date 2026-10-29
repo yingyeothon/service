@@ -19,6 +19,7 @@ import {
 import { defineRoute, json, type AnyRoute, type RouteContext } from "@yyt/http";
 import QRCode from "qrcode";
 import { z } from "zod";
+import { adminReason, requireSeatlessReason } from "./admin-reason.js";
 import { catalogTopicOf } from "./catalog-push.js";
 import { appImageView, artifactView } from "./catalog.js";
 import type { ConsoleIdentity } from "./identity.js";
@@ -82,6 +83,8 @@ export const shareLinkBody = z
       )
       .optional(),
     summary: listingSummary.optional(),
+    // Decision #12: required from a platform admin with no seat on the team.
+    reason: adminReason.optional(),
   })
   .strict();
 
@@ -90,7 +93,7 @@ export interface ShareLinkRoutesOptions {
   catalog: CatalogDb;
   db: Pick<ConsoleDb, "findMembersByIds">;
   team: Pick<TeamDb, "findTeamNamesByIds">;
-  access: Pick<TeamAccessHelpers, "projectResource">;
+  access: Pick<TeamAccessHelpers, "projectResource" | "memberTeamIds">;
   history: ResourceHistory;
   writeSlot: (id: ConsoleIdentity) => Promise<void>;
   clock: Clock;
@@ -316,7 +319,16 @@ export function createShareLinkRoutes({
       auth: true,
       body: shareLinkBody,
       handler: async (ctx) => {
-        const { id, row: app } = await appWith(ctx);
+        const { id, row: app, team } = await appWith(ctx);
+        // A bare admin passes the member check; a token link to another
+        // team's app is a larger act than reading it (decision #12).
+        const seatless = await requireSeatlessReason(
+          id,
+          team.id,
+          ctx.body.reason,
+          access.memberTeamIds,
+          "share another team's app",
+        );
         await writeSlot(id);
         const now = nowSec(clock);
         // Count-then-insert: the write slot serialises one member, and two
@@ -354,6 +366,7 @@ export function createShareLinkRoutes({
           linkId: row.id,
           expiresInDays: ctx.body.expiresInDays,
           buildKind: row.buildKind,
+          ...(seatless ? { reason: ctx.body.reason } : {}),
         });
         await linkHistory(app, id.subject, "resource.create", row.id);
         const [view] = await linkViews([{ ...row, revokedAt: null }]);

@@ -166,6 +166,10 @@ describe("CatalogAppPage", () => {
     let dialog = await screen.findByRole("dialog", { name: "Share my-game" });
     expect(
       within(dialog).getByRole("button", { name: "Create link" }),
+    ).toBeDisabled();
+    // Seatless: the reason the server asks for (share links #12).
+    expect(
+      within(dialog).getByRole("textbox", { name: /Reason/ }),
     ).toBeInTheDocument();
     expect(
       await within(dialog).findByRole("button", {

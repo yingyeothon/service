@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/client-cloudfront-keyvaluestore";
 import { AppError, type Clock } from "@yyt/core";
 import type { SiteEdgeDb, SitesDb, SiteRow } from "@yyt/console-db";
+import { adminReason } from "./admin-reason.js";
 import { z } from "zod";
 
 const credential = z
@@ -42,7 +43,7 @@ export const siteAuthBody = z.discriminatedUnion("mode", [
   credential.extend({ mode: z.literal("basic") }),
 ]);
 export const siteSuspensionBody = z
-  .object({ suspended: z.boolean(), reason: z.string().trim().min(1).max(500) })
+  .object({ suspended: z.boolean(), reason: adminReason })
   .strict();
 export interface SiteAccessState {
   mode: "public" | "basic";

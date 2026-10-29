@@ -398,10 +398,10 @@ describe("runGatewayProbe", () => {
         kv,
         memory,
         logger: nullLogger,
-        fetchFn: (async () => {
+        fetchFn: async () => {
           if (st.gatewayUp) return new Response("ok");
           throw refused();
-        }),
+        },
         notify: async (subject) => {
           if (!st.snsUp) throw new Error("sns down");
           sent.push(subject);

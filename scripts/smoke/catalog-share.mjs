@@ -30,6 +30,7 @@ const as = asUser(base);
 
 const owner = await login("smoke-shr-owner", "member", -2201);
 const stranger = await login("smoke-shr-stranger", "member", -2202);
+const boss = await login("smoke-shr-admin", "admin", -2204);
 const team = await ensureTeam(call, base, as(owner), "smoke-share", check);
 
 const suffix = Date.now().toString(36);
@@ -90,6 +91,37 @@ check(
   (await call(links, { method: "POST", headers: as(stranger), body: {} }))
     .status === 404,
 );
+// Decision #12: a platform admin with no seat on the team gives a reason.
+const bossNoReason = await call(links, {
+  method: "POST",
+  headers: as(boss),
+  body: { expiresInDays: 1 },
+});
+check(
+  "a seatless admin needs a reason",
+  bossNoReason.status === 400 && /reason/.test(bossNoReason.text),
+  String(bossNoReason.status),
+);
+await settle();
+const bossMade = await call(links, {
+  method: "POST",
+  headers: as(boss),
+  body: { expiresInDays: 1, reason: "smoke: admin share" },
+});
+check(
+  "a seatless admin with a reason mints",
+  bossMade.status === 201,
+  String(bossMade.status),
+);
+if (bossMade.body?.id) {
+  await settle();
+  const gone = await call(`${links}/${bossMade.body.id}`, {
+    method: "DELETE",
+    headers: as(owner),
+  });
+  check("revoke the admin's link", gone.status === 204, String(gone.status));
+}
+await settle();
 const made = await call(links, {
   method: "POST",
   headers: as(owner),
@@ -134,7 +166,8 @@ const listed = await call(links, { headers: as(owner) });
 check(
   "list never carries the token",
   listed.status === 200 &&
-    listed.body?.links?.length === 1 &&
+    // The admin's revoked link stays listed (dead rows are kept 30 days).
+    listed.body?.links?.length === 2 &&
     !listed.text.includes(ref) &&
     listed.body?.publicUrl === null,
 );
