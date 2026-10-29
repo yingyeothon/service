@@ -120,12 +120,18 @@ func newLeaderboard(a *App) *cobra.Command {
 		newLbScoreGet(a, lbID),
 		newLbScoreDelete(a, lbID),
 	)
+	get := newResourceGet(lbID, "get <lb>", "Show one board with its rules, caps, live bucket and LB API paths", "/leaderboards", a.printLbBoard)
+	get.Example = "  yyt lb get high-scores\n  yyt lb get lb_0123456789abcdef --json"
+	get.Annotations = map[string]string{OutputAnnotation: lbBoardOutput}
+	del := newResourceDelete(a, lbID, "delete <lb>", "Delete a board and every score on it (large ones drain in the background)", "/leaderboards")
+	del.Example = "  yyt lb delete high-scores\n  yyt lb delete lb_0123456789abcdef --team dooroo --project game"
+	del.Annotations = map[string]string{OutputAnnotation: "\"deleted <lb>\" (the argument as given); --json prints the same line"}
 	c.AddCommand(
 		newLbList(a),
 		newLbCreate(a),
-		newResourceGet(lbID, "get <lb>", "Show one board with its rules, caps, live bucket and LB API paths", "/leaderboards", a.printLbBoard),
+		get,
 		newLbUpdate(a, lbID),
-		newResourceDelete(a, lbID, "delete <lb>", "Delete a board and every score on it (large ones drain in the background)", "/leaderboards"),
+		del,
 		newLbTop(a, lbID),
 		newLbClear(a, lbID),
 		score,
@@ -136,6 +142,9 @@ func newLeaderboard(a *App) *cobra.Command {
 func (c *ctxClient) leaderboard(ctx context.Context, arg string, write bool) (string, error) {
 	return c.resource(ctx, "leaderboard", "/leaderboards", "leaderboards", arg, write)
 }
+
+// lbBoardOutput describes what printLbBoard writes.
+const lbBoardOutput = "the board as key/value lines (id, name, project, submit, rule, order, periods, maxEntries, retainPeriods, period, scores, created, api paths…); --json: the board {id,name,submit,rule,order,periods,maxEntries,retainPeriods,api,…}"
 
 func (a *App) printLbBoard(b lbBoard) error {
 	if a.jsonOut {
@@ -193,7 +202,10 @@ func newLbList(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the boards of the project in context",
-		Args:    cobra.NoArgs,
+		Example: "  yyt lb list" + "\n" +
+			"  yyt lb ls --team dooroo --project game --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID NAME SUBMIT RULE ORDER PERIODS MAX UPDATED; --json: {leaderboards:[{id,name,submit,rule,order,periods,maxEntries,…}]}"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -234,7 +246,11 @@ func newLbCreate(a *App) *cobra.Command {
 			"the keys are computed in Asia/Seoul by the platform, never by the client.\n" +
 			"None of the four can be changed afterwards: a board that changed how a new\n" +
 			"score meets the stored one would be ranking rows written under two rules.",
-		Args: cobra.ExactArgs(1),
+		Example: "  yyt lb create high-scores --team dooroo --project game --submit server" + "\n" +
+			"  yyt lb create speedrun --team dooroo --project game --submit owner --rule best --order asc --periods alltime,weekly" + "\n" +
+			"  yyt lb create daily-sum --team dooroo --project game --submit server --rule sum --periods daily --max-entries 5000 --retain-periods 7",
+		Annotations: map[string]string{OutputAnnotation: lbBoardOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !contains(lbSubmits, submit) {
 				return fmt.Errorf("submit %q: use one of %s", submit, strings.Join(lbSubmits, ", "))
@@ -330,7 +346,10 @@ func newLbUpdate(a *App, lbID idResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "update <lb>",
 		Short: "Rename a board, change its description or its caps (submit, rule, order and periods are fixed)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt lb update high-scores --name top-scores" + "\n" +
+			"  yyt lb update high-scores --description \"\" --max-entries 5000 --retain-periods 8",
+		Annotations: map[string]string{OutputAnnotation: lbBoardOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := map[string]any{}
 			if cmd.Flags().Changed("name") {
@@ -384,7 +403,11 @@ func newLbTop(a *App, lbID idResolver) *cobra.Command {
 			"--period names the live bucket by period (alltime, daily, weekly) or a past\n" +
 			"one by key (2026-09-10, 2026-W37); omitted means the board's first period at\n" +
 			"its live key. A client never computes a key itself.",
-		Args: cobra.ExactArgs(1),
+		Example: "  yyt lb top high-scores" + "\n" +
+			"  yyt lb top high-scores --period weekly --limit 50" + "\n" +
+			"  yyt lb top high-scores --period 2026-W37 --json",
+		Annotations: map[string]string{OutputAnnotation: "table RANK OWNER SCORE META CHANNEL UPDATED, \"bucket <period> [key], N score(s) in it\" on stderr; --json: {period,periodKey,total,scores:[{rank,owner,score,meta,channelId,updatedAt}]}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := lbID(cmd, args[0], false)
 			if err != nil {
@@ -442,7 +465,10 @@ func newLbScoreGet(a *App, lbID idResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "get <lb> <ownerId>",
 		Short: "Show one owner's score and rank in a bucket",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt lb score get high-scores 0123456789abcdef0123456789abcdef" + "\n" +
+			"  yyt lb score get high-scores 0123456789abcdef0123456789abcdef --period daily --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value lines period, owner, score, rank (N of M), meta, channel, updated; --json: {rank,owner,score,meta,channelId,updatedAt,period,periodKey,total}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := lbID(cmd, args[0], false)
 			if err != nil {
@@ -473,10 +499,12 @@ func newLbScoreGet(a *App, lbID idResolver) *cobra.Command {
 
 func newLbScoreDelete(a *App, lbID idResolver) *cobra.Command {
 	return &cobra.Command{
-		Use:     "delete <lb> <ownerId>",
-		Aliases: []string{"rm", "remove"},
-		Short:   "Delete one owner's score from every period of the board",
-		Args:    cobra.ExactArgs(2),
+		Use:         "delete <lb> <ownerId>",
+		Aliases:     []string{"rm", "remove"},
+		Short:       "Delete one owner's score from every period of the board",
+		Example:     "  yyt lb score delete high-scores 0123456789abcdef0123456789abcdef",
+		Annotations: map[string]string{OutputAnnotation: "\"deleted N row(s) of <ownerId> across every period\"; --json: {deleted:N}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := lbID(cmd, args[0], true)
 			if err != nil {
@@ -507,7 +535,10 @@ func newLbClear(a *App, lbID idResolver) *cobra.Command {
 		Long: "Empty one bucket. <period> is a period name (alltime, daily, weekly) for the\n" +
 			"live bucket or a key (2026-09-10, 2026-W37) for a past one. Other periods\n" +
 			"keep their scores; use `lb delete` for the whole board.",
-		Args: cobra.ExactArgs(2),
+		Example: "  yyt lb clear high-scores daily" + "\n" +
+			"  yyt lb clear high-scores 2026-W37",
+		Annotations: map[string]string{OutputAnnotation: "\"deleted N score(s) in <period>\"; --json: {deleted:N}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := lbID(cmd, args[0], true)
 			if err != nil {

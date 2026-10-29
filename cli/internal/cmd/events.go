@@ -105,6 +105,9 @@ func parseWhen(s string) (int64, error) {
 	return 0, fmt.Errorf("cannot parse time %q (use RFC3339, YYYY-MM-DDTHH:MM or unix seconds)", s)
 }
 
+// eventOutput describes what an event command's printEvent writes.
+const eventOutput = "the event as key/value lines (id, title, status, owner, place, hours, vote until, starts, option <id>…, voters, revision, poster, body, comments); --json: the event {id,title,status,place,durationHours,voteUntil,startsAt,options:[{id,startsAt,mine,votes}],revision,comments,…}"
+
 func newEvents(a *App) *cobra.Command {
 	c := group(&cobra.Command{Use: "events", Short: "Hackathon events: date vote, page revisions, comments, poster"})
 	p := func() output.Printer { return a.printer() }
@@ -163,7 +166,12 @@ func newEvents(a *App) *cobra.Command {
 		return p().KV(pairs)
 	}
 	do := func(cmd *cobra.Command, method, path string, in, out any) error {
-		cl, err := a.client()
+		// Published events are public: a read needs no login.
+		client := a.client
+		if method == http.MethodGet {
+			client = a.readClient
+		}
+		cl, err := client()
 		if err != nil {
 			return err
 		}
@@ -176,7 +184,11 @@ func newEvents(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List events (anonymous: waiting/opened/closed; members: everything but others' drafts)",
-		Args:    cobra.NoArgs,
+		Example: "  yyt events list" + "\n" +
+			"  yyt events ls --sort startsAt --order desc" + "\n" +
+			"  yyt events list --q hackathon --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID STATUS TITLE STARTS PLACE OWNER POSTER; --json: {events:[{id,title,status,place,startsAt,owner,hasPoster,…}]}"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			q, err := eventList.query(nil)
 			if err != nil {
@@ -207,7 +219,10 @@ func newEvents(a *App) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:   "get <event-id>",
 		Short: "Show one event (options, tally once the vote closed, comments)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt events get ev_0123456789abcdef" + "\n" +
+			"  yyt events get ev_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: eventOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var e event
 			if err := do(cmd, http.MethodGet, eventPath(args[0]), nil, &e); err != nil {
@@ -223,7 +238,10 @@ func newEvents(a *App) *cobra.Command {
 		cc := &cobra.Command{
 			Use:   "create <title>",
 			Short: "Create a draft (member; max 3 drafts): page + place + candidate dates + vote deadline",
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt events create \"Autumn Jam\" --place \"Seoul hub\" --hours 24 --vote-until 2026-11-10T23:00 --option 2026-11-21T10:00 --option 2026-11-28T10:00" + "\n" +
+				"  yyt events create \"Winter Jam\" --body @page.md --place \"Seoul hub\" --place-url https://maps.example.com/hub --hours 48 --vote-until 2026-12-01T18:00 --option 2026-12-12T10:00",
+			Annotations: map[string]string{OutputAnnotation: eventOutput},
+			Args:        cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(body)
 				if err != nil {
@@ -272,7 +290,11 @@ func newEvents(a *App) *cobra.Command {
 		cc := &cobra.Command{
 			Use:   "update <event-id>",
 			Short: "Edit the page (owner/admin; every edit is a revision); --vote-until/--option/--hours only while draft",
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt events update ev_0123456789abcdef --title \"Autumn Jam 2026\"" + "\n" +
+				"  yyt events update ev_0123456789abcdef --body @page.md --clear-place-url" + "\n" +
+				"  yyt events update ev_0123456789abcdef --vote-until 2026-11-12T23:00 --option 2026-11-21T10:00 --option 2026-11-22T10:00",
+			Annotations: map[string]string{OutputAnnotation: eventOutput},
+			Args:        cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				patch := map[string]any{}
 				if cmd.Flags().Changed("title") {
@@ -337,9 +359,11 @@ func newEvents(a *App) *cobra.Command {
 	}
 	simple := func(use, short, action string) *cobra.Command {
 		return &cobra.Command{
-			Use:   use + " <event-id>",
-			Short: short,
-			Args:  cobra.ExactArgs(1),
+			Use:         use + " <event-id>",
+			Short:       short,
+			Example:     "  yyt events " + use + " ev_0123456789abcdef\n  yyt events " + use + " ev_0123456789abcdef --json",
+			Annotations: map[string]string{OutputAnnotation: eventOutput},
+			Args:        cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				var e event
 				if err := do(cmd, http.MethodPost, eventPath(args[0])+"/"+action, nil, &e); err != nil {
@@ -361,7 +385,10 @@ func newEvents(a *App) *cobra.Command {
 				"the earliest date); --option names a candidate outright, even one\n" +
 				"that lost. The reason is required and is published on the event page\n" +
 				"for everyone to read; it cannot be edited afterwards.",
-			Args: cobra.ExactArgs(1),
+			Example: "  yyt events close-vote ev_0123456789abcdef --reason \"Venue confirmed early\"" + "\n" +
+				"  yyt events close-vote ev_0123456789abcdef --reason \"Venue only free that day\" --option eo_0123456789abcdef",
+			Annotations: map[string]string{OutputAnnotation: eventOutput},
+			Args:        cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if strings.TrimSpace(reason) == "" {
 					return fmt.Errorf("--reason is required to close a vote early")
@@ -382,10 +409,12 @@ func newEvents(a *App) *cobra.Command {
 		c.AddCommand(cv)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:     "delete <event-id>",
-		Aliases: []string{"rm"},
-		Short:   "Delete an event with its history (platform admin)",
-		Args:    cobra.ExactArgs(1),
+		Use:         "delete <event-id>",
+		Aliases:     []string{"rm"},
+		Short:       "Delete an event with its history (platform admin)",
+		Example:     "  yyt events delete ev_0123456789abcdef",
+		Annotations: map[string]string{OutputAnnotation: "nothing on success (exit 0); --json prints nothing either"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return do(cmd, http.MethodDelete, eventPath(args[0]), nil, nil)
 		},
@@ -395,7 +424,10 @@ func newEvents(a *App) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:   "vote <event-id> <option-id>...",
 		Short: "Pick every date you can make (replaces your previous picks; while voting)",
-		Args:  cobra.MinimumNArgs(2),
+		Example: "  yyt events vote ev_0123456789abcdef eo_0123456789abcdef" + "\n" +
+			"  yyt events vote ev_0123456789abcdef eo_0123456789abcdef eo_fedcba9876543210 --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value lines event, voted (the option ids); --json: {eventId,optionIds:[…]}"},
+		Args:        cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				EventID   string   `json:"eventId"`
@@ -411,9 +443,11 @@ func newEvents(a *App) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:   "unvote <event-id>",
-		Short: "Withdraw all your picks (while voting)",
-		Args:  cobra.ExactArgs(1),
+		Use:         "unvote <event-id>",
+		Short:       "Withdraw all your picks (while voting)",
+		Example:     "  yyt events unvote ev_0123456789abcdef",
+		Annotations: map[string]string{OutputAnnotation: "nothing on success (exit 0); --json prints nothing either"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return do(cmd, http.MethodDelete, eventPath(args[0])+"/vote", nil, nil)
 		},
@@ -423,7 +457,10 @@ func newEvents(a *App) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:   "history <event-id>",
 		Short: "List the page revisions (who changed what, when)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt events history ev_0123456789abcdef" + "\n" +
+			"  yyt events history ev_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: "table REV BY AT TITLE PLACE HOURS POSTER; --json: {revisions:[{revision,editedBy,editedAt,title,place,placeUrl,durationHours,posterKey}]}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				Revisions []eventRevision `json:"revisions"`
@@ -448,7 +485,10 @@ func newEvents(a *App) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:   "diff <event-id> <rev-a> <rev-b>",
 		Short: "Show what changed between two revisions (unified diff of the page)",
-		Args:  cobra.ExactArgs(3),
+		Example: "  yyt events diff ev_0123456789abcdef 1 3" + "\n" +
+			"  yyt events diff ev_0123456789abcdef 2 3 --json",
+		Annotations: map[string]string{OutputAnnotation: "a unified diff of the page (---/+++ rN headers); --json: {a:<revision>,b:<revision>,diff:[{op,line}]}"},
+		Args:        cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var ra, rb eventRevision
 			if err := do(cmd, http.MethodGet, eventPath(args[0])+"/revisions/"+api.PathID(args[1]), nil, &ra); err != nil {
@@ -471,7 +511,10 @@ func newEvents(a *App) *cobra.Command {
 		Use:     "list <event-id>",
 		Aliases: []string{"ls"},
 		Short:   "List comments",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt events comments list ev_0123456789abcdef" + "\n" +
+			"  yyt events comments ls ev_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID BY AT BODY; --json: {comments:[{id,bodyMd,createdBy,createdAt,updatedAt,mine}]}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var e event
 			if err := do(cmd, http.MethodGet, eventPath(args[0]), nil, &e); err != nil {
@@ -492,7 +535,10 @@ func newEvents(a *App) *cobra.Command {
 		cc := &cobra.Command{
 			Use:   "add <event-id>",
 			Short: "Post a comment",
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt events comments add ev_0123456789abcdef --body \"Count me in\"" + "\n" +
+				"  yyt events comments add ev_0123456789abcdef --body @comment.md --json",
+			Annotations: map[string]string{OutputAnnotation: "key/value lines id, by, body; --json: the comment {id,bodyMd,createdBy,createdAt,updatedAt,mine}"},
+			Args:        cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(body)
 				if err != nil {
@@ -517,7 +563,10 @@ func newEvents(a *App) *cobra.Command {
 		cc := &cobra.Command{
 			Use:   "edit <event-id> <comment-id>",
 			Short: "Edit your comment",
-			Args:  cobra.ExactArgs(2),
+			Example: "  yyt events comments edit ev_0123456789abcdef ec_0123456789abcdef --body \"Count me in, with two friends\"" + "\n" +
+				"  yyt events comments edit ev_0123456789abcdef ec_0123456789abcdef --body @comment.md --json",
+			Annotations: map[string]string{OutputAnnotation: "key/value lines id, body; --json: the comment {id,bodyMd,createdBy,createdAt,updatedAt,mine}"},
+			Args:        cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(body)
 				if err != nil {
@@ -538,10 +587,12 @@ func newEvents(a *App) *cobra.Command {
 		cm.AddCommand(cc)
 	}
 	cm.AddCommand(&cobra.Command{
-		Use:     "delete <event-id> <comment-id>",
-		Aliases: []string{"rm"},
-		Short:   "Delete a comment (author or admin)",
-		Args:    cobra.ExactArgs(2),
+		Use:         "delete <event-id> <comment-id>",
+		Aliases:     []string{"rm"},
+		Short:       "Delete a comment (author or admin)",
+		Example:     "  yyt events comments delete ev_0123456789abcdef ec_0123456789abcdef",
+		Annotations: map[string]string{OutputAnnotation: "nothing on success (exit 0); --json prints nothing either"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return do(cmd, http.MethodDelete, eventPath(args[0])+"/comments/"+api.PathID(args[1]), nil, nil)
 		},
@@ -553,7 +604,10 @@ func newEvents(a *App) *cobra.Command {
 	poster.AddCommand(&cobra.Command{
 		Use:   "upload <event-id> <file.png|jpg>",
 		Short: "Upload a poster (≤5MB) through a presigned PUT and attach it (replaces the previous one)",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt events poster upload ev_0123456789abcdef poster.png" + "\n" +
+			"  yyt events poster upload ev_0123456789abcdef poster.jpg --json",
+		Annotations: map[string]string{OutputAnnotation: eventOutput},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ct, ok := posterTypes[strings.ToLower(filepath.Ext(args[1]))]
 			if !ok {
@@ -583,10 +637,12 @@ func newEvents(a *App) *cobra.Command {
 		},
 	})
 	poster.AddCommand(&cobra.Command{
-		Use:     "delete <event-id>",
-		Aliases: []string{"rm"},
-		Short:   "Remove the poster",
-		Args:    cobra.ExactArgs(1),
+		Use:         "delete <event-id>",
+		Aliases:     []string{"rm"},
+		Short:       "Remove the poster",
+		Example:     "  yyt events poster delete ev_0123456789abcdef",
+		Annotations: map[string]string{OutputAnnotation: "nothing on success (exit 0); --json prints nothing either"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return do(cmd, http.MethodDelete, eventPath(args[0])+"/poster", nil, nil)
 		},
@@ -594,7 +650,10 @@ func newEvents(a *App) *cobra.Command {
 	poster.AddCommand(&cobra.Command{
 		Use:   "history <event-id>",
 		Short: "List every poster upload (who, when, size; replaced objects are deleted)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt events poster history ev_0123456789abcdef" + "\n" +
+			"  yyt events poster history ev_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID BY AT TYPE SIZE STATE; --json: {posters:[{id,key,contentType,size,uploadedBy,uploadedAt,replacedAt,deletedAt,current}]}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				Posters []eventPoster `json:"posters"`

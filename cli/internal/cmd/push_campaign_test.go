@@ -715,7 +715,8 @@ func TestPushSubmitRefusals(t *testing.T) {
 	if _, _, err := run(t, f2, "push", "job", "submit", pushID, "--template", "welcome", "--csv", csv); err == nil || !strings.Contains(err.Error(), "wait for the oldest") {
 		t.Errorf("upload cap: %v", err)
 	}
-	// The upload route takes no write slot: its 429 is not waited out.
+	// A `rate_limited` with a hint is waited out by the client (3 retries)
+	// whatever the route; then it fails with the hint.
 	posts := 0
 	f3 := newFake(t, routes{
 		"GET " + pushBasePath + "/templates": templatesRoute(sampleTemplate(nil)),
@@ -725,7 +726,7 @@ func TestPushSubmitRefusals(t *testing.T) {
 			return 429, apiErr("rate_limited", "slow down", map[string]any{"retryAfterMs": 500})
 		},
 	})
-	if _, _, err := run(t, f3, "push", "job", "submit", pushID, "--template", "welcome", "--csv", csv); err == nil || posts != 1 || !strings.Contains(err.Error(), "two writes a second") {
+	if _, _, err := run(t, f3, "push", "job", "submit", pushID, "--template", "welcome", "--csv", csv); err == nil || posts != 4 || !strings.Contains(err.Error(), "two writes a second") {
 		t.Errorf("upload 429: posts = %d, %v", posts, err)
 	}
 	// A PUT the bucket refuses leaves an upload nothing names: removed.

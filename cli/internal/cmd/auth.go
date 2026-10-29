@@ -46,6 +46,12 @@ func newLogin(a *App) *cobra.Command {
 checks it against GET /me and stores it with the console URL in the config file.
 With --device, signs in through the GitHub device flow instead: the console
 mints a fresh API token once you approve the code on github.com.`,
+		Example: "  yyt login --device\n" +
+			"  printf %s \"$YYT_TOKEN\" | yyt login\n" +
+			"  yyt login --profile dev --api https://console-dev.yyt.life --device --name laptop",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"logged in as <login> (<role>) at <api> [profile <name>]\" and \"config: <path>\" (device code prompt on stderr); --json: {api,id,login,role,profile,config}",
+		},
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return doLogin(cmd, a, device, tokenName)
@@ -235,8 +241,12 @@ func readSecretLine(in io.Reader, prompt io.Writer, label string) (string, error
 
 func newLogout(a *App) *cobra.Command {
 	return &cobra.Command{
-		Use:   "logout",
-		Short: "Remove the stored token for the selected profile (the token itself stays valid until revoked)",
+		Use:     "logout",
+		Short:   "Remove the stored token for the selected profile (the token itself stays valid until revoked)",
+		Example: "  yyt logout\n  yyt logout --profile dev",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"logged out of profile <name>; …\"; --json: {loggedOut:true,profile,config}",
+		},
 		RunE: func(_ *cobra.Command, _ []string) error {
 			prof, _, err := loginProfile(a)
 			if err != nil {
@@ -257,8 +267,12 @@ func newLogout(a *App) *cobra.Command {
 
 func newWhoami(a *App) *cobra.Command {
 	return &cobra.Command{
-		Use:   "whoami",
-		Short: "Show the member behind the current token",
+		Use:     "whoami",
+		Short:   "Show the member behind the current token",
+		Example: "  yyt whoami\n  yyt whoami --json | jq -r .login",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, login, role, profile, api, config, team, project; --json: {id,login,role,via,api,profile,config,team,teamSource,project,projectSource}",
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {

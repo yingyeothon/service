@@ -23,9 +23,13 @@ func newSelf(a *App, up *selfupdate.Updater) *cobra.Command {
 	}
 
 	c.AddCommand(&cobra.Command{
-		Use:   "version",
-		Short: "Print the installed yyt version",
-		Args:  cobra.NoArgs,
+		Use:     "version",
+		Short:   "Print the installed yyt version",
+		Example: "  yyt self version\n  yyt self version --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"yyt <version> (<os>/<arch>, <go>)\"; --json: {version,os,arch,go}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if a.jsonOut {
 				return a.printer().JSONValue(map[string]any{
@@ -44,6 +48,11 @@ func newSelf(a *App, up *selfupdate.Updater) *cobra.Command {
 		Short: "Install the newest GitHub release of yyt over this binary",
 		Long: "Looks up the newest `cli/v*` release of " + selfupdate.Repo + ", verifies the archive against its checksums.txt, " +
 			"and replaces the running executable. `--check` only reports; `--version` installs a specific release even if it is older.",
+		Example: "  yyt self update --check\n  yyt self update\n  yyt self update --version 0.16.0",
+		Annotations: map[string]string{
+			OutputAnnotation: "one status line (\"updated <path>: <old> → <new>\", \"… is up to date\" or, with --check, \"… available\"; exit 7 when an update exists); " +
+				"--json: {previous,installed,path}, or {current,latest,updateAvailable} for --check / up to date",
+		},
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()

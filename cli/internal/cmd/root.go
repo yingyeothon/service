@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yingyeothon/service/cli/internal/api"
@@ -30,6 +32,9 @@ type App struct {
 	// Team/project context flags (see context.go).
 	teamFlag    string
 	projectFlag string
+	// noRetry turns off the client's `rate_limited` retry (`--no-retry`,
+	// YYT_NO_RETRY).
+	noRetry bool
 	// NewClient lets tests replace the HTTP client; nil → real client.
 	NewClient func(cfg config.Config) *api.Client
 	// Updater lets tests point `self update` at a fake GitHub; nil → real.
@@ -54,20 +59,68 @@ func (a *App) resolveClient() (config.Config, *api.Client, error) {
 	return cfg, cl, err
 }
 
+// readClient is client for a route that also answers without a session
+// (`GET /events…`): with no token it is an anonymous client, not an error.
+func (a *App) readClient() (*api.Client, error) {
+	cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Token != "" {
+		return a.clientFor(cfg)
+	}
+	var cl *api.Client
+	if a.NewClient != nil {
+		cl = a.NewClient(cfg)
+	} else {
+		cl = api.New(cfg.API, "")
+	}
+	a.withRateLimitRetry(cl)
+	return cl, nil
+}
+
 func (a *App) clientFor(cfg config.Config) (*api.Client, error) {
 	if cfg.Token == "" {
 		return nil, errors.New("not logged in: run `yyt login --token <API token>` (console > account > API tokens) or set YYT_TOKEN")
 	}
+	var cl *api.Client
 	if a.NewClient != nil {
-		return a.NewClient(cfg), nil
+		cl = a.NewClient(cfg)
+	} else {
+		cl = api.New(cfg.API, cfg.Token)
 	}
-	return api.New(cfg.API, cfg.Token), nil
+	a.withRateLimitRetry(cl)
+	return cl, nil
+}
+
+// withRateLimitRetry gives cl the CLI's `rate_limited` retry unless it was
+// turned off; each wait is one stderr line, so stdout stays parseable.
+func (a *App) withRateLimitRetry(cl *api.Client) {
+	if a.noRetry || retryDisabledByEnv() {
+		cl.RateLimitRetries = 0
+		return
+	}
+	cl.RateLimitRetries = api.DefaultRateLimitRetries
+	cl.Sleep = func(ctx context.Context, d time.Duration) error { return sleepFor(ctx, d) }
+	cl.OnRateLimitRetry = func(attempt int, wait time.Duration) {
+		fmt.Fprintf(a.Err, "rate_limited: retrying in %s (%d/%d)\n", wait, attempt, api.DefaultRateLimitRetries)
+	}
+}
+
+// retryDisabledByEnv: YYT_NO_RETRY set to anything but "", "0" or "false".
+func retryDisabledByEnv() bool {
+	v := strings.TrimSpace(os.Getenv("YYT_NO_RETRY"))
+	return v != "" && v != "0" && !strings.EqualFold(v, "false")
 }
 
 // group marks a command that only groups subcommands: it prints its help when
 // called bare and fails on an unknown subcommand instead of printing help and
 // exiting 0 (a script still calling a removed `catalog group …` must notice).
 func group(c *cobra.Command) *cobra.Command {
+	if c.Annotations == nil {
+		c.Annotations = map[string]string{}
+	}
+	c.Annotations["group"] = "true"
 	c.Args = cobra.ArbitraryArgs
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		if len(args) > 0 {
@@ -89,6 +142,7 @@ func NewRoot(a *App) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "yyt",
 		Short:         "CLI for the yingyeothon service console (teams, projects, channels, push, catalog, assets, sites, events)",
+		Long:          rootLong(),
 		Version:       api.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -101,6 +155,7 @@ func NewRoot(a *App) *cobra.Command {
 	pf.StringVar(&a.tokFlag, "token", "", "API token (overrides config and YYT_TOKEN)")
 	pf.StringVar(&a.profFlag, "profile", "", "config profile (default from YYT_PROFILE or the config file)")
 	pf.StringVar(&a.teamFlag, "team", "", "team context by name or id (default: YYT_TEAM, "+ContextFile+", or 'yyt team use')")
+	pf.BoolVar(&a.noRetry, "no-retry", false, "do not wait out and repeat a rate_limited refusal (also YYT_NO_RETRY=1)")
 	pf.StringVar(&a.projectFlag, "project", "", "project context by name or id (default: YYT_PROJECT, "+ContextFile+", or 'yyt project use')")
 
 	root.AddCommand(
@@ -109,7 +164,9 @@ func NewRoot(a *App) *cobra.Command {
 		newTeam(a), newProject(a),
 		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newShows(a), newCatalog(a), newAssets(a), newSites(a), newKvStore(a), newLeaderboard(a), newPush(a), newLimits(a), newAudit(a), newSmoke(a),
 		newSelf(a, a.Updater),
+		newAgentsTopic(),
 	)
+	root.SetHelpCommand(newHelp(a, root))
 	return root
 }
 
@@ -120,28 +177,28 @@ func Execute() int {
 	selfupdate.RemoveStale()
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		if errors.Is(err, ErrUpdateAvailable) {
-			return 7
+			return ExitUpdateAvailable
 		}
 		fmt.Fprintln(a.Err, "error:", err)
 		var ce *ContextError
 		if errors.As(err, &ce) {
-			return 6
+			return ExitContext
 		}
 		var ae *api.Error
 		if errors.As(err, &ae) {
 			switch ae.Status {
 			case 401:
 				fmt.Fprintln(a.Err, "hint: the token is missing, revoked, or for another stage; run `yyt login`")
-				return 3
+				return ExitUnauthorized
 			case 403:
 				fmt.Fprintln(a.Err, "hint: your account may still be pending (an admin runs `yyt members approve <id>`), your team seat is pending, or the action needs a team owner/admin")
-				return 4
+				return ExitForbidden
 			case 404:
-				return 5
+				return ExitNotFound
 			}
-			return 2
+			return ExitAPI
 		}
-		return 1
+		return ExitLocal
 	}
-	return 0
+	return ExitOK
 }

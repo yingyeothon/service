@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -258,7 +259,13 @@ func newCatalog(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the apps of the project or team in context, or of every team you sit in",
-		Args:    cobra.NoArgs,
+		Example: "  yyt catalog app list\n" +
+			"  yyt catalog app list --team dooroo\n" +
+			"  yyt catalog app list --project game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID NAME PATH TEAM/PROJECT UPDATED; --json: {apps:[{id,name,path,description,teamId,teamName,projectId,projectName,createdBy,createdAt,updatedAt}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -299,7 +306,12 @@ func newCatalog(a *App) *cobra.Command {
 		create := &cobra.Command{
 			Use:   "create <name> --path <applicationId>",
 			Short: "Create an app in the project context (explicit)",
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt catalog app create my-game --path life.yyt.my_game --project game\n" +
+				"  yyt catalog app create my-game --path life.yyt.my_game --project game --description \"Puzzle game\" --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id name path project description createdBy created updated; --json: the app {id,name,path,description,teamId,teamName,projectId,projectName,createdBy,createdAt,updatedAt}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cc, err := a.ctxClient(cmd)
 				if err != nil {
@@ -328,7 +340,12 @@ func newCatalog(a *App) *cobra.Command {
 	app.AddCommand(&cobra.Command{
 		Use:   "get <app>",
 		Short: "Show one app",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt catalog app get my-game\n" +
+			"  yyt catalog app get ca_0123abcd --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id name path project description createdBy created updated; --json: the app {id,name,path,description,teamId,teamName,projectId,projectName,createdBy,createdAt,updatedAt}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var v catalogApp
 			if err := appDo(cmd, false, http.MethodGet, args[0], "", nil, &v); err != nil {
@@ -342,7 +359,13 @@ func newCatalog(a *App) *cobra.Command {
 		update := &cobra.Command{
 			Use:   "update <app> [--name n] [--path p] [--description d]",
 			Short: "Update app fields; empty --description clears it",
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt catalog app update my-game --description \"Puzzle game\"\n" +
+				"  yyt catalog app update ca_0123abcd --name my-game-2 --json\n" +
+				"  yyt catalog app update my-game --description \"\"",
+			Annotations: map[string]string{
+				OutputAnnotation: "the updated app as key/value lines id name path project description createdBy created updated; --json: the app {id,name,path,description,teamId,teamName,projectId,projectName,createdBy,createdAt,updatedAt}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				body := map[string]any{}
 				if cmd.Flags().Changed("name") {
@@ -371,7 +394,12 @@ func newCatalog(a *App) *cobra.Command {
 		Use:     "delete <app>",
 		Aliases: []string{"rm"},
 		Short:   "Delete an app (must have no artifacts)",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt catalog app delete my-game\n" +
+			"  yyt catalog app delete ca_0123abcd",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted\" (same with --json)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := appDo(cmd, true, http.MethodDelete, args[0], "", nil, nil); err != nil {
 				return err
@@ -386,7 +414,13 @@ func newCatalog(a *App) *cobra.Command {
 		settings := &cobra.Command{
 			Use:   "settings <app>",
 			Short: "Show or update app settings",
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt catalog app settings my-game\n" +
+				"  yyt catalog app settings my-game --keep 5 --slack-channel \"#builds\"\n" +
+				"  yyt catalog app settings my-game --slack-hook \"\" --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines slackHookUrl slackChannel messageTemplate keepRecentVersions; --json: {slackHookUrl,slackChannel,messageTemplate,keepRecentVersions}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				body := map[string]any{}
 				if cmd.Flags().Changed("slack-hook") {
@@ -433,7 +467,13 @@ func newCatalog(a *App) *cobra.Command {
 		cleanup := &cobra.Command{
 			Use:   "cleanup <app>",
 			Short: "Apply the app's retention policy",
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt catalog app cleanup my-game --dry-run\n" +
+				"  yyt catalog app cleanup my-game\n" +
+				"  yyt catalog app cleanup my-game --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "table ARTIFACT VERSION PLATFORM REASON, then \"deleted N artifact(s)\" or \"dry run: would delete N of M artifact(s)\"; --json: {dryRun,executed,deleted,preview:{keepRecentVersions,totalArtifacts,deletions:[{artifactId,platform,version,reason}]}}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				suffix := "/artifacts/cleanup"
 				if dryRun {
@@ -489,7 +529,13 @@ func newCatalog(a *App) *cobra.Command {
 			Use:     "list <app>",
 			Aliases: []string{"ls"},
 			Short:   "List an app's artifacts (newest first)",
-			Args:    cobra.ExactArgs(1),
+			Example: "  yyt catalog artifact list my-game\n" +
+				"  yyt catalog artifact list my-game --platform android --filter build_type=release\n" +
+				"  yyt catalog artifact list ca_0123abcd --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "table ID VERSION PLATFORM SIZE CREATED; --json: {artifacts:[{id,appId,platform,url,objectKey,size,hash,tags,createdAt,ios}]}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				want, err := parseTags(filters)
 				if err != nil {
@@ -520,7 +566,12 @@ func newCatalog(a *App) *cobra.Command {
 	artifact.AddCommand(&cobra.Command{
 		Use:   "get <app> <artifact-id>",
 		Short: "Show one artifact (with its CDN URL)",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt catalog artifact get my-game art_0123abcd\n" +
+			"  yyt catalog artifact get my-game art_0123abcd --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id platform url size tags created (+install for iOS); --json: the artifact {id,appId,platform,url,objectKey,size,hash,tags,createdAt,ios}",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var v catalogArtifact
 			if err := appDo(cmd, false, http.MethodGet, args[0], "/artifacts/"+api.PathID(args[1]), nil, &v); err != nil {
@@ -535,7 +586,12 @@ func newCatalog(a *App) *cobra.Command {
 		up := &cobra.Command{
 			Use:   "upload <app> <file>",
 			Short: "Upload a file as a new artifact (presigned PUT + commit)",
-			Args:  cobra.ExactArgs(2),
+			Example: "  yyt catalog artifact upload my-game ./server.tar.gz --platform server --version 1.2.0\n" +
+				"  yyt catalog artifact upload my-game ./my-game.exe --platform win32 --version 1.2.0 --tag stage=beta --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id platform url size tags created (+install for iOS), the linked project version on stderr; --json: the artifact {id,appId,platform,url,objectKey,size,hash,tags,createdAt,ios}",
+			},
+			Args: cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				t, err := parseTags(tags)
 				if err != nil {
@@ -566,7 +622,11 @@ func newCatalog(a *App) *cobra.Command {
 		Use:     "delete <app> <artifact-id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete an artifact (removes the CDN object too)",
-		Args:    cobra.ExactArgs(2),
+		Example: "  yyt catalog artifact delete my-game art_0123abcd",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted\" (same with --json)",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := appDo(cmd, true, http.MethodDelete, args[0], "/artifacts/"+api.PathID(args[1]), nil, nil); err != nil {
 				return err
@@ -580,7 +640,12 @@ func newCatalog(a *App) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:   "installer",
 		Short: "Show the latest installer downloads",
-		Args:  cobra.NoArgs,
+		Example: "  yyt catalog installer\n" +
+			"  yyt catalog installer --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table FILE VERSION BUILD PLATFORM URL INSTALL; --json: {downloads:[{url,filename,platform,version,applicationId,bundleId,buildNumber,ios,createdAt}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -834,11 +899,17 @@ func newCatalogDeploy(a *App) *cobra.Command {
 		Short: "Build a Flutter Android app and upload the artifacts",
 		Long: `Reads pubspec.yaml / build.gradle from --project-path, finds the app by name in
 the team context (explicit: --team, YYT_TEAM, ` + ContextFile + ` next to the project, or
-` + "`yyt team use`" + `), runs "flutter build" for each --profile, uploads the outputs
+` + "`yyt team use`" + `), runs "flutter build" for each --build-profile, uploads the outputs
 with version/build_type/application_id tags, and verifies the upload by re-reading
 the artifact list. A missing app is created in the project context if one is set
 (--project/YYT_PROJECT/...), else in the project named after the --project-path
 directory (created when missing).`,
+		Example: "  yyt catalog deploy --team dooroo --project-path .\n" +
+			"  yyt catalog deploy --build-profile release --build-profile appbundle --stage beta --note \"fix crash\"\n" +
+			"  yyt catalog deploy --do-bump --bump minor --split-per-abi --commit \"$(git rev-parse --short HEAD)\" --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "one line per uploaded artifact \"<id> <build_type> [abi] <url>\", progress on stderr; --json: {app,version,artifacts:[{id,platform,url,tags,…}],verified}",
+		},
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -968,14 +1039,16 @@ directory (created when missing).`,
 					return err
 				}
 				for _, out := range outs {
-					// Rename so the CDN filename carries app+version+profile(+abi).
+					// Copy (not rename) so the CDN filename carries
+					// app+version+profile(+abi) and Flutter's own output stays
+					// where `flutter install` and other tools expect it.
 					suffix := ""
 					if out.abi != "" {
 						suffix = "-" + out.abi
 					}
 					dst := filepath.Join(filepath.Dir(out.path),
 						fmt.Sprintf("%s-%s-%s%s%s", name, version, pr, suffix, spec.ext))
-					if err := os.Rename(out.path, dst); err != nil {
+					if err := copyFile(out.path, dst); err != nil {
 						return err
 					}
 					tags := map[string]string{
@@ -1062,7 +1135,13 @@ func newCatalogBump(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "bump",
 		Short: "Bump the pubspec.yaml version (+build number); no git commit",
-		Args:  cobra.NoArgs,
+		Example: "  yyt catalog bump\n" +
+			"  yyt catalog bump --bump minor --project-path ./my_game\n" +
+			"  yyt catalog bump --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"bumped version <from> -> <to>\"; --json: {from,to}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			b, err := flutter.ParseBump(bump)
 			if err != nil {
@@ -1093,14 +1172,18 @@ func newCatalogBump(a *App) *cobra.Command {
 
 // typedUpload builds an upload subcommand with platform-specific tag flags
 // on top of the generic presign → PUT → commit flow.
-func typedUpload(a *App, appID appResolver, platform string, tagFlags []struct{ flag, tag, usage string }, required []string) *cobra.Command {
+func typedUpload(a *App, appID appResolver, platform, example string, tagFlags []struct{ flag, tag, usage string }, required []string) *cobra.Command {
 	var version, stage, changelog string
 	var extraTags []string
 	values := make([]string, len(tagFlags))
 	c := &cobra.Command{
-		Use:   platform + " <app> <file>",
-		Short: "Upload a " + platform + " artifact with typed tag flags",
-		Args:  cobra.ExactArgs(2),
+		Use:     platform + " <app> <file>",
+		Short:   "Upload a " + platform + " artifact with typed tag flags",
+		Example: example,
+		Annotations: map[string]string{
+			OutputAnnotation: "\"<artifact id> <url>\", the linked project version on stderr; --json: the artifact {id,appId,platform,url,size,hash,tags,createdAt,ios,version}",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			tags, err := parseTags(extraTags)
 			if err != nil {
@@ -1129,12 +1212,17 @@ func typedUpload(a *App, appID appResolver, platform string, tagFlags []struct{ 
 		},
 	}
 	f := c.Flags()
-	f.StringVar(&version, "version", "", "artifact version tag")
+	f.StringVar(&version, "version", "", "artifact version tag (required)")
 	f.StringVar(&stage, "stage", "", "stage tag")
 	f.StringVar(&changelog, "changelog", "", "changelog tag")
 	f.StringArrayVar(&extraTags, "tag", nil, "extra tag key=value (repeatable)")
 	for i, tf := range tagFlags {
-		f.StringVar(&values[i], tf.flag, "", tf.usage)
+		usage := tf.usage
+		// cobra's help does not mark MarkFlagRequired flags; say it.
+		if slices.Contains(required, tf.flag) {
+			usage += " (required)"
+		}
+		f.StringVar(&values[i], tf.flag, "", usage)
 	}
 	_ = c.MarkFlagRequired("version")
 	for _, r := range required {
@@ -1144,23 +1232,47 @@ func typedUpload(a *App, appID appResolver, platform string, tagFlags []struct{ 
 }
 
 func newUploadAndroid(a *App, appID appResolver) *cobra.Command {
-	return typedUpload(a, appID, "android", []struct{ flag, tag, usage string }{
-		{"application-id", "application_id", "Android applicationId"},
-		{"build-type", "build_type", "debug|release|appbundle"},
-		{"build", "build", "build number"},
-		{"commit", "commit", "commit hash"},
-		{"min-sdk", "min_sdk", "minSdkVersion"},
-		{"target-sdk", "target_sdk", "targetSdkVersion"},
-		{"abi", "abi", "ABI (e.g. arm64-v8a)"},
-	}, []string{"application-id", "build-type"})
+	return typedUpload(a, appID, "android",
+		"  yyt catalog artifact upload android my-game build/app-release.apk --version 1.2.0 --application-id life.yyt.my_game --build-type release\n"+
+			"  yyt catalog artifact upload android my-game app-release.aab --version 1.2.0+12 --application-id life.yyt.my_game --build-type appbundle --build 12 --stage beta --json",
+		[]struct{ flag, tag, usage string }{
+			{"application-id", "application_id", "Android applicationId"},
+			{"build-type", "build_type", "debug|release|appbundle"},
+			{"build", "build", "build number"},
+			{"commit", "commit", "commit hash"},
+			{"min-sdk", "min_sdk", "minSdkVersion"},
+			{"target-sdk", "target_sdk", "targetSdkVersion"},
+			{"abi", "abi", "ABI (e.g. arm64-v8a)"},
+		}, []string{"application-id", "build-type"})
 }
 
 func newUploadIOS(a *App, appID appResolver) *cobra.Command {
-	return typedUpload(a, appID, "ios", []struct{ flag, tag, usage string }{
-		{"bundle-id", "bundle_id", "iOS bundle identifier"},
-		{"build-number", "build_number", "build number"},
-		{"distribution-method", "distribution_method", "ad-hoc|app-store|development"},
-		{"minimum-os-version", "minimum_os_version", "minimum iOS version"},
-		{"url-scheme", "url_scheme", "URL scheme the console app's Open launches (e.g. mygame)"},
-	}, []string{"bundle-id", "build-number"})
+	return typedUpload(a, appID, "ios",
+		"  yyt catalog artifact upload ios my-game build/ios/ipa/MyGame.ipa --version 1.2.0 --bundle-id life.yyt.myGame --build-number 12 --distribution-method ad-hoc\n"+
+			"  yyt catalog artifact upload ios my-game MyGame.ipa --version 1.2.0 --bundle-id life.yyt.myGame --build-number 12 --url-scheme mygame --json",
+		[]struct{ flag, tag, usage string }{
+			{"bundle-id", "bundle_id", "iOS bundle identifier"},
+			{"build-number", "build_number", "build number"},
+			{"distribution-method", "distribution_method", "ad-hoc|app-store|development"},
+			{"minimum-os-version", "minimum_os_version", "minimum iOS version"},
+			{"url-scheme", "url_scheme", "URL scheme the console app's Open launches (e.g. mygame)"},
+		}, []string{"bundle-id", "build-number"})
+}
+
+// copyFile writes src's bytes to dst (created or truncated, mode 0644).
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }

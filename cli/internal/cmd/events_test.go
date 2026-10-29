@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -319,5 +320,30 @@ func TestPosterUpload(t *testing.T) {
 	out, _, err = run(t, f, "events", "poster", "history", "ev_1")
 	if err != nil || !strings.Contains(out, "current") || !strings.Contains(out, "replaced") {
 		t.Fatalf("out=%s err=%v", out, err)
+	}
+}
+
+// Published events are public: `events list` works without a login and sends
+// no Authorization header; writes still need one.
+func TestEventsListAnonymous(t *testing.T) {
+	f := newFake(t, map[string]func(recorded) (int, any){
+		"GET /events": func(recorded) (int, any) { return 200, map[string]any{"events": []any{}} },
+	})
+	t.Setenv("YYT_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("YYT_API", f.srv.URL)
+	t.Setenv("YYT_TOKEN", "")
+	var out, errb bytes.Buffer
+	root := NewRoot(&App{Out: &out, Err: &errb})
+	root.SetArgs([]string{"events", "list"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("anonymous list: %v", err)
+	}
+	if len(f.reqs) != 1 || f.reqs[0].Auth != "" {
+		t.Fatalf("reqs=%+v", f.reqs)
+	}
+	root = NewRoot(&App{Out: &out, Err: &errb})
+	root.SetArgs([]string{"events", "delete", "ev_1"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "not logged in") {
+		t.Fatalf("a write must still need a login: %v", err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -83,14 +84,31 @@ func liveHint(err error, bundle string) error {
 // the bundle, which is what the map JSON's relative references resolve
 // against — not the local filename.
 func uploadAssetFile(ctx context.Context, cl *api.Client, bundle, version, path, localPath string) (*assetFile, error) {
+	// A file the console takes in parts must name its sha256 (the parts'
+	// checksums and the file row are keyed on it); smaller ones need not
+	// pay for hashing.
+	var sum string
+	if st, err := os.Stat(localPath); err == nil && st.Size() > multipartThreshold {
+		if sum, _, err = hashFile(localPath); err != nil {
+			return nil, err
+		}
+	}
 	return uploadFile[assetFile](ctx, cl, localPath, "/assets/bundles/"+api.PathID(bundle)+"/files", func(size int64) map[string]any {
-		return map[string]any{
+		body := map[string]any{
 			"version": version,
 			"path":    path,
 			"size":    size,
 		}
+		if sum != "" {
+			body["sha256"] = sum
+		}
+		return body
 	}, "/assets/uploads/")
 }
+
+// multipartThreshold mirrors the console's MULTIPART_THRESHOLD_BYTES
+// (services/console/src/asset-commit.ts): above it a file goes up in parts.
+const multipartThreshold = 64 << 20
 
 func newAssets(a *App) *cobra.Command {
 	c := &cobra.Command{
@@ -179,7 +197,13 @@ func newAssetList(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the bundles of the project in context, or of every team you sit in",
-		Args:    cobra.NoArgs,
+		Example: "  yyt asset list\n" +
+			"  yyt asset list --project game\n" +
+			"  yyt asset list --team dooroo --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID NAME MODE TEAM/PROJECT DESCRIPTION UPDATED; --json: {bundles:[{id,name,description,mode,encrypted,teamId,teamName,projectId,projectName,createdBy,createdAt,updatedAt}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -217,7 +241,13 @@ func newAssetCreate(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create an asset bundle in the project context (explicit)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt asset create maps --project game\n" +
+			"  yyt asset create web-assets --project game --mode live --description \"Lobby assets\"\n" +
+			"  yyt asset create secret-maps --project game --mode live --encrypted --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id name mode encrypted project description createdBy created updated; --json: the bundle {id,name,description,mode,encrypted,teamId,teamName,projectId,projectName,createdBy,createdAt,updatedAt}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if mode != "versioned" && mode != "live" {
 				return fmt.Errorf("--mode is versioned or live, not %q", mode)
@@ -256,11 +286,21 @@ func newAssetCreate(a *App) *cobra.Command {
 }
 
 func newAssetGet(a *App, bundleID bundleResolver) *cobra.Command {
-	return newResourceGet(bundleID, "get <bundle>", "Show one bundle with its versions", "/assets/bundles", a.printBundle)
+	c := newResourceGet(bundleID, "get <bundle>", "Show one bundle with its versions", "/assets/bundles", a.printBundle)
+	c.Example = "  yyt asset get maps\n  yyt asset get ab_0123abcd --json"
+	c.Annotations = map[string]string{
+		OutputAnnotation: "key/value lines id name mode encrypted project description createdBy created updated files bytes, then table VERSION FILES BYTES CREATED; --json: the bundle {id,name,mode,encrypted,…,versions:[{version,files,bytes,createdAt}],files,bytes}",
+	}
+	return c
 }
 
 func newAssetUpdate(a *App, bundleID bundleResolver) *cobra.Command {
-	return newResourceUpdate(bundleID, "update <bundle>", "Rename a bundle or change its description (empty --description clears it)", "new bundle name (unique within the team)", "/assets/bundles", a.printBundle)
+	c := newResourceUpdate(bundleID, "update <bundle>", "Rename a bundle or change its description (empty --description clears it)", "new bundle name (unique within the team)", "/assets/bundles", a.printBundle)
+	c.Example = "  yyt asset update maps --description \"Arena maps\"\n  yyt asset update maps --name arena-maps --json\n  yyt asset update maps --description \"\""
+	c.Annotations = map[string]string{
+		OutputAnnotation: "the updated bundle as key/value lines id name mode encrypted project description createdBy created updated; --json: the bundle {id,name,description,mode,encrypted,teamId,teamName,projectId,projectName,createdBy,createdAt,updatedAt}",
+	}
+	return c
 }
 
 // deleteRounds bounds how often a delete is repeated after a 202: each round
@@ -297,7 +337,12 @@ func newAssetDelete(a *App, bundleID bundleResolver) *cobra.Command {
 		Use:     "delete <bundle>",
 		Aliases: []string{"remove"},
 		Short:   "Delete a bundle with every version and object it holds",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt asset delete maps\n" +
+			"  yyt asset delete ab_0123abcd",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted <bundle>\" (progress of a large delete on stderr; same with --json)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], true)
 			if err != nil {
@@ -392,6 +437,12 @@ func newAssetFiles(a *App, bundleID bundleResolver) *cobra.Command {
 		Long: "List the files of one version of a versioned bundle, or every file of a\n" +
 			"live bundle (which takes no version), with their public URLs, SHA-256 and\n" +
 			"flags (mutable, stale).",
+		Example: "  yyt asset files maps v1\n" +
+			"  yyt asset files web-assets\n" +
+			"  yyt asset files maps v1 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table PATH TYPE BYTES SHA-256 FLAGS URL; --json: {bundle,version,files:[{id,bundleId,version,path,url,objectKey,contentType,size,sha256,mutable,staleSince,createdAt}]}",
+		},
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], false)
@@ -423,6 +474,10 @@ func newAssetVersionDelete(a *App, bundleID bundleResolver) *cobra.Command {
 			"points its --map-url into the version: re-point those first. Anyone else\n" +
 			"who cached a URL of the version gets a 404 afterwards. A large version is\n" +
 			"deleted in rounds; the command repeats until the console says it is done.",
+		Example: "  yyt asset rm-version maps v1",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted <bundle>/<version>\" (progress of a large delete on stderr; same with --json)",
+		},
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], true)
@@ -444,7 +499,12 @@ func newAssetUpload(a *App, bundleID bundleResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "upload <bundle> <version> <file>",
 		Short: "Upload one file into a bundle version (presigned PUT + commit)",
-		Args:  cobra.ExactArgs(3),
+		Example: "  yyt asset upload maps v2 ./out/level1.json\n" +
+			"  yyt asset upload maps v2 ./out/tiles.png --path images/tiles.png --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table PATH TYPE BYTES SHA-256 FLAGS URL for the uploaded file; --json: {bundle,version,files:[{id,path,url,contentType,size,sha256,…}]}",
+		},
+		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], true)
 			if err != nil {
@@ -472,6 +532,11 @@ func newAssetPush(a *App, bundleID bundleResolver) *cobra.Command {
 		Long: "Upload a whole directory as one bundle version.\n\n" +
 			"Every file keeps its path relative to <dir>, so the relative references\n" +
 			"inside a map JSON keep resolving once the bundle is on the CDN.",
+		Example: "  yyt asset push maps v2 ./out/maps\n" +
+			"  yyt asset push maps v2 ./out/maps --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table PATH TYPE BYTES SHA-256 FLAGS URL of the uploaded files; --json: {bundle,version,files:[{id,path,url,contentType,size,sha256,…}]}",
+		},
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], true)

@@ -227,7 +227,13 @@ func newSiteList(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the sites of the project in context, or of every team you sit in",
-		Args:    cobra.NoArgs,
+		Example: "  yyt site list\n" +
+			"  yyt site list --project game\n" +
+			"  yyt site list --team dooroo --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID NAME TEAM/PROJECT URL STATE LIVE UPDATED; --json: {sites:[{id,name,slug,description,teamId,teamName,projectId,projectName,publicUrl,basePath,domain,hostUrl,currentDeployId,busy,access,…}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -264,7 +270,12 @@ func newSiteCreate(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a site in the project context (explicit); prints its URL and base path",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt site create web --project game\n" +
+			"  yyt site create docs --project game --description \"Game manual\" --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id name project url domain hostUrl publicUrl basePath movingTo description createdBy created updated live busy, a shared-origin warning on stderr; --json: the site {id,name,slug,publicUrl,basePath,domain,hostUrl,…}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -296,7 +307,12 @@ func newSiteCreate(a *App) *cobra.Command {
 }
 
 func newSiteGet(a *App, siteID siteResolver) *cobra.Command {
-	return newResourceGet(siteID, "get <site>", "Show one site with its URL, base path and recent deploys", "/sites", a.printSite)
+	c := newResourceGet(siteID, "get <site>", "Show one site with its URL, base path and recent deploys", "/sites", a.printSite)
+	c.Example = "  yyt site get web\n  yyt site get st_0123abcd --json"
+	c.Annotations = map[string]string{
+		OutputAnnotation: "the site as key/value lines id name project url domain hostUrl publicUrl basePath movingTo description createdBy created updated live busy access suspended accessSync, then table DEPLOY KIND MOVE_TO STATUS FILES BYTES ERROR BY CREATED; --json: the site {id,name,slug,publicUrl,basePath,domain,hostUrl,currentDeployId,busy,access:{mode,username,suspended,sync,available},deploys:[…],…}",
+	}
+	return c
 }
 
 // newSiteUpdate is its own command rather than newResourceUpdate: a domain
@@ -320,6 +336,12 @@ func newSiteUpdate(a *App, siteID siteResolver) *cobra.Command {
 			"Reserved words (help, docs, status, ...) are the platform's own page names:\n" +
 			"a platform admin claims one with --reserved-note; only an admin changes or\n" +
 			"clears such a name afterwards.",
+		Example: "  yyt site update web --description \"Lobby page\"\n" +
+			"  yyt site update web --domain my-game\n" +
+			"  yyt site update web --clear-domain --no-wait --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "the site as key/value lines id name project url domain hostUrl publicUrl basePath movingTo … (+ deploys table), \"move to <name> queued\" on stderr; --json: the site {id,name,slug,publicUrl,basePath,domain,hostUrl,movingTo,…}",
+		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := map[string]any{}
@@ -455,7 +477,12 @@ func newSiteNames(a *App) *cobra.Command {
 		Use:     "show <name>",
 		Aliases: []string{"get"},
 		Short:   "Show the ledger row behind a site name",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt site name show my-game\n" +
+			"  yyt site name show my-game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines name team kind createdBy created inUse released served purged; --json: {name,teamId,kind,createdBy,createdAt,releasedAt,served,purgedAt}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -483,9 +510,13 @@ func newSiteNames(a *App) *cobra.Command {
 	}
 	var reason string
 	release := &cobra.Command{
-		Use:   "release <name> --reason <text>",
-		Short: "Free a kept site name for every team (deletes its files; refused while a site uses it)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "release <name> --reason <text>",
+		Short:   "Free a kept site name for every team (deletes its files; refused while a site uses it)",
+		Example: "  yyt site name release my-game --reason \"team asked to give it up\"",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"released <name>\" (same with --json)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := strings.TrimSpace(reason)
 			if r == "" || len([]rune(r)) > 500 {
@@ -510,7 +541,12 @@ func newSiteNames(a *App) *cobra.Command {
 }
 
 func newSiteDelete(a *App, siteID siteResolver) *cobra.Command {
-	return newResourceDelete(a, siteID, "delete <site>", "Delete a site and every file it serves (refused while a deploy is in flight)", "/sites")
+	c := newResourceDelete(a, siteID, "delete <site>", "Delete a site and every file it serves (refused while a deploy is in flight)", "/sites")
+	c.Example = "  yyt site delete web\n  yyt site delete st_0123abcd"
+	c.Annotations = map[string]string{
+		OutputAnnotation: "\"deleted <site>\" (same with --json)",
+	}
+	return c
 }
 
 func newSiteDeploys(a *App, siteID siteResolver) *cobra.Command {
@@ -518,7 +554,12 @@ func newSiteDeploys(a *App, siteID siteResolver) *cobra.Command {
 		Use:     "deploys <site>",
 		Aliases: []string{"history"},
 		Short:   "List the recent deploys of a site, newest first",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt site deploys web\n" +
+			"  yyt site deploys web --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table DEPLOY KIND MOVE_TO STATUS FILES BYTES ERROR BY CREATED; --json: {deploys:[{id,siteId,status,kind,moveTo,moveFrom,zipBytes,bytes,files,error,createdBy,createdAt,updatedAt}]}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := siteID(cmd, args[0], false)
 			if err != nil {
@@ -550,6 +591,12 @@ func newSiteDeploy(a *App, siteID siteResolver) *cobra.Command {
 			"the deploy until it is live or failed and prints the public URL. The\n" +
 			"previous files keep serving until the new set is complete; files missing\n" +
 			"from the new build are removed.",
+		Example: "  yyt site deploy web ./dist\n" +
+			"  yyt site deploy web ./dist --exclude '*.map'\n" +
+			"  yyt site deploy web build.zip --no-wait --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"live: <url> (N files, N bytes)\" (--no-wait: the deploy row as table DEPLOY KIND MOVE_TO STATUS …); --json: {deploy:{id,status,files,bytes,…},site:{id,publicUrl,…}} (--no-wait: {deploys:[…]})",
+		},
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := siteID(cmd, args[0], true)

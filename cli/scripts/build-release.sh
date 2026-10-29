@@ -12,11 +12,13 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
   work="dist/${name}"; mkdir -p "$work"
   bin=yyt; [ "$os" = windows ] && bin=yyt.exe
   CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "$ldflags" -o "$work/$bin" ./cmd/yyt
-  cp README.md "$work/"
+  # The agent guide is also embedded (`yyt help agents`); the file is for
+  # users who copy it into an agent's skill or rules directory.
+  cp README.md agent-guide.md "$work/"
   if [ "$os" = windows ]; then
-    (cd "$work" && zip -q "../${name}.zip" "$bin" README.md)
+    (cd "$work" && zip -q "../${name}.zip" "$bin" README.md agent-guide.md)
   else
-    tar -C "$work" -czf "dist/${name}.tar.gz" "$bin" README.md
+    tar -C "$work" -czf "dist/${name}.tar.gz" "$bin" README.md agent-guide.md
   fi
   rm -rf "$work"
   echo "built $name"

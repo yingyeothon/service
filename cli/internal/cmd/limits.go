@@ -225,7 +225,13 @@ func newLimits(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "Show a scope's limits: usage, the effective value, soft and hard, and pending requests",
-		Args:    cobra.NoArgs,
+		Example: "  yyt limit ls\n" +
+			"  yyt limit ls --scope team\n" +
+			"  yyt limit ls --bundle ab_0123 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table LIMIT USAGE EFFECTIVE SOFT HARD OVERRIDE, then override/step notes and a pending-request table; --json: {scope,teamId,expiresAt,limits:[{key,unit,soft,hard,effective,usage,step,next,override}],pending:[…]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, _, _, scope, err := scopeOf(cmd, false, "")
 			if err != nil {
@@ -307,6 +313,9 @@ func newLimits(a *App) *cobra.Command {
 			"  yyt limit request channel.lifetime unlimited --channel lobby --reason \"always-on demo\"\n" +
 			"  yyt limit request team.projects +5 --reason \"one project per minigame\"\n" +
 			"  yyt limit request push.jobsPerDay 30 --channel alerts --reason \"launch week\"",
+		Annotations: map[string]string{
+			OutputAnnotation: "the created request as key/value lines id, team, scope, limit, requested, status, by, created (+ granted, decided, decidedBy, note once decided), reason; --json: the request {id,teamId,scope:{kind,id},key,requestedValue,status,decidedValue,decisionNote,reason,createdAt,…}",
+		},
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(reason) == "" {
@@ -344,7 +353,13 @@ func newLimits(a *App) *cobra.Command {
 	requests := &cobra.Command{
 		Use:   "requests",
 		Short: "List the team's limit requests, newest first (--all: every team's, admin)",
-		Args:  cobra.NoArgs,
+		Example: "  yyt limit requests\n" +
+			"  yyt limit requests --all --status pending\n" +
+			"  yyt limit requests --status approved --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID TEAM SCOPE LIMIT REQUESTED STATUS BY CREATED, then the --all pending count and a next-page hint on stderr; --json: {requests:[…],next,pending}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			q := url.Values{}
 			if status != "" {
@@ -405,12 +420,16 @@ func newLimits(a *App) *cobra.Command {
 	requests.Flags().IntVar(&pageSize, "limit", 0, "rows per page (default 50, max 200)")
 	requests.Flags().BoolVar(&all, "all", false, "every team's requests (platform admin)")
 
-	decide := func(use, short, verb string, needNote bool, withValue bool) *cobra.Command {
+	decide := func(use, short, verb string, needNote bool, withValue bool, example string) *cobra.Command {
 		var note, value string
 		cmd := &cobra.Command{
-			Use:   use,
-			Short: short,
-			Args:  cobra.ExactArgs(1),
+			Use:     use,
+			Short:   short,
+			Example: example,
+			Annotations: map[string]string{
+				OutputAnnotation: "the updated request as key/value lines id, team, scope, limit, requested, status, by, created (+ granted, decided, decidedBy, note once decided), reason; --json: the request {id,teamId,scope:{kind,id},key,requestedValue,status,decidedValue,decisionNote,reason,createdAt,…}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if needNote && strings.TrimSpace(note) == "" {
 					return errors.New("--note is required")
@@ -456,6 +475,9 @@ func newLimits(a *App) *cobra.Command {
 		Short: "Set a scope's limit directly, without a request (platform admin; --note required)",
 		Example: "  yyt limit set asset.bundleBytes 1GiB --bundle ab_0123 --expires 7d --note \"contest week\"\n" +
 			"  yyt limit set channel.lifetime unlimited --channel lobby_0123 --note \"public demo\"",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines limit, effective (+ expires, note); --json: {key,unit,effective,override:{value,expiresAt,note,grantedBy,grantedAt,…}}",
+		},
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(note) == "" {
@@ -505,7 +527,12 @@ func newLimits(a *App) *cobra.Command {
 	revoke := &cobra.Command{
 		Use:   "revoke <limit>",
 		Short: "Drop a scope's override (platform admin); a channel's lifetime returns to 28 days",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt limit revoke asset.bundleBytes --bundle ab_0123 --note \"contest over\"\n" +
+			"  yyt limit revoke team.projects --note \"back to the default\"",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"revoked <limit> on <kind>:<id>\" (no --json form)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(revokeNote) == "" {
 				return errors.New("--note is required")
@@ -526,9 +553,13 @@ func newLimits(a *App) *cobra.Command {
 	revoke.Flags().StringVar(&revokeNote, "note", "", "why (required; kept in the audit log)")
 
 	get := &cobra.Command{
-		Use:   "get <request-id>",
-		Short: "Show one request with its reason and, once decided, the grant and the admin's note",
-		Args:  cobra.ExactArgs(1),
+		Use:     "get <request-id>",
+		Short:   "Show one request with its reason and, once decided, the grant and the admin's note",
+		Example: "  yyt limit get lr_0123\n  yyt limit get lr_0123 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, team, scope, limit, requested, status, by, created (+ granted, decided, decidedBy, note once decided), reason; --json: the request {id,teamId,scope:{kind,id},key,requestedValue,status,decidedValue,decisionNote,reason,createdAt,…}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -544,9 +575,12 @@ func newLimits(a *App) *cobra.Command {
 
 	c.AddCommand(
 		list, request, requests, get,
-		decide("cancel <request-id>", "Cancel a pending request (the requester, or a team owner); counts as a refusal for 7 days", "cancel", false, false),
-		decide("approve <request-id>", "Approve a pending request (platform admin)", "approve", false, true),
-		decide("reject <request-id>", "Refuse a pending request (platform admin; --note required)", "reject", true, false),
+		decide("cancel <request-id>", "Cancel a pending request (the requester, or a team owner); counts as a refusal for 7 days", "cancel", false, false,
+			"  yyt limit cancel lr_0123"),
+		decide("approve <request-id>", "Approve a pending request (platform admin)", "approve", false, true,
+			"  yyt limit approve lr_0123\n  yyt limit approve lr_0123 --value 512MiB --note \"512 MiB is enough for now\""),
+		decide("reject <request-id>", "Refuse a pending request (platform admin; --note required)", "reject", true, false,
+			"  yyt limit reject lr_0123 --note \"use a second bundle instead\""),
 		set, revoke,
 	)
 	return c

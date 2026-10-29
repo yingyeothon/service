@@ -776,6 +776,13 @@ func (a *App) finishPushSubmit(ctx context.Context, cl *api.Client, base string,
 /* ---------------- commands ---------------- */
 
 // addPushCampaignCommands hangs `template`, `job` and `broadcast` on `yyt push`.
+// Output lines of the campaign commands that print a template or a job.
+const (
+	pushTemplateOutput  = "key/value id, name, title, body, data, variables, updated; --json: the template {id,channelId,name,title,body,data,variables,updatedAt,…}"
+	pushJobOutput       = "key/value id, kind, status, key, template, title, body, data, author, times, then rows/sent/noToken/failed/skipped/report (a broadcast: projects); --json: the job {id,channelId,kind,dryRun,status,error,idempotencyKey,message,total,processed,counts,report,…}"
+	pushJobSubmitOutput = "\"submitted <kind> <id>\" (or \"replayed …\") and the idempotency key on stderr, then the job: " + pushJobOutput
+)
+
 func (a *App) addPushCampaignCommands(push *cobra.Command, resolve channelResolver) {
 	push.AddCommand(a.pushTemplateCmd(resolve), a.pushJobCmd(resolve), a.pushBroadcastCmd(resolve))
 }
@@ -792,10 +799,12 @@ func (a *App) pushTemplateCmd(resolve channelResolver) *cobra.Command {
 			"a title. <template> is an id (pt_…) or a name, compared without case.",
 	}
 	c.AddCommand(&cobra.Command{
-		Use:     "ls <channel>",
-		Aliases: []string{"list"},
-		Short:   "List the channel's templates and the variables each names",
-		Args:    cobra.ExactArgs(1),
+		Use:         "ls <channel>",
+		Aliases:     []string{"list"},
+		Short:       "List the channel's templates and the variables each names",
+		Example:     "  yyt push template ls alerts\n  yyt push template ls alerts --json",
+		Annotations: map[string]string{OutputAnnotation: "table NAME ID VARIABLES UPDATED BY UPDATED; --json: {templates:[{id,name,title,body,data,variables,…}],max}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := resolve(cmd, args[0], false)
 			if err != nil {
@@ -827,9 +836,11 @@ func (a *App) pushTemplateCmd(resolve channelResolver) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:   "get <channel> <template>",
-		Short: "Show a template and the variables it names (the CSV columns a job needs)",
-		Args:  cobra.ExactArgs(2),
+		Use:         "get <channel> <template>",
+		Short:       "Show a template and the variables it names (the CSV columns a job needs)",
+		Example:     "  yyt push template get alerts welcome\n  yyt push template get alerts pt_0123abcd --json",
+		Annotations: map[string]string{OutputAnnotation: pushTemplateOutput},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := resolve(cmd, args[0], false)
 			if err != nil {
@@ -888,7 +899,8 @@ func (a *App) pushTemplateCmd(resolve channelResolver) *cobra.Command {
 		Short: "Create a template",
 		Example: "  yyt push template create alerts --name welcome --title \"Hi {{name}}\" --body \"Season 2 is open\" --data screen=season\n" +
 			"  yyt push template create alerts --file welcome.json",
-		Args: cobra.ExactArgs(1),
+		Annotations: map[string]string{OutputAnnotation: pushTemplateOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			in, err := messageBody(cmd)
 			if err != nil {
@@ -912,7 +924,10 @@ func (a *App) pushTemplateCmd(resolve channelResolver) *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <channel> <template> [--name … --title … --body … --data k=v … | --file template.json]",
 		Short: "Change a template; jobs already submitted keep the text they were submitted with",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt push template update alerts welcome --body \"Season 3 is open\"\n" +
+			"  yyt push template update alerts welcome --title \"Welcome back\" --clear-data",
+		Annotations: map[string]string{OutputAnnotation: pushTemplateOutput},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			in, err := messageBody(cmd)
 			if err != nil {
@@ -945,10 +960,12 @@ func (a *App) pushTemplateCmd(resolve channelResolver) *cobra.Command {
 	messageFlags(update, "rename the template")
 	update.Flags().BoolVar(&clearData, "clear-data", false, "remove every data entry")
 	c.AddCommand(create, update, &cobra.Command{
-		Use:     "rm <channel> <template>",
-		Aliases: []string{"remove", "delete"},
-		Short:   "Delete a template; jobs already submitted are not affected",
-		Args:    cobra.ExactArgs(2),
+		Use:         "rm <channel> <template>",
+		Aliases:     []string{"remove", "delete"},
+		Short:       "Delete a template; jobs already submitted are not affected",
+		Example:     "  yyt push template rm alerts welcome\n  yyt push template rm alerts pt_0123abcd --json",
+		Annotations: map[string]string{OutputAnnotation: "\"deleted template <name> (<id>)\"; --json: {deleted:<id>}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := resolve(cmd, args[0], true)
 			if err != nil {
@@ -1023,7 +1040,8 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 			"failed; the job keeps running when the wait is interrupted or times out.",
 		Example: "  yyt push job submit alerts --template welcome --csv users.csv --dry-run --wait\n" +
 			"  yyt push job submit alerts --template welcome --csv users.csv --wait",
-		Args: cobra.ExactArgs(1),
+		Annotations: map[string]string{OutputAnnotation: pushJobSubmitOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if key != "" && !pushIdemKey.MatchString(key) {
@@ -1155,10 +1173,12 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 	var limit int
 	var cursor string
 	ls := &cobra.Command{
-		Use:     "ls <channel>",
-		Aliases: []string{"list"},
-		Short:   "List the channel's jobs and broadcasts, newest first",
-		Args:    cobra.ExactArgs(1),
+		Use:         "ls <channel>",
+		Aliases:     []string{"list"},
+		Short:       "List the channel's jobs and broadcasts, newest first",
+		Example:     "  yyt push job ls alerts\n  yyt push job ls alerts --limit 50 --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID KIND STATUS ROWS SENT FAILED CREATED KEY, \"more: --cursor …\" on stderr; --json: {jobs:[{id,kind,dryRun,status,total,counts,…}],next}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("limit") && (limit < 1 || limit > 100) {
 				return fmt.Errorf("--limit is 1 to 100 (got %d)", limit)
@@ -1228,10 +1248,16 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 	// one runs a route addressed by job id and prints the job it answers.
 	one := func(use, short, method, suffix string, write bool, note string) *cobra.Command {
 		var server bool
+		out := pushJobOutput
+		if note != "" {
+			out += "; \"" + note + "\" on stderr while it runs"
+		}
 		oc := &cobra.Command{
-			Use:   use + " <channel> <job>",
-			Short: short,
-			Args:  cobra.ExactArgs(2),
+			Use:         use + " <channel> <job>",
+			Short:       short,
+			Example:     "  yyt push job " + use + " alerts pj_0123abcd\n  yyt push job " + use + " alerts pj_0123abcd --json",
+			Annotations: map[string]string{OutputAnnotation: out},
+			Args:        cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if !pushJobID.MatchString(args[1]) {
 					return fmt.Errorf("%q is not a job id (pj_…; yyt push job ls %s)", args[1], args[0])
@@ -1278,6 +1304,11 @@ func (a *App) pushJobCmd(resolve channelResolver) *cobra.Command {
 			"three are the job's `invalid` count.\n\n" +
 			"The download URL is a five-minute credential and is not printed; --url\n" +
 			"prints it instead of downloading (treat it as a secret until it expires).",
+		Example: "  yyt push job report alerts pj_0123abcd\n" +
+			"  yyt push job report alerts pj_0123abcd -o - | grep ,failed,\n" +
+			"  yyt push job report alerts pj_0123abcd --url --json",
+		Annotations: map[string]string{OutputAnnotation: "writes ./push-report-<job>.csv (userId,status,reason; -o - to stdout), \"wrote …\" and a legend on stderr; " +
+			"--url: the link on stdout, its expiry on stderr; --url --json: {url,expiresAt,reportExpiresAt}"},
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !pushJobID.MatchString(args[1]) {
@@ -1369,7 +1400,8 @@ func (a *App) pushBroadcastCmd(resolve channelResolver) *cobra.Command {
 			"again that day, pass a new --idempotency-key.",
 		Example: "  yyt push broadcast alerts --title \"Maintenance at 03:00 UTC\" --body \"About 20 minutes\" --wait\n" +
 			"  yyt push broadcast alerts --template maintenance",
-		Args: cobra.ExactArgs(1),
+		Annotations: map[string]string{OutputAnnotation: pushJobSubmitOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			fl := cmd.Flags()

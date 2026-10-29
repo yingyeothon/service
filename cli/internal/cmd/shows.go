@@ -118,6 +118,12 @@ func reportDone(a *App, pairs [][2]string) error {
 	return a.printer().KV(pairs)
 }
 
+// showOutput and showEntryOutput describe what printShow and printEntry write.
+const (
+	showOutput      = "the show as key/value lines (id, title, who may see it, state, entries, owner, created, event, may submit…, body); --json: the show {id,title,acl,eventId,closedAt,bodyMd,entryCount,canWrite,canManage,grants,…}"
+	showEntryOutput = "the entry as key/value lines (id, title, exhibits, build, link, by, created, likes, screenshot <id>…, body, comments); --json: the entry {id,showId,title,bodyMd,target:{kind,id,name,ref,available,url},shots,likes,comments,…}"
+)
+
 func newShows(a *App) *cobra.Command {
 	c := group(&cobra.Command{
 		Use:   "show",
@@ -221,7 +227,11 @@ func newShows(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List shows you may see",
-		Args:    cobra.NoArgs,
+		Example: "  yyt show list" + "\n" +
+			"  yyt show ls --state open --q jam" + "\n" +
+			"  yyt show list --cursor \"$NEXT\" --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID TITLE ACL STATE OWNER CREATED, \"more: --cursor <c>\" on stderr when a page follows; --json: {shows:[{id,title,acl,eventId,createdBy,createdAt,closedAt}],next}"},
+		Args:        cobra.NoArgs,
 	}
 	var listState, listCursor, listQ string
 	list.Flags().StringVar(&listState, "state", "", "only 'open' or 'closed' shows")
@@ -258,7 +268,10 @@ func newShows(a *App) *cobra.Command {
 	get := &cobra.Command{
 		Use:   "get <show>",
 		Short: "Show one gallery (owner and admins also see who may submit)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt show get sh_0123456789abcdef" + "\n" +
+			"  yyt show get sh_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: showOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var s showDetail
 			if err := do(cmd, http.MethodGet, showPath(args[0]), nil, &s); err != nil {
@@ -271,7 +284,10 @@ func newShows(a *App) *cobra.Command {
 	create := &cobra.Command{
 		Use:   "create <title>",
 		Short: "Open a show (any non-pending member)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt show create \"Autumn Jam showcase\"" + "\n" +
+			"  yyt show create \"Team demos\" --body @show.md --acl member_only",
+		Annotations: map[string]string{OutputAnnotation: showOutput},
+		Args:        cobra.ExactArgs(1),
 	}
 	var createBody, createACL string
 	create.Flags().StringVar(&createBody, "body", "", "markdown page, or @file")
@@ -304,7 +320,11 @@ func newShows(a *App) *cobra.Command {
 		Long: "Narrowing the audience is always allowed; opening a member-only show\n" +
 			"to everyone is refused once it has entries — people submitted to the\n" +
 			"audience they were shown.",
-		Args: cobra.ExactArgs(1),
+		Example: "  yyt show update sh_0123456789abcdef --title \"Autumn Jam 2026 showcase\"" + "\n" +
+			"  yyt show update sh_0123456789abcdef --body @show.md --acl member_only" + "\n" +
+			"  yyt show update sh_0123456789abcdef --acl member_only --reason \"Spam reports\"",
+		Annotations: map[string]string{OutputAnnotation: showOutput},
+		Args:        cobra.ExactArgs(1),
 	}
 	var upTitle, upBody, upACL, upReason string
 	update.Flags().StringVar(&upTitle, "title", "", "new title")
@@ -347,7 +367,10 @@ func newShows(a *App) *cobra.Command {
 		c := &cobra.Command{
 			Use:   verb + " <show>",
 			Short: short,
-			Args:  cobra.ExactArgs(1),
+			Example: "  yyt show " + verb + " sh_0123456789abcdef\n" +
+				"  yyt show " + verb + " sh_0123456789abcdef --reason \"Requested by the organisers\" --json",
+			Annotations: map[string]string{OutputAnnotation: "key/value lines show <id>, state " + doneState + "; --json: {show,state}"},
+			Args:        cobra.ExactArgs(1),
 		}
 		var reason string
 		c.Flags().StringVar(&reason, "reason", "", "required when an admin acts on somebody else's show")
@@ -371,7 +394,9 @@ func newShows(a *App) *cobra.Command {
 		Long: "Deleting destroys other people's entries, screenshots and comments,\n" +
 			"so a reason is always required and is recorded in the audit log with a\n" +
 			"snapshot of what existed.",
-		Args: cobra.ExactArgs(1),
+		Example:     "  yyt show delete sh_0123456789abcdef --reason \"Test show, no real entries\"",
+		Annotations: map[string]string{OutputAnnotation: "\"deleted <show>\" as a key/value line; --json: {deleted}"},
+		Args:        cobra.ExactArgs(1),
 	}
 	var delReason string
 	del.Flags().StringVar(&delReason, "reason", "", "why it is being removed (required)")
@@ -391,7 +416,10 @@ func newShows(a *App) *cobra.Command {
 		Long: "Resolved through the teams you hold a seat in, so a platform admin\n" +
 			"with no seat sees nothing — the answer is 'what may *I* exhibit',\n" +
 			"never an inventory of the platform.",
-		Args: cobra.ExactArgs(1),
+		Example: "  yyt show submittable sh_0123456789abcdef" + "\n" +
+			"  yyt show submittable sh_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: "table KIND NAME ID; --json: {targets:[{kind,id,name}]}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				Targets []struct {
@@ -420,7 +448,10 @@ func newShows(a *App) *cobra.Command {
 		Long: "Refused with 409 until the event is visible to an anonymous visitor:\n" +
 			"an event still taking date votes, and one cancelled after it was\n" +
 			"published, are both invisible to the world.",
-		Args: cobra.ExactArgs(1),
+		Example: "  yyt show from-event ev_0123456789abcdef" + "\n" +
+			"  yyt show from-event ev_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: showOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				ID string `json:"id"`
@@ -465,7 +496,10 @@ func newShowGrants(
 		Use:     "list <show>",
 		Aliases: []string{"ls"},
 		Short:   "List the grants",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt show grants list sh_0123456789abcdef" + "\n" +
+			"  yyt show grants ls sh_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: "table LOGIN BY WHEN; --json: {grants:[{login,grantedBy,grantedAt}]}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				Grants []showGrant `json:"grants"`
@@ -488,7 +522,10 @@ func newShowGrants(
 		Short: "Let a member put work up",
 		Long: "An unknown login and an already-granted one answer alike: the route\n" +
 			"must not tell anyone whether a GitHub login is a member here.",
-		Args: cobra.ExactArgs(2),
+		Example: "  yyt show grants add sh_0123456789abcdef octocat" + "\n" +
+			"  yyt show grants add sh_0123456789abcdef octocat --reason \"Owner is away\" --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value lines granted <login>, note; --json: {granted,note}"},
+		Args:        cobra.ExactArgs(2),
 	}
 	var addReason string
 	add.Flags().StringVar(&addReason, "reason", "", "required when an admin grants on somebody else's show")
@@ -505,7 +542,10 @@ func newShowGrants(
 	rm := &cobra.Command{
 		Use:   "rm <show> <github-login>",
 		Short: "Take the grant back",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt show grants rm sh_0123456789abcdef octocat" + "\n" +
+			"  yyt show grants rm sh_0123456789abcdef octocat --reason \"Owner is away\" --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value lines revoked <login>, note; --json: {revoked,note}"},
+		Args:        cobra.ExactArgs(2),
 	}
 	var rmReason string
 	rm.Flags().StringVar(&rmReason, "reason", "", "required when an admin acts on somebody else's show")
@@ -544,7 +584,11 @@ func newShowEntries(
 		Use:     "list <show>",
 		Aliases: []string{"ls"},
 		Short:   "List the entries",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt show entries list sh_0123456789abcdef" + "\n" +
+			"  yyt show entries ls sh_0123456789abcdef --sort likes" + "\n" +
+			"  yyt show entries list sh_0123456789abcdef --cursor \"$NEXT\" --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID TITLE EXHIBITS BY LIKES COMMENTS, \"more: --cursor <c>\" on stderr when a page follows; --json: {entries:[{id,title,target:{kind,id,name,available},likes,commentCount,…}],next}"},
+		Args:        cobra.ExactArgs(1),
 	}
 	var sort, cursor string
 	list.Flags().StringVar(&sort, "sort", "new", "new|likes")
@@ -581,7 +625,10 @@ func newShowEntries(
 	get := &cobra.Command{
 		Use:   "get <show> <entry>",
 		Short: "Show one entry with its screenshots and comments",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt show entries get sh_0123456789abcdef se_0123456789abcdef" + "\n" +
+			"  yyt show entries get sh_0123456789abcdef se_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: showEntryOutput},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var x showEntry
 			if err := do(cmd, http.MethodGet, entryPath(args[0], args[1]), nil, &x); err != nil {
@@ -600,7 +647,11 @@ func newShowEntries(
 			"checked before the entry is created, so a bad path fails without\n" +
 			"putting anything up; if an upload still fails afterwards the error\n" +
 			"names the entry so you can finish it with `entries update`.",
-		Args: cobra.ExactArgs(2),
+		Example: "  yyt show entries submit sh_0123456789abcdef \"Space Dodge\" --app my-game" + "\n" +
+			"  yyt show entries submit sh_0123456789abcdef \"Level pack\" --bundle my-assets --body @entry.md --screenshot shot1.png --screenshot shot2.jpg" + "\n" +
+			"  yyt show entries submit sh_0123456789abcdef \"Docs site\" --site my-site --team dooroo --project game",
+		Annotations: map[string]string{OutputAnnotation: showEntryOutput},
+		Args:        cobra.ExactArgs(2),
 	}
 	var appName, bundleName, siteName, subBody, subReason string
 	var shots []string
@@ -661,7 +712,11 @@ func newShowEntries(
 		Long: "--screenshot replaces the whole set and may be given up to 3 times;\n" +
 			"omitting it keeps the screenshots the entry has, and\n" +
 			"--clear-screenshots empties them.",
-		Args: cobra.ExactArgs(2),
+		Example: "  yyt show entries update sh_0123456789abcdef se_0123456789abcdef --title \"Space Dodge 1.1\"" + "\n" +
+			"  yyt show entries update sh_0123456789abcdef se_0123456789abcdef --build art_0123456789abcdef --screenshot shot1.png" + "\n" +
+			"  yyt show entries update sh_0123456789abcdef se_0123456789abcdef --clear-screenshots",
+		Annotations: map[string]string{OutputAnnotation: showEntryOutput},
+		Args:        cobra.ExactArgs(2),
 	}
 	var upTitle, upBody, upRef, upReason string
 	var upShots []string
@@ -736,7 +791,10 @@ func newShowEntries(
 		Long: "Its author, the show owner, an admin — and anyone who can write what\n" +
 			"it exhibits, so a team is never forced to destroy its own work to take\n" +
 			"it down.",
-		Args: cobra.ExactArgs(2),
+		Example: "  yyt show entries delete sh_0123456789abcdef se_0123456789abcdef" + "\n" +
+			"  yyt show entries delete sh_0123456789abcdef se_0123456789abcdef --reason \"Broken link reported\" --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value line removed <entry>; --json: {removed}"},
+		Args:        cobra.ExactArgs(2),
 	}
 	var delReason string
 	del.Flags().StringVar(&delReason, "reason", "", "required when an admin removes somebody else's entry")
@@ -755,7 +813,10 @@ func newShowEntries(
 		return &cobra.Command{
 			Use:   verb + " <show> <entry>",
 			Short: short,
-			Args:  cobra.ExactArgs(2),
+			Example: "  yyt show entries " + verb + " sh_0123456789abcdef se_0123456789abcdef\n" +
+				"  yyt show entries " + verb + " sh_0123456789abcdef se_0123456789abcdef --json",
+			Annotations: map[string]string{OutputAnnotation: "key/value line " + verb + " <entry>; --json: {" + verb + "}"},
+			Args:        cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if err := do(cmd, method, entryPath(args[0], args[1])+"/like", nil, nil); err != nil {
 					return err
@@ -790,7 +851,10 @@ func newShowEntryComments(
 		Use:     "list <show> <entry>",
 		Aliases: []string{"ls"},
 		Short:   "List the comments",
-		Args:    cobra.ExactArgs(2),
+		Example: "  yyt show entries comments list sh_0123456789abcdef se_0123456789abcdef" + "\n" +
+			"  yyt show entries comments ls sh_0123456789abcdef se_0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID BY WHEN BODY; --json: [{id,bodyMd,createdBy,createdAt,updatedAt,mine}] (a bare array)"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var x showEntry
 			if err := do(cmd, http.MethodGet, entryPath(args[0], args[1]), nil, &x); err != nil {
@@ -809,7 +873,10 @@ func newShowEntryComments(
 	add := &cobra.Command{
 		Use:   "add <show> <entry>",
 		Short: "Add a comment",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt show entries comments add sh_0123456789abcdef se_0123456789abcdef --body \"Great level design\"" + "\n" +
+			"  yyt show entries comments add sh_0123456789abcdef se_0123456789abcdef --body @comment.md --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value line added <comment-id>; --json: {added}"},
+		Args:        cobra.ExactArgs(2),
 	}
 	var addBody string
 	add.Flags().StringVar(&addBody, "body", "", "markdown, or @file (required)")
@@ -833,7 +900,10 @@ func newShowEntryComments(
 	edit := &cobra.Command{
 		Use:   "edit <show> <entry> <comment>",
 		Short: "Edit a comment (its author, the show owner or an admin)",
-		Args:  cobra.ExactArgs(3),
+		Example: "  yyt show entries comments edit sh_0123456789abcdef se_0123456789abcdef sc_0123456789abcdef --body \"Great level design!\"" + "\n" +
+			"  yyt show entries comments edit sh_0123456789abcdef se_0123456789abcdef sc_0123456789abcdef --body @comment.md --reason \"Removed personal data\"",
+		Annotations: map[string]string{OutputAnnotation: "key/value line edited <comment-id>; --json: {edited}"},
+		Args:        cobra.ExactArgs(3),
 	}
 	var editBody, editReason string
 	edit.Flags().StringVar(&editBody, "body", "", "markdown, or @file (required)")
@@ -860,7 +930,10 @@ func newShowEntryComments(
 		Use:     "delete <show> <entry> <comment>",
 		Aliases: []string{"rm", "remove"},
 		Short:   "Delete a comment",
-		Args:    cobra.ExactArgs(3),
+		Example: "  yyt show entries comments delete sh_0123456789abcdef se_0123456789abcdef sc_0123456789abcdef" + "\n" +
+			"  yyt show entries comments delete sh_0123456789abcdef se_0123456789abcdef sc_0123456789abcdef --reason \"Spam\"",
+		Annotations: map[string]string{OutputAnnotation: "key/value line deleted <comment-id>; --json: {deleted}"},
+		Args:        cobra.ExactArgs(3),
 	}
 	var delReason string
 	del.Flags().StringVar(&delReason, "reason", "", "required when an admin removes somebody else's comment")

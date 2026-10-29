@@ -89,7 +89,12 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 	listing := &cobra.Command{
 		Use:   "listing <app>",
 		Short: "Show the app's listing (how it is published)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt catalog listing my-game\n" +
+			"  yyt catalog listing my-game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines app team title summary tags audience publishedBy published updated (+takenDown); --json: {appId,appName,teamId,teamName,title,summary,tags,audience,publishedBy,publishedAt,updatedAt,takenDown}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var v catalogListing
 			if err := listingDo(cmd, false, http.MethodGet, args[0], "", nil, &v); err != nil {
@@ -108,6 +113,12 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 			"to everyone (`--audience public`) or to the members named with `viewer add`\n" +
 			"(`--audience members`). Running it again replaces title, summary, tags and\n" +
 			"audience whole. A listing a platform admin took down stays hidden.",
+		Example: "  yyt catalog publish my-game --title \"My Game\" --audience public --tag puzzle\n" +
+			"  yyt catalog publish my-game --title \"My Game beta\" --audience members --summary \"Closed beta\"\n" +
+			"  yyt catalog publish my-game --title \"My Game\" --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "the listing as key/value lines app team title summary tags audience publishedBy published updated; --json: {appId,appName,teamId,teamName,title,summary,tags,audience,publishedBy,publishedAt,updatedAt,takenDown}",
+		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			title = strings.TrimSpace(title)
@@ -138,9 +149,13 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 	publish.Flags().StringArrayVar(&tags, "tag", nil, "lowercase slug tag, repeatable (max 10)")
 
 	unpublish := &cobra.Command{
-		Use:   "unpublish <app>",
-		Short: "Remove the app's listing (already fetched CDN links stay valid)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "unpublish <app>",
+		Short:   "Remove the app's listing (already fetched CDN links stay valid)",
+		Example: "  yyt catalog unpublish my-game",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"unpublished\" (same with --json)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := listingDo(cmd, true, http.MethodDelete, args[0], "", nil, nil); err != nil {
 				return err
@@ -154,7 +169,12 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 	viewer.AddCommand(&cobra.Command{
 		Use:   "add <app> <github-login>",
 		Short: "Name an approved platform member as a reader of the listing",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt catalog viewer add my-game octocat\n" +
+			"  yyt catalog viewer add my-game octocat --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"added <login>\" or \"<login> was already named\"; --json: {login,added}",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var v struct {
 				Login string `json:"login"`
@@ -178,7 +198,11 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 		Use:     "rm <app> <github-login>",
 		Aliases: []string{"remove", "delete"},
 		Short:   "Stop naming a member (does not revoke links already fetched)",
-		Args:    cobra.ExactArgs(2),
+		Example: "  yyt catalog viewer rm my-game octocat",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"removed <login>\" (same with --json)",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := listingDo(cmd, true, http.MethodDelete, args[0], "/viewers/"+api.PathID(args[1]), nil, nil); err != nil {
 				return err
@@ -191,7 +215,12 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 		Use:     "ls <app>",
 		Aliases: []string{"list"},
 		Short:   "List the named members",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt catalog viewer ls my-game\n" +
+			"  yyt catalog viewer ls my-game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table LOGIN ADDED_BY ADDED; --json: {viewers:[{login,addedBy,addedAt}]}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res struct {
 				Viewers []catalogListingViewer `json:"viewers"`
@@ -215,7 +244,13 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 		Use:     "listings",
 		Aliases: []string{"browse"},
 		Short:   "Browse published apps you may read (public, named for you, or your teams')",
-		Args:    cobra.NoArgs,
+		Example: "  yyt catalog listings\n" +
+			"  yyt catalog listings --q puzzle --platform android --sort title --order asc\n" +
+			"  yyt catalog listings --tag arcade --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table APP TITLE TEAM AUDIENCE TAGS PLATFORMS PUBLISHED; --json: the server body as sent {listings:[{appId,appName,teamName,title,summary,tags,audience,publishedAt,updatedAt,artifacts,latestArtifact,…}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if sortKey != "" && sortKey != "publishedAt" && sortKey != "title" {
 				return errors.New("--sort must be publishedAt or title")
@@ -281,8 +316,10 @@ func newCatalogListingCommands(a *App, appID appResolver) []*cobra.Command {
 }
 
 // firstLine is a multi-line value as one key/value line: its first line, with
-// an ellipsis when more follows.
+// an ellipsis when more follows. Trailing line breaks (an editor's final
+// newline in an @file) are not "more".
 func firstLine(s string) string {
+	s = strings.TrimRight(s, "\r\n")
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return strings.TrimRight(s[:i], "\r") + " …"
 	}

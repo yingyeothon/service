@@ -197,7 +197,11 @@ ticket, accepts the proposal and waits for "confirmed" (at most 4 requests/s,
 the stage's API throttle being 5/s). When the run fails the tickets are
 deleted; a ticket deleted during a proposal counts as a decline, so a rerun
 right after may answer 429 cooldown for the channel's accept timeout. Exit code 1 when any player fails or times out.`,
-		Args: cobra.NoArgs,
+		Example: "  yyt smoke match --url \"$WS_URL\" --jwt-file players.jwt\n" +
+			"  yyt smoke match --url \"$TICKET_URL\" --jwt-file players.jwt --deferred --timeout 3m\n" +
+			"  yyt smoke match --url \"$WS_URL\" --jwt-file players.jwt --json",
+		Annotations: map[string]string{OutputAnnotation: "one line per frame \"[  t.tts] pN  <frame JSON>\" (deferred: \"t.tts  player N  <state> [matchId] [reason=…]\"), \"ok: N players matched|confirmed\" on stderr; --json: one {player,at,msg,error} object per line"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if deferred {
 				tokens, err := f.tokens()
@@ -244,7 +248,10 @@ func newSmokeTopic(a *App) *cobra.Command {
 		Long: `Connects every JWT to a topic wsUrl (returned by POST /t on the topic API),
 sends {type:"msg", payload:{hello:<n>}} from each member and prints every frame
 received during --wait. The wsUrl looks like wss://topic-ws…/?topic=<topicId>. Exit code 1 on error/expired/closed frames.`,
-		Args: cobra.NoArgs,
+		Example: "  yyt smoke topic --url \"$TOPIC_WS_URL\" --jwt-file players.jwt\n" +
+			"  yyt smoke topic --url \"$TOPIC_WS_URL\" --jwt-file players.jwt --wait 10s --json",
+		Annotations: map[string]string{OutputAnnotation: "one line per frame \"[  t.tts] pN  <frame JSON>\", \"done after <wait>\" on stderr; --json: one {player,at,msg,error} object per line"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			tokens, err := f.tokens()
 			if err != nil {

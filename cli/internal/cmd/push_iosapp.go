@@ -105,6 +105,9 @@ func (a *App) pushIOSCmd(resolve channelResolver) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:   "add <channel> <bundleId>",
 		Short: "Add an iOS app to a push channel (fixed once set; the same bundle id again is a no-op)",
+		Example: "  yyt push channel ios add alerts com.example.game\n" +
+			"  yyt push channel ios add push_0123abcd com.example.game --json",
+		Annotations: map[string]string{OutputAnnotation: channelViewOutput + "; the ios and apns lines show the iOS app"},
 		Long: "Add an iOS app to a push channel (fixed once set; the same bundle id again is a no-op).\n\n" +
 			"A platform-sender channel registers the bundle id in its own slot's Firebase\n" +
 			"project, and its APNs state is `pending` until the platform owner uploads\n" +
@@ -141,9 +144,11 @@ func (a *App) pushIOSCmd(resolve channelResolver) *cobra.Command {
 // channel's team, so <channel> is an id (the `push pool` listing prints it).
 func (a *App) pushAPNsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "apns <push-id> ready|pending",
-		Short: "Mark a channel's iOS app ready once its APNs certificate is uploaded, or pending again (platform admin)",
-		Args:  cobra.ExactArgs(2),
+		Use:         "apns <push-id> ready|pending",
+		Short:       "Mark a channel's iOS app ready once its APNs certificate is uploaded, or pending again (platform admin)",
+		Example:     "  yyt push pool apns push_0123abcd ready\n  yyt push pool apns push_0123abcd pending --json",
+		Annotations: map[string]string{OutputAnnotation: "\"apns <state> on <id>\"; --json: {channelId,apnsState}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, state := args[0], args[1]
 			if state != "ready" && state != "pending" {

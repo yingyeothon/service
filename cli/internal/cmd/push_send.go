@@ -84,6 +84,11 @@ func (a *App) pushSendCmd(resolve channelResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "send <channel> --user <id>[,<id>…] [--data k=v …] [--title t --body b] [--priority high|normal] [--ttl sec] [--collapse-key k]",
 		Short: "Send to up to 500 users of a push channel with its stored apiKey (`push key set`); prints one line per user",
+		Example: "  yyt push send alerts --user u_0123abcd --title \"Your turn\" --body \"dooroo played a move\"\n" +
+			"  yyt push send alerts --user u_0123abcd,u_4567cdef --data screen=match --priority high --ttl 3600\n" +
+			"  yyt push send push_0123abcd --user u_0123abcd --data kind=ping --json",
+		Annotations: map[string]string{OutputAnnotation: "table USER STATUS REASON, then \"sent <n> · no-token <n> · failed <n>\"; " +
+			"--json: {results:[{userId,status,reason}],sent,noToken,failed}"},
 		Long: "The targeted send (docs/push.md, Targeted send): POST {apiBase}/push/{channel}/send\n" +
 			"with the channel apiKey stored by `yyt push key set` (or `rotate --save`).\n" +
 			"At least one of --data and --title is needed. The route is not idempotent:\n" +

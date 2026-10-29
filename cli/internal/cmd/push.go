@@ -226,7 +226,11 @@ func (a *App) pushConfigCmd(resolve channelResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "config <channel> [--ios]",
 		Short: "Download the channel's " + googleServicesFile + " (the Android app embeds it), or with --ios its " + googleServiceInfoFile,
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt push channel config alerts -o app/" + googleServicesFile + " --force\n" +
+			"  yyt push channel config alerts --ios -o ios/Runner/" + googleServiceInfoFile + "\n" +
+			"  yyt push channel config push_0123abcd -o -",
+		Annotations: map[string]string{OutputAnnotation: "writes the file and \"wrote <file> (<n> bytes)\" on stderr; -o - prints the file itself on stdout; --json does not apply"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := googleServicesFile
 			if ios {
@@ -316,7 +320,10 @@ func (a *App) pushSenderKeyCmd(resolve channelResolver) *cobra.Command {
 	set := &cobra.Command{
 		Use:   "set <channel> --service-account <file|->",
 		Short: "Register or replace the team's sender key; the channel then also accepts tokens of that Firebase project",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt push channel sender-key set alerts --service-account sa.json\n" +
+			"  yyt push channel sender-key set alerts --service-account - < sa.json",
+		Annotations: map[string]string{OutputAnnotation: channelViewOutput + " (never the key)"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Read before resolving, so a bad file costs no request.
 			key, err := readServiceAccount(file, a.In)
@@ -339,10 +346,12 @@ func (a *App) pushSenderKeyCmd(resolve channelResolver) *cobra.Command {
 	c.AddCommand(set)
 
 	c.AddCommand(&cobra.Command{
-		Use:     "rm <channel>",
-		Aliases: []string{"remove", "delete"},
-		Short:   "Remove the team's sender key from a platform-sender channel (a team-sender channel refuses: it has no other sender)",
-		Args:    cobra.ExactArgs(1),
+		Use:         "rm <channel>",
+		Aliases:     []string{"remove", "delete"},
+		Short:       "Remove the team's sender key from a platform-sender channel (a team-sender channel refuses: it has no other sender)",
+		Example:     "  yyt push channel sender-key rm alerts\n  yyt push channel sender-key rm push_0123abcd --json",
+		Annotations: map[string]string{OutputAnnotation: "\"removed the sender key of <id>\" or \"<id> had no sender key\"; --json: {removed}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := resolve(cmd, args[0], true)
 			if err != nil {
@@ -419,6 +428,8 @@ func (a *App) pushPoolCmd() *cobra.Command {
 		}
 		return a.printer().Table([]string{"CHANNEL", "TEAM", "BUNDLE ID", "SLOT"}, pending)
 	}
+	const listOutput = "table SLOT STATE APPS CLOSED BY CLOSED AT, then table CHANNEL TEAM BUNDLE ID SLOT when iOS apps wait for APNs; " +
+		"--json: {configured,slots:[{slot,provisioned,closed,closedBy,closedAt,apps,capacity}],apnsPending:[{channelId,teamId,iosBundleId,slot}]}"
 	c := &cobra.Command{
 		Use:   "pool",
 		Short: "The stage's push registration slots (platform admin)",
@@ -432,21 +443,28 @@ func (a *App) pushPoolCmd() *cobra.Command {
 			"the slot then stays closed until `pool open`.\n\n" +
 			"APNS PENDING lists the platform channels whose iOS app waits for the team's\n" +
 			"APNs certificate; `pool apns <push-id> ready` marks one once it is uploaded.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error { return list(cmd) },
+		Example:     "  yyt push pool\n  yyt push pool --json",
+		Annotations: map[string]string{OutputAnnotation: listOutput},
+		Args:        cobra.NoArgs,
+		RunE:        func(cmd *cobra.Command, _ []string) error { return list(cmd) },
 	}
 	c.AddCommand(&cobra.Command{
-		Use:     "list",
-		Aliases: []string{"ls"},
-		Short:   "List the slots: state, apps registered out of the capacity, and who closed one",
-		Args:    cobra.NoArgs,
-		RunE:    func(cmd *cobra.Command, _ []string) error { return list(cmd) },
+		Use:         "list",
+		Aliases:     []string{"ls"},
+		Short:       "List the slots: state, apps registered out of the capacity, and who closed one",
+		Example:     "  yyt push pool list\n  yyt push pool ls --json",
+		Annotations: map[string]string{OutputAnnotation: listOutput},
+		Args:        cobra.NoArgs,
+		RunE:        func(cmd *cobra.Command, _ []string) error { return list(cmd) },
 	})
 	toggle := func(verb, short, done string) *cobra.Command {
 		return &cobra.Command{
-			Use:   verb + " <slot>",
-			Short: short,
-			Args:  cobra.ExactArgs(1),
+			Use:     verb + " <slot>",
+			Short:   short,
+			Example: "  yyt push pool " + verb + " p2\n  yyt push pool " + verb + " p2 --json",
+			Annotations: map[string]string{OutputAnnotation: "\"" + done + " <slot>\" or \"<slot> was already " + done +
+				"\"; --json: {slot,closed,changed}"},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cl, err := a.client()
 				if err != nil {

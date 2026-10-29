@@ -228,3 +228,31 @@ func TestAssetFilesFollowsEveryPage(t *testing.T) {
 		t.Errorf("pages = %v", cursors)
 	}
 }
+
+// A file the console takes in parts (over 64 MiB) is presigned with its
+// sha256; a smaller one is not hashed (the body above has no sha256).
+func TestAssetUploadLargeNamesSHA256(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "big.bin")
+	fh, err := os.Create(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sparse: 64 MiB + 1 of zeros without writing them.
+	if err := fh.Truncate(multipartThreshold + 1); err != nil {
+		t.Fatal(err)
+	}
+	_ = fh.Close()
+	var sum any
+	withProject(t)
+	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
+		"POST /assets/bundles/ab_1/files": func(r recorded) (int, any) {
+			sum = r.Body["sha256"]
+			return 400, map[string]any{"error": map[string]any{"code": "bad_request", "message": "stop here"}}
+		},
+	}, nil, nil, []any{sampleBundle}))
+	_, _, _ = run(t, f, "asset", "upload", "dungeon-maps", "v1", file)
+	want, _, _ := hashFile(file)
+	if sum != want || want == "" {
+		t.Fatalf("sha256 = %v, want %s", sum, want)
+	}
+}

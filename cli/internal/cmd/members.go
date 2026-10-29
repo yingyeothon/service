@@ -23,7 +23,11 @@ func newMembers(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List members",
-		Args:    cobra.NoArgs,
+		Example: "  yyt members ls\n  yyt members ls --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID LOGIN ROLE CREATED APPROVED APPROVED_BY; --json: {members:[{id,login,role,createdAt,approvedAt,approvedBy}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -52,9 +56,13 @@ func newMembers(a *App) *cobra.Command {
 	} {
 		action := action
 		c.AddCommand(&cobra.Command{
-			Use:   action.name + " <member-id>",
-			Short: action.short,
-			Args:  cobra.ExactArgs(1),
+			Use:     action.name + " <member-id>",
+			Short:   action.short,
+			Example: "  yyt members " + action.name + " m_0123abcd\n  yyt members " + action.name + " m_0123abcd --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, login, role; --json: {id,login,role}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cl, err := a.client()
 				if err != nil {

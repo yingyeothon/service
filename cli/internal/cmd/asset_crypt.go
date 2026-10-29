@@ -167,6 +167,11 @@ func newAssetKey(a *App, bundleID bundleResolver) *cobra.Command {
 			"bundle's files, and what `asset sync` and `asset download` fetch for you.\n" +
 			"Every read is audited. Never commit it: the key is never rotated in place,\n" +
 			"so a leaked key means a new bundle and an app release.",
+		Example: "  yyt asset key show secret-maps\n" +
+			"  yyt asset key show ab_0123abcd --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "the key (yak1.…) on stdout, a warning on stderr; --json: {bundleId,key,format}",
+		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], true)

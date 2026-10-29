@@ -56,6 +56,10 @@ func newSiteAuth(a *App, resolve siteResolver) *cobra.Command {
 		}
 		return a.printSite(result)
 	}}
+	set.Example = "  printf %s \"$SITE_PASSWORD\" | yyt site auth set web --username viewer --password-stdin\n  yyt site auth set web --username viewer --password-stdin --json < password.txt"
+	set.Annotations = map[string]string{
+		OutputAnnotation: "the site as key/value lines id name project url domain hostUrl publicUrl basePath movingTo description createdBy created updated live busy access suspended accessSync; --json: the site {id,name,slug,publicUrl,basePath,domain,hostUrl,currentDeployId,busy,access:{mode,username,suspended,sync,available},…}",
+	}
 	set.Flags().StringVar(&username, "username", "", "shared viewer ID (no colon or spaces)")
 	set.Flags().BoolVar(&stdin, "password-stdin", false, "read the password from standard input; never stored in configuration")
 	var confirm bool
@@ -73,6 +77,10 @@ func newSiteAuth(a *App, resolve siteResolver) *cobra.Command {
 		}
 		return a.printSite(result)
 	}}
+	clear.Example = "  yyt site auth clear web --confirm-public\n  yyt site auth clear web --confirm-public --json"
+	clear.Annotations = map[string]string{
+		OutputAnnotation: "the site as key/value lines id name project url domain hostUrl publicUrl basePath movingTo description createdBy created updated live busy access suspended accessSync; --json: the site {id,name,slug,publicUrl,basePath,domain,hostUrl,currentDeployId,busy,access:{mode,username,suspended,sync,available},…}",
+	}
 	clear.Flags().BoolVar(&confirm, "confirm-public", false, "explicitly publish the site without authentication")
 	sync := &cobra.Command{Use: "sync <site>", Short: "Retry pending edge policy synchronization", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cc, id, err := resolve(cmd, args[0], true)
@@ -85,6 +93,10 @@ func newSiteAuth(a *App, resolve siteResolver) *cobra.Command {
 		}
 		return a.printSite(result)
 	}}
+	sync.Example = "  yyt site auth sync web\n  yyt site auth sync web --json"
+	sync.Annotations = map[string]string{
+		OutputAnnotation: "the site as key/value lines id name project url domain hostUrl publicUrl basePath movingTo description createdBy created updated live busy access suspended accessSync; --json: the site {id,name,slug,publicUrl,basePath,domain,hostUrl,currentDeployId,busy,access:{mode,username,suspended,sync,available},…}",
+	}
 	c.AddCommand(set, clear, sync)
 	return group(c)
 }
@@ -108,6 +120,10 @@ func newSiteSuspension(a *App, resolve siteResolver, suspended bool) *cobra.Comm
 		}
 		return a.printSite(result)
 	}}
+	c.Example = "  yyt site " + verb + " web --reason \"abuse report 42\"\n  yyt site " + verb + " st_0123abcd --reason \"abuse report 42\" --json"
+	c.Annotations = map[string]string{
+		OutputAnnotation: "the site as key/value lines id name project url domain hostUrl publicUrl basePath movingTo description createdBy created updated live busy access suspended accessSync; --json: the site {id,name,slug,publicUrl,basePath,domain,hostUrl,currentDeployId,busy,access:{mode,username,suspended,sync,available},…}",
+	}
 	c.Flags().StringVar(&reason, "reason", "", "audit reason (required)")
 	return c
 }

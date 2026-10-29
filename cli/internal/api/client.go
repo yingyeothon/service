@@ -59,6 +59,51 @@ type Client struct {
 	// DataPlane marks a client of a data-plane host (state, match tickets):
 	// its errors must not suggest checking the console URL.
 	DataPlane bool
+	// RateLimitRetries is how many times a request refused with
+	// `rate_limited` and a `details.retryAfterMs` hint is sent again (0 =
+	// never). That refusal is the console's per-member write slot, raised
+	// before any write, so repeating the request is safe; no other 429, 409
+	// or 5xx is repeated here (docs/decisions.md "CLI").
+	RateLimitRetries int
+	// RateLimitBudget caps the total wait across those retries (0 = 5 s).
+	RateLimitBudget time.Duration
+	// OnRateLimitRetry, when set, is told about each wait before it starts.
+	OnRateLimitRetry func(attempt int, wait time.Duration)
+	// Sleep waits between retries; nil = a timer honouring ctx. Tests stub it.
+	Sleep func(ctx context.Context, d time.Duration) error
+}
+
+// DefaultRateLimitRetries is the CLI's default for RateLimitRetries.
+const DefaultRateLimitRetries = 3
+
+// rateLimitHint is the wait a `rate_limited` refusal asked for, or 0 when err
+// is anything else (or carries no hint).
+func rateLimitHint(err error) time.Duration {
+	e, ok := err.(*Error)
+	if !ok || e.Status != http.StatusTooManyRequests || e.Code != "rate_limited" || len(e.Details) == 0 {
+		return 0
+	}
+	var d struct {
+		RetryAfterMs int64 `json:"retryAfterMs"`
+	}
+	if json.Unmarshal(e.Details, &d) != nil || d.RetryAfterMs <= 0 {
+		return 0
+	}
+	return time.Duration(d.RetryAfterMs) * time.Millisecond
+}
+
+func (c *Client) sleep(ctx context.Context, d time.Duration) error {
+	if c.Sleep != nil {
+		return c.Sleep(ctx, d)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func New(base, token string) *Client {
@@ -101,14 +146,41 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, in any, accept 
 	return raw, err
 }
 
+// send is sendOnce plus the `rate_limited` retry (see RateLimitRetries).
 func (c *Client) send(ctx context.Context, method, path string, in any, accept string) (int, []byte, error) {
-	var body io.Reader
+	var payload []byte
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
 			return 0, nil, err
 		}
-		body = bytes.NewReader(b)
+		payload = b
+	}
+	budget := c.RateLimitBudget
+	if budget <= 0 {
+		budget = 5 * time.Second
+	}
+	var waited time.Duration
+	for attempt := 1; ; attempt++ {
+		status, raw, err := c.sendOnce(ctx, method, path, payload, in != nil, accept)
+		hint := rateLimitHint(err)
+		if hint == 0 || attempt > c.RateLimitRetries || waited+hint > budget {
+			return status, raw, err
+		}
+		if c.OnRateLimitRetry != nil {
+			c.OnRateLimitRetry(attempt, hint)
+		}
+		if serr := c.sleep(ctx, hint); serr != nil {
+			return status, raw, err
+		}
+		waited += hint
+	}
+}
+
+func (c *Client) sendOnce(ctx context.Context, method, path string, payload []byte, hasBody bool, accept string) (int, []byte, error) {
+	var body io.Reader
+	if hasBody {
+		body = bytes.NewReader(payload)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, body)
 	if err != nil {
@@ -116,7 +188,7 @@ func (c *Client) send(ctx context.Context, method, path string, in any, accept s
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "yyt-cli/"+Version)
-	if in != nil {
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if c.Token != "" {

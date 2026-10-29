@@ -22,7 +22,11 @@ func newTokens(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List your API tokens (plaintext is never shown)",
-		Args:    cobra.NoArgs,
+		Example: "  yyt tokens ls\n  yyt tokens ls --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID NAME CREATED LAST_USED; --json: {tokens:[{id,name,createdAt,lastUsedAt}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -46,9 +50,13 @@ func newTokens(a *App) *cobra.Command {
 	})
 	var name string
 	create := &cobra.Command{
-		Use:   "create --name <name>",
-		Short: "Create an API token; the plaintext is printed once",
-		Args:  cobra.NoArgs,
+		Use:     "create --name <name>",
+		Short:   "Create an API token; the plaintext is printed once",
+		Example: "  yyt tokens create --name ci\n  yyt tokens create --name ci --json | jq -r .token",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, name, token (shown once; a reminder goes to stderr); --json: {id,name,createdAt,lastUsedAt,token}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -72,9 +80,13 @@ func newTokens(a *App) *cobra.Command {
 	_ = create.MarkFlagRequired("name")
 	c.AddCommand(create)
 	c.AddCommand(&cobra.Command{
-		Use:   "revoke <token-id>",
-		Short: "Revoke an API token",
-		Args:  cobra.ExactArgs(1),
+		Use:     "revoke <token-id>",
+		Short:   "Revoke an API token",
+		Example: "  yyt tokens revoke tok_0123\n  yyt tokens revoke tok_0123 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"revoked <id>\"; --json: {id,revoked:true}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := a.client()
 			if err != nil {

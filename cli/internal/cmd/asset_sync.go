@@ -89,6 +89,11 @@ func newAssetRm(a *App, bundleID bundleResolver) *cobra.Command {
 			"No CDN invalidation happens: an immutable file stays cached at the edge,\n" +
 			"so its path takes only the same bytes again for 400 days. A versioned\n" +
 			"bundle deletes whole versions (`asset rm-version`).",
+		Example: "  yyt asset rm web-assets old/logo.png\n" +
+			"  yyt asset rm web-assets a.png b.png --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted N\", then \"missing N: …\" and \"failed N: …\" when any; --json: {deleted:[],missing:[],skipped:[],failed:[]}",
+		},
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := bundleID(cmd, args[0], true)
@@ -571,6 +576,12 @@ func newAssetSync(a *App, bundleID bundleResolver) *cobra.Command {
 			"sizes and SHA-256s are the ciphertext's. The ciphertext digest of each\n" +
 			"plaintext is remembered there too, so an unchanged file is compared without\n" +
 			"being encrypted again. Nothing on this machine ever writes the key to disk.",
+		Example: "  yyt asset sync web-assets ./dist --mutable manifest.json --dry-run\n" +
+			"  yyt asset sync web-assets ./dist --mutable manifest.json --prune\n" +
+			"  yyt asset sync maps ./out/maps --version v3 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "one line per file (\"uploaded|replaced|marked stale|pruned|conflict|failed <path>\"), then \"done: …\" or with --dry-run \"plan: …\"; progress on stderr; --json: {uploaded,replaced,skipped,fresh,stale,pruned,conflicts,failed,dryRun,held}",
+		},
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

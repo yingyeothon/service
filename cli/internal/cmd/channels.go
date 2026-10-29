@@ -38,7 +38,9 @@ type channel struct {
 	StartURL     string            `json:"startUrl,omitempty"`
 	CallbackURLs map[string]string `json:"callbackUrls,omitempty"`
 	APIBase      string            `json:"apiBase,omitempty"`
-	WsURL        string            `json:"wsUrl,omitempty"`
+	// Auth only: the state stack's document base, absent before it exists.
+	DocURL string `json:"docUrl,omitempty"`
+	WsURL  string `json:"wsUrl,omitempty"`
 	// A deferred `match` channel has no socket: its tickets are an HTTP
 	// resource, and this is where (absent while the stage has no HTTP host).
 	TicketURL string `json:"ticketUrl,omitempty"`
@@ -47,6 +49,8 @@ type channel struct {
 	// Firebase project of the team's own sender key, never the key.
 	Registered  *bool  `json:"registered,omitempty"`
 	TeamProject string `json:"teamProject,omitempty"`
+	// The FCM topic `push broadcast` sends to (`yyt.push.{id}`).
+	Topic string `json:"topic,omitempty"`
 	// `push` with an iOS app (config.iosBundleId): IOSRegistered says the
 	// platform's iOS registration exists (`config --ios` has a plist to
 	// fetch); APNsState is team, pending (the platform owner has yet to
@@ -105,7 +109,9 @@ type docKey struct {
 	ChannelID string `json:"channelId"`
 	DocURL    string `json:"docUrl"`
 	WritePath string `json:"writePath"`
-	APIKey    string `json:"apiKey,omitempty"`
+	// The kv collections' path on the state stack (`/kv/{collection}`).
+	KvPath string `json:"kvPath,omitempty"`
+	APIKey string `json:"apiKey,omitempty"`
 	// Absent on issue (it just became true).
 	Issued *bool `json:"issued,omitempty"`
 	// Absent when the console has no handle on the document table.
@@ -192,7 +198,7 @@ func (f *configFlags) bind(c *cobra.Command) {
 	fl.StringVar(&f.githubSecret, "github-client-secret", "", "auth: GitHub OAuth app client secret (or GITHUB_CLIENT_SECRET env)")
 	fl.StringVar(&f.googleID, "google-client-id", "", "auth: Google OAuth client id")
 	fl.StringVar(&f.googleSecret, "google-client-secret", "", "auth: Google OAuth client secret (or GOOGLE_CLIENT_SECRET env)")
-	fl.StringVar(&f.authChannel, "auth-channel", "", "topic/match: id of the auth channel whose JWTs are accepted")
+	fl.StringVar(&f.authChannel, "auth-channel", "", "topic/match/lobby/q/push (required): id or name of the auth channel whose JWTs are accepted")
 	fl.IntVar(&f.partySize, "party-size", 0, "match: players per match (2..16)")
 	fl.IntVar(&f.waitTimeout, "wait-timeout", 0, "match: seconds to wait before onTimeout (live: 5..600, default 60; deferred: 30..7200, default 600)")
 	fl.StringVar(&f.onTimeout, "on-timeout", "", "match: partial|fail (default fail)")
@@ -560,6 +566,16 @@ func newChannels(a *App) *cobra.Command {
 	return group(c)
 }
 
+// channelViewOutput is the output line of a command that ends in showChannel
+// without the secret; channelSecretOutput of one that prints it once.
+const (
+	channelViewOutput = "key/value id, kind, name, status, project, created, expires, then the kind's " +
+		"endpoints (issuer, apiBase, wsUrl, topic, …) and config; --json: the channel {id,kind,name,status,config,expiresAt,…}"
+	channelSecretOutput = "the channel's key/value view plus secret (auth) or apiKey (push), printed once, and " +
+		"\"store the secret now; it is not shown again\" on stderr (push --save: the apiKey goes to the config file instead); " +
+		"--json: the channel {id,kind,name,config,…,secret|apiKey}"
+)
+
 // channelResolver resolves <channel> (id or name), of one kind when `kind` is
 // set. write=true refuses to auto-select the project a name is looked up in.
 func (a *App) channelResolver(kind string) channelResolver {
@@ -579,6 +595,13 @@ func (a *App) channelResolver(kind string) channelResolver {
 // of the other kinds.
 func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 	channelID := a.channelResolver(fixedKind)
+	// ex picks the Example of `yyt channels` or of `yyt push channel`.
+	ex := func(generic, push string) string {
+		if fixedKind == "push" {
+			return push
+		}
+		return generic
+	}
 
 	var kind, scope string
 	var chList *listOpts
@@ -586,7 +609,12 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the channels of the project in context, or of every team you sit in (admins: --scope all)",
-		Args:    cobra.NoArgs,
+		Example: ex("  yyt channels ls --project game\n  yyt channels ls --kind auth --json",
+			"  yyt push channel ls --project game\n  yyt push channel ls --json"),
+		Annotations: map[string]string{OutputAnnotation: ex(
+			"table ID KIND NAME STATUS EXPIRES TEAM/PROJECT MODE; --json: {channels:[{id,kind,name,status,expiresAt,config,…}]}",
+			"table ID KIND NAME STATUS EXPIRES TEAM/PROJECT; --json: {channels:[{id,kind,name,status,expiresAt,config,…}]}")},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if fixedKind != "" {
 				kind = fixedKind
@@ -662,7 +690,12 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 	create := &cobra.Command{
 		Use:   "create --kind <" + channelKindList + "> --name <name> [config flags]",
 		Short: "Create a channel in the project context (explicit); the secret/apiKey is printed once",
-		Args:  cobra.NoArgs,
+		Example: ex("  GITHUB_CLIENT_SECRET=\"$GH_SECRET\" yyt channels create --project game --kind auth --name login --audience my-game --github-client-id Iv1.0123abcd --redirect https://my-game.example.com/\n"+
+			"  yyt channels create --project game --kind match --name duel --auth-channel login --party-size 2",
+			"  yyt push channel create --project game --name alerts --auth login --package com.example.game --save\n"+
+				"  yyt push channel create --project game --name alerts --auth login --package com.example.game --sender team --service-account sa.json"),
+		Annotations: map[string]string{OutputAnnotation: channelSecretOutput},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if fixedKind != "" {
 				ckind = fixedKind
@@ -729,7 +762,10 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 	c.AddCommand(&cobra.Command{
 		Use:   "get <channel>",
 		Short: "Show a channel (secrets are never returned)",
-		Args:  cobra.ExactArgs(1),
+		Example: ex("  yyt channels get login --project game\n  yyt channels get auth_0123abcd --json",
+			"  yyt push channel get alerts --project game\n  yyt push channel get push_0123abcd --json"),
+		Annotations: map[string]string{OutputAnnotation: channelViewOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := channelID(cmd, args[0], false)
 			if err != nil {
@@ -748,7 +784,10 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 	update := &cobra.Command{
 		Use:   "update <channel> [--name ...] [config flags]",
 		Short: "Update name and/or config; only the given flags change",
-		Args:  cobra.ExactArgs(1),
+		Example: ex("  yyt channels update login --token-ttl 3600\n  yyt channels update plaza --max-peers 32 --cap-debug=false",
+			"  yyt push channel update alerts --auth login\n  yyt push channel update alerts --name alerts-v2"),
+		Annotations: map[string]string{OutputAnnotation: channelViewOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := channelID(cmd, args[0], true)
 			if err != nil {
@@ -864,12 +903,18 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 	c.AddCommand(update)
 
 	// postAction is a bodiless POST on the channel that answers with the channel.
-	postAction := func(use, short, suffix string, withSecret bool) *cobra.Command {
+	postAction := func(use, short, suffix string, withSecret bool, example string) *cobra.Command {
 		var save bool
+		out := channelViewOutput
+		if withSecret {
+			out = channelSecretOutput
+		}
 		c := &cobra.Command{
-			Use:   use,
-			Short: short,
-			Args:  cobra.ExactArgs(1),
+			Use:         use,
+			Short:       short,
+			Example:     example,
+			Annotations: map[string]string{OutputAnnotation: out},
+			Args:        cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cc, id, err := channelID(cmd, args[0], true)
 				if err != nil {
@@ -893,8 +938,12 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 		}
 		return c
 	}
-	c.AddCommand(postAction("extend <channel>", "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel. A channel with no expiry (`yyt limit request channel.lifetime unlimited`) refuses", "/extend", false))
-	rotate := postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (any team member; a platform admin without a seat cannot); the new value is printed once", "/rotate-secret", true)
+	c.AddCommand(postAction("extend <channel>", "Extend expiry by 7 days (max 28 days ahead); revives a disabled channel. A channel with no expiry (`yyt limit request channel.lifetime unlimited`) refuses", "/extend", false,
+		ex("  yyt channels extend login --project game\n  yyt channels extend auth_0123abcd --json",
+			"  yyt push channel extend alerts --project game\n  yyt push channel extend push_0123abcd --json")))
+	rotate := postAction("rotate-secret <channel>", "Replace the channel secret/apiKey (any team member; a platform admin without a seat cannot); the new value is printed once", "/rotate-secret", true,
+		ex("  yyt channels rotate-secret login --project game\n  yyt channels rotate-secret auth_0123abcd --json",
+			"  yyt push channel rotate alerts --save\n  yyt push channel rotate push_0123abcd --json"))
 	rotate.Aliases = []string{"rotate"}
 	c.AddCommand(rotate)
 	if fixedKind == "" {
@@ -905,7 +954,10 @@ func (a *App) addChannelCommands(c *cobra.Command, fixedKind string) {
 		Use:     "delete <channel>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a channel (soft delete; secrets are dropped immediately)",
-		Args:    cobra.ExactArgs(1),
+		Example: ex("  yyt channels rm login --project game\n  yyt channels delete auth_0123abcd --json",
+			"  yyt push channel rm alerts --project game\n  yyt push channel delete push_0123abcd --json"),
+		Annotations: map[string]string{OutputAnnotation: "\"deleted <id>\"; --json: {id,deleted:true}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := channelID(cmd, args[0], true)
 			if err != nil {
@@ -1029,6 +1081,11 @@ type credentialSpec[T revocable] struct {
 	revokeShort string
 	stored      string
 	show        func(T) error
+	// example is a channel argument of the right kind, for the Examples.
+	example string
+	// showOutput names the key/value lines of `show` (and of `issue`, which
+	// adds the secret line); secret is that line's key.
+	showOutput, secret string
 	// afterIssue runs between the "store it now" line and the block, when set.
 	afterIssue func(T)
 }
@@ -1051,10 +1108,16 @@ func credentialCmd[T revocable](a *App, channelID channelResolver, sp credential
 		err = cc.cl.Do(cmd.Context(), method, "/channels/"+api.PathID(id)+"/"+sp.segment, nil, &v)
 		return v, err
 	}
+	ex := func(verb string) string {
+		return "  yyt channels " + sp.use + " " + verb + " " + sp.example + "\n  yyt channels " + sp.use + " " + verb + " " + sp.example + " --json"
+	}
 	c.AddCommand(&cobra.Command{
-		Use:   "show <channel>",
-		Short: sp.showShort,
-		Args:  cobra.ExactArgs(1),
+		Use:     "show <channel>",
+		Short:   sp.showShort,
+		Example: ex("show"),
+		Annotations: map[string]string{OutputAnnotation: "key/value " + sp.showOutput +
+			"; --json: the same fields as an object"},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := call(cmd, http.MethodGet, args[0])
 			if err != nil {
@@ -1067,7 +1130,10 @@ func credentialCmd[T revocable](a *App, channelID channelResolver, sp credential
 		Use:     "issue <channel>",
 		Aliases: []string{"rotate"},
 		Short:   sp.issueShort,
-		Args:    cobra.ExactArgs(1),
+		Example: ex("issue"),
+		Annotations: map[string]string{OutputAnnotation: "key/value " + sp.showOutput + " with " + sp.secret +
+			" (printed once; \"" + sp.stored + "\" on stderr); --json: the same fields as an object"},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := call(cmd, http.MethodPost, args[0])
 			if err != nil {
@@ -1084,16 +1150,22 @@ func credentialCmd[T revocable](a *App, channelID channelResolver, sp credential
 		Use:     "revoke <channel>",
 		Aliases: []string{"rm", "delete"},
 		Short:   sp.revokeShort,
-		Args:    cobra.ExactArgs(1),
+		Example: ex("revoke"),
+		Annotations: map[string]string{OutputAnnotation: "\"revoked the " + sp.noun + " of <channel>\" or \"<channel> had no " +
+			sp.noun + "\"; --json: {revoked}"},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := call(cmd, http.MethodDelete, args[0])
 			if err != nil {
 				return err
 			}
+			r := v.revoked()
 			if a.jsonOut {
-				return a.printer().JSONValue(v)
+				// The route answers `{revoked}` alone; printing the decoded
+				// struct would add empty fields of the issue/show view.
+				return a.printer().JSONValue(map[string]bool{"revoked": r != nil && *r})
 			}
-			if r := v.revoked(); r != nil && *r {
+			if r != nil && *r {
 				fmt.Fprintf(a.Out, "revoked the %s of %s\n", sp.noun, args[0])
 			} else {
 				fmt.Fprintf(a.Out, "%s had no %s\n", args[0], sp.noun)
@@ -1119,6 +1191,9 @@ func (a *App) channelRedisUserCmd(channelID channelResolver) *cobra.Command {
 		revokeShort: "Delete the account; the game Lambda stops being able to log in",
 		stored:      "store the password now; it is not shown again",
 		show:        a.showRedisUser,
+		example:     "arena",
+		showOutput:  "channel, host, port, username, issued, the five key/channel prefixes",
+		secret:      "password",
 		afterIssue: func(u redisUser) {
 			if u.Persisted != nil && !*u.Persisted {
 				// The account works right now but is not in Redis' ACL file.
@@ -1175,6 +1250,9 @@ func (a *App) channelDocKeyCmd(channelID channelResolver) *cobra.Command {
 		revokeShort: "Delete the key; documents are kept",
 		stored:      "store the key now; it is not shown again",
 		show:        a.showDocKey,
+		example:     "login",
+		showOutput:  "channel, docUrl, path, kvPath, issued, documents, profiles",
+		secret:      "apiKey",
 	})
 }
 
@@ -1186,6 +1264,9 @@ func (a *App) showDocKey(k docKey) error {
 		{"channel", k.ChannelID},
 		{"docUrl", k.DocURL},
 		{"path", k.WritePath},
+	}
+	if k.KvPath != "" {
+		pairs = append(pairs, [2]string{"kvPath", k.KvPath})
 	}
 	if k.APIKey != "" {
 		pairs = append(pairs, [2]string{"apiKey", k.APIKey})
@@ -1259,8 +1340,14 @@ func (a *App) showChannel(ch channel, withSecret bool) error {
 		}
 		pairs = append(pairs, [2]string{"registered", reg})
 	}
+	if ch.DocURL != "" {
+		pairs = append(pairs, [2]string{"docUrl", ch.DocURL})
+	}
 	if ch.TeamProject != "" {
 		pairs = append(pairs, [2]string{"teamProject", ch.TeamProject})
+	}
+	if ch.Topic != "" {
+		pairs = append(pairs, [2]string{"topic", ch.Topic})
 	}
 	pairs = append(pairs, pushIOSPairs(ch)...)
 	if len(ch.Config) > 0 {

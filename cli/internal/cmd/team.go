@@ -219,7 +219,11 @@ func newTeam(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the teams you sit in or asked to join (admins: --scope all)",
-		Args:    cobra.NoArgs,
+		Example: "  yyt team ls\n  yyt team ls --q contest --sort updatedAt\n  yyt team ls --scope all --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID NAME ROLE DESCRIPTION; --json: {teams:[{id,name,role,description,adminLocked,createdBy,createdAt,updatedAt}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -262,9 +266,13 @@ func newTeam(a *App) *cobra.Command {
 	{
 		var description string
 		create := &cobra.Command{
-			Use:   "create <name>",
-			Short: "Create a team (you become its owner)",
-			Args:  cobra.ExactArgs(1),
+			Use:     "create <name>",
+			Short:   "Create a team (you become its owner)",
+			Example: "  yyt team create dooroo\n  yyt team create dooroo --description \"Weekend game jam crew\"",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, name, role, description, adminLocked, createdBy, created, updated (+ owners, members, pending, projects); --json: the team {id,name,role,description,adminLocked,createdBy,createdAt,updatedAt,counts}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cl, err := a.client()
 				if err != nil {
@@ -285,9 +293,13 @@ func newTeam(a *App) *cobra.Command {
 		c.AddCommand(create)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "join <name>",
-		Short: "Ask to join a team by its exact name (an owner approves)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "join <name>",
+		Short:   "Ask to join a team by its exact name (an owner approves)",
+		Example: "  yyt team join dooroo",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, name, role (pending until an owner approves); --json: {id,name,role} (a next-step note on stderr)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := a.client()
 			if err != nil {
@@ -302,9 +314,13 @@ func newTeam(a *App) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:   "get [team]",
-		Short: "Show a team with its member and project counts",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "get [team]",
+		Short:   "Show a team with its member and project counts",
+		Example: "  yyt team get\n  yyt team get dooroo --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, name, role, description, adminLocked, createdBy, created, updated (+ owners, members, pending, projects); --json: the team {id,name,role,description,adminLocked,createdBy,createdAt,updatedAt,counts}",
+		},
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, r, err := teamOf(cmd, args, false)
 			if err != nil {
@@ -320,9 +336,13 @@ func newTeam(a *App) *cobra.Command {
 	{
 		var name, description string
 		update := &cobra.Command{
-			Use:   "update [team] [--name n] [--description d]",
-			Short: "Rename or describe a team (owner); empty --description clears it",
-			Args:  cobra.MaximumNArgs(1),
+			Use:     "update [team] [--name n] [--description d]",
+			Short:   "Rename or describe a team (owner); empty --description clears it",
+			Example: "  yyt team update dooroo --description \"Season 2 crew\"\n  yyt team update dooroo --name dooroo-s2\n  yyt team update --description \"\"",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, name, role, description, adminLocked, createdBy, created, updated (+ owners, members, pending, projects); --json: the team {id,name,role,description,adminLocked,createdBy,createdAt,updatedAt,counts}",
+			},
+			Args: cobra.MaximumNArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				body := map[string]any{}
 				if cmd.Flags().Changed("name") {
@@ -351,7 +371,11 @@ func newTeam(a *App) *cobra.Command {
 		Use:     "delete [team]",
 		Aliases: []string{"rm"},
 		Short:   "Delete an empty team (owner or admin); projects must be deleted first",
-		Args:    cobra.MaximumNArgs(1),
+		Example: "  yyt team rm dooroo\n  yyt team rm dooroo --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted <name>\"; --json: {id,deleted:true}",
+		},
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, r, err := teamOf(cmd, args, true)
 			if err != nil {
@@ -370,9 +394,16 @@ func newTeam(a *App) *cobra.Command {
 	{
 		var locked bool
 		lock := &cobra.Command{
-			Use:   "admin-lock [team] --locked=true|false",
-			Short: "Admin: lock the team so only platform admins may change it (installer trust)",
-			Args:  cobra.MaximumNArgs(1),
+			Use:     "admin-lock [team] --locked=true|false",
+			Short:   "Admin: lock the team so only platform admins may change it (installer trust)",
+			Example: "  yyt team admin-lock dooroo --locked=true\n  yyt team admin-lock dooroo --locked=false",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, name, role, description, adminLocked, createdBy, created, updated (+ owners, members, pending, projects); --json: the team {id,name,role,description,adminLocked,createdBy,createdAt,updatedAt,counts}",
+			},
+			Long: "Admin: lock the team so only platform admins may change it (installer trust).\n\n" +
+				"Without [team] the team context is used; a platform admin with no seat in\n" +
+				"the team has no context for it and must name it (id or exact name).",
+			Args: cobra.MaximumNArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if !cmd.Flags().Changed("locked") {
 					return errors.New("--locked=true|false is required")
@@ -392,9 +423,13 @@ func newTeam(a *App) *cobra.Command {
 		c.AddCommand(lock)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "use <team>",
-		Short: "Store the team (by name or id) as this profile's default context; clears the default project",
-		Args:  cobra.ExactArgs(1),
+		Use:     "use <team>",
+		Short:   "Store the team (by name or id) as this profile's default context; clears the default project",
+		Example: "  yyt team use dooroo",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"profile <name> now defaults to team <name> (<id>)\"; --json: {profile,team,teamName}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -426,9 +461,13 @@ func newTeam(a *App) *cobra.Command {
 		var limit int
 		var cursor string
 		hist := &cobra.Command{
-			Use:   "history [team]",
-			Short: "Show the team's append-only history (newest first)",
-			Args:  cobra.MaximumNArgs(1),
+			Use:     "history [team]",
+			Short:   "Show the team's append-only history (newest first)",
+			Example: "  yyt team history\n  yyt team history dooroo --limit 50\n  yyt team history --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "table AT ACTOR ACTION SUBJECT TARGET, then a next-page hint on stderr; --json: {history:[{id,at,actor,action,subject,target,detail}],next}",
+			},
+			Args: cobra.MaximumNArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cc, r, err := teamOf(cmd, args, false)
 				if err != nil {
@@ -487,7 +526,11 @@ func (a *App) teamMembersCmd(teamOf teamResolver) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List seats (pending requests included, for owners)",
-		Args:    cobra.NoArgs,
+		Example: "  yyt team members ls\n  yyt team members ls --team dooroo --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID LOGIN ROLE STATE REQUESTED DECIDED BY; --json: {members:[{id,login,platformRole,role,state,requestedAt,decidedAt,decidedBy}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, r, err := teamOf(cmd, nil, false)
 			if err != nil {
@@ -505,9 +548,13 @@ func (a *App) teamMembersCmd(teamOf teamResolver) *cobra.Command {
 	{
 		var role string
 		add := &cobra.Command{
-			Use:   "add <github-login>",
-			Short: "Seat a platform member immediately (owner); --role owner|member",
-			Args:  cobra.ExactArgs(1),
+			Use:     "add <github-login>",
+			Short:   "Seat a platform member immediately (owner); --role owner|member",
+			Example: "  yyt team members add octocat\n  yyt team members add octocat --role owner --team dooroo",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, login, role, state, requested, decided, decidedBy; --json: the seat {id,login,platformRole,role,state,requestedAt,decidedAt,decidedBy}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if role != "owner" && role != "member" {
 					return fmt.Errorf("--role must be owner|member (got %q)", role)
@@ -529,9 +576,13 @@ func (a *App) teamMembersCmd(teamOf teamResolver) *cobra.Command {
 	}
 	setRole := func(use, short, role string) *cobra.Command {
 		return &cobra.Command{
-			Use:   use + " <member-id>",
-			Short: short,
-			Args:  cobra.ExactArgs(1),
+			Use:     use + " <member-id>",
+			Short:   short,
+			Example: "  yyt team members " + use + " m_0123abcd\n  yyt team members " + use + " m_0123abcd --team dooroo --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, login, role, state, requested, decided, decidedBy; --json: the seat {id,login,platformRole,role,state,requestedAt,decidedAt,decidedBy}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cc, r, err := teamOf(cmd, nil, true)
 				if err != nil {
@@ -551,15 +602,19 @@ func (a *App) teamMembersCmd(teamOf teamResolver) *cobra.Command {
 		setRole("promote", "Make a member an owner (owner; a seatless admin may appoint any platform member, themselves included)", "owner"),
 		setRole("demote", "Make an owner a member (owner; the last owner cannot be demoted)", "member"),
 	)
-	remove := func(use, short string, self bool) *cobra.Command {
+	remove := func(use, short, example string, self bool) *cobra.Command {
 		args := cobra.ExactArgs(1)
 		if self {
 			args = cobra.NoArgs
 		}
 		return &cobra.Command{
-			Use:   use,
-			Short: short,
-			Args:  args,
+			Use:     use,
+			Short:   short,
+			Example: example,
+			Annotations: map[string]string{
+				OutputAnnotation: "\"<action> <member-id>\" or \"declined <member-id>\", then channels whose credentials to rotate on stderr; --json: {removed,action,rotate:[{id,kind,name}]}",
+			},
+			Args: args,
 			RunE: func(cmd *cobra.Command, argv []string) error {
 				cc, r, err := teamOf(cmd, nil, true)
 				if err != nil {
@@ -599,8 +654,10 @@ func (a *App) teamMembersCmd(teamOf teamResolver) *cobra.Command {
 		}
 	}
 	c.AddCommand(
-		remove("kick <member-id>", "Remove a seat, or decline a pending request (owner); lists credentials to rotate", false),
-		remove("leave", "Give up your own seat, or withdraw your pending request", true),
+		remove("kick <member-id>", "Remove a seat, or decline a pending request (owner); lists credentials to rotate",
+			"  yyt team members kick m_0123abcd\n  yyt team members kick m_0123abcd --team dooroo --json", false),
+		remove("leave", "Give up your own seat, or withdraw your pending request",
+			"  yyt team members leave --team dooroo", true),
 	)
 	return group(c)
 }
@@ -618,7 +675,11 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List discussions (newest first)",
-		Args:    cobra.NoArgs,
+		Example: "  yyt team discussion ls\n  yyt team discussion ls --team dooroo --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID TITLE BY UPDATED; --json: {discussions:[{id,teamId,title,bodyMd,createdBy,createdAt,updatedAt,mine}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, p, err := base(cmd, false)
 			if err != nil {
@@ -643,9 +704,13 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 	{
 		var body string
 		create := &cobra.Command{
-			Use:   "create <title> --body <md|@file>",
-			Short: "Open a discussion",
-			Args:  cobra.ExactArgs(1),
+			Use:     "create <title> --body <md|@file>",
+			Short:   "Open a discussion",
+			Example: "  yyt team discussion create \"Jam theme vote\" --body \"Pick one by Friday\"\n  yyt team discussion create \"Retro\" --body @retro.md",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, title, by, created, updated, then the body and comments; --json: the discussion {id,teamId,title,bodyMd,createdBy,createdAt,updatedAt,mine,comments}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(body)
 				if err != nil {
@@ -667,9 +732,13 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 		c.AddCommand(create)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "get <id>",
-		Short: "Show a discussion with its comments",
-		Args:  cobra.ExactArgs(1),
+		Use:     "get <id>",
+		Short:   "Show a discussion with its comments",
+		Example: "  yyt team discussion get dsc_0123\n  yyt team discussion get dsc_0123 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, title, by, created, updated, then the body and comments; --json: the discussion {id,teamId,title,bodyMd,createdBy,createdAt,updatedAt,mine,comments}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, p, err := base(cmd, false)
 			if err != nil {
@@ -685,9 +754,13 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 	{
 		var title, body string
 		update := &cobra.Command{
-			Use:   "update <id> [--title t] [--body md|@file]",
-			Short: "Edit your discussion",
-			Args:  cobra.ExactArgs(1),
+			Use:     "update <id> [--title t] [--body md|@file]",
+			Short:   "Edit your discussion",
+			Example: "  yyt team discussion update dsc_0123 --title \"Jam theme vote (closed)\"\n  yyt team discussion update dsc_0123 --body @retro.md",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, title, by, created, updated, then the body and comments; --json: the discussion {id,teamId,title,bodyMd,createdBy,createdAt,updatedAt,mine,comments}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				patch := map[string]any{}
 				if cmd.Flags().Changed("title") {
@@ -722,7 +795,11 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 		Use:     "delete <id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a discussion (author or owner)",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt team discussion rm dsc_0123",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted <id>\" (no --json form)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, p, err := base(cmd, true)
 			if err != nil {
@@ -735,7 +812,7 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 			return nil
 		},
 	})
-	c.AddCommand(a.commentCmd("discussion", func(cmd *cobra.Command, parent string) (*ctxClient, string, error) {
+	c.AddCommand(a.commentCmd("discussion", "yyt team discussion comment", "dsc_0123", func(cmd *cobra.Command, parent string) (*ctxClient, string, error) {
 		cc, p, err := base(cmd, true)
 		if err != nil {
 			return nil, "", err
@@ -746,16 +823,22 @@ func (a *App) teamDiscussionCmd(teamOf teamResolver) *cobra.Command {
 }
 
 // commentCmd is shared by discussions and issues: `comment add|update|rm`.
-func (a *App) commentCmd(parentKind string, parentPath func(cmd *cobra.Command, parent string) (*ctxClient, string, error)) *cobra.Command {
+// cmdPath is the command path for examples (`yyt team discussion comment`),
+// parentEx a sample parent argument.
+func (a *App) commentCmd(parentKind, cmdPath, parentEx string, parentPath func(cmd *cobra.Command, parent string) (*ctxClient, string, error)) *cobra.Command {
 	c := &cobra.Command{Use: "comment", Aliases: []string{"comments"}, Short: "Comments on a " + parentKind}
 	// withBody is `<verb> <parent> [...] --body`: read the markdown first (a
 	// bad @file must not cost a request), then resolve, then send it.
-	withBody := func(use, short string, nargs int, method string, path func(p string, args []string) string) *cobra.Command {
+	withBody := func(use, short, example string, nargs int, method string, path func(p string, args []string) string) *cobra.Command {
 		var body string
 		cmd := &cobra.Command{
-			Use:   use,
-			Short: short,
-			Args:  cobra.ExactArgs(nargs),
+			Use:     use,
+			Short:   short,
+			Example: example,
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, by, created, body; --json: the comment {id,bodyMd,createdBy,createdAt,updatedAt,mine}",
+			},
+			Args: cobra.ExactArgs(nargs),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(body)
 				if err != nil {
@@ -776,15 +859,21 @@ func (a *App) commentCmd(parentKind string, parentPath func(cmd *cobra.Command, 
 		_ = cmd.MarkFlagRequired("body")
 		return cmd
 	}
-	c.AddCommand(withBody("add <"+parentKind+"> --body <md|@file>", "Add a comment", 1, http.MethodPost,
+	c.AddCommand(withBody("add <"+parentKind+"> --body <md|@file>", "Add a comment",
+		"  "+cmdPath+" add "+parentEx+" --body \"Looks good\"\n  "+cmdPath+" add "+parentEx+" --body @reply.md", 1, http.MethodPost,
 		func(p string, _ []string) string { return p }))
-	c.AddCommand(withBody("update <"+parentKind+"> <comment-id> --body <md|@file>", "Edit your comment", 2, http.MethodPatch,
+	c.AddCommand(withBody("update <"+parentKind+"> <comment-id> --body <md|@file>", "Edit your comment",
+		"  "+cmdPath+" update "+parentEx+" cmt_0123 --body \"Looks good after the fix\"", 2, http.MethodPatch,
 		func(p string, args []string) string { return p + "/" + api.PathID(args[1]) }))
 	c.AddCommand(&cobra.Command{
 		Use:     "delete <" + parentKind + "> <comment-id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a comment (author or owner)",
-		Args:    cobra.ExactArgs(2),
+		Example: "  " + cmdPath + " rm " + parentEx + " cmt_0123",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted <comment-id>\" (no --json form)",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, p, err := parentPath(cmd, args[0])
 			if err != nil {

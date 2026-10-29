@@ -59,7 +59,7 @@ yyt --profile dev catalog app list
 yyt --profile dev logout                         # removes only that profile
 ```
 
-`whoami` prints the active profile and API; tokens are never printed. `profile default` is a synonym of `profile use` (handy after removing the default profile); `rename` moves the default marker with the profile. Across all commands, `ls` aliases `list` and `rm` aliases `remove`/`delete`.
+`whoami` prints the active profile and API; tokens are never printed. `profile default` is a synonym of `profile use` (handy after removing the default profile); `rename` moves the default marker with the profile. `list` commands take the alias `ls`, and most `delete`/`remove` commands take `rm`; where a group has a separate command of a similar name (`asset rm-version`, `asset delete` for the whole bundle), each `--help` names its own aliases.
 
 ## Teams, projects and the context
 
@@ -100,7 +100,7 @@ yyt project issue comment add <n> --body … | update <n> <cid> --body … | rm 
 
 `team|project|channels|events list` take `--sort`/`--order` and `--q`, the console's list parameters (2026-09-02, `docs/team-project.md` _List parameters_); `show list` takes `--q` only, because it is cursor-paged and the cursor pins the order. A value outside the route's vocabulary is refused before the request, and the vocabulary is in each command's `--help`; so is `--order` with no `--sort`, which the routes ignore and which would otherwise print the default order while looking as if it had done something. Without any of them a list prints the server's default order, which is what **name resolution** relies on: `yyt` resolves a name to an id from the whole, unfiltered list, so these flags are for what you read, never for what the CLI looks up.
 
-Every resource command maps 1:1 to a console route; `--json` prints the response as JSON (for `login`, `logout`, `revoke`, `delete` a small synthesized object), otherwise a table / key-value view. Secrets are printed only by `create` and `rotate-secret` (a push channel's apiKey not even there with `--save`, which stores it instead); `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
+Every resource command maps 1:1 to a console route; `--json` prints JSON instead of a table / key-value view: for most commands the route's response as decoded into the CLI's own struct (a field the CLI does not know is dropped, so a newer console can carry more than an older `yyt` prints), for `login`, `logout`, `revoke`, `delete` a small synthesized object. `yyt help --json` names each command's output. Secrets are printed only by `create` and `rotate-secret` (a push channel's apiKey not even there with `--save`, which stores it instead); `lobby`/`q` channels have none, so those commands print nothing extra and `rotate-secret` refuses them.
 
 ```
 yyt members list | approve <id> | promote <id> | demote <id>        # admin
@@ -222,6 +222,8 @@ yyt catalog listing <app>                               # how the app is publish
 yyt catalog viewer add|rm|ls <app> [<github-login>]     # the members a `members` listing names (a read, never a seat)
 yyt catalog listings [--q s] [--tag t] [--platform p] [--sort publishedAt|title] [--order asc|desc]   # browse what you may read
 yyt catalog share create <app> [--days 1|7|30] [--label text]   # an expiring install page link; the URL is printed once
+                        [--kind android-release|android-debug|ios-ad-hoc] [--title t] [--summary text|@file]
+                        [--reason text]                          # --reason: a platform admin with no seat on the team
 yyt catalog share ls <app>                              # token links (live/expired/revoked) and the public link, if any
 yyt catalog share rm <app> <id>                         # revoke a token link
 yyt catalog share public <app>                          # the permanent link of a public listing
@@ -301,7 +303,32 @@ yyt lb clear <lb> <period>                             # empty one bucket (a per
 
 `push` searches `.yyt.json` from the current directory, not from `<dir>` (the directory is a payload, not a project). It keeps every file's path relative to `<dir>` (dot-files and symlinks are skipped), so the relative references inside a map JSON keep resolving once the bundle is on the CDN. Objects are public, cached forever and never overwritten: a fix is a **new version** plus `yyt channels update <lobby-id> --map-url <new URL>`. Deleting a version a channel still points at breaks the game's load outright, so re-point first. Allowed extensions: `.json .png .jpg .jpeg .webp .gif .bmp .ogg .mp3 .wav .txt .csv`. Sizes and counts are limits (`yyt limit list --bundle <bundle>`): 2 MiB per file and 20 MiB per bundle unless a platform admin granted more; a refused upload names the limit to ask for.
 
-Exit codes: `0` ok, `1` local error (incl. smoke failures/timeouts and a missing/ambiguous context), `2` API error, `3` unauthorized (bad/expired token), `4` forbidden (pending platform member or team seat, or the action needs an owner/admin), `5` not found (including a team/project/resource name that does not resolve), `6` context missing or ambiguous (no request was made).
+Exit codes — a stable contract (`docs/decisions.md` _CLI_; changing one is a major version), also in `yyt --help`, `yyt help --json` and `yyt help agents`:
+
+<!-- exit-codes:begin -->
+- `0` ok
+- `1` local error (bad flag or argument, file I/O, smoke failure or timeout)
+- `2` API error not listed below (incl. rate_limited after its retries)
+- `3` unauthorized: token missing, revoked or for another stage
+- `4` forbidden: pending platform member or team seat, or the action needs an owner/admin
+- `5` not found (incl. a team/project/resource name that does not resolve)
+- `6` team/project context missing or ambiguous (no request was made)
+- `7` `self update --check` found a newer release
+<!-- exit-codes:end -->
+
+**Scripts and agents.** `yyt help agents` prints the guide for non-interactive use (also `agent-guide.md` in each release archive). `yyt help --json [command]` prints the command tree as one JSON document — a stable contract, `schema: 1`, fields only ever added:
+
+```
+{ "schema": 1, "version": "0.19.0",
+  "exitCodes": [{"code": 0, "meaning": "ok"}, …],
+  "env": [{"name": "YYT_API", "meaning": "…"}, …],
+  "commands": [{ "path": "yyt catalog share create", "use": "create <app> …", "short": "…", "long": "…",
+                 "aliases": ["…"], "example": "  yyt catalog share create my-game …",
+                 "output": "the URL on stdout …; --json: …", "runnable": true,
+                 "flags": [{"name": "days", "type": "int", "default": "7", "usage": "…", "required": false}] }, …] }
+```
+
+The root entry lists the global flags; every other entry its own. Every runnable command has an `example` and an `output` line (a test enforces it). A `rate_limited` refusal with a `retryAfterMs` hint — the per-member write slot, raised before anything is written — is waited out up to 3 times (5 s in total, one stderr line each); `--no-retry` or `YYT_NO_RETRY=1` turns that off, and nothing else is retried for you.
 
 ### Push notifications
 
@@ -384,7 +411,7 @@ A match channel is `live` (the default) or `deferred`, chosen with `--mode` at c
 ```sh
 # one socket per JWT (JWTs minted by the auth channel, e.g. POST /c/{ch}/token)
 yyt smoke match --url "$(yyt channels get match_… --json | jq -r .wsUrl)" --jwt-file players.txt
-yyt smoke topic --url wss://topic-ws.yyt.life/<topicId> --jwt <t1> --jwt <t2> --wait 5s
+yyt smoke topic --url 'wss://topic-ws.yyt.life/?topic=<topicId>' --jwt <t1> --jwt <t2> --wait 5s
 # deferred match: submit, accept, wait for confirmed (polls at most 4 requests/s)
 yyt smoke match --deferred --url "$(yyt channels get match_… --json | jq -r .ticketUrl)" --jwt-file players.txt
 # push: register a device token with a player JWT, send it one message with the stored apiKey, remove the token

@@ -52,6 +52,10 @@ func newSmokePush(a *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "push <channel> (--jwt-file <f> | --jwt <t>) --token-file <file> [--project <firebase project id>] [--title t] [--keep]",
 		Short: "Register a device token with a player JWT, send it one message with the stored apiKey, then remove the token",
+		Example: "  yyt smoke push alerts --jwt-file player.jwt --token-file fcm-token.txt\n" +
+			"  yyt smoke push alerts --jwt-file player.jwt --token-file fcm-token.txt --title \"hello\" --keep",
+		Annotations: map[string]string{OutputAnnotation: "table USER STATUS REASON and \"sent <n> · no-token <n> · failed <n>\"; " +
+			"\"registered a token for <sub>\" / \"removed the token\" on stderr; --json: {results:[{userId,status,reason}],sent,noToken,failed}"},
 		Long: "The device half and the server half of a push channel in one run, against\n" +
 			"the channel's apiBase: PUT /push/{channel}/token with the player JWT (its\n" +
 			"auth channel must be the push channel's), POST /push/{channel}/send to the\n" +

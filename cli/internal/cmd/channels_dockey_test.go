@@ -11,6 +11,7 @@ func TestChannelsDocKey(t *testing.T) {
 		"channelId": "auth_9",
 		"docUrl":    "https://doc-dev.yyt.life",
 		"writePath": "/s/{ownerId}",
+		"kvPath":    "/kv/{collection}",
 	}
 	show := map[string]any{"issued": false, "documents": 0, "profiles": 2}
 	issued := map[string]any{"issued": true, "apiKey": apiKey}
@@ -47,6 +48,16 @@ func TestChannelsDocKey(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "not shown again") {
 		t.Fatalf("issue must warn the key is shown once: %s", errOut)
+	}
+
+	// `--json` keeps kvPath, and revoke prints only what the route answers.
+	out, _, err = run(t, f, "--json", "channels", "doc-key", "show", "auth_9")
+	if err != nil || !strings.Contains(out, `"kvPath": "/kv/{collection}"`) {
+		t.Fatalf("show --json lost kvPath: %v %s", err, out)
+	}
+	out, _, err = run(t, f, "--json", "channels", "doc-key", "revoke", "auth_9")
+	if err != nil || strings.TrimSpace(out) != "{\n  \"revoked\": true\n}" {
+		t.Fatalf("revoke --json: %v %q", err, out)
 	}
 
 	out, _, err = run(t, f, "channels", "doc-key", "revoke", "auth_9")

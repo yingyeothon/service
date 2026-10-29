@@ -132,7 +132,7 @@ func (a *App) printVersion(v projectVersion) error {
 		return a.printer().JSONValue(v)
 	}
 	if err := a.printer().KV([][2]string{
-		{"id", v.ID}, {"name", v.Name}, {"note", output.Str(v.Note)},
+		{"id", v.ID}, {"name", v.Name}, {"note", noteCell(v.Note)},
 		{"artifacts", strconv.Itoa(v.ArtifactCount)}, {"assets", strconv.Itoa(v.AssetCount)},
 		{"createdBy", output.Str(v.CreatedBy)}, {"created", output.Time(v.CreatedAt)},
 	}); err != nil {
@@ -194,7 +194,11 @@ func newProject(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the projects of the team in context",
-		Args:    cobra.NoArgs,
+		Example: "  yyt project ls\n  yyt project ls --team dooroo --q game --sort updatedAt\n  yyt project ls --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID NAME TEAM DESCRIPTION UPDATED; --json: {projects:[{id,teamId,teamName,name,description,createdBy,createdAt,updatedAt}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -229,9 +233,13 @@ func newProject(a *App) *cobra.Command {
 	{
 		var description string
 		create := &cobra.Command{
-			Use:   "create <name>",
-			Short: "Create a project in the team in context (explicit --team or `yyt team use`)",
-			Args:  cobra.ExactArgs(1),
+			Use:     "create <name>",
+			Short:   "Create a project in the team in context (explicit --team or `yyt team use`)",
+			Example: "  yyt project create game --team dooroo\n  yyt project create game --team dooroo --description \"Jam entry\"",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, name, team, description, createdBy, created, updated (+ resource counts); --json: the project {id,teamId,teamName,name,description,createdBy,createdAt,updatedAt,counts}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cc, err := a.ctxClient(cmd)
 				if err != nil {
@@ -260,9 +268,13 @@ func newProject(a *App) *cobra.Command {
 		c.AddCommand(create)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "get [project]",
-		Short: "Show a project with its resource counts",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "get [project]",
+		Short:   "Show a project with its resource counts",
+		Example: "  yyt project get\n  yyt project get game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, name, team, description, createdBy, created, updated (+ resource counts); --json: the project {id,teamId,teamName,name,description,createdBy,createdAt,updatedAt,counts}",
+		},
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, r, err := projectOf(cmd, args, false)
 			if err != nil {
@@ -278,8 +290,12 @@ func newProject(a *App) *cobra.Command {
 	{
 		var authCh, lobbyCh, matchCh, pushCh string
 		kit := &cobra.Command{
-			Use:   "kit-config [project]",
-			Short: "Print the game kit config block for a project (JSON, all public values)",
+			Use:     "kit-config [project]",
+			Short:   "Print the game kit config block for a project (JSON, all public values)",
+			Example: "  yyt project kit-config game > kit-config.json\n  yyt project kit-config --lobby lobby --match ranked",
+			Annotations: map[string]string{
+				OutputAnnotation: "the kit config block as indented JSON (the same with or without --json)",
+			},
 			Long: "Print the block a game pastes into its own config so the client kit knows\n" +
 				"which channels, collections and boards this project owns\n" +
 				"(`docs/game-kit-design.md`). Everything in it is public — ids, names and\n" +
@@ -334,9 +350,13 @@ func newProject(a *App) *cobra.Command {
 	{
 		var name, description string
 		update := &cobra.Command{
-			Use:   "update [project] [--name n] [--description d]",
-			Short: "Rename or describe a project; empty --description clears it",
-			Args:  cobra.MaximumNArgs(1),
+			Use:     "update [project] [--name n] [--description d]",
+			Short:   "Rename or describe a project; empty --description clears it",
+			Example: "  yyt project update game --description \"Jam entry, season 2\"\n  yyt project update game --name game-s2\n  yyt project update --description \"\"",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, name, team, description, createdBy, created, updated (+ resource counts); --json: the project {id,teamId,teamName,name,description,createdBy,createdAt,updatedAt,counts}",
+			},
+			Args: cobra.MaximumNArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				body := map[string]any{}
 				if cmd.Flags().Changed("name") {
@@ -364,8 +384,12 @@ func newProject(a *App) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:     "delete [project]",
 		Aliases: []string{"rm"},
-		Short:   "Delete an empty project (owner or admin); channels, apps and bundles must go first",
-		Args:    cobra.MaximumNArgs(1),
+		Short:   "Delete an empty project (owner or admin); its channels, apps, bundles, sites, kv collections and leaderboards must go first",
+		Example: "  yyt project rm game\n  yyt project rm game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted <name>\"; --json: {id,deleted:true}",
+		},
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, r, err := projectOf(cmd, args, true)
 			if err != nil {
@@ -382,9 +406,13 @@ func newProject(a *App) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:   "use <project>",
-		Short: "Store the project (by name or id) — and its team — as this profile's default context",
-		Args:  cobra.ExactArgs(1),
+		Use:     "use <project>",
+		Short:   "Store the project (by name or id) — and its team — as this profile's default context",
+		Example: "  yyt project use game\n  yyt project use game --team dooroo",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"profile <name> now defaults to team <team> / project <project>\"; --json: {profile,team,teamName,project,projectName}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
 			if err != nil {
@@ -441,7 +469,11 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List versions (newest first)",
-		Args:    cobra.NoArgs,
+		Example: "  yyt project version ls\n  yyt project version ls --project game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID NAME NOTE ARTIFACTS ASSETS BY CREATED; --json: {versions:[{id,projectId,name,note,createdBy,createdAt,artifactCount,assetCount}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, _, p, err := base(cmd, false)
 			if err != nil {
@@ -458,7 +490,7 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(res.Versions))
 			for _, v := range res.Versions {
-				rows = append(rows, []string{v.ID, v.Name, output.Str(v.Note), strconv.Itoa(v.ArtifactCount), strconv.Itoa(v.AssetCount), output.Str(v.CreatedBy), output.Time(v.CreatedAt)})
+				rows = append(rows, []string{v.ID, v.Name, noteCell(v.Note), strconv.Itoa(v.ArtifactCount), strconv.Itoa(v.AssetCount), output.Str(v.CreatedBy), output.Time(v.CreatedAt)})
 			}
 			return a.printer().Table([]string{"ID", "NAME", "NOTE", "ARTIFACTS", "ASSETS", "BY", "CREATED"}, rows)
 		},
@@ -466,9 +498,13 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 	{
 		var note string
 		create := &cobra.Command{
-			Use:   "create <name> [--note md|@file]",
-			Short: "Create a version (any name; `bump` needs semver)",
-			Args:  cobra.ExactArgs(1),
+			Use:     "create <name> [--note md|@file]",
+			Short:   "Create a version (any name; `bump` needs semver)",
+			Example: "  yyt project version create 1.2.0\n  yyt project version create 1.2.0 --note @CHANGELOG.md",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, name, note, artifacts, assets, createdBy, created, then a LINK KIND TARGET ID CREATED table when linked; --json: the version {id,projectId,name,note,createdBy,createdAt,artifactCount,assetCount,links}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				body := map[string]any{"name": args[0]}
 				if cmd.Flags().Changed("note") {
@@ -493,9 +529,13 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 		c.AddCommand(create)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "bump [patch|minor|major]",
-		Short: "Create the next semver version after the latest one (default patch)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "bump [patch|minor|major]",
+		Short:   "Create the next semver version after the latest one (default patch)",
+		Example: "  yyt project version bump\n  yyt project version bump minor --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, name, note, artifacts, assets, createdBy, created, then a LINK KIND TARGET ID CREATED table when linked; --json: the version {id,projectId,name,note,createdBy,createdAt,artifactCount,assetCount,links}",
+		},
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			part := "patch"
 			if len(args) == 1 {
@@ -516,9 +556,13 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:   "get <version>",
-		Short: "Show a version with its links",
-		Args:  cobra.ExactArgs(1),
+		Use:     "get <version>",
+		Short:   "Show a version with its links",
+		Example: "  yyt project version get 1.2.0\n  yyt project version get 1.2.0 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, name, note, artifacts, assets, createdBy, created, then a LINK KIND TARGET ID CREATED table when linked; --json: the version {id,projectId,name,note,createdBy,createdAt,artifactCount,assetCount,links}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, p, err := verPath(cmd, args[0], false)
 			if err != nil {
@@ -534,9 +578,13 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 	{
 		var note string
 		update := &cobra.Command{
-			Use:   "update <version> --note <md|@file>",
-			Short: "Replace the note (empty clears it)",
-			Args:  cobra.ExactArgs(1),
+			Use:     "update <version> --note <md|@file>",
+			Short:   "Replace the note (empty clears it)",
+			Example: "  yyt project version update 1.2.0 --note @CHANGELOG.md\n  yyt project version update 1.2.0 --note \"\"",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines id, name, note, artifacts, assets, createdBy, created, then a LINK KIND TARGET ID CREATED table when linked; --json: the version {id,projectId,name,note,createdBy,createdAt,artifactCount,assetCount,links}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(note)
 				if err != nil {
@@ -561,7 +609,11 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 		Use:     "delete <version>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a version and its links (issues keep no reference)",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt project version rm 1.2.0",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"deleted <version>\" (no --json form)",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, p, err := verPath(cmd, args[0], true)
 			if err != nil {
@@ -577,9 +629,13 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 	{
 		var artifact, bundle, assetVersion string
 		link := &cobra.Command{
-			Use:   "link <version> (--artifact <artifact-id> | --bundle <bundle> --asset-version <v>)",
-			Short: "Link a catalog artifact or an asset bundle version to this version",
-			Args:  cobra.ExactArgs(1),
+			Use:     "link <version> (--artifact <artifact-id> | --bundle <bundle> --asset-version <v>)",
+			Short:   "Link a catalog artifact or an asset bundle version to this version",
+			Example: "  yyt project version link 1.2.0 --artifact art_0123\n  yyt project version link 1.2.0 --bundle sprites --asset-version v3",
+			Annotations: map[string]string{
+				OutputAnnotation: "\"linked <link-id>\"; --json: the link {id,versionId,kind,artifactId,bundleId,assetVersion,createdAt,artifact,bundleName}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				var body map[string]any
 				switch {
@@ -618,9 +674,13 @@ func (a *App) projectVersionCmd(projectOf projectResolver) *cobra.Command {
 		c.AddCommand(link)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "unlink <version> <link-id>",
-		Short: "Remove a link",
-		Args:  cobra.ExactArgs(2),
+		Use:     "unlink <version> <link-id>",
+		Short:   "Remove a link",
+		Example: "  yyt project version unlink 1.2.0 lnk_0123",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"unlinked <link-id>\" (no --json form)",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, p, err := verPath(cmd, args[0], true)
 			if err != nil {
@@ -661,8 +721,12 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 			Use:     "list [--status open|closed] [--version <id|name>]",
 			Aliases: []string{"ls"},
 			Short:   "List issues (open ones by default)",
-			Long:    "List issues. --version keeps the ones filed against one version (id or name, `+build` stripped like create; a name the project does not have is an error, never created).",
-			Args:    cobra.NoArgs,
+			Example: "  yyt project issue ls\n  yyt project issue ls --status closed --version 1.2.0\n  yyt project issue ls --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "table # STATUS TITLE VERSION BY UPDATED; --json: {issues:[{id,projectId,number,title,bodyMd,status,versionId,createdBy,createdAt,updatedAt,closedAt}]}",
+			},
+			Long: "List issues. --version keeps the ones filed against one version (id or name, `+build` stripped like create; a name the project does not have is an error, never created).",
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				cc, r, p, err := base(cmd, false)
 				if err != nil {
@@ -700,17 +764,21 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 				return a.printer().Table([]string{"#", "STATUS", "TITLE", "VERSION", "BY", "UPDATED"}, rows)
 			},
 		}
-		list.Flags().StringVar(&status, "status", "", "open|closed (server default: open)")
+		list.Flags().StringVar(&status, "status", "", "open|closed (default: both)")
 		list.Flags().StringVar(&version, "version", "", "only issues against this version (id or exact name)")
 		c.AddCommand(list)
 	}
 	{
 		var body, version string
 		create := &cobra.Command{
-			Use:   "create <title> [--body md|@file] [--version <id|name>]",
-			Long:  "Open an issue. --version takes a version id or name; a name the project does not have yet is created.",
-			Short: "Open an issue",
-			Args:  cobra.ExactArgs(1),
+			Use:     "create <title> [--body md|@file] [--version <id|name>]",
+			Long:    "Open an issue. --version takes a version id or name; a name the project does not have yet is created.",
+			Short:   "Open an issue",
+			Example: "  yyt project issue create \"Crash on resume\" --body @crash.md --version 1.2.0\n  yyt project issue create \"Typo on title screen\"",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines number, id, title, status, version, by, created, updated, closed, then the body and comments; --json: the issue {id,projectId,number,title,bodyMd,status,versionId,createdBy,createdAt,updatedAt,closedAt,comments} (a created version is noted on stderr)",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				md, err := readBody(body)
 				if err != nil {
@@ -743,9 +811,13 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 		c.AddCommand(create)
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "get <number>",
-		Short: "Show an issue with its comments",
-		Args:  cobra.ExactArgs(1),
+		Use:     "get <number>",
+		Short:   "Show an issue with its comments",
+		Example: "  yyt project issue get 12\n  yyt project issue get 12 --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines number, id, title, status, version, by, created, updated, closed, then the body and comments; --json: the issue {id,projectId,number,title,bodyMd,status,versionId,createdBy,createdAt,updatedAt,closedAt,comments}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, _, p, err := issuePath(cmd, args[0], false)
 			if err != nil {
@@ -762,9 +834,13 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 		var title, body, version string
 		var noVersion bool
 		update := &cobra.Command{
-			Use:   "update <number> [--title t] [--body md|@file] [--version v | --no-version]",
-			Short: "Edit an issue (any member)",
-			Args:  cobra.ExactArgs(1),
+			Use:     "update <number> [--title t] [--body md|@file] [--version v | --no-version]",
+			Short:   "Edit an issue (any member)",
+			Example: "  yyt project issue update 12 --title \"Crash on resume (Android 14)\"\n  yyt project issue update 12 --version 1.2.1\n  yyt project issue update 12 --no-version",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines number, id, title, status, version, by, created, updated, closed, then the body and comments; --json: the issue {id,projectId,number,title,bodyMd,status,versionId,createdBy,createdAt,updatedAt,closedAt,comments}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				patch := map[string]any{}
 				if cmd.Flags().Changed("title") {
@@ -815,9 +891,13 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 	}
 	transition := func(action, short string) *cobra.Command {
 		return &cobra.Command{
-			Use:   action + " <number>",
-			Short: short,
-			Args:  cobra.ExactArgs(1),
+			Use:     action + " <number>",
+			Short:   short,
+			Example: "  yyt project issue " + action + " 12\n  yyt project issue " + action + " 12 --json",
+			Annotations: map[string]string{
+				OutputAnnotation: "key/value lines number, id, title, status, version, by, created, updated, closed, then the body and comments; --json: the issue {id,projectId,number,title,bodyMd,status,versionId,createdBy,createdAt,updatedAt,closedAt,comments}",
+			},
+			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				cc, _, p, err := issuePath(cmd, args[0], true)
 				if err != nil {
@@ -832,7 +912,7 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 		}
 	}
 	c.AddCommand(transition("close", "Close an issue (issues are never deleted)"), transition("reopen", "Reopen a closed issue"))
-	c.AddCommand(a.commentCmd("issue", func(cmd *cobra.Command, parent string) (*ctxClient, string, error) {
+	c.AddCommand(a.commentCmd("issue", "yyt project issue comment", "12", func(cmd *cobra.Command, parent string) (*ctxClient, string, error) {
 		cc, _, p, err := issuePath(cmd, parent, true)
 		if err != nil {
 			return nil, "", err
@@ -840,4 +920,14 @@ func (a *App) projectIssueCmd(projectOf projectResolver) *cobra.Command {
 		return cc, p + "/comments", nil
 	}))
 	return group(c)
+}
+
+// noteCell is a version note in a table cell or key/value line: one line,
+// so a note read from an @file (with its final newline) keeps rows intact.
+// `--json` carries the note as stored.
+func noteCell(n *string) string {
+	if n == nil {
+		return output.Str(n)
+	}
+	return firstLine(*n)
 }

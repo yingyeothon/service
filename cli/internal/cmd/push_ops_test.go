@@ -11,11 +11,11 @@ func TestPushUploadsStatsSweep(t *testing.T) {
 	f := newFake(t, ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /channels/" + pushID + "/push/uploads": func(recorded) (int, any) {
 			return 200, map[string]any{"uploads": []any{
-				map[string]any{"id": "up_1", "size": 120, "createdBy": "mem_1", "createdByLogin": login, "createdAt": 1756000000, "usableUntil": 1756086400, "pending": true, "inUse": false},
-				map[string]any{"id": "up_2", "size": 80, "createdBy": "apikey", "createdByLogin": nil, "createdAt": 1756000000, "usableUntil": 1756086400, "pending": false, "inUse": false},
+				map[string]any{"id": "pu_1", "size": 120, "createdBy": "mem_1", "createdByLogin": login, "createdAt": 1756000000, "usableUntil": 1756086400, "pending": true, "inUse": false},
+				map[string]any{"id": "pu_2", "size": 80, "createdBy": "apikey", "createdByLogin": nil, "createdAt": 1756000000, "usableUntil": 1756086400, "pending": false, "inUse": false},
 			}, "next": nil, "max": 20}
 		},
-		"DELETE /channels/" + pushID + "/push/uploads/up_2": func(recorded) (int, any) { return 204, nil },
+		"DELETE /channels/" + pushID + "/push/uploads/pu_2": func(recorded) (int, any) { return 204, nil },
 		"GET /channels/" + pushID + "/push/stats": func(recorded) (int, any) {
 			return 200, map[string]any{"tokens": map[string]any{"count": 3, "capped": false}, "tokenCap": 10000, "since": "2026-09-27",
 				"days": []any{map[string]any{"day": "2026-10-10", "calls": 2, "sent": 1, "noToken": 1, "failed": 0, "unregistered": 0}}}
@@ -33,7 +33,7 @@ func TestPushUploadsStatsSweep(t *testing.T) {
 	if !strings.Contains(errs, "1 of 20 pending places used") {
 		t.Fatalf("stderr %q", errs)
 	}
-	if _, _, err := run(t, f, "push", "upload", "rm", pushID, "up_2"); err != nil {
+	if _, _, err := run(t, f, "push", "upload", "rm", pushID, "pu_2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := run(t, f, "push", "upload", "rm", pushID, "pj_2"); err == nil {

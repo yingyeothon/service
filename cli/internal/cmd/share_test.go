@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -50,6 +52,20 @@ func TestCatalogShareCreate(t *testing.T) {
 	}
 	if _, has := post.Body["label"]; has || post.Body["expiresInDays"] != float64(7) {
 		t.Fatalf("defaults %v", post.Body)
+	}
+	// Kind, title, summary (@file) and reason go only when set.
+	md := filepath.Join(t.TempDir(), "s.md")
+	_ = os.WriteFile(md, []byte("Try the boss fight.\n"), 0o644)
+	if _, _, err := run(t, f, "catalog", "share", "create", "ca_1", "--kind", "android-release", "--title", " Beta ", "--summary", "@"+md, "--reason", "ticket 12"); err != nil {
+		t.Fatal(err)
+	}
+	if post.Body["buildKind"] != "android-release" || post.Body["title"] != "Beta" || post.Body["summary"] != "Try the boss fight." || post.Body["reason"] != "ticket 12" {
+		t.Fatalf("kind body %v", post.Body)
+	}
+	for _, bad := range [][]string{{"--kind", "apk"}, {"--title", "a\nb"}, {"--title", strings.Repeat("x", 101)}} {
+		if _, _, err := run(t, f, append([]string{"catalog", "share", "create", "ca_1"}, bad...)...); err == nil {
+			t.Fatalf("%v: want a local refusal", bad)
+		}
 	}
 	// --json prints the whole object, url included.
 	out, _, err = run(t, f, "catalog", "share", "create", "ca_1", "--json")

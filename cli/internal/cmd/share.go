@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf16"
@@ -29,7 +30,14 @@ type shareLink struct {
 	ExpiresAt int64   `json:"expiresAt"`
 	RevokedAt *int64  `json:"revokedAt"`
 	Live      bool    `json:"live"`
+	// The one build the link grants (nil: the newest of each platform) and
+	// the link's own title for recipients (nil: the app name).
+	BuildKind *string `json:"buildKind,omitempty"`
+	Title     *string `json:"title,omitempty"`
 }
+
+// shareBuildKinds are the console's SHARE_BUILD_KINDS (decisions share #10).
+var shareBuildKinds = []string{"android-release", "android-debug", "ios-ad-hoc"}
 
 type shareLinkList struct {
 	Links     []shareLink `json:"links"`
@@ -96,13 +104,17 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 	}
 
 	var days int
-	var label string
+	var label, kind, title, summary, reason string
 	create := &cobra.Command{
-		Use:   "create <app> [--days 1|7|30] [--label text]",
+		Use:   "create <app> [--days 1|7|30] [--label text] [--kind k] [--title t] [--summary text|@file] [--reason text]",
 		Short: "Create a token link and print its URL (shown only this once)",
 		Example: "  yyt catalog share create my-game\n" +
 			"  yyt catalog share create my-game --days 30 --label \"playtest group\"\n" +
-			"  yyt catalog share create ca_0123 --days 1 --json",
+			"  yyt catalog share create ca_0123 --days 1 --json\n" +
+			"  yyt catalog share create my-game --kind android-release --title \"My Game beta\" --summary @notes.md",
+		Annotations: map[string]string{
+			OutputAnnotation: "the URL on stdout, the link id and expiry on stderr; --json: the created link {id,url,expiresAt,label,buildKind,title,…}",
+		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if days != 1 && days != 7 && days != 30 {
@@ -122,6 +134,34 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 				if l != "" {
 					body["label"] = l
 				}
+			}
+			// Only the keys the user set (decisions share #10); blank = unset.
+			if kind != "" {
+				if !slices.Contains(shareBuildKinds, kind) {
+					return fmt.Errorf("--kind must be one of %s", strings.Join(shareBuildKinds, ", "))
+				}
+				body["buildKind"] = kind
+			}
+			if t := strings.TrimSpace(title); t != "" {
+				if len(utf16.Encode([]rune(t))) > 100 {
+					return errors.New("--title is at most 100 characters (UTF-16 units)")
+				}
+				if strings.IndexFunc(t, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) >= 0 {
+					return errors.New("--title must be one line without control or format characters")
+				}
+				body["title"] = t
+			}
+			if cmd.Flags().Changed("summary") {
+				sm, err := readBody(summary)
+				if err != nil {
+					return err
+				}
+				if sm = strings.TrimSpace(sm); sm != "" {
+					body["summary"] = sm
+				}
+			}
+			if r := strings.TrimSpace(reason); r != "" {
+				body["reason"] = r
 			}
 			var raw json.RawMessage
 			if err := shareDo(cmd, true, http.MethodPost, args[0], "", body, &raw); err != nil {
@@ -148,6 +188,10 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 	}
 	create.Flags().IntVar(&days, "days", 7, "days until the link expires: 1, 7 or 30")
 	create.Flags().StringVar(&label, "label", "", "the team's own note (max 100 chars, never shown to a recipient)")
+	create.Flags().StringVar(&kind, "kind", "", "grant one build only: android-release, android-debug or ios-ad-hoc (default: the newest of each platform)")
+	create.Flags().StringVar(&title, "title", "", "the link's own title for recipients, one line, max 100 chars (default: the app name)")
+	create.Flags().StringVar(&summary, "summary", "", "the link's own summary on the install page, max 2000 chars, or @file")
+	create.Flags().StringVar(&reason, "reason", "", "why: required from a platform admin with no seat on the app's team (audited)")
 
 	ls := &cobra.Command{
 		Use:     "ls <app>",
@@ -155,6 +199,9 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 		Short:   "List the app's token links (live, expired and revoked) and its public link",
 		Example: "  yyt catalog share ls my-game\n" +
 			"  yyt catalog share ls my-game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table ID LABEL BY CREATED EXPIRES STATUS, then \"public link: <url>\" if any; --json: {links:[{id,label,createdBy,createdAt,expiresAt,revokedAt,live,…}],publicUrl,limit}",
+		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var raw json.RawMessage
@@ -189,8 +236,11 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 		Use:     "rm <app> <id>",
 		Aliases: []string{"remove", "revoke", "delete"},
 		Short:   "Revoke a token link (revoking twice is a no-op)",
-		Example: "  yyt catalog share rm my-game shl_01J…",
-		Args:    cobra.ExactArgs(2),
+		Example: "  yyt catalog share rm my-game shl_01JABCD",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"revoked <id>\" (same with --json)",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := shareDo(cmd, true, http.MethodDelete, args[0], "/"+api.PathID(args[1]), nil, nil); err != nil {
 				return err
@@ -205,8 +255,11 @@ func newCatalogShareCommand(a *App, appID appResolver) *cobra.Command {
 		Short: "Print the permanent link of a public listing",
 		Long: "Print the app's permanent install page link. It exists only while the app's\n" +
 			"listing is published with `--audience public` and not taken down.",
-		Example: "  yyt catalog share public my-game",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt catalog share public my-game\n  yyt catalog share public my-game --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "the public URL; --json: {publicUrl}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res shareLinkList
 			if err := shareDo(cmd, false, http.MethodGet, args[0], "", nil, &res); err != nil {

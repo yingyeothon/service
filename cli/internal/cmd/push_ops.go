@@ -57,7 +57,10 @@ func (a *App) pushUploadCmd(resolve channelResolver) *cobra.Command {
 		Use:     "ls <channel>",
 		Aliases: []string{"list"},
 		Short:   "List the channel's uploads, newest first: size, who uploaded, whether one still counts against the 20",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt push upload ls alerts\n  yyt push upload ls alerts --limit 50 --json\n  yyt push upload ls push_0123abcd --as-server",
+		Annotations: map[string]string{OutputAnnotation: "table ID BYTES STATE BY CREATED USABLE UNTIL, then \"more: --cursor …\" or \"<n> of <max> pending places used\" on stderr; " +
+			"--json: {uploads:[{id,size,createdBy,createdAt,usableUntil,pending,inUse}],next,max}"},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := resolve(cmd, args[0], false)
 			if err != nil {
@@ -124,13 +127,15 @@ func (a *App) pushUploadCmd(resolve channelResolver) *cobra.Command {
 	asServerFlag(ls, &asServer)
 	var rmServer bool
 	rm := &cobra.Command{
-		Use:     "rm <channel> <upload>",
-		Aliases: []string{"remove"},
-		Short:   "Remove an upload no running job reads (an upload in use answers upload_in_use)",
-		Args:    cobra.ExactArgs(2),
+		Use:         "rm <channel> <upload>",
+		Aliases:     []string{"remove"},
+		Short:       "Remove an upload no running job reads (an upload in use answers upload_in_use)",
+		Example:     "  yyt push upload rm alerts pu_0123abcd\n  yyt push upload rm alerts pu_0123abcd --json",
+		Annotations: map[string]string{OutputAnnotation: "\"deleted <upload>\"; --json: {id,deleted:true}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !strings.HasPrefix(args[1], "up_") {
-				return fmt.Errorf("%q is not an upload id (up_…; yyt push upload ls %s)", args[1], args[0])
+			if !strings.HasPrefix(args[1], "pu_") {
+				return fmt.Errorf("%q is not an upload id (pu_…; yyt push upload ls %s)", args[1], args[0])
 			}
 			cc, id, err := resolve(cmd, args[0], true)
 			if err != nil {
@@ -158,12 +163,16 @@ func (a *App) pushUploadCmd(resolve channelResolver) *cobra.Command {
 func (a *App) pushStatsCmd(resolve channelResolver) *cobra.Command {
 	var days int
 	c := &cobra.Command{
-		Use:   "stats <channel> [--days 14]",
-		Short: "Device tokens held against the channel's cap, and the targeted sends of the last days",
+		Use:     "stats <channel> [--days 14]",
+		Short:   "Device tokens held against the channel's cap, and the sends of the last days",
+		Example: "  yyt push channel stats alerts\n  yyt push channel stats alerts --days 30 --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value tokens, tokenCap, since, then table DAY CALLS SENT NO TOKEN FAILED UNREGISTERED " +
+			"(or \"no send in this window\"); --json: {tokens:{count,capped},tokenCap,since,days:[{day,calls,sent,noToken,failed,unregistered}]}"},
 		Long: "The channel's registered device tokens against push.tokensPerChannel (a new\n" +
 			"token past it is refused 409; `yyt limit request push.tokensPerChannel …`), and\n" +
-			"per UTC day the targeted sends: calls, users sent, without a token, failed\n" +
-			"(of which unregistered). Days without a send are left out; kept 30 days.",
+			"per UTC day the sends — targeted sends and campaign jobs alike (a broadcast\n" +
+			"is one call to the topic): calls, users sent, without a token, failed (of\n" +
+			"which unregistered). Days without a send are left out; kept 30 days.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := resolve(cmd, args[0], false)
@@ -189,7 +198,7 @@ func (a *App) pushStatsCmd(resolve channelResolver) *cobra.Command {
 				return err
 			}
 			if len(res.Days) == 0 {
-				fmt.Fprintln(a.Out, "no targeted send in this window")
+				fmt.Fprintln(a.Out, "no send in this window")
 				return nil
 			}
 			rows := make([][]string, 0, len(res.Days))
@@ -252,9 +261,12 @@ type pushSweepRecord struct {
 
 func (a *App) pushSweepCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "sweep",
-		Short: "What the last daily sweep found per slot: orphans, missing and foreign apps, auto-closes (platform admin)",
-		Args:  cobra.NoArgs,
+		Use:     "sweep",
+		Short:   "What the last daily sweep found per slot: orphans, missing and foreign apps, auto-closes (platform admin)",
+		Example: "  yyt push pool sweep\n  yyt push pool sweep --json",
+		Annotations: map[string]string{OutputAnnotation: "key/value at, stale tokens, claims released/kept, failed phases, truncated, then table SLOT CLAIMS APPS ORPHANS MISSING FOREIGN RESTORED LOST CLEANED AUTO " +
+			"(or \"no sweep recorded in the last 8 days …\"); --json: {last:{at,tokens,released,kept,failed,pool,reconcile:{slots:[…]}}|null}"},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, err := a.client()
 			if err != nil {

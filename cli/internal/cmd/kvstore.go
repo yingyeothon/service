@@ -88,8 +88,10 @@ func newKvStore(a *App) *cobra.Command {
 		Long: "Key-value collections under a project: announcements, per-player progress,\n" +
 			"public profiles. A collection's read and write scopes say who may reach it\n" +
 			"through the KV API on the state stack — `team` (console and `yyt kv` only),\n" +
+			"`server` (the auth channel's doc apiKey only: a Lambda or cron, never a build),\n" +
 			"`project` (every player and the server key), `user` (each player its own\n" +
-			"namespace; the server key every namespace). The scopes and the encryption\n" +
+			"namespace; the server key every namespace). A collection is per-owner when\n" +
+			"either scope is `user`. The scopes and the encryption\n" +
 			"flag are fixed at creation.\n\n" +
 			"Values are JSON text stored byte for byte as sent (at most 16 KiB). An\n" +
 			"encrypted collection's values can be written and read only through the KV\n" +
@@ -116,12 +118,18 @@ func newKvStore(a *App) *cobra.Command {
 		newKvEntryDelete(a, kvID),
 		newKvEntryClear(a, kvID),
 	)
+	get := newResourceGet(kvID, "get <kv>", "Show one collection with its scopes, caps, entry count and KV API paths", "/kv", a.printKvCollection)
+	get.Example = "  yyt kv get progress\n  yyt kv get kv_0123456789abcdef --json"
+	get.Annotations = map[string]string{OutputAnnotation: kvCollectionOutput}
+	del := newResourceDelete(a, kvID, "delete <kv>", "Delete a collection and every entry in it (large ones drain in the background)", "/kv")
+	del.Example = "  yyt kv delete progress\n  yyt kv delete kv_0123456789abcdef --team dooroo --project game"
+	del.Annotations = map[string]string{OutputAnnotation: "\"deleted <kv>\" (the argument as given); --json prints the same line"}
 	c.AddCommand(
 		newKvList(a),
 		newKvCreate(a),
-		newResourceGet(kvID, "get <kv>", "Show one collection with its scopes, caps, entry count and KV API paths", "/kv", a.printKvCollection),
+		get,
 		newKvUpdate(a, kvID),
-		newResourceDelete(a, kvID, "delete <kv>", "Delete a collection and every entry in it (large ones drain in the background)", "/kv"),
+		del,
 		newKvEntries(a, kvID),
 		entry,
 	)
@@ -131,6 +139,9 @@ func newKvStore(a *App) *cobra.Command {
 func (c *ctxClient) kv(ctx context.Context, arg string, write bool) (string, error) {
 	return c.resource(ctx, "kv", "/kv", "collections", arg, write)
 }
+
+// kvCollectionOutput describes what printKvCollection writes.
+const kvCollectionOutput = "the collection as key/value lines (id, name, project, readScope, writeScope, encrypted, maxEntries, maxEntriesPerOwner, entries, created, api paths…); --json: the collection {id,name,readScope,writeScope,encrypted,maxEntries,maxEntriesPerOwner,entries,api,…}"
 
 func (a *App) printKvCollection(k kvCollection) error {
 	if a.jsonOut {
@@ -178,7 +189,10 @@ func newKvList(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List the collections of the project in context",
-		Args:    cobra.NoArgs,
+		Example: "  yyt kv list" + "\n" +
+			"  yyt kv ls --team dooroo --project game --json",
+		Annotations: map[string]string{OutputAnnotation: "table ID NAME READ WRITE ENCRYPTED ENTRIES UPDATED; --json: {collections:[{id,name,readScope,writeScope,encrypted,entries,…}]}"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cc, err := a.ctxClient(cmd)
 			if err != nil {
@@ -224,7 +238,11 @@ func newKvCreate(a *App) *cobra.Command {
 			"owner's entries, and user-read + project-write is the mail shape (any player\n" +
 			"may create, never overwrite, in another owner's namespace). None of the three\n" +
 			"can be changed afterwards.",
-		Args: cobra.ExactArgs(1),
+		Example: "  yyt kv create announcements --team dooroo --project game --read project --write team" + "\n" +
+			"  yyt kv create progress --team dooroo --project game --read user --write user --max-entries-per-owner 20" + "\n" +
+			"  yyt kv create secrets --team dooroo --project game --read server --write server --encrypted",
+		Annotations: map[string]string{OutputAnnotation: kvCollectionOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, s := range []string{readScope, writeScope} {
 				if !contains(kvScopes, s) {
@@ -264,7 +282,7 @@ func newKvCreate(a *App) *cobra.Command {
 	f.StringVar(&writeScope, "write", "", "write scope: team | server | project | user")
 	f.BoolVar(&encrypted, "encrypted", false, "encrypt values at rest with a key only the state stack holds (values then bypass the console)")
 	f.StringVar(&description, "description", "", "human-readable description")
-	f.IntVar(&maxEntries, "max-entries", 0, "entries the collection may hold (default and ceiling on create 10000; ask for more with `yyt limit request kv.maxEntries --collection`)")
+	f.IntVar(&maxEntries, "max-entries", 0, "entries the collection may hold (default and ceiling on create 10000; ask for more with 'yyt limit request kv.maxEntries --collection')")
 	f.IntVar(&maxEntriesPerOwner, "max-entries-per-owner", 0, "entries one player may hold in its namespace (default and ceiling on create 100)")
 	_ = c.MarkFlagRequired("read")
 	_ = c.MarkFlagRequired("write")
@@ -279,7 +297,10 @@ func newKvUpdate(a *App, kvID idResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "update <kv>",
 		Short: "Rename a collection, change its description or its caps (scopes and encryption are fixed)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt kv update progress --name player-progress" + "\n" +
+			"  yyt kv update progress --description \"\" --max-entries 5000 --max-entries-per-owner 50",
+		Annotations: map[string]string{OutputAnnotation: kvCollectionOutput},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := map[string]any{}
 			if cmd.Flags().Changed("name") {
@@ -309,7 +330,7 @@ func newKvUpdate(a *App, kvID idResolver) *cobra.Command {
 	f := c.Flags()
 	f.StringVar(&name, "name", "", "new collection name (unique within the team)")
 	f.StringVar(&description, "description", "", "new description (empty clears it)")
-	f.IntVar(&maxEntries, "max-entries", 0, "new cap on entries (up to the collection's ceiling: `yyt limit list --collection`)")
+	f.IntVar(&maxEntries, "max-entries", 0, "new cap on entries (up to the collection's ceiling: 'yyt limit list --collection')")
 	f.IntVar(&maxEntriesPerOwner, "max-entries-per-owner", 0, "new cap on one player's entries (up to the collection's ceiling)")
 	return c
 }
@@ -380,7 +401,11 @@ func newKvEntries(a *App, kvID idResolver) *cobra.Command {
 			"owner: --owner shows one player's rows, none shows every owner's. Values\n" +
 			"are shown for a plaintext collection you are seated for; an encrypted one\n" +
 			"lists keys, sizes and times only.",
-		Args: cobra.ExactArgs(1),
+		Example: "  yyt kv entries progress" + "\n" +
+			"  yyt kv entries progress --owner 0123456789abcdef0123456789abcdef --prefix save/" + "\n" +
+			"  yyt kv entries announcements --all --json",
+		Annotations: map[string]string{OutputAnnotation: "table OWNER KEY [FROM] VERSION BYTES EXPIRES UPDATED VALUE, \"more: --cursor <c> (or --all)\" on stderr when a page follows; --json: {entries:[{owner,key,version,bytes,expiresAt,channelId,from,updatedAt,valueText}],nextCursor}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := kvID(cmd, args[0], false)
 			if err != nil {
@@ -421,7 +446,7 @@ func newKvEntries(a *App, kvID idResolver) *cobra.Command {
 	}
 	f := c.Flags()
 	f.StringVar(&prefix, "prefix", "", "only keys starting with this")
-	f.StringVar(&owner, "owner", "", "one owner's namespace (user write scope only)")
+	f.StringVar(&owner, "owner", "", "one owner's namespace (per-owner collections: either scope user)")
 	f.StringVar(&cursor, "cursor", "", "continue from a previous page")
 	f.IntVar(&limit, "limit", 0, "page size (1..100, default 50)")
 	f.BoolVar(&all, "all", false, "follow the cursor until the end")
@@ -433,7 +458,10 @@ func newKvEntryGet(a *App, kvID idResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "get <kv> <key>",
 		Short: "Print one entry's value as stored (--json: the whole entry)",
-		Args:  cobra.ExactArgs(2),
+		Example: "  yyt kv entry get announcements motd" + "\n" +
+			"  yyt kv entry get progress save/1 --owner 0123456789abcdef0123456789abcdef --json",
+		Annotations: map[string]string{OutputAnnotation: "the stored JSON value verbatim (encrypted or unseated: key/value lines owner, key, version, bytes, expires, updated); --json: {owner,key,version,bytes,expiresAt,channelId,from,updatedAt,valueText}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := kvID(cmd, args[0], false)
 			if err != nil {
@@ -463,7 +491,7 @@ func newKvEntryGet(a *App, kvID idResolver) *cobra.Command {
 			return err
 		},
 	}
-	c.Flags().StringVar(&owner, "owner", "", "the owner's namespace (user write scope only)")
+	c.Flags().StringVar(&owner, "owner", "", "the owner's namespace (per-owner collections: either scope user)")
 	return c
 }
 
@@ -479,7 +507,11 @@ func newKvEntryPut(a *App, kvID idResolver) *cobra.Command {
 			"(0 clears one; omitted keeps whatever the row has). --if-version makes the\n" +
 			"write conditional on the stored version, a compare-and-set: a mismatch is\n" +
 			"answered with a conflict that names the current version.",
-		Args: cobra.ExactArgs(2),
+		Example: "  yyt kv entry put announcements motd --value '{\"text\":\"Welcome\"}'" + "\n" +
+			"  yyt kv entry put progress save/1 --owner 0123456789abcdef0123456789abcdef --file save.json --ttl 86400" + "\n" +
+			"  jq -c . config.json | yyt kv entry put announcements config --if-version 3",
+		Annotations: map[string]string{OutputAnnotation: "\"created|updated <key> (version N, B bytes)\"; --json: {owner,key,version,bytes,created}"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			text, err := kvValueOf(cmd, value, file, a.In)
 			if err != nil {
@@ -518,7 +550,7 @@ func newKvEntryPut(a *App, kvID idResolver) *cobra.Command {
 		},
 	}
 	f := c.Flags()
-	f.StringVar(&owner, "owner", "", "the owner's namespace (user write scope only)")
+	f.StringVar(&owner, "owner", "", "the owner's namespace (per-owner collections: either scope user)")
 	f.StringVar(&value, "value", "", "the JSON value")
 	f.StringVar(&file, "file", "", "read the JSON value from this file")
 	f.IntVar(&ttl, "ttl", 0, "expiry in seconds (0 clears; omitted keeps)")
@@ -561,7 +593,10 @@ func newKvEntryDelete(a *App, kvID idResolver) *cobra.Command {
 		Use:     "delete <kv> <key>",
 		Aliases: []string{"rm", "remove"},
 		Short:   "Delete one entry (allowed on an encrypted collection too)",
-		Args:    cobra.ExactArgs(2),
+		Example: "  yyt kv entry delete announcements motd" + "\n" +
+			"  yyt kv entry delete progress save/1 --owner 0123456789abcdef0123456789abcdef",
+		Annotations: map[string]string{OutputAnnotation: "\"deleted <key>\"; --json prints the same line"},
+		Args:        cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := kvID(cmd, args[0], true)
 			if err != nil {
@@ -574,7 +609,7 @@ func newKvEntryDelete(a *App, kvID idResolver) *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVar(&owner, "owner", "", "the owner's namespace (user write scope only)")
+	c.Flags().StringVar(&owner, "owner", "", "the owner's namespace (per-owner collections: either scope user)")
 	return c
 }
 
@@ -583,7 +618,10 @@ func newKvEntryClear(a *App, kvID idResolver) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "clear <kv> [--owner <id>]",
 		Short: "Delete every entry of one owner (user write scope), or of the shared namespace; repeats until nothing is left",
-		Args:  cobra.ExactArgs(1),
+		Example: "  yyt kv entry clear announcements" + "\n" +
+			"  yyt kv entry clear progress --owner 0123456789abcdef0123456789abcdef",
+		Annotations: map[string]string{OutputAnnotation: "\"deleted N entries [of <owner>]\"; --json: {deleted:N}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := kvID(cmd, args[0], true)
 			if err != nil {
@@ -618,7 +656,7 @@ func newKvEntryClear(a *App, kvID idResolver) *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVar(&owner, "owner", "", "the owner whose namespace is emptied (user write scope); omitted = the shared namespace")
+	c.Flags().StringVar(&owner, "owner", "", "the owner whose namespace is emptied (per-owner collections: either scope user); omitted = the shared namespace")
 	return c
 }
 

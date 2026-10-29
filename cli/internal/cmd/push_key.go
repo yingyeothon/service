@@ -67,7 +67,10 @@ func (a *App) pushKeyCmd(resolve channelResolver) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:   "set <channel>",
 		Short: "Store a push channel's apiKey, read from stdin (prompted on a terminal)",
-		Args:  cobra.ExactArgs(1),
+		Example: "  printf %s \"$PUSH_API_KEY\" | yyt push key set alerts\n" +
+			"  yyt push key set push_0123abcd",
+		Annotations: map[string]string{OutputAnnotation: "\"stored the apiKey of <id>\"; --json: {channelId,stored:true}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, id, err := resolve(cmd, args[0], false)
 			if err != nil {
@@ -94,10 +97,12 @@ func (a *App) pushKeyCmd(resolve channelResolver) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:     "rm <channel>",
-		Aliases: []string{"remove"},
-		Short:   "Forget a stored apiKey (the key itself stays valid; rotate it to revoke)",
-		Args:    cobra.ExactArgs(1),
+		Use:         "rm <channel>",
+		Aliases:     []string{"remove"},
+		Short:       "Forget a stored apiKey (the key itself stays valid; rotate it to revoke)",
+		Example:     "  yyt push key rm alerts\n  yyt push key rm push_0123abcd --json",
+		Annotations: map[string]string{OutputAnnotation: "\"forgot the apiKey of <id>\"; --json: {channelId,removed:true}"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
 			if err != nil {
@@ -126,10 +131,12 @@ func (a *App) pushKeyCmd(resolve channelResolver) *cobra.Command {
 		},
 	})
 	c.AddCommand(&cobra.Command{
-		Use:     "ls",
-		Aliases: []string{"list"},
-		Short:   "List the push channels with a stored apiKey on this stage (ids only)",
-		Args:    cobra.NoArgs,
+		Use:         "ls",
+		Aliases:     []string{"list"},
+		Short:       "List the push channels with a stored apiKey on this stage (ids only)",
+		Example:     "  yyt push key ls\n  yyt push key ls --json",
+		Annotations: map[string]string{OutputAnnotation: "one channel id per line, never a key; --json: {api,channels:[<id>]}"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Resolve(a.profFlag, a.apiFlag, a.tokFlag)
 			if err != nil {

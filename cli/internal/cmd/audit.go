@@ -45,7 +45,13 @@ func newAudit(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List audit rows, newest first",
-		Args:    cobra.NoArgs,
+		Example: "  yyt audit ls --action-prefix show. --from 2026-10-01\n" +
+			"  yyt audit ls --actor octocat --limit 50\n" +
+			"  yyt audit ls --target ca_0123 --all --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table WHEN ACTION ACTOR TARGET ID, then a next-page hint on stderr; --json: {rows:[{id,actor,action,target,at}],next}",
+		},
+		Args: cobra.NoArgs,
 	}
 	var action, prefix, target, actor, from, to, cursor string
 	var limit int
@@ -127,7 +133,11 @@ func newAudit(a *App) *cobra.Command {
 		Use:     "get <id>",
 		Aliases: []string{"show"},
 		Short:   "Read one audit row with its detail",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt audit get 01JC4Z0123ABCD\n  yyt audit get 01JC4Z0123ABCD --json | jq .detail",
+		Annotations: map[string]string{
+			OutputAnnotation: "key/value lines id, when, action, actor, target, detail; --json: {id,actor,action,target,at,detail,detailTruncated}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var d auditDetail
 			if err := do(cmd, http.MethodGet, "/admin/audit/"+api.PathID(args[0]), &d); err != nil {

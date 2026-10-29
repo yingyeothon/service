@@ -16,7 +16,11 @@ func newProfile(a *App) *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List stored profiles (the active one is marked)",
-		Args:    cobra.NoArgs,
+		Example: "  yyt profile ls\n  yyt profile ls --json",
+		Annotations: map[string]string{
+			OutputAnnotation: "table (active mark) NAME API DEFAULT; --json: {profiles:[{name,api,default,active}]}",
+		},
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			f, err := config.LoadFile()
 			if err != nil {
@@ -63,6 +67,11 @@ func newProfile(a *App) *cobra.Command {
 			Long: `Verifies a token (--token, YYT_TOKEN, or stdin) or runs the GitHub device
 flow (--device) against --api and stores the login under the given profile
 name. The first stored profile becomes the default.`,
+			Example: "  yyt profile add dev --api https://console-dev.yyt.life --device\n" +
+				"  printf %s \"$YYT_TOKEN\" | yyt profile add prod",
+			Annotations: map[string]string{
+				OutputAnnotation: "\"logged in as <login> (<role>) at <api> [profile <name>]\" and \"config: <path>\" (device code prompt on stderr); --json: {api,id,login,role,profile,config}",
+			},
 			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				prev := a.profFlag
@@ -87,23 +96,35 @@ name. The first stored profile becomes the default.`,
 		return nil
 	}
 	c.AddCommand(&cobra.Command{
-		Use:   "use <name>",
-		Short: "Make a stored profile the default",
-		Args:  cobra.ExactArgs(1),
-		RunE:  setDefault,
+		Use:     "use <name>",
+		Short:   "Make a stored profile the default",
+		Example: "  yyt profile use dev",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"default profile is now <name>\"; --json: {default}",
+		},
+		Args: cobra.ExactArgs(1),
+		RunE: setDefault,
 	})
 
 	c.AddCommand(&cobra.Command{
-		Use:   "default <name>",
-		Short: "Make a stored profile the default (same as `yyt profile use`)",
-		Args:  cobra.ExactArgs(1),
-		RunE:  setDefault,
+		Use:     "default <name>",
+		Short:   "Make a stored profile the default (same as `yyt profile use`)",
+		Example: "  yyt profile default prod",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"default profile is now <name>\"; --json: {default}",
+		},
+		Args: cobra.ExactArgs(1),
+		RunE: setDefault,
 	})
 
 	c.AddCommand(&cobra.Command{
-		Use:   "rename <old> <new>",
-		Short: "Rename a stored profile (the default marker moves with it)",
-		Args:  cobra.ExactArgs(2),
+		Use:     "rename <old> <new>",
+		Short:   "Rename a stored profile (the default marker moves with it)",
+		Example: "  yyt profile rename default dev",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"renamed profile <old> -> <new>\"; --json: {from,to}",
+		},
+		Args: cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if err := config.RenameProfile(args[0], args[1]); err != nil {
 				return err
@@ -120,7 +141,11 @@ name. The first stored profile becomes the default.`,
 		Use:     "remove <name>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a stored profile (the token itself stays valid until revoked)",
-		Args:    cobra.ExactArgs(1),
+		Example: "  yyt profile rm old-dev",
+		Annotations: map[string]string{
+			OutputAnnotation: "\"removed profile <name>\"; --json: {removed}",
+		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if err := config.RemoveProfile(args[0]); err != nil {
 				return err

@@ -33,6 +33,12 @@ func newAssetDownload(a *App, bundleID bundleResolver) *cobra.Command {
 			"A file of an encrypted bundle is decrypted here with the bundle key (fetched\n" +
 			"from the console, audited): every 64 KiB segment is verified before a byte\n" +
 			"is written, and --range fetches only the segments it needs.",
+		Example: "  yyt asset download maps level1.json --version v2\n" +
+			"  yyt asset download web-assets manifest.json -o - | jq .\n" +
+			"  yyt asset download web-assets video.mp4 --range 0-1048575 -o head.bin",
+		Annotations: map[string]string{
+			OutputAnnotation: "the file's bytes to -o (default: its base name; - is stdout) and \"wrote <file> (N bytes)\" on stderr; --json changes nothing",
+		},
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
