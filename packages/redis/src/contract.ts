@@ -1,5 +1,5 @@
 import type { Kv } from "./kv.js";
-import { hashTakeIf, hsetEx } from "./take.js";
+import { hashTakeIf, hsetEx, incrEx } from "./take.js";
 
 interface TestApi {
   it: (name: string, fn: () => Promise<void>) => void;
@@ -121,6 +121,17 @@ export function kvContractTests(
     expect(await hashTakeIf(kv, ["ht", "ht:armed"], "last", "1")).toBe(
       undefined,
     );
+  });
+
+  it("incr-ex counts and always carries a TTL", async () => {
+    const kv = await make();
+    expect(await incrEx(kv, "ix", 60)).toBe(1);
+    expect(await incrEx(kv, "ix", 60)).toBe(2);
+    expect(await kv.get("ix")).toBe("2");
+    // Re-armed on every call, not only the first.
+    await kv.expire("ix", 600);
+    expect(await incrEx(kv, "ix", 30)).toBe(3);
+    expect((await kv.ttl("ix")) <= 30).toBe(true);
   });
 
   it("hash set-ex", async () => {

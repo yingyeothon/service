@@ -280,6 +280,7 @@ describe("serverless.yml invariants", () => {
       functions: Record<
         string,
         {
+          handler?: string;
           reservedConcurrency: number;
           maximumEventAge?: number;
           memorySize?: number;
@@ -294,6 +295,22 @@ describe("serverless.yml invariants", () => {
         Resources: Record<string, { Type: string; Properties: unknown }>;
       };
     };
+    // The gateway probe has its own small entry (todo/83): back inside the
+    // API bundle it needed ~240 MB and timed out cold init at 128 MB.
+    const probe = doc.functions.gatewayProbe!;
+    expect(probe.handler).toBe("src/probe-handler.gatewayProbe");
+    expect(probe.memorySize).toBe(256);
+    expect(probe.reservedConcurrency).toBe(1);
+    expect(probe.maximumRetryAttempts).toBe(0);
+    for (const secret of [
+      "MYSQL_PASSWORD",
+      "REDIS_ACL_USER",
+      "REDIS_ACL_PASSWORD",
+      "GITHUB_CLIENT_SECRET",
+      "DEBUG_KEY",
+      "GATEWAY_TOKEN",
+    ])
+      expect(probe.environment?.[secret], secret).toBe("");
     const fn = doc.functions.catalogPush!;
     // Run by Scheduler only: no route, no recurring schedule.
     expect(fn.events).toBeUndefined();

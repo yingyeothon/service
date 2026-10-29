@@ -508,14 +508,23 @@ functions:
       GATEWAY_TOKEN: ""
 
   gatewayProbe:
-    handler: src/handler.gatewayProbe
+    handler: src/probe-handler.gatewayProbe
     reservedConcurrency: 1
     role: GatewayProbeRole
-    # It loads the whole console bundle: at 128 MB it ran at the cap, cold
-    # init outgrew the 10 s init limit (2026-10-27) and the starved fetch
-    # timed out against a healthy gateway. It uses ~240 MB; at 512 MB a cold
-    # run takes ~2 s and a warm one ~50 ms, fewer GB-s than 128 MB timing out.
-    memorySize: 512
+    environment:
+      # Redis (the provider's REDIS_* service user) and SNS only.
+      MYSQL_PASSWORD: ""
+      REDIS_ACL_USER: ""
+      REDIS_ACL_PASSWORD: ""
+      GITHUB_CLIENT_SECRET: ""
+      DEBUG_KEY: ""
+      GATEWAY_TOKEN: ""
+    # Own entry (probe-handler.ts) since 2026-10-29. Before that it loaded the
+    # whole console bundle: at 128 MB it ran at the cap, cold init outgrew the
+    # 10 s init limit (2026-10-27) and the starved fetch timed out against a
+    # healthy gateway. Own bundle is 1.2 MB: at 512 MB a cold run peaked at
+    # 162 MB with 0.7 s init (dev, 2026-10-29), so 256 MB leaves headroom.
+    memorySize: 256
     timeout: 20
     # A retry repeats a tick ~1 min later and was what turned a timed-out
     # tick into a "recovered" mail without a "down" one; the next tick is

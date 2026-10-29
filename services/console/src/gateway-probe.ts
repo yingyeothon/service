@@ -1,5 +1,5 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
-import type { Kv } from "@yyt/redis";
+import { incrEx, type Kv } from "@yyt/redis";
 
 /**
  * Liveness probe for the self-hosted realtime gateway
@@ -17,7 +17,11 @@ import type { Kv } from "@yyt/redis";
  * scheduled function has no Errors alarm of its own (the 10-alarm cap).
  */
 
-/** Redis key (prefix applied by `Kv`): value is the unix second the outage was first seen. */
+/**
+ * Redis key (prefix applied by `Kv`): `{since}` (unix second) while an outage
+ * is claimed but its DOWN message has not gone out, `{since}:n` once it has.
+ * Only a notified outage gets "recovered"; an unnotified one retries each tick.
+ */
 export const GATEWAY_DOWN_KEY = "gateway:probe:down";
 /** Consecutive-failure counter; reset by any 200. */
 export const GATEWAY_FAIL_KEY = "gateway:probe:fails";
@@ -49,6 +53,13 @@ export interface GatewayProbeResult {
 export interface GatewayProbeMemory {
   /** A "down, state unavailable" message has been sent by this container. */
   announcedWithoutState: boolean;
+  /**
+   * Consecutive ticks with the gateway and Redis both failing (the same
+   * two-in-a-row rule as the Redis counter). Lost with the container, like
+   * the flag above: a recycled container may repeat the DOWN message, or
+   * never send its "recovered" if the host comes back first.
+   */
+  failsWithoutState?: number;
 }
 
 export interface GatewayProbeOptions {
@@ -112,21 +123,34 @@ export async function runGatewayProbe({
     failure = failureName(e, timeoutMs);
   }
   const now = nowSec(clock);
+  // Set once this tick's DOWN went out, so a Redis failure right after it
+  // is treated as an outage this container already announced.
+  let sentDown = false;
   try {
     if (failure) {
-      const fails = await kv.incr(GATEWAY_FAIL_KEY);
-      await kv.expire(GATEWAY_FAIL_KEY, FAIL_KEY_TTL_SEC);
-      const downSince = await kv.get(GATEWAY_DOWN_KEY);
-      if (downSince) {
+      const fails = await incrEx(kv, GATEWAY_FAIL_KEY, FAIL_KEY_TTL_SEC);
+      memory.failsWithoutState = 0;
+      const marker = parseMarker(await kv.get(GATEWAY_DOWN_KEY), now);
+      if (marker?.notified) {
         logger.warn("gateway probe: still down", {
           url,
           failure,
           fails,
-          downSince: Number(downSince),
+          downSince: marker.since,
         });
         return { status: "down", notified: false, detail: failure };
       }
-      if (fails < failuresToAnnounce) {
+      if (memory.announcedWithoutState) {
+        // This container already said DOWN while Redis was unreachable: carry
+        // that outage into Redis as notified (over an unsent claim, if any) so
+        // no second DOWN goes out and the next 200 says "recovered".
+        await kv.set(GATEWAY_DOWN_KEY, `${marker?.since ?? now}:n`, {
+          ex: DOWN_KEY_TTL_SEC,
+        });
+        memory.announcedWithoutState = false;
+        return { status: "down", notified: false, detail: failure };
+      }
+      if (!marker && fails < failuresToAnnounce) {
         logger.warn("gateway probe: failed, not yet announced", {
           url,
           failure,
@@ -134,35 +158,71 @@ export async function runGatewayProbe({
         });
         return { status: "down", notified: false, detail: failure };
       }
-      // `nx` so two overlapping ticks cannot both announce the same outage.
-      const first = await kv.set(GATEWAY_DOWN_KEY, String(now), {
-        nx: true,
-        ex: DOWN_KEY_TTL_SEC,
-      });
-      logger.error("gateway probe: down", { url, failure, fails });
-      const notified =
-        first &&
-        (await send(
-          notify,
-          `[yyt] gateway DOWN: ${base}`,
-          `${url} failed ${fails} times in a row: ${failure}\nfirst announced: ${iso(now)}`,
-          logger,
-        ));
+      let since = marker?.since;
+      if (since === undefined) {
+        // `nx` so two overlapping ticks cannot both claim the same outage (a
+        // later tick that finds the claim unsent retries it; overlapping
+        // ticks are excluded by `reservedConcurrency: 1` and no retries).
+        const first = await kv.set(GATEWAY_DOWN_KEY, String(now), {
+          nx: true,
+          ex: DOWN_KEY_TTL_SEC,
+        });
+        if (!first) return { status: "down", notified: false, detail: failure };
+        since = now;
+        logger.error("gateway probe: down", { url, failure, fails });
+      } else
+        logger.warn("gateway probe: still down, retrying the DOWN message", {
+          url,
+          failure,
+          fails,
+        });
+      const notified = await send(
+        notify,
+        `[yyt] gateway DOWN: ${base}`,
+        `${url} failed ${fails} times in a row: ${failure}\nfirst announced: ${iso(since)}`,
+        logger,
+      );
+      sentDown = notified;
+      // Only now is the outage "announced"; a failed publish leaves the plain
+      // marker so the next tick retries instead of going silent. Without a
+      // topic there is nothing to retry, so it counts as announced.
+      if (notified || !notify)
+        await kv.set(GATEWAY_DOWN_KEY, `${since}:n`, { ex: DOWN_KEY_TTL_SEC });
       return { status: "down", notified, detail: failure };
     }
-    memory.announcedWithoutState = false;
     await kv.del(GATEWAY_FAIL_KEY);
-    const downSince = await kv.get(GATEWAY_DOWN_KEY);
-    if (!downSince) return { status: "up" };
+    const marker = parseMarker(await kv.get(GATEWAY_DOWN_KEY), now);
+    const announcedWithoutState = memory.announcedWithoutState;
+    memory.announcedWithoutState = false;
+    memory.failsWithoutState = 0;
+    if (!marker) {
+      if (!announcedWithoutState) return { status: "up" };
+      logger.warn("gateway probe: recovered (outage seen without state)", {
+        url,
+      });
+      const notified = await send(
+        notify,
+        `[yyt] gateway recovered: ${base}`,
+        `${url} answers 200 again and Redis is reachable.\nthe outage was announced while state was unavailable, so its start is unknown.`,
+        logger,
+      );
+      // A failed publish is retried by the next 200 (the flag stays set).
+      memory.announcedWithoutState = !notified && notify !== undefined;
+      return { status: "recovered", notified };
+    }
     // The delete count is the recovery edge's NX: only the tick that removed
     // the marker announces.
     if ((await kv.del(GATEWAY_DOWN_KEY)) === 0) return { status: "up" };
-    const since = Number(downSince);
+    const since = marker.since;
     logger.warn("gateway probe: recovered", {
       url,
       downSince: since,
       outageSec: now - since,
+      announced: marker.notified,
     });
+    // An outage whose DOWN never went out gets no "recovered" either.
+    if (!marker.notified && !announcedWithoutState)
+      return { status: "recovered", notified: false };
     const notified = await send(
       notify,
       `[yyt] gateway recovered: ${base}`,
@@ -173,28 +233,55 @@ export async function runGatewayProbe({
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (!failure) {
+      // The gateway answered: the stateless failures are no longer in a row.
+      memory.failsWithoutState = 0;
       logger.error("gateway probe: state error", { url, message });
       return { status: "error", notified: false };
     }
     // Gateway and Redis both unreachable: the box itself is the likeliest
-    // cause, and nothing else in this repo would say so. Once per container
-    // (`reservedConcurrency: 1` makes that about once per outage).
+    // cause, and nothing else in this repo would say so. Two failures in a
+    // row, then once per container (`reservedConcurrency: 1` makes that about
+    // once per outage).
     logger.error("gateway probe: down, state unavailable", {
       url,
       failure,
       message,
     });
-    if (memory.announcedWithoutState)
+    if (sentDown) {
+      // The DOWN went out and only the `:n` write failed: no second message.
+      memory.announcedWithoutState = true;
+      return { status: "down", notified: true, detail: failure };
+    }
+    memory.failsWithoutState = (memory.failsWithoutState ?? 0) + 1;
+    if (
+      memory.announcedWithoutState ||
+      memory.failsWithoutState < failuresToAnnounce
+    )
       return { status: "error", notified: false, detail: failure };
-    memory.announcedWithoutState = true;
     const notified = await send(
       notify,
       `[yyt] gateway DOWN, state unavailable: ${base}`,
-      `${url} failed: ${failure}\nthe console's Redis on the same host is unreachable too — check the box.\nseen: ${iso(now)}`,
+      `${url} failed ${memory.failsWithoutState} times in a row: ${failure}\nthe console's Redis on the same host is unreachable too — check the box.\nseen: ${iso(now)}`,
       logger,
     );
+    // A failed publish is retried next tick rather than recorded as sent.
+    memory.announcedWithoutState = notified;
     return { status: "error", notified, detail: failure };
   }
+}
+
+/** `{since}` or `{since}:n` (notified); an unparsable or non-positive start reads as `now`. */
+export function parseMarker(
+  raw: string | null,
+  now: number,
+): { since: number; notified: boolean } | undefined {
+  if (raw === null) return undefined;
+  const notified = raw.endsWith(":n");
+  const since = Number(notified ? raw.slice(0, -2) : raw);
+  return {
+    since: Number.isFinite(since) && since > 0 ? Math.floor(since) : now,
+    notified,
+  };
 }
 
 async function send(

@@ -33,7 +33,9 @@ export { kvContractTests } from "./contract.js";
 export {
   HASH_SET_EX_SCRIPT,
   HASH_TAKE_IF_SCRIPT,
+  INCR_EX_SCRIPT,
   hashTakeIf,
   hsetEx,
+  incrEx,
 } from "./take.js";
 export { cachedJson, type CachedJsonOptions } from "./cache.js";

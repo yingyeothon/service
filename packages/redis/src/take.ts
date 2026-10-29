@@ -50,3 +50,20 @@ export async function hsetEx(
   if (pairs.length === 0) return;
   await kv.eval(HASH_SET_EX_SCRIPT, [key], [String(ttlSec), ...pairs]);
 }
+
+/**
+ * `INCR KEYS[1]` and (re)arm its TTL (`ARGV[1]` seconds) in one step: a
+ * crash between the two can never leave a counter without an expiry.
+ */
+export const INCR_EX_SCRIPT = `local n = redis.call("incr", KEYS[1])
+redis.call("expire", KEYS[1], ARGV[1])
+return n`;
+
+/** {@link INCR_EX_SCRIPT}: increment `key`, expire it in `ttlSec`, return the new count. */
+export async function incrEx(
+  kv: Kv,
+  key: string,
+  ttlSec: number,
+): Promise<number> {
+  return Number(await kv.eval(INCR_EX_SCRIPT, [key], [String(ttlSec)]));
+}

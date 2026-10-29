@@ -6,7 +6,7 @@ import { createRedisKv, kvContractTests, type Kv } from "../src/index.js";
 
 /*
  * The Kv contract against a real Redis in a container, so the Lua scripts
- * (`RELEASE_SCRIPT`, `HASH_TAKE_IF_SCRIPT`) run on the server they ship to and
+ * (`RELEASE_SCRIPT`, `HASH_TAKE_IF_SCRIPT`, `HASH_SET_EX_SCRIPT`, `INCR_EX_SCRIPT`) run on the server they ship to and
  * not only through the fake's matchers. Skips without Docker, like the
  * MariaDB suite (`YYT_TC=0` skips it too).
  */

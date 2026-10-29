@@ -80,7 +80,6 @@ import { runPushSweep, type PushSweepResult } from "./push-sweep.js";
 import { runPushJobSweep, type PushJobSweepResult } from "./push-job-sweep.js";
 import { createS3PushJobStore, type PushJobStore } from "./push-job-store.js";
 import { runPushJobs } from "./push-worker.js";
-import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 import {
   createCloudWatchUsageMetrics,
   runUsageDigest,
@@ -93,14 +92,13 @@ import {
   cdnGuardTargets,
   createCloudFrontControl,
   runCdnGuard,
-  runCdnGuardWatch,
   type CdnControl,
   type CdnGuardMemory,
 } from "./cdn-guard.js";
 import { CloudFrontClient } from "@aws-sdk/client-cloudfront";
 import { S3Client } from "@aws-sdk/client-s3";
 import { createGithubLogin } from "./github.js";
-import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
+import { createAlarmNotify } from "./alarm-notify.js";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { createPushPool, ssmSlotLoader, type PushPool } from "@yyt/push";
 import { historyId } from "./team.js";
@@ -118,7 +116,7 @@ import {
   SchedulerClient,
 } from "@aws-sdk/client-scheduler";
 
-/* The only place in the service that reads `process.env` or touches `console`. */
+/* With `probe-handler.ts`, the only places in the service that read `process.env` or touch `console`. */
 
 const env = (name: string) => requireEnv(process.env, name);
 
@@ -880,87 +878,16 @@ export const expire = async (): Promise<void> => {
   if (failures.length > 0) throw failures[0];
 };
 
-const snsClients = new Map<string, SNSClient>();
-
-/**
- * Publisher for the stage's alarm topic; `undefined` when the stage has none.
- * The default is bounded like the CloudWatch reads (the probe and the CDN
- * guard wait on it); a request path passes a tighter bound.
- */
-function alarmNotify({
-  attempts = 2,
-  timeoutMs = 5000,
-}: { attempts?: number; timeoutMs?: number } = {}):
-  ((subject: string, message: string) => Promise<void>) | undefined {
-  const topic = process.env.ALARM_TOPIC_ARN ?? "";
-  if (!topic) return undefined;
-  const k = `${attempts}:${timeoutMs}`;
-  let sns = snsClients.get(k);
-  if (!sns) {
-    sns = new SNSClient({
-      maxAttempts: attempts,
-      requestHandler: {
-        requestTimeout: timeoutMs,
-        connectionTimeout: Math.min(3000, timeoutMs),
-      },
-    });
-    snsClients.set(k, sns);
-  }
-  const client = sns;
-  return async (subject, message) => {
-    await client.send(
-      new PublishCommand({
-        TopicArn: topic,
-        Subject: subject,
-        Message: message,
-      }),
-    );
-  };
+/** The stage's alarm publisher (`alarm-notify.ts`); `undefined` without a topic. */
+function alarmNotify(opts: { attempts?: number; timeoutMs?: number } = {}) {
+  return createAlarmNotify(process.env.ALARM_TOPIC_ARN ?? "", opts);
 }
-let probeKv: Kv | undefined;
-const probeMemory: GatewayProbeMemory = { announcedWithoutState: false };
 let guardKv: Kv | undefined;
 let guardControl: CdnControl | undefined;
 let guardMetrics: ReturnType<typeof createCloudWatchUsageMetrics> | undefined;
 const guardMemory: CdnGuardMemory = { announcedWithoutState: false };
 
-/**
- * EventBridge every 5 minutes (prod only by schedule; the function exists on
- * every stage so `aws lambda invoke` can run it by hand on dev). Its own Redis
- * connection and no MariaDB: it must not share `getDeps()` with the API, whose
- * cold start would otherwise pay for a Prisma client the probe never queries.
- * Never throws — it has no Errors alarm (`rules/serverless-aws.md`).
- */
-export const gatewayProbe = async (): Promise<void> => {
-  const stage = env("STAGE");
-  try {
-    probeKv ??= createRedisKv(redisOptionsFromEnv());
-    const r = await runGatewayProbe({
-      wsUrl: process.env.GATEWAY_WS_URL ?? "",
-      kv: probeKv,
-      memory: probeMemory,
-      logger,
-      notify: alarmNotify(),
-    });
-    logger.info("gateway probe", { stage, ...r });
-  } catch (e) {
-    logger.error("gateway probe crashed", {
-      stage,
-      message: e instanceof Error ? e.message : String(e),
-    });
-  }
-  // The CDN guard's watchdog rides this 5-minute schedule (no alarm slot of
-  // its own): a stopped guard is announced within about 20 minutes.
-  if (probeKv) {
-    const watch = await runCdnGuardWatch({
-      stage,
-      kv: probeKv,
-      notify: alarmNotify(),
-      logger,
-    });
-    logger.info("cdn guard watch", { stage, status: watch });
-  } else logger.error("cdn guard watch: skipped, no Redis client", { stage });
-};
+// `gatewayProbe` lives in `probe-handler.ts`: its own small bundle.
 
 /**
  * EventBridge every 5 minutes on every stage (`docs/decisions.md` *CDN cost

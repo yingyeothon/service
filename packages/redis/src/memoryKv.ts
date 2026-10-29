@@ -30,10 +30,13 @@ const HASH_TAKE_IF =
 const HASH_SET_EX =
   /redis\.call\(["']hset["'],\s*KEYS\[1\],\s*unpack\(ARGV,\s*2\)\)[\s\S]*redis\.call\(["']expire["'],\s*KEYS\[1\],\s*ARGV\[1\]\)/;
 
+const INCR_EX =
+  /local n = redis\.call\(["']incr["'],\s*KEYS\[1\]\)[\s\S]*redis\.call\(["']expire["'],\s*KEYS\[1\],\s*ARGV\[1\]\)[\s\S]*return n/;
+
 /**
  * In-memory `Kv` mirroring the Redis semantics used in this repo (NX/EX,
  * TTL expiry driven by an injected clock, set/list/hash ops, compare-and-delete
- * hash take-if and hash set-ex via `eval`).
+ * hash take-if, hash set-ex and incr-ex via `eval`).
  */
 export function createMemoryKv({
   prefix = "",
@@ -248,6 +251,15 @@ export function createMemoryKv({
           fields[pairs[i]!] = pairs[i + 1]!;
         await kv.hset(key, fields);
         return (await kv.expire(key, Number(ttl))) ? 1 : 0;
+      }
+      if (INCR_EX.test(script)) {
+        const [key] = keys;
+        const [ttl] = args;
+        if (key === undefined || ttl === undefined)
+          throw new Error("incr-ex needs 1 key and a TTL");
+        const n = await kv.incr(key);
+        await kv.expire(key, Number(ttl));
+        return n;
       }
       if (HASH_TAKE_IF.test(script)) {
         const [key] = keys;
