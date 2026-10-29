@@ -297,7 +297,7 @@ export function ProjectPage() {
             ? {
                 label: "Delete project",
                 description:
-                  "Deleting a project is refused while a channel, app, bundle, site, kv collection or leaderboard still belongs to it — including channels deleted less than a day ago, until the sweep purges them.",
+                  "Deleting a project is refused while a channel, app, bundle, site, kv collection or leaderboard still belongs to it — including channels deleted in the last 30 days, until the daily sweep purges them.",
                 onConfirm: remove,
                 disabled: act.busy,
               }
@@ -1079,7 +1079,7 @@ function KvTab({
           <Notice kind="warn">{shape}</Notice>
         ) : f.readScope === "project" && f.writeScope === "user" ? (
           <Notice kind="warn">{KV_PUBLIC_PROFILE_WARNING}</Notice>
-        ) : f.readScope === "user" && f.writeScope !== "user" ? (
+        ) : f.readScope === "user" && f.writeScope === "project" ? (
           <Notice kind="warn">{KV_MAIL_WARNING}</Notice>
         ) : null}
         <Text size="xs" c="dimmed">
@@ -1150,14 +1150,15 @@ function KitConfigSection({ project }: { project: ProjectDetail }) {
               label={`Which ${kind} channel`}
               description={`This project has ${rows.length}; the block names one.`}
               value={pick[kind] ?? ""}
-              onChange={(e) =>
+              onChange={(e) => {
+                // Read now: React nulls `currentTarget` once the handler
+                // returns, and StrictMode re-runs the updater after that.
+                const value = e.currentTarget.value;
                 setPick((p) => {
                   const { [kind]: _drop, ...rest } = p;
-                  return e.currentTarget.value === ""
-                    ? rest
-                    : { ...rest, [kind]: e.currentTarget.value };
-                })
-              }
+                  return value === "" ? rest : { ...rest, [kind]: value };
+                });
+              }}
               data={[
                 { value: "", label: "Choose…" },
                 ...rows.map((c) => ({
@@ -1550,7 +1551,8 @@ function VersionsTab({
                       onClick: () => remove(v),
                       confirm: {
                         title: `Delete ${v.name}?`,
-                        message: "Its links go with it; issues keep the id.",
+                        message:
+                          "Its links go with it; issues keep no reference to it.",
                         confirmLabel: "Delete version",
                         danger: true,
                       },

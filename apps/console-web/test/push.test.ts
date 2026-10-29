@@ -181,7 +181,20 @@ describe("channelDeleteNote", () => {
     expect(channelDeleteNote("push")).toMatch(
       /Firebase registration and every device token/,
     );
-    expect(channelDeleteNote("match")).toMatch(/Sockets on it are closed/);
+  });
+
+  it("says what happens to live sockets, kind by kind", () => {
+    // Only the gateway closes sockets; topic rooms run out their TTL and the
+    // matcher tells waiters `failed` without closing them.
+    expect(channelDeleteNote("lobby")).toMatch(/gateway closes its sockets/);
+    expect(channelDeleteNote("q")).toMatch(/Redis account is revoked/);
+    expect(channelDeleteNote("topic")).toMatch(
+      /rooms already open keep running/,
+    );
+    expect(channelDeleteNote("match")).toMatch(/told failed \(closed\)/);
+    expect(channelDeleteNote("auth")).toMatch(/documents, kv entries, scores/);
+    for (const kind of ["topic", "match", "auth"])
+      expect(channelDeleteNote(kind)).not.toMatch(/closes its sockets/);
   });
 });
 

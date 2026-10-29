@@ -94,6 +94,10 @@ describe("leaderboards", () => {
       teamId: alice.teamId,
       projectId: alice.prjId,
       createdBy: "alice",
+      // The same current-bucket fields as GET, so `yyt lb create` prints them.
+      period: "alltime",
+      periodKey: "",
+      scores: 0,
     });
     expect(b.api).toEqual({
       configured: true,

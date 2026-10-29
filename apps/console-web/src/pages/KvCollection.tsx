@@ -71,7 +71,7 @@ export function kvShapeProblem(
   encrypted: boolean,
 ): string | null {
   if (encrypted && (read === "team" || write === "team"))
-    return "An encrypted collection needs project or user scopes: the key that opens it lives in the state stack, which a team scope never reaches.";
+    return "An encrypted collection needs server, project or user scopes: the key that opens it lives in the state stack, which a team scope never reaches.";
   return null;
 }
 
@@ -79,7 +79,7 @@ export function kvShapeProblem(
 export const KV_PUBLIC_PROFILE_WARNING =
   "project-read + user-write lets every player list every owner's entries.";
 export const KV_MAIL_WARNING =
-  "user-read + a project or server write scope is a mailbox: any player may create (never overwrite) entries in any other player's namespace. Max entries per owner then bounds both the inbox and what one sender may send.";
+  "user-read + project-write is a mailbox: any player may create (never overwrite) entries in any other player's namespace. Max entries per owner then bounds both the inbox and what one sender may send.";
 export const KV_IMMUTABLE_NOTE =
   "Scopes and encryption cannot be changed later; delete and recreate the collection to change them.";
 
@@ -611,7 +611,7 @@ export function KvCollectionPage() {
                         confirm: {
                           title: `Delete ${rowLabel(r)}?`,
                           message:
-                            "The key is free again; its version continues if it is written again.",
+                            "The key is free again; written again, its version restarts at 1.",
                           confirmLabel: "Delete entry",
                           danger: true,
                         },

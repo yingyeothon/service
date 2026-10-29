@@ -129,6 +129,8 @@ describe("q channel redis account", () => {
     expect(
       screen.getAllByRole("button", { name: /Copy tslib prefixes/ }),
     ).toHaveLength(1);
+    // The socket URL already carries `?channel=`, so the game id is `&`.
+    expect(screen.getByText("&gameId=…")).toBeInTheDocument();
     // Nothing to revoke before anything was issued.
     expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
 

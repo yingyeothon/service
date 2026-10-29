@@ -739,6 +739,10 @@ describe("CatalogAppPage", () => {
     open();
     await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
     const drawer = await screen.findByRole("dialog");
+    // The server answers 409 while artifacts remain; it never takes them.
+    expect(
+      within(drawer).getByText(/Refused while the app has artifacts/),
+    ).toBeInTheDocument();
     await userEvent.click(
       within(drawer).getByRole("button", { name: "Delete app" }),
     );

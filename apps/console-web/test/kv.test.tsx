@@ -364,6 +364,10 @@ describe("KvCollectionPage", () => {
     const modal = (
       await screen.findByText(`Delete ${OWNER_B} profile?`)
     ).closest('[role="dialog"]') as HTMLElement;
+    // The row is removed, so a later write starts over at version 1.
+    expect(
+      within(modal).getByText(/its version restarts at 1/),
+    ).toBeInTheDocument();
     await userEvent.click(
       within(modal).getByRole("button", { name: "Delete entry" }),
     );

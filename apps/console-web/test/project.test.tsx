@@ -147,6 +147,16 @@ describe("ProjectPage", () => {
     );
   });
 
+  it("tells an owner that deleted channels block deletion until the purge", async () => {
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "owner" });
+    mount("/teams/team_1/projects/prj_1/settings");
+    const dialog = await screen.findByRole("dialog");
+    // Soft-deleted channels count until the 30-day purge.
+    expect(
+      within(dialog).getByText(/channels deleted in the last 30 days/),
+    ).toBeInTheDocument();
+  });
+
   it("sends a seatless admin's /settings and an unknown tab to the first tab without a drawer", async () => {
     vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
     mount("/teams/team_1/projects/prj_1/settings");
@@ -200,6 +210,23 @@ describe("ProjectPage", () => {
       ),
     ).toBe("/teams/team_1/projects/prj_1/versions/ver_1");
     expect(mockApi.version).not.toHaveBeenCalled();
+  });
+
+  it("says a deleted version's issues drop the reference", async () => {
+    mount("/teams/team_1/projects/prj_1/versions");
+    await screen.findByRole("link", { name: "v1.2.3" });
+    await userEvent.click(
+      screen.getByRole("button", { name: /Actions for v1\.2\.3/ }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete version" }),
+    );
+    // `issues.version_id` is `ON DELETE SET NULL`, as the version page says.
+    expect(
+      await screen.findByText(
+        "Its links go with it; issues keep no reference to it.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("lists issues with their version and hides creation from a seatless admin", async () => {

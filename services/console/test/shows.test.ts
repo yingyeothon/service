@@ -584,6 +584,47 @@ describe("shows: submittable", () => {
     ).toEqual([]);
   });
 
+  it("never offers an encrypted bundle, which submitting would refuse", async () => {
+    const h = harness({ assetKek: "4b454b30" + "00".repeat(28) });
+    const owner = await h.team("alice");
+    const enc = await app(
+      h,
+      ev("POST", `/projects/${owner.prjId}/assets/bundles`, {
+        headers: owner.cookie,
+        body: { name: "sealed", encrypted: true },
+      }),
+    );
+    expect(enc.statusCode, enc.body).toBe(201);
+    const plain = await app(
+      h,
+      ev("POST", `/projects/${owner.prjId}/assets/bundles`, {
+        headers: owner.cookie,
+        body: { name: "maps" },
+      }),
+    );
+    expect(plain.statusCode, plain.body).toBe(201);
+    const show = parse(
+      await app(
+        h,
+        ev("POST", "/shows", {
+          headers: owner.cookie,
+          body: { title: "Show 36" },
+        }),
+      ),
+    ).id as string;
+    const offered = parse(
+      await get(h, `/shows/${show}/submittable`, owner),
+    ).targets.map((x: Json) => x.id);
+    expect(offered).toEqual([parse(plain).id]);
+    // The refusal the filter mirrors.
+    const r = await submit(h, owner, show, {
+      targetKind: "bundle",
+      targetId: parse(enc).id,
+      title: "sealed",
+    });
+    expect(r.statusCode, r.body).toBe(400);
+  });
+
   it("a seatless admin submitting another team's resource must say why", async () => {
     const { h, admin, owner, show, t } = await setup();
     const bare = await submit(h, admin, show, {

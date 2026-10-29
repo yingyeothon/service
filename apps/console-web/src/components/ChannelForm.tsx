@@ -163,8 +163,8 @@ export function ChannelForm({
             required
           />
           <Textarea
-            label="Redirect allowlist (one absolute https URL per line, max 20)"
-            description="After login, auth only redirects to URLs that start with one of these (origin + path boundary)."
+            label="Redirect allowlist (one absolute URL per line, max 20)"
+            description="https, or http on localhost, 127.0.0.1 or [::1]. After login, auth only redirects to URLs that start with one of these (origin + path boundary)."
             value={form.redirectAllowlist}
             onChange={(e) => set("redirectAllowlist", e.target.value)}
             autosize

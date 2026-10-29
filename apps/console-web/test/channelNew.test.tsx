@@ -112,6 +112,10 @@ describe("ChannelNewPage", () => {
       screen.getByRole("button", { name: "Create an auth channel" }),
     );
     expect(screen.getByLabelText("Kind")).toHaveValue("auth");
+    // The server takes http for loopback hosts only.
+    expect(
+      screen.getByText(/https, or http on localhost, 127\.0\.0\.1 or \[::1\]/),
+    ).toBeInTheDocument();
   });
 
   it("is read-only for a seatless admin", async () => {

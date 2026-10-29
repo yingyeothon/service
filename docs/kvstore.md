@@ -17,7 +17,7 @@ Design of record: `docs/decisions.md` _Key-value store (`kv`)_ (ten decisions, 2
 
 ## Mail: writing into another owner's namespace
 
-A collection with `readScope: user` + `writeScope: project | server` is an **inbox**: the owner alone reads its namespace, and any player of the project may put something there. Four rules bound it (`docs/decisions.md` #6):
+A collection with `readScope: user` + `writeScope: project` is a **mailbox**: the owner alone reads its namespace, and any player of the project may put something there. Four rules bound it (`docs/decisions.md` #6). With `writeScope: server` it is an inbox only the server fills (a player's JWT may not write at all), and none of the four rules apply to the server's writes:
 
 | Rule                                                 | Effect                                                                                                                                                                   |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

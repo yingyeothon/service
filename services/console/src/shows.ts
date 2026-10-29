@@ -894,7 +894,14 @@ export function createShowRoutes({
         return {
           targets: [
             ...free("app", await catalog.listApps({ teamIds })),
-            ...free("bundle", await assets.listBundles({ teamIds })),
+            // An encrypted bundle is refused on submit (ciphertext is not
+            // an exhibit), so it is never offered.
+            ...free(
+              "bundle",
+              (await assets.listBundles({ teamIds })).filter(
+                (b) => !b.encrypted,
+              ),
+            ),
             ...free("site", await sites.listSites({ teamIds })),
           ],
         };

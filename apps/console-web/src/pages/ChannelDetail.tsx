@@ -766,7 +766,7 @@ function QDetails({ c }: { c: Channel }) {
       )}
       <Text size="sm" c="dimmed">
         Your entry API allocates the game id and writes the start event; player
-        sockets then connect with <Code>?gameId=…</Code> appended to the
+        sockets then connect with <Code>&amp;gameId=…</Code> appended to the
         WebSocket URL. Copy the <strong>prefix block above</strong> and set each
         tslib prefix option from it unchanged: the Redis account issued for this
         channel is scoped to <Code>{r?.aclKeyPattern}</Code>, so a prefix you

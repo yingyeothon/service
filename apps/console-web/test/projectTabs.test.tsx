@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../src/api";
@@ -534,9 +535,16 @@ describe("kv tab", () => {
     // (`docs/decisions.md` *Serverless clients* #5).
     await userEvent.selectOptions(read, "user");
     expect(button).toBeEnabled();
-    // `server` is offered on both sides.
+    const mailbox = /is a mailbox: any player may create/;
+    await userEvent.selectOptions(write, "project");
+    expect(within(drawer).getByText(mailbox)).toBeInTheDocument();
+    // `server` is offered on both sides. A server write scope is no mailbox:
+    // a player's token may not write there at all.
     await userEvent.selectOptions(write, "server");
     expect(button).toBeEnabled();
+    expect(within(drawer).queryByText(mailbox)).toBeNull();
+    await userEvent.selectOptions(write, "team");
+    expect(within(drawer).queryByText(mailbox)).toBeNull();
     await userEvent.selectOptions(read, "project");
     await userEvent.selectOptions(write, "user");
     expect(
@@ -548,9 +556,14 @@ describe("kv tab", () => {
     await userEvent.selectOptions(read, "team");
     await userEvent.click(within(drawer).getByLabelText(/^Encrypted/));
     expect(
-      within(drawer).getByText(/An encrypted collection needs project or user/),
+      within(drawer).getByText(
+        /An encrypted collection needs server, project or user/,
+      ),
     ).toBeInTheDocument();
     expect(button).toBeDisabled();
+    // The server refuses only `team` (`checkKvScopes`): `server` is fine.
+    await userEvent.selectOptions(read, "server");
+    expect(button).toBeEnabled();
     await userEvent.selectOptions(read, "project");
     expect(button).toBeEnabled();
     const perOwner = input("Max entries per owner", drawer);
@@ -781,5 +794,51 @@ describe("game kit config", () => {
     expect(mockApi.kitConfig).toHaveBeenLastCalledWith("prj_1", {
       auth: "auth_2",
     });
+  });
+  it("survives choosing a channel under StrictMode, which replays the updater", async () => {
+    // The picker read `e.currentTarget` inside the `setPick` updater; React
+    // nulls it after the handler, so the replay threw and blanked the page.
+    vi.mocked(mockApi.kitConfig).mockRejectedValue(
+      new Error("this project has 2 auth channels; name one with ?auth="),
+    );
+    vi.mocked(mockApi.projectChannels).mockResolvedValue([
+      { ...CHANNEL, id: "auth_1", name: "auth-old" },
+      { ...CHANNEL, id: "auth_2", name: "auth-new" },
+    ]);
+    mountWith(
+      <StrictMode>
+        <Routes>
+          <Route
+            path="/teams/:team/projects/:prj/:tab"
+            element={<ProjectPage />}
+          />
+        </Routes>
+      </StrictMode>,
+      { client: mockApi, path: "/teams/team_1/projects/prj_1/channels" },
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show config" }),
+    );
+    const select = await screen.findByLabelText("Which auth channel");
+    vi.mocked(mockApi.kitConfig).mockResolvedValue({
+      auth: { url: "https://auth.example", channelId: "auth_1" },
+    });
+    await userEvent.selectOptions(select, "auth_1");
+    expect(
+      JSON.parse(
+        (await screen.findByLabelText("kit-config.json")).textContent ?? "",
+      ),
+    ).toEqual({ auth: { url: "https://auth.example", channelId: "auth_1" } });
+    expect(mockApi.kitConfig).toHaveBeenLastCalledWith("prj_1", {
+      auth: "auth_1",
+    });
+    // Back to "Choose…" drops the pick rather than sending an empty one.
+    await userEvent.selectOptions(
+      screen.getByLabelText("Which auth channel"),
+      "",
+    );
+    await waitFor(() =>
+      expect(mockApi.kitConfig).toHaveBeenLastCalledWith("prj_1", {}),
+    );
   });
 });

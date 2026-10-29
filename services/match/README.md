@@ -21,13 +21,13 @@ game builds a room from (`docs/decisions.md` _Serverless clients_ #8). The
 documented client recipe is that the lowest `userId` runs `party.create` on the
 game's lobby channel and invites the rest.
 
-| Direction | Message                                                     | Note                                                                                                                                                 |
-| --------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| client →  | `{"type":"ping"}`                                           | any other message is ignored                                                                                                                         |
-| ← server  | `{"type":"pong","position":n,"waited":sec}`                 | 1-based queue position                                                                                                                               |
-| ← server  | `{"type":"matched","matchId","partial","result","members"}` | `members` = the party in ticket order; `result` = the callback's 2xx JSON (≤8 KB, `null` when empty or when the channel has no callback); then close |
-| ← server  | `{"type":"failed","reason":"timeout\|callback\|closed"}`    | `closed`: channel disabled/expired or no ticket for this socket; then close                                                                          |
-| ← server  | `{"type":"replaced"}`                                       | the same user connected again; this socket is no longer queued                                                                                       |
+| Direction | Message                                                     | Note                                                                                                                                     |
+| --------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| client →  | `{"type":"ping"}`                                           | any other message is ignored                                                                                                             |
+| ← server  | `{"type":"pong","position":n,"waited":sec}`                 | 1-based queue position                                                                                                                   |
+| ← server  | `{"type":"matched","matchId","partial","result","members"}` | `members` = the party in ticket order; `result` = the callback's 2xx JSON (≤8 KB, `null` when empty or when the channel has no callback) |
+| ← server  | `{"type":"failed","reason":"timeout\|callback\|closed"}`    | `closed`: channel disabled/expired or no ticket for this socket                                                                          |
+| ← server  | `{"type":"replaced"}`                                       | the same user connected again; this socket is no longer queued                                                                           |
 
 The server never closes sockets; the client closes after a terminal message (idle sockets expire after 10 minutes).
 

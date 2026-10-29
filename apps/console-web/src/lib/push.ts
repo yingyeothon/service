@@ -239,7 +239,23 @@ export function openDownload(url: string): void {
 }
 
 /** What deleting a channel of `kind` takes with it (confirm modals, the danger zone). */
-export const channelDeleteNote = (kind: string): string =>
-  kind === "push"
-    ? "Its Firebase registration and every device token registered on it are deleted with it, and its API key stops working."
-    : "Sockets on it are closed and its credentials stop working.";
+export function channelDeleteNote(kind: string): string {
+  switch (kind) {
+    case "push":
+      return "Its Firebase registration and every device token registered on it are deleted with it, and its API key stops working.";
+    case "auth":
+      return "Its secret stops working, and its players' documents, kv entries, scores and social profiles are deleted with it.";
+    case "topic":
+      // The topic stack checks the channel on connect only, through a 60 s
+      // cache.
+      return "Its API key stops working and new sockets are refused within a minute; rooms already open keep running until they expire (20 minutes at most).";
+    case "match":
+      // The matcher posts `failed` but leaves the socket to the client; a
+      // deferred channel's ticket routes answer 404/410.
+      return "Its callbacks stop; players waiting on a socket are told failed (closed) on the next sweep, and a deferred channel's tickets stop answering.";
+    case "q":
+      return "The gateway closes its sockets within a minute, and its Redis account is revoked.";
+    default:
+      return "The gateway closes its sockets within a minute.";
+  }
+}

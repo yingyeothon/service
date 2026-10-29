@@ -737,7 +737,8 @@ export function CatalogAppPage() {
         }
         danger={{
           label: "Delete app",
-          description: "Every artifact goes with it.",
+          description:
+            "Refused while the app has artifacts: delete them first. Its preview image goes with it.",
           onConfirm: remove,
           disabled: act.busy,
         }}

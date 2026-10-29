@@ -342,8 +342,14 @@ export function createLeaderboardRoutes({
           periods: row.periods,
         });
         await boardHistory(row, a.id.subject, "resource.create");
+        // The same view as `GET /leaderboards/{id}`: a new board's current
+        // bucket, empty.
+        const bucket = bucketOf(row, undefined);
         return noStore(201, {
           ...(await boardViews([row]))[0]!,
+          period: bucket.period,
+          periodKey: bucket.key,
+          scores: 0,
           api: apiBlock(row),
         });
       },
