@@ -1,5 +1,7 @@
 # Debug collector (`tracer`)
 
+> tracer is independent of Sentry. Its ingest speaks a subset of the Sentry envelope protocol, so a Sentry SDK _can_ send to it, but the platform's clients are the yyt libraries (flutterlib, csharplib, tslib), which need no Sentry package. A team may use tracer alone.
+
 Design of record: `docs/decisions.md` _Debug collector (`tracer`)_ (2026-11-08, revised after three plan reviews the same day). This page is the working reference between that contract and the code in `tracer/`. Status: **designed**. `tracer/` holds a compiling skeleton from before this design (numeric ids, JSON config, a `blob` column); it is rewritten to this page before the first deploy, so do not treat its shapes as decided.
 
 ## Why
@@ -9,13 +11,13 @@ Design of record: `docs/decisions.md` _Debug collector (`tracer`)_ (2026-11-08, 
 
 ## Pieces
 
-| Piece                | Where                                                                    | Does                                                                                                |
-| -------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `tracer` container   | `yyt-stateful`, one per stage, `trace{-dev}.yyt.life`, own data volume   | Sentry envelope ingest; read API for `yyt_` tokens; SQLite + blob files; retention                  |
-| console              | existing stack                                                           | `tracer` resource CRUD, write-key mint/rotate, limits; internal `/tr/*` routes; SSM `tracer-url`    |
-| `yyt tracer …`       | `cli/`                                                                   | resource management (console routes) and reads (tracer routes, a second client)                     |
-| `tracer-debug` skill | `tracer/skill/tracer-debug/SKILL.md`, symlinked into `~/.claude/skills/` | the agent loop                                                                                      |
-| SPA / console app    | after the CLI                                                            | resource pages showing the DSN and the no-backup notice; a minimal event view is optional and later |
+| Piece                | Where                                                                                                       | Does                                                                                                |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `tracer` container   | `yyt-stateful`, one per stage, `trace{-dev}.yyt.life`, data on the root volume (dev 0.5 GiB / prod 1.5 GiB) | Sentry envelope ingest; read API for `yyt_` tokens; SQLite + blob files; retention                  |
+| console              | existing stack                                                                                              | `tracer` resource CRUD, write-key mint/rotate, limits; internal `/tr/*` routes; SSM `tracer-url`    |
+| `yyt tracer …`       | `cli/`                                                                                                      | resource management (console routes) and reads (tracer routes, a second client)                     |
+| `tracer-debug` skill | `tracer/skill/tracer-debug/SKILL.md`, symlinked into `~/.claude/skills/`                                    | the agent loop                                                                                      |
+| SPA / console app    | after the CLI                                                                                               | resource pages showing the DSN and the no-backup notice; a minimal event view is optional and later |
 
 ## Principals
 
@@ -79,7 +81,7 @@ Local mode: `yyt tracer --local http://127.0.0.1:<port> --resource trc_… …` 
 
 - SQLite per container (WAL, `synchronous=NORMAL`, `busy_timeout`, `auto_vacuum=INCREMENTAL`, `journal_size_limit`, periodic `wal_checkpoint(TRUNCATE)`), one writer goroutine with batched inserts; read routes use a read-only connection with short transactions. Migrations are embedded `tracer/internal/store/migrations/NNNN_*.sql`, tracked by `PRAGMA user_version`, append-only once deployed (`0001_init.sql` is rewritten to this design before the first deploy).
 - Blobs are files under `blobs/{trc}/{yyyy-mm-dd}/{blobId}`; `blobId` is minted by the server (never a client filename or `event_id`). The file is written and fsynced **before** the row commits; the row holds path, size, type, sha256.
-- Byte accounting = DB + WAL + blobs. Ingest checks the stage cap and the volume's free-space floor on every write.
+- Byte accounting = DB + WAL + blobs. Ingest checks the stage cap (`TRACER_STAGE_BYTES`: dev 0.5 GiB, prod 1.5 GiB) and the root volume's usage line (`TRACER_DISK_MAX_PCT=70`, the host's disk-investigation line) on every write; either refuses with 503.
 - Retention, daily: rows and their files older than 30 days; then oldest until under the stage cap; then a walk of `blobs/` removing files no row names (crash orphans); then `PRAGMA incremental_vacuum`.
 - Deleted resources: after `GET /tr/health` proves the right console, `GET /tr/resources/deleted` lists ids deleted more than 7 days ago; only those are purged. An empty or failed answer purges nothing.
 - No backups (debug data is disposable); the resource page and CLI output say so.
@@ -88,20 +90,20 @@ Local mode: `yyt tracer --local http://127.0.0.1:<port> --resource trc_… …` 
 
 tracer's caps join the platform registry (`docs/decisions.md` _Limit requests_): every resource gets the **soft** value, a member asks for more with the existing `yyt limit request` / console limits page, a platform admin approves up to **hard**. Nothing new is invented for asking; tracer adds a scope kind, two keys, usage reporting and a quota-aware ingest.
 
-| key                 | scope                       | soft    | hard  | step    | usage                      |
-| ------------------- | --------------------------- | ------- | ----- | ------- | -------------------------- |
-| `tracer.resources`  | project                     | 5       | 20    |         | console row count          |
-| `tracer.dailyBytes` | tracer (resource, new kind) | 200 MiB | 2 GiB | 200 MiB | today's bytes, from tracer |
+| key                 | scope                       | soft   | hard    | step   | usage                      |
+| ------------------- | --------------------------- | ------ | ------- | ------ | -------------------------- |
+| `tracer.resources`  | project                     | 5      | 20      |        | console row count          |
+| `tracer.dailyBytes` | tracer (resource, new kind) | 50 MiB | 300 MiB | 50 MiB | today's bytes, from tracer |
 
 - **Scope kind `tracer`**: a typed nullable `tracer_resource_id` foreign key on `limit_requests` and `limit_overrides` (`ON DELETE CASCADE`, the `collection_id`/`site_id` precedent), shipped in the resource migration. The registry table in _Limit requests_ #1 gains both rows in the same commit as the code.
-- **Stepped `tracer.dailyBytes`**: a request may carry only `effective + 200 MiB`, and only once today's usage has reached the effective value (`next` in `GET /limits`), so the queue holds real shortfalls, not speculation. `+N` on the CLI already means this.
-- **Hard is bounded by the volume**: 2 GiB a day for one resource only makes sense if the stage volume holds it for a while; raising hard is a code + decisions change made together with a bigger volume (owner action). The stage cap still evicts oldest data across resources, so a raise is also a reminder to look at the volume.
+- **Stepped `tracer.dailyBytes`**: a request may carry only `effective + 50 MiB`, and only once today's usage has reached the effective value (`next` in `GET /limits`), so the queue holds real shortfalls, not speculation. `+N` on the CLI already means this.
+- **Hard is bounded by the stage cap**: 300 MiB a day is a fifth of prod's 1.5 GiB, so one resource cannot evict the others within a day. Raising hard (or the stage caps) is a code + decisions change made together with more disk — an owner action, decided from measured usage.
 - **Usage**: tracer keeps per-resource daily byte counters (UTC day). Console reads them when it renders limits — `GET /tr/usage?ids=` on tracer, authenticated with the same `tracer-token` in the other direction — and shows `null` (never 0) when tracer is unreachable. tracer re-reads the effective quota with resource config (60 s cache), so an approval takes effect within a minute.
 - **Staged degradation when the quota is reached**, so the cheapest signal survives the longest:
   1. at 100 %: attachments (screenshots, view hierarchies, minidumps) are dropped item by item (`drops` reason `quota_attachment`), the envelope still answers 200 and its events, logs, transactions and feedback are stored;
   2. at 120 % (the text allowance): the envelope answers 429 with `Retry-After: 300` — short on purpose, so a device resumes within minutes of an approval instead of at UTC midnight — counted as `quota_refused`;
   3. the UTC day rolls over and counters reset.
-- **Telling the owner**: the first quota crossing of a resource each UTC day is recorded once; the console limits page shows the resource over its limit with a "Request more" action, `yyt tracer drops` lists `quota_*` counts, the daily usage digest names resources that hit their quota, and the `tracer-debug` skill checks drops in the window it reads — when quota drops overlap the incident it says so and suggests `yyt limit request --tracer <res> tracer.dailyBytes +200MiB --reason …` (the CLI gains a `--tracer` scope flag beside `--bundle`/`--collection`/`--site`) (it never files the request itself).
+- **Telling the owner**: the first quota crossing of a resource each UTC day is recorded once; the console limits page shows the resource over its limit with a "Request more" action, `yyt tracer drops` lists `quota_*` counts, the daily usage digest names resources that hit their quota, and the `tracer-debug` skill checks drops in the window it reads — when quota drops overlap the incident it says so and suggests `yyt limit request --tracer <res> tracer.dailyBytes +50MiB --reason …` (the CLI gains a `--tracer` scope flag beside `--bundle`/`--collection`/`--site`) (it never files the request itself).
 - **Admin view**: the approval screen shows the last 7 days of the resource's daily usage and quota drops, so a raise is judged on measured volume.
 
 ## Operations
@@ -112,30 +114,44 @@ tracer's caps join the platform registry (`docs/decisions.md` _Limit requests_):
 - Run line: distroless image, read-only root, one writable data volume, host network like the gateway, `TRACER_LISTEN=127.0.0.1:<port>` behind Caddy. A wildcard listen address is refused in every mode; local mode additionally requires a loopback IP.
 - Image: `golang:1.26-alpine` builder (`go.mod` needs 1.26), CI adds a `docker build`; release workflow `tracer-release.yml` on `tracer/v*` (`:main` moves only on such a tag, as for the gateway).
 
-## Client integration (Flutter debug builds)
+## Wire contract for client libraries
 
-How an app starts sending to tracer. Release builds are untouched.
+This section is the normative spec the yyt libraries implement (like `gateway/README.md` for the gateway clients). A Sentry SDK pointed at tracer works because it already speaks a superset; nothing below requires one.
 
-1. **Create the resource** (one per app): `yyt tracer create <name> --project <prj>`; the view shows the DSN once the stage's `tracer-url` is set.
-2. **Deliver the DSN at build time, never in source.** `yyt tracer dsn <res>` prints the DSN alone (exit 0) for scripts; add `--profile dev` for a dev-stage resource (the CLI's default profile may be prod). Every app's Android entry point is `tools/build_android.sh` in the Flutter project root (`app/` in portcall, `lamp_app/` in aladin-lamp), which passes the environment through to the shared `flutter_cata_deploy.sh`, whose `DEFINE_KEYS` become `--dart-define`s:
-   `DEBUG_SENTRY_DSN="$(yyt tracer dsn <res>)" DEFINE_KEYS="${DEFINE_KEYS:+$DEFINE_KEYS,}DEBUG_SENTRY_DSN" tools/build_android.sh debug` — appending to any keys the app already passes, and following the app's own build rules (version bump, clean tree).
-   For `flutter run`, the value goes into a gitignored `tracer.defines.json` (`{"DEBUG_SENTRY_DSN": "…"}`) used with `--dart-define-from-file=tracer.defines.json`. One define name for every app: `DEBUG_SENTRY_DSN`. Empty or absent means debug diagnostics are off — never a fallback to the release DSN, and the release DSN is never sent to tracer.
-3. **Choose the DSN by build mode** in the app's single options function: `kDebugMode` → `DEBUG_SENTRY_DSN` with the debug options below; release/profile → the existing release DSN and scrubbing, unchanged. Background isolates go through the same function.
-4. **Debug options** (what tracer stores; everything else is dropped at the server and only costs the device bandwidth): `environment: "debug"`, `sendDefaultPii: true`, `maxBreadcrumbs: 500`, `enableLogs: true`, `attachScreenshot: true`, `attachViewHierarchy: true`, `tracesSampleRate: 1.0`, the breadcrumb integrations on; **session replay off** (`replay.sessionSampleRate = 0`, `onErrorSampleRate = 0`). Add tags for the runtime/feature the app already distinguishes, and `dist` or a `git.sha` tag from a `GIT_SHA` define so the agent can check out the exact code.
-5. **Make the trail leave the device.** Breadcrumbs travel only inside an event: a helper that records a step writes a breadcrumb **and** a log line; something that looks wrong sends a warning event. A debug-only "report this" action sends an event (breadcrumbs + screenshot) and then `Sentry.captureFeedback(…, associatedEventId: id)` for the tester's note.
-6. **Verify**: build debug, reproduce, then from the app repository `yyt tracer events <res> --since 10m` and the `tracer-debug` skill. Record the release/debug DSN split in the app's own rules.
+- Endpoint: `POST {base}/api/{trc_id}/envelope/`, `Content-Type: application/x-sentry-envelope`, optional `Content-Encoding: gzip`. Auth header `X-Sentry-Auth: Sentry sentry_key={writeKey}, sentry_version=7, sentry_client=yyt-{lang}/{version}` (the header name is the compatible one; the value carries no Sentry account). The DSN string `https://{writeKey}@{host}/{trc_id}` is how the console hands both out; libraries parse it.
+- Envelope: header line `{"event_id"?, "sent_at", "sdk": {"name": "yyt.{lang}", "version"}}`, then items with explicit `length`. Items a library sends: `event` (message/level/timestamp/platform/release/dist/environment/tags/contexts/breadcrumbs/exception with frames), `log` (`application/vnd.sentry.items.log+json`, `{"items":[{timestamp, level, body, trace_id?, attributes}]}`), `attachment` (screenshot PNG, `view-hierarchy.json`, other files), `feedback` (`contexts.feedback {message, associated_event_id}`), optionally `transaction`. Field names follow the Sentry event schema subset tracer stores (_Ingest_, _What a reader gets_); anything else is ignored.
+- Responses: 200 `{"id"}`; 401 bad key (stop until reconfigured); 429 `Retry-After` (quota — wait, then resume; never retry sooner); 503 (disk — back off with jitter, keep at most a bounded on-disk/in-memory queue); 413 too large (drop and count). A client never blocks the app on tracer and never crashes it.
+- Batching: logs and breadcrumbs are buffered and flushed by size/time (and on app pause); an `event`/`report` flushes immediately with the current breadcrumb ring. Limits a client keeps under: envelope ≤ 20 MB decompressed, attachments ≤ the same.
+- Fixtures: the golden envelopes in `tracer/testdata/envelopes/` include one per yyt library, and each library's tests decode their own output against the same expectations.
 
-Rotation: `yyt tracer rotate-key <res>` invalidates the old key within 60 s; debug builds made before it stop reporting and are rebuilt with the new `yyt tracer dsn` output.
+## Client libraries and app integration
+
+| Library    | Package (working names)                                                                                                                                                                                                                                                    | Platform extras                 |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| flutterlib | `yingyeothon_tracer_client` (pure Dart: DSN, envelope writer, buffering, transport, `logger` sink) + `yingyeothon_tracer_flutter` (screenshot via `RepaintBoundary`, view hierarchy, lifecycle/navigation breadcrumbs, isolate support, a debug-only "report this" widget) | Android/iOS/desktop             |
+| csharplib  | `com.yingyeothon.tracer-client` (Unity package: envelope writer, `logger` sink, `Application.logMessageReceived` breadcrumbs, `ScreenCapture` screenshot, scene breadcrumbs)                                                                                               | Unity incl. WebGL               |
+| tslib      | `@yingyeothon/tracer-client` (browser + Node: envelope writer, `logger` sink, `fetch` transport, `window.onerror`/`unhandledrejection` breadcrumbs, canvas screenshot opt-in)                                                                                              | web games, Node servers/Lambdas |
+
+Common API shape (each library adapts it to its conventions): `init(dsn, {release, dist, environment, tags})`, `breadcrumb(category, message, data)`, `log(level, message, attributes)`, `trace(category, message, data)` (breadcrumb + log), `report(message, data, {screenshot})` (event with the breadcrumb ring), `feedback(note, eventId)`, `flush()`, `close()`. Off when the DSN is empty. Release builds of the dooroo apps never initialise it; for games the team decides per build.
+
+**Dooroo apps (Flutter) with Sentry crash reporting kept**: each app keeps its Sentry init for crashes (release unchanged; debug switches to crash-only options against the same sentry.io DSN, `environment: debug`, and drops screenshots/replay/logs/traces/print breadcrumbs), and in debug also initialises `yingyeothon_tracer_flutter` with `TRACER_DSN`, routing the app's existing trace/marker helpers to it. The two do not know about each other; an app that wants Sentry's automatic breadcrumbs in tracer may mirror them in `beforeBreadcrumb` with one line, but nothing depends on that.
+
+**Delivering the DSN at build time, never in source.** `yyt tracer dsn <res>` prints the DSN (`--profile dev` for a dev resource; the CLI's default profile may be prod). Every dooroo app's Android entry point is `tools/build_android.sh` in the Flutter project root (`app/` in portcall, `lamp_app/` in aladin-lamp), which passes the environment through to the shared `flutter_cata_deploy.sh`, whose `DEFINE_KEYS` become `--dart-define`s:
+`TRACER_DSN="$(yyt tracer dsn <res>)" GIT_SHA="$(git rev-parse --short HEAD)" DEFINE_KEYS="${DEFINE_KEYS:+$DEFINE_KEYS,}TRACER_DSN,GIT_SHA" tools/build_android.sh debug` — appending to any keys the app already passes and following the app's own build rules (version bump, clean tree). For `flutter run`, a gitignored `tracer.defines.json` with `--dart-define-from-file`. Unity and web games take the DSN from their own build configuration the same way (never committed).
+
+**Verify**: build debug, reproduce, then from the app repository `yyt tracer events <res> --since 10m` and the `tracer-debug` skill; for the dooroo apps also force a test crash and see it on sentry.io under `environment: debug`.
+
+Rotation: `yyt tracer rotate-key <res>` invalidates the old key within 60 s; builds made before it stop sending to tracer and are rebuilt with the new `yyt tracer dsn` output.
 
 ## Clients
 
-| App                             | Today                              | Move                                                               |
-| ------------------------------- | ---------------------------------- | ------------------------------------------------------------------ |
-| chessrigado                     | separate debug/release DSN defines | swap the debug default                                             |
-| bluechat, portcall, aladin-lamp | one DSN constant for both modes    | split release/debug inside the one options function (all isolates) |
-| dangerous-commute               | release only                       | debug diagnostics would be new work                                |
+| App                             | Today                              | Move                                                       |
+| ------------------------------- | ---------------------------------- | ---------------------------------------------------------- |
+| chessrigado                     | separate debug/release DSN defines | package; replay off, "report this" action, git-sha tag     |
+| bluechat, portcall, aladin-lamp | one DSN constant for both modes    | package; the constant becomes the crash DSN for both modes |
+| dangerous-commute               | release only                       | package; gains debug diagnostics                           |
 
-Each app records its split in its own rules; release data policies are unaffected.
+Each app records the split in its own rules; release data policies are unaffected.
 
 ## Rollout order (per stage, then once)
 
@@ -143,4 +159,4 @@ Each app records its split in its own rules; release data policies are unaffecte
 2. ops repo: data volume, compose service with the memory cap, Caddy route (no query-string logging), DNS for `trace{-dev}`.
 3. tracer image (`tracer/v*`) started with `TRACER_CONSOLE_URL` and the token; verify `/livez`, `/healthz`, a fixture envelope; then set `tracer-url` so the console starts showing DSNs.
 4. Once both stages are live: CLI release with `yyt tracer`; then SPA and console-app resource pages.
-5. One app's debug build (chessrigado first), then the others.
+5. Client libraries against the wire contract: flutterlib first (the dooroo apps need it), then csharplib and tslib (each repo's own `todo/tracer-client.md`). Then one app's debug build (chessrigado first), then the others.

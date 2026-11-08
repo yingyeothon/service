@@ -80,6 +80,7 @@
 
 ## Go tracer (`tracer/`, 2026-11-08)
 
+- tracer is independent of Sentry: its ingest is a Sentry-envelope-compatible subset, documented as the wire contract in `docs/tracer.md` _Wire contract for client libraries_, which flutterlib/csharplib/tslib implement without any Sentry package. Never make a server feature depend on a Sentry-only field, and change that section in the same commit as any ingest change (it is those libraries' spec).
 - Third Go module (`github.com/yingyeothon/service/tracer`), sharing nothing with `cli/` or `gateway/`; contract in `docs/decisions.md` _Debug collector (`tracer`)_, working reference `docs/tracer.md`. CI runs gofmt, `go vet`, `go test -race` and a `CGO_ENABLED=0` build for it.
 - Layering: `config` → `ingest` (HTTP, DSN-key auth, decompression and caps) → `envelope` (pure parser, bytes in, typed items out) → `store` (SQLite, one writer goroutine, embedded `migrations/NNNN_*.sql` by `PRAGMA user_version`); `query` shapes the read API. Keep IO out of `envelope`.
 - `modernc.org/sqlite` only (pure Go), so the image stays `CGO_ENABLED=0`; it forces `go 1.26.0` in `tracer/go.mod`. A new dependency needs a stated reason against the 64 MB cap.
