@@ -111,3 +111,16 @@ func TestLivezSharesOneWriteProbe(t *testing.T) {
 		t.Fatalf("a public poller made %d DB writes", n)
 	}
 }
+
+type ctxProbe struct{}
+
+func (ctxProbe) Writable(ctx context.Context) error { return ctx.Err() }
+
+func TestLivezProbeIgnoresCallerCancel(t *testing.T) {
+	s := New(Options{DB: ctxProbe{}, Metrics: metrics.New()})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.writable(ctx); err != nil {
+		t.Fatalf("a cancelled caller was cached as unwritable: %v", err)
+	}
+}

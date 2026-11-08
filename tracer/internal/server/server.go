@@ -74,7 +74,11 @@ func (s *Server) writable(ctx context.Context) error {
 	if !s.liveAt.IsZero() && time.Since(s.liveAt) < livezEvery {
 		return s.liveErr
 	}
-	s.liveErr = s.opt.DB.Writable(ctx)
+	// Detached from the caller: one client hanging up must not become a
+	// cached "unwritable" for everyone (the 2 s bound still applies).
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	s.liveErr = s.opt.DB.Writable(pctx)
 	s.liveAt = time.Now()
 	return s.liveErr
 }
