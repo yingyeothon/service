@@ -9,3 +9,5 @@ layers/*/nodejs
 packages/console-db/src/generated
 packages/console-db/prisma/migrations
 apps/console-app
+# Go-generated golden JSON is compared byte for byte (go test ./internal/query -update).
+/tracer/testdata
