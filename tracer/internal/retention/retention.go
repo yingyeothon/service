@@ -177,8 +177,10 @@ func (r *Retention) Once(ctx context.Context) (Report, error) {
 	if err := r.vacuum(ctx); err != nil {
 		return rep, err
 	}
-	r.checkpoint(ctx, "TRUNCATE")
-	rep.BytesAfter, err = r.usedBytes(ctx)
+	// PASSIVE: a TRUNCATE waits on readers while holding writers off (past the
+	// /livez deadline); journal_size_limit trims the WAL file when it resets.
+	r.checkpoint(ctx, "PASSIVE")
+	rep.BytesAfter, err = r.liveBytes(ctx) // what the cap pass measures
 	return rep, err
 }
 
@@ -366,8 +368,8 @@ func (r *Retention) refreshIssues(ctx context.Context, groups map[[2]string]bool
 	var gone int64
 	for g := range groups {
 		var count int64
-		var first sql.NullInt64
-		if err := r.opt.DB.QueryRowContext(ctx, `SELECT count(*), min(ts_ms) FROM events WHERE resource_id = ? AND group_key = ?`, g[0], g[1]).Scan(&count, &first); err != nil {
+		var first, last sql.NullInt64
+		if err := r.opt.DB.QueryRowContext(ctx, `SELECT count(*), min(ts_ms), max(ts_ms) FROM events WHERE resource_id = ? AND group_key = ?`, g[0], g[1]).Scan(&count, &first, &last); err != nil {
 			return gone, err
 		}
 		if count == 0 {
@@ -379,8 +381,10 @@ func (r *Retention) refreshIssues(ctx context.Context, groups map[[2]string]bool
 			gone += n
 			continue
 		}
-		if _, err := r.opt.DB.ExecContext(ctx, `UPDATE issues SET count = ?, first_seen_ms = ? WHERE resource_id = ? AND group_key = ?`,
-			count, first.Int64, g[0], g[1]); err != nil {
+		if _, err := r.opt.DB.ExecContext(ctx, `UPDATE issues SET count = ?, first_seen_ms = ?, last_seen_ms = ?,
+			latest_event_id = (SELECT event_id FROM events WHERE resource_id = ? AND group_key = ? ORDER BY ts_ms DESC, id DESC LIMIT 1)
+			WHERE resource_id = ? AND group_key = ?`,
+			count, first.Int64, last.Int64, g[0], g[1], g[0], g[1]); err != nil {
 			return gone, err
 		}
 	}
@@ -428,23 +432,13 @@ func (r *Retention) sweepOrphans(ctx context.Context) (int64, error) {
 		return nil
 	})
 	for i := len(dirs) - 1; i >= 0; i-- {
-		os.Remove(dirs[i]) // fails unless empty
+		// Only old, empty directories: ingest creates today's directory just
+		// before it opens a temp file there.
+		if st, err := os.Stat(dirs[i]); err == nil && st.ModTime().Before(cutoff) {
+			os.Remove(dirs[i]) // fails unless empty
+		}
 	}
 	return removed, err
-}
-
-// usedBytes is the live part of the database plus the WAL plus blob bytes
-// (what the pass reports).
-func (r *Retention) usedBytes(ctx context.Context) (int64, error) {
-	live, err := r.liveBytes(ctx)
-	if err != nil {
-		return 0, err
-	}
-	var wal int64
-	if st, err := os.Stat(r.opt.DBPath + "-wal"); err == nil {
-		wal = st.Size()
-	}
-	return live + wal, nil
 }
 
 // liveBytes is used pages plus blob bytes: what deleting rows lowers at once

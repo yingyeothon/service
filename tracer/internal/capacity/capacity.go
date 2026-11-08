@@ -45,15 +45,16 @@ type Options struct {
 type Capacity struct {
 	opt Options
 
-	mu       sync.Mutex
-	db       int64
-	wal      int64
-	blobs    int64
-	volume   Usage
-	err      error
-	measured bool
-	added    atomic.Int64
-	refresh  time.Time
+	mu        sync.Mutex
+	refreshMu sync.Mutex
+	db        int64
+	wal       int64
+	blobs     int64
+	volume    Usage
+	err       error
+	measured  bool
+	added     atomic.Int64
+	refresh   time.Time
 }
 
 // New builds a Capacity; call Refresh before the first Check.
@@ -86,6 +87,10 @@ func Statfs(path string) (Usage, error) {
 
 // Refresh measures DB, WAL, blobs and the volume.
 func (c *Capacity) Refresh(ctx context.Context) error {
+	// One measurement at a time: two overlapping refreshes would both
+	// subtract the same addedBefore and under-count.
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
 	// Bytes added while measuring may or may not be in the measurement; keep
 	// them (over-count) rather than lose them.
 	addedBefore := c.added.Load()
