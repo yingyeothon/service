@@ -196,13 +196,13 @@ func TestGoldenEnvelopes(t *testing.T) {
 		}
 	}
 	checks := map[string]int64{
-		"SELECT count(*) FROM events WHERE type='event'":                                 4,
+		"SELECT count(*) FROM events WHERE type='event'":                                 6,
 		"SELECT count(*) FROM events WHERE type='feedback'":                              1,
 		"SELECT count(*) FROM transactions":                                              1,
-		"SELECT count(*) FROM attachments":                                               4,
+		"SELECT count(*) FROM attachments":                                               8,
 		"SELECT count(*) FROM sessions":                                                  1,
-		"SELECT count(*) FROM logs":                                                      6,
-		"SELECT count(*) FROM issues":                                                    4,
+		"SELECT count(*) FROM logs":                                                      12,
+		"SELECT count(*) FROM issues":                                                    6,
 		"SELECT count FROM drops WHERE item_type='replay_video' AND reason='not_stored'": 2,
 		"SELECT errors FROM sessions":                                                    1,
 	}
@@ -211,7 +211,7 @@ func TestGoldenEnvelopes(t *testing.T) {
 			t.Errorf("%s = %d, want %d", q, got, want)
 		}
 	}
-	if files := blobFiles(t, e.blobs); len(files) != 4 {
+	if files := blobFiles(t, e.blobs); len(files) != 8 {
 		t.Fatalf("blob files %v", files)
 	}
 	var sum, path string

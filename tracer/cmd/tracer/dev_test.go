@@ -37,7 +37,7 @@ func TestDevSeedRestamp(t *testing.T) {
 	}
 	var n int
 	st.DB.QueryRow("SELECT count(*) FROM attachments").Scan(&n)
-	if n != 4 {
+	if n != 8 {
 		t.Fatalf("attachments %d", n)
 	}
 }
