@@ -64,6 +64,20 @@ const (
 	// MaxInFlightPerAddress keeps one address from holding every slot.
 	MaxInFlightPerAddress = 2
 	dropFlushInterval     = 10 * time.Second
+
+	// Slow bodies (docs/tracer.md _Ingest_): a shared slot is taken only once
+	// the first body byte arrived (within DefaultBodyFirstByteWait); holding
+	// it then needs DefaultBodyMinRate on average after DefaultBodyGrace, and
+	// never longer than DefaultBodyMaxWait (the server's ReadTimeout, which a
+	// per-request read deadline replaces).
+	DefaultBodyFirstByteWait = 10 * time.Second
+	// 8 KiB/s after 20 s lets a 64 kbit/s phone send ~480 KiB inside the cap;
+	// the first-byte gate and the cap do the slot protection.
+	DefaultBodyGrace   = 20 * time.Second
+	DefaultBodyMinRate = 8 << 10 // bytes per second
+	DefaultBodyMaxWait = 60 * time.Second
+	// slowRetryAfterSeconds spaces a slow client's retries (no tight loop on a bad link).
+	slowRetryAfterSeconds = 60
 )
 
 // Writer is the store writer (store.Writer).
@@ -93,6 +107,11 @@ type Options struct {
 	MaxJSONItem     int64
 	InFlight        int
 	InFlightWait    time.Duration
+	// Body pacing; zero = the Default* values above.
+	BodyFirstByteWait time.Duration
+	BodyGrace         time.Duration
+	BodyMinRate       int64
+	BodyMaxWait       time.Duration
 	// DumpDir (local mode only) receives each accepted raw request instead of storing it.
 	DumpDir string
 	Log     *slog.Logger
@@ -138,6 +157,18 @@ func New(opt Options) *Handler {
 	}
 	if opt.InFlightWait <= 0 {
 		opt.InFlightWait = DefaultInFlightWait
+	}
+	if opt.BodyFirstByteWait <= 0 {
+		opt.BodyFirstByteWait = DefaultBodyFirstByteWait
+	}
+	if opt.BodyGrace <= 0 {
+		opt.BodyGrace = DefaultBodyGrace
+	}
+	if opt.BodyMinRate <= 0 {
+		opt.BodyMinRate = DefaultBodyMinRate
+	}
+	if opt.BodyMaxWait <= 0 {
+		opt.BodyMaxWait = DefaultBodyMaxWait
 	}
 	if opt.DailyBytes == nil {
 		opt.DailyBytes = func(context.Context, string, string) (int64, bool, error) { return 0, false, nil }
@@ -200,6 +231,25 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.perAddr.release(addr)
+	// Wait for the first body byte before taking a shared slot, so a client
+	// that connects and stalls holds only its own address's slots.
+	start := time.Now() // wall clock: read deadlines are wall-clock
+	rc := http.NewResponseController(w)
+	pb := &pacedBody{r: r.Body, c: r.Body}
+	first := bufio.NewReader(pb)
+	if r.ContentLength != 0 { // an empty body is already read: arming a deadline would only cancel the request later
+		_ = rc.SetReadDeadline(start.Add(h.opt.BodyFirstByteWait)) // ErrNotSupported only off a real server
+		if _, err := first.Peek(1); err != nil && !errors.Is(err, io.EOF) {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				h.refused(w, res.ID, http.StatusServiceUnavailable, store.ReasonSlow)
+			}
+			return // otherwise the client went away
+		}
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{first, pb}
 	timer := time.NewTimer(h.opt.InFlightWait)
 	select {
 	case h.sem <- struct{}{}:
@@ -216,6 +266,8 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		<-h.sem
 		h.opt.Metrics.Gauges.InFlight.Add(-1)
 	}()
+	// Holding the slot needs progress: the deadline moves with the bytes read.
+	pb.pace(rc, time.Now(), h.opt.BodyGrace, h.opt.BodyMinRate, start.Add(h.opt.BodyMaxWait))
 
 	now := h.opt.Now()
 	day := normalize.Day(now.UnixMilli())
@@ -275,6 +327,9 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, resourceID string
 // count is kept in memory and flushed by Run, so a flood of refusals never
 // becomes a flood of transactions.
 func (h *Handler) refused(w http.ResponseWriter, resourceID string, status int, reason string) {
+	if reason == store.ReasonSlow {
+		w.Header().Set("Retry-After", fmt.Sprint(slowRetryAfterSeconds))
+	}
 	if reason != "console" { // a `console` id was never confirmed: no per-resource bucket for it
 		h.opt.Metrics.Resource(resourceID).Refused.Add(1)
 	}
@@ -445,6 +500,8 @@ func (c *capReader) Read(p []byte) (int, error) {
 func (h *Handler) readErr(err error) error {
 	var mbe *http.MaxBytesError
 	switch {
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return refuse(http.StatusServiceUnavailable, store.ReasonSlow, err)
 	case errors.As(err, &mbe), errors.Is(err, errDecompressedTooLarge):
 		return refuse(http.StatusRequestEntityTooLarge, store.ReasonTooLarge, err)
 	case errors.Is(err, envelope.ErrMalformed), errors.Is(err, envelope.ErrTruncated),
@@ -1037,3 +1094,52 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }
+
+// pacedBody is a request body whose read deadline, once paced, is
+// start + grace + bytesRead/minRate, capped at limit: a client that keeps
+// sending at minRate on average keeps its slot, a stalled one loses it.
+// After the body's EOF it never touches the deadline again: net/http clears
+// it and starts its background read then, and a re-armed deadline would
+// cancel the request context while the envelope is still being stored.
+type pacedBody struct {
+	r     io.Reader
+	c     io.Closer
+	rc    *http.ResponseController
+	start time.Time
+	grace time.Duration
+	rate  int64
+	limit time.Time
+	read  int64
+	eof   bool
+}
+
+func (p *pacedBody) pace(rc *http.ResponseController, start time.Time, grace time.Duration, rate int64, limit time.Time) {
+	p.rc, p.start, p.grace, p.rate, p.limit = rc, start, grace, rate, limit
+	p.extend()
+}
+
+func (p *pacedBody) extend() {
+	if p.eof || p.rc == nil {
+		return
+	}
+	d := p.start.Add(p.grace + time.Duration(p.read)*time.Second/time.Duration(p.rate))
+	if d.After(p.limit) {
+		d = p.limit
+	}
+	_ = p.rc.SetReadDeadline(d)
+}
+
+func (p *pacedBody) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.read += int64(n)
+	if err != nil {
+		p.eof = true // EOF or a failed read: leave the deadline to net/http
+		return n, err
+	}
+	if n > 0 {
+		p.extend()
+	}
+	return n, err
+}
+
+func (p *pacedBody) Close() error { return p.c.Close() }

@@ -86,7 +86,7 @@ rows.
    whole envelopes refused (120 %), so the record is incomplete. Say so, and suggest (never
    run) that a team member asks for more — `yyt limit request tracer.dailyBytes +50MiB
 --tracer <res> --reason "<why>"` (accepted once today's usage reached the quota),
-   or the console limits page. Other reasons (`too_large`, `invalid`, `disk`, `busy`) are worth
+   or the console limits page. Other reasons (`too_large`, `invalid`, `disk`, `busy`, `slow`, `console`, `store_error`) are worth
    a sentence; `not_stored` is normal (replays, client reports and similar items are counted,
    not kept).
 4. **Hypothesis.** State the root cause in one or two sentences, citing event ids and

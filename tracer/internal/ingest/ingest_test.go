@@ -1,13 +1,16 @@
 package ingest
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -564,5 +567,198 @@ func TestSentryKeyForms(t *testing.T) {
 		if got := SentryKey(r); got != want {
 			t.Errorf("%q: %q, want %q", header, got, want)
 		}
+	}
+}
+
+// rawPost opens a connection, sends the request line, headers and the first
+// `send` bytes of body (declaring the full length), then stalls.
+func rawPost(t *testing.T, e *env, body []byte, send int) *bufio.Reader {
+	t.Helper()
+	c, err := net.Dial("tcp", strings.TrimPrefix(e.srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: x\r\nX-Sentry-Auth: %s\r\nContent-Length: %d\r\n\r\n", envURL, auth["X-Sentry-Auth"], len(body))
+	if _, err := c.Write(body[:send]); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	return bufio.NewReader(c)
+}
+
+func rawStatus(t *testing.T, br *bufio.Reader) int {
+	t.Helper()
+	res, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	return res.StatusCode
+}
+
+// waitAddrSlots waits until the address holds n per-address slots.
+func waitAddrSlots(t *testing.T, e *env, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		e.h.perAddr.mu.Lock()
+		got := e.h.perAddr.m["127.0.0.1"]
+		e.h.perAddr.mu.Unlock()
+		if got >= n {
+			return
+		}
+	}
+	t.Fatalf("address never held %d slots", n)
+}
+
+// attachmentEnvelope is an envelope of one attachment of n bytes.
+func attachmentEnvelope(n int) []byte {
+	b := []byte(fmt.Sprintf("{}\n{\"type\":\"attachment\",\"length\":%d,\"filename\":\"a.bin\"}\n", n))
+	return append(b, bytes.Repeat([]byte("x"), n)...)
+}
+
+func TestStalledBodyNeverTakesASlot(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.InFlight = 1
+		o.InFlightWait = 50 * time.Millisecond // shorter than the stall: a held slot shows as 503
+		o.BodyFirstByteWait = 2 * time.Second
+	})
+	body := fixture(t, "sentry-dart/log.envelope")
+	br := rawPost(t, e, body, 0) // headers only, then nothing
+	waitAddrSlots(t, e, 1)
+	if g := e.reg.Gauges.InFlight.Load(); g != 0 {
+		t.Fatalf("a stalled client holds %d shared slots", g)
+	}
+	if res, _ := e.post(t, envURL, body, auth); res.StatusCode != 200 {
+		t.Fatalf("a stalled client held the only slot: %d", res.StatusCode)
+	}
+	if s := rawStatus(t, br); s != http.StatusServiceUnavailable {
+		t.Fatalf("stalled body: %d", s)
+	}
+	if e.reg.Counters.StoreErrors.Load() != 0 {
+		t.Fatal("a stalled client counted as a store error")
+	}
+}
+
+func TestSlowBodyLosesItsSlot(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.InFlight = 1
+		o.InFlightWait = 50 * time.Millisecond
+		o.BodyGrace = time.Second
+		o.BodyMinRate = 1 << 20
+	})
+	body := fixture(t, "sentry-dart/log.envelope")
+	br := rawPost(t, e, body, 10) // a few bytes, then a stall
+	for deadline := time.Now().Add(3 * time.Second); e.reg.Gauges.InFlight.Load() == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the slow client never took the slot")
+		}
+	}
+	if res, _ := e.post(t, envURL, body, auth); res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("slot should be held within grace: %d", res.StatusCode)
+	}
+	start := time.Now()
+	if s := rawStatus(t, br); s != http.StatusServiceUnavailable {
+		t.Fatalf("slow body: %d", s)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("slot held %v", time.Since(start))
+	}
+	if res, _ := e.post(t, envURL, body, auth); res.StatusCode != 200 {
+		t.Fatalf("slot not released: %d", res.StatusCode)
+	}
+	if e.reg.Counters.StoreErrors.Load() != 0 {
+		t.Fatal("a slow client counted as a store error")
+	}
+}
+
+// trickle sends body in chunk-byte writes every gap, then returns the status.
+func trickle(t *testing.T, e *env, body []byte, chunk int, gap time.Duration) int {
+	t.Helper()
+	c, err := net.Dial("tcp", strings.TrimPrefix(e.srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: x\r\nX-Sentry-Auth: %s\r\nContent-Length: %d\r\n\r\n", envURL, auth["X-Sentry-Auth"], len(body))
+	for off := 0; off < len(body); off += chunk {
+		if _, err := c.Write(body[off:min(off+chunk, len(body))]); err != nil {
+			break // the server answered and closed early
+		}
+		time.Sleep(gap)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	return rawStatus(t, bufio.NewReader(c))
+}
+
+func TestSteadyBodyAboveMinRateKeepsItsSlot(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.BodyGrace = 200 * time.Millisecond; o.BodyMinRate = 4096 })
+	// ~6.4 KiB/s for ~650 ms: past the grace, above the minimum rate.
+	if s := trickle(t, e, attachmentEnvelope(4000), 64, 10*time.Millisecond); s != 200 {
+		t.Fatalf("steady body: %d", s)
+	}
+}
+
+func TestBodyMaxWaitCaps(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.BodyGrace = 10 * time.Second
+		o.BodyMaxWait = 300 * time.Millisecond
+	})
+	start := time.Now()
+	if s := trickle(t, e, attachmentEnvelope(4000), 64, 10*time.Millisecond); s != http.StatusServiceUnavailable {
+		t.Fatalf("over the max wait: %d", s)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("max wait not applied: %v", time.Since(start))
+	}
+}
+
+func TestSlowGzipBodyIsSlowNotInvalid(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.BodyGrace = 200 * time.Millisecond; o.BodyMinRate = 1 << 20 })
+	body := gz(attachmentEnvelope(4000))
+	c, err := net.Dial("tcp", strings.TrimPrefix(e.srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: x\r\nX-Sentry-Auth: %s\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n", envURL, auth["X-Sentry-Auth"], len(body))
+	_, _ = c.Write(body[:20])
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if s := rawStatus(t, bufio.NewReader(c)); s != http.StatusServiceUnavailable {
+		t.Fatalf("slow gzip body: %d", s)
+	}
+}
+
+func TestEmptyBodyDoesNotWaitForFirstByte(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.BodyFirstByteWait = 3 * time.Second })
+	start := time.Now()
+	if res, _ := e.post(t, envURL, nil, auth); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty body: %d", res.StatusCode)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("empty body waited %v", time.Since(start))
+	}
+}
+
+type slowWriter struct {
+	w     Writer
+	delay time.Duration
+}
+
+func (s slowWriter) Write(ctx context.Context, b *store.Batch) (store.Result, error) {
+	time.Sleep(s.delay)
+	return s.w.Write(ctx, b)
+}
+
+// A store write that outlasts the pacing grace after the body's EOF must not
+// be cancelled (the deadline is never re-armed after EOF).
+func TestSlowStoreAfterBodyEOFIsNotCancelled(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.BodyGrace = 100 * time.Millisecond
+		o.Writer = slowWriter{w: o.Writer, delay: 400 * time.Millisecond}
+	})
+	res, body := e.post(t, envURL, fixture(t, "yyt-dart/report.envelope"), auth)
+	if res.StatusCode != 200 || !strings.Contains(body, `"id":"1011`) {
+		t.Fatalf("status %d body %q", res.StatusCode, body)
 	}
 }

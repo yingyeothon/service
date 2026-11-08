@@ -111,6 +111,7 @@ const (
 	ReasonQuotaAttachment = "quota_attachment"
 	ReasonQuotaRefused    = "quota_refused"
 	ReasonDisk            = "disk"
+	ReasonSlow            = "slow" // body slower than the ingest pacing (ingest.DefaultBody*)
 )
 
 // Rows is the number of rows a batch writes (the writer's grouping budget).
