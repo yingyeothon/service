@@ -70,6 +70,7 @@ jobs:
           go-version-file: tracer/go.mod
           cache-dependency-path: tracer/go.sum
       - run: cd tracer && test -z "$(gofmt -l .)" && go vet ./... && go vet -tags dev ./... && go test -race ./... && go test -tags dev ./cmd/... && CGO_ENABLED=0 go build ./...
+      - run: docker build -t yyt-tracer:ci --build-arg VERSION=0.0.0-ci tracer/ && test "$(docker run --rm yyt-tracer:ci version)" = 0.0.0-ci
   secrets-scan:
     runs-on: ubuntu-latest
     steps:
