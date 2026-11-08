@@ -1,5 +1,6 @@
 import { nowSec, systemClock, type Clock, type Logger } from "@yyt/core";
 import { incrEx, type Kv } from "@yyt/redis";
+import { parseTracerUrl } from "./tracer-url.js";
 
 /**
  * Liveness probe for the self-hosted realtime gateway
@@ -92,14 +93,8 @@ export function gatewayHttpBase(wsUrl: string): string | undefined {
 
 export async function runGatewayProbe({
   wsUrl,
-  kv,
-  notify,
-  memory = { announcedWithoutState: false },
-  fetchFn = fetch,
-  timeoutMs = 5000,
-  failuresToAnnounce = DEFAULT_FAILURES_TO_ANNOUNCE,
-  clock = systemClock,
   logger,
+  ...rest
 }: GatewayProbeOptions): Promise<GatewayProbeResult> {
   const base = gatewayHttpBase(wsUrl.trim());
   if (!base) {
@@ -110,6 +105,77 @@ export async function runGatewayProbe({
       });
     return { status: "skipped" };
   }
+  return runLivezProbe({
+    ...rest,
+    logger,
+    base,
+    label: "gateway",
+    downKey: GATEWAY_DOWN_KEY,
+    failKey: GATEWAY_FAIL_KEY,
+  });
+}
+
+/** Edge keys of the tracer probe (same shape as the gateway's). */
+export const TRACER_DOWN_KEY = "tracer:probe:down";
+export const TRACER_FAIL_KEY = "tracer:probe:fails";
+
+export interface TracerProbeOptions extends Omit<GatewayProbeOptions, "wsUrl"> {
+  /** The console's `TRACER_URL` (`https://trace.yyt.life`); empty means no tracer on this stage. */
+  tracerUrl: string;
+}
+
+/**
+ * The same transition-only probe for the stage's tracer container
+ * (docs/tracer.md *Operations*): `/livez` only, no alarm of its own, edges in
+ * Redis under `tracer:probe:*`.
+ */
+export async function runTracerProbe({
+  tracerUrl,
+  logger,
+  ...rest
+}: TracerProbeOptions): Promise<GatewayProbeResult> {
+  let base: string | undefined;
+  try {
+    base = parseTracerUrl(tracerUrl)?.origin;
+  } catch {
+    logger.warn("tracer probe: unusable TRACER_URL", {
+      length: tracerUrl.length,
+    });
+  }
+  if (!base) return { status: "skipped" };
+  return runLivezProbe({
+    ...rest,
+    logger,
+    base,
+    label: "tracer",
+    downKey: TRACER_DOWN_KEY,
+    failKey: TRACER_FAIL_KEY,
+  });
+}
+
+interface LivezProbeOptions extends Omit<GatewayProbeOptions, "wsUrl"> {
+  /** `https://host[:port]`, already validated. */
+  base: string;
+  /** Names the target in logs and notifications. */
+  label: string;
+  downKey: string;
+  failKey: string;
+}
+
+async function runLivezProbe({
+  base,
+  label,
+  downKey,
+  failKey,
+  kv,
+  notify,
+  memory = { announcedWithoutState: false },
+  fetchFn = fetch,
+  timeoutMs = 5000,
+  failuresToAnnounce = DEFAULT_FAILURES_TO_ANNOUNCE,
+  clock = systemClock,
+  logger,
+}: LivezProbeOptions): Promise<GatewayProbeResult> {
   const url = `${base}/livez`;
   let failure: string | undefined;
   try {
@@ -128,11 +194,11 @@ export async function runGatewayProbe({
   let sentDown = false;
   try {
     if (failure) {
-      const fails = await incrEx(kv, GATEWAY_FAIL_KEY, FAIL_KEY_TTL_SEC);
+      const fails = await incrEx(kv, failKey, FAIL_KEY_TTL_SEC);
       memory.failsWithoutState = 0;
-      const marker = parseMarker(await kv.get(GATEWAY_DOWN_KEY), now);
+      const marker = parseMarker(await kv.get(downKey), now);
       if (marker?.notified) {
-        logger.warn("gateway probe: still down", {
+        logger.warn(`${label} probe: still down`, {
           url,
           failure,
           fails,
@@ -144,14 +210,14 @@ export async function runGatewayProbe({
         // This container already said DOWN while Redis was unreachable: carry
         // that outage into Redis as notified (over an unsent claim, if any) so
         // no second DOWN goes out and the next 200 says "recovered".
-        await kv.set(GATEWAY_DOWN_KEY, `${marker?.since ?? now}:n`, {
+        await kv.set(downKey, `${marker?.since ?? now}:n`, {
           ex: DOWN_KEY_TTL_SEC,
         });
         memory.announcedWithoutState = false;
         return { status: "down", notified: false, detail: failure };
       }
       if (!marker && fails < failuresToAnnounce) {
-        logger.warn("gateway probe: failed, not yet announced", {
+        logger.warn(`${label} probe: failed, not yet announced`, {
           url,
           failure,
           fails,
@@ -163,22 +229,22 @@ export async function runGatewayProbe({
         // `nx` so two overlapping ticks cannot both claim the same outage (a
         // later tick that finds the claim unsent retries it; overlapping
         // ticks are excluded by `reservedConcurrency: 1` and no retries).
-        const first = await kv.set(GATEWAY_DOWN_KEY, String(now), {
+        const first = await kv.set(downKey, String(now), {
           nx: true,
           ex: DOWN_KEY_TTL_SEC,
         });
         if (!first) return { status: "down", notified: false, detail: failure };
         since = now;
-        logger.error("gateway probe: down", { url, failure, fails });
+        logger.error(`${label} probe: down`, { url, failure, fails });
       } else
-        logger.warn("gateway probe: still down, retrying the DOWN message", {
+        logger.warn(`${label} probe: still down, retrying the DOWN message`, {
           url,
           failure,
           fails,
         });
       const notified = await send(
         notify,
-        `[yyt] gateway DOWN: ${base}`,
+        `[yyt] ${label} DOWN: ${base}`,
         `${url} failed ${fails} times in a row: ${failure}\nfirst announced: ${iso(since)}`,
         logger,
       );
@@ -187,22 +253,22 @@ export async function runGatewayProbe({
       // marker so the next tick retries instead of going silent. Without a
       // topic there is nothing to retry, so it counts as announced.
       if (notified || !notify)
-        await kv.set(GATEWAY_DOWN_KEY, `${since}:n`, { ex: DOWN_KEY_TTL_SEC });
+        await kv.set(downKey, `${since}:n`, { ex: DOWN_KEY_TTL_SEC });
       return { status: "down", notified, detail: failure };
     }
-    await kv.del(GATEWAY_FAIL_KEY);
-    const marker = parseMarker(await kv.get(GATEWAY_DOWN_KEY), now);
+    await kv.del(failKey);
+    const marker = parseMarker(await kv.get(downKey), now);
     const announcedWithoutState = memory.announcedWithoutState;
     memory.announcedWithoutState = false;
     memory.failsWithoutState = 0;
     if (!marker) {
       if (!announcedWithoutState) return { status: "up" };
-      logger.warn("gateway probe: recovered (outage seen without state)", {
+      logger.warn(`${label} probe: recovered (outage seen without state)`, {
         url,
       });
       const notified = await send(
         notify,
-        `[yyt] gateway recovered: ${base}`,
+        `[yyt] ${label} recovered: ${base}`,
         `${url} answers 200 again and Redis is reachable.\nthe outage was announced while state was unavailable, so its start is unknown.`,
         logger,
       );
@@ -212,9 +278,9 @@ export async function runGatewayProbe({
     }
     // The delete count is the recovery edge's NX: only the tick that removed
     // the marker announces.
-    if ((await kv.del(GATEWAY_DOWN_KEY)) === 0) return { status: "up" };
+    if ((await kv.del(downKey)) === 0) return { status: "up" };
     const since = marker.since;
-    logger.warn("gateway probe: recovered", {
+    logger.warn(`${label} probe: recovered`, {
       url,
       downSince: since,
       outageSec: now - since,
@@ -225,7 +291,7 @@ export async function runGatewayProbe({
       return { status: "recovered", notified: false };
     const notified = await send(
       notify,
-      `[yyt] gateway recovered: ${base}`,
+      `[yyt] ${label} recovered: ${base}`,
       `${url} answers 200 again.\ndown since: ${iso(since)} (${Math.max(0, now - since)} s)`,
       logger,
     );
@@ -233,16 +299,16 @@ export async function runGatewayProbe({
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (!failure) {
-      // The gateway answered: the stateless failures are no longer in a row.
+      // The target answered: the stateless failures are no longer in a row.
       memory.failsWithoutState = 0;
-      logger.error("gateway probe: state error", { url, message });
+      logger.error(`${label} probe: state error`, { url, message });
       return { status: "error", notified: false };
     }
-    // Gateway and Redis both unreachable: the box itself is the likeliest
+    // Target and Redis both unreachable: the box itself is the likeliest
     // cause, and nothing else in this repo would say so. Two failures in a
     // row, then once per container (`reservedConcurrency: 1` makes that about
     // once per outage).
-    logger.error("gateway probe: down, state unavailable", {
+    logger.error(`${label} probe: down, state unavailable`, {
       url,
       failure,
       message,
@@ -260,7 +326,7 @@ export async function runGatewayProbe({
       return { status: "error", notified: false, detail: failure };
     const notified = await send(
       notify,
-      `[yyt] gateway DOWN, state unavailable: ${base}`,
+      `[yyt] ${label} DOWN, state unavailable: ${base}`,
       `${url} failed ${memory.failsWithoutState} times in a row: ${failure}\nthe console's Redis on the same host is unreachable too — check the box.\nseen: ${iso(now)}`,
       logger,
     );

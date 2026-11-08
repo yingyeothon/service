@@ -7,6 +7,7 @@ import { runUsageDigest } from "../src/usage-digest.js";
 import {
   createTracerUsageClient,
   noTracerUsage,
+  type TracerGauges,
   type TracerUsage,
   type TracerUsageClient,
 } from "../src/tracer-usage.js";
@@ -30,6 +31,7 @@ function fakeUsage(
   seen: string[][] = [],
 ): TracerUsageClient {
   return {
+    gauges: () => Promise.resolve(null),
     usage: (ids, days) => {
       seen.push([...ids, `days=${days}`]);
       const out: TracerUsage = {};
@@ -362,8 +364,27 @@ describe("tracer usage client", () => {
     expect(
       new URL(calls[1]!.url).searchParams.get("ids")!.split(","),
     ).toHaveLength(50);
+    // Disk gauges from /metrics (the operator view; extra fields ignored).
+    const gauges = {
+      dbBytes: 1,
+      walBytes: 2,
+      blobBytes: 3,
+      stageBytesCap: 10,
+      volumeUsedPct: 40,
+    };
+    body = { counters: {}, gauges: { ...gauges, inFlight: 0 }, resources: {} };
+    calls.length = 0;
+    expect(await c.gauges()).toEqual(gauges);
+    // The public view: no bearer for gauges.
+    expect(calls[0]).toEqual({
+      url: "https://trace-dev.yyt.life/metrics",
+      auth: null,
+    });
+    body = { gauges: { dbBytes: 1 } };
+    expect(await c.gauges()).toBeNull();
     status = 503;
     expect(await c.usage(["trc_aaaaaaaaaaaaaaaaaaaaaaaaaa"], 1)).toBeNull();
+    expect(await c.gauges()).toBeNull();
     const failing = createTracerUsageClient({
       tracerUrl: "https://trace-dev.yyt.life",
       token: TRACER_TOKEN,
@@ -451,5 +472,57 @@ describe("usage digest: tracer quota", () => {
     expect(blind.warnings.filter((w) => w.kind.startsWith("tracer:"))).toEqual(
       [],
     );
+  });
+
+  it("names a tracer near its stage cap or a filling root volume", async () => {
+    const clock: Clock = { now: () => NOW_SEC * 1000 };
+    const tracers = createMemoryTracerDb();
+    const digest = (g: TracerGauges | null) =>
+      runUsageDigest({
+        stage: "dev",
+        tracer: {
+          usage: {
+            quotaHits: () => Promise.resolve({}),
+            gauges: () => Promise.resolve(g),
+          },
+          tracers,
+        },
+        kv: createMemoryKv({ clock }),
+        clock,
+        logger: nullLogger,
+      });
+    const base = {
+      dbBytes: 100 * MiB,
+      walBytes: 0,
+      blobBytes: 0,
+      stageBytesCap: 512 * MiB,
+      volumeUsedPct: 40,
+    };
+    const kinds = async (g: TracerGauges | null) =>
+      (await digest(g)).warnings
+        .map((w) => w.kind)
+        .filter((k) => k.startsWith("tracer:"));
+    expect(await kinds(base)).toEqual([]);
+    expect(await kinds({ ...base, blobBytes: 400 * MiB })).toEqual([
+      "tracer:stage-bytes",
+    ]);
+    expect(await kinds({ ...base, volumeUsedPct: 66 })).toEqual([
+      "tracer:volume",
+    ]);
+    // The lines themselves: 90 % of the cap and 65 % of the volume warn.
+    expect(
+      await kinds({ ...base, dbBytes: 0, blobBytes: 460.8 * MiB }),
+    ).toEqual(["tracer:stage-bytes"]);
+    expect(await kinds({ ...base, dbBytes: 0, blobBytes: 460 * MiB })).toEqual(
+      [],
+    );
+    expect(await kinds({ ...base, volumeUsedPct: 65 })).toEqual([
+      "tracer:volume",
+    ]);
+    expect(await kinds({ ...base, volumeUsedPct: 64 })).toEqual([]);
+    expect(await kinds({ ...base, stageBytesCap: 0 })).toEqual([]);
+    // Unknown is a failing source, not a quiet one.
+    const blind = await digest(null);
+    expect(blind.errors).toEqual(["tracer-metrics"]);
   });
 });

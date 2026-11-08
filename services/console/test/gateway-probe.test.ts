@@ -8,6 +8,9 @@ import {
   gatewayHttpBase,
   parseMarker,
   runGatewayProbe,
+  runTracerProbe,
+  TRACER_DOWN_KEY,
+  TRACER_FAIL_KEY,
   type GatewayProbeMemory,
 } from "../src/gateway-probe.js";
 
@@ -496,5 +499,58 @@ describe("runGatewayProbe", () => {
     expect(await probe()).toMatchObject({ status: "down", notified: false });
     expect(await kv.get(GATEWAY_DOWN_KEY)).toBe("100:n");
     expect(sent).toEqual([]);
+  });
+});
+
+describe("runTracerProbe", () => {
+  const tsetup = (
+    statuses: number[],
+    tracerUrl = "https://trace.example.test",
+  ) => {
+    const kv = createMemoryKv({ prefix: "console:test:" });
+    const calls: string[] = [];
+    const sent: string[] = [];
+    let i = 0;
+    const fetchFn: typeof fetch = async (url) => {
+      calls.push(url as string);
+      return new Response("ok", {
+        status: statuses[Math.min(i++, statuses.length - 1)],
+      });
+    };
+    const probe = () =>
+      runTracerProbe({
+        tracerUrl,
+        kv,
+        fetchFn,
+        memory: { announcedWithoutState: false },
+        logger: nullLogger,
+        notify: async (subject) => {
+          sent.push(subject);
+        },
+      });
+    return { kv, calls, sent, probe };
+  };
+
+  it("skips without a usable tracer url and never fetches", async () => {
+    for (const url of ["", "http://trace.example.test", "https://x.test/p"]) {
+      const t = tsetup([200], url);
+      expect(await t.probe()).toEqual({ status: "skipped" });
+      expect(t.calls).toEqual([]);
+    }
+  });
+
+  it("probes tracer /livez under its own keys and names tracer in the message", async () => {
+    const t = tsetup([503, 503, 200]);
+    await t.probe();
+    expect((await t.probe()).status).toBe("down");
+    expect(t.calls[0]).toBe("https://trace.example.test/livez");
+    expect(t.sent).toEqual(["[yyt] tracer DOWN: https://trace.example.test"]);
+    expect(await t.kv.get(TRACER_DOWN_KEY)).not.toBeNull();
+    expect(await t.kv.get(GATEWAY_DOWN_KEY)).toBeNull();
+    expect((await t.probe()).status).toBe("recovered");
+    expect(t.sent[1]).toBe(
+      "[yyt] tracer recovered: https://trace.example.test",
+    );
+    expect(await t.kv.get(TRACER_FAIL_KEY)).toBeNull();
   });
 });

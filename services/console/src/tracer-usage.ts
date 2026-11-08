@@ -37,17 +37,32 @@ const usageBody = z.object({
 });
 export type TracerUsage = Record<string, TracerUsageDay[]>;
 
+/** The gauges of tracer `GET /metrics` the digest reads (docs/tracer.md *Operations*). */
+const metricsBody = z.object({
+  gauges: z.object({
+    dbBytes: z.number().int().nonnegative(),
+    walBytes: z.number().int().nonnegative(),
+    blobBytes: z.number().int().nonnegative(),
+    stageBytesCap: z.number().int().nonnegative(),
+    volumeUsedPct: z.number().int().min(0).max(100),
+  }),
+});
+export type TracerGauges = z.infer<typeof metricsBody>["gauges"];
+
 export interface TracerUsageClient {
   /** The last `days` UTC days of each id; `null` when tracer cannot say. */
   usage(ids: readonly string[], days: number): Promise<TracerUsage | null>;
   /** Resources that dropped data for quota on `day`; `null` when unknown. */
   quotaHits(day: string): Promise<TracerUsage | null>;
+  /** Disk gauges from `/metrics`; `null` when unknown. */
+  gauges(): Promise<TracerGauges | null>;
 }
 
 /** A client that knows nothing: tracer not configured on this stage. */
 export const noTracerUsage: TracerUsageClient = {
   usage: () => Promise.resolve(null),
   quotaHits: () => Promise.resolve(null),
+  gauges: () => Promise.resolve(null),
 };
 
 export function createTracerUsageClient({
@@ -72,10 +87,11 @@ export function createTracerUsageClient({
   if (!base || token === "") return noTracerUsage;
   const origin = base.origin;
 
-  const get = async (query: URLSearchParams): Promise<TracerUsage | null> => {
+  /** One bounded GET with the bearer; the parsed JSON, or `null` on any doubt. */
+  const read = async (path: string, bearer = true): Promise<unknown> => {
     try {
-      const r = await fetchFn(`${origin}/tr/usage?${query.toString()}`, {
-        headers: { authorization: `Bearer ${token}` },
+      const r = await fetchFn(`${origin}${path}`, {
+        headers: bearer ? { authorization: `Bearer ${token}` } : {},
         signal: AbortSignal.timeout(timeoutMs),
         redirect: "error",
       });
@@ -89,12 +105,7 @@ export function createTracerUsageClient({
         logger.warn("tracer usage read failed", { reason: "size" });
         return null;
       }
-      const parsed = usageBody.safeParse(JSON.parse(text));
-      if (!parsed.success) {
-        logger.warn("tracer usage read failed", { reason: "shape" });
-        return null;
-      }
-      return parsed.data.usage;
+      return JSON.parse(text) as unknown;
     } catch (e) {
       // Never the token: only the error's name.
       logger.warn("tracer usage read failed", {
@@ -102,6 +113,17 @@ export function createTracerUsageClient({
       });
       return null;
     }
+  };
+
+  const get = async (query: URLSearchParams): Promise<TracerUsage | null> => {
+    const body = await read(`/tr/usage?${query.toString()}`);
+    if (body === null) return null;
+    const parsed = usageBody.safeParse(body);
+    if (!parsed.success) {
+      logger.warn("tracer usage read failed", { reason: "shape" });
+      return null;
+    }
+    return parsed.data.usage;
   };
 
   return {
@@ -122,5 +144,16 @@ export function createTracerUsageClient({
       return out;
     },
     quotaHits: (day) => get(new URLSearchParams({ quotaDay: day })),
+    gauges: async () => {
+      // The public view: the gauges are there without the per-resource slice.
+      const body = await read("/metrics", false);
+      if (body === null) return null;
+      const parsed = metricsBody.safeParse(body);
+      if (!parsed.success) {
+        logger.warn("tracer usage read failed", { reason: "shape" });
+        return null;
+      }
+      return parsed.data.gauges;
+    },
   };
 }

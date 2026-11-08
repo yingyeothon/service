@@ -251,7 +251,8 @@ export interface UsageDigestOptions {
    * unreachable, leaves the lines out.
    */
   tracer?: {
-    usage: Pick<TracerUsageClient, "quotaHits">;
+    usage: Pick<TracerUsageClient, "quotaHits"> &
+      Partial<Pick<TracerUsageClient, "gauges">>;
     tracers: Pick<TracerDb, "findNamesByIds">;
   };
   /** Asset uploads; omitted leaves the stuck-completion line out. */
@@ -263,6 +264,10 @@ export interface UsageDigestOptions {
   clock?: Clock;
   logger: Logger;
 }
+
+/** Digest lines for the tracer host (docs/tracer.md *Operations*). */
+export const TRACER_STAGE_WARN_PCT = 90;
+export const TRACER_VOLUME_WARN_PCT = 65;
 
 /** How long a `completing` upload may sit before the digest names it. */
 export const STUCK_COMPLETING_SEC = 3600;
@@ -475,6 +480,35 @@ export async function runUsageDigest({
         type: "level",
         text: `tracer resource "${name}" (${id}) hit its tracer.dailyBytes on ${day}: ${d.quotaAttachment} attachment(s) dropped, ${d.quotaRefused} envelope(s) refused`,
       });
+    }
+  }
+
+  if (tracer?.usage.gauges) {
+    const gauges = tracer.usage.gauges;
+    const g = await attempt("tracer-metrics", async () => {
+      const r = await gauges();
+      if (r === null) throw new Error("tracer metrics unavailable");
+      return r;
+    });
+    if (g) {
+      const used = g.dbBytes + g.walBytes + g.blobBytes;
+      // Ingest refuses at 100 % of the stage cap; retention aims under 80 %.
+      if (
+        g.stageBytesCap > 0 &&
+        used * 100 >= g.stageBytesCap * TRACER_STAGE_WARN_PCT
+      )
+        warnings.push({
+          kind: "tracer:stage-bytes",
+          type: "level",
+          text: `tracer data is at ${Math.floor((used * 100) / g.stageBytesCap)}% of its stage cap (${formatBytes(used)} of ${formatBytes(g.stageBytesCap)}); ingest refuses at 100% — a value that stays means retention cannot keep up and the cap needs raising`,
+        });
+      // Ingest refuses at TRACER_DISK_MAX_PCT (70 %) of the shared root volume.
+      if (g.volumeUsedPct >= TRACER_VOLUME_WARN_PCT)
+        warnings.push({
+          kind: "tracer:volume",
+          type: "level",
+          text: `the tracer host's root volume is ${g.volumeUsedPct}% used; tracer refuses ingest at TRACER_DISK_MAX_PCT (70% by default)`,
+        });
     }
   }
 

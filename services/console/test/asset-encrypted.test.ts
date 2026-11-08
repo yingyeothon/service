@@ -160,7 +160,15 @@ describe("encrypted bundles: creation and the key", () => {
     expect(r.statusCode).toBe(503);
     // The same body as an unreadable row: the response is no oracle.
     expect(parse(r).error.details).toEqual({ reason: "asset_key_unreadable" });
-    h.assets.keys.set(id, { ...row, wrapped: row.wrapped.slice(0, -2) + "AA" });
+    // Flip the first character of the tag part: the last base64url
+    // characters of a 16-byte tag carry padding bits, so overwriting them
+    // could leave the bytes unchanged (a 1-in-256 flake, 2026-11-08).
+    const dot = row.wrapped.lastIndexOf(".") + 1;
+    const flipped = row.wrapped[dot] === "A" ? "B" : "A";
+    h.assets.keys.set(id, {
+      ...row,
+      wrapped: row.wrapped.slice(0, dot) + flipped + row.wrapped.slice(dot + 1),
+    });
     h.clock.tick(1);
     r = await keyOf(h, a, id);
     expect(r.statusCode).toBe(503);

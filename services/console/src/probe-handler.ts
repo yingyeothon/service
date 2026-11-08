@@ -2,7 +2,11 @@ import { createJsonLogger, requireEnv } from "@yyt/core";
 import { createRedisKv, redisOptionsFromEnv, type Kv } from "@yyt/redis";
 import { createAlarmNotify } from "./alarm-notify.js";
 import { runCdnGuardWatch } from "./cdn-guard.js";
-import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
+import {
+  runGatewayProbe,
+  runTracerProbe,
+  type GatewayProbeMemory,
+} from "./gateway-probe.js";
 
 /*
  * The scheduled gateway probe's own entry, so its bundle carries the probe,
@@ -14,6 +18,7 @@ import { runGatewayProbe, type GatewayProbeMemory } from "./gateway-probe.js";
 const logger = createJsonLogger(console);
 let probeKv: Kv | undefined;
 const probeMemory: GatewayProbeMemory = { announcedWithoutState: false };
+const tracerMemory: GatewayProbeMemory = { announcedWithoutState: false };
 
 /**
  * EventBridge every 5 minutes (prod only by schedule; the function exists on
@@ -26,20 +31,52 @@ export const gatewayProbe = async (): Promise<void> => {
   const notify = createAlarmNotify(process.env.ALARM_TOPIC_ARN ?? "");
   try {
     probeKv ??= createRedisKv(redisOptionsFromEnv());
-    const r = await runGatewayProbe({
-      wsUrl: process.env.GATEWAY_WS_URL ?? "",
-      kv: probeKv,
-      memory: probeMemory,
-      logger,
-      notify,
-    });
-    logger.info("gateway probe", { stage, ...r });
   } catch (e) {
-    logger.error("gateway probe crashed", {
+    logger.error("probe: no Redis client", {
       stage,
       message: e instanceof Error ? e.message : String(e),
     });
   }
+  const kv = probeKv;
+  const run = async (
+    label: string,
+    probe: () => Promise<Record<string, unknown>>,
+  ): Promise<void> => {
+    try {
+      logger.info(`${label} probe`, { stage, ...(await probe()) });
+    } catch (e) {
+      logger.error(`${label} probe crashed`, {
+        stage,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+  if (kv)
+    // Side by side, not in turn: each can take a 5 s fetch plus a Redis
+    // timeout, and the 20 s function timeout must still leave the watchdog.
+    // The stage's tracer rides the same schedule and alarm topic (no alarm
+    // of its own, docs/tracer.md *Operations*); skipped while `tracer-url`
+    // is unset.
+    await Promise.all([
+      run("gateway", async () => ({
+        ...(await runGatewayProbe({
+          wsUrl: process.env.GATEWAY_WS_URL ?? "",
+          kv,
+          memory: probeMemory,
+          logger,
+          notify,
+        })),
+      })),
+      run("tracer", async () => ({
+        ...(await runTracerProbe({
+          tracerUrl: process.env.TRACER_URL ?? "",
+          kv,
+          memory: tracerMemory,
+          logger,
+          notify,
+        })),
+      })),
+    ]);
   // The CDN guard's watchdog rides this 5-minute schedule (no alarm slot of
   // its own): a stopped guard is announced within about 20 minutes.
   if (probeKv) {
