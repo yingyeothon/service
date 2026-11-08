@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yingyeothon/service/tracer/internal/envelope"
@@ -179,5 +180,19 @@ func TestInvalidAndBounds(t *testing.T) {
 	tags := tagsOf(json.RawMessage(`[["a","1"],["b",2]]`))
 	if len(tags) != 2 || tags[1] != [2]string{"b", "2"} {
 		t.Fatalf("pair tags %v", tags)
+	}
+}
+
+// Attributes full of `<>&` that fit as sent still fit as stored (json.Marshal
+// would escape each to 6 bytes and drop them whole).
+func TestLogAttributesKeepHTMLCharacters(t *testing.T) {
+	v := strings.Repeat("&", 7000) + strings.Repeat("<", 7000)
+	payload := `{"items":[{"timestamp":1.5,"body":"x","attributes":{"a":{"value":"` + v + `","type":"string"}}}]}`
+	logs, _, err := Logs([]byte(payload), recv)
+	if err != nil || len(logs) != 1 {
+		t.Fatal(err)
+	}
+	if len(logs[0].AttributesJSON) == 0 || !strings.Contains(string(logs[0].AttributesJSON), "&&&<<<") {
+		t.Fatalf("attributes dropped or escaped: %d bytes", len(logs[0].AttributesJSON))
 	}
 }

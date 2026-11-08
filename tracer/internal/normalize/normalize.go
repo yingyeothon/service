@@ -191,7 +191,7 @@ func Logs(payload []byte, receivedMs int64) ([]store.Log, int, error) {
 		l.UserID = clip(attr(it.Attributes, "user.id"), MaxTag)
 		l.Device = clip(attr(it.Attributes, "device.model"), MaxTag)
 		if len(it.Attributes) > 0 {
-			if b, err := json.Marshal(it.Attributes); err == nil && len(b) <= MaxDataJSON {
+			if b, err := marshalRaw(it.Attributes); err == nil && len(b) <= MaxDataJSON {
 				l.AttributesJSON = b
 			}
 		}
@@ -544,3 +544,16 @@ func clip(s string, n int) string {
 
 // Day is the UTC calendar day of a unix-millisecond time.
 func Day(ms int64) string { return time.UnixMilli(ms).UTC().Format("2006-01-02") }
+
+// marshalRaw marshals without HTML escaping: json.Marshal turns each `<`,
+// `>` and `&` into a 6-byte escape, so attributes a client measured as
+// fitting MaxDataJSON could grow past it and be dropped whole.
+func marshalRaw(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
