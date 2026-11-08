@@ -17,6 +17,9 @@
 #   (GATEWAY_TOKEN=... rotates it), and written to local/deploy/gateway-token.<stage>.
 #   gateway-ws-url is NOT touched here — it is a public domain, set by hand as a plain String
 #   parameter once the gateway resolves; while unset, lobby/q channel views omit `wsUrl`.
+# Stage-wide, tracer (todo/85 P4d): tracer-token, the same way as gateway-token (TRACER_TOKEN=...
+#   rotates it; it must differ from gateway-token), written to local/deploy/tracer-token.<stage>.
+#   tracer-url is NOT touched here (SSM refuses an empty value): set by hand once tracer resolves.
 # Always: cloudfront-cert-arn (looked up from ACM us-east-1, used by services/console CloudFront).
 # dev only: auth's debug seeding hook writes the console DB, so console.dev.env's MySQL account is also
 #   published as /yyt-service/dev/auth/debug-mysql-{user,password} (docs/decisions.md "디버그 시드").
@@ -204,22 +207,56 @@ put android-cert-sha256 "${ANDROID_CERT_SHA256:-}"
 put ios-app-ids "${IOS_APP_IDS:-}"
 put link-host-enabled "${LINK_HOST_ENABLED:-}"
 
+# Shared secrets kept across re-runs (gateway-token, tracer-token). Only
+# ParameterNotFound means "mint one": any other read error (an expired session,
+# throttling, KMS) stops the run, or a blip would silently rotate a live secret
+# and break the gateway or tracer at the next console deploy.
+ssm_kept() { # name — prints the stored value, nothing when absent; exits on other errors
+  local err out
+  err="$(mktemp)"
+  if out="$(aws ssm get-parameter --name "/yyt-service/${STAGE}/$1" --with-decryption --query Parameter.Value --output text 2>"$err")"; then
+    rm -f "$err"; printf '%s' "$out"; return 0
+  fi
+  case "$(cat "$err")" in
+    *ParameterNotFound*) rm -f "$err"; return 0 ;;
+  esac
+  echo "cannot read /yyt-service/${STAGE}/$1 (not ParameterNotFound); refusing to mint a replacement:" >&2
+  cat "$err" >&2; rm -f "$err"; exit 1
+}
+keep_token() { # name VAR — writes local/deploy/<name>.<stage> (0600) and SSM
+  put "$1" "$2"
+  printf '%s\n' "$2" > "local/deploy/$1.${STAGE}"
+  chmod 600 "local/deploy/$1.${STAGE}"
+}
+
 # Realtime gateway (todo/14): the console checks GATEWAY_TOKEN on
-# GET /gw/channels/{id}. Generated once per stage and kept across re-runs, the
-# same way as debug-key; GATEWAY_TOKEN=... forces a new one (then redeploy
-# console AND the gateway). It must be >= 32 chars — the console disables the
-# route and logs an error below that, so generate rather than hand-pick.
-if [ -z "${GATEWAY_TOKEN:-}" ]; then
-  GATEWAY_TOKEN="$(aws ssm get-parameter --name "/yyt-service/${STAGE}/gateway-token" --with-decryption --query Parameter.Value --output text 2>/dev/null || true)"
-fi
+# GET /gw/channels/{id}. Debug collector (todo/85 P4d): tracer presents
+# TRACER_TOKEN on the console's /tr/* routes and the console presents it on
+# tracer's /tr/usage. Each is generated once per stage and kept across re-runs,
+# the same way as debug-key; GATEWAY_TOKEN=... / TRACER_TOKEN=... forces a new
+# one (then redeploy console AND restart the gateway / tracer with the new
+# file). Both must be >= 32 chars and differ from each other — the console
+# disables the routes and logs an error otherwise, so generate rather than
+# hand-pick. Both are resolved and checked before either is written. A first
+# run on a stage mints its tracer-token even before tracer exists there; it is
+# kept, so the tracer rollout reuses it.
+if [ -z "${GATEWAY_TOKEN:-}" ]; then GATEWAY_TOKEN="$(ssm_kept gateway-token)"; fi
 GATEWAY_TOKEN="${GATEWAY_TOKEN:-gw_$(openssl rand -hex 32)}"
+if [ -z "${TRACER_TOKEN:-}" ]; then TRACER_TOKEN="$(ssm_kept tracer-token)"; fi
+TRACER_TOKEN="${TRACER_TOKEN:-trt_$(openssl rand -hex 32)}"
 if [ "${#GATEWAY_TOKEN}" -lt 32 ]; then
   echo "GATEWAY_TOKEN must be at least 32 characters (console refuses shorter ones)" >&2; exit 1
 fi
-put gateway-token "${GATEWAY_TOKEN}"
-printf '%s\n' "${GATEWAY_TOKEN}" > "local/deploy/gateway-token.${STAGE}"
-chmod 600 "local/deploy/gateway-token.${STAGE}"
+if [ "${#TRACER_TOKEN}" -lt 32 ]; then
+  echo "TRACER_TOKEN must be at least 32 characters (console refuses shorter ones)" >&2; exit 1
+fi
+if [ "${TRACER_TOKEN}" = "${GATEWAY_TOKEN}" ]; then
+  echo "TRACER_TOKEN must differ from GATEWAY_TOKEN (console disables /tr/* otherwise)" >&2; exit 1
+fi
+keep_token gateway-token "${GATEWAY_TOKEN}"
 log "gateway-token written to local/deploy/gateway-token.${STAGE} (hand it to the gateway; scripts/smoke/console.mjs reads it)"
+keep_token tracer-token "${TRACER_TOKEN}"
+log "tracer-token written to local/deploy/tracer-token.${STAGE} (the ops repo hands it to tracer; scripts/smoke/tracer.mjs reads it)"
 # artifact-bucket / site-bucket (the hand-made distribution and static-site
 # buckets, plain Strings) are set by hand once per stage — bucket names are
 # infra identifiers (docs/secrets.md), so serverless.yml reads them from SSM:
