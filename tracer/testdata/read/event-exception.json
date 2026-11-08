@@ -1,0 +1,181 @@
+{
+  "attachments": [],
+  "breadcrumbs": [
+    {
+      "category": "app.lifecycle",
+      "data": {
+        "state": "foreground"
+      },
+      "level": "info",
+      "timestamp": "2026-11-08T06:42:12.337Z",
+      "type": "navigation"
+    },
+    {
+      "category": "device.event",
+      "data": {
+        "action": "BATTERY_CHANGED",
+        "charging": true,
+        "level": 100
+      },
+      "level": "info",
+      "timestamp": "2026-11-08T06:42:12.352Z",
+      "type": "system"
+    },
+    {
+      "category": "board.pointer",
+      "data": {
+        "x": 12,
+        "y": 34
+      },
+      "level": "info",
+      "message": "tap e2",
+      "timestamp": "2026-11-08T06:42:15.665Z"
+    }
+  ],
+  "contexts": {
+    "accessibility": {
+      "accessible_navigation": false,
+      "bold_text": false,
+      "disable_animations": false,
+      "high_contrast": false,
+      "invert_colors": false,
+      "reduce_motion": false
+    },
+    "app": {
+      "app_build": "1",
+      "app_identifier": "dev.yyt.capture.trc_capture_app",
+      "app_memory": 384094208,
+      "app_name": "trc_capture_app",
+      "app_start_time": "2026-11-08T06:42:11.275Z",
+      "app_version": "1.0.0",
+      "in_foreground": true,
+      "is_split_apks": false,
+      "permissions": {
+        "DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "granted",
+        "INTERNET": "granted"
+      },
+      "text_scale": 1
+    },
+    "culture": {
+      "is_24_hour_format": false,
+      "locale": "en-US",
+      "timezone": "UTC"
+    },
+    "dart": {
+      "name": "Dart",
+      "raw_description": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"android_x64\"",
+      "type": "runtime",
+      "version": "3.13.7 (stable)"
+    },
+    "dart_context": {
+      "compile_mode": "debug",
+      "executable": "flutter",
+      "resolved_executable": "/system/bin/app_process64",
+      "script": "file:///main.dart"
+    },
+    "device": {
+      "archs": [
+        "x86_64",
+        "arm64-v8a"
+      ],
+      "battery_level": 100,
+      "battery_temperature": 25,
+      "boot_time": "2026-01-01T00:00:00.000Z",
+      "brand": "google",
+      "charging": true,
+      "chipset": "AOSP ranchu",
+      "family": "sdk_gphone64_x86_64",
+      "free_memory": 871825408,
+      "free_storage": 4026630144,
+      "id": "00000000000000000000000000000000",
+      "locale": "en_US",
+      "low_memory": false,
+      "manufacturer": "Google",
+      "memory_size": 2066915328,
+      "model": "sdk_gphone64_x86_64",
+      "model_id": "AE3A.240806.043",
+      "name": "fixture-device",
+      "orientation": "portrait",
+      "processor_count": 6,
+      "processor_frequency": 0,
+      "screen_density": 2.625,
+      "screen_dpi": 420,
+      "screen_height_pixels": 2400,
+      "screen_width_pixels": 1080,
+      "simulator": true,
+      "storage_size": 6228115456,
+      "timezone": "Etc/UTC___"
+    },
+    "flutter": {
+      "compiler": "Dart VM",
+      "name": "Flutter",
+      "type": "runtime"
+    },
+    "flutter0": {
+      "build": "737ba8f885",
+      "name": "Flutter",
+      "raw_description": "3.47.8 (stable) - Git hash 737ba8f885 - Git URL https://github.com/flutter/flutter.git",
+      "type": "runtime",
+      "version": "3.47.8 (stable)"
+    },
+    "flutter_context": {
+      "current_lifecycle_state": "resumed",
+      "default_route_name": "/",
+      "has_render_view": "true",
+      "initial_lifecycle_state": "AppLifecycleState.resumed"
+    },
+    "os": {
+      "build": "sdk_gphone64_x86_64-userdebug 15 AE3A.240806.043 12960925 dev-keys",
+      "kernel_version": "6.6.50-android15-8-g8adecb593e9b-ab12525588",
+      "name": "Android",
+      "raw_description": "sdk_gphone64_x86_64-userdebug 15 AE3A.240806.043 12960925 dev-keys",
+      "rooted": false,
+      "theme": "light",
+      "version": "15"
+    },
+    "trace": {
+      "op": "default",
+      "replay_id": "2c2bc946649a4e9f9d9dc6303e0608f3",
+      "span_id": "9394edae532a41ed",
+      "trace_id": "736bdc7084784e46ad408a5e5164db30"
+    }
+  },
+  "device": "sdk_gphone64_x86_64",
+  "dist": "abc1234",
+  "environment": "debug",
+  "eventId": "2f166ea5ffa64594a3938e8ef5559888",
+  "exception": [
+    {
+      "frames": [
+        {
+          "colno": 7,
+          "filename": "main.dart",
+          "function": "_CaptureAppState._run",
+          "inApp": true,
+          "lineno": 87
+        }
+      ],
+      "type": "StateError",
+      "value": "Bad state: capture exception"
+    }
+  ],
+  "groupKey": "e44a06390b44b43496bef8b65c59aacc",
+  "level": "error",
+  "os": "Android 15",
+  "platform": "other",
+  "received": "2026-11-08T06:43:00.000Z",
+  "release": "capture@1.0.0+1",
+  "sdk": {
+    "name": "sentry.dart.flutter",
+    "version": "9.30.1"
+  },
+  "tags": {
+    "event.environment": "dart",
+    "event.origin": "flutter"
+  },
+  "timestamp": "2026-11-08T06:42:15.991Z",
+  "title": "StateError: Bad state: capture exception",
+  "traceId": "736bdc7084784e46ad408a5e5164db30",
+  "type": "event",
+  "userId": "00000000000000000000000000000000"
+}

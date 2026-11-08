@@ -1,7 +1,8 @@
 -- tracer schema (docs/tracer.md _Storage_). Append-only once deployed.
 -- Times are unix milliseconds UTC. resource_id is the console's `trc_…` id;
 -- tracer holds no resource table of its own (decisions _Debug collector_ #9).
--- Retention walks *_received_ms / received_ms; reads filter on ts_ms.
+-- Retention walks received_ms; read API lists select by received_ms (server
+-- clock) and order/window by ts_ms (device clock).
 
 -- One row per process-wide fact (livez write probe, retention bookkeeping).
 CREATE TABLE meta (
@@ -41,6 +42,7 @@ CREATE INDEX events_res_group ON events(resource_id, group_key, ts_ms);
 CREATE INDEX events_res_trace ON events(resource_id, trace_id) WHERE trace_id IS NOT NULL;
 CREATE INDEX events_res_assoc ON events(resource_id, associated_event_id) WHERE associated_event_id IS NOT NULL;
 CREATE INDEX events_received ON events(received_ms);
+CREATE INDEX events_res_received ON events(resource_id, received_ms); -- read API since/until
 
 CREATE TABLE event_tags (
   event_row   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -105,6 +107,7 @@ CREATE TABLE logs (
 CREATE INDEX logs_res_ts ON logs(resource_id, ts_ms);
 CREATE INDEX logs_res_trace ON logs(resource_id, trace_id, ts_ms) WHERE trace_id IS NOT NULL;
 CREATE INDEX logs_received ON logs(received_ms);
+CREATE INDEX logs_res_received ON logs(resource_id, received_ms); -- read API since/until
 
 CREATE TABLE transactions (
   id          INTEGER PRIMARY KEY,
@@ -171,7 +174,7 @@ CREATE INDEX sessions_received ON sessions(received_ms);
 -- Items accepted and discarded, or refused, so lost volume stays visible.
 -- reason per item: not_stored (accepted-and-counted types), unknown,
 -- quota_attachment, too_large, invalid; per refused envelope (item_type
--- 'envelope'): busy, quota_refused, disk, too_large, invalid, store_error.
+-- 'envelope'): busy, quota_refused, disk, too_large, invalid, console, store_error.
 CREATE TABLE drops (
   day         TEXT NOT NULL,
   resource_id TEXT NOT NULL,

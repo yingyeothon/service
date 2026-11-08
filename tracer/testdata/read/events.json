@@ -1,0 +1,64 @@
+{
+  "events": [
+    {
+      "environment": "debug",
+      "eventId": "3b6f9f83faee48509f8b04720917ebf8",
+      "groupKey": "4fcac10451bf8368fa7410bb6af8cc6b",
+      "level": "warning",
+      "os": "Android",
+      "received": "2026-11-08T06:43:00.000Z",
+      "release": "capture@1.0.0+1",
+      "timestamp": "2026-11-08T06:42:16.018Z",
+      "title": "background isolate report",
+      "traceId": "4da225e81a844b948d1e373f680b8cd1",
+      "type": "event"
+    },
+    {
+      "device": "sdk_gphone64_x86_64",
+      "dist": "abc1234",
+      "environment": "debug",
+      "eventId": "7b794510c9834f9abbb4f224407f5629",
+      "level": "info",
+      "os": "Android 15",
+      "received": "2026-11-08T06:43:00.000Z",
+      "release": "capture@1.0.0+1",
+      "timestamp": "2026-11-08T06:42:16.004Z",
+      "title": "capture feedback note",
+      "traceId": "736bdc7084784e46ad408a5e5164db30",
+      "type": "feedback",
+      "userId": "00000000000000000000000000000000"
+    },
+    {
+      "device": "sdk_gphone64_x86_64",
+      "dist": "abc1234",
+      "environment": "debug",
+      "eventId": "2f166ea5ffa64594a3938e8ef5559888",
+      "groupKey": "e44a06390b44b43496bef8b65c59aacc",
+      "level": "error",
+      "os": "Android 15",
+      "received": "2026-11-08T06:43:00.000Z",
+      "release": "capture@1.0.0+1",
+      "timestamp": "2026-11-08T06:42:15.991Z",
+      "title": "StateError: Bad state: capture exception",
+      "traceId": "736bdc7084784e46ad408a5e5164db30",
+      "type": "event",
+      "userId": "00000000000000000000000000000000"
+    },
+    {
+      "device": "sdk_gphone64_x86_64",
+      "dist": "abc1234",
+      "environment": "debug",
+      "eventId": "7730857f6b4d4655aee7855244455e2d",
+      "groupKey": "84e204752b8852c485f2240c96907092",
+      "level": "warning",
+      "os": "Android 15",
+      "received": "2026-11-08T06:43:00.000Z",
+      "release": "capture@1.0.0+1",
+      "timestamp": "2026-11-08T06:42:15.834Z",
+      "title": "capture report: rejected move",
+      "traceId": "736bdc7084784e46ad408a5e5164db30",
+      "type": "event",
+      "userId": "00000000000000000000000000000000"
+    }
+  ]
+}

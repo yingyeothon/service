@@ -1,0 +1,20 @@
+{
+  "events": [
+    {
+      "device": "sdk_gphone64_x86_64",
+      "dist": "abc1234",
+      "environment": "debug",
+      "eventId": "7730857f6b4d4655aee7855244455e2d",
+      "groupKey": "84e204752b8852c485f2240c96907092",
+      "level": "warning",
+      "os": "Android 15",
+      "received": "2026-11-08T06:43:00.000Z",
+      "release": "capture@1.0.0+1",
+      "timestamp": "2026-11-08T06:42:15.834Z",
+      "title": "capture report: rejected move",
+      "traceId": "736bdc7084784e46ad408a5e5164db30",
+      "type": "event",
+      "userId": "00000000000000000000000000000000"
+    }
+  ]
+}

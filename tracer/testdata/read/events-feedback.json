@@ -1,0 +1,19 @@
+{
+  "events": [
+    {
+      "device": "sdk_gphone64_x86_64",
+      "dist": "abc1234",
+      "environment": "debug",
+      "eventId": "7b794510c9834f9abbb4f224407f5629",
+      "level": "info",
+      "os": "Android 15",
+      "received": "2026-11-08T06:43:00.000Z",
+      "release": "capture@1.0.0+1",
+      "timestamp": "2026-11-08T06:42:16.004Z",
+      "title": "capture feedback note",
+      "traceId": "736bdc7084784e46ad408a5e5164db30",
+      "type": "feedback",
+      "userId": "00000000000000000000000000000000"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "logs": [
+    {
+      "attributes": {
+        "device.brand": {
+          "type": "string",
+          "value": "google"
+        },
+        "device.family": {
+          "type": "string",
+          "value": "sdk_gphone64_x86_64"
+        },
+        "device.model": {
+          "type": "string",
+          "value": "sdk_gphone64_x86_64"
+        },
+        "os.build_id": {
+          "type": "string",
+          "value": "sdk_gphone64_x86_64-userdebug 15 AE3A.240806.043 12960925 dev-keys"
+        },
+        "os.kernel_version": {
+          "type": "string",
+          "value": "6.6.50-android15-8-g8adecb593e9b-ab12525588"
+        },
+        "os.name": {
+          "type": "string",
+          "value": "Android"
+        },
+        "os.raw_description": {
+          "type": "string",
+          "value": "sdk_gphone64_x86_64-userdebug 15 AE3A.240806.043 12960925 dev-keys"
+        },
+        "os.rooted": {
+          "type": "boolean",
+          "value": false
+        },
+        "os.version": {
+          "type": "string",
+          "value": "15"
+        },
+        "sentry.environment": {
+          "type": "string",
+          "value": "debug"
+        },
+        "sentry.release": {
+          "type": "string",
+          "value": "capture@1.0.0+1"
+        },
+        "sentry.replay_id": {
+          "type": "string",
+          "value": "2c2bc946649a4e9f9d9dc6303e0608f3"
+        },
+        "sentry.sdk.name": {
+          "type": "string",
+          "value": "sentry.dart.flutter"
+        },
+        "sentry.sdk.version": {
+          "type": "string",
+          "value": "9.30.1"
+        },
+        "square": {
+          "type": "string",
+          "value": "e2"
+        }
+      },
+      "body": "[board.pointer] tap e2",
+      "device": "sdk_gphone64_x86_64",
+      "environment": "debug",
+      "level": "info",
+      "received": "2026-11-08T06:43:00.000Z",
+      "release": "capture@1.0.0+1",
+      "spanId": "135e745caf2a4a9d",
+      "timestamp": "2026-11-08T06:42:15.674Z",
+      "traceId": "736bdc7084784e46ad408a5e5164db30"
+    }
+  ]
+}

@@ -1,0 +1,191 @@
+{
+  "attachments": [
+    {
+      "attachmentType": "event.attachment",
+      "contentType": "image/png",
+      "filename": "screenshot.png",
+      "id": "<blob>",
+      "sha256": "39bf2e1c49054ecb5c8c56cd08a4f9fe18a5055d01f31227a2d11492ec46ee5c",
+      "size": 22719
+    },
+    {
+      "attachmentType": "event.view_hierarchy",
+      "contentType": "application/json",
+      "filename": "view-hierarchy.json",
+      "id": "<blob>",
+      "sha256": "12b6a06e70337058c16887171b935ef480dd79fa79ca9e5a72dc14ff949c4c13",
+      "size": 15193
+    }
+  ],
+  "breadcrumbs": [
+    {
+      "category": "app.lifecycle",
+      "data": {
+        "state": "foreground"
+      },
+      "level": "info",
+      "timestamp": "2026-11-08T06:42:12.337Z",
+      "type": "navigation"
+    },
+    {
+      "category": "device.event",
+      "data": {
+        "action": "BATTERY_CHANGED",
+        "charging": true,
+        "level": 100
+      },
+      "level": "info",
+      "timestamp": "2026-11-08T06:42:12.352Z",
+      "type": "system"
+    },
+    {
+      "category": "board.pointer",
+      "data": {
+        "x": 12,
+        "y": 34
+      },
+      "level": "info",
+      "message": "tap e2",
+      "timestamp": "2026-11-08T06:42:15.665Z"
+    }
+  ],
+  "contexts": {
+    "accessibility": {
+      "accessible_navigation": false,
+      "bold_text": false,
+      "disable_animations": false,
+      "high_contrast": false,
+      "invert_colors": false,
+      "reduce_motion": false
+    },
+    "app": {
+      "app_build": "1",
+      "app_identifier": "dev.yyt.capture.trc_capture_app",
+      "app_memory": 382685184,
+      "app_name": "trc_capture_app",
+      "app_start_time": "2026-11-08T06:42:11.275Z",
+      "app_version": "1.0.0",
+      "in_foreground": true,
+      "is_split_apks": false,
+      "permissions": {
+        "DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "granted",
+        "INTERNET": "granted"
+      }
+    },
+    "culture": {
+      "is_24_hour_format": false,
+      "locale": "en-US",
+      "timezone": "UTC"
+    },
+    "dart": {
+      "name": "Dart",
+      "raw_description": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"android_x64\"",
+      "type": "runtime",
+      "version": "3.13.7 (stable)"
+    },
+    "dart_context": {
+      "compile_mode": "debug",
+      "executable": "flutter",
+      "resolved_executable": "/system/bin/app_process64",
+      "script": "file:///main.dart"
+    },
+    "details": {
+      "from": "e2",
+      "to": "e5"
+    },
+    "device": {
+      "archs": [
+        "x86_64",
+        "arm64-v8a"
+      ],
+      "battery_level": 100,
+      "battery_temperature": 25,
+      "boot_time": "2026-01-01T00:00:00.000Z",
+      "brand": "google",
+      "charging": true,
+      "chipset": "AOSP ranchu",
+      "family": "sdk_gphone64_x86_64",
+      "free_memory": 845840384,
+      "free_storage": 4026679296,
+      "id": "00000000000000000000000000000000",
+      "locale": "en_US",
+      "low_memory": false,
+      "manufacturer": "Google",
+      "memory_size": 2066915328,
+      "model": "sdk_gphone64_x86_64",
+      "model_id": "AE3A.240806.043",
+      "name": "fixture-device",
+      "orientation": "portrait",
+      "processor_count": 6,
+      "processor_frequency": 0,
+      "screen_density": 2.625,
+      "screen_dpi": 420,
+      "screen_height_pixels": 2400,
+      "screen_width_pixels": 1080,
+      "simulator": true,
+      "storage_size": 6228115456,
+      "timezone": "Etc/UTC___"
+    },
+    "flutter": {
+      "compiler": "Dart VM",
+      "name": "Flutter",
+      "type": "runtime"
+    },
+    "flutter0": {
+      "build": "737ba8f885",
+      "name": "Flutter",
+      "raw_description": "3.47.8 (stable) - Git hash 737ba8f885 - Git URL https://github.com/flutter/flutter.git",
+      "type": "runtime",
+      "version": "3.47.8 (stable)"
+    },
+    "flutter_context": {
+      "current_lifecycle_state": "resumed",
+      "default_route_name": "/",
+      "has_render_view": "true",
+      "initial_lifecycle_state": "AppLifecycleState.resumed"
+    },
+    "os": {
+      "build": "sdk_gphone64_x86_64-userdebug 15 AE3A.240806.043 12960925 dev-keys",
+      "kernel_version": "6.6.50-android15-8-g8adecb593e9b-ab12525588",
+      "name": "Android",
+      "raw_description": "sdk_gphone64_x86_64-userdebug 15 AE3A.240806.043 12960925 dev-keys",
+      "rooted": false,
+      "theme": "light",
+      "version": "15"
+    },
+    "trace": {
+      "op": "default",
+      "span_id": "ff9ee6cca7374230",
+      "trace_id": "736bdc7084784e46ad408a5e5164db30"
+    }
+  },
+  "device": "sdk_gphone64_x86_64",
+  "dist": "abc1234",
+  "environment": "debug",
+  "eventId": "7730857f6b4d4655aee7855244455e2d",
+  "fingerprint": [
+    "{{ default }}",
+    "rejected-move"
+  ],
+  "groupKey": "84e204752b8852c485f2240c96907092",
+  "level": "warning",
+  "message": "capture report: rejected move",
+  "os": "Android 15",
+  "platform": "other",
+  "received": "2026-11-08T06:43:00.000Z",
+  "release": "capture@1.0.0+1",
+  "sdk": {
+    "name": "sentry.dart.flutter",
+    "version": "9.30.1"
+  },
+  "tags": {
+    "event.environment": "dart",
+    "event.origin": "flutter",
+    "feature": "board"
+  },
+  "timestamp": "2026-11-08T06:42:15.834Z",
+  "title": "capture report: rejected move",
+  "traceId": "736bdc7084784e46ad408a5e5164db30",
+  "type": "event",
+  "userId": "00000000000000000000000000000000"
+}

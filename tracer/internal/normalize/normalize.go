@@ -308,9 +308,10 @@ const (
 
 // Exception is one value of a chain with its last MaxFrames frames.
 type Exception struct {
-	Type   string
-	Value  string
-	Frames []json.RawMessage
+	Type      string
+	Value     string
+	Mechanism json.RawMessage
+	Frames    []json.RawMessage
 }
 
 // Exceptions streams the exception chain (last MaxExceptions values, each
@@ -325,12 +326,13 @@ func Exceptions(raw json.RawMessage) []Exception {
 		var ex struct {
 			Type       string          `json:"type"`
 			Value      string          `json:"value"`
+			Mechanism  json.RawMessage `json:"mechanism"`
 			Stacktrace json.RawMessage `json:"stacktrace"`
 		}
 		if json.Unmarshal(v, &ex) != nil {
 			continue
 		}
-		e := Exception{Type: ex.Type, Value: ex.Value}
+		e := Exception{Type: ex.Type, Value: ex.Value, Mechanism: ex.Mechanism}
 		if len(ex.Stacktrace) > 0 {
 			e.Frames, _, _ = ArrayItems(ex.Stacktrace, "frames", MaxFrames, true)
 		}

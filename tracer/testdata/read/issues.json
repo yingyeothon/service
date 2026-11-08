@@ -1,0 +1,34 @@
+{
+  "issues": [
+    {
+      "count": 1,
+      "firstSeen": "2026-11-08T06:42:16.018Z",
+      "groupKey": "4fcac10451bf8368fa7410bb6af8cc6b",
+      "lastSeen": "2026-11-08T06:42:16.018Z",
+      "latestEventId": "3b6f9f83faee48509f8b04720917ebf8",
+      "level": "warning",
+      "status": "unresolved",
+      "title": "background isolate report"
+    },
+    {
+      "count": 1,
+      "firstSeen": "2026-11-08T06:42:15.991Z",
+      "groupKey": "e44a06390b44b43496bef8b65c59aacc",
+      "lastSeen": "2026-11-08T06:42:15.991Z",
+      "latestEventId": "2f166ea5ffa64594a3938e8ef5559888",
+      "level": "error",
+      "status": "unresolved",
+      "title": "StateError: Bad state: capture exception"
+    },
+    {
+      "count": 1,
+      "firstSeen": "2026-11-08T06:42:15.834Z",
+      "groupKey": "84e204752b8852c485f2240c96907092",
+      "lastSeen": "2026-11-08T06:42:15.834Z",
+      "latestEventId": "7730857f6b4d4655aee7855244455e2d",
+      "level": "warning",
+      "status": "unresolved",
+      "title": "capture report: rejected move"
+    }
+  ]
+}

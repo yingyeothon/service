@@ -21,6 +21,7 @@ import (
 	"github.com/yingyeothon/service/tracer/internal/config"
 	"github.com/yingyeothon/service/tracer/internal/ingest"
 	"github.com/yingyeothon/service/tracer/internal/metrics"
+	"github.com/yingyeothon/service/tracer/internal/query"
 	"github.com/yingyeothon/service/tracer/internal/resource"
 	"github.com/yingyeothon/service/tracer/internal/server"
 	"github.com/yingyeothon/service/tracer/internal/store"
@@ -121,11 +122,21 @@ func serve() error {
 		BlobDir: cfg.BlobDir(), MaxDecompressed: cfg.MaxEnvelopeBytes, DumpDir: cfg.DumpDir, Log: log})
 	ingDone := make(chan struct{})
 	go func() { ing.Run(ctx); close(ingDone) }()
+	ro, err := store.OpenReadOnly(ctx, cfg.DBPath())
+	if err != nil {
+		return err
+	}
+	defer ro.Close()
+	// Local mode only until P5 (server mode exits above); P5 swaps in the
+	// console authorizer, which must map transient failures to 503.
+	read := query.New(query.Options{DB: ro, BlobDir: cfg.BlobDir(), Auth: query.NewLocalAuthorizer(cfg.Local.ReadToken, src),
+		Metrics: reg, Log: log})
 	handler := server.New(server.Options{
 		Stage:         cfg.Stage,
 		Mode:          cfg.Mode.String(),
 		DB:            st,
 		Ingest:        ing,
+		Read:          read,
 		Metrics:       reg,
 		Detail:        reg.Detailed,
 		OperatorToken: cfg.Token,

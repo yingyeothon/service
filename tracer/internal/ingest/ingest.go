@@ -175,6 +175,10 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		// tells a client its key is wrong, which may not be true behind NAT).
 		w.Header().Set("Retry-After", fmt.Sprint(failRetryAfterSeconds))
 	}
+	if status == http.StatusServiceUnavailable && res.ID != "" {
+		h.refused(w, res.ID, status, "console") // resource source unreachable
+		return
+	}
 	if status != 0 {
 		h.reject(w, status, 0)
 		return
