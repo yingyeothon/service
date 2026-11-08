@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yingyeothon/service/tracer/internal/config"
@@ -56,6 +57,26 @@ type Server struct {
 	opToken []byte
 	started time.Time
 	mux     *http.ServeMux
+
+	// The write probe behind the public `/livez`, shared for livezEvery so a
+	// flood of probes cannot compete with ingest for the single writer.
+	liveMu  sync.Mutex
+	liveAt  time.Time
+	liveErr error
+}
+
+// livezEvery is how long one DB write probe answers `/livez`.
+const livezEvery = time.Second
+
+func (s *Server) writable(ctx context.Context) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if !s.liveAt.IsZero() && time.Since(s.liveAt) < livezEvery {
+		return s.liveErr
+	}
+	s.liveErr = s.opt.DB.Writable(ctx)
+	s.liveAt = time.Now()
+	return s.liveErr
 }
 
 // New composes the routes.
@@ -90,7 +111,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 func (s *Server) livez(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	if err := s.opt.DB.Writable(ctx); err != nil {
+	if err := s.writable(ctx); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"service": "yyt-tracer", "live": false, "db": "unwritable"})
 		return
 	}
@@ -105,7 +126,7 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	body := map[string]any{"service": "yyt-tracer", "version": Version, "stage": s.opt.Stage, "mode": s.opt.Mode,
 		"uptimeSec": int(time.Since(s.started).Seconds()), "db": "ok", "console": "n/a"}
-	if err := s.opt.DB.Writable(ctx); err != nil {
+	if err := s.writable(ctx); err != nil {
 		body["db"], status = "unwritable", http.StatusServiceUnavailable
 	}
 	if s.opt.Ready != nil {

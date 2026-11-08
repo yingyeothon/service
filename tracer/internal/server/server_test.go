@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/yingyeothon/service/tracer/internal/metrics"
@@ -91,5 +92,22 @@ func TestComposition(t *testing.T) {
 	defer bare.Close()
 	if code, _ := get(t, bare.URL+"/v1/trc_a/events", ""); code != 404 {
 		t.Errorf("no read mux: %d", code)
+	}
+}
+
+type countingProbe struct{ n atomic.Int64 }
+
+func (p *countingProbe) Writable(context.Context) error { p.n.Add(1); return nil }
+
+func TestLivezSharesOneWriteProbe(t *testing.T) {
+	p := &countingProbe{}
+	srv := httptest.NewServer(New(Options{DB: p, Metrics: metrics.New()}))
+	defer srv.Close()
+	for range 20 {
+		get(t, srv.URL+"/livez", "")
+	}
+	get(t, srv.URL+"/healthz", "")
+	if n := p.n.Load(); n != 1 {
+		t.Fatalf("a public poller made %d DB writes", n)
 	}
 }
