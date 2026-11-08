@@ -6,7 +6,7 @@ Real envelopes as tracer received them, scrubbed, stored **decompressed**. `<nam
 | ---------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------- |
 | `sentry-android` | `sentry.java.android.flutter/8.56.0` (sentry_flutter 9.30.1, UI isolate, `FileSystemTransport`) | 2026-11-08, Android 15 emulator (`todo/85` P2) |
 | `sentry-dart`    | `sentry.dart/9.30.1` (`HttpTransport`, background isolate)                                      | 2026-11-08, same run                           |
-| `yyt-dart`       | `yyt-dart/0.2.0` (flutterlib `yingyeothon_tracer_client`)                                       | 2026-11-08, generated, not captured            |
+| `yyt-dart`       | `yyt-dart/0.3.1` (flutterlib `yingyeothon_tracer_client`)                                       | 2026-11-08, generated, not captured            |
 
 Every capture is from the throwaway app in `capture/main.dart` (chessrigado's debug options, synthetic data only), never from a real device or user.
 
