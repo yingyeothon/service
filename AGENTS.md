@@ -21,7 +21,7 @@
 - `scripts/deploy.sh <service> <stage>` — deploy one stack (`dev` for verification, `prod` on request only).
 - `scripts/smoke/*.mjs`, `wscat -s bearer -s <jwt>` — manual verification against `dev`.
 - `cd cli && go test ./... && go build ./...` — CLI.
-- `cd tracer && gofmt -l . && go vet ./... && go test -race ./...` — tracer.
+- `cd tracer && gofmt -l . && go vet ./... && go vet -tags dev ./... && go test -race ./... && go test -tags dev ./cmd/...` — tracer.
 
 ## Non-Negotiables
 

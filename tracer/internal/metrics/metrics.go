@@ -20,8 +20,9 @@ type Counters struct {
 	Rejected429       atomic.Int64
 	Rejected503       atomic.Int64
 	RejectedOther     atomic.Int64
-	// ItemsStored / ItemsDropped count envelope items (drops include unknown
-	// types, quota attachment drops and items of refused envelopes).
+	// ItemsStored / ItemsDropped count items of accepted envelopes (stored
+	// rows net of duplicates; dropped = unknown, not_stored, too_large,
+	// invalid, quota_attachment). Refused envelopes are EnvelopesRejected.
 	ItemsStored    atomic.Int64
 	ItemsDropped   atomic.Int64
 	BytesIngested  atomic.Int64
@@ -44,6 +45,7 @@ type Gauges struct {
 	VolumeFreeBytes atomic.Int64
 	VolumeUsedPct   atomic.Int64
 	StageBytesCap   atomic.Int64
+	WriterTxMaxUs   atomic.Int64
 }
 
 // CountRejection files a refused envelope under its status.
@@ -69,7 +71,7 @@ type ResourceStats struct {
 	Refused    atomic.Int64
 	Dropped    atomic.Int64
 	Bytes      atomic.Int64
-	QuotaHits  atomic.Int64
+	QuotaHits  atomic.Int64 // envelopes refused (429) or stripped of attachments by the quota
 	LastSeenMs atomic.Int64
 }
 
@@ -151,6 +153,7 @@ func (r *Registry) snapshot(detail bool) snapshot {
 			"volumeFreeBytes": g.VolumeFreeBytes.Load(),
 			"volumeUsedPct":   g.VolumeUsedPct.Load(),
 			"stageBytesCap":   g.StageBytesCap.Load(),
+			"writerTxMaxUs":   g.WriterTxMaxUs.Load(),
 		},
 		Runtime: runtimeStats(),
 	}

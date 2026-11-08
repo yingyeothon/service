@@ -169,8 +169,9 @@ CREATE INDEX sessions_res_started ON sessions(resource_id, started_ms);
 CREATE INDEX sessions_received ON sessions(received_ms);
 
 -- Items accepted and discarded, or refused, so lost volume stays visible.
--- reason: not_stored (accepted-and-counted types), unknown, quota_attachment,
--- quota_refused, disk, too_large, invalid.
+-- reason per item: not_stored (accepted-and-counted types), unknown,
+-- quota_attachment, too_large, invalid; per refused envelope (item_type
+-- 'envelope'): busy, quota_refused, disk, too_large, invalid, store_error.
 CREATE TABLE drops (
   day         TEXT NOT NULL,
   resource_id TEXT NOT NULL,

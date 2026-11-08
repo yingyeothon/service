@@ -76,3 +76,20 @@ func TestMetricsDetailNeedsBearer(t *testing.T) {
 		t.Error("no operator token must mean no detail")
 	}
 }
+
+func TestComposition(t *testing.T) {
+	ingest := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(299) })
+	read := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(298) })
+	srv := httptest.NewServer(New(Options{DB: probe{}, Metrics: metrics.New(), Ingest: ingest, Read: read}))
+	defer srv.Close()
+	for path, want := range map[string]int{"/api/trc_a/envelope/": 299, "/v1/trc_a/events": 298, "/other": 404} {
+		if code, _ := get(t, srv.URL+path, ""); code != want {
+			t.Errorf("%s: %d, want %d", path, code, want)
+		}
+	}
+	bare := httptest.NewServer(New(Options{DB: probe{}, Metrics: metrics.New()}))
+	defer bare.Close()
+	if code, _ := get(t, bare.URL+"/v1/trc_a/events", ""); code != 404 {
+		t.Errorf("no read mux: %d", code)
+	}
+}

@@ -69,7 +69,7 @@ jobs:
         with:
           go-version-file: tracer/go.mod
           cache-dependency-path: tracer/go.sum
-      - run: cd tracer && test -z "$(gofmt -l .)" && go vet ./... && go test -race ./... && CGO_ENABLED=0 go build ./...
+      - run: cd tracer && test -z "$(gofmt -l .)" && go vet ./... && go vet -tags dev ./... && go test -race ./... && go test -tags dev ./cmd/... && CGO_ENABLED=0 go build ./...
   secrets-scan:
     runs-on: ubuntu-latest
     steps:

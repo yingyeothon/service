@@ -2,7 +2,7 @@
 
 Debug-data collector for debug builds (`docs/decisions.md` _Debug collector (`tracer`)_, design in `docs/tracer.md`). Third Go module of this repository; shares nothing with `cli/` or `gateway/`. Progress: `todo/85` (machine-local).
 
-Status: P1 (skeleton matched to the design). `tracer serve` reads `TRACER_*` environment variables, opens SQLite with the design schema, answers `GET /livez`, `GET /healthz`, `GET /metrics`, and authenticates `POST /api/{trc_id}/envelope/` / `/store/` by `sha256(sentry_key)`; past auth it answers 501 (dump mode: 200). Ingest parsing (P3), the console client (P5), the read API (P6) and the image (P8) come next. Server mode (`TRACER_CONSOLE_URL`) refuses to start until P5.
+Status: P3 (local-mode ingest). `tracer serve` reads `TRACER_*` environment variables, opens SQLite with the design schema, answers `GET /livez`, `GET /healthz`, `GET /metrics`, and ingests `POST /api/{trc_id}/envelope/` / `/store/` (gzip/deflate, size caps, 4 in flight, daily quota stages, stage cap and disk line, attachments as blob files, one writer goroutine). `go build -tags dev` adds `tracer dev seed`. Server mode (`TRACER_CONSOLE_URL`) refuses to start until the console client (P5); the read API (P6), retention (P7) and the image (P8) follow.
 
 ## Configuration
 
