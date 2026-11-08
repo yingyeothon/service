@@ -61,6 +61,15 @@ jobs:
           cache-dependency-path: gateway/go.sum
       - run: cd gateway && go vet ./... && go test -race ./... && CGO_ENABLED=0 go build ./...
       - run: docker build --build-arg VERSION=0.0.0-ci gateway/
+  tracer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tracer/go.mod
+          cache-dependency-path: tracer/go.sum
+      - run: cd tracer && test -z "$(gofmt -l .)" && go vet ./... && go test -race ./... && CGO_ENABLED=0 go build ./...
   secrets-scan:
     runs-on: ubuntu-latest
     steps:

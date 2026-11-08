@@ -1,0 +1,8 @@
+{
+  "listen": "127.0.0.1:8095",
+  "db": "tracer.db",
+  "max_envelope_bytes": 20971520,
+  "projects": [
+    { "id": 1, "slug": "chessrigado", "key": "replace-with-random-hex" }
+  ]
+}

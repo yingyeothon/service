@@ -26,3 +26,10 @@ packages/console-db/src/generated/
 cli/yyt
 # Local `go build` output of the gateway binary.
 gateway/gateway
+# Local tracer binary, config (write keys) and runtime state.
+tracer/tracer
+tracer/tracer.json
+tracer/*.db
+tracer/*.db-wal
+tracer/*.db-shm
+tracer/blobs/
