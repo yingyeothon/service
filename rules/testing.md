@@ -112,3 +112,7 @@
 - Read API: golden JSON per route (field names are the skill's contract), limits and truncation, and a test that a read path cannot write. Goldens live in `tracer/testdata/read/`, seeded from the envelope fixtures through `ingest.Handler.Accept` with a fixed receive time; per-run values (blob ids) are masked. `-update` rewrites them — review the diff as a contract change.
 - Retention tests drive `Retention.Once` with an injected `Now` on a `t.TempDir()` store, with blob files whose mtimes are set explicitly (the orphan sweep has a 1 h grace).
 - Store tests open a fresh DB in `t.TempDir()`; `go test ./...` must need no CGO, Docker or network.
+
+## Long clock jumps outlive the console session (2026-11-08)
+
+- `harness()` cookies expire with the session TTL: after `h.clock.tick(<days>)` a cookie request answers 401. Tests that age a row by weeks write through the repository (`h.tracers.softDelete(id, at)`) instead of the route (`tracer-internal.test.ts`).

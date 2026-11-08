@@ -267,3 +267,7 @@
 - **Access paths, proven with `EXPLAIN` at 40,000 rows in the container suite**: `push_jobs_channel (channel_id, created_at)` for the list, `push_jobs_day (day, channel_id, dry_run)` for the daily count and the digest (`day` leads because the digest is global), `push_jobs_runnable (status, lease_until)` for the claim, `push_jobs_finished` for the retention, `push_jobs_upload` for "does an unfinished job read this upload".
 - **Retention**: uploads 2 days (object first, then the row; an upload an unfinished job reads is left), unfinished jobs failed after 3 days, finished jobs deleted after 30 — and their idempotency keys with them.
 - **Bound a table's rows by construction, not by the write slot** (2026-10-27, `todo/80`): share links capped only the _live_ rows (20 per app) while a revoked row stays until 30 days past its expiry, so a create-and-revoke loop at the 500 ms slot could pile ~86k rows a day into one app's list. A second cap on _all_ rows per app (100) closes it. Never edit the comment of a migration already applied on a stage: the checksum changes.
+
+## A grace-period delete list needs a hard-delete sweep (2026-11-08)
+
+- A "deleted more than N days ago" list served oldest-first with a page cap pins at the cap forever unless something removes old rows: newer deletes never reach the consumer. Pair every such list with a sweep that hard-deletes rows once the consumer can no longer need them (tracer: `runTracerSweep`, 7 d grace + 30 d retention + 1 d).

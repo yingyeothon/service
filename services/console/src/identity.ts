@@ -27,6 +27,33 @@ function safeOrigin(url: string): string {
   }
 }
 
+/**
+ * A `yyt_` API token → its member, touching `last_used_at` at most once per
+ * {@link TOUCH_INTERVAL_SEC}. Shared by bearer auth and tracer's
+ * `POST /tr/authz`, so both judge a token the same way.
+ */
+export async function resolveApiToken(
+  db: Pick<ConsoleDb, "findTokenIdentity" | "touchApiToken">,
+  clock: Clock,
+  bearer: string,
+): Promise<ConsoleIdentity | undefined> {
+  if (!TOKEN.test(bearer)) return undefined;
+  // One statement for the token and its member: this runs on every request.
+  const found = await db.findTokenIdentity(sha256Hex(bearer));
+  if (!found) return undefined;
+  const { token: tok, member: m } = found;
+  const now = nowSec(clock);
+  if (tok.lastUsedAt === null || now - tok.lastUsedAt >= TOUCH_INTERVAL_SEC)
+    await db.touchApiToken(tok.id, now);
+  return {
+    kind: "token",
+    subject: m.id,
+    role: m.role,
+    login: m.githubLogin,
+    tokenId: tok.id,
+  };
+}
+
 export function createIdentityResolver({
   db,
   sessions,
@@ -43,21 +70,7 @@ export function createIdentityResolver({
   return async ({ bearer, cookies, event }) => {
     // Bearer wins: the CLI never carries cookies, and the SPA never sends a bearer.
     if (bearer !== undefined) {
-      if (!TOKEN.test(bearer)) return undefined;
-      // One statement for the token and its member: this runs on every request.
-      const found = await db.findTokenIdentity(sha256Hex(bearer));
-      if (!found) return undefined;
-      const { token: tok, member: m } = found;
-      const now = nowSec(clock);
-      if (tok.lastUsedAt === null || now - tok.lastUsedAt >= TOUCH_INTERVAL_SEC)
-        await db.touchApiToken(tok.id, now);
-      return {
-        kind: "token",
-        subject: m.id,
-        role: m.role,
-        login: m.githubLogin,
-        tokenId: tok.id,
-      } satisfies ConsoleIdentity;
+      return resolveApiToken(db, clock, bearer);
     }
     const sid = cookies[SESSION_COOKIE];
     if (!sid) return undefined;

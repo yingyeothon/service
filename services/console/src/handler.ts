@@ -79,6 +79,7 @@ import { runShowSweep } from "./shows.js";
 import { runShareLinkSweep } from "./share-links.js";
 import { runLimitSweep } from "./limits.js";
 import { runPushSweep, type PushSweepResult } from "./push-sweep.js";
+import { runTracerSweep } from "./tracer-sweep.js";
 import { runPushJobSweep, type PushJobSweepResult } from "./push-job-sweep.js";
 import { createS3PushJobStore, type PushJobStore } from "./push-job-store.js";
 import { runPushJobs } from "./push-worker.js";
@@ -238,6 +239,8 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       .filter(Boolean),
     // Empty until the gateway ships: `GET /gw/channels/{id}` then answers 503.
     gatewayToken: process.env.GATEWAY_TOKEN ?? "",
+    // Empty until bootstrap-ssm.sh mints `tracer-token`: `/tr/*` then answer 503.
+    tracerToken: process.env.TRACER_TOKEN ?? "",
     // Empty until the owner uploads the app's signing fingerprint (SSM
     // `android-cert-sha256`): `/.well-known/assetlinks.json` then answers 404.
     androidCertFingerprints: (process.env.ANDROID_APP_CERT_SHA256 ?? "")
@@ -668,6 +671,7 @@ export const expire = async (): Promise<void> => {
     team,
     kvstore,
     leaderboards,
+    tracers,
     social,
     push,
     pushJobs,
@@ -851,6 +855,8 @@ export const expire = async (): Promise<void> => {
         channels: deletedAuthChannels,
         logger,
       }),
+    // Soft-deleted tracer rows long past tracer's purge and retention.
+    () => runTracerSweep({ tracers, logger }),
     () => runCatalogSweep({ catalog, artifacts, db, logger }),
     () => runShareLinkSweep({ listings, clock: systemClock, logger }),
     () => runAssetSweep({ assets, artifacts, db, logger }),

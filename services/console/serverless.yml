@@ -181,6 +181,8 @@ provider:
     # Shared secret the gateway presents on GET /gw/channels/{id}; empty until
     # the gateway ships, and the route answers 503 while it is.
     GATEWAY_TOKEN: ${ssm:${self:custom.stageSsm}/gateway-token, ""}
+    # Shared secret the stage tracer presents on /tr/*; empty until P4d mints it.
+    TRACER_TOKEN: ${ssm:${self:custom.stageSsm}/tracer-token, ""}
     # SHA-256 fingerprint(s) of the console app's release signing certificate,
     # served on /.well-known/assetlinks.json so Android verifies the app's
     # https://console…/app-open link (todo/49). Not a secret, but an identifier
@@ -511,6 +513,7 @@ functions:
       GITHUB_CLIENT_SECRET: ""
       DEBUG_KEY: ""
       GATEWAY_TOKEN: ""
+      TRACER_TOKEN: ""
 
   gatewayProbe:
     handler: src/probe-handler.gatewayProbe
@@ -524,6 +527,7 @@ functions:
       GITHUB_CLIENT_SECRET: ""
       DEBUG_KEY: ""
       GATEWAY_TOKEN: ""
+      TRACER_TOKEN: ""
     # Own entry (probe-handler.ts) since 2026-10-29. Before that it loaded the
     # whole console bundle: at 128 MB it ran at the cap, cold init outgrew the
     # 10 s init limit (2026-10-27) and the starved fetch timed out against a
@@ -577,6 +581,7 @@ functions:
       GITHUB_CLIENT_SECRET: ""
       DEBUG_KEY: ""
       GATEWAY_TOKEN: ""
+      TRACER_TOKEN: ""
     # Its own role (`CdnGuardRole` below): the only one in the stack allowed
     # to update a distribution, and only the three it may disable.
     role: CdnGuardRole

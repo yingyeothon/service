@@ -46,6 +46,8 @@ export const URLS = {
 };
 /** 32+ chars, as `createGatewayRoutes` requires. */
 export const GATEWAY_TOKEN = "gw_" + "0123456789abcdef".repeat(2) + "ff";
+/** 32+ chars, as `createTracerInternalRoutes` requires. */
+export const TRACER_TOKEN = "trt_" + "fedcba9876543210".repeat(2) + "ee";
 export const STAGE = "dev";
 export const CDN = "https://dev-d.yyt.life";
 export const SITE_CDN = "https://dev-g.yyt.life";
@@ -294,6 +296,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     github: createGithubLogin({ clientId: "cid", clientSecret: "csec", fetch }),
     adminLogins: ["Boss"],
     gatewayToken: GATEWAY_TOKEN,
+    tracerToken: TRACER_TOKEN,
     redisAcl,
     redisEndpoint: REDIS_ENDPOINT,
     state,

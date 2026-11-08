@@ -111,6 +111,7 @@ import { createWriteSlot } from "./write-slot.js";
 import { createTokenMinter } from "./api-token.js";
 import { createAppHandoffRoutes } from "./app-handoff.js";
 import { createGatewayRoutes } from "./gateway.js";
+import { createTracerInternalRoutes } from "./tracer-internal.js";
 import { createTeamRoutes } from "./team.js";
 import { createTeamAccess } from "./team-access.js";
 import {
@@ -220,6 +221,8 @@ export interface ConsoleAppOptions {
   adminLogins: string[];
   /** Shared secret the realtime gateway presents on `GET /gw/channels/{id}`; empty disables it. */
   gatewayToken?: string;
+  /** Shared secret the stage's tracer presents on `/tr/*`; empty disables them. */
+  tracerToken?: string;
   /**
    * Mints the per-channel Redis credentials a participant's game Lambda uses.
    * Omit when the stage has no issuer account: `/channels/{id}/redis-user`
@@ -326,6 +329,7 @@ export function createConsoleApp({
   logger = nullLogger,
   extraRoutes = [],
   gatewayToken = "",
+  tracerToken = "",
   redisAcl,
   redisEndpoint = { host: "", port: 6379 },
   state,
@@ -1277,6 +1281,19 @@ export function createConsoleApp({
     logger,
   });
 
+  if (tracerToken !== "" && tracerToken === gatewayToken)
+    logger.error("TRACER_TOKEN equals GATEWAY_TOKEN: tracer routes disabled");
+  const tracerInternalRoutes = createTracerInternalRoutes({
+    db,
+    team,
+    tracers,
+    // One secret for two principals would let either act as the other.
+    token:
+      tracerToken !== "" && tracerToken === gatewayToken ? "" : tracerToken,
+    clock,
+    logger,
+  });
+
   const channelRedisRoutes = createChannelRedisRoutes({
     access,
     admin: redisAcl,
@@ -1531,6 +1548,7 @@ export function createConsoleApp({
       ...pushRoutes,
       ...pushCampaignRoutes,
       ...gatewayRoutes,
+      ...tracerInternalRoutes,
     ],
     identity: createIdentityResolver({
       db,
