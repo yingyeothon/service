@@ -37,6 +37,18 @@ func fakeWS(t *testing.T, serve func(i int, tok string, c *websocket.Conn)) stri
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
+// hold keeps a fake server conn open until the client goes away. A handler
+// parked in `select {}` leaves the hijacked conn unreachable, and the GC's
+// netFD finalizer closes it: the client sees EOF mid-test (macOS CI flake,
+// 2026-11-08).
+func hold(c *websocket.Conn) {
+	for {
+		if _, _, err := c.ReadMessage(); err != nil {
+			return
+		}
+	}
+}
+
 func runSmoke(t *testing.T, args ...string) (string, error) {
 	var out, errb bytes.Buffer
 	root := NewRoot(&App{Out: &out, Err: &errb})
@@ -86,7 +98,7 @@ func TestSmokeMatchSuccess(t *testing.T) {
 func TestSmokeMatchFailedAndRejected(t *testing.T) {
 	url := fakeWS(t, func(_ int, _ string, c *websocket.Conn) {
 		_ = c.WriteJSON(map[string]any{"type": "failed", "reason": "timeout"})
-		select {}
+		hold(c)
 	})
 	out, err := runSmoke(t, "smoke", "match", "--url", url, "--jwt", "ok1", "--timeout", "10s")
 	if err == nil || !strings.Contains(err.Error(), "1 of 1") {
@@ -111,7 +123,7 @@ func TestSmokeMatchFailedAndRejected(t *testing.T) {
 }
 
 func TestSmokeMatchTimeout(t *testing.T) {
-	url := fakeWS(t, func(int, string, *websocket.Conn) { select {} })
+	url := fakeWS(t, func(_ int, _ string, c *websocket.Conn) { hold(c) })
 	_, err := runSmoke(t, "smoke", "match", "--url", url, "--jwt", "ok1", "--timeout", "500ms")
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("err=%v", err)
@@ -151,7 +163,7 @@ func TestSmokeTopic(t *testing.T) {
 		if i == 0 {
 			_ = c.WriteJSON(map[string]any{"type": "expired"})
 		}
-		select {}
+		hold(c)
 	})
 	out, err = runSmoke(t, "smoke", "topic", "--url", url2, "--jwt", "ok1", "--jwt", "ok2", "--wait", "1s")
 	if err == nil || !strings.Contains(err.Error(), "1 of 2") {
