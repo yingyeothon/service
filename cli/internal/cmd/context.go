@@ -36,7 +36,7 @@ const ContextFile = ".yyt.json"
 // with the two copies in services/console/src (channels.ts, team.ts); `push`
 // joined all three on 2026-10-06, after both stages were checked for a stored
 // name starting with `push_`.
-var idLike = regexp.MustCompile(`^(?i)(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|push|m|tok|dbg|up)_`)
+var idLike = regexp.MustCompile(`^(?i)(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|push|m|tok|dbg|up|trc)_`)
 
 // IsID reports whether s is addressed as an id rather than a name.
 func IsID(s string) bool { return idLike.MatchString(s) }

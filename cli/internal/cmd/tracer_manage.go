@@ -42,9 +42,8 @@ type tracerResource struct {
 
 const tracerResourceOutput = "the resource as key/value lines (id, name, project, description, writeKey, dsn, readUrl, backup, createdBy, created, updated; every value on one line); --json: {id,name,writeKey,dsn,readUrl,noBackup,…}"
 
-// tracer resolves a tracer resource id or name. The `trc_` prefix is not in
-// the shared id grammar yet (the gated ID_LIKE commit, todo/85 P4 note), so it
-// is recognised here.
+// tracer resolves a tracer resource id or name (`trc_` is in the shared id
+// grammar, IsID).
 func (c *ctxClient) tracer(ctx context.Context, arg string, write bool) (string, error) {
 	// Ids are minted lowercase; an id typed in capitals means the same row.
 	if strings.HasPrefix(strings.ToLower(arg), "trc_") {

@@ -82,9 +82,12 @@ const ID = /^[a-z0-9_-]{3,40}$/;
  *
  * `push` (2026-10-06) went in the same way, with the `push` channel kind:
  * both stages were checked that day and no stored name starts with `push_`.
+ *
+ * `trc` (2026-11-08, tracer resources) the same way: prod had no `trc_` name;
+ * dev's only ones were soft-deleted tracer rows, renamed to their id.
  */
 const ID_LIKE =
-  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|push|m|tok|dbg|up)_/i;
+  /^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|push|m|tok|dbg|up|trc)_/i;
 const name = z
   .string()
   .trim()

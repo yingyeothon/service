@@ -12,7 +12,7 @@ import { listParams, searchQuery } from "./list-query.js";
 import { LIMITS, overLimit, resolveLimits } from "./limits.js";
 import type { ConsoleIdentity } from "./identity.js";
 import type { CrumbResolver, ResourceHistory } from "./resources.js";
-import { resourceName, RESOURCE_NAME_MESSAGE } from "./team.js";
+import { resourceName } from "./team.js";
 import { parseTracerUrl } from "./tracer-url.js";
 
 export { parseTracerUrl };
@@ -37,15 +37,8 @@ export const TRACERS_PER_PROJECT_SOFT = LIMITS["tracer.resources"].soft;
 /** The write key's bytes; hex-encoded it is 32 characters. */
 const WRITE_KEY_BYTES = 16;
 
-/**
- * `resourceName`, plus a `trc_` refusal: a name in the id shape could never be
- * addressed by name in the CLI. The gated `ID_LIKE` commit (todo/85 P4 note)
- * adds `trc` to the shared rule and makes this refinement redundant.
- */
-const tracerName = resourceName.refine(
-  (s) => !/^trc_/i.test(s),
-  RESOURCE_NAME_MESSAGE,
-);
+/** `resourceName`: its `ID_LIKE` refuses `trc_…` with every other id prefix. */
+const tracerName = resourceName;
 const description = z.string().max(2000);
 
 export const tracerCreateBody = z
