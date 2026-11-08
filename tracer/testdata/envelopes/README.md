@@ -6,8 +6,11 @@ Real envelopes as tracer received them, scrubbed, stored **decompressed**. `<nam
 | ---------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------- |
 | `sentry-android` | `sentry.java.android.flutter/8.56.0` (sentry_flutter 9.30.1, UI isolate, `FileSystemTransport`) | 2026-11-08, Android 15 emulator (`todo/85` P2) |
 | `sentry-dart`    | `sentry.dart/9.30.1` (`HttpTransport`, background isolate)                                      | 2026-11-08, same run                           |
+| `yyt-dart`       | `yyt-dart/0.2.0` (flutterlib `yingyeothon_tracer_client`)                                       | 2026-11-08, generated, not captured            |
 
 Every capture is from the throwaway app in `capture/main.dart` (chessrigado's debug options, synthetic data only), never from a real device or user.
+
+`yyt-dart/report.envelope` is the one fixture of a yyt library (_Wire contract for client libraries_ in `docs/tracer.md`): the report envelope (event with breadcrumbs, tags, contexts and an exception with frames; the buffered log container with typed attributes; a 1×1 PNG screenshot; a view-hierarchy JSON) written by flutterlib's `packages/yingyeothon_tracer_client/test/golden_test.dart` with a fixed clock and fixed ids, byte-identical to `test/golden/report.envelope` there. That test pins its bytes and checks the fields tracer stores; here `internal/ingest` and `tracer dev seed` count its rows; the read goldens (`testdata/read/`, `internal/query`) seed only the captured `sentry-*` envelopes, so a client release never rewrites the read contract. When the library changes its output, regenerate it there (`UPDATE_GOLDEN=1`) and copy it here unchanged. It carries the fixture values below and no device data. Its `meta.json` is written by hand from the headers the library sends.
 
 ## Fixture values
 

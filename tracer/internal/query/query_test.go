@@ -61,7 +61,10 @@ func newReadEnv(t *testing.T) *readEnv {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ing := ingest.New(ingest.Options{Source: src, Writer: w, BlobDir: blobs, Log: quiet})
 	res, _ := src.Lookup(ctx, resID)
-	files, _ := filepath.Glob("../../testdata/envelopes/*/*.envelope")
+	// The captured SDK envelopes only: the read goldens are the contract
+	// with `yyt tracer` and the skill, and a library fixture (yyt-*) would
+	// rewrite them on every client release.
+	files, _ := filepath.Glob("../../testdata/envelopes/sentry-*/*.envelope")
 	for _, f := range files {
 		b, _ := os.ReadFile(f)
 		if _, err := ing.Accept(ctx, res, bytes.NewReader(b), fixedNow); err != nil {
