@@ -2,7 +2,7 @@
 
 ## Project Shape
 
-- `yingyeothon/service`: contest-support services deployed with Serverless Framework 4 on AWS (`ap-northeast-2`, `AWS_PROFILE=yyt`). Four stacks — `services/{auth,console,topic,match}` — plus shared `packages/*`, the console SPA in `apps/console-web`, and a Go CLI in `cli/`.
+- `yingyeothon/service`: contest-support services deployed with Serverless Framework 4 on AWS (`ap-northeast-2`, `AWS_PROFILE=yyt`). Four stacks — `services/{auth,console,topic,match}` — plus shared `packages/*`, the console SPA in `apps/console-web`, a Go CLI in `cli/`, the Go realtime gateway in `gateway/`, and the Go debug collector in `tracer/` (designed, skeleton only — `docs/tracer.md`).
 - Source of truth, in order: `docs/decisions.md` (confirmed product/tech decisions) → `todo/index.md` (progress + next work; **`todo/` is gitignored and machine-local** — it may mention infra details) → `todo/NN-*.md` (per-area checklists) → `docs/auth-game-contract.md` (JWT contract shared with tslib games).
 - Sibling repo `~/git/yyt.life/tslib` (`@yingyeothon/*`) owns game-loop libraries; this repo must stay compatible with its JWT/WebSocket contracts but never duplicates its code.
 - All documentation, `rules/`, and code comments are written in English: concise, facts only. Chat with the user may be in Korean.
@@ -21,6 +21,7 @@
 - `scripts/deploy.sh <service> <stage>` — deploy one stack (`dev` for verification, `prod` on request only).
 - `scripts/smoke/*.mjs`, `wscat -s bearer -s <jwt>` — manual verification against `dev`.
 - `cd cli && go test ./... && go build ./...` — CLI.
+- `cd tracer && gofmt -l . && go vet ./... && go test -race ./...` — tracer.
 
 ## Non-Negotiables
 

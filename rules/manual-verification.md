@@ -74,6 +74,13 @@
 - Channel config edits reach match/topic only after their 60 s `chcfg` Redis cache expires: a smoke that rewrites `callbackUrl` right before connecting gets `failed/callback` on the first match — wait a minute and rerun before debugging.
 - Do not send `ping` right after `matched` in a match smoke: the server has already released the ticket and answers `failed:closed`.
 
+## tracer (`tracer/`, 2026-11-08)
+
+- Local first: `tracer serve` in local mode (loopback, `tracer.json` resources and a static read token) with a temp DB; `curl` captured fixtures plain and gzipped to `/api/{trc}/envelope/` with `X-Sentry-Auth`, expect `200 {"id":…}`; a wrong key 401; a repeated envelope one row.
+- Debug-only state hook: `tracer dev seed <fixture…>` (build tag `dev`, absent from the image, never over HTTP) loads fixtures straight into a DB, optionally re-stamped to now, so read routes and the skill are verified without a device.
+- The acceptance test is the agent loop: from an app repository, the `tracer-debug` skill reaches event → timeline → screenshot unaided, first against the local binary, then against `trace-dev` with a `--profile dev` token.
+- On `dev`: `/healthz`, a fixture envelope over HTTPS, `yyt tracer issues --profile dev`, and the container's measured RSS against the 64 MB cap. Then a real debug APK pointed at the dev DSN.
+
 ## Console app (Flutter) release
 
 - Build: `cd apps/console-app && flutter test && flutter build apk --release` (signing from gitignored `android/key.properties`); publish with the `yyt … catalog artifact upload` line in `apps/console-app/README.md` (`--profile prod` for prod). Re-uploading the same `version` tag needs the old artifact deleted first.

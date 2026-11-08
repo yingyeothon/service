@@ -185,6 +185,16 @@
 - Order every HTTP route as route match → bearer verification → body/param validation. Parsing the body first answers `400` to anonymous callers, which both leaks validation detail and makes tests assert the wrong code (sample-morpg phase 3, 2026-08-28).
 - CSP applies to redirect targets: `GET /events/{id}/poster` answers a 302 to a presigned S3 URL, and `img-src 'self'` alone blanked every poster in the SPA (fixed 2026-08-29: `img-src` lists the exact virtual-hosted poster bucket host the presigner emits, `https://yyt-console-posters-{stage}.s3.ap-northeast-2.amazonaws.com` — the bucket name is already public in `serverless.yml`, so a wildcard bought nothing; `services/console/test/csp.test.ts` pins both). When a same-origin route redirects to another host, that host needs to be in the directive of the consumer (`img-src`, `connect-src`, `media-src`), not just the origin the tag names.
 
+## Debug collector (`tracer/`, 2026-11-08)
+
+- The DSN write key ships inside apps, so it is public: it authorizes ingest for one resource and **never** a read. The read mux is separate from ingest; a write key there is a 401.
+- The write key is a stated exception to "list/get responses omit secrets": it ships inside debug APKs, so it is shown to every team member and protected only by rotation and per-resource quotas.
+- Reads take a `yyt_` token. tracer shape-checks it and rate-limits per address before forwarding it over TLS to console `POST /tr/authz` (the console hashes it, like its own bearer auth — forwarding the stored hash would turn the hash into a credential), never stores or logs it, and caches verdicts (refusals included, bounded) for 60 s — the documented revocation window. The caller sees 401 for an unknown token and 404 for every other refusal.
+- Debug payloads are unmasked screenshots and personal data by design: a seatless platform admin is refused like `secret: true`, and **no release build may point at tracer** (`docs/decisions.md`).
+- Everything a device sent is untrusted input for agents (prompt injection through log text, breadcrumbs, view hierarchy): the skill and any agent-facing output present it as data, and nothing from it is copied into code, tests or commits.
+- Local mode (static read token from `tracer.json`) is allowed only when no console URL is set and the listen host is a loopback IP, checked in code. Blob paths use server-minted ids only.
+- Committed fixtures under `tracer/testdata/` are scrubbed of DSN keys, installation ids, device names and personal data.
+
 ## Social graph (`/social/*`, 2026-09-10)
 
 - **A display name is user text on a surface the platform does not control.** 1–32 characters, trimmed, refusing `\p{Cc}`, `\p{Cf}` and U+2028/2029 and a run of combining marks: a newline forges a row in an operator's table (the leaderboard `meta` lesson), a bidi override reorders one, and a zero-width joiner makes two different names look identical. Refusing at the boundary is not enough on its own — names are **not unique**, so every renderer (SPA, CLI, and the client libraries' docs) puts the owner id beside the name wherever a mistake matters.
