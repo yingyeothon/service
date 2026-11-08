@@ -71,6 +71,9 @@ function scopeUrl(r: LimitRequest): string {
       return kvUrl(r.scope.id);
     case "site":
       return `/sites/${encodeURIComponent(r.scope.id)}`;
+    case "tracer":
+      // No tracer resource page yet (todo/85 P12): its team.
+      return teamUrl(r.teamId);
   }
 }
 

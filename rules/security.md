@@ -267,3 +267,7 @@
 - Keep move targets blocked during copying and retire the old prefix before switching. An in-place domain claim has no old prefix to block.
 
 - Count password length in the same Unicode code points on every surface; UTF-16 length and UTF-8 header bytes are different bounds. Size the edge Authorization limit for the longest accepted encoded credential and test non-ASCII boundary values. Strength grades are local advice, never validation or a remote scoring request.
+
+## A shared secret guard covers both directions (2026-11-08)
+
+- When a route refuses a misconfigured shared secret (too short, equal to another principal's), the outbound client that sends the same secret must get the same sanitised value (`effectiveTracerToken`): otherwise console keeps presenting the reused secret to the peer while the inbound side is disabled. And an answer from that peer is bounded (body bytes, entry count) and its ids are matched against our own rows before they reach text or dedupe keys (`tracer-usage.ts`, the digest's tracer lines).

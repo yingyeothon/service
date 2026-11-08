@@ -89,7 +89,15 @@ import {
 } from "./leaderboard.js";
 import { createTracerRoutes } from "./tracer.js";
 import { createKitConfigRoutes } from "./kit-config.js";
-import { createLimitRoutes, type LimitNotify } from "./limits.js";
+import {
+  createLimitRoutes,
+  resolveLimits,
+  type LimitNotify,
+} from "./limits.js";
+import {
+  createTracerUsageClient,
+  type TracerUsageClient,
+} from "./tracer-usage.js";
 import { createEventRoutes } from "./events.js";
 import { canReadShow, createShowRoutes } from "./shows.js";
 import {
@@ -111,7 +119,10 @@ import { createWriteSlot } from "./write-slot.js";
 import { createTokenMinter } from "./api-token.js";
 import { createAppHandoffRoutes } from "./app-handoff.js";
 import { createGatewayRoutes } from "./gateway.js";
-import { createTracerInternalRoutes } from "./tracer-internal.js";
+import {
+  createTracerInternalRoutes,
+  effectiveTracerToken,
+} from "./tracer-internal.js";
 import { createTeamRoutes } from "./team.js";
 import { createTeamAccess } from "./team-access.js";
 import {
@@ -158,6 +169,8 @@ export interface ConsoleAppOptions {
    * container is reachable, and tracer views then carry `dsn`/`readUrl: null`.
    */
   tracerUrl?: string;
+  /** Console → tracer usage reads; defaults to a client on `tracerUrl` + `tracerToken`. */
+  tracerUsage?: TracerUsageClient;
   /** Profiles and relations; the state stack serves `/social/*` from the same tables. */
   social: SocialDb;
   /** Limit requests and overrides (docs/decisions.md *Limit requests*). */
@@ -303,6 +316,7 @@ export function createConsoleApp({
   leaderboards,
   tracers,
   tracerUrl = "",
+  tracerUsage,
   social,
   limits,
   push,
@@ -1283,13 +1297,21 @@ export function createConsoleApp({
 
   if (tracerToken !== "" && tracerToken === gatewayToken)
     logger.error("TRACER_TOKEN equals GATEWAY_TOKEN: tracer routes disabled");
+  const tracerBearer = effectiveTracerToken(tracerToken, gatewayToken);
+  const tracerUsageClient =
+    tracerUsage ??
+    createTracerUsageClient({ tracerUrl, token: tracerBearer, logger });
   const tracerInternalRoutes = createTracerInternalRoutes({
     db,
     team,
     tracers,
-    // One secret for two principals would let either act as the other.
-    token:
-      tracerToken !== "" && tracerToken === gatewayToken ? "" : tracerToken,
+    // The raw value: the routes log a short one themselves.
+    token: tracerToken === gatewayToken ? "" : tracerToken,
+    // The effective `tracer.dailyBytes`, which tracer enforces.
+    dailyBytes: async (id) =>
+      (await resolveLimits(limits, [{ kind: "tracer", id }], nowSec(clock)))(
+        "tracer.dailyBytes",
+      ),
     clock,
     logger,
   });
@@ -1379,6 +1401,7 @@ export function createConsoleApp({
 
   const tracerRoutes = createTracerRoutes({
     tracers,
+    limits,
     access,
     crumbs,
     history,
@@ -1426,6 +1449,8 @@ export function createConsoleApp({
     assets,
     kvstore,
     sites,
+    tracers,
+    tracerUsage: tracerUsageClient,
     push,
     pushJobs,
     access,

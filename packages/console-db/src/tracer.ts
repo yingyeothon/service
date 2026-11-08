@@ -353,8 +353,7 @@ export interface MemoryTracerDeps {
   loginOf?: (id: string) => string;
   /**
    * The limit rows' half of a soft delete (pending requests cancelled,
-   * overrides dropped), run in the same step. Unwired until the limits fake
-   * knows the `tracer` scope kind (todo/85 P4c).
+   * overrides dropped), run in the same step.
    */
   tracersDeleted?: (ids: readonly string[], at: number) => void;
   /** The `ON DELETE CASCADE` of the limit rows naming a purged resource. */

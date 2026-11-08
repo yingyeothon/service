@@ -80,6 +80,8 @@ import { runShareLinkSweep } from "./share-links.js";
 import { runLimitSweep } from "./limits.js";
 import { runPushSweep, type PushSweepResult } from "./push-sweep.js";
 import { runTracerSweep } from "./tracer-sweep.js";
+import { effectiveTracerToken } from "./tracer-internal.js";
+import { createTracerUsageClient, noTracerUsage } from "./tracer-usage.js";
 import { runPushJobSweep, type PushJobSweepResult } from "./push-job-sweep.js";
 import { createS3PushJobStore, type PushJobStore } from "./push-job-store.js";
 import { runPushJobs } from "./push-worker.js";
@@ -781,6 +783,20 @@ export const expire = async (): Promise<void> => {
       const redis = redisAcl
         ? await runRedisUsageReport({ admin: redisAcl, stage, logger })
         : undefined;
+      const tracerBearer = effectiveTracerToken(
+        process.env.TRACER_TOKEN ?? "",
+        process.env.GATEWAY_TOKEN ?? "",
+      );
+      const tracerUsage = createTracerUsageClient({
+        tracerUrl: process.env.TRACER_URL ?? "",
+        token: tracerBearer,
+        logger,
+      });
+      // A stage without a tracer has nothing to report, not a failing source.
+      const tracerDigest =
+        tracerUsage === noTracerUsage
+          ? undefined
+          : { usage: tracerUsage, tracers };
       await runUsageDigest({
         stage,
         redis,
@@ -794,6 +810,7 @@ export const expire = async (): Promise<void> => {
           jobSweep: pushJobSweep,
           channels: db,
         },
+        tracer: tracerDigest,
         metrics: createCloudWatchUsageMetrics({ region: env("AWS_REGION") }),
         bucket: process.env.ARTIFACT_BUCKET || undefined,
         distributions: cdnDistributionsFromEnv(process.env, {

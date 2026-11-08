@@ -1,6 +1,7 @@
 import { AppError, nowSec, randomHex, ulid, type Clock } from "@yyt/core";
 import {
   TRACER_SORT_KEYS,
+  type LimitsDb,
   type TracerDb,
   type TracerMeta,
   type TracerRow,
@@ -8,9 +9,13 @@ import {
 import { defineRoute, json, type AnyRoute } from "@yyt/http";
 import { z } from "zod";
 import { listParams, searchQuery } from "./list-query.js";
+import { LIMITS, overLimit, resolveLimits } from "./limits.js";
 import type { ConsoleIdentity } from "./identity.js";
 import type { CrumbResolver, ResourceHistory } from "./resources.js";
 import { resourceName, RESOURCE_NAME_MESSAGE } from "./team.js";
+import { parseTracerUrl } from "./tracer-url.js";
+
+export { parseTracerUrl };
 import type { ResourceAccess, TeamAccessHelpers } from "./team-access.js";
 
 /*
@@ -26,12 +31,8 @@ import type { ResourceAccess, TeamAccessHelpers } from "./team-access.js";
  * like `secret: true`, and the project list leaves the key and the DSN out.
  */
 
-/**
- * Resources one project may hold.
- * TODO(todo/85 P4c): read the effective `tracer.resources` limit (soft 5,
- * hard 20) from the limits registry instead of this soft value.
- */
-export const TRACERS_PER_PROJECT_SOFT = 5;
+/** Resources one project may hold without a grant: `tracer.resources` soft. */
+export const TRACERS_PER_PROJECT_SOFT = LIMITS["tracer.resources"].soft;
 
 /** The write key's bytes; hex-encoded it is 32 characters. */
 const WRITE_KEY_BYTES = 16;
@@ -72,8 +73,8 @@ export interface TracerRoutesOptions {
    * rule, decisions #5).
    */
   tracerUrl: string;
-  /** Per-project cap; defaults to {@link TRACERS_PER_PROJECT_SOFT}. */
-  maxPerProject?: number;
+  /** The project's `tracer.resources` grant, if any. */
+  limits: Pick<LimitsDb, "listOverrides">;
   clock: Clock;
   /** The per-member slot every recorded write takes. */
   writeSlot: (id: ConsoleIdentity) => Promise<void>;
@@ -85,33 +86,13 @@ export interface TracerRoutesOptions {
   ) => Promise<void>;
 }
 
-/**
- * Parses `TRACER_URL` once, at construction: a malformed value is a deploy
- * mistake and is ignored (logged) and treated as unset like every other configuration error,
- * rather than handing out a DSN nobody can use.
- */
-export function parseTracerUrl(raw: string): URL | undefined {
-  const t = raw.trim();
-  if (t === "") return undefined;
-  let u: URL;
-  try {
-    u = new URL(t);
-  } catch {
-    throw new Error("TRACER_URL is not a URL");
-  }
-  if (u.protocol !== "https:") throw new Error("TRACER_URL must be https");
-  if (u.username || u.password || u.search || u.hash || u.pathname !== "/")
-    throw new Error("TRACER_URL must be a bare origin");
-  return u;
-}
-
 export function createTracerRoutes({
   tracers,
   access,
   crumbs,
   history,
   tracerUrl,
-  maxPerProject = TRACERS_PER_PROJECT_SOFT,
+  limits,
   clock,
   writeSlot,
   audit,
@@ -217,9 +198,17 @@ export function createTracerRoutes({
       handler: async (ctx) => {
         const a = await projectAccess(ctx, ctx.params.prj!, { secret: true });
         await writeSlot(a.id);
+        const limit = await resolveLimits(
+          limits,
+          [{ kind: "project", id: a.project.id }],
+          now(),
+        );
+        const maxPerProject = limit("tracer.resources");
         if ((await tracers.countResources(a.project.id)) >= maxPerProject)
-          throw new AppError(
+          throw overLimit(
             "conflict",
+            "tracer.resources",
+            maxPerProject,
             `at most ${maxPerProject} tracer resources per project`,
           );
         await requireFreeName(a.team.id, ctx.body.name);

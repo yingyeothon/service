@@ -414,25 +414,29 @@ Status: decided and built 2026-09-28 (`todo/46` P1); live on dev and prod 2026-0
 
 1. **Registry.** One code table (`services/console/src/limits.ts`) lists every key with its scope, unit, soft and hard value; changing a hard value is a code and decisions change. The effective limit is an unexpired override, else the soft value. An override is validated against hard, `unlimited` exists only where hard is unlimited, and a key is accepted only for its own scope kind. A key may carry a **step**: it is then asked for only as `effective + step`, and only once the usage has reached the effective value (#2).
 
-   | Key                       | Scope      | Soft       | Hard      | Step |
-   | ------------------------- | ---------- | ---------- | --------- | ---- |
-   | `asset.fileBytes`         | bundle     | 2 MiB      | 256 MiB   |      |
-   | `asset.bundleBytes`       | bundle     | 20 MiB     | 3 GiB     |      |
-   | `asset.projectBytes`      | project    | 400 MiB    | 5 GiB     |      |
-   | `asset.bundlesPerProject` | project    | 20         | 50        |      |
-   | `asset.versionsPerBundle` | bundle     | 50         | 500       |      |
-   | `asset.filesPerVersion`   | bundle     | 200        | 5,000     |      |
-   | `asset.filesPerBundle`    | bundle     | 10,000     | 20,000    |      |
-   | `asset.mutableFileBytes`  | bundle     | 256 KiB    | 4 MiB     |      |
-   | `channel.lifetime`        | channel    | now + 28 d | unlimited |      |
-   | `team.projects`           | team       | 20         | 1,000     | 5    |
-   | `kv.maxEntries`           | collection | 10,000     | 100,000   |      |
-   | `kv.maxEntriesPerOwner`   | collection | 100        | 1,000     |      |
-   | `kv.collections`          | project    | 20         | 100       |      |
-   | `push.appsPerTeam`        | team       | 2          | 5         | 1    |
-   | `site.zipBytes`           | site       | 5 MiB      | 64 MiB    |      |
-   | `site.files`              | site       | 2,000      | 10,000    |      |
-   | `site.extractedBytes`     | site       | 50 MiB     | 256 MiB   |      |
+   | Key                       | Scope      | Soft       | Hard      | Step   |
+   | ------------------------- | ---------- | ---------- | --------- | ------ |
+   | `asset.fileBytes`         | bundle     | 2 MiB      | 256 MiB   |        |
+   | `asset.bundleBytes`       | bundle     | 20 MiB     | 3 GiB     |        |
+   | `asset.projectBytes`      | project    | 400 MiB    | 5 GiB     |        |
+   | `asset.bundlesPerProject` | project    | 20         | 50        |        |
+   | `asset.versionsPerBundle` | bundle     | 50         | 500       |        |
+   | `asset.filesPerVersion`   | bundle     | 200        | 5,000     |        |
+   | `asset.filesPerBundle`    | bundle     | 10,000     | 20,000    |        |
+   | `asset.mutableFileBytes`  | bundle     | 256 KiB    | 4 MiB     |        |
+   | `channel.lifetime`        | channel    | now + 28 d | unlimited |        |
+   | `team.projects`           | team       | 20         | 1,000     | 5      |
+   | `kv.maxEntries`           | collection | 10,000     | 100,000   |        |
+   | `kv.maxEntriesPerOwner`   | collection | 100        | 1,000     |        |
+   | `kv.collections`          | project    | 20         | 100       |        |
+   | `push.appsPerTeam`        | team       | 2          | 5         | 1      |
+   | `site.zipBytes`           | site       | 5 MiB      | 64 MiB    |        |
+   | `site.files`              | site       | 2,000      | 10,000    |        |
+   | `site.extractedBytes`     | site       | 50 MiB     | 256 MiB   |        |
+   | `tracer.resources`        | project    | 5          | 20        |        |
+   | `tracer.dailyBytes`       | tracer     | 50 MiB     | 300 MiB   | 50 MiB |
+
+   The two `tracer.*` keys (2026-11-08, _Debug collector (`tracer`)_ #9, migration `m0038`, a seventh scope kind `tracer`): `tracer.resources` is checked by the resource create route; `tracer.dailyBytes` is enforced by tracer, which reads the effective value from `GET /tr/resources/{id}`. Its usage is today's bytes from tracer's `GET /tr/usage` and is unknown (`null`) whenever tracer cannot answer, so a stepped request is refused on a blind read rather than passing on 0. The approval screen carries the resource's last 7 days (`recentUsage`), and the daily digest names resources that hit their quota the previous UTC day. A tracer resource is soft-deleted: its pending requests are cancelled and overrides dropped in the delete's transaction (the `collection` rule); the row purge cascades.
 
    The three `site.*` keys (decided 2026-10-10, `todo/58`, migration `m0030_site_limit_scope`, a sixth scope kind, `site`; live on dev 2026-10-10 and prod 2026-10-11) replace the fixed upload caps of _Static sites_ §4: their soft values are those caps, and a platform admin raises them per site, never stage-wide. The hard values are what one `siteDeploy` run can hold: the worker keeps the whole zip and every inflated file in memory, so 64 MiB + 256 MiB sets the function at **1024 MB** (billed only while a deploy runs, one at a time; measured on dev 2026-10-10 at the hard values: 48 s, 786 MB peak); should a measured deploy not fit, the worker moves to streaming extraction rather than the ceiling moving up. Transfer is the CDN guard's business (_CDN cost guard_): the owner chose these numbers on the condition that the guard watches both site hosts and trips on them, which was checked on dev and prod the same day, and a guard that stops holding re-opens the hard values. Usage is the live deploy's zip size, extracted size and file count, absent while a site has no live upload (after a move only the file count is known). The presign checks `site.zipBytes`, and commit re-checks the zip size against the then-effective values and **pins all three on the deploy row**; the worker reads the row and never the registry, so a grant revoked while a zip waits in the queue changes nothing already committed, and a refusal names the key (409, `details: {limit, value}`, as the asset routes do). A site is hard-deleted, and `site_id` cascades (#6). `SITE_DEPLOYS_PER_HOUR` and the per-member budgets are unchanged and are not limit keys.
 

@@ -14,6 +14,7 @@ import type {
   PushSendStats,
   SocialChannelUsage,
   SocialDb,
+  TracerDb,
 } from "@yyt/console-db";
 import {
   PUSH_APPS_PER_PROJECT,
@@ -21,6 +22,7 @@ import {
   pushTokenCapOf,
 } from "@yyt/console-db";
 import type { Kv } from "@yyt/redis";
+import type { TracerUsageClient } from "./tracer-usage.js";
 import {
   CloudWatchClient,
   GetMetricStatisticsCommand,
@@ -243,6 +245,15 @@ export interface UsageDigestOptions {
   };
   /** Limit requests; omitted leaves the pending-request line out. */
   limits?: Pick<LimitsDb, "countPending">;
+  /**
+   * Tracer resources that dropped data for quota on the previous UTC day
+   * (docs/tracer.md *Limits and raise requests*); omitted, or tracer
+   * unreachable, leaves the lines out.
+   */
+  tracer?: {
+    usage: Pick<TracerUsageClient, "quotaHits">;
+    tracers: Pick<TracerDb, "findNamesByIds">;
+  };
   /** Asset uploads; omitted leaves the stuck-completion line out. */
   assets?: Pick<AssetsDb, "countStuckUploads">;
   kv: Kv;
@@ -342,6 +353,7 @@ export async function runUsageDigest({
   social,
   push,
   limits,
+  tracer,
   assets,
   kv,
   notify,
@@ -430,6 +442,38 @@ export async function runUsageDigest({
         kind: "limits:pending",
         type: "daily",
         text: `pending limit requests: ${pending.count} (oldest ${days}d)`,
+      });
+    }
+  }
+
+  if (tracer) {
+    const day = new Date((nowSec(clock) - 86400) * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const hits = await attempt("tracer", async () => {
+      const r = await tracer.usage.quotaHits(day);
+      // Unreachable is a failing source, not an empty one; yesterday's
+      // crossings are then not reported again (tracer's `drops` keep them).
+      if (r === null) throw new Error("tracer usage unavailable");
+      return r;
+    });
+    const ids = Object.keys(hits ?? {});
+    // Only resources this console knows: the text and the dedupe kind are
+    // never built from an id tracer alone supplied.
+    const known =
+      ids.length > 0
+        ? ((await attempt("tracer", () =>
+            tracer.tracers.findNamesByIds(ids),
+          )) ?? [])
+        : [];
+    for (const { id, name } of known) {
+      const d = hits?.[id]?.find((x) => x.day === day);
+      if (!d) continue;
+      // The day is in the kind, so each crossing is said once.
+      warnings.push({
+        kind: `tracer:quota:${id}:${day}`,
+        type: "level",
+        text: `tracer resource "${name}" (${id}) hit its tracer.dailyBytes on ${day}: ${d.quotaAttachment} attachment(s) dropped, ${d.quotaRefused} envelope(s) refused`,
       });
     }
   }

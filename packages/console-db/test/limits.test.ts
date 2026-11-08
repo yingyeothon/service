@@ -5,6 +5,7 @@ import {
   createMemoryKvStoreDb,
   createMemoryLimitsDb,
   createMemorySitesDb,
+  createMemoryTracerDb,
   patchChannelConfig,
   type ChannelRow,
   type LimitRequestInput,
@@ -39,6 +40,10 @@ export interface LimitsEnv {
   deleteCollection(id: string, at: number): Promise<boolean>;
   /** `SitesDb.deleteSite` over the same store (a hard delete; the FK cascades, m0030). */
   deleteSite(id: string, at: number): Promise<boolean>;
+  /** `TracerDb.softDelete` over the same store (the limit half rides along). */
+  deleteTracer(id: string, at: number): Promise<boolean>;
+  /** `TracerDb.deleteRow` (the FK cascades, m0038). */
+  purgeTracer(id: string): Promise<boolean>;
 }
 
 /** The kv collection every `make` seeds beside the bundle (`kv_1`, the defaults). */
@@ -67,6 +72,18 @@ export const SITE = {
   createdAt: 1,
 };
 
+/** The tracer resource every `make` seeds beside the bundle. */
+export const TRACER = {
+  id: "trc_01hf7yavygfgdxpjfmr5r0g6ca",
+  teamId: "team_1",
+  projectId: "prj_1",
+  name: "app-debug",
+  description: null,
+  writeKey: "0".repeat(32),
+  ownerId: null,
+  at: 1,
+};
+
 /**
  * Seeded by every `make`: team `team_1` with project `prj_1`, bundle `ab_1`,
  * kv collection `kv_1` and site `st_1` in it, channels `ch_1` and `ch_2`
@@ -80,6 +97,7 @@ const CH2: LimitScope = { kind: "channel", id: "ch_2" };
 const TEAM: LimitScope = { kind: "team", id: "team_1" };
 const COLLECTION: LimitScope = { kind: "collection", id: "kv_1" };
 const SITE_SCOPE: LimitScope = { kind: "site", id: "st_1" };
+const TRACER_SCOPE: LimitScope = { kind: "tracer", id: TRACER.id };
 
 const req = (
   id: string,
@@ -719,6 +737,51 @@ export function limitsContract(make: () => Promise<LimitsEnv>) {
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("a tracer resource is a scope; its soft delete cancels and drops, its purge cascades (m0038)", async () => {
+    const env = await make();
+    const { limits } = env;
+    const dailyBytes = (id: string, requestedValue = 100 * 1024 * 1024) =>
+      req(id, {
+        scope: TRACER_SCOPE,
+        key: "tracer.dailyBytes",
+        requestedValue,
+      });
+    await limits.createRequest(dailyBytes("lr_01"), RULES);
+    expect((await limits.findRequest("lr_01"))?.scope).toEqual(TRACER_SCOPE);
+    expect(
+      (await limits.listRequests({ scope: TRACER_SCOPE, limit: 10 })).rows.map(
+        (r) => r.id,
+      ),
+    ).toEqual(["lr_01"]);
+    await limits.setOverride({
+      id: "lo_1",
+      teamId: "team_1",
+      scope: TRACER_SCOPE,
+      key: "tracer.dailyBytes",
+      value: 150 * 1024 * 1024,
+      note: "n",
+      grantedBy: "m2",
+      grantedAt: 1,
+    });
+    expect(
+      (await limits.listOverrides([TRACER_SCOPE, PROJECT], 0)).map((o) => [
+        o.scope.kind,
+        o.scope.id,
+        o.value,
+      ]),
+    ).toEqual([["tracer", TRACER.id, 150 * 1024 * 1024]]);
+    expect(await env.deleteTracer(TRACER.id, 7)).toBe(true);
+    expect((await limits.findRequest("lr_01"))?.status).toBe("cancelled");
+    expect(await limits.listOverrides([TRACER_SCOPE], 0)).toEqual([]);
+    // Soft-deleted: the scope is gone for limits (`lockScope`).
+    await expect(
+      limits.createRequest(dailyBytes("lr_02"), RULES),
+    ).rejects.toMatchObject({ code: "not_found" });
+    // The purge takes the cancelled request with it.
+    expect(await env.purgeTracer(TRACER.id)).toBe(true);
+    expect(await limits.findRequest("lr_01")).toBeUndefined();
+  });
+
   it("a site is a scope, and its hard delete cascades into its request and override (m0030)", async () => {
     const env = await make();
     const { limits } = env;
@@ -865,6 +928,12 @@ describe("memory limits repository", () => {
     const sites = createMemorySitesDb(undefined, {
       siteDeleted: (id) => limits.scopeDeleted({ kind: "site", id }),
     });
+    const tracers = createMemoryTracerDb({
+      tracersDeleted: (ids, at) => limits.tracersDeleted(ids, at),
+      tracersPurged: (ids) => {
+        for (const id of ids) limits.scopeDeleted({ kind: "tracer", id });
+      },
+    });
     // The hooks above only run after `limits` exists.
     const limits = createMemoryLimitsDb({
       scopeExists: (s) =>
@@ -876,9 +945,11 @@ describe("memory limits repository", () => {
               ? assets.bundles.has(s.id)
               : s.kind === "site"
                 ? sites.sites.has(s.id)
-                : s.kind === "team"
-                  ? s.id === "team_1"
-                  : s.id === "prj_1",
+                : s.kind === "tracer"
+                  ? tracers.tracers.get(s.id)?.deletedAt === null
+                  : s.kind === "team"
+                    ? s.id === "team_1"
+                    : s.id === "prj_1",
       writeChannel: (id, w) => {
         const c = db.channels.get(id);
         if (!c || c.deletedAt !== null) return false;
@@ -906,6 +977,7 @@ describe("memory limits repository", () => {
       createdAt: 1,
     });
     await kvstore.insertCollection(KV_COLLECTION);
+    await tracers.insert(TRACER);
     for (const id of ["ch_1", "ch_2"])
       db.channels.set(id, {
         id,
@@ -950,6 +1022,8 @@ describe("memory limits repository", () => {
       },
       deleteCollection: (id, at) => kvstore.softDeleteCollection(id, at),
       deleteSite: (id, at) => sites.deleteSite(id, at, false),
+      deleteTracer: (id, at) => tracers.softDelete(id, at),
+      purgeTracer: (id) => tracers.deleteRow(id),
     };
   });
 });

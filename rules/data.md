@@ -271,3 +271,7 @@
 ## A grace-period delete list needs a hard-delete sweep (2026-11-08)
 
 - A "deleted more than N days ago" list served oldest-first with a page cap pins at the cap forever unless something removes old rows: newer deletes never reach the consumer. Pair every such list with a sweep that hard-deletes rows once the consumer can no longer need them (tracer: `runTracerSweep`, 7 d grace + 30 d retention + 1 d).
+
+## Usage read from another service is unknown, never 0 (2026-11-08)
+
+- A limit whose usage comes over HTTP (`tracer.dailyBytes` from tracer `/tr/usage`) leaves the key out of `usageOf` when the read fails; `GET /limits` then shows `usage: null`, and a stepped request answers 503 `usage is unknown` with `details.usage: null` instead of the generic "uses 0 of N" refusal.

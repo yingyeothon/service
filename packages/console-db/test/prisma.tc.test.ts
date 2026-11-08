@@ -53,7 +53,7 @@ import {
 import { pushTokenHash } from "../src/push.js";
 import { pushJobsContract, type PushJobsHarness } from "./pushJobs.test.js";
 import type { PrismaClient } from "../src/prisma.js";
-import { KV_COLLECTION, SITE, limitsContract } from "./limits.test.js";
+import { KV_COLLECTION, SITE, TRACER, limitsContract } from "./limits.test.js";
 import {
   dockerAvailable,
   resetTestDb,
@@ -471,6 +471,7 @@ describe.skipIf(!dockerAvailable())(
         });
         await createKvStoreDb(db.client).insertCollection(KV_COLLECTION);
         await createSitesDb(db.client).insertSite(SITE);
+        await createTracerDb(db.client).insert(TRACER);
         for (const id of ["ch_1", "ch_2"])
           await db.client.channels.create({
             data: {
@@ -528,6 +529,9 @@ describe.skipIf(!dockerAvailable())(
             createKvStoreDb(db.client).softDeleteCollection(id, at),
           deleteSite: (id, at) =>
             createSitesDb(db.client).deleteSite(id, at, false),
+          deleteTracer: (id, at) =>
+            createTracerDb(db.client).softDelete(id, at),
+          purgeTracer: (id) => createTracerDb(db.client).deleteRow(id),
         };
       });
 

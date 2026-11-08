@@ -38,6 +38,8 @@ export const LIMIT_LABELS: Record<string, string> = {
   "site.zipBytes": "Zip size",
   "site.files": "Files",
   "site.extractedBytes": "Extracted size",
+  "tracer.resources": "Tracer resources",
+  "tracer.dailyBytes": "Daily debug data",
 };
 
 export const limitLabel = (key: string): string => LIMIT_LABELS[key] ?? key;

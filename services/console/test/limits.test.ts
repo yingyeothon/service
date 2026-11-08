@@ -162,6 +162,7 @@ describe("limit requests", () => {
       { key: "asset.projectBytes", usage: 1000 },
       { key: "asset.bundlesPerProject", usage: 1, effective: 20 },
       { key: "kv.collections", usage: 0, effective: 20, hard: 100 },
+      { key: "tracer.resources", usage: 0, effective: 5, hard: 20 },
     ]);
     expect((await get(boss, `bundle:${b}`)).statusCode).toBe(200);
     expect((await get(bob, `bundle:${b}`)).statusCode).toBe(404);

@@ -17,6 +17,7 @@ import { defineRoute, json, type AnyRoute } from "@yyt/http";
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { resolveApiToken } from "./identity.js";
+import { LIMITS } from "./limits.js";
 
 /*
  * The internal routes the stage's tracer container calls (docs/tracer.md
@@ -32,8 +33,21 @@ import { resolveApiToken } from "./identity.js";
 const MIN_TOKEN_LEN = 32;
 /** Soft-deleted resources are purged by tracer after this grace period. */
 export const TRACER_PURGE_AFTER_SEC = 7 * 86400;
-/** `tracer.dailyBytes` soft default (docs/decisions.md *Limit requests*). */
-export const TRACER_DAILY_BYTES_SOFT = 50 * 1024 * 1024;
+/** `tracer.dailyBytes` without a grant (docs/decisions.md *Limit requests*). */
+export const TRACER_DAILY_BYTES_SOFT = LIMITS["tracer.dailyBytes"].soft;
+
+/**
+ * The tracer secret as both directions use it: empty (disabled) when it is
+ * too short to be one or reuses the gateway's, since one secret for two
+ * principals would let either act as the other.
+ */
+export function effectiveTracerToken(
+  tracerToken: string,
+  gatewayToken: string,
+): string {
+  if (tracerToken.length < MIN_TOKEN_LEN) return "";
+  return tracerToken === gatewayToken ? "" : tracerToken;
+}
 
 export interface TracerInternalRoutesOptions {
   db: Pick<ConsoleDb, "findTokenIdentity" | "touchApiToken">;
@@ -45,7 +59,7 @@ export interface TracerInternalRoutesOptions {
    * not expose an unauthenticated read.
    */
   token: string;
-  /** The resource's effective `tracer.dailyBytes`; the soft value until limits know the scope. */
+  /** The resource's effective `tracer.dailyBytes`; defaults to the soft value. */
   dailyBytes?: (resourceId: string) => Promise<number>;
   clock: Clock;
   logger?: Logger;

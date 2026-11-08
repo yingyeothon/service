@@ -32,6 +32,7 @@ import {
   type SitesDb,
   type TeamDb,
   type TeamHistoryAction,
+  type TracerDb,
 } from "@yyt/console-db";
 import {
   defineRoute,
@@ -53,6 +54,7 @@ import {
 } from "./site-deploy.js";
 import type { ResourceHistory } from "./resources.js";
 import type { TeamAccess, TeamAccessHelpers } from "./team-access.js";
+import { noTracerUsage, type TracerUsageClient } from "./tracer-usage.js";
 
 /*
  * Limit requests (docs/decisions.md *Limit requests (soft/hard)*). A cap is
@@ -244,6 +246,20 @@ export const LIMITS = {
     soft: SITE_MAX_EXTRACTED_BYTES,
     hard: SITE_HARD_EXTRACTED_BYTES,
   },
+  // Tracer resources per project (docs/decisions.md *Debug collector*
+  // (`tracer`) #9), checked by the create route.
+  "tracer.resources": { scope: "project", unit: "count", soft: 5, hard: 20 },
+  // Bytes one tracer resource may store per UTC day. Enforced by tracer,
+  // which reads the effective value from `GET /tr/resources/{id}` (60 s
+  // cache); usage is today's bytes from tracer's `GET /tr/usage`. Hard is a
+  // fifth of the prod stage cap, so one resource cannot evict the rest.
+  "tracer.dailyBytes": {
+    scope: "tracer",
+    unit: "bytes",
+    soft: 50 * MiB,
+    hard: 300 * MiB,
+    step: 50 * MiB,
+  },
 } as const satisfies Record<string, LimitSpec>;
 
 export type LimitKey = keyof typeof LIMITS;
@@ -366,7 +382,7 @@ export const scopeParam = z
       ctx.addIssue({
         code: "custom",
         message:
-          "scope is project:<id>, bundle:<id>, channel:<id>, team:<id>, collection:<id> or site:<id>",
+          "scope is project:<id>, bundle:<id>, channel:<id>, team:<id>, collection:<id>, site:<id> or tracer:<id>",
       });
       return z.NEVER;
     }
@@ -430,6 +446,10 @@ export interface LimitRoutesOptions {
   >;
   /** The `site.*` usage (the current deploy) and the names a request list shows. */
   sites: Pick<SitesDb, "findSite" | "findDeploy" | "listSitesByIds">;
+  /** `tracer.resources` usage, a tracer scope's row and the names a request list shows. */
+  tracers: Pick<TracerDb, "find" | "countResources" | "findNamesByIds">;
+  /** `tracer.dailyBytes` usage; absent (or tracer unreachable) shows none. */
+  tracerUsage?: TracerUsageClient;
   /** The usage of `push.appsPerTeam` and `push.tokensPerChannel`; absent on a stage without push. */
   push?: Pick<PushDb, "countTeamApps" | "countTokens">;
   /** The usage of `push.jobsPerDay`; absent on a stage without push. */
@@ -489,6 +509,8 @@ export function createLimitRoutes({
   assets,
   kvstore,
   sites,
+  tracers,
+  tracerUsage = noTracerUsage,
   push,
   pushJobs,
   access,
@@ -572,6 +594,15 @@ export function createLimitRoutes({
         );
         return { ...a, scope: { kind: "site", id: a.row.id } };
       }
+      case "tracer": {
+        // A soft-deleted resource is refused here already.
+        const a = await projectResource(
+          ctx,
+          { kind: "trc", id: scope.id },
+          opts,
+        );
+        return { ...a, scope: { kind: "tracer", id: a.row.id } };
+      }
     }
   }
 
@@ -628,6 +659,7 @@ export function createLimitRoutes({
         "asset.projectBytes": u.bytes,
         "asset.bundlesPerProject": u.bundles,
         "kv.collections": await kvstore.countCollections(scope.id),
+        "tracer.resources": await tracers.countResources(scope.id),
       };
     }
     if (scope.kind === "collection") {
@@ -659,6 +691,15 @@ export function createLimitRoutes({
           ? { "site.zipBytes": d.zipBytes, "site.extractedBytes": d.bytes }
           : {}),
       };
+    }
+    if (scope.kind === "tracer") {
+      // Today's bytes (UTC), from tracer; unknown stays absent (`null`),
+      // never 0, so a stepped request cannot pass on a blind read.
+      const u = await tracerUsage.usage([scope.id], 1);
+      const today = utcDay(nowSec(clock));
+      const row = u?.[scope.id]?.find((d) => d.day === today);
+      if (!u) return {};
+      return { "tracer.dailyBytes": row?.bytes ?? 0 };
     }
     return {};
   }
@@ -719,6 +760,9 @@ export function createLimitRoutes({
     const siteRows = await ask(ofKind("site"), (ids) =>
       sites.listSitesByIds(ids),
     );
+    const tracerRows = await ask(ofKind("tracer"), (ids) =>
+      tracers.findNamesByIds(ids),
+    );
     const names = {
       project: projects,
       bundle: bundles,
@@ -726,6 +770,7 @@ export function createLimitRoutes({
       team: teams,
       collection: collections,
       site: siteRows,
+      tracer: tracerRows,
     };
     const login = (id: string | null) =>
       id === null ? null : (members.get(id.toLowerCase())?.githubLogin ?? null);
@@ -881,6 +926,12 @@ export function createLimitRoutes({
       const s = await sites.findSite(scope.id);
       if (!s) throw gone();
       return { teamId: s.teamId, scope: { kind: "site", id: s.id } };
+    }
+    if (scope.kind === "tracer") {
+      const t = await tracers.find(scope.id);
+      // A soft-deleted resource is no scope (its overrides were dropped).
+      if (!t || t.deletedAt !== null) throw gone();
+      return { teamId: t.teamId, scope: { kind: "tracer", id: t.id } };
     }
     const c = await db.findChannelRow(scope.id);
     if (!c?.teamId) throw gone();
@@ -1039,7 +1090,15 @@ export function createLimitRoutes({
           if (spec.step !== undefined && current !== "unlimited") {
             // A stepped key (#2): only once every slot is used, and only
             // for the next step, so the queue holds no speculative asks.
-            const used = (await usageOf(scope, a))[key] ?? 0;
+            const known = (await usageOf(scope, a))[key];
+            // Unknown (tracer did not answer) is never read as 0 (#1).
+            if (known === undefined && scope.kind === "tracer")
+              throw new AppError(
+                "unavailable",
+                `${key}: usage is unknown right now; try again later`,
+                { details: { limit: key, value: current, usage: null } },
+              );
+            const used = known ?? 0;
             const next = nextStepValue(key, current, used);
             const details = { limit: key, value: current, usage: used, next };
             if (used < current)
@@ -1161,8 +1220,25 @@ export function createLimitRoutes({
           limit: ctx.query.limit,
         });
         const pending = await limits.countPending();
+        // A tracer raise is judged on measured volume: the resource's last
+        // 7 days of bytes and quota drops (`null` when tracer cannot say).
+        const tracerIds = page.rows
+          .filter((r) => r.scope.kind === "tracer")
+          .map((r) => r.scope.id);
+        const recent =
+          tracerIds.length > 0
+            ? await tracerUsage.usage(tracerIds, 7)
+            : undefined;
+        const views = await requestViews(page.rows);
         return noStore({
-          requests: await requestViews(page.rows),
+          requests: views.map((v) =>
+            v.scope.kind === "tracer"
+              ? {
+                  ...v,
+                  recentUsage: recent ? (recent[v.scope.id] ?? []) : null,
+                }
+              : v,
+          ),
           next: page.next,
           pending: pending.count,
           oldestPendingAt: pending.oldestAt,

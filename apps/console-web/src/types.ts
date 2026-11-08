@@ -1611,7 +1611,7 @@ export interface KitConfig {
 // ---- limits (docs/decisions.md *Limit requests (soft/hard)*) --------------
 
 export type LimitScopeKind =
-  "project" | "bundle" | "channel" | "team" | "collection" | "site";
+  "project" | "bundle" | "channel" | "team" | "collection" | "site" | "tracer";
 export type LimitUnit = "bytes" | "count" | "seconds";
 /** `unlimited` exists only where the hard value is (`channel.lifetime`). */
 export type LimitValue = number | "unlimited";
@@ -1675,6 +1675,18 @@ export interface LimitRequest {
   decidedBy: string | null;
   decidedByLogin: string | null;
   decidedAt: number | null;
+  /**
+   * Admin list, tracer scope only: the resource's last 7 UTC days, newest
+   * first; `null` when tracer could not say.
+   */
+  recentUsage?: TracerUsageDay[] | null;
+}
+
+export interface TracerUsageDay {
+  day: string;
+  bytes: number;
+  quotaAttachment: number;
+  quotaRefused: number;
 }
 
 export interface LimitsView {

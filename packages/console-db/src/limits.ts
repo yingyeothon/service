@@ -48,10 +48,11 @@ export const LIMIT_SCOPE_KINDS = [
   "team",
   "collection",
   "site",
+  "tracer",
 ] as const;
 export type LimitScopeKind = (typeof LIMIT_SCOPE_KINDS)[number];
 
-/** A project, an asset bundle, a channel, the team itself, a kv collection or a site, by id. */
+/** A project, an asset bundle, a channel, the team itself, a kv collection, a site or a tracer resource, by id. */
 export interface LimitScope {
   kind: LimitScopeKind;
   id: string;
@@ -254,6 +255,8 @@ type ScopeColumns = {
   collection_id: string | null;
   /** A static site as the scope (`m0030`). */
   site_id: string | null;
+  /** A tracer resource as the scope (`m0038`). */
+  tracer_resource_id: string | null;
 };
 
 const scopeData = (s: LimitScope): ScopeColumns => ({
@@ -263,6 +266,7 @@ const scopeData = (s: LimitScope): ScopeColumns => ({
   scope_team_id: s.kind === "team" ? s.id : null,
   collection_id: s.kind === "collection" ? s.id : null,
   site_id: s.kind === "site" ? s.id : null,
+  tracer_resource_id: s.kind === "tracer" ? s.id : null,
 });
 
 /** Exactly one column is set (the CHECK constraint); anything else is a corrupt row. */
@@ -274,6 +278,8 @@ function scopeOf(r: ScopeColumns): LimitScope {
   if (r.collection_id !== null)
     return { kind: "collection", id: r.collection_id };
   if (r.site_id !== null) return { kind: "site", id: r.site_id };
+  if (r.tracer_resource_id !== null)
+    return { kind: "tracer", id: r.tracer_resource_id };
   throw new AppError("internal", "limit row without a scope");
 }
 
@@ -285,7 +291,8 @@ const scopeWhere = (
   | { channel_id: string }
   | { scope_team_id: string }
   | { collection_id: string }
-  | { site_id: string } =>
+  | { site_id: string }
+  | { tracer_resource_id: string } =>
   s.kind === "project"
     ? { project_id: s.id }
     : s.kind === "bundle"
@@ -296,7 +303,9 @@ const scopeWhere = (
           ? { scope_team_id: s.id }
           : s.kind === "collection"
             ? { collection_id: s.id }
-            : { site_id: s.id };
+            : s.kind === "site"
+              ? { site_id: s.id }
+              : { tracer_resource_id: s.id };
 
 const clampLimit = (n: number | undefined) =>
   Math.min(
@@ -414,9 +423,15 @@ export function createLimitsDb(prisma: PrismaClient): LimitsDb {
                 await t.$queryRaw<
                   { id: string }[]
                 >`SELECT id FROM sites WHERE id = ${s.id} FOR UPDATE`
-              : await t.$queryRaw<
-                  { id: string }[]
-                >`SELECT id FROM projects WHERE id = ${s.id} FOR UPDATE`;
+              : s.kind === "tracer"
+                ? // Soft-deleted like a collection; `softDelete` cancels the
+                  // resource's requests in the same transaction.
+                  await t.$queryRaw<
+                    { id: string }[]
+                  >`SELECT id FROM tracer_resources WHERE id = ${s.id} AND deleted_at IS NULL FOR UPDATE`
+                : await t.$queryRaw<
+                    { id: string }[]
+                  >`SELECT id FROM projects WHERE id = ${s.id} FOR UPDATE`;
     return rows.length > 0;
   }
 
@@ -761,6 +776,8 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
   channelsDeleted(ids: readonly string[], at: number): void;
   /** The collection soft delete's half (`KvStoreDb.softDeleteCollection`), the same shape. */
   collectionsDeleted(ids: readonly string[], at: number): void;
+  /** The tracer soft delete's half (`TracerDb.softDelete`), the same shape. */
+  tracersDeleted(ids: readonly string[], at: number): void;
   /** The cascades of deleting a scope row (bundle, project, site, purged channel or collection). */
   scopeDeleted(scope: LimitScope): void;
 } {
@@ -813,6 +830,28 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
     requests.set(id, { ...r, ...patch });
     return true;
   };
+  /** A soft delete's half: pending requests cancelled, overrides dropped. */
+  const softDeleted = (
+    kind: LimitScopeKind,
+    ids: readonly string[],
+    at: number,
+  ) => {
+    for (const r of [...requests.values()])
+      if (
+        r.status === "pending" &&
+        r.scope.kind === kind &&
+        ids.some((id) => sameId(id, r.scope.id))
+      )
+        requests.set(r.id, {
+          ...r,
+          status: "cancelled",
+          decidedAt: at,
+          decidedBy: null,
+        });
+    for (const o of [...overrides.values()])
+      if (o.scope.kind === kind && ids.some((id) => sameId(id, o.scope.id)))
+        overrides.delete(o.id);
+  };
   const requireChannelScope = (scope: LimitScope) => {
     if (scope.kind !== "channel")
       throw new AppError("internal", "channel write on a non-channel scope");
@@ -840,26 +879,8 @@ export function createMemoryLimitsDb(deps: MemoryLimitsDeps = {}): LimitsDb & {
         )
           overrides.delete(o.id);
     },
-    collectionsDeleted: (ids, at) => {
-      for (const r of [...requests.values()])
-        if (
-          r.status === "pending" &&
-          r.scope.kind === "collection" &&
-          ids.some((id) => sameId(id, r.scope.id))
-        )
-          requests.set(r.id, {
-            ...r,
-            status: "cancelled",
-            decidedAt: at,
-            decidedBy: null,
-          });
-      for (const o of [...overrides.values()])
-        if (
-          o.scope.kind === "collection" &&
-          ids.some((id) => sameId(id, o.scope.id))
-        )
-          overrides.delete(o.id);
-    },
+    collectionsDeleted: (ids, at) => softDeleted("collection", ids, at),
+    tracersDeleted: (ids, at) => softDeleted("tracer", ids, at),
     scopeDeleted: (scope) => {
       for (const r of [...requests.values()])
         if (sameScope(r.scope, scope)) requests.delete(r.id);

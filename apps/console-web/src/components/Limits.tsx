@@ -27,6 +27,7 @@ import { fmtDate, fmtRelative, fmtTime, isNoExpiry } from "../lib/format";
 import {
   BYTE_UNITS,
   defaultByteUnit,
+  fmtBytes,
   fmtLimit,
   fmtRequestValue,
   formLimitValue,
@@ -217,6 +218,24 @@ export function RequestFacts({ r }: { r: LimitRequest }) {
       {line("Scope", `${r.scope.kind} ${r.scope.name ?? r.scope.id}`)}
       {line("Limit", limitLabel(r.key))}
       {line("Requested", fmtRequestValue(r, r.requestedValue))}
+      {r.recentUsage !== undefined &&
+        line(
+          "Last 7 days",
+          r.recentUsage === null
+            ? "unknown (tracer not configured or did not answer)"
+            : r.recentUsage.length === 0
+              ? "nothing recorded"
+              : r.recentUsage
+                  .map(
+                    (d) =>
+                      `${d.day} ${fmtBytes(d.bytes)}${
+                        d.quotaAttachment + d.quotaRefused > 0
+                          ? ` (quota drops ${d.quotaAttachment}+${d.quotaRefused})`
+                          : ""
+                      }`,
+                  )
+                  .join(", "),
+        )}
       {line(
         "Asked",
         `${fmtTime(r.createdAt)} by ${r.createdByLogin ?? r.createdBy}`,

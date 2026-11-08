@@ -150,7 +150,9 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
               ? sites.sites.has(s.id)
               : s.kind === "team"
                 ? teamDb.teams.has(s.id)
-                : teamDb.projects.has(s.id),
+                : s.kind === "tracer"
+                  ? tracers.tracers.get(s.id)?.deletedAt === null
+                  : teamDb.projects.has(s.id),
     writeChannel: (id, w) => {
       const c = db.channels.get(id);
       if (!c || c.deletedAt !== null) return false;
@@ -216,6 +218,11 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     projectExists: (id) => teamDb.projects.has(id),
     memberExists: (id) => db.members.has(id),
     loginOf,
+    // `softDelete`'s limit half in the same step; the purge's FK cascade.
+    tracersDeleted: (ids, at) => limits.tracersDeleted(ids, at),
+    tracersPurged: (ids) => {
+      for (const id of ids) limits.scopeDeleted({ kind: "tracer", id });
+    },
   });
   const social = createMemorySocialDb();
   const countIn = (
