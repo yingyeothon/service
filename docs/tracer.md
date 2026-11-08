@@ -52,7 +52,7 @@ Design of record: `docs/decisions.md` _Debug collector (`tracer`)_ (2026-11-08, 
 
 ## Read API and CLI
 
-`yyt tracer` resolves a resource through the console (team/project context as every other command), takes the read URL from the resource view (absent until `tracer-url` is configured: the CLI then exits with a clear "tracer is not configured on this stage" error), and builds a **second client** like `dataClient` in `cli/internal/cmd/push_send.go` (https only, its own 401/403 wording). The `yyt_` token travels to tracer only in that request.
+Management commands talk to the console only: `yyt tracer create|list|get|rename|rotate-key|delete` and `yyt tracer dsn <res>` (prints the DSN alone, for build scripts). `yyt tracer` resolves a resource through the console (team/project context as every other command), takes the read URL from the resource view (absent until `tracer-url` is configured: the CLI then exits with a clear "tracer is not configured on this stage" error), and builds a **second client** like `dataClient` in `cli/internal/cmd/push_send.go` (https only, its own 401/403 wording). The `yyt_` token travels to tracer only in that request.
 
 | CLI                                                | tracer route                         | Returns                                                                                                                 |
 | -------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
@@ -107,9 +107,24 @@ tracer's caps join the platform registry (`docs/decisions.md` _Limit requests_):
 ## Operations
 
 - Endpoints like the gateway: `GET /livez` (process up, DB writable — restarts wire to this), `GET /healthz` (readiness: console reachable and `/tr/health` agrees; never restarts the container).
-- Monitoring within the 10-alarm budget: the existing `gatewayProbe` also probes tracer `/livez`; the daily usage digest gains tracer volume use, refusals and `drops`.
+- Monitoring, two layers like the gateway: (a) this repo — the existing `gatewayProbe` also probes tracer `/livez` (no new alarm; the 10-alarm budget is full) and the daily usage digest gains tracer volume use, quota hits and `drops`; (b) the ops repo — its `yyt-agent` scrapes tracer `GET /metrics` (JSON like the gateway's: counters for accepted/refused/dropped items, gauges for in-flight envelopes, DB/WAL/blob bytes, volume free bytes, runtime `sysBytes`; public part without ids, per-resource slice only with the `tracer-token` bearer), with `expect.env` thresholds, `status.sh` lines and a dashboard card.
 - Run line: distroless image, read-only root, one writable data volume, listen on the address the ops repo's compose gives it (env `TRACER_LISTEN`); the loopback-only check applies to local mode.
 - Image: `golang:1.26-alpine` builder (`go.mod` needs 1.26), CI adds a `docker build`; release workflow `tracer-release.yml` on `tracer/v*`.
+
+## Client integration (Flutter debug builds)
+
+How an app starts sending to tracer. Release builds are untouched.
+
+1. **Create the resource** (one per app): `yyt tracer create <name> --project <prj>`; the view shows the DSN once the stage's `tracer-url` is set.
+2. **Deliver the DSN at build time, never in source.** `yyt tracer dsn <res>` prints the DSN alone (exit 0) for scripts. Every app builds Android through the shared `tools/android/flutter_cata_deploy.sh`, which already calls `yyt` and forwards `DEFINE_KEYS` as `--dart-define`:
+   `DEBUG_SENTRY_DSN="$(yyt tracer dsn <res>)" DEFINE_KEYS=DEBUG_SENTRY_DSN tools/android/flutter_cata_deploy.sh debug`.
+   For `flutter run`, the same value goes into a gitignored `--dart-define-from-file`. One define name for every app: `DEBUG_SENTRY_DSN`. Empty or absent means debug diagnostics are off — never a fallback to the release DSN, and the release DSN is never sent to tracer.
+3. **Choose the DSN by build mode** in the app's single options function: `kDebugMode` → `DEBUG_SENTRY_DSN` with the debug options below; release/profile → the existing release DSN and scrubbing, unchanged. Background isolates go through the same function.
+4. **Debug options** (what tracer stores; everything else is dropped at the server and only costs the device bandwidth): `environment: "debug"`, `sendDefaultPii: true`, `maxBreadcrumbs: 500`, `enableLogs: true`, `attachScreenshot: true`, `attachViewHierarchy: true`, `tracesSampleRate: 1.0`, the breadcrumb integrations on; **session replay off** (`replay.sessionSampleRate = 0`, `onErrorSampleRate = 0`). Add tags for the runtime/feature the app already distinguishes, and `dist` or a `git.sha` tag from a `GIT_SHA` define so the agent can check out the exact code.
+5. **Make the trail leave the device.** Breadcrumbs travel only inside an event: a helper that records a step writes a breadcrumb **and** a log line; something that looks wrong sends a warning event. A debug-only "report this" action sends an event (breadcrumbs + screenshot) and then `Sentry.captureFeedback(…, associatedEventId: id)` for the tester's note.
+6. **Verify**: build debug, reproduce, then from the app repository `yyt tracer events <res> --since 10m` and the `tracer-debug` skill. Record the release/debug DSN split in the app's own rules.
+
+Rotation: `yyt tracer rotate-key <res>` invalidates the old key within 60 s; debug builds made before it stop reporting and are rebuilt with the new `yyt tracer dsn` output.
 
 ## Clients
 
