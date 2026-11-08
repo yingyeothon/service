@@ -72,7 +72,8 @@ function scopeUrl(r: LimitRequest): string {
     case "site":
       return `/sites/${encodeURIComponent(r.scope.id)}`;
     case "tracer":
-      // No tracer resource page yet (todo/85 P12): its team.
+      // The approver is usually a seatless admin, whom the resource page
+      // refuses (it carries the write key); the 7-day usage is in the row.
       return teamUrl(r.teamId);
   }
 }

@@ -27,6 +27,8 @@ String limitLabel(String key) => switch (key) {
   'kv.maxEntries' => '엔트리 캡',
   'kv.maxEntriesPerOwner' => '플레이어당 엔트리 캡',
   'kv.collections' => '컬렉션 수',
+  'tracer.resources' => '트레이서 리소스 수',
+  'tracer.dailyBytes' => '하루 디버그 데이터',
   _ => key,
 };
 
@@ -264,6 +266,12 @@ class LimitsView {
   }
 }
 
+/// When a stepped key may be raised: once every slot is in use, or for a
+/// byte volume (`tracer.dailyBytes`) once today's usage reaches the limit.
+String steppedWaitHint(LimitRow row) => row.unit == 'bytes'
+    ? '사용량이 한도(${formatLimit(row.unit, row.effective)})에 닿으면 다음 단계를 요청할 수 있습니다.'
+    : '모든 슬롯을 다 쓰면 다음 단계를 요청할 수 있습니다.';
+
 /// The server's rule for a value, mirrored so the dialog refuses before the
 /// round trip: `null` when [value] may be asked for (`null` value = unlimited).
 String? limitValueProblem(LimitRow row, int? value) {
@@ -276,7 +284,7 @@ String? limitValueProblem(LimitRow row, int? value) {
     return '상한(${formatLimit(row.unit, row.hard)}) 초과입니다.';
   }
   if (row.step != null) {
-    if (row.next == null) return '모든 슬롯을 다 쓴 뒤에 요청할 수 있습니다.';
+    if (row.next == null) return steppedWaitHint(row);
     if (value != row.next) {
       return '요청 가능한 값은 ${formatLimit(row.unit, row.next)}뿐입니다.';
     }

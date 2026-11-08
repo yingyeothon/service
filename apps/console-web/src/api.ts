@@ -18,6 +18,8 @@ import type {
   AssetBundle,
   AssetBundleDetail,
   AssetBundleKey,
+  Tracer,
+  TracerDetail,
   AssetBundleMode,
   AssetDeleteProgress,
   AssetFileDeleteResult,
@@ -1145,6 +1147,23 @@ export function createApiClient({
         `/kv/${enc(id)}/entries${qs({ owner })}`,
       );
     },
+    // ---- tracer resources (docs/tracer.md, addressed by id) ----------------
+    projectTracers: (prj: string, p: ListParams = {}) =>
+      get<{ tracers: Tracer[] }>(`${projectPath(prj)}/tracers${qs(p)}`).then(
+        (r) => r.tracers,
+      ),
+    createTracer: (prj: string, body: { name: string; description?: string }) =>
+      post<TracerDetail>(`${projectPath(prj)}/tracers`, body),
+    /** Refused (403) to a platform admin without a seat: it carries the key. */
+    tracer: (id: string) => get<TracerDetail>(`/tracers/${enc(id)}`),
+    updateTracer: (
+      id: string,
+      body: { name?: string; description?: string | null },
+    ) => patch<TracerDetail>(`/tracers/${enc(id)}`, body),
+    /** The old key stops working once tracer's 60 s config cache turns over. */
+    rotateTracerKey: (id: string) =>
+      post<TracerDetail>(`/tracers/${enc(id)}/rotate-key`),
+    deleteTracer: (id: string) => del(`/tracers/${enc(id)}`),
     /** The game kit block; `?auth=`/`?lobby=`/`?match=`/`?push=` disambiguate. */
     kitConfig: (prj: string, p: Record<string, string> = {}) =>
       get<KitConfig>(`${projectPath(prj)}/kit-config${qs(p)}`),

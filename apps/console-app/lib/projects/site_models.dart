@@ -257,8 +257,11 @@ String? validateSiteDomain(String normalized) {
 /// with a letter or digit, not shaped like an id (services/console/src/team.ts
 /// `resourceName` + sites.ts `SITE_NAME`).
 final _siteName = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$');
-final _idLike = RegExp(
-  r'^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|m|tok|dbg|up)_',
+
+/// Mirrors `ID_LIKE` in services/console/src/team.ts: the CLI treats
+/// `{prefix}_…` as an id, so such a name could never be addressed by name.
+final idLikeName = RegExp(
+  r'^(team|prj|ver|iss|dsc|cmt|lnk|ca|ab|art|af|st|sd|kv|lb|auth|topic|match|lobby|q|push|m|tok|dbg|up|trc)_',
   caseSensitive: false,
 );
 
@@ -267,7 +270,7 @@ String? validateSiteName(String trimmed) {
   if (!_siteName.hasMatch(trimmed)) {
     return '영문·숫자로 시작하고 영문, 숫자, _, -만 64자까지 쓸 수 있습니다.';
   }
-  if (_idLike.hasMatch(trimmed)) return 'id처럼 보이는 이름(st_… 등)은 쓸 수 없습니다.';
+  if (idLikeName.hasMatch(trimmed)) return 'id처럼 보이는 이름(st_… 등)은 쓸 수 없습니다.';
   return null;
 }
 

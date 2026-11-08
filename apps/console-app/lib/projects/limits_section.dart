@@ -143,7 +143,7 @@ class _LimitsSectionState extends State<LimitsSection> {
             context,
             next is num
                 ? '요청 가능한 값은 ${formatLimit(row.unit, next.toInt())}뿐입니다. 화면을 새로 읽습니다.'
-                : '지금은 이 한도를 요청할 수 없습니다 (모든 슬롯을 다 쓴 뒤에, 상한 아래에서만). 화면을 새로 읽습니다.',
+                : '지금은 이 한도를 요청할 수 없습니다 (한도를 다 쓴 뒤에, 상한 아래에서만). 화면을 새로 읽습니다.',
           );
           await _load();
           return;
@@ -274,8 +274,11 @@ class _LimitsSectionState extends State<LimitsSection> {
                 Text(line, style: theme.textTheme.bodySmall),
                 if (row.override?.expiresAt case final e?)
                   HintText('승인 만료 ${formatLocalTime(_at(e))}'),
-                if (row.step != null && row.next == null && !row.atCeiling)
-                  const HintText('모든 슬롯을 다 쓰면 다음 단계를 요청할 수 있습니다.'),
+                if (row.step != null &&
+                    row.next == null &&
+                    row.usage != null &&
+                    !row.atCeiling)
+                  HintText(steppedWaitHint(row)),
               ],
             ),
           ),
@@ -408,7 +411,7 @@ class _LimitRequestDialogState extends State<LimitRequestDialog> {
             const HintText('이 한도는 "무제한"으로만 요청할 수 있습니다.')
           else if (row.step != null)
             HintText(
-              '요청 값: ${formatLimit(row.unit, row.next)} (한 번에 ${row.step}씩 올립니다).',
+              '요청 값: ${formatLimit(row.unit, row.next)} (한 번에 ${formatLimit(row.unit, row.step)}씩 올립니다).',
             )
           else
             TextField(

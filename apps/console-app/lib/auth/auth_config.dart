@@ -93,6 +93,10 @@ class AuthConfig {
       '$base/projects/${Uri.encodeComponent(projectId)}/sites';
   static String siteUrlOf(String base, String siteId) =>
       '$base/sites/${Uri.encodeComponent(siteId)}';
+  static String projectTracersUrlOf(String base, String projectId) =>
+      '$base/projects/${Uri.encodeComponent(projectId)}/tracers';
+  static String tracerUrlOf(String base, String tracerId) =>
+      '$base/tracers/${Uri.encodeComponent(tracerId)}';
   static String projectChannelsUrlOf(String base, String projectId) =>
       '$base/projects/${Uri.encodeComponent(projectId)}/channels';
   static String channelUrlOf(String base, String channelId) =>

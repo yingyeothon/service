@@ -1682,6 +1682,30 @@ export interface LimitRequest {
   recentUsage?: TracerUsageDay[] | null;
 }
 
+/**
+ * One row of `GET /projects/{prj}/tracers` (services/console/src/tracer.ts):
+ * a debug-data collection in the stage's tracer container. The list carries
+ * no description; `writeKey` and `dsn` are left out for a seatless platform
+ * admin, and `dsn`/`readUrl` are `null` while the stage has no tracer.
+ */
+export interface Tracer extends ResourceCrumbs {
+  id: string;
+  name: string;
+  /** Shown to every team member on purpose: it ships inside debug builds. */
+  writeKey?: string;
+  dsn?: string | null;
+  readUrl: string | null;
+  /** Always `true`: debug data has no backup. */
+  noBackup: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** `GET/PATCH /tracers/{id}`, `POST /tracers/{id}/rotate-key`. */
+export interface TracerDetail extends Tracer {
+  description: string | null;
+}
+
 export interface TracerUsageDay {
   day: string;
   bytes: number;

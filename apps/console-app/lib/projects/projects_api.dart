@@ -7,6 +7,7 @@ import 'package:yyt_console/projects/limit_models.dart';
 import 'package:yyt_console/projects/channel_models.dart';
 import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/projects/site_models.dart';
+import 'package:yyt_console/projects/tracer_models.dart';
 import 'package:yyt_console/share/share_models.dart';
 import 'package:http/http.dart' as http;
 
@@ -312,6 +313,52 @@ class ProjectsApi {
 
   Future<void> deleteSite(String id) =>
       _delete(AuthConfig.siteUrlOf(baseUrl, id));
+
+  // ---- tracer resources -------------------------------------------------
+
+  Future<List<Tracer>> listTracers(String projectId) async {
+    final body = await _get(AuthConfig.projectTracersUrlOf(baseUrl, projectId));
+    return _list(body['tracers']).map(Tracer.fromJson).toList();
+  }
+
+  /// Refused (403) to a platform admin without a seat: it carries the key.
+  Future<Tracer> getTracer(String id) async =>
+      Tracer.fromJson(_object(await _get(AuthConfig.tracerUrlOf(baseUrl, id))));
+
+  /// A blank description is left out rather than sent empty.
+  Future<Tracer> createTracer(
+    String projectId, {
+    required String name,
+    String description = '',
+  }) async {
+    final d = description.trim();
+    return Tracer.fromJson(
+      _object(
+        await _post(AuthConfig.projectTracersUrlOf(baseUrl, projectId), {
+          'name': name.trim(),
+          if (d.isNotEmpty) 'description': d,
+        }),
+      ),
+    );
+  }
+
+  /// [patch] carries only the changed keys ([buildTracerPatch]).
+  Future<Tracer> updateTracer(String id, Map<String, Object?> patch) async =>
+      Tracer.fromJson(
+        _object(
+          _decode(await _patch(AuthConfig.tracerUrlOf(baseUrl, id), patch)),
+        ),
+      );
+
+  /// The old key stops working once tracer's 60 s config cache turns over.
+  Future<Tracer> rotateTracerKey(String id) async => Tracer.fromJson(
+    _object(
+      await _post('${AuthConfig.tracerUrlOf(baseUrl, id)}/rotate-key', null),
+    ),
+  );
+
+  Future<void> deleteTracer(String id) =>
+      _delete(AuthConfig.tracerUrlOf(baseUrl, id));
 
   // ---- channels ---------------------------------------------------------
 

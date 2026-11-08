@@ -13,6 +13,7 @@ import type {
   ProjectDetail,
   Site,
   TeamDetail,
+  Tracer,
 } from "../src/types";
 
 /*
@@ -39,6 +40,8 @@ const mockApi = {
   createKv: vi.fn(),
   projectLeaderboards: vi.fn(),
   createLeaderboard: vi.fn(),
+  projectTracers: vi.fn(),
+  createTracer: vi.fn(),
   kitConfig: vi.fn(),
   projectChannels: vi.fn(),
 } as unknown as ApiClient;
@@ -145,6 +148,19 @@ const LB: Leaderboard = {
   updatedAt: 60,
 };
 
+const TRACER: Tracer = {
+  ...crumbs,
+  createdBy: "alice",
+  id: "trc_01hf7yavygfgdxpjfmr5r0g6ca",
+  name: "game-debug",
+  writeKey: "0".repeat(32),
+  dsn: "https://k@trace.example/trc_01hf7yavygfgdxpjfmr5r0g6ca",
+  readUrl: "https://trace.example",
+  noBackup: true,
+  createdAt: 0,
+  updatedAt: 60,
+};
+
 const CHANNEL: Channel = {
   ...crumbs,
   id: "auth_1",
@@ -205,6 +221,7 @@ beforeEach(() => {
   vi.mocked(mockApi.projectAssetBundles).mockResolvedValue([BUNDLE]);
   vi.mocked(mockApi.projectSites).mockResolvedValue([SITE]);
   vi.mocked(mockApi.projectKv).mockResolvedValue([KV]);
+  vi.mocked(mockApi.projectTracers).mockResolvedValue([TRACER]);
 });
 
 describe("catalog tab", () => {
@@ -690,6 +707,67 @@ describe("leaderboards tab", () => {
   });
 });
 
+describe("tracers tab", () => {
+  it("lists resources linking to their page and creates one", async () => {
+    vi.mocked(mockApi.createTracer).mockResolvedValue({
+      ...TRACER,
+      id: "trc_2",
+      name: "web-debug",
+      description: "browser",
+    });
+    mount("tracers");
+    const link = await screen.findByRole("link", { name: "game-debug" });
+    expect(link).toHaveAttribute(
+      "href",
+      "/tracers/trc_01hf7yavygfgdxpjfmr5r0g6ca",
+    );
+    expect(headers()).toEqual(["Resource", "Id", "Created by", "Updated"]);
+    expect(
+      screen.getByText(/no backup and is kept at most 30 days/),
+    ).toBeInTheDocument();
+    const drawer = await openDrawer("tracer resource");
+    expect(limits(input("Name", drawer))).toEqual({
+      placeholder: "name (e.g. my-game-debug)",
+      required: true,
+      maxLength: 64,
+    });
+    await userEvent.type(input("Name", drawer), "web-debug");
+    await userEvent.type(input("Description", drawer), "browser");
+    await userEvent.click(
+      within(drawer).getByRole("button", { name: "Create tracer resource" }),
+    );
+    await waitFor(() =>
+      expect(mockApi.createTracer).toHaveBeenCalledWith("prj_1", {
+        name: "web-debug",
+        description: "browser",
+      }),
+    );
+    await waitFor(() =>
+      expect(mockApi.projectTracers).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("does not link a seatless admin to a page that refuses them", async () => {
+    vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
+    vi.mocked(mockApi.projectTracers).mockResolvedValue([
+      { ...TRACER, writeKey: undefined, dsn: undefined },
+    ]);
+    mount("tracers");
+    expect(await screen.findByText("game-debug")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("link", { name: "game-debug" })).toBeNull(),
+    );
+  });
+
+  it("says when there is nothing yet", async () => {
+    vi.mocked(mockApi.projectTracers).mockResolvedValue([]);
+    mount("tracers");
+    expect(
+      await screen.findByText("No tracer resources yet."),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("read-only standing", () => {
   it("hides every create form from a seatless admin", async () => {
     vi.mocked(mockApi.team).mockResolvedValue({ ...TEAM, role: "admin" });
@@ -699,6 +777,7 @@ describe("read-only standing", () => {
       ["sites", "New site"],
       ["kv", "New collection"],
       ["leaderboards", "New leaderboard"],
+      ["tracers", "New tracer resource"],
     ] as const) {
       const r = mount(tab);
       await screen.findByRole("table");

@@ -111,6 +111,26 @@ describe("LimitRequestsPage", () => {
     for (const l of links) expect(l).toHaveAttribute("href", "/teams/team_1");
   });
 
+  it("links a tracer-scoped request to its team, not the key-bearing page", async () => {
+    vi.mocked(mockApi.adminLimitRequests).mockResolvedValue(
+      page([
+        request({
+          scope: { kind: "tracer", id: "trc_1", name: "game-debug" },
+          key: "tracer.dailyBytes",
+          unit: "bytes",
+          hard: 300 * 1024 * 1024,
+          requestedValue: 100 * 1024 * 1024,
+        }),
+      ]),
+    );
+    mount(<LimitRequestsPage />, { client: mockApi });
+    expect(await screen.findByText("Daily debug data")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "game-debug" })).toHaveAttribute(
+      "href",
+      "/teams/team_1",
+    );
+  });
+
   it("lists the pending queue with its team, scope, limit and requester", async () => {
     mount(<LimitRequestsPage />, { client: mockApi });
     expect(

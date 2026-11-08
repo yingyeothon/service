@@ -37,6 +37,7 @@ describe("routes", () => {
       "/sites",
       "/kv",
       "/leaderboards",
+      "/tracers",
     ]);
     for (const h of hidden) expect(navMinRole(h)).toBe("member");
     expect(navMinRole("/teams")).toBe("member");

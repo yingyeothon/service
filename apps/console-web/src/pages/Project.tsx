@@ -42,7 +42,7 @@ import { RowMenu } from "../components/RowMenu";
 import { Section } from "../components/Section";
 import { Badge, CopyField, CopyText, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
-import { fmtTime, isNoExpiry } from "../lib/format";
+import { fmtRelative, fmtTime, isNoExpiry } from "../lib/format";
 import { notify } from "../lib/notify";
 import { channelDeleteNote } from "../lib/push";
 import { noMatch, useListQuery } from "../lib/listQuery";
@@ -95,6 +95,7 @@ import {
   retainOk,
 } from "./Leaderboard";
 import { SITE_SHARED_ORIGIN_WARNING, sitePrimaryUrl } from "./Site";
+import { tracerUrl } from "./Tracer";
 
 const TABS = [
   "channels",
@@ -103,6 +104,7 @@ const TABS = [
   "sites",
   "kv",
   "leaderboards",
+  "tracers",
   "versions",
   "issues",
 ];
@@ -197,7 +199,7 @@ export function ProjectPage() {
         const r = await confirm({
           title: `Delete ${project.name}?`,
           message:
-            "Refused while a channel, app, bundle, site, kv collection or leaderboard still belongs to it.",
+            "Refused while a channel, app, bundle, site, kv collection, leaderboard or tracer resource still belongs to it.",
           confirmLabel: "Delete project",
           danger: true,
         });
@@ -243,6 +245,7 @@ export function ProjectPage() {
           <Tabs.Tab value="sites">Sites</Tabs.Tab>
           <Tabs.Tab value="kv">Key-value</Tabs.Tab>
           <Tabs.Tab value="leaderboards">Leaderboards</Tabs.Tab>
+          <Tabs.Tab value="tracers">Tracers</Tabs.Tab>
           <Tabs.Tab value="versions">Versions</Tabs.Tab>
           <Tabs.Tab value="issues">Issues</Tabs.Tab>
         </Tabs.List>
@@ -276,6 +279,13 @@ export function ProjectPage() {
             onCounts={p.reload}
           />
         </Tabs.Panel>
+        <Tabs.Panel value="tracers" pt="lg">
+          <TracersTab
+            project={project}
+            canWrite={canWrite}
+            standing={t.standing}
+          />
+        </Tabs.Panel>
         <Tabs.Panel value="versions" pt="lg">
           <VersionsTab project={project} canWrite={canWrite} />
         </Tabs.Panel>
@@ -297,7 +307,7 @@ export function ProjectPage() {
             ? {
                 label: "Delete project",
                 description:
-                  "Deleting a project is refused while a channel, app, bundle, site, kv collection or leaderboard still belongs to it — including channels deleted in the last 30 days, until the daily sweep purges them.",
+                  "Deleting a project is refused while a channel, app, bundle, site, kv collection, leaderboard or tracer resource still belongs to it — including channels deleted in the last 30 days, until the daily sweep purges them.",
                 onConfirm: remove,
                 disabled: act.busy,
               }
@@ -811,7 +821,7 @@ function AssetsTab({
       <LimitsSection
         limits={limits}
         standing={standing}
-        description="What the project may hold: its asset bundles together, and how many kv collections. A team member may ask a platform admin for more, up to the ceiling."
+        description="What the project may hold: its asset bundles together, and how many kv collections and tracer resources. A team member may ask a platform admin for more, up to the ceiling."
       />
     </>
   );
@@ -893,6 +903,116 @@ function SitesTab(props: { project: ProjectDetail; canWrite: boolean }) {
         </>
       )}
       emptyText="No sites yet."
+    />
+  );
+}
+
+/* ---- tracer resources ------------------------------------------------------ */
+
+const clipTo = (maxWidth: string) =>
+  ({
+    display: "inline-block",
+    maxWidth,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    verticalAlign: "bottom",
+  }) as const;
+
+/**
+ * Debug-data collections (docs/tracer.md). A seatless platform admin sees the
+ * rows but not the resource page (it carries the write key), so the name is
+ * not a link for that standing.
+ */
+function TracersTab({
+  standing,
+  ...props
+}: {
+  project: ProjectDetail;
+  canWrite: boolean;
+  standing: TeamStanding | undefined;
+}) {
+  // Link only once the standing is known, so a seatless admin never sees a
+  // link to a page that refuses them while the team loads.
+  const linkable = standing !== undefined && standing !== "admin";
+  return (
+    <ResourceListTab
+      {...props}
+      queryKey="tracers"
+      load={api.projectTracers}
+      create={(prj, name, description) =>
+        api.createTracer(prj, withDescription(name, description))
+      }
+      noun="tracer resource"
+      title="Tracers"
+      intro={
+        <>
+          Debug-build records (events, logs, screenshots) collected by the
+          stage&apos;s tracer: a debug build sends with a resource&apos;s DSN,
+          and <Code>yyt tracer</Code> or the <Code>tracer-debug</Code> skill
+          reads them. Debug data has no backup and is kept at most 30 days.
+          Resources per project are a limit (Assets › Limits).
+        </>
+      }
+      namePlaceholder="name (e.g. my-game-debug)"
+      second={{
+        label: "Description",
+        placeholder: "optional",
+        required: false,
+        maxLength: 2000,
+      }}
+      columns={[
+        { key: "name", label: "Resource", sortKey: "name" },
+        { key: "id", label: "Id" },
+        { key: "by", label: "Created by", sortKey: "createdBy" },
+        {
+          key: "updated",
+          label: "Updated",
+          sortKey: "updatedAt",
+          defaultOrder: "desc",
+        },
+      ]}
+      row={(r) => (
+        <>
+          {/* One line: a 64-character name is clipped (read in full on the
+              resource page), a 39-character login likewise; measured
+              792 px with no overflow at a 1080 px viewport (2026-11-09). */}
+          {linkable ? (
+            <NameCell to={tracerUrl(r.id)}>
+              <span style={clipTo("12rem")} title={r.name}>
+                {r.name}
+              </span>
+            </NameCell>
+          ) : (
+            <Table.Td>
+              <Text
+                component="span"
+                size="sm"
+                fw={500}
+                style={clipTo("12rem")}
+                title={r.name}
+              >
+                {r.name}
+              </Text>
+            </Table.Td>
+          )}
+          <Table.Td style={{ whiteSpace: "nowrap" }}>
+            <Code>{r.id}</Code>
+          </Table.Td>
+          <Table.Td style={{ whiteSpace: "nowrap" }}>
+            <span style={clipTo("7rem")} title={r.createdBy ?? undefined}>
+              {r.createdBy ?? "—"}
+            </span>
+          </Table.Td>
+          <Table.Td
+            style={{ whiteSpace: "nowrap" }}
+            title={fmtTime(r.updatedAt)}
+          >
+            {fmtRelative(r.updatedAt)}
+          </Table.Td>
+        </>
+      )}
+      emptyText="No tracer resources yet."
     />
   );
 }

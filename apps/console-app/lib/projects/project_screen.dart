@@ -5,11 +5,12 @@ import 'package:yyt_console/projects/models.dart';
 import 'package:yyt_console/projects/projects_api.dart';
 import 'package:yyt_console/projects/resource_widgets.dart';
 import 'package:yyt_console/projects/sites_tab.dart';
+import 'package:yyt_console/projects/tracers_tab.dart';
 import 'package:flutter/material.dart';
 
-enum ProjectTab { issues, sites, channels }
+enum ProjectTab { issues, sites, channels, tracers }
 
-/// One project: issues, sites and channels as tabs. Owns the one client every
+/// One project: issues, sites, channels and tracer resources as tabs. Owns the one client every
 /// tab and every screen pushed from them uses, so the whole visit talks to the
 /// server and token captured when it opened.
 class ProjectScreen extends StatefulWidget {
@@ -62,6 +63,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
               Tab(text: '이슈'),
               Tab(text: '사이트'),
               Tab(text: '채널'),
+              Tab(text: '트레이서'),
             ],
           ),
         ),
@@ -95,6 +97,12 @@ class _ProjectScreenState extends State<ProjectScreen> {
                     api: _api,
                   ),
                   ChannelsTab(
+                    authState: widget.authState,
+                    team: team,
+                    project: widget.project,
+                    api: _api,
+                  ),
+                  TracersTab(
                     authState: widget.authState,
                     team: team,
                     project: widget.project,

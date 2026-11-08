@@ -1,5 +1,6 @@
 import {
   IconApps,
+  IconBug,
   IconBellRinging,
   IconCalendarEvent,
   IconClipboardList,
@@ -100,6 +101,13 @@ export const NAV_ITEMS: NavItem[] = [
     path: "/leaderboards",
     label: "Leaderboards",
     icon: IconTrophy,
+    minRole: "member",
+    hidden: true,
+  },
+  {
+    path: "/tracers",
+    label: "Tracers",
+    icon: IconBug,
     minRole: "member",
     hidden: true,
   },

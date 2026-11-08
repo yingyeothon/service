@@ -341,6 +341,34 @@ describe("LimitsSection", () => {
     ).toBeInTheDocument();
   });
 
+  it("says a byte step in units and waits on usage, not slots", async () => {
+    const MiB = 1024 * 1024;
+    open({
+      scope: { kind: "tracer", id: "trc_1" },
+      teamId: "team_1",
+      limits: [
+        {
+          key: "tracer.dailyBytes",
+          unit: "bytes",
+          soft: 50 * MiB,
+          hard: 300 * MiB,
+          effective: 50 * MiB,
+          usage: 10 * MiB,
+          step: 50 * MiB,
+          next: null,
+          override: null,
+        },
+      ],
+      pending: [],
+    });
+    const s = await section();
+    expect(
+      await within(s).findByText(
+        "Ask for 50 MiB more once usage reaches 50 MiB (10 MiB now).",
+      ),
+    ).toBeInTheDocument();
+  });
+
   // A team has two stepped keys since push: each hint names its limit.
   const TEAM_PUSH = (projects: number, apps: number): LimitsView => ({
     ...TEAM(projects),

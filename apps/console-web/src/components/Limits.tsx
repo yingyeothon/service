@@ -460,10 +460,14 @@ export function LimitsSection({
     )
       return [];
     const name = steppedCount > 1 ? `${limitLabel(l.key)}: ` : "";
+    const ask = name ? "ask" : "Ask";
+    // A byte key (tracer.dailyBytes) is a volume, not slots: say it in units.
     const text =
-      l.usage < l.effective
-        ? `${name ? "ask" : "Ask"} for ${l.step} more once all ${l.effective} are in use (${l.usage} now).`
-        : `${name ? "at" : "At"} the ceiling of ${fmtLimit(l.unit, l.hard)}.`;
+      l.usage >= l.effective
+        ? `${name ? "at" : "At"} the ceiling of ${fmtLimit(l.unit, l.hard)}.`
+        : l.unit === "bytes"
+          ? `${ask} for ${fmtBytes(l.step)} more once usage reaches ${fmtBytes(l.effective)} (${fmtBytes(l.usage)} now).`
+          : `${ask} for ${l.step} more once all ${l.effective} are in use (${l.usage} now).`;
     return [{ key: l.key, text: `${name}${text}` }];
   });
 
@@ -836,7 +840,7 @@ export function LimitsSection({
               row.unit === "seconds"
                 ? "The channel stops expiring once a platform admin approves."
                 : row.next !== null
-                  ? `${row.step} more than the current ${fmtLimit(row.unit, row.effective)}; this limit is raised in steps of ${row.step}, up to ${fmtLimit(row.unit, row.hard)}.`
+                  ? `${fmtLimit(row.unit, row.step ?? 0)} more than the current ${fmtLimit(row.unit, row.effective)}; this limit is raised in steps of ${fmtLimit(row.unit, row.step ?? 0)}, up to ${fmtLimit(row.unit, row.hard)}.`
                   : `Now ${fmtLimit(row.unit, row.effective)}; the ceiling is ${fmtLimit(row.unit, row.hard)}.`
             }
             error={f.amount === "" ? null : valueProblem}

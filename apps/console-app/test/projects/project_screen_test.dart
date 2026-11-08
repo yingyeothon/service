@@ -51,6 +51,19 @@ http.Client _client(List<String> calls) => MockClient((req) async {
           },
         ],
       });
+    case '/projects/prj_1/tracers':
+      return jsonResponse({
+        'tracers': [
+          {
+            'id': 'trc_01hf7yavygfgdxpjfmr5r0g6ca',
+            'name': 'game-debug',
+            'readUrl': 'https://trace.example',
+            'noBackup': true,
+            'createdAt': 1700000000,
+            'updatedAt': 1700000000,
+          },
+        ],
+      });
     case '/projects/prj_1/channels':
       return jsonResponse({
         'channels': [
@@ -96,7 +109,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('three tabs, each loaded once and kept alive', (tester) async {
+  testWidgets('four tabs, each loaded once and kept alive', (tester) async {
     final calls = <String>[];
     await pump(tester, role: 'member', calls: calls);
     expect(find.text('crew / game'), findsOneWidget);
@@ -118,6 +131,12 @@ void main() {
     expect(find.text('활성'), findsOneWidget);
     expect(find.text('채널 만들기'), findsOneWidget);
 
+    await tester.tap(find.text('트레이서'));
+    await tester.pumpAndSettle();
+    expect(find.text('game-debug'), findsOneWidget);
+    expect(find.text('트레이서 만들기'), findsOneWidget);
+    expect(find.textContaining('백업은 없고'), findsOneWidget);
+
     await tester.tap(find.text('사이트'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('이슈'));
@@ -126,6 +145,7 @@ void main() {
       'GET /projects/prj_1/issues',
       'GET /projects/prj_1/sites',
       'GET /projects/prj_1/channels',
+      'GET /projects/prj_1/tracers',
     ]);
   });
 
@@ -145,6 +165,17 @@ void main() {
     await tester.tap(find.text('채널'));
     await tester.pumpAndSettle();
     expect(find.text('채널 만들기'), findsNothing);
+    await tester.tap(find.text('트레이서'));
+    await tester.pumpAndSettle();
+    expect(find.text('트레이서 만들기'), findsNothing);
+    // The resource view carries the write key: an unseated admin is refused
+    // it, so the row does not open.
+    await tester.tap(find.text('game-debug'));
+    await tester.pumpAndSettle();
+    expect(
+      calls,
+      isNot(contains('GET /tracers/trc_01hf7yavygfgdxpjfmr5r0g6ca')),
+    );
     await tester.tap(find.text('이슈'));
     await tester.pumpAndSettle();
     expect(find.text('이슈 등록'), findsNothing);
