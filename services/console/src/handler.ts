@@ -15,6 +15,7 @@ import {
   createPrismaClient,
   createKvStoreDb,
   createLeaderboardDb,
+  createTracerDb,
   createSocialDb,
   createSitesDb,
   createLimitsDb,
@@ -28,6 +29,7 @@ import {
   type EventsDb,
   type KvStoreDb,
   type LeaderboardDb,
+  type TracerDb,
   type LimitsDb,
   type ListingsDb,
   type PushDb,
@@ -137,6 +139,7 @@ interface Deps {
   /** The key-value store; the state stack serves its API from the same tables. */
   kvstore: KvStoreDb;
   leaderboards: LeaderboardDb;
+  tracers: TracerDb;
   social: SocialDb;
   /** Push registrations, pool slots and device tokens. */
   push: PushDb;
@@ -188,6 +191,7 @@ function getDeps(): Promise<Deps> {
       team: createTeamDb(raw, { newHistoryId: historyId }),
       kvstore: createKvStoreDb(raw),
       leaderboards: createLeaderboardDb(raw),
+      tracers: createTracerDb(raw),
       social: createSocialDb(raw),
       push: createPushDb(raw),
       pushJobs: createPushJobsDb(raw),
@@ -245,6 +249,9 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
       .map((s) => s.trim())
       .filter(Boolean),
     linkHost: process.env.LINK_HOST ?? "",
+    // Empty until the stage's tracer container is reachable: tracer views
+    // then carry `dsn: null` and `readUrl: null`.
+    tracerUrl: process.env.TRACER_URL ?? "",
   };
   const {
     stage,
@@ -259,6 +266,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     team,
     kvstore,
     leaderboards,
+    tracers,
     social,
     push,
     pushJobs,
@@ -347,6 +355,7 @@ async function buildApp(): Promise<(event: HttpEvent) => Promise<HttpResult>> {
     team,
     kvstore,
     leaderboards,
+    tracers,
     social,
     limits,
     push,

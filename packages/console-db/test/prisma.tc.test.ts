@@ -12,6 +12,7 @@ import {
   createSitesDb,
   createKvStoreDb,
   createLeaderboardDb,
+  createTracerDb,
   createStateDb,
   createSocialDb,
   createPushDb,
@@ -41,6 +42,7 @@ import {
 import { teamContract } from "./team.test.js";
 import { kvstoreContract } from "./kvstore.test.js";
 import { leaderboardContract } from "./leaderboard.test.js";
+import { tracerContract } from "./tracer.test.js";
 import { stateContract } from "./state.test.js";
 import { socialContract } from "./social.test.js";
 import {
@@ -374,6 +376,88 @@ describe.skipIf(!dockerAvailable())(
       );
     });
 
+    describe("tracer contract", () => {
+      tracerContract(
+        async () => {
+          await resetTestDb(db.client);
+          // `tracer_resources` has both parent foreign keys.
+          await seedTeamProject(db.client);
+          return createTracerDb(db.client);
+        },
+        { login },
+      );
+
+      it("cancels and drops the resource's limit rows on soft delete, cascades on purge (m0038)", async () => {
+        await resetTestDb(db.client);
+        await seedTeamProject(db.client);
+        const tracers = createTracerDb(db.client);
+        for (const id of ["trc_1", "trc_2"])
+          await tracers.insert({
+            id,
+            teamId: "team_1",
+            projectId: "prj_1",
+            name: id === "trc_1" ? "one" : "two",
+            description: null,
+            writeKey: "a".repeat(32),
+            ownerId: "m1",
+            at: 1,
+          });
+        const request = (id: string, trc: string, status = "pending") =>
+          db.client.limit_requests.create({
+            data: {
+              id,
+              team_id: "team_1",
+              tracer_resource_id: trc,
+              limit_key: "tracer.dailyBytes",
+              requested_value: 100,
+              reason: "r",
+              status: status as "pending",
+              created_by: "m1",
+              created_at: 1,
+            },
+          });
+        const override = (id: string, trc: string) =>
+          db.client.limit_overrides.create({
+            data: {
+              id,
+              team_id: "team_1",
+              tracer_resource_id: trc,
+              limit_key: "tracer.dailyBytes",
+              value: 100,
+              note: "n",
+              granted_by: "m1",
+              granted_at: 1,
+            },
+          });
+        await request("lr_1", "trc_1");
+        await request("lr_1_done", "trc_1", "approved");
+        await request("lr_2", "trc_2");
+        await override("lo_1", "trc_1");
+        await override("lo_2", "trc_2");
+        // One override per resource and key: the unique index.
+        await expect(override("lo_1_dup", "trc_1")).rejects.toThrow();
+
+        expect(await tracers.softDelete("trc_1", 50)).toBe(true);
+        const req = (id: string) =>
+          db.client.limit_requests.findUnique({ where: { id } });
+        expect(await req("lr_1")).toMatchObject({
+          status: "cancelled",
+          decided_at: 50n,
+        });
+        expect(await req("lr_1_done")).toMatchObject({ status: "approved" });
+        expect(await req("lr_2")).toMatchObject({ status: "pending" });
+        expect(
+          (await db.client.limit_overrides.findMany()).map((o) => o.id),
+        ).toEqual(["lo_2"]);
+
+        // The purge drops the row and the FK cascades its remaining rows.
+        expect(await tracers.deleteRow("trc_1")).toBe(true);
+        expect(await req("lr_1")).toBeNull();
+        expect(await req("lr_1_done")).toBeNull();
+        expect(await req("lr_2")).not.toBeNull();
+      });
+    });
+
     describe("limits contract", () => {
       limitsContract(async () => {
         await resetTestDb(db.client);
@@ -492,6 +576,22 @@ describe.skipIf(!dockerAvailable())(
           row({ site_id: "st_1", channel_id: "ch_1" }),
         ).rejects.toThrow();
         await expect(row({ site_id: "st_1" })).resolves.toBeDefined();
+        await createTracerDb(db.client).insert({
+          id: "trc_1",
+          teamId: "team_1",
+          projectId: "prj_1",
+          name: "dbg",
+          description: null,
+          writeKey: "a".repeat(32),
+          ownerId: null,
+          at: 1,
+        });
+        await expect(
+          row({ tracer_resource_id: "trc_1", site_id: "st_1" }),
+        ).rejects.toThrow();
+        await expect(
+          row({ tracer_resource_id: "trc_1" }),
+        ).resolves.toBeDefined();
         await expect(row({ channel_id: "ch_1" })).resolves.toBeDefined();
         await expect(row({ scope_team_id: "team_1" })).resolves.toBeDefined();
       });
@@ -1328,6 +1428,7 @@ describe.skipIf(!dockerAvailable())(
           sites: 1,
           kv: 0,
           lb: 0,
+          trc: 0,
         });
         await createSitesDb(db.client).deleteSite("st_1", 4, false);
         // A parent that does not exist is a foreign-key failure, not a silent null.

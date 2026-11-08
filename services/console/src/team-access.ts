@@ -16,6 +16,8 @@ import type {
   ProjectRow,
   SiteRow,
   SitesDb,
+  TracerDb,
+  TracerRow,
 } from "@yyt/console-db";
 import type { RouteContext } from "@yyt/http";
 import { requireRole, type ConsoleIdentity } from "./identity.js";
@@ -79,7 +81,8 @@ export interface ProjectAccess extends TeamAccess {
   project: ProjectRow;
 }
 
-export type ResourceKind = "channel" | "app" | "bundle" | "site" | "kv" | "lb";
+export type ResourceKind =
+  "channel" | "app" | "bundle" | "site" | "kv" | "lb" | "trc";
 export type ResourceRowOf<K extends ResourceKind> = K extends "channel"
   ? ChannelRow
   : K extends "app"
@@ -90,7 +93,9 @@ export type ResourceRowOf<K extends ResourceKind> = K extends "channel"
         ? SiteRow
         : K extends "kv"
           ? KvCollectionRow
-          : LeaderboardRow;
+          : K extends "lb"
+            ? LeaderboardRow
+            : TracerRow;
 
 export interface ResourceAccess<K extends ResourceKind> extends ProjectAccess {
   row: ResourceRowOf<K>;
@@ -104,6 +109,7 @@ export interface TeamAccessDeps {
   sites: SitesDb;
   kvstore: KvStoreDb;
   leaderboards: LeaderboardDb;
+  tracers: TracerDb;
 }
 
 export function createTeamAccess({
@@ -114,6 +120,7 @@ export function createTeamAccess({
   sites,
   kvstore,
   leaderboards,
+  tracers,
 }: TeamAccessDeps) {
   /** Standing of `id` in `teamRow`, or `undefined` when it has none and is not an admin. */
   async function standingOf(
@@ -195,6 +202,13 @@ export function createTeamAccess({
         // Same rule as a soft-deleted collection: a draining board holds no
         // name any more, so nothing addresses it.
         const row = await leaderboards.findBoard(id);
+        return (row?.deletedAt === null ? row : undefined) as
+          ResourceRowOf<K> | undefined;
+      }
+      case "trc": {
+        // Same rule again: a soft-deleted tracer resource has parked its name
+        // on its id and waits only for the purge.
+        const row = await tracers.find(id);
         return (row?.deletedAt === null ? row : undefined) as
           ResourceRowOf<K> | undefined;
       }

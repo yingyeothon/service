@@ -25,6 +25,7 @@ import type {
   EventsDb,
   KvStoreDb,
   LeaderboardDb,
+  TracerDb,
   LimitsDb,
   SocialDb,
   ShowsDb,
@@ -86,6 +87,7 @@ import {
   createLeaderboardRoutes,
   deleteChannelLbScores,
 } from "./leaderboard.js";
+import { createTracerRoutes } from "./tracer.js";
 import { createKitConfigRoutes } from "./kit-config.js";
 import { createLimitRoutes, type LimitNotify } from "./limits.js";
 import { createEventRoutes } from "./events.js";
@@ -148,6 +150,13 @@ export interface ConsoleAppOptions {
   /** The key-value store; the state stack serves its API from the same tables. */
   kvstore: KvStoreDb;
   leaderboards: LeaderboardDb;
+  /** Tracer resources (docs/decisions.md *Debug collector (`tracer`)*). */
+  tracers: TracerDb;
+  /**
+   * The stage's tracer base URL (`TRACER_URL`); empty or absent until the
+   * container is reachable, and tracer views then carry `dsn`/`readUrl: null`.
+   */
+  tracerUrl?: string;
   /** Profiles and relations; the state stack serves `/social/*` from the same tables. */
   social: SocialDb;
   /** Limit requests and overrides (docs/decisions.md *Limit requests*). */
@@ -289,6 +298,8 @@ export function createConsoleApp({
   team,
   kvstore,
   leaderboards,
+  tracers,
+  tracerUrl = "",
   social,
   limits,
   push,
@@ -392,6 +403,7 @@ export function createConsoleApp({
     sites,
     kvstore,
     leaderboards,
+    tracers,
   });
   const { projectAccess, projectResource, memberTeamIds } = access;
   const history = createResourceHistory(team, logger);
@@ -1348,6 +1360,17 @@ export function createConsoleApp({
     audit,
   });
 
+  const tracerRoutes = createTracerRoutes({
+    tracers,
+    access,
+    crumbs,
+    history,
+    tracerUrl,
+    clock,
+    writeSlot: createWriteSlot({ kv, clock }),
+    audit,
+  });
+
   const pushRoutes = createPushRoutes({
     ...pushDeps,
     access,
@@ -1418,6 +1441,7 @@ export function createConsoleApp({
     sites,
     kvstore,
     leaderboards,
+    tracers,
     kv,
     clock,
     audit,
@@ -1499,6 +1523,7 @@ export function createConsoleApp({
       ...siteRoutes,
       ...kvStoreRoutes,
       ...leaderboardRoutes,
+      ...tracerRoutes,
       ...kitConfigRoutes,
       ...limitRoutes,
       ...channelRedisRoutes,

@@ -476,6 +476,7 @@ model members {
   show_comments                 show_comments[]
   kv_collections                kv_collections[]
   leaderboards                  leaderboards[]
+  tracer_resources              tracer_resources[]
   limit_requests_created        limit_requests[]            @relation("limit_request_creator")
   limit_requests_decided        limit_requests[]            @relation("limit_request_decider")
   limit_overrides               limit_overrides[]
@@ -571,14 +572,14 @@ enum catalog_listings_audience {
 }
 
 model teams {
-  id                     String            @id @db.VarChar(64)
-  name                   String            @unique(map: "teams_name") @db.VarChar(255)
-  description            String?           @db.MediumText
-  admin_locked           Boolean           @default(false)
-  created_by             String            @db.VarChar(64)
+  id                     String             @id @db.VarChar(64)
+  name                   String             @unique(map: "teams_name") @db.VarChar(255)
+  description            String?            @db.MediumText
+  admin_locked           Boolean            @default(false)
+  created_by             String             @db.VarChar(64)
   created_at             BigInt
   updated_at             BigInt
-  members                members           @relation("team_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "teams_creator")
+  members                members            @relation("team_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "teams_creator")
   team_members           team_members[]
   team_history           team_history[]
   discussions            discussions[]
@@ -590,10 +591,11 @@ model teams {
   site_names             site_names[]
   kv_collections         kv_collections[]
   leaderboards           leaderboards[]
+  tracer_resources       tracer_resources[]
   limit_requests         limit_requests[]
   limit_overrides        limit_overrides[]
-  limit_requests_scoped  limit_requests[]  @relation("limit_request_scope_team")
-  limit_overrides_scoped limit_overrides[] @relation("limit_override_scope_team")
+  limit_requests_scoped  limit_requests[]   @relation("limit_request_scope_team")
+  limit_overrides_scoped limit_overrides[]  @relation("limit_override_scope_team")
 
   @@index([created_by], map: "teams_creator")
 }
@@ -682,6 +684,7 @@ model projects {
   sites             sites[]
   kv_collections    kv_collections[]
   leaderboards      leaderboards[]
+  tracer_resources  tracer_resources[]
   limit_requests    limit_requests[]
   limit_overrides   limit_overrides[]
 
@@ -1321,42 +1324,44 @@ enum social_relation_state {
 }
 
 /// A member's request to raise one limit of one scope (docs/decisions.md
-/// *Limit requests (soft/hard)*). Exactly one of `project_id`, `bundle_id`,
-/// `channel_id` is set: a CHECK constraint in the migration, which Prisma does
+/// *Limit requests (soft/hard)*). Exactly one scope column is set: a CHECK constraint in the migration, which Prisma does
 /// not model. Every scope key cascades, so the scope's deletion removes it.
 model limit_requests {
-  id              String                @id @db.VarChar(64)
-  team_id         String                @db.VarChar(64)
-  project_id      String?               @db.VarChar(64)
-  bundle_id       String?               @db.VarChar(64)
-  channel_id      String?               @db.VarChar(64)
+  id                 String                @id @db.VarChar(64)
+  team_id            String                @db.VarChar(64)
+  project_id         String?               @db.VarChar(64)
+  bundle_id          String?               @db.VarChar(64)
+  channel_id         String?               @db.VarChar(64)
   /// The team itself as the scope (`team.projects`); `team_id` holds the same id.
-  scope_team_id   String?               @db.VarChar(64)
+  scope_team_id      String?               @db.VarChar(64)
   /// A kv collection as the scope (`kv.maxEntries`, `kv.maxEntriesPerOwner`, m0027).
-  collection_id   String?               @db.VarChar(64)
+  collection_id      String?               @db.VarChar(64)
   /// A static site as the scope (`site.*`, m0030).
-  site_id         String?               @db.VarChar(64)
-  limit_key       String                @db.VarChar(64)
+  site_id            String?               @db.VarChar(64)
+  /// A tracer resource as the scope (`tracer.dailyBytes`, m0038).
+  tracer_resource_id String?               @db.VarChar(64)
+  limit_key          String                @db.VarChar(64)
   /// Null asks for unlimited.
-  requested_value BigInt?
-  reason          String                @db.Text
-  status          limit_requests_status @default(pending)
-  decided_value   BigInt?
-  decision_note   String?               @db.Text
-  created_by      String                @db.VarChar(64)
-  created_at      BigInt
-  decided_by      String?               @db.VarChar(64)
-  decided_at      BigInt?
-  teams           teams                 @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_team_fk")
-  projects        projects?             @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_project_fk")
-  asset_bundles   asset_bundles?        @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_bundle_fk")
-  channels        channels?             @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_channel_fk")
-  scope_team      teams?                @relation("limit_request_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_team_fk")
-  kv_collections  kv_collections?       @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_collection_fk")
-  sites           sites?                @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_site_fk")
-  creator         members               @relation("limit_request_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_creator_fk")
-  decider         members?              @relation("limit_request_decider", fields: [decided_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_decider_fk")
-  limit_overrides limit_overrides[]
+  requested_value    BigInt?
+  reason             String                @db.Text
+  status             limit_requests_status @default(pending)
+  decided_value      BigInt?
+  decision_note      String?               @db.Text
+  created_by         String                @db.VarChar(64)
+  created_at         BigInt
+  decided_by         String?               @db.VarChar(64)
+  decided_at         BigInt?
+  teams              teams                 @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_team_fk")
+  projects           projects?             @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_project_fk")
+  asset_bundles      asset_bundles?        @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_bundle_fk")
+  channels           channels?             @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_channel_fk")
+  scope_team         teams?                @relation("limit_request_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_team_fk")
+  kv_collections     kv_collections?       @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_collection_fk")
+  sites              sites?                @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_site_fk")
+  tracer_resources   tracer_resources?     @relation(fields: [tracer_resource_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_requests_scope_tracer_fk")
+  creator            members               @relation("limit_request_creator", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_creator_fk")
+  decider            members?              @relation("limit_request_decider", fields: [decided_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_requests_decider_fk")
+  limit_overrides    limit_overrides[]
 
   @@index([project_id, limit_key, status], map: "limit_requests_project")
   @@index([bundle_id, limit_key, status], map: "limit_requests_bundle")
@@ -1364,6 +1369,7 @@ model limit_requests {
   @@index([scope_team_id, limit_key, status], map: "limit_requests_scope_team")
   @@index([collection_id, limit_key, status], map: "limit_requests_scope_collection")
   @@index([site_id, limit_key, status], map: "limit_requests_scope_site")
+  @@index([tracer_resource_id, limit_key, status], map: "limit_requests_scope_tracer")
   @@index([team_id, status, id], map: "limit_requests_team")
   @@index([status, id], map: "limit_requests_status")
   @@index([created_by], map: "limit_requests_creator")
@@ -1373,34 +1379,37 @@ model limit_requests {
 /// The granted value of one limit for one scope; the effective limit is this
 /// while unexpired, else the soft value. Same one-scope CHECK as above.
 model limit_overrides {
-  id             String          @id @db.VarChar(64)
-  team_id        String          @db.VarChar(64)
-  project_id     String?         @db.VarChar(64)
-  bundle_id      String?         @db.VarChar(64)
-  channel_id     String?         @db.VarChar(64)
+  id                 String            @id @db.VarChar(64)
+  team_id            String            @db.VarChar(64)
+  project_id         String?           @db.VarChar(64)
+  bundle_id          String?           @db.VarChar(64)
+  channel_id         String?           @db.VarChar(64)
   /// The team itself as the scope (`team.projects`); `team_id` holds the same id.
-  scope_team_id  String?         @db.VarChar(64)
+  scope_team_id      String?           @db.VarChar(64)
   /// A kv collection as the scope (m0027).
-  collection_id  String?         @db.VarChar(64)
+  collection_id      String?           @db.VarChar(64)
   /// A static site as the scope (m0030).
-  site_id        String?         @db.VarChar(64)
-  limit_key      String          @db.VarChar(64)
+  site_id            String?           @db.VarChar(64)
+  /// A tracer resource as the scope (m0038).
+  tracer_resource_id String?           @db.VarChar(64)
+  limit_key          String            @db.VarChar(64)
   /// Null is unlimited.
-  value          BigInt?
-  request_id     String?         @db.VarChar(64)
-  note           String          @db.Text
-  granted_by     String          @db.VarChar(64)
-  granted_at     BigInt
-  expires_at     BigInt?
-  teams          teams           @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_team_fk")
-  projects       projects?       @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_project_fk")
-  asset_bundles  asset_bundles?  @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_bundle_fk")
-  channels       channels?       @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_channel_fk")
-  scope_team     teams?          @relation("limit_override_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_team_fk")
-  kv_collections kv_collections? @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_collection_fk")
-  sites          sites?          @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_site_fk")
-  limit_requests limit_requests? @relation(fields: [request_id], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "limit_overrides_request_fk")
-  members        members         @relation(fields: [granted_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_overrides_granter_fk")
+  value              BigInt?
+  request_id         String?           @db.VarChar(64)
+  note               String            @db.Text
+  granted_by         String            @db.VarChar(64)
+  granted_at         BigInt
+  expires_at         BigInt?
+  teams              teams             @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_team_fk")
+  projects           projects?         @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_project_fk")
+  asset_bundles      asset_bundles?    @relation(fields: [bundle_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_bundle_fk")
+  channels           channels?         @relation(fields: [channel_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_channel_fk")
+  scope_team         teams?            @relation("limit_override_scope_team", fields: [scope_team_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_team_fk")
+  kv_collections     kv_collections?   @relation(fields: [collection_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_collection_fk")
+  sites              sites?            @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_site_fk")
+  tracer_resources   tracer_resources? @relation(fields: [tracer_resource_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "limit_overrides_scope_tracer_fk")
+  limit_requests     limit_requests?   @relation(fields: [request_id], references: [id], onDelete: SetNull, onUpdate: Restrict, map: "limit_overrides_request_fk")
+  members            members           @relation(fields: [granted_by], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "limit_overrides_granter_fk")
 
   @@unique([project_id, limit_key], map: "limit_overrides_project")
   @@unique([bundle_id, limit_key], map: "limit_overrides_bundle")
@@ -1408,6 +1417,7 @@ model limit_overrides {
   @@unique([scope_team_id, limit_key], map: "limit_overrides_scope_team")
   @@unique([collection_id, limit_key], map: "limit_overrides_scope_collection")
   @@unique([site_id, limit_key], map: "limit_overrides_scope_site")
+  @@unique([tracer_resource_id, limit_key], map: "limit_overrides_scope_tracer")
   @@index([team_id], map: "limit_overrides_team")
   @@index([expires_at], map: "limit_overrides_expires")
   @@index([request_id], map: "limit_overrides_request")
@@ -1646,4 +1656,36 @@ model site_edge_control {
   id    Int    @id
   month String @db.VarChar(7)
   used  Int    @default(0)
+}
+
+/// A debug-data collection in the stage's tracer container, under a project
+/// (docs/decisions.md *Debug collector (`tracer`)* #5-#9). Console owns the
+/// row; tracer learns it over HTTP (`GET /tr/resources/{id}`), never from
+/// MariaDB.
+model tracer_resources {
+  id              String            @id @db.VarChar(64)
+  team_id         String            @db.VarChar(64)
+  project_id      String            @db.VarChar(64)
+  name            String            @db.VarChar(255)
+  description     String?           @db.MediumText
+  /// The DSN key, plain on purpose: it ships inside debug APKs and is shown
+  /// to every team member (decisions #6); tracer receives only its sha256.
+  write_key       String            @db.VarChar(64)
+  /// Creator, kept for display; authorization is team membership.
+  owner_id        String?           @db.VarChar(64)
+  /// Soft-delete claim. The name is freed at once (set to the id); the row
+  /// stays until tracer has purged the resource's data.
+  deleted_at      BigInt?
+  created_at      BigInt
+  updated_at      BigInt
+  members         members?          @relation(fields: [owner_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "tracer_resources_owner")
+  teams           teams             @relation(fields: [team_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "tracer_resources_team_fk")
+  projects        projects          @relation(fields: [project_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "tracer_resources_project_fk")
+  limit_requests  limit_requests[]
+  limit_overrides limit_overrides[]
+
+  @@unique([team_id, name], map: "tracer_resources_team_name")
+  @@index([owner_id], map: "tracer_resources_owner")
+  @@index([project_id], map: "tracer_resources_project")
+  @@index([deleted_at], map: "tracer_resources_deleted")
 }

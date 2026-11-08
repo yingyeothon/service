@@ -11,6 +11,7 @@ import {
   createMemoryShowsDb,
   createMemoryKvStoreDb,
   createMemoryLeaderboardDb,
+  createMemoryTracerDb,
   createMemoryLimitsDb,
   createMemoryPushDb,
   createMemoryPushJobsDb,
@@ -208,6 +209,12 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     memberExists: (id) => db.members.has(id),
     loginOf,
   });
+  const tracers = createMemoryTracerDb({
+    teamExists: (id) => teamDb.teams.has(id),
+    projectExists: (id) => teamDb.projects.has(id),
+    memberExists: (id) => db.members.has(id),
+    loginOf,
+  });
   const social = createMemorySocialDb();
   const countIn = (
     pick: (r: { teamId: string | null; projectId: string | null }) => boolean,
@@ -222,6 +229,10 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     kv: [...kvstore.collections.values()].filter(pick).length,
     // Same for a draining leaderboard.
     lb: [...leaderboards.boards.values()].filter(pick).length,
+    // Live tracers only: a soft-deleted one goes with its project or team.
+    trc: [...tracers.tracers.values()].filter(
+      (r) => pick(r) && r.deletedAt === null,
+    ).length,
   });
   const teamDb = createMemoryTeamDb({
     memberExists: (id) => db.members.has(id),
@@ -250,6 +261,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     team: teamDb,
     kvstore,
     leaderboards,
+    tracers,
     social,
     limits,
     push,
@@ -398,6 +410,7 @@ export function harness(over: Partial<ConsoleAppOptions> = {}) {
     invoked,
     kvstore,
     leaderboards,
+    tracers,
     social,
     limits,
     push,

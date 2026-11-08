@@ -597,3 +597,21 @@ export {
   type SiteEdgeDb,
   type SiteEdgePolicy,
 } from "./site-edge.js";
+export {
+  checkTracerName,
+  createMemoryTracerDb,
+  createTracerDb,
+  isTracerIdShapedName,
+  TRACER_BATCH_MAX,
+  TRACER_ID_RE,
+  TRACER_SORT_KEYS,
+  TRACER_WRITE_KEY_RE,
+  type MemoryTracerDeps,
+  type TracerDb,
+  type TracerFilter,
+  type TracerInput,
+  type TracerMeta,
+  type TracerPatch,
+  type TracerRow,
+  type TracerSortKey,
+} from "./tracer.js";
