@@ -62,6 +62,9 @@ func newTracer(a *App) *cobra.Command {
 			"--local <url> (or YYT_TRACER_LOCAL) skips the console and reads a local\n" +
 			"`tracer serve` with YYT_TRACER_LOCAL_TOKEN (the readToken of its tracer.json);\n" +
 			"<res> must then be the trc_ id. Plain http is allowed only for a loopback host.\n\n" +
+			"Manage resources (console): list, create, get, update/rename, rotate-key,\n" +
+			"delete, dsn. A debug build sends with the DSN (`yyt tracer dsn <res>`).\n" +
+			"These always use the console: they refuse --local and ignore YYT_TRACER_LOCAL.\n\n" +
 			"Times: --since/--until take RFC 3339 or a duration back from now (15m, 2h, 7d)\n" +
 			"and select by receive time; rows show the device time and the receive time.",
 	}
@@ -81,6 +84,7 @@ func newTracer(a *App) *cobra.Command {
 		newTracerDays(a, target, "usage", "Per-day stored bytes and the first quota crossing of each day",
 			"DAY  BYTES  QUOTA_HIT; --json: {usage:[{day,bytes,quotaHit}]}"),
 	)
+	c.AddCommand(a.tracerManagement()...)
 	return group(c)
 }
 
@@ -91,9 +95,10 @@ func (a *App) tracerTarget(cmd *cobra.Command, local, res string) (*tracerTarget
 		local = strings.TrimSpace(os.Getenv("YYT_TRACER_LOCAL"))
 	}
 	if local != "" {
-		if !strings.HasPrefix(res, "trc_") {
+		if !strings.HasPrefix(strings.ToLower(res), "trc_") {
 			return nil, fmt.Errorf("with --local, <res> must be the trc_ id (got %q)", res)
 		}
+		res = strings.ToLower(res)
 		if err := checkTracerURL(local, true); err != nil {
 			return nil, err
 		}
@@ -109,11 +114,9 @@ func (a *App) tracerTarget(cmd *cobra.Command, local, res string) (*tracerTarget
 	if err != nil {
 		return nil, err
 	}
-	id := res
-	if !strings.HasPrefix(res, "trc_") {
-		if id, err = cc.resource(cmd.Context(), "tracer resource", "/tracers", "tracers", res, false); err != nil {
-			return nil, err
-		}
+	id, err := cc.tracer(cmd.Context(), res, false)
+	if err != nil {
+		return nil, err
 	}
 	var v tracerView
 	if err := cc.cl.Do(cmd.Context(), http.MethodGet, "/tracers/"+api.PathID(id), nil, &v); err != nil {

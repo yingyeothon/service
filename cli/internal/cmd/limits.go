@@ -148,15 +148,17 @@ func newLimits(a *App) *cobra.Command {
 		Long: "Team, asset and channel limits (docs/decisions.md \"Limit requests\").\n\n" +
 			"Every limit has a soft value every scope gets and a hard ceiling a platform\n" +
 			"admin may grant up to. A limit belongs to a bundle (--bundle), a channel\n" +
-			"(--channel), a kv collection (--collection), a static site (--site), the team in context\n" +
+			"(--channel), a kv collection (--collection), a static site (--site), a tracer\n" +
+			"resource (--tracer), the team in context\n" +
 			"(--scope team, a `team.` limit or push.appsPerTeam) or, with none of these, the project\n" +
 			"in context. Sizes take binary units\n" +
 			"(256MiB, 3GiB); a channel's lifetime takes only `unlimited`; a stepped\n" +
-			"limit such as team.projects is asked for as `+5` once every slot is used.\n" +
+			"limit such as team.projects is asked for as `+5` (tracer.dailyBytes as `+50MiB`)\n" +
+			"once usage reaches it.\n" +
 			"push.recipientsPerJob and push.jobsPerDay belong to a push channel\n" +
 			"(--channel), unlike push.appsPerTeam.",
 	}
-	var bundle, channel, collection, siteArg, scopeKind string
+	var bundle, channel, collection, siteArg, tracerArg, scopeKind string
 	// countNonEmpty is how many of the scope flags were given.
 	countNonEmpty := func(xs ...string) int {
 		n := 0
@@ -171,6 +173,7 @@ func newLimits(a *App) *cobra.Command {
 		cmd.Flags().StringVar(&bundle, "bundle", "", "an asset bundle (id or name in the project context)")
 		cmd.Flags().StringVar(&channel, "channel", "", "a channel (id or name in the project context)")
 		cmd.Flags().StringVar(&collection, "collection", "", "a kv collection (id or name in the project context)")
+		cmd.Flags().StringVar(&tracerArg, "tracer", "", "a tracer resource (id or name in the project context): tracer.dailyBytes")
 		cmd.Flags().StringVar(&siteArg, "site", "", "a static site (id or name in the project context): site.basicAuth, site.zipBytes, site.files, site.extractedBytes")
 		cmd.Flags().StringVar(&scopeKind, "scope", "", "team | project: the team or (default) the project in context")
 	}
@@ -192,9 +195,9 @@ func newLimits(a *App) *cobra.Command {
 			return nil, "", "", "", fmt.Errorf("%s is a team limit: drop --scope project", key)
 		case isPushChannelLimit(key) && channel == "":
 			return nil, "", "", "", fmt.Errorf("%s is a limit of a push channel: pass --channel <push channel>", key)
-		case countNonEmpty(bundle, channel, collection, siteArg) > 1,
-			team && countNonEmpty(bundle, channel, collection, siteArg) > 0:
-			return nil, "", "", "", errors.New("pass one of --bundle, --channel, --collection, --site and --scope team")
+		case countNonEmpty(bundle, channel, collection, siteArg, tracerArg) > 1,
+			team && countNonEmpty(bundle, channel, collection, siteArg, tracerArg) > 0:
+			return nil, "", "", "", errors.New("pass one of --bundle, --channel, --collection, --site, --tracer and --scope team")
 		case team:
 			r, err := cc.team(ctx, write)
 			if err != nil {
@@ -213,6 +216,9 @@ func newLimits(a *App) *cobra.Command {
 		case siteArg != "":
 			id, err := cc.site(ctx, siteArg, write)
 			return cc, "site", id, "site:" + id, err
+		case tracerArg != "":
+			id, err := cc.tracer(ctx, tracerArg, write)
+			return cc, "tracer", id, "tracer:" + id, err
 		}
 		r, err := cc.project(ctx, write)
 		if err != nil {
@@ -282,11 +288,11 @@ func newLimits(a *App) *cobra.Command {
 					eff, _ := l.Effective.(float64)
 					switch {
 					case l.Next != nil:
-						notes = append(notes, [2]string{l.Key, fmt.Sprintf("at the limit: ask for %d with `yyt limit request %s +%d --reason ...`", *l.Next, l.Key, *l.Step)})
+						notes = append(notes, [2]string{l.Key, fmt.Sprintf("at the limit: ask for %s with `yyt limit request %s %s --reason ...`", formatLimit(l.Unit, float64(*l.Next)), l.Key, relStep(l.Unit, *l.Step))})
 					case l.Usage != nil && *l.Usage >= eff:
 						notes = append(notes, [2]string{l.Key, fmt.Sprintf("at the ceiling of %s", formatLimit(l.Unit, l.Hard))})
 					default:
-						notes = append(notes, [2]string{l.Key, fmt.Sprintf("raised %d at a time once every slot is used", *l.Step)})
+						notes = append(notes, [2]string{l.Key, fmt.Sprintf("raised %s at a time once usage reaches the limit", relStep(l.Unit, *l.Step))})
 					}
 				}
 			}
@@ -326,10 +332,12 @@ func newLimits(a *App) *cobra.Command {
 				return err
 			}
 			var value any
-			if n, ok := parseRelative(args[1]); ok {
+			if rel, ok, perr := parseRelative(args[1]); perr != nil {
+				return perr
+			} else if ok {
 				// `+N` is relative to the effective value the server reports;
 				// for a stepped limit the server's `next` is what to send.
-				value, err = relativeValue(cmd, cc, scope, args[0], n)
+				value, err = relativeValue(cmd, cc, scope, args[0], rel)
 			} else {
 				value, err = parseLimitValue(args[1])
 			}
@@ -627,24 +635,39 @@ func (a *App) printRequest(r limitRequest) error {
 	return a.printer().KV(pairs)
 }
 
-// parseRelative reads `+N` (a positive whole number) and reports whether the
-// argument had that form at all.
-func parseRelative(s string) (int64, bool) {
+// relative is a parsed `+N`: the amount and whether it carried a size unit.
+type relative struct {
+	n     int64
+	sized bool
+}
+
+// parseRelative reads `+N` (a positive whole number, or a binary size such as
+// `+50MiB`). ok reports whether the argument had the `+` form at all; err is
+// set when it had it but N is not a positive amount.
+func parseRelative(s string) (rel relative, ok bool, err error) {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "+") {
-		return 0, false
+		return relative{}, false, nil
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(s[1:]), 10, 64)
-	if err != nil || n <= 0 {
-		return 0, true
+	v, err := parseLimitValue(s[1:])
+	n, isNum := v.(int64)
+	if err != nil || !isNum || n <= 0 {
+		return relative{}, true, fmt.Errorf("relative value %q: want +N (a count) or a size like +50MiB", s)
 	}
-	return n, true
+	m := sizeRe.FindStringSubmatch(strings.TrimSpace(s[1:]))
+	return relative{n: n, sized: m != nil && m[2] != ""}, true, nil
+}
+
+// relStep is a step as the `+N` a request takes: `+5`, `+50MiB`.
+func relStep(unit string, step int64) string {
+	return "+" + strings.ReplaceAll(formatLimit(unit, float64(step)), " ", "")
 }
 
 // relativeValue turns `+N` into the absolute value to send, for a count: the
 // server's `next` when the limit is stepped and N is its step, else effective + N.
 // The server still decides; a wrong step or an unreached limit is its 400.
-func relativeValue(cmd *cobra.Command, cc *ctxClient, scope, key string, n int64) (any, error) {
+func relativeValue(cmd *cobra.Command, cc *ctxClient, scope, key string, rel relative) (any, error) {
+	n := rel.n
 	if n <= 0 {
 		return nil, errors.New("a relative value is +N with N above 0")
 	}
@@ -658,8 +681,13 @@ func relativeValue(cmd *cobra.Command, cc *ctxClient, scope, key string, n int64
 		if l.Key != key {
 			continue
 		}
-		if l.Unit != "count" {
-			return nil, fmt.Errorf("%s takes an absolute value (%s): +N is for counts", key, l.Unit)
+		switch {
+		case l.Unit != "count" && l.Unit != "bytes":
+			return nil, fmt.Errorf("%s takes an absolute value (%s): +N is for counts and sizes", key, l.Unit)
+		case l.Unit == "bytes" && !rel.sized:
+			return nil, fmt.Errorf("%s is a size: give the unit, e.g. +50MiB", key)
+		case l.Unit == "count" && rel.sized:
+			return nil, fmt.Errorf("%s is a count: +N takes no size unit", key)
 		}
 		if l.Step != nil && l.Next != nil && *l.Step == n {
 			return *l.Next, nil

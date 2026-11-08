@@ -342,9 +342,17 @@ yyt tracer timeline <res> <event_id> [--window 2m]     # breadcrumbs, logs, even
 yyt tracer logs <res> [--since 15m] [--until …] [--level l] [--device d] [--trace-id t] [--attribute k:v] [--text t] [--limit n] [--cursor c]
 yyt tracer attachment <res> <attachment_id> -o file    # streamed, kept only if the sha256 matches
 yyt tracer drops|usage <res> [--days 7]
+
+yyt tracer list                                        # the project's resources (console)
+yyt tracer create <name> [--description d]             # prints the write key and, once the stage has a tracer, the DSN
+yyt tracer get <res>
+yyt tracer update <res> [--name n] [--description d]   # or: yyt tracer rename <res> <new-name>
+yyt tracer rotate-key <res>                            # old DSNs stop being accepted
+yyt tracer delete <res>                                # tracer purges the data after 7 days; no backup
+yyt tracer dsn <res>                                   # the DSN alone, for a build script: TRACER_DSN="$(yyt tracer dsn app-debug --profile dev)"
 ```
 
-`--local http://127.0.0.1:8095` (or `YYT_TRACER_LOCAL`) reads a local `tracer serve` with `YYT_TRACER_LOCAL_TOKEN` (its `tracer.json` readToken) and needs the `trc_` id; plain http is accepted only for a loopback host. A refused token exits 1 with a tracer-specific message (the console login is not at fault); a missing resource or event exits 5. Device text in tables is stripped of control characters; `--json` keeps it escaped. Resource management (`create`, `list`, `dsn`, …) comes with the console routes.
+`--local http://127.0.0.1:8095` (or `YYT_TRACER_LOCAL`) reads a local `tracer serve` with `YYT_TRACER_LOCAL_TOKEN` (its `tracer.json` readToken) and needs the `trc_` id; plain http is accepted only for a loopback host. A refused token exits 1 with a tracer-specific message (the console login is not at fault); a missing resource or event exits 5. Device text in tables is stripped of control characters; `--json` keeps it escaped. The management commands always go to the console (they refuse `--local` and ignore `YYT_TRACER_LOCAL`); `dsn` prints only a DSN of the minted shape (`https://<this key>@<host>/<this id>`) and fails, printing nothing, otherwise or before the stage has a tracer.
 
 ### Push notifications
 
@@ -385,11 +393,12 @@ yyt push job report alerts pj_…                                               
 ### Limits
 
 ```sh
-yyt limit list [--bundle b | --channel c | --collection k | --scope team]   # usage, effective, soft, hard, override; no flag = the project in context
-yyt limit request <limit> <value|unlimited|+N> [--bundle b | --channel c | --collection k] --reason "…"
+yyt limit list [--bundle b | --channel c | --collection k | --site s | --tracer t | --scope team]   # usage, effective, soft, hard, override; no flag = the project in context
+yyt limit request <limit> <value|unlimited|+N> [--bundle b | --channel c | --collection k | --site s | --tracer t] --reason "…"
 yyt limit request kv.maxEntries 50000 --collection saves --reason "…"   # a collection's cap ceiling; its usage is the cap set now
                                                        # sizes in binary units (256MiB, 3GiB); channel.lifetime takes only `unlimited`
-yyt limit request team.projects +5 --reason "…"        # a `team.` limit is the team in context; +5 once every project slot is used
+yyt limit request team.projects +5 --reason "…"        # a `team.` limit is the team in context; +5 once usage reaches the limit
+yyt limit request tracer.dailyBytes +50MiB --tracer app-debug --reason "…"   # a size limit's +N takes the unit
 yyt limit request push.jobsPerDay 30 --channel alerts --reason "…"   # push.jobsPerDay and push.recipientsPerJob need --channel (a push channel)
 yyt limit requests [--status s] [--cursor c] [--limit n]   # the team's requests, newest first
 yyt limit get <request-id>                             # reason, and once decided the grant and the admin's note

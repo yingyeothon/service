@@ -84,8 +84,8 @@ rows.
 3. **Check for gaps.** `yyt tracer drops <res> --days 2`. Rows with reason `quota_*` in the
    window you read mean the resource hit its daily quota: attachments were dropped (100 %) or
    whole envelopes refused (120 %), so the record is incomplete. Say so, and suggest (never
-   run) that a team member asks for more — `yyt limit request --tracer <res>
-tracer.dailyBytes +50MiB --reason "<why>"` once the console has the `tracer` limit scope,
+   run) that a team member asks for more — `yyt limit request tracer.dailyBytes +50MiB
+--tracer <res> --reason "<why>"` (accepted once today's usage reached the quota),
    or the console limits page. Other reasons (`too_large`, `invalid`, `disk`, `busy`) are worth
    a sentence; `not_stored` is normal (replays, client reports and similar items are counted,
    not kept).

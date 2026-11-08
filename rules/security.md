@@ -271,3 +271,7 @@
 ## A shared secret guard covers both directions (2026-11-08)
 
 - When a route refuses a misconfigured shared secret (too short, equal to another principal's), the outbound client that sends the same secret must get the same sanitised value (`effectiveTracerToken`): otherwise console keeps presenting the reused secret to the peer while the inbound side is disabled. And an answer from that peer is bounded (body bytes, entry count) and its ids are matched against our own rows before they reach text or dedupe keys (`tracer-usage.ts`, the digest's tracer lines).
+
+## A CLI value a script embeds is validated, not echoed (2026-11-08)
+
+- `yyt tracer dsn` output goes into `TRACER_DSN="$(…)"` and from there into a build: it prints only a DSN of the minted shape (https, userinfo = this view's write key, path = this resource id, no query/fragment/controls) re-serialised, and fails with empty stdout otherwise. Every other console string in a KV/table view goes through `oneLine`, so a team member's description cannot forge a `dsn:`/`writeKey:` line for another member.
