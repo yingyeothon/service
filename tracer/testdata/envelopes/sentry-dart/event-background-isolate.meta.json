@@ -1,0 +1,9 @@
+{
+  "headers": {
+    "Content-Encoding": "gzip",
+    "Content-Type": "application/x-sentry-envelope",
+    "User-Agent": "sentry.dart/9.30.1",
+    "X-Sentry-Auth": "Sentry sentry_version=7, sentry_client=sentry.dart/9.30.1, sentry_key=fixturewritekeyfixturewritekey00"
+  },
+  "path": "/api/trc_fixture01/envelope/"
+}

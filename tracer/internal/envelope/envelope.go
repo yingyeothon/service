@@ -64,6 +64,7 @@ const (
 	TypeClientReport    = "client_report"
 	TypeReplayEvent     = "replay_event"
 	TypeReplayRecording = "replay_recording"
+	TypeReplayVideo     = "replay_video" // sentry-android session replay (captured 2026-11-08)
 	TypeProfile         = "profile"
 	TypeCheckIn         = "check_in"
 	TypeSpan            = "span"

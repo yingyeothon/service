@@ -1,0 +1,9 @@
+{
+  "headers": {
+    "Content-Encoding": "gzip",
+    "Content-Type": "application/x-sentry-envelope",
+    "User-Agent": "sentry.java.android.flutter/8.56.0",
+    "X-Sentry-Auth": "Sentry sentry_version=7, sentry_client=sentry.java.android.flutter/8.56.0, sentry_key=fixturewritekeyfixturewritekey00"
+  },
+  "path": "/api/trc_fixture01/envelope/"
+}

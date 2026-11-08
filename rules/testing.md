@@ -106,7 +106,7 @@
 
 ## tracer (`tracer/`, 2026-11-08)
 
-- Golden envelopes in `tracer/testdata/envelopes/`, one set per sender (sentry-android via `FileSystemTransport`, sentry-dart `HttpTransport` gzip, sentry-cocoa when iOS is in play), captured from real debug builds: event + screenshot + view hierarchy, log container, transaction, feedback, session, client_report, replay.
+- Golden envelopes in `tracer/testdata/envelopes/<sender>/`, one directory per sender (`sentry-android`, `sentry-dart`; `sentry-cocoa` when iOS is in play; `yyt-dart`/`yyt-csharp`/`yyt-ts` from the libraries), captured from real builds and stored **decompressed** with a `.meta.json` of the sender's headers (tests gzip them on the fly). How they were made and how to add one: `tracer/testdata/envelopes/README.md`.
 - Parser cases: with/without `length`, several items, missing trailing newline, empty payload, unknown types, gzip, oversize after decompression. Ingest cases: duplicate `event_id` → one row and 200; wrong key → 401; unknown type → 200 + `drops`.
 - The console `/tr/*` client is tested against an `httptest` fake whose responses are copied from the console route's own tests, not invented on the tracer side.
 - Read API: golden JSON per route (field names are the skill's contract), limits and truncation, and a test that a read path cannot write.

@@ -194,6 +194,7 @@
 - Everything a device sent is untrusted input for agents (prompt injection through log text, breadcrumbs, view hierarchy): the skill and any agent-facing output present it as data, and nothing from it is copied into code, tests or commits.
 - Local mode (static read token from `tracer.json`) is allowed only when no console URL is set and the listen host is a loopback IP, checked in code. Blob paths use server-minted ids only.
 - A redactor must parse exactly like the parser it guards (2026-11-08, P1 review): the dump mode stripped only `"Sentry "` while `SentryKey` accepted any case, so `sentry sentry_key=…` authenticated and landed in the dump unredacted. Share one tokenizer (`authParts`) between "find the credential" and "redact the credential", and test the odd spellings.
+- Scrub fixtures by **value**, not by field name (2026-11-08, P2 review): the scrubber rewrote `user.id` in every JSON item, but `replay_video` is msgpack carrying a `replay_event` with the same installation id, which only a byte-level replace of the learned values caught. Check a fixture by grepping the original values with `grep -a`, never only the key names.
 - Committed fixtures under `tracer/testdata/` are scrubbed of DSN keys, installation ids, device names and personal data.
 
 ## Social graph (`/social/*`, 2026-09-10)

@@ -82,8 +82,9 @@ CREATE INDEX issues_res_last ON issues(resource_id, last_seen_ms);
 -- Retention deletes a group once its last event has aged out.
 CREATE INDEX issues_last ON issues(last_seen_ms);
 
--- `log` container items, one row per log entry. dedupe_key is NULL until the
--- capture-based key is decided (todo/85 P2); a NULL never collides.
+-- `log` container items, one row per log entry. Log entries carry no id;
+-- dedupe_key = first 16 bytes of sha256 over the entry's JSON bytes as
+-- received (sentry-android resends an item's stored bytes; docs/tracer.md).
 CREATE TABLE logs (
   id              INTEGER PRIMARY KEY,
   resource_id     TEXT NOT NULL,
@@ -98,7 +99,7 @@ CREATE TABLE logs (
   user_id         TEXT,
   device          TEXT,
   attributes_json TEXT,
-  dedupe_key      TEXT,
+  dedupe_key      BLOB NOT NULL,          -- sha256(entry bytes)[:16]
   UNIQUE (resource_id, dedupe_key)
 );
 CREATE INDEX logs_res_ts ON logs(resource_id, ts_ms);
@@ -142,18 +143,30 @@ CREATE TABLE attachments (
   received_ms     INTEGER NOT NULL
 );
 CREATE INDEX attachments_res_event ON attachments(resource_id, event_id);
+-- A retried envelope must not store its screenshot twice.
+CREATE UNIQUE INDEX attachments_dedupe ON attachments(resource_id, event_id, sha256) WHERE event_id IS NOT NULL;
 CREATE INDEX attachments_received ON attachments(received_ms);
 
--- `session`/`sessions` items are counted, not kept.
+-- One row per `session` (sid), merged on each update (docs/tracer.md
+-- _Ingest_: terminal status beats ok, then highest (seq, updated_ms); errors
+-- max; started_ms/did first), so a retried envelope changes nothing.
+-- Aggregated `sessions` items are counted in drops (not_stored).
 CREATE TABLE sessions (
   resource_id TEXT NOT NULL,
-  day         TEXT NOT NULL,              -- YYYY-MM-DD UTC
-  release     TEXT NOT NULL DEFAULT '',
-  environment TEXT NOT NULL DEFAULT '',
-  status      TEXT NOT NULL,
-  count       INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (resource_id, day, release, environment, status)
+  sid         TEXT NOT NULL,
+  did         TEXT,                       -- installation id
+  status      TEXT NOT NULL,              -- ok | exited | crashed | abnormal
+  errors      INTEGER NOT NULL DEFAULT 0,
+  seq         INTEGER NOT NULL DEFAULT 0,
+  started_ms  INTEGER,
+  updated_ms  INTEGER NOT NULL,
+  release     TEXT,
+  environment TEXT,
+  received_ms INTEGER NOT NULL,
+  PRIMARY KEY (resource_id, sid)
 ) WITHOUT ROWID;
+CREATE INDEX sessions_res_started ON sessions(resource_id, started_ms);
+CREATE INDEX sessions_received ON sessions(received_ms);
 
 -- Items accepted and discarded, or refused, so lost volume stays visible.
 -- reason: not_stored (accepted-and-counted types), unknown, quota_attachment,
