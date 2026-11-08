@@ -1,0 +1,4 @@
+GROUP                             LEVEL    COUNT  LAST_SEEN                 LATEST_EVENT                      TITLE
+4fcac10451bf8368fa7410bb6af8cc6b  warning  1      2026-11-08T06:42:16.018Z  3b6f9f83faee48509f8b04720917ebf8  background isolate report
+e44a06390b44b43496bef8b65c59aacc  error    1      2026-11-08T06:42:15.991Z  2f166ea5ffa64594a3938e8ef5559888  StateError: Bad state: capture exception
+84e204752b8852c485f2240c96907092  warning  1      2026-11-08T06:42:15.834Z  7730857f6b4d4655aee7855244455e2d  capture report: rejected move

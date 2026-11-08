@@ -1,0 +1,4 @@
+TIME                      LEVEL  DEVICE               BODY
+2026-11-08T06:42:16.017Z  info   -                    background isolate log
+2026-11-08T06:42:15.674Z  warn   sdk_gphone64_x86_64  capture warning log
+2026-11-08T06:42:15.674Z  info   sdk_gphone64_x86_64  [board.pointer] tap e2

@@ -1,0 +1,10 @@
+TIME                      KIND         LEVEL    CATEGORY       MESSAGE
+2026-11-08T06:42:12.337Z  breadcrumb   info     app.lifecycle  {"state":"foreground"}
+2026-11-08T06:42:12.352Z  breadcrumb   info     device.event   {"action":"BATTERY_CHANGED","charging":true,"level":100}
+2026-11-08T06:42:15.665Z  breadcrumb   info     board.pointer  tap e2
+2026-11-08T06:42:15.674Z  log          info     -              [board.pointer] tap e2
+2026-11-08T06:42:15.674Z  log          warn     -              capture warning log
+2026-11-08T06:42:15.675Z  transaction  -        ui.load        capture.flow (122 ms)
+2026-11-08T06:42:15.834Z  *event       warning  -              capture report: rejected move
+2026-11-08T06:42:15.991Z  event        error    -              StateError: Bad state: capture exception
+2026-11-08T06:42:16.004Z  feedback     info     -              capture feedback note

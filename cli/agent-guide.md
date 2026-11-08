@@ -92,6 +92,8 @@ The codes are a stable contract: changing one is a major version.
 | `YYT_CONFIG` | config file path (profiles and push apiKeys; mode 0600) |
 | `YYT_CACHE` | cache dir for resumable uploads |
 | `YYT_NO_RETRY` | never wait out a `rate_limited` refusal |
+| `YYT_TRACER_LOCAL` | `yyt tracer` reads a local tracer at this URL instead of the console's (as `--local`) |
+| `YYT_TRACER_LOCAL_TOKEN` | the static read token of that local tracer (`readToken` in its `tracer.json`) |
 
 ## Recipes
 

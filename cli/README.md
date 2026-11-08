@@ -330,6 +330,22 @@ Exit codes — a stable contract (`docs/decisions.md` _CLI_; changing one is a m
 
 The root entry lists the global flags; every other entry its own. Every runnable command has an `example` and an `output` line (a test enforces it). A `rate_limited` refusal with a `retryAfterMs` hint — the per-member write slot, raised before anything is written — is waited out up to 3 times (5 s in total, one stderr line each); `--no-retry` or `YYT_NO_RETRY=1` turns that off, and nothing else is retried for you.
 
+### Debug collector (tracer)
+
+Read what debug builds sent to tracer (`docs/tracer.md`). Reads go to the tracer host with your API token; the console only resolves `<res>` (a `trc_…` id or a name in the project context) and hands out the host — until a stage has its `tracer-url`, the command says "tracer is not configured on this stage".
+
+```sh
+yyt tracer issues <res> [--since 2h] [--level error] [--text t] [--limit n] [--tags <groupKey>]
+yyt tracer events <res> [--since 10m] [--until …] [--level l] [--release r] [--device d] [--trace-id t] [--type event|feedback] [--group g] [--tag k:v] [--text t] [--limit n] [--cursor c]
+yyt tracer event <res> <event_id>                      # exception + frames, breadcrumbs, tags, contexts, attachments
+yyt tracer timeline <res> <event_id> [--window 2m]     # breadcrumbs, logs, events, transactions around it (device time)
+yyt tracer logs <res> [--since 15m] [--until …] [--level l] [--device d] [--trace-id t] [--attribute k:v] [--text t] [--limit n] [--cursor c]
+yyt tracer attachment <res> <attachment_id> -o file    # streamed, kept only if the sha256 matches
+yyt tracer drops|usage <res> [--days 7]
+```
+
+`--local http://127.0.0.1:8095` (or `YYT_TRACER_LOCAL`) reads a local `tracer serve` with `YYT_TRACER_LOCAL_TOKEN` (its `tracer.json` readToken) and needs the `trc_` id; plain http is accepted only for a loopback host. A refused token exits 1 with a tracer-specific message (the console login is not at fault); a missing resource or event exits 5. Device text in tables is stripped of control characters; `--json` keeps it escaped. Resource management (`create`, `list`, `dsn`, …) comes with the console routes.
+
 ### Push notifications
 
 A push channel is a channel of kind `push`: `yyt push channel create|ls|get|update|extend|rotate|delete` are the `yyt channels` commands with the kind fixed (same routes, same output), and `yyt push channel` adds what only that kind has. It registers one Android application id with the platform's Firebase sender; `config` downloads the `google-services.json` the app embeds (`registered: true` in `get` says there is one). `create` and `rotate` print the `apiKey` once. `get` prints `apiBase`: the app registers its FCM token there with a player JWT of the channel's auth channel (`PUT|DELETE /push/{channel}/token`) and a game server sends with the apiKey (`POST /push/{channel}/send`).

@@ -1,0 +1,33 @@
+event:       7730857f6b4d4655aee7855244455e2d
+type:        event
+level:       warning
+time:        2026-11-08T06:42:15.834Z
+received:    2026-11-08T06:43:00.000Z
+release:     capture@1.0.0+1
+dist:        abc1234
+environment: debug
+device:      sdk_gphone64_x86_64
+os:          Android 15
+user:        00000000000000000000000000000000
+trace:       736bdc7084784e46ad408a5e5164db30
+group:       84e204752b8852c485f2240c96907092
+sdk:         sentry.dart.flutter/9.30.1
+title:       capture report: rejected move
+message:     capture report: rejected move
+
+tags:
+TAG                VALUE
+event.environment  dart
+event.origin       flutter
+feature            board
+
+breadcrumbs (3):
+TIME                      CATEGORY       LEVEL  MESSAGE
+2026-11-08T06:42:12.337Z  app.lifecycle  info   {"state":"foreground"}
+2026-11-08T06:42:12.352Z  device.event   info   {"action":"BATTERY_CHANGED","charging":true,"level":100}
+2026-11-08T06:42:15.665Z  board.pointer  info   tap e2
+
+attachments (2):
+ID      KIND                  TYPE              SIZE   FILENAME
+<blob>  event.attachment      image/png         22719  screenshot.png
+<blob>  event.view_hierarchy  application/json  15193  view-hierarchy.json

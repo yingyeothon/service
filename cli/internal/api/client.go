@@ -216,7 +216,8 @@ func (c *Client) sendOnce(ctx context.Context, method, path string, payload []by
 			} `json:"error"`
 		}
 		if json.Unmarshal(raw, &env) == nil && env.Error.Code != "" {
-			e.Code, e.Message, e.Details = env.Error.Code, env.Error.Message, env.Error.Details
+			// The message is printed: a data-plane host (tracer) can echo device text.
+			e.Code, e.Message, e.Details = env.Error.Code, sanitize([]byte(env.Error.Message)), env.Error.Details
 		} else {
 			e.Message = sanitize(raw)
 			if e.Message == "" {

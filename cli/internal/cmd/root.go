@@ -162,7 +162,7 @@ func NewRoot(a *App) *cobra.Command {
 		newLogin(a), newLogout(a), newWhoami(a),
 		newProfile(a),
 		newTeam(a), newProject(a),
-		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newShows(a), newCatalog(a), newAssets(a), newSites(a), newKvStore(a), newLeaderboard(a), newPush(a), newLimits(a), newAudit(a), newSmoke(a),
+		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newShows(a), newCatalog(a), newAssets(a), newSites(a), newKvStore(a), newLeaderboard(a), newTracer(a), newPush(a), newLimits(a), newAudit(a), newSmoke(a),
 		newSelf(a, a.Updater),
 		newAgentsTopic(),
 	)

@@ -22,6 +22,8 @@ var EnvVars = []EnvVar{
 	{"YYT_CONFIG", "config file path (default: the user config dir + yyt/config.json, mode 0600; holds profiles and push apiKeys)"},
 	{"YYT_CACHE", "cache dir for resumable uploads (default: the user cache dir + yyt)"},
 	{"YYT_NO_RETRY", "any value but empty/0/false: never wait out a rate_limited refusal (as --no-retry)"},
+	{"YYT_TRACER_LOCAL", "`yyt tracer` reads this local tracer URL instead of the console's (as --local)"},
+	{"YYT_TRACER_LOCAL_TOKEN", "the static read token of that local tracer (its tracer.json readToken)"},
 }
 
 func envVarHelp() string {
