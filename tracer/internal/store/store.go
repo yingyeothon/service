@@ -33,6 +33,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		"synchronous(NORMAL)",
 		"busy_timeout(5000)",
 		"foreign_keys(1)",
+		"journal_size_limit(67108864)", // a checkpointed WAL is truncated back to 64 MiB at most
 	} {
 		q.Add("_pragma", p)
 	}

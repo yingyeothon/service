@@ -110,4 +110,5 @@
 - Parser cases: with/without `length`, several items, missing trailing newline, empty payload, unknown types, gzip, oversize after decompression. Ingest cases: duplicate `event_id` → one row and 200; wrong key → 401; unknown type → 200 + `drops`.
 - The console `/tr/*` client is tested against an `httptest` fake whose responses are copied from the console route's own tests, not invented on the tracer side.
 - Read API: golden JSON per route (field names are the skill's contract), limits and truncation, and a test that a read path cannot write. Goldens live in `tracer/testdata/read/`, seeded from the envelope fixtures through `ingest.Handler.Accept` with a fixed receive time; per-run values (blob ids) are masked. `-update` rewrites them — review the diff as a contract change.
+- Retention tests drive `Retention.Once` with an injected `Now` on a `t.TempDir()` store, with blob files whose mtimes are set explicitly (the orphan sweep has a 1 h grace).
 - Store tests open a fresh DB in `t.TempDir()`; `go test ./...` must need no CGO, Docker or network.

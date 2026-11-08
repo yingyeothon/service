@@ -23,6 +23,7 @@ import (
 	"github.com/yingyeothon/service/tracer/internal/metrics"
 	"github.com/yingyeothon/service/tracer/internal/query"
 	"github.com/yingyeothon/service/tracer/internal/resource"
+	"github.com/yingyeothon/service/tracer/internal/retention"
 	"github.com/yingyeothon/service/tracer/internal/server"
 	"github.com/yingyeothon/service/tracer/internal/store"
 )
@@ -114,9 +115,25 @@ func serve() error {
 			"usedPct", snap.Volume.UsedPct, "maxPct", cfg.DiskMaxPct)
 	}
 	publishCapacity(reg, capa.Snapshot())
+	ret := retention.New(retention.Options{DB: st.DB, DBPath: cfg.DBPath(), BlobDir: cfg.BlobDir(), StageBytes: cfg.StageBytes, Log: log})
+	go ret.Run(ctx, time.Minute, retention.DefaultInterval, func(rep retention.Report) {
+		reg.Counters.RetentionRows.Add(rep.AgedRows)
+		reg.Counters.RetentionCapRows.Add(rep.CapRows)
+		reg.Counters.OrphanBlobs.Add(rep.Orphans)
+		if rep.Err != nil {
+			reg.Counters.RetentionErrors.Add(1)
+		} else {
+			reg.Gauges.RetentionLastOkMs.Store(time.Now().UnixMilli())
+		}
+		capa.Refresh(ctx) // measure what the pass freed before the next envelope is judged
+		publishCapacity(reg, capa.Snapshot())
+	})
 	go capa.Run(ctx, 30*time.Second, func(s capacity.Snapshot) {
 		publishCapacity(reg, s)
 		reg.Gauges.WriterTxMaxUs.Store(writer.MaxTxMicros())
+		if s.Total*100 > cfg.StageBytes*retention.TriggerPercent {
+			ret.Trigger()
+		}
 	})
 	ing := ingest.New(ingest.Options{Source: src, Metrics: reg, Writer: writer, Capacity: capa, DailyBytes: st.DailyBytes,
 		BlobDir: cfg.BlobDir(), MaxDecompressed: cfg.MaxEnvelopeBytes, DumpDir: cfg.DumpDir, Log: log})

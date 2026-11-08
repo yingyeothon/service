@@ -34,6 +34,11 @@ type Counters struct {
 	ReadRequests   atomic.Int64
 	ReadRejected   atomic.Int64
 	StoreErrors    atomic.Int64
+	// Retention: rows removed by age or by the stage cap, and orphan files.
+	RetentionRows    atomic.Int64
+	RetentionCapRows atomic.Int64
+	OrphanBlobs      atomic.Int64
+	RetentionErrors  atomic.Int64
 }
 
 // Gauges are current values.
@@ -46,6 +51,8 @@ type Gauges struct {
 	VolumeUsedPct   atomic.Int64
 	StageBytesCap   atomic.Int64
 	WriterTxMaxUs   atomic.Int64
+	// RetentionLastOkMs is when the last retention pass completed (0 = none yet).
+	RetentionLastOkMs atomic.Int64
 }
 
 // CountRejection files a refused envelope under its status.
@@ -144,16 +151,21 @@ func (r *Registry) snapshot(detail bool) snapshot {
 			"readRequests":      c.ReadRequests.Load(),
 			"readRejected":      c.ReadRejected.Load(),
 			"storeErrors":       c.StoreErrors.Load(),
+			"retentionRows":     c.RetentionRows.Load(),
+			"retentionCapRows":  c.RetentionCapRows.Load(),
+			"orphanBlobs":       c.OrphanBlobs.Load(),
+			"retentionErrors":   c.RetentionErrors.Load(),
 		},
 		Gauges: map[string]int64{
-			"inFlight":        g.InFlight.Load(),
-			"dbBytes":         g.DBBytes.Load(),
-			"walBytes":        g.WALBytes.Load(),
-			"blobBytes":       g.BlobBytes.Load(),
-			"volumeFreeBytes": g.VolumeFreeBytes.Load(),
-			"volumeUsedPct":   g.VolumeUsedPct.Load(),
-			"stageBytesCap":   g.StageBytesCap.Load(),
-			"writerTxMaxUs":   g.WriterTxMaxUs.Load(),
+			"inFlight":          g.InFlight.Load(),
+			"dbBytes":           g.DBBytes.Load(),
+			"walBytes":          g.WALBytes.Load(),
+			"blobBytes":         g.BlobBytes.Load(),
+			"volumeFreeBytes":   g.VolumeFreeBytes.Load(),
+			"volumeUsedPct":     g.VolumeUsedPct.Load(),
+			"stageBytesCap":     g.StageBytesCap.Load(),
+			"writerTxMaxUs":     g.WriterTxMaxUs.Load(),
+			"retentionLastOkMs": g.RetentionLastOkMs.Load(),
 		},
 		Runtime: runtimeStats(),
 	}
