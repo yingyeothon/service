@@ -33,3 +33,5 @@ tracer/*.db
 tracer/*.db-wal
 tracer/*.db-shm
 tracer/blobs/
+tracer/tracer-data/
+tracer/dump/

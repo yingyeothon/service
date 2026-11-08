@@ -2,7 +2,7 @@
 
 > tracer is independent of Sentry. Its ingest speaks a subset of the Sentry envelope protocol, so a Sentry SDK _can_ send to it, but the platform's clients are the yyt libraries (flutterlib, csharplib, tslib), which need no Sentry package. A team may use tracer alone.
 
-Design of record: `docs/decisions.md` _Debug collector (`tracer`)_ (2026-11-08, revised after three plan reviews the same day). This page is the working reference between that contract and the code in `tracer/`. Status: **designed**. `tracer/` holds a compiling skeleton from before this design (numeric ids, JSON config, a `blob` column); it is rewritten to this page before the first deploy, so do not treat its shapes as decided.
+Design of record: `docs/decisions.md` _Debug collector (`tracer`)_ (2026-11-08, revised after three plan reviews the same day). This page is the working reference between that contract and the code in `tracer/`. Status: **P1** (2026-11-08) — `tracer/` matches this page's configuration, ids, schema and health/metrics surface; ingest parsing and everything after it are in progress (`tracer/README.md`). `0001_init.sql` may still change until the first deploy.
 
 ## Why
 
@@ -31,7 +31,7 @@ Design of record: `docs/decisions.md` _Debug collector (`tracer`)_ (2026-11-08, 
 - Before calling authz, tracer checks the token shape (`yyt_` + 48 hex), applies a per-address bucket, and consults a bounded verdict cache (refusals included, 60 s, keyed by `sha256(token)`); an unreachable console is a fast 503. The token is never stored or logged.
 - `GET /tr/resources/{id}` → `{teamId, projectId, writeKeySha256, state, dailyBytes}`; tracer compares `sha256(sentry_key)` in constant time. 60 s cache with singleflight; on console failure the last good entry is served for up to 24 h so ingest survives a console redeploy.
 - `tracer-token` is checked like `gateway-token` (minimum length, constant-time digest compare, empty disables the routes). It is registered in `docs/secrets.md` and `scripts/bootstrap-ssm.sh`.
-- Local mode — only when no console URL is set **and** the listen host parses as a loopback IP (enforced in code): resources and one static read token come from `tracer.json`, so the binary and the skill can be verified on a desktop with fixtures.
+- Local mode — only when no console URL is set **and** the listen host parses as a loopback IP (enforced in code): resources and one static read token come from `tracer.json`, so the binary and the skill can be verified on a desktop with fixtures. `tracer.json` = `{"resources":[{"id":"trc_…","writeKey":"…","dailyBytes"?}],"readToken":"yyt_…"}`; the plaintext key is hashed at load so both modes compare `sha256(sentry_key)` the same way. `TRACER_TOKEN` and the console URL are refused in local mode; `TRACER_LOCAL_CONFIG` and `TRACER_DUMP_DIR` are refused in server mode.
 
 ## Ingest
 
@@ -41,7 +41,7 @@ Design of record: `docs/decisions.md` _Debug collector (`tracer`)_ (2026-11-08, 
 - Stored: `event`, `feedback`, `transaction`, `log` (`{"items":[…]}`), `attachment` (screenshot, view hierarchy, minidump → blob files), `session`/`sessions` (counts).
 - Accepted and counted, not stored: `client_report`, `replay_event`, `replay_recording`, `profile`, `check_in`, `span` (v2), `trace_metric`, `statsd`, anything unknown. Never an error for an unknown type.
 - Duplicates: insert-or-ignore on `(resource, event_id)`, still `200 {"id":…}`. `log`/`session` items have no `event_id`; their dedupe key is decided with the first captures.
-- Refusals, in order: invalid key → 401 (per-address bucket on these); resource over its daily quota → the staged degradation in _Limits and raise requests_; volume free space under the floor or the stage byte cap reached → 503, counted. No other 429 and no `X-Sentry-Rate-Limits`: the SDK drops a whole window on them.
+- Refusals, in order: invalid key → 401 (per-address bucket on these); resource over its daily quota → the staged degradation in _Limits and raise requests_; root volume usage at or above `TRACER_DISK_MAX_PCT` (70 %) or the stage byte cap reached → 503, counted. No other 429 and no `X-Sentry-Rate-Limits`: the SDK drops a whole window on them.
 - `sentry_key` in the query string is accepted (some SDKs use it); the Caddy route must not log query strings for this host.
 
 ## What a reader gets
@@ -79,7 +79,7 @@ Local mode: `yyt tracer --local http://127.0.0.1:<port> --resource trc_… …` 
 
 ## Storage
 
-- SQLite per container (WAL, `synchronous=NORMAL`, `busy_timeout`, `auto_vacuum=INCREMENTAL`, `journal_size_limit`, periodic `wal_checkpoint(TRUNCATE)`), one writer goroutine with batched inserts; read routes use a read-only connection with short transactions. Migrations are embedded `tracer/internal/store/migrations/NNNN_*.sql`, tracked by `PRAGMA user_version`, append-only once deployed (`0001_init.sql` is rewritten to this design before the first deploy).
+- SQLite per container (WAL, `synchronous=NORMAL`, `busy_timeout`, `auto_vacuum=INCREMENTAL`, `journal_size_limit`, periodic `wal_checkpoint(TRUNCATE)`), one writer goroutine with batched inserts; read routes use a read-only connection with short transactions. Migrations are embedded `tracer/internal/store/migrations/NNNN_*.sql`, tracked by `PRAGMA user_version`, append-only once deployed (`0001_init.sql` was rewritten to this design in P1, 2026-11-08, and may still change until the first deploy).
 - Blobs are files under `blobs/{trc}/{yyyy-mm-dd}/{blobId}`; `blobId` is minted by the server (never a client filename or `event_id`). The file is written and fsynced **before** the row commits; the row holds path, size, type, sha256.
 - Byte accounting = DB + WAL + blobs. Ingest checks the stage cap (`TRACER_STAGE_BYTES`: dev 0.5 GiB, prod 1.5 GiB) and the root volume's usage line (`TRACER_DISK_MAX_PCT=70`, the host's disk-investigation line) on every write; either refuses with 503.
 - Retention, daily: rows and their files older than 30 days; then oldest until under the stage cap; then a walk of `blobs/` removing files no row names (crash orphans); then `PRAGMA incremental_vacuum`.
@@ -111,7 +111,7 @@ tracer's caps join the platform registry (`docs/decisions.md` _Limit requests_):
 - Endpoints like the gateway: `GET /livez` (process up, DB writable — restarts wire to this), `GET /healthz` (readiness: console reachable and `/tr/health` agrees; never restarts the container).
 - Monitoring, two layers like the gateway: (a) this repo — `gatewayProbe` (a prod-only schedule) also probes tracer `/livez`, reading the host from SSM `tracer-url` (absent → skipped), with no new alarm (the 10-alarm budget is full); the daily usage digest reads tracer `GET /metrics` with the `tracer-token` bearer for volume use, quota hits and `drops`; (b) the ops repo — its `yyt-agent` scrapes the public part of tracer `GET /metrics` (accepted/refused/dropped counters, in-flight envelopes, DB/WAL/blob bytes, volume free bytes, runtime `sysBytes`; the per-resource slice needs the bearer and stays out of the agent), with `expect.env` thresholds, `status.sh` lines and a dashboard card. dev is watched by the ops layer only.
 - `tracer-url` and `tracer-token` follow the gateway's SSM rules: `tracer-url` is **absent** until set by hand (SSM refuses empty values; `bootstrap-ssm.sh` leaves it alone, as with `gateway-ws-url`), and both are listed in `docs/secrets.md` and `rules/deployment.md` in the same change. Rotating `tracer-token`: mint a new one with `bootstrap-ssm.sh`, redeploy console, install the new file in the ops repo, restart tracer; ingest rides the stale-config window, reads fail closed for the seconds in between.
-- Run line: distroless image, read-only root, one writable data volume, host network like the gateway, `TRACER_LISTEN=127.0.0.1:<port>` behind Caddy. A wildcard listen address is refused in every mode; local mode additionally requires a loopback IP.
+- Run line: distroless image, read-only root, one writable data volume, host network like the gateway, `TRACER_LISTEN=127.0.0.1:<port>` behind Caddy. The listen address must be a loopback IP in every mode (a wildcard or another address is refused at start-up); `TRACER_CONSOLE_URL` must be https (plain http only to a loopback IP, for a fake console).
 - Image: `golang:1.26-alpine` builder (`go.mod` needs 1.26), CI adds a `docker build`; release workflow `tracer-release.yml` on `tracer/v*` (`:main` moves only on such a tag, as for the gateway).
 
 ## Wire contract for client libraries

@@ -13,7 +13,7 @@ import (
 	"io"
 )
 
-// ErrNotImplemented is returned until the ingest parser lands (todo/85-tracer.md).
+// ErrNotImplemented is returned until the ingest parser lands (todo/85 P3).
 var ErrNotImplemented = errors.New("envelope: parser not implemented")
 
 // Header is the first line of an envelope.
@@ -22,6 +22,8 @@ type Header struct {
 	DSN     string          `json:"dsn,omitempty"`
 	SentAt  string          `json:"sent_at,omitempty"`
 	SDK     json.RawMessage `json:"sdk,omitempty"`
+	// Trace is the dynamic sampling context (`trace_id`, `release`, …).
+	Trace json.RawMessage `json:"trace,omitempty"`
 }
 
 // ItemHeader precedes each item payload.
@@ -45,14 +47,28 @@ type Envelope struct {
 	Items  []Item
 }
 
-// Item types tracer stores; every other type is counted in `drops` and discarded.
+// Item types tracer stores (docs/tracer.md _Ingest_).
 const (
 	TypeEvent       = "event"
+	TypeFeedback    = "feedback"
 	TypeLog         = "log"
 	TypeAttachment  = "attachment"
 	TypeTransaction = "transaction"
 	TypeSession     = "session"
 	TypeSessions    = "sessions"
+)
+
+// Item types accepted and counted (`drops` reason `not_stored`) but not kept.
+// Any other type is counted as `unknown`; neither is ever an error.
+const (
+	TypeClientReport    = "client_report"
+	TypeReplayEvent     = "replay_event"
+	TypeReplayRecording = "replay_recording"
+	TypeProfile         = "profile"
+	TypeCheckIn         = "check_in"
+	TypeSpan            = "span"
+	TypeTraceMetric     = "trace_metric"
+	TypeStatsd          = "statsd"
 )
 
 // Parse reads a whole (already decompressed and size-capped) envelope.

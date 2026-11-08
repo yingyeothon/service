@@ -77,6 +77,7 @@
 ## tracer (`tracer/`, 2026-11-08)
 
 - Local first: `tracer serve` in local mode (loopback, `tracer.json` resources and a static read token) with a temp DB; `curl` captured fixtures plain and gzipped to `/api/{trc}/envelope/` with `X-Sentry-Auth`, expect `200 {"id":…}`; a wrong key 401; a repeated envelope one row.
+- Start it from the environment only (no flags): `TRACER_DATA_DIR=$(mktemp -d) TRACER_LOCAL_CONFIG=<tracer.json> tracer serve`; add `TRACER_DUMP_DIR=<dir>` to keep each accepted request raw (body + headers with `sentry_key` redacted) for fixture capture — dumps still hold device data and the envelope header's `dsn` key, so scrub before anything reaches `testdata/`. Check the refusals too: a wildcard or non-loopback listen without a console URL, and a dump dir with one, must not start.
 - Debug-only state hook: `tracer dev seed <fixture…>` (build tag `dev`, absent from the image, never over HTTP) loads fixtures straight into a DB, optionally re-stamped to now, so read routes and the skill are verified without a device.
 - The acceptance test is the agent loop: from an app repository, the `tracer-debug` skill reaches event → timeline → screenshot unaided, first against the local binary, then against `trace-dev` with a `--profile dev` token.
 - On `dev`: `/healthz`, a fixture envelope over HTTPS, `yyt tracer issues --profile dev`, and the container's measured RSS against the 64 MB cap. Then a real debug APK pointed at the dev DSN.

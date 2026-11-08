@@ -1,5 +1,5 @@
 // Package store owns the SQLite database: connection pragmas, schema migrations
-// and (from phase 1 on) the single writer goroutine and read queries.
+// and (from todo/85 P3 on) the single writer goroutine and read queries.
 package store
 
 import (
@@ -50,6 +50,18 @@ func Open(ctx context.Context, path string) (*Store, error) {
 
 // Close closes the database.
 func (s *Store) Close() error { return s.DB.Close() }
+
+// Writable proves the database accepts a write (the `/livez` probe): it takes
+// the write lock with a write to `meta` and rolls back, so nothing is written.
+func (s *Store) Writable(ctx context.Context) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, "INSERT OR REPLACE INTO meta(k, v) VALUES ('livez', '1')")
+	return err
+}
 
 // migrate applies migrations/NNNN_*.sql in order, tracked by PRAGMA user_version.
 // Migrations are append-only: never edit one that has shipped.
