@@ -116,3 +116,4 @@
 ## Long clock jumps outlive the console session (2026-11-08)
 
 - `harness()` cookies expire with the session TTL: after `h.clock.tick(<days>)` a cookie request answers 401. Tests that age a row by weeks write through the repository (`h.tracers.softDelete(id, at)`) instead of the route (`tracer-internal.test.ts`).
+- tracer read-API goldens (`tracer/testdata/read/`) seed only the captured `sentry-*` envelopes (2026-11-08): a client library's fixture (`yyt-*`) would rewrite the read contract on every library release, and its regenerated `groupKey` hashes tripped gitleaks' `generic-api-key`. The fix for a scanner false positive is to change what is committed, never to loosen `.gitleaks.toml`.
