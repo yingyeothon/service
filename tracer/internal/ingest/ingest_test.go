@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yingyeothon/service/tracer/internal/addrlimit"
 	"github.com/yingyeothon/service/tracer/internal/config"
 	"github.com/yingyeothon/service/tracer/internal/metrics"
 	"github.com/yingyeothon/service/tracer/internal/resource"
@@ -381,10 +382,10 @@ func TestInFlightBound(t *testing.T) {
 
 func TestFailureBucketSkipsLookups(t *testing.T) {
 	e := newEnv(t, nil)
-	for i := 0; i < failBucketBurst+10; i++ {
+	for i := 0; i < addrlimit.Burst+10; i++ {
 		e.post(t, envURL+"?sentry_key=wrong", []byte("{}\n"), nil)
 	}
-	if n := e.src.n.Load(); n > failBucketBurst+1 {
+	if n := e.src.n.Load(); n > addrlimit.Burst+1 {
 		t.Fatalf("lookups after the bucket emptied: %d", n)
 	}
 	// A correct key from the same (NATed) address is told to back off, not that its key is wrong.
@@ -495,6 +496,34 @@ func TestSourceFailureIs503(t *testing.T) {
 	if res, _ := e.post(t, envURL+"?sentry_key=x", nil, nil); res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", res.StatusCode)
 	}
+	// Made-up ids during an outage spend the address budget and never
+	// become per-resource buckets.
+	for i := 0; i < addrlimit.Burst+5; i++ {
+		e.post(t, "/api/trc_made"+itoa(int64(i))+"/envelope/", nil, auth)
+	}
+	if !strings.Contains(string(mustJSON(t, e.reg.Detailed())), "trc_made") {
+		return
+	}
+	t.Fatal("unconfirmed ids got per-resource metrics")
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestDropCounterBounded(t *testing.T) {
+	d := &dropCounter{m: map[dropKey]int64{}}
+	for i := 0; i < maxDropKeys+100; i++ {
+		d.add(dropKey{resource: "trc_x" + itoa(int64(i)), reason: "console"}, 0, false)
+	}
+	if len(d.take()) != maxDropKeys {
+		t.Fatal("drop counter not bounded")
+	}
 }
 
 func TestDumpScrubsCredentials(t *testing.T) {
@@ -535,22 +564,5 @@ func TestSentryKeyForms(t *testing.T) {
 		if got := SentryKey(r); got != want {
 			t.Errorf("%q: %q, want %q", header, got, want)
 		}
-	}
-}
-
-func TestClientAddr(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", nil)
-	r.RemoteAddr = "127.0.0.1:5000"
-	r.Header.Set("X-Forwarded-For", "6.6.6.6, 203.0.113.9")
-	if got := clientAddr(r); got != "203.0.113.9" {
-		t.Fatalf("behind proxy %s", got)
-	}
-	r.RemoteAddr = "198.51.100.1:5000"
-	if got := clientAddr(r); got != "198.51.100.1" {
-		t.Fatalf("direct peer must ignore XFF: %s", got)
-	}
-	r.RemoteAddr = "[2001:db8:1:2:3:4:5:6]:5000"
-	if got := clientAddr(r); got != "2001:db8:1:2::/64" {
-		t.Fatalf("ipv6 /64: %s", got)
 	}
 }

@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,8 +18,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yingyeothon/service/tracer/internal/addrlimit"
 	"github.com/yingyeothon/service/tracer/internal/capacity"
 	"github.com/yingyeothon/service/tracer/internal/config"
+	"github.com/yingyeothon/service/tracer/internal/console"
 	"github.com/yingyeothon/service/tracer/internal/ingest"
 	"github.com/yingyeothon/service/tracer/internal/metrics"
 	"github.com/yingyeothon/service/tracer/internal/query"
@@ -71,11 +74,6 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	// Refuse before touching the data dir: opening the store would migrate it.
-	if cfg.Mode != config.ModeLocal {
-		// todo/85 P5: the console `/tr/*` client.
-		return errors.New("server mode (TRACER_CONSOLE_URL) is not implemented yet; run local mode")
-	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
 	slog.SetDefault(log)
 	server.Version = version
@@ -92,8 +90,29 @@ func serve() error {
 	}
 	defer st.Close()
 
-	var src resource.Source = resource.NewLocal(cfg.Local)
 	reg := metrics.New()
+	var (
+		src   resource.Source
+		auth  query.Authorizer
+		ready func(context.Context) (string, bool)
+		cons  *console.Client
+	)
+	if cfg.Mode == config.ModeLocal {
+		local := resource.NewLocal(cfg.Local)
+		src, auth = local, query.NewLocalAuthorizer(cfg.Local.ReadToken, local)
+	} else {
+		// Resource config and read authz come from the console's /tr/* routes.
+		if cons, err = console.New(console.Options{BaseURL: cfg.ConsoleURL, Token: cfg.Token, Metrics: reg, Log: log}); err != nil {
+			return err
+		}
+		src, auth, ready = cons, cons, cons.Health
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if state, ok := cons.Health(hctx); !ok {
+			// Not fatal: ingest serves what it can and /healthz reports it.
+			log.Warn("console /tr/health is not ok at start", "state", state)
+		}
+		cancel()
+	}
 	reg.Gauges.StageBytesCap.Store(cfg.StageBytes)
 	// The writer outlives the signal context: it stops only after the HTTP
 	// server and the refusal flush are done with it.
@@ -115,11 +134,20 @@ func serve() error {
 			"usedPct", snap.Volume.UsedPct, "maxPct", cfg.DiskMaxPct)
 	}
 	publishCapacity(reg, capa.Snapshot())
-	ret := retention.New(retention.Options{DB: st.DB, DBPath: cfg.DBPath(), BlobDir: cfg.BlobDir(), StageBytes: cfg.StageBytes, Log: log})
+	retOpt := retention.Options{DB: st.DB, DBPath: cfg.DBPath(), BlobDir: cfg.BlobDir(), StageBytes: cfg.StageBytes, Log: log}
+	if cons != nil {
+		retOpt.Deleted = cons.DeletedIDs
+		retOpt.Purged = func(id string) { cons.Forget(id); reg.Forget(id) }
+	}
+	ret := retention.New(retOpt)
 	go ret.Run(ctx, time.Minute, retention.DefaultInterval, func(rep retention.Report) {
 		reg.Counters.RetentionRows.Add(rep.AgedRows)
 		reg.Counters.RetentionCapRows.Add(rep.CapRows)
 		reg.Counters.OrphanBlobs.Add(rep.Orphans)
+		reg.Counters.PurgedRows.Add(rep.PurgedRows)
+		if rep.PurgeErr != nil {
+			reg.Counters.RetentionErrors.Add(1)
+		}
 		if rep.Err != nil {
 			reg.Counters.RetentionErrors.Add(1)
 		} else {
@@ -135,7 +163,9 @@ func serve() error {
 			ret.Trigger()
 		}
 	})
-	ing := ingest.New(ingest.Options{Source: src, Metrics: reg, Writer: writer, Capacity: capa, DailyBytes: st.DailyBytes,
+	// One failure budget per address across ingest and reads.
+	fails := addrlimit.NewFailBuckets(nil)
+	ing := ingest.New(ingest.Options{Source: src, Fails: fails, Metrics: reg, Writer: writer, Capacity: capa, DailyBytes: st.DailyBytes,
 		BlobDir: cfg.BlobDir(), MaxDecompressed: cfg.MaxEnvelopeBytes, DumpDir: cfg.DumpDir, Log: log})
 	ingDone := make(chan struct{})
 	go func() { ing.Run(ctx); close(ingDone) }()
@@ -144,10 +174,11 @@ func serve() error {
 		return err
 	}
 	defer ro.Close()
-	// Local mode only until P5 (server mode exits above); P5 swaps in the
-	// console authorizer, which must map transient failures to 503.
-	read := query.New(query.Options{DB: ro, BlobDir: cfg.BlobDir(), Auth: query.NewLocalAuthorizer(cfg.Local.ReadToken, src),
-		Metrics: reg, Log: log})
+	read := query.New(query.Options{DB: ro, BlobDir: cfg.BlobDir(), Auth: auth, Fails: fails, Metrics: reg, Log: log})
+	var usageDB *sql.DB
+	if cfg.Mode != config.ModeLocal {
+		usageDB = ro // console GET /tr/usage, operator bearer only
+	}
 	handler := server.New(server.Options{
 		Stage:         cfg.Stage,
 		Mode:          cfg.Mode.String(),
@@ -157,6 +188,8 @@ func serve() error {
 		Metrics:       reg,
 		Detail:        reg.Detailed,
 		OperatorToken: cfg.Token,
+		Ready:         ready,
+		UsageDB:       usageDB,
 	})
 	srv := &http.Server{
 		Addr:              cfg.Listen,

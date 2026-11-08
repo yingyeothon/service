@@ -29,6 +29,7 @@ const (
 	minTriggerGap     = time.Minute
 	orphanGrace       = time.Hour
 	maxCapPassBatches = 10_000
+	maxDeletedList    = 1000 // the console's page of deleted ids
 )
 
 // Options configures a Retention.
@@ -40,6 +41,11 @@ type Options struct {
 	Age        time.Duration
 	Now        func() time.Time
 	Log        *slog.Logger
+	// Deleted (server mode) lists resources the console deleted long enough
+	// ago to purge; an error or an empty list purges nothing.
+	Deleted func(ctx context.Context) ([]string, error)
+	// Purged is told each resource whose data was removed (cache eviction).
+	Purged func(id string)
 }
 
 // Retention runs the passes.
@@ -47,6 +53,9 @@ type Retention struct {
 	opt     Options
 	trigger chan struct{}
 	groups  map[[2]string]bool // issue groups touched by the current pass
+	// purged: ids already purged by this process; the console lists a deleted
+	// id for about a month, and nothing can write for it again.
+	purged map[string]bool
 }
 
 // New builds a Retention.
@@ -60,7 +69,7 @@ func New(opt Options) *Retention {
 	if opt.Log == nil {
 		opt.Log = slog.Default()
 	}
-	return &Retention{opt: opt, trigger: make(chan struct{}, 1)}
+	return &Retention{opt: opt, trigger: make(chan struct{}, 1), purged: map[string]bool{}}
 }
 
 // Trigger asks Run for a pass now (at most one a minute): ingest refuses at
@@ -82,6 +91,11 @@ type Report struct {
 	Orphans      int64
 	IssuesGone   int64
 	BytesAfter   int64
+	// PurgeErr is a purge failure the rest of the pass carried on past.
+	PurgeErr error
+	// PurgedResources / PurgedRows: data of console-deleted resources.
+	PurgedResources int64
+	PurgedRows      int64
 }
 
 // Run does a first pass after `first`, then one every interval, and a WAL
@@ -153,8 +167,13 @@ func (r *Retention) Once(ctx context.Context) (Report, error) {
 	}
 	groups := map[[2]string]bool{}
 	r.groups = groups
+	if err := r.purgeDeleted(ctx, &rep); err != nil {
+		// Never let a failing purge stop the age and cap passes the disk needs.
+		rep.PurgeErr = err
+		r.opt.Log.Warn("deleted-resource purge failed; continuing with retention", "err", err)
+	}
 	n, blobs, err := r.deleteBefore(ctx, cutoff)
-	rep.AgedRows, rep.BlobsRemoved = n, blobs
+	rep.AgedRows, rep.BlobsRemoved = n, blobs+rep.BlobsRemoved
 	if err != nil {
 		return rep, err
 	}
@@ -204,6 +223,75 @@ func (r *Retention) deleteBefore(ctx context.Context, cutoff int64) (rows, blobs
 		}
 	}
 	an, b, err := r.deleteAttachments(ctx, `received_ms < ?`, cutoff)
+	return rows + an, blobs + b, err
+}
+
+// purgeDeleted removes every row and file of the resources the console
+// lists as deleted (docs/tracer.md _Storage_). The console client asks only
+// after `/tr/health` proves the right console; a failed or empty answer
+// purges nothing and is not an error of the pass.
+func (r *Retention) purgeDeleted(ctx context.Context, rep *Report) error {
+	if r.opt.Deleted == nil {
+		return nil
+	}
+	ids, err := r.opt.Deleted(ctx)
+	if err != nil {
+		r.opt.Log.Warn("deleted-resource list unavailable; purging nothing", "err", err)
+		return nil
+	}
+	if len(r.purged) > 4*maxDeletedList {
+		clear(r.purged) // a restart forgets it as well; a repeat is only work
+	}
+	for _, id := range ids {
+		if r.purged[id] {
+			continue
+		}
+		n, b, err := r.purgeResource(ctx, id)
+		rep.PurgedRows += n
+		rep.BlobsRemoved += b
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			rep.PurgedResources++
+			r.opt.Log.Info("purged deleted resource", "resource", id, "rows", n, "blobs", b)
+		}
+		r.purged[id] = true
+		if r.opt.Purged != nil {
+			r.opt.Purged(id)
+		}
+	}
+	return nil
+}
+
+func (r *Retention) purgeResource(ctx context.Context, id string) (rows, blobs int64, err error) {
+	// Events first (cascading breadcrumbs and tags); issue rows go with them below.
+	n, err := r.deleteEventsWhere(ctx, `resource_id = ?`, id)
+	rows += n
+	if err != nil {
+		return rows, blobs, err
+	}
+	for _, q := range []string{
+		`DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE resource_id = ? LIMIT ?)`,
+		`DELETE FROM transactions WHERE id IN (SELECT id FROM transactions WHERE resource_id = ? LIMIT ?)`,
+		`DELETE FROM sessions WHERE (resource_id, sid) IN (SELECT resource_id, sid FROM sessions WHERE resource_id = ? LIMIT ?)`,
+		`DELETE FROM issues WHERE (resource_id, group_key) IN (SELECT resource_id, group_key FROM issues WHERE resource_id = ? LIMIT ?)`,
+		`DELETE FROM drops WHERE (resource_id, day, item_type, reason) IN (SELECT resource_id, day, item_type, reason FROM drops WHERE resource_id = ? LIMIT ?)`,
+		`DELETE FROM daily_bytes WHERE (resource_id, day) IN (SELECT resource_id, day FROM daily_bytes WHERE resource_id = ? LIMIT ?)`,
+	} {
+		n, err := r.batched(ctx, q, id, batchRows)
+		rows += n
+		if err != nil {
+			return rows, blobs, err
+		}
+	}
+	// The issue rows are gone already: nothing left to recount for this id.
+	for g := range r.groups {
+		if g[0] == id {
+			delete(r.groups, g)
+		}
+	}
+	an, b, err := r.deleteAttachments(ctx, `resource_id = ?`, id)
 	return rows + an, blobs + b, err
 }
 
@@ -326,9 +414,13 @@ func (r *Retention) batched(ctx context.Context, q string, arg any, batch int) (
 // deleteEvents removes events (cascading breadcrumbs and tags) in small
 // batches and remembers the issue groups they belonged to.
 func (r *Retention) deleteEvents(ctx context.Context, cutoff int64) (int64, error) {
+	return r.deleteEventsWhere(ctx, `received_ms < ?`, cutoff)
+}
+
+func (r *Retention) deleteEventsWhere(ctx context.Context, cond string, arg any) (int64, error) {
 	var total int64
 	for {
-		rows, err := r.opt.DB.QueryContext(ctx, `SELECT id, resource_id, coalesce(group_key,'') FROM events WHERE received_ms < ? LIMIT ?`, cutoff, eventBatchRows)
+		rows, err := r.opt.DB.QueryContext(ctx, `SELECT id, resource_id, coalesce(group_key,'') FROM events WHERE `+cond+` LIMIT ?`, arg, eventBatchRows)
 		if err != nil {
 			return total, err
 		}

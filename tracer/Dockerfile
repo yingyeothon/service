@@ -23,8 +23,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -
 # `chown 65532:65532` first), host network, TRACER_LISTEN on loopback behind
 # Caddy, and the 64 MB hard limit from `--memory` (GOMEMLIMIT is only the Go
 # soft limit) — docs/tracer.md _Operations_. Without TRACER_CONSOLE_URL the
-# binary is in local mode and wants a tracer.json; server mode refuses to
-# start until the console client lands (todo/85 P5): do not tag before that.
+# binary is in local mode and wants a tracer.json — never run the image that
+# way; production sets TRACER_CONSOLE_URL and TRACER_TOKEN_FILE (server mode).
 # `tracer dev …` is not in this build.
 FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.source="https://github.com/yingyeothon/service"

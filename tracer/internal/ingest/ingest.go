@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yingyeothon/service/tracer/internal/addrlimit"
 	"github.com/yingyeothon/service/tracer/internal/config"
 	"github.com/yingyeothon/service/tracer/internal/envelope"
 	"github.com/yingyeothon/service/tracer/internal/metrics"
@@ -46,9 +46,6 @@ const (
 	DefaultInFlightWait     = 2 * time.Second
 	QuotaRetryAfterSeconds  = 300
 	refusedQuotaPercent     = 120
-	failBucketBurst         = 30
-	failBucketRefillPerSec  = 0.5
-	failBucketMaxAddresses  = 10_000
 	failRetryAfterSeconds   = 60
 	envelopeItemForRefusals = "envelope"
 	unknownItemType         = "unknown"
@@ -100,6 +97,8 @@ type Options struct {
 	DumpDir string
 	Log     *slog.Logger
 	Now     func() time.Time
+	// Fails limits failed authentications per client address (default: own set).
+	Fails *addrlimit.FailBuckets
 }
 
 // Handler serves the ingest routes.
@@ -109,7 +108,7 @@ type Handler struct {
 	dumps   atomic.Int64
 	sem     chan struct{}
 	quota   *quotaTracker
-	fails   *failBuckets
+	fails   *addrlimit.FailBuckets
 	perAddr *addrSlots
 	refusal *dropCounter
 }
@@ -143,9 +142,12 @@ func New(opt Options) *Handler {
 	if opt.DailyBytes == nil {
 		opt.DailyBytes = func(context.Context, string, string) (int64, bool, error) { return 0, false, nil }
 	}
+	if opt.Fails == nil {
+		opt.Fails = addrlimit.NewFailBuckets(opt.Now)
+	}
 	h := &Handler{opt: opt, mux: http.NewServeMux(), sem: make(chan struct{}, opt.InFlight),
 		quota: &quotaTracker{load: opt.DailyBytes, m: map[string]*quotaState{}},
-		fails: &failBuckets{m: map[string]*bucket{}, now: opt.Now}, perAddr: &addrSlots{m: map[string]int{}},
+		fails: opt.Fails, perAddr: &addrSlots{m: map[string]int{}},
 		refusal: &dropCounter{m: map[dropKey]int64{}}}
 	h.mux.HandleFunc("POST /api/{resource}/envelope/{$}", h.envelope)
 	h.mux.HandleFunc("POST /api/{resource}/store/{$}", h.envelope)
@@ -168,7 +170,7 @@ func refuse(status int, reason string, err error) error {
 }
 
 func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
-	addr := clientAddr(r)
+	addr := addrlimit.ClientAddr(r)
 	res, status := h.authorize(r, addr)
 	if status == http.StatusServiceUnavailable && res.ID == "" {
 		// The address spent its failure budget: back off, never "stop" (a 401
@@ -273,7 +275,9 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, resourceID string
 // count is kept in memory and flushed by Run, so a flood of refusals never
 // becomes a flood of transactions.
 func (h *Handler) refused(w http.ResponseWriter, resourceID string, status int, reason string) {
-	h.opt.Metrics.Resource(resourceID).Refused.Add(1)
+	if reason != "console" { // a `console` id was never confirmed: no per-resource bucket for it
+		h.opt.Metrics.Resource(resourceID).Refused.Add(1)
+	}
 	nowMs := h.opt.Now().UnixMilli()
 	h.refusal.add(dropKey{resource: resourceID, day: normalize.Day(nowMs), itemType: envelopeItemForRefusals, reason: reason}, nowMs, reason == store.ReasonQuotaRefused)
 	h.reject(w, status, 0)
@@ -317,8 +321,12 @@ type dropVal struct {
 	quotaHitMs int64
 }
 
+// maxDropKeys bounds the refusals held between flushes: a `console` refusal
+// names an id the console could not confirm, so its keys are not all real.
+const maxDropKeys = 1024
+
 // dropCounter aggregates whole-envelope refusals between flushes. Keys are
-// authenticated resource ids × a fixed reason set, so the map stays small.
+// resource ids × a fixed reason set, bounded by maxDropKeys.
 type dropCounter struct {
 	mu  sync.Mutex
 	m   map[dropKey]int64
@@ -328,6 +336,9 @@ type dropCounter struct {
 func (d *dropCounter) add(k dropKey, nowMs int64, quotaHit bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if _, ok := d.m[k]; !ok && len(d.m) >= maxDropKeys {
+		return // the refusal is still in the metrics counters
+	}
 	d.m[k]++
 	if quotaHit {
 		if d.hit == nil {
@@ -794,24 +805,28 @@ func clipText(s string, n int) string {
 func (h *Handler) authorize(r *http.Request, addr string) (resource.Resource, int) {
 	id := r.PathValue("resource")
 	if !config.ResourceIDPattern.MatchString(id) {
-		h.fails.fail(addr)
+		h.fails.Fail(addr)
 		return resource.Resource{}, http.StatusUnauthorized
 	}
-	if !h.fails.allowed(addr) {
+	if !h.fails.Allowed(addr) {
 		return resource.Resource{}, http.StatusServiceUnavailable
 	}
 	key := SentryKey(r)
 	res, err := h.opt.Source.Lookup(r.Context(), id)
 	switch {
 	case errors.Is(err, resource.ErrNotFound):
-		h.fails.fail(addr)
+		h.fails.Fail(addr)
 		return res, http.StatusUnauthorized
 	case err != nil:
+		// No answer for an id it had never seen (a known one rides its stale
+		// config): spend the address's budget, so made-up ids during a console
+		// outage do not become one console call each.
+		h.fails.Fail(addr)
 		h.opt.Log.Warn("resource lookup failed", "resource", id, "err", err)
 		return resource.Resource{ID: id}, http.StatusServiceUnavailable
 	}
 	if !res.KeyMatches(key) || !res.Active() {
-		h.fails.fail(addr)
+		h.fails.Fail(addr)
 		return res, http.StatusUnauthorized
 	}
 	return res, 0
@@ -829,85 +844,6 @@ func (h *Handler) reject(w http.ResponseWriter, status int, _ int64) {
 	}[status]
 	writeJSON(w, status, map[string]string{"detail": detail})
 }
-
-// clientAddr is the peer address; behind Caddy on loopback it is the last
-// X-Forwarded-For entry (the one Caddy appended). IPv6 addresses are keyed
-// by their /64, which is what one client controls.
-func clientAddr(r *http.Request) string {
-	return addrKey(peerAddr(r))
-}
-
-func addrKey(host string) string {
-	ip := net.ParseIP(host)
-	if ip == nil || ip.To4() != nil {
-		return host
-	}
-	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
-}
-
-func peerAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if last := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(last) != nil {
-				return last
-			}
-		}
-	}
-	return host
-}
-
-// failBuckets is a per-address token bucket on authentication failures.
-type failBuckets struct {
-	mu  sync.Mutex
-	m   map[string]*bucket
-	now func() time.Time
-}
-
-type bucket struct {
-	tokens float64
-	at     time.Time
-}
-
-func (f *failBuckets) take(addr string, spend bool) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	now := f.now()
-	b, ok := f.m[addr]
-	if !ok {
-		if !spend {
-			return true
-		}
-		if len(f.m) >= failBucketMaxAddresses {
-			// Evict refilled buckets first; never wipe the drained ones an
-			// attacker would like reset.
-			for k, v := range f.m {
-				if v.tokens+now.Sub(v.at).Seconds()*failBucketRefillPerSec >= failBucketBurst {
-					delete(f.m, k)
-				}
-			}
-			if len(f.m) >= failBucketMaxAddresses {
-				return true // full of drained buckets: do not track a new one
-			}
-		}
-		b = &bucket{tokens: failBucketBurst, at: now}
-		f.m[addr] = b
-	}
-	b.tokens = min(failBucketBurst, b.tokens+now.Sub(b.at).Seconds()*failBucketRefillPerSec)
-	b.at = now
-	if !spend {
-		return b.tokens >= 1
-	}
-	b.tokens = max(0, b.tokens-1)
-	return true
-}
-
-func (f *failBuckets) allowed(addr string) bool { return f.take(addr, false) }
-func (f *failBuckets) fail(addr string)         { f.take(addr, true) }
 
 // quotaTracker caches today's byte counter per resource.
 type quotaTracker struct {

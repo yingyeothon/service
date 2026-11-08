@@ -39,6 +39,8 @@ type Counters struct {
 	RetentionCapRows atomic.Int64
 	OrphanBlobs      atomic.Int64
 	RetentionErrors  atomic.Int64
+	// PurgedRows: rows of console-deleted resources removed (server mode).
+	PurgedRows atomic.Int64
 }
 
 // Gauges are current values.
@@ -116,6 +118,13 @@ func (r *Registry) Resource(id string) *ResourceStats {
 	return s
 }
 
+// Forget drops a resource's bucket (its data was purged).
+func (r *Registry) Forget(id string) {
+	r.mu.Lock()
+	delete(r.resources, id)
+	r.mu.Unlock()
+}
+
 type snapshot struct {
 	Counters  map[string]int64            `json:"counters"`
 	Gauges    map[string]int64            `json:"gauges"`
@@ -155,6 +164,7 @@ func (r *Registry) snapshot(detail bool) snapshot {
 			"retentionCapRows":  c.RetentionCapRows.Load(),
 			"orphanBlobs":       c.OrphanBlobs.Load(),
 			"retentionErrors":   c.RetentionErrors.Load(),
+			"purgedRows":        c.PurgedRows.Load(),
 		},
 		Gauges: map[string]int64{
 			"inFlight":          g.InFlight.Load(),

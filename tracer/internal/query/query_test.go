@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yingyeothon/service/tracer/internal/addrlimit"
 	"github.com/yingyeothon/service/tracer/internal/config"
 	"github.com/yingyeothon/service/tracer/internal/ingest"
 	"github.com/yingyeothon/service/tracer/internal/resource"
@@ -324,5 +326,44 @@ func TestPagination(t *testing.T) {
 	dashed := reportID[:8] + "-" + reportID[8:12] + "-" + reportID[12:16] + "-" + reportID[16:20] + "-" + reportID[20:]
 	if code, _, _ := e.get(t, "/v1/"+resID+"/events/"+strings.ToUpper(dashed), readToken); code != 200 {
 		t.Fatalf("dashed id %d", code)
+	}
+}
+
+type stubAuth struct{ err error }
+
+func (s stubAuth) Authorize(context.Context, string, string) error { return s.err }
+
+func TestUnavailableAuthorizerIs503(t *testing.T) {
+	h := New(Options{Auth: stubAuth{err: fmt.Errorf("%w: down", ErrUnavailable)}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/"+resID+"/events", nil)
+	req.Header.Set("Authorization", "Bearer "+readToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != 503 {
+		t.Fatalf("%d", rec.Code)
+	}
+}
+
+func TestFailedReadsBackOff(t *testing.T) {
+	h := New(Options{Auth: stubAuth{err: ErrUnauthenticated}})
+	get := func(tok, addr string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/"+resID+"/events", nil)
+		req.RemoteAddr = addr
+		req.Header.Set("Authorization", "Bearer "+tok)
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	for range addrlimit.Burst {
+		if rec := get(readToken, "198.51.100.7:1"); rec.Code != 401 {
+			t.Fatalf("%d", rec.Code)
+		}
+	}
+	rec := get(readToken, "198.51.100.7:1")
+	if rec.Code != 503 || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("drained address: %d", rec.Code)
+	}
+	if rec := get(readToken, "198.51.100.8:1"); rec.Code != 401 {
+		t.Fatalf("other address: %d", rec.Code)
 	}
 }

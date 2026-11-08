@@ -24,6 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/yingyeothon/service/tracer/internal/addrlimit"
 	"github.com/yingyeothon/service/tracer/internal/config"
 	"github.com/yingyeothon/service/tracer/internal/metrics"
 	"github.com/yingyeothon/service/tracer/internal/normalize"
@@ -55,6 +56,13 @@ var ErrUnauthenticated = errors.New("query: unauthenticated")
 
 // ErrForbidden: every other refusal (404, never 403).
 var ErrForbidden = errors.New("query: not visible")
+
+// ErrUnavailable: the authorizer could not answer (console unreachable) —
+// a 503, never a refusal. Any other error maps to it as well.
+var ErrUnavailable = errors.New("query: authorization unavailable")
+
+// failRetryAfterSeconds is the back-off an address over its failure budget gets.
+const failRetryAfterSeconds = 60
 
 // Authorizer answers whether a `yyt_` token may read a resource. Server mode
 // asks the console (`POST /tr/authz`, P5); local mode compares the static token.
@@ -99,6 +107,8 @@ type Options struct {
 	Metrics *metrics.Registry
 	Log     *slog.Logger
 	Now     func() time.Time
+	// Fails limits failed authentications per client address (default: own set).
+	Fails *addrlimit.FailBuckets
 }
 
 // Handler serves `/v1/…`.
@@ -117,6 +127,9 @@ func New(opt Options) *Handler {
 	}
 	if opt.Now == nil {
 		opt.Now = time.Now
+	}
+	if opt.Fails == nil {
+		opt.Fails = addrlimit.NewFailBuckets(opt.Now)
 	}
 	h := &Handler{opt: opt, mux: http.NewServeMux()}
 	h.route("GET /v1/{trc}/issues", h.issues)
@@ -144,8 +157,18 @@ type ctxKey struct{}
 func (h *Handler) route(pattern string, fn func(http.ResponseWriter, *http.Request, string)) {
 	h.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		h.opt.Metrics.Counters.ReadRequests.Add(1)
+		addr := addrlimit.ClientAddr(r)
+		// An address that keeps failing is refused before any authz call,
+		// so guessed tokens never become one console call each.
+		if !h.opt.Fails.Allowed(addr) {
+			h.opt.Metrics.Counters.ReadRejected.Add(1)
+			w.Header().Set("Retry-After", strconv.Itoa(failRetryAfterSeconds))
+			writeError(w, http.StatusServiceUnavailable, "unavailable", "too many failed attempts from this address; retry later")
+			return
+		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || !config.ReadTokenPattern.MatchString(token) {
+			h.opt.Fails.Fail(addr)
 			h.opt.Metrics.Counters.ReadRejected.Add(1)
 			writeError(w, http.StatusUnauthorized, "unauthorized", "Authorization: Bearer yyt_… is required")
 			return
@@ -159,10 +182,12 @@ func (h *Handler) route(pattern string, fn func(http.ResponseWriter, *http.Reque
 		switch err := h.opt.Auth.Authorize(r.Context(), token, trc); {
 		case err == nil:
 		case errors.Is(err, ErrUnauthenticated):
+			h.opt.Fails.Fail(addr)
 			h.opt.Metrics.Counters.ReadRejected.Add(1)
 			writeError(w, http.StatusUnauthorized, "unauthorized", "token unknown or revoked")
 			return
 		case errors.Is(err, ErrForbidden):
+			h.opt.Fails.Fail(addr)
 			h.opt.Metrics.Counters.ReadRejected.Add(1)
 			writeError(w, http.StatusNotFound, "not_found", "tracer resource not found")
 			return

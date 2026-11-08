@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -158,5 +159,99 @@ func TestClockJumpKeepsData(t *testing.T) {
 	}
 	if e.count(t, "SELECT count(*) FROM events") != 1 {
 		t.Fatal("a forward clock jump deleted fresh data")
+	}
+}
+
+func TestPurgeDeletedResources(t *testing.T) {
+	e := newEnv(t)
+	file := e.put(t, "e1", "g1", e.now.Add(-time.Hour), 100)
+	day := e.now.Format("2006-01-02")
+	at := e.now.Add(-time.Hour).UnixMilli()
+	extra := func(res string) {
+		t.Helper()
+		if _, err := e.w.Write(context.Background(), &store.Batch{ResourceID: res, Day: day, ReceivedMs: at, Bytes: 10,
+			Events:       []store.Event{{EventID: "x_" + res, Type: "event", TsMs: at, GroupKey: "g9", JSON: []byte("{}"), Tags: [][2]string{{"k", "v"}}}},
+			Transactions: []store.Transaction{{EventID: "t_" + res, Name: "n", StartMs: at, EndMs: at + 1}},
+			Sessions:     []store.Session{{SID: "s_" + res, Status: "ok", UpdatedMs: at}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extra("trc_a")
+	extra("trc_b") // another resource: must survive the purge
+	if err := e.w.RecordDrops(context.Background(), "trc_a", day, store.Drop{ItemType: "attachment", Reason: "quota_attachment", Count: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var purged []string
+	opt := func(list []string, err error) *Retention {
+		r := e.ret(0)
+		r.opt.Deleted = func(context.Context) ([]string, error) { return list, err }
+		r.opt.Purged = func(id string) { purged = append(purged, id) }
+		return r
+	}
+	// A failed list purges nothing and does not fail the pass.
+	if _, err := opt(nil, errors.New("down")).Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(t, "SELECT count(*) FROM events") != 3 {
+		t.Fatal("purged on a failed list")
+	}
+	// Another id leaves trc_a alone.
+	if _, err := opt([]string{"trc_other"}, nil).Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(t, "SELECT count(*) FROM events") != 3 {
+		t.Fatal("purged the wrong resource")
+	}
+	rep, err := opt([]string{"trc_a"}, nil).Once(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"events", "breadcrumbs", "logs", "attachments", "issues", "drops", "daily_bytes", "event_tags", "transactions", "sessions"} {
+		if n := e.count(t, "SELECT count(*) FROM "+table+" WHERE resource_id = 'trc_a'"); n != 0 {
+			t.Errorf("%s keeps %d rows", table, n)
+		}
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatal("blob file kept")
+	}
+	if rep.PurgedResources != 1 || rep.PurgedRows == 0 || rep.BlobsRemoved != 1 {
+		t.Fatalf("report %+v", rep)
+	}
+	if len(purged) != 2 || purged[1] != "trc_a" {
+		t.Fatalf("purged callback %v", purged)
+	}
+	for _, table := range []string{"events", "event_tags", "transactions", "sessions", "issues", "daily_bytes"} {
+		if n := e.count(t, "SELECT count(*) FROM "+table+" WHERE resource_id = 'trc_b'"); n == 0 {
+			t.Errorf("%s lost trc_b", table)
+		}
+	}
+	// A purged id is not purged again by the same Retention.
+	r := opt([]string{"trc_a"}, nil)
+	r.purged["trc_a"] = true
+	if rep, _ := r.Once(context.Background()); rep.PurgedRows != 0 || len(purged) != 2 {
+		t.Fatalf("repeat purge %+v", rep)
+	}
+}
+
+func TestPurgeFailureDoesNotStopRetention(t *testing.T) {
+	e := newEnv(t)
+	e.put(t, "e_new", "g1", e.now.Add(-time.Hour), 100) // trc_a, today: its purge will fail
+	old := e.now.Add(-40 * 24 * time.Hour)
+	if _, err := e.w.Write(context.Background(), &store.Batch{ResourceID: "trc_b", Day: old.Format("2006-01-02"), ReceivedMs: old.UnixMilli(),
+		Events: []store.Event{{EventID: "b_old", Type: "event", TsMs: old.UnixMilli(), JSON: []byte("{}")}}}); err != nil {
+		t.Fatal(err)
+	}
+	r := e.ret(0)
+	r.opt.Deleted = func(context.Context) ([]string, error) { return []string{"trc_a"}, nil }
+	if _, err := e.st.DB.Exec(`CREATE TRIGGER no_purge BEFORE DELETE ON daily_bytes
+		WHEN OLD.resource_id = 'trc_a' BEGIN SELECT RAISE(ABORT, 'locked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r.Once(context.Background())
+	if err != nil || rep.PurgeErr == nil {
+		t.Fatalf("err %v purgeErr %v", err, rep.PurgeErr)
+	}
+	if e.count(t, "SELECT count(*) FROM events WHERE resource_id = 'trc_b'") != 0 {
+		t.Fatal("age pass did not run after a failed purge")
 	}
 }
