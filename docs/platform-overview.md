@@ -48,18 +48,19 @@ Four consequences run through everything below:
 
 ## 2. Shape at a glance
 
-| Piece                      | Runtime                                       | Where                                                               | Holds                                                     |
-| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
-| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                     | OAuth → per-channel JWT                                   |
-| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front)  | schema owner, every management route                      |
-| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)              | short-lived broadcast rooms                               |
-| `match`                    | Lambda + API Gateway WebSocket + HTTP API     | `match.yyt.life` (sockets), `match-api.yyt.life` (deferred tickets) | FIFO matchmaker                                           |
-| `state`                    | Lambda                                        | `doc.yyt.life`                                                      | `/s` documents, `/kv`, `/lb`, `/social`, `/time`, `/push` |
-| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                       | `lobby` relay, `q` actor bridge, `/presence`              |
-| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                          | immutable game data; static web builds                    |
-| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                    | all durable and all volatile state                        |
-| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                     | every console API as subcommands                          |
-| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                              | installer + project issues, sites, channels               |
+| Piece                      | Runtime                                       | Where                                                               | Holds                                                        |
+| -------------------------- | --------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `auth`                     | Lambda (Node 22, arm64, ESM, SLS 4 + esbuild) | `auth.yyt.life`                                                     | OAuth → per-channel JWT                                      |
+| `console`                  | Lambda                                        | `console.yyt.life` (API at `/`, SPA at `/ui`, CloudFront in front)  | schema owner, every management route                         |
+| `topic`                    | Lambda + API Gateway WebSocket                | `topic.yyt.life` (HTTP), `topic-ws.yyt.life` (sockets)              | short-lived broadcast rooms                                  |
+| `match`                    | Lambda + API Gateway WebSocket + HTTP API     | `match.yyt.life` (sockets), `match-api.yyt.life` (deferred tickets) | FIFO matchmaker                                              |
+| `state`                    | Lambda                                        | `doc.yyt.life`                                                      | `/s` documents, `/kv`, `/lb`, `/social`, `/time`, `/push`    |
+| realtime gateway           | **Go, one Docker container**                  | `gw.yyt.life`                                                       | `lobby` relay, `q` actor bridge, `/presence`                 |
+| asset CDN / site host      | S3 + CloudFront                               | `d.yyt.life`, `g.yyt.life`                                          | immutable game data; static web builds                       |
+| MariaDB + Redis (Valkey 8) | self-hosted, one box                          | private ops repo                                                    | all durable and all volatile state                           |
+| `tracer` (**designed**)    | Go, one Docker container per stage            | `trace{-dev}.yyt.life`                                              | Sentry-compatible debug-build collector, SQLite + blob files |
+| `yyt` CLI                  | Go single binary                              | GitHub Releases                                                     | every console API as subcommands                             |
+| console app ("잉여톤")     | Flutter                                       | distributed through the catalog itself                              | installer + project issues, sites, channels                  |
 
 Two deployment classes, and the rule that sorts them: **anything that must hold a socket
 runs as a container; everything else is a Lambda stack.** Region `ap-northeast-2`, stages
