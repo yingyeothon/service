@@ -2,7 +2,7 @@
   "headers": {
     "Content-Encoding": "gzip",
     "Content-Type": "application/x-sentry-envelope",
-    "X-Sentry-Auth": "Sentry sentry_key=fixturewritekeyfixturewritekey00, sentry_version=7, sentry_client=yyt-csharp/0.3.0"
+    "X-Sentry-Auth": "Sentry sentry_key=fixturewritekeyfixturewritekey00, sentry_version=7, sentry_client=yyt-csharp/0.3.1"
   },
   "path": "/api/trc_fixture01/envelope/"
 }
