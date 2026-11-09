@@ -1,5 +1,5 @@
-EVENT                             TYPE      LEVEL    TIME                      DEVICE               RELEASE          TITLE
-3b6f9f83faee48509f8b04720917ebf8  event     warning  2026-11-08T06:42:16.018Z  -                    capture@1.0.0+1  background isolate report
-7b794510c9834f9abbb4f224407f5629  feedback  info     2026-11-08T06:42:16.004Z  sdk_gphone64_x86_64  capture@1.0.0+1  capture feedback note
-2f166ea5ffa64594a3938e8ef5559888  event     error    2026-11-08T06:42:15.991Z  sdk_gphone64_x86_64  capture@1.0.0+1  StateError: Bad state: capture exception
-7730857f6b4d4655aee7855244455e2d  event     warning  2026-11-08T06:42:15.834Z  sdk_gphone64_x86_64  capture@1.0.0+1  capture report: rejected move
+EVENT                             TYPE      LEVEL    TIME                      DEVICE               RELEASE          ATT  TITLE
+3b6f9f83faee48509f8b04720917ebf8  event     warning  2026-11-08T06:42:16.018Z  -                    capture@1.0.0+1  0    background isolate report
+7b794510c9834f9abbb4f224407f5629  feedback  info     2026-11-08T06:42:16.004Z  sdk_gphone64_x86_64  capture@1.0.0+1  0    capture feedback note
+2f166ea5ffa64594a3938e8ef5559888  event     error    2026-11-08T06:42:15.991Z  sdk_gphone64_x86_64  capture@1.0.0+1  0    StateError: Bad state: capture exception
+7730857f6b4d4655aee7855244455e2d  event     warning  2026-11-08T06:42:15.834Z  sdk_gphone64_x86_64  capture@1.0.0+1  2    capture report: rejected move

@@ -339,6 +339,7 @@ type trcEvent struct {
 	Device      string `json:"device,omitempty"`
 	OS          string `json:"os,omitempty"`
 	GroupKey    string `json:"groupKey,omitempty"`
+	Attachments int64  `json:"attachments,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
 }
 
@@ -348,8 +349,9 @@ func newTracerEvents(a *App, target func(*cobra.Command, string) (*tracerTarget,
 		Short: "Events and feedback, newest received first (filters by level, release, device, trace, tag, text)",
 		Example: "  yyt tracer events chessrigado-debug --since 10m\n" +
 			"  yyt tracer events chessrigado-debug --level error --release 1.4.2+31\n" +
+			"  yyt tracer events chessrigado-debug --since 2h --with-attachments\n" +
 			"  yyt tracer events trc_01abc --local http://127.0.0.1:8095 --tag feature:board --json",
-		Annotations: map[string]string{OutputAnnotation: "EVENT  TYPE  LEVEL  TIME  DEVICE  RELEASE  TITLE (then `next: <cursor>` when the page is full); --json: {events:[{eventId,type,timestamp,received,level,title,release,dist,environment,traceId,userId,device,os,groupKey}],next?}"},
+		Annotations: map[string]string{OutputAnnotation: "EVENT  TYPE  LEVEL  TIME  DEVICE  RELEASE  ATT  TITLE (ATT = stored attachments; then `next: <cursor>` when the page is full); --json: {events:[{eventId,type,timestamp,received,level,title,release,dist,environment,traceId,userId,device,os,groupKey,attachments?}],next?}"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			t, err := target(cmd, args[0])
@@ -363,17 +365,35 @@ func newTracerEvents(a *App, target func(*cobra.Command, string) (*tracerTarget,
 			q := tracerQuery(cmd, map[string]string{"since": "since", "until": "until", "limit": "limit", "level": "level",
 				"release": "release", "device": "device", "trace-id": "traceId", "type": "type", "group": "group",
 				"text": "text", "tag": "tag", "cursor": "cursor"})
+			withAtt, _ := cmd.Flags().GetBool("with-attachments")
+			if withAtt {
+				q.Set("attachments", "1")
+			}
 			if err := t.get(cmd.Context(), "/events", q, &res); err != nil {
 				return err
+			}
+			if withAtt {
+				// A tracer older than v0.2.2 ignores attachments=1 and sends no
+				// counts: filter here too, and say so rather than look filtered.
+				kept := res.Events[:0]
+				for _, e := range res.Events {
+					if e.Attachments > 0 {
+						kept = append(kept, e)
+					}
+				}
+				if len(kept) < len(res.Events) {
+					fmt.Fprintln(a.Err, "note: the tracer ignored --with-attachments (older than v0.2.2?); rows without a count were left out")
+				}
+				res.Events = kept
 			}
 			if a.jsonOut {
 				return a.printer().JSONValue(res)
 			}
 			rows := make([][]string, 0, len(res.Events))
 			for _, e := range res.Events {
-				rows = append(rows, cells(e.EventID, e.Type, e.Level, e.Timestamp, dash(e.Device), dash(e.Release), truncateRunes(e.Title, 80)))
+				rows = append(rows, cells(e.EventID, e.Type, e.Level, e.Timestamp, dash(e.Device), dash(e.Release), strconv.FormatInt(e.Attachments, 10), truncateRunes(e.Title, 80)))
 			}
-			if err := a.printer().Table([]string{"EVENT", "TYPE", "LEVEL", "TIME", "DEVICE", "RELEASE", "TITLE"}, rows); err != nil {
+			if err := a.printer().Table([]string{"EVENT", "TYPE", "LEVEL", "TIME", "DEVICE", "RELEASE", "ATT", "TITLE"}, rows); err != nil {
 				return err
 			}
 			if res.Next != "" {
@@ -390,6 +410,7 @@ func newTracerEvents(a *App, target func(*cobra.Command, string) (*tracerTarget,
 	} {
 		c.Flags().String(f[0], "", f[1])
 	}
+	c.Flags().Bool("with-attachments", false, "only events with a stored attachment (screenshot, view hierarchy)")
 	return c
 }
 
@@ -614,6 +635,8 @@ func newTracerTimeline(a *App, target func(*cobra.Command, string) (*tracerTarge
 	c := &cobra.Command{
 		Use:   "timeline <res> <event_id>",
 		Short: "Breadcrumbs, logs, events, feedback and transactions around an event, in device time",
+		Long: "Everything of the same trace or installation within --window on each side of the event, ordered by\n" +
+			"device time. In the table the KIND of the event you asked for is marked with a leading * (e.g. *event).",
 		Example: "  yyt tracer timeline chessrigado-debug 7730857f6b4d4655aee7855244455e2d --window 2m\n" +
 			"  yyt tracer timeline trc_01abc 7730857f6b4d4655aee7855244455e2d --local http://127.0.0.1:8095 --json",
 		Annotations: map[string]string{OutputAnnotation: "TIME  KIND  LEVEL  CATEGORY  MESSAGE (the event itself is marked with *); --json: {eventId,from,to,entries:[{timestamp,kind,type,level,category,message,data,attributes,eventId,traceId,spanId}],truncated}"},
@@ -817,8 +840,11 @@ func newTracerDays(a *App, target func(*cobra.Command, string) (*tracerTarget, e
 				if err := a.printer().Table([]string{"DAY", "ITEM", "REASON", "COUNT", "BYTES"}, rows); err != nil {
 					return err
 				}
+				if len(rows) == 0 {
+					fmt.Fprintln(a.Err, "no drops in this window: nothing was refused or dropped")
+				}
 				if quota {
-					fmt.Fprintln(a.Out, "quota_* rows: the daily quota was reached (attachments dropped at 100 %, envelopes refused at 120 %); a team member can ask for more with `yyt limit request`")
+					fmt.Fprintln(a.Err, "quota_* rows: the daily quota was reached (attachments dropped at 100 %, envelopes refused at 120 %); a team member can ask for more with `yyt limit request`")
 				}
 				return nil
 			}

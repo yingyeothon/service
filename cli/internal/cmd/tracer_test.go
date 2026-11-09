@@ -241,3 +241,29 @@ func TestTracerIssuesReleaseAndGroup(t *testing.T) {
 		t.Fatalf("group+release: %v", err)
 	}
 }
+
+func TestTracerEventsWithAttachments(t *testing.T) {
+	ft := newFakeTracer(t, nil)
+	out, _, err := runLocal(t, ft, "tracer", "events", trcRes, "--with-attachments", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := ft.paths[len(ft.paths)-1]; !strings.Contains(last, "attachments=1") {
+		t.Fatalf("query %s", last)
+	}
+	// The fake answers the unfiltered golden, as a tracer older than v0.2.2
+	// would: rows without a count are dropped client-side, with a note.
+	var res struct{ Events []trcEvent }
+	if json.Unmarshal([]byte(out), &res) != nil || len(res.Events) == 0 {
+		t.Fatalf("json %s", out)
+	}
+	for _, e := range res.Events {
+		if e.Attachments == 0 {
+			t.Fatalf("kept %s", e.EventID)
+		}
+	}
+	_, errOut, _ := runLocal(t, ft, "tracer", "events", trcRes, "--with-attachments")
+	if !strings.Contains(errOut, "ignored --with-attachments") {
+		t.Fatalf("stderr %q", errOut)
+	}
+}

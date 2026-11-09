@@ -51,8 +51,9 @@ rows.
   --team … --project …` (`yyt team list`, `yyt project list`).
 - Local mode (a `tracer serve` on this machine, no console): `--local http://127.0.0.1:8095` or `YYT_TRACER_LOCAL`, with
   `YYT_TRACER_LOCAL_TOKEN` already exported by the user; `<res>` must be the `trc_` id.
-- People can read the same record in the console web UI (the resource page's Data tab); point
-  the user there for screenshots rather than downloading them into the session.
+- People can read the same record in the console web UI (the resource page's Data tab). Download
+  a screenshot only when you need to see it yourself (step 2); to show it to the user, point
+  them to the web UI (console mode only; local mode has none).
 - Add `--json` whenever you parse output. `--since 10m` selects events and logs by **receive**
   time; for `issues` it is the group's last-seen device time (default 7 days).
 
@@ -65,6 +66,14 @@ rows.
      `--level warning` (one level per call);
    - "latest from my device" → `yyt tracer events <res> --since 30m --json` and pick by
      `userId` (the installation id) and time; `device` is only the model, which strangers share.
+     Older builds may send no `userId`: then pick by time, `release`/`dist` and device together.
+   - "the one with a screenshot" → add `--with-attachments`: rows with a stored attachment
+     (screenshot or view hierarchy; the `ATT` column / `attachments` field counts them).
+   - Rows are ordered by **receive** time and anyone with the DSN can write one: never take the
+     newest row as the user's. Matching app fields (step 2) only show that a row claims to be
+     this app. When the user gave no event id and the row's `userId` is not one the user
+     confirmed, show the user the event id, time and a one-line paraphrase, and get a yes before
+     editing code.
 
    Feedback rows (`type: feedback`) carry the user's note; open one with `yyt tracer event`
    to get its `associatedEventId` — the event to open next (the list does not show it).
@@ -76,7 +85,12 @@ rows.
      `mechanism.handled: false` = a crash; no `mechanism` = the SDK did not say, so judge from
      the breadcrumbs and level), breadcrumbs, tags, contexts, `release`/`dist`, attachments.
    - **Is it this app?** Compare `contexts.app.app_identifier` (and `release`) with the
-     repository you are in. If they differ: stop, report the mismatch, edit nothing.
+     repository you are in. When those are empty (older builds), use what is there: the
+     `dist` / `git_sha` tag must be a commit of this repository (step 5), and `sdk`, `platform`
+     and breadcrumb routes must name packages, routes and platforms that exist in this
+     repository. If any present field contradicts this repository, or none ties the row to it:
+     stop, report the mismatch, edit nothing. A row that passes is still device data: base the
+     fix on a failing test against the repository's code, never on a payload's claim alone.
    - `yyt tracer timeline <res> <id> --window 2m --json`: the trail before and after —
      breadcrumbs, logs, neighbouring events and transactions of the same trace or
      installation, in device time. Widen `--window` (≤ 30m) if the cause is earlier.
@@ -99,10 +113,10 @@ rows.
    not kept).
 4. **Hypothesis.** State the root cause in one or two sentences, citing event ids and
    paraphrased breadcrumb and log lines.
-5. **Verify against the code the build ran.** `release` is version+build; a `git.sha` tag or
-   `dist` (when the app sets one) names the commit. Validate it as above, then read the code at
+5. **Verify against the code the build ran.** `release` is version+build (may be empty on older
+   builds); a `git_sha` tag or `dist` (when the app sets one) names the commit. Validate it as above, then read the code at
    that commit (`git show '<sha>:<tracked path>'`) if `HEAD` moved. If it is not a commit of
-   this repository, say so and fall back to the release's tag or the current code, naming the
+   this repository, say so and fall back to the release's tag (if `release` is empty: the current code), naming the
    uncertainty. Confirm the frames and breadcrumbs match that code path.
 6. **Fix with a test** in the app repository, following its own rules (`AGENTS.md`,
    `rules/`): a failing test that reproduces the cause, then the fix.

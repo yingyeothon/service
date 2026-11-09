@@ -337,7 +337,7 @@ Read what debug builds sent to tracer (`docs/tracer.md`). Reads go to the tracer
 ```sh
 yyt tracer issues <res> [--since 2h] [--level error] [--text t] [--release r] [--limit n]
 yyt tracer issues <res> --group <groupKey> [--since 7d]   # one group's tag-value spread (releases, devices, features)
-yyt tracer events <res> [--since 10m] [--until …] [--level l] [--release r] [--device d] [--trace-id t] [--type event|feedback] [--group g] [--tag k:v] [--text t] [--limit n] [--cursor c]
+yyt tracer events <res> [--since 10m] [--until …] [--level l] [--release r] [--device d] [--trace-id t] [--type event|feedback] [--group g] [--tag k:v] [--text t] [--with-attachments] [--limit n] [--cursor c]
 yyt tracer event <res> <event_id>                      # exception + frames, breadcrumbs, tags, contexts, attachments
 yyt tracer timeline <res> <event_id> [--window 2m]     # breadcrumbs, logs, events, transactions around it (device time)
 yyt tracer logs <res> [--since 15m] [--until …] [--level l] [--device d] [--trace-id t] [--attribute k:v] [--text t] [--limit n] [--cursor c]

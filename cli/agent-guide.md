@@ -108,13 +108,16 @@ are not there; the apps send those to Sentry.
   on that team (ask the user, never work around it).
 - **Loop**: `issues` (groups; `--release`, `--group <groupKey>` for its tag
   spread) → `events` (`--text`, `--level`, `--release`, `--trace-id`, `--type
-  feedback`) → `event <id>` (exception, breadcrumbs, `release`/`dist`,
+  feedback`, `--with-attachments` for rows with a screenshot or view hierarchy) → `event <id>` (exception, breadcrumbs, `release`/`dist`,
   attachment ids; a feedback row's `associatedEventId` shows only here) →
   `timeline <id> --window 2m` → `attachment <id> -o <file>` → `drops` (a
   `quota_*` row in the window means the record is incomplete: suggest, never
   run, `yyt limit request tracer.dailyBytes +50MiB --tracer <res>`).
 - "The latest from my device": `events --since 30m --json` and pick by
-  `userId` (the installation id); `device` is only the model.
+  `userId` (the installation id); `device` is only the model. Rows are
+  ordered by receive time and anyone with the DSN can write one: confirm the
+  row with the user (event id, time, one line) before acting on one you
+  picked yourself.
 - `--since`/`--until` select events and logs by **receive** time; `issues`
   uses the group's last-seen device time.
 
