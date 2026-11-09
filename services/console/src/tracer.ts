@@ -17,6 +17,7 @@ import { parseTracerUrl } from "./tracer-url.js";
 
 export { parseTracerUrl };
 import type { ResourceAccess, TeamAccessHelpers } from "./team-access.js";
+import type { ReadTickets } from "./tracer-ticket.js";
 
 /*
  * The console half of the tracer resource (docs/decisions.md *Debug
@@ -69,6 +70,8 @@ export interface TracerRoutesOptions {
   /** The project's `tracer.resources` grant, if any. */
   limits: Pick<LimitsDb, "listOverrides">;
   clock: Clock;
+  /** `trr_` read tickets for the SPA (decisions #12). */
+  tickets: Pick<ReadTickets, "mint">;
   /** The per-member slot every recorded write takes. */
   writeSlot: (id: ConsoleIdentity) => Promise<void>;
   audit: (
@@ -87,6 +90,7 @@ export function createTracerRoutes({
   tracerUrl,
   limits,
   clock,
+  tickets,
   writeSlot,
   audit,
 }: TracerRoutesOptions): AnyRoute[] {
@@ -236,6 +240,25 @@ export function createTracerRoutes({
       handler: async (ctx) => {
         const a = await tracerWith(ctx);
         return noStore(200, await view(a.row));
+      },
+    },
+    {
+      method: "POST",
+      path: "/tracers/{id}/read-ticket",
+      auth: true,
+      handler: async (ctx) => {
+        // The resource view's access: a seatless admin is refused (#8, #12).
+        const { id, row } = await tracerWith(ctx);
+        if (readUrl === null)
+          throw new AppError(
+            "unavailable",
+            "tracer is not configured on this stage",
+            { details: { reason: "tracer_not_configured" } },
+          );
+        // No write slot and no audit row, like a `yyt_` read; mints are
+        // limited per member and logged by `tickets`.
+        const t = await tickets.mint(id, row.id);
+        return noStore(200, { ...t, readUrl });
       },
     },
     defineRoute({

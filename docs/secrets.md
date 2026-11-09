@@ -53,7 +53,7 @@ Not secrets, on purpose: team, project and resource **ids** (`team_…`, `prj_�
 ## Code rules
 
 - Never log tokens, OAuth codes, `state`, passwords, or request bodies. Driver errors are reduced to codes (`mysql ER_…`, `redis NOPERM`) before logging; HTTP responses never contain driver messages.
-- Secrets are shown once on create/rotate; API tokens are stored hashed. The one exception, decided 2026-09-28 and unbuilt: an encrypted asset bundle's key stays readable by its team (a POST route, audited, `no-store`), because the consumer app and every deploying member need it and it cannot be rotated in place.
+- Secrets are shown once on create/rotate; API tokens are stored hashed, and so are tracer read tickets (`trr_`, Redis `trr:{sha256}`, 15 min). The one exception, decided 2026-09-28 and unbuilt: an encrypted asset bundle's key stays readable by its team (a POST route, audited, `no-store`), because the consumer app and every deploying member need it and it cannot be rotated in place.
 - Console's writer DB credentials reach the auth Lambda only on `dev` and only with `--param debugHooks=1`.
 
 ## Rotation

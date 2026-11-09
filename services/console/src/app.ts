@@ -88,6 +88,7 @@ import {
   deleteChannelLbScores,
 } from "./leaderboard.js";
 import { createTracerRoutes } from "./tracer.js";
+import { createReadTickets } from "./tracer-ticket.js";
 import { createKitConfigRoutes } from "./kit-config.js";
 import {
   createLimitRoutes,
@@ -1301,10 +1302,12 @@ export function createConsoleApp({
   const tracerUsageClient =
     tracerUsage ??
     createTracerUsageClient({ tracerUrl, token: tracerBearer, logger });
+  const readTickets = createReadTickets({ kv, sessions, db, clock, logger });
   const tracerInternalRoutes = createTracerInternalRoutes({
     db,
     team,
     tracers,
+    tickets: readTickets,
     // The raw value: the routes log a short one themselves.
     token: tracerToken === gatewayToken ? "" : tracerToken,
     // The effective `tracer.dailyBytes`, which tracer enforces.
@@ -1407,6 +1410,7 @@ export function createConsoleApp({
     history,
     tracerUrl,
     clock,
+    tickets: readTickets,
     writeSlot: createWriteSlot({ kv, clock }),
     audit,
   });

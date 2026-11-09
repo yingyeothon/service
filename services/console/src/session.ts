@@ -22,12 +22,18 @@ export interface SessionStore {
   /** Returns the opaque session id (the cookie value). Only its hash is stored. */
   create(data: SessionData): Promise<string>;
   get(sessionId: string): Promise<SessionData | undefined>;
+  /**
+   * The session stored under `sha256(sessionId)`: what a tracer read ticket
+   * keeps, so Redis never holds a usable cookie value (`tracer-ticket.ts`).
+   */
+  getByHash(sessionHash: string): Promise<SessionData | undefined>;
   destroy(sessionId: string): Promise<void>;
   issueState(data: OAuthStateData): Promise<string>;
   /** Single-use. */
   consumeState(state: string): Promise<OAuthStateData>;
 }
 
+/** A session id and its SHA-256 share one shape: 32 bytes in hex. */
 const SESSION_ID = /^[0-9a-f]{64}$/;
 const STATE = /^[0-9a-f]{48}$/;
 
@@ -40,7 +46,8 @@ const STATE = /^[0-9a-f]{48}$/;
  * attacker could act on.
  */
 export function createSessionStore(kv: Kv): SessionStore {
-  const sessKey = (id: string) => `sess:${sha256Hex(id)}`;
+  const sessKeyOfHash = (hash: string) => `sess:${hash}`;
+  const sessKey = (id: string) => sessKeyOfHash(sha256Hex(id));
   const stateKey = (s: string) => `oauth:${sha256Hex(s)}`;
   return {
     create: async (data) => {
@@ -54,6 +61,11 @@ export function createSessionStore(kv: Kv): SessionStore {
     get: async (id) => {
       if (!SESSION_ID.test(id)) return undefined;
       const raw = await kv.get(sessKey(id));
+      return raw === null ? undefined : (JSON.parse(raw) as SessionData);
+    },
+    getByHash: async (hash) => {
+      if (!SESSION_ID.test(hash)) return undefined;
+      const raw = await kv.get(sessKeyOfHash(hash));
       return raw === null ? undefined : (JSON.parse(raw) as SessionData);
     },
     destroy: async (id) => {

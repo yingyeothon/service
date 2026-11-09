@@ -121,3 +121,7 @@
 ## Fake WebSocket servers keep their conns reachable (2026-11-08)
 
 - A fake server handler parked in `select {}` after hijacking leaves the `*websocket.Conn` unreachable; the GC's netFD finalizer then closes the socket and the client sees `1006 unexpected EOF` mid-test (`TestSmokeTopic` on macOS CI). Park in a read loop instead (`hold(c)` in `cli/internal/cmd/smoke_test.go`); reproduce with `GOGC=1 go test -count=20`.
+
+## A test named for a path must observe the path (2026-11-09)
+
+- "keeps a malformed `trr_` away from the ticket path" passed whichever branch ran, because both branches answer `unknown_token` (todo/86 P1 review). When two branches give the same answer, the test spies on what only one of them touches (here, the `trr:` Redis reads) and asserts on that.

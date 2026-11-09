@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import { describe, expect, it } from "vitest";
 import { createMemoryConsoleDb, createMemoryTracerDb } from "@yyt/console-db";
-import { sha256Hex, systemClock } from "@yyt/core";
+import { AppError, sha256Hex, systemClock } from "@yyt/core";
 import {
   createTracerInternalRoutes,
   TRACER_DAILY_BYTES_SOFT,
@@ -112,6 +112,10 @@ describe("tracer token", () => {
         db: createMemoryConsoleDb(),
         team: { findTeamMember: () => Promise.resolve(undefined) },
         tracers: createMemoryTracerDb(),
+        tickets: {
+          find: () => Promise.resolve(undefined),
+          bindingLive: () => Promise.resolve(false),
+        },
         token: "too-short",
         clock: systemClock,
       }),
@@ -352,6 +356,178 @@ describe("POST /tr/authz", () => {
     const h = harness();
     const r = await h.app(authz({ token: "x", resourceId: "y", extra: 1 }));
     expect(r.statusCode).toBe(400);
+  });
+});
+
+describe("POST /tr/authz with a read ticket (decisions #12)", () => {
+  const TRACER_URL = "https://trace-dev.yyt.life/";
+  const unknown = { allowed: false, reason: "unknown_token" };
+  const denied = { allowed: false, reason: "denied" };
+  /** Mints through the route, with a session cookie or a `yyt_` bearer. */
+  const mint = async (h: H, headers: Record<string, string>, id: string) => {
+    const r = await h.app(
+      ev("POST", `/tracers/${id}/read-ticket`, { headers }),
+    );
+    expect(r.statusCode, r.body).toBe(200);
+    return parse(r).token as string;
+  };
+  const verdict = async (h: H, bearer: string, resourceId: string) =>
+    parse(await h.app(authz({ token: bearer, resourceId })));
+
+  it("allows a session ticket for its resource and refuses another", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const t2 = await mk(h, alice, "second");
+    const bearer = await mint(h, alice.cookie, t.id);
+    expect(bearer).toMatch(/^trr_[0-9a-f]{48}$/);
+    expect(await verdict(h, bearer, t.id)).toEqual({
+      allowed: true,
+      memberId: alice.id,
+    });
+    // Same team, another resource: the ticket names exactly one.
+    expect(await verdict(h, bearer, t2.id)).toEqual(denied);
+    // A well-formed ticket nobody minted.
+    expect(
+      await verdict(h, "trr_" + "0123456789abcdef".repeat(3), t.id),
+    ).toEqual(unknown);
+  });
+
+  it("expires after 15 minutes", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const bearer = await mint(h, alice.cookie, t.id);
+    h.clock.tick(899);
+    expect((await verdict(h, bearer, t.id)).allowed).toBe(true);
+    h.clock.tick(2);
+    expect(await verdict(h, bearer, t.id)).toEqual(unknown);
+  });
+
+  it("dies with the minting session (sign-out) or token (revoke)", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const viaSession = await mint(h, alice.cookie, t.id);
+    const tok = await apiToken(h, alice);
+    const viaToken = await mint(h, { authorization: `Bearer ${tok}` }, t.id);
+    expect((await verdict(h, viaToken, t.id)).allowed).toBe(true);
+
+    expect(
+      (await h.app(ev("POST", "/logout", { headers: alice.cookie })))
+        .statusCode,
+    ).toBe(204);
+    expect(await verdict(h, viaSession, t.id)).toEqual(unknown);
+    // The token's ticket does not hang on the session.
+    expect((await verdict(h, viaToken, t.id)).allowed).toBe(true);
+
+    const again = await h.login("alice", "member");
+    const tid = (
+      parse(await h.app(ev("GET", "/tokens", { headers: again.cookie })))
+        .tokens as { id: string }[]
+    )[0]!.id;
+    slot(h);
+    await h.app(ev("DELETE", `/tokens/${tid}`, { headers: again.cookie }));
+    expect(await verdict(h, viaToken, t.id)).toEqual(unknown);
+  });
+
+  it("re-reads the member and the seat on every verdict", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const dave = await h.login("dave", "member");
+    await h.seat(alice, alice.teamId, "dave");
+    const bearer = await mint(h, dave.cookie, t.id);
+    expect((await verdict(h, bearer, t.id)).allowed).toBe(true);
+    // Platform role fell back to `pending`.
+    const m = h.db.members.get(dave.id)!;
+    h.db.members.set(dave.id, { ...m, role: "pending" });
+    expect(await verdict(h, bearer, t.id)).toEqual(denied);
+    h.db.members.set(dave.id, m);
+    expect((await verdict(h, bearer, t.id)).allowed).toBe(true);
+    // Seat lost.
+    slot(h);
+    await h.app(
+      ev("DELETE", `/teams/${alice.teamId}/members/${dave.id}`, {
+        headers: alice.cookie,
+      }),
+    );
+    expect(await verdict(h, bearer, t.id)).toEqual(denied);
+    // Member row gone.
+    h.db.members.delete(dave.id);
+    expect(await verdict(h, bearer, t.id)).toEqual(unknown);
+  });
+
+  it("answers 503, never unknown_token, when Redis fails", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const bearer = await mint(h, alice.cookie, t.id);
+    const get = h.kv.get.bind(h.kv);
+    h.kv.get = (key) =>
+      key.startsWith("trr:")
+        ? Promise.reject(new AppError("unavailable", "redis ECONNREFUSED"))
+        : get(key);
+    const r = await h.app(authz({ token: bearer, resourceId: t.id }));
+    expect(r.statusCode).toBe(503);
+    h.kv.get = get;
+    expect((await verdict(h, bearer, t.id)).allowed).toBe(true);
+  });
+
+  it("never reads Redis for a malformed trr_", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const get = h.kv.get.bind(h.kv);
+    const asked: string[] = [];
+    h.kv.get = (key) => {
+      asked.push(key);
+      return get(key);
+    };
+    for (const bad of [
+      "trr_",
+      "trr_" + "0".repeat(47),
+      "TRR_" + "0".repeat(48),
+    ])
+      expect(await verdict(h, bad, t.id), bad).toEqual(unknown);
+    expect(asked.filter((k) => k.startsWith("trr:"))).toEqual([]);
+  });
+
+  it("refuses a ticket whose resource was deleted, or whose record is malformed", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const bearer = await mint(h, alice.cookie, t.id);
+    const key = `trr:${sha256Hex(bearer)}`;
+    const good = (await h.kv.get(key))!;
+    for (const bad of [
+      "{",
+      "{}",
+      JSON.stringify({ memberId: alice.id, tracerId: t.id }),
+    ]) {
+      await h.kv.set(key, bad, { ex: 60 });
+      expect(await verdict(h, bearer, t.id), bad).toEqual(unknown);
+    }
+    await h.kv.set(key, good, { ex: 60 });
+    expect((await verdict(h, bearer, t.id)).allowed).toBe(true);
+    slot(h);
+    await h.app(ev("DELETE", `/tracers/${t.id}`, { headers: alice.cookie }));
+    expect(await verdict(h, bearer, t.id)).toEqual(denied);
+  });
+
+  it("answers 503 when the session lookup fails", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const bearer = await mint(h, alice.cookie, t.id);
+    const get = h.kv.get.bind(h.kv);
+    h.kv.get = (key) =>
+      key.startsWith("sess:")
+        ? Promise.reject(new AppError("unavailable", "redis ECONNREFUSED"))
+        : get(key);
+    expect(
+      (await h.app(authz({ token: bearer, resourceId: t.id }))).statusCode,
+    ).toBe(503);
   });
 });
 

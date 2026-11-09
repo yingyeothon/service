@@ -18,6 +18,7 @@ import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { resolveApiToken } from "./identity.js";
 import { LIMITS } from "./limits.js";
+import { READ_TICKET_RE, type ReadTickets } from "./tracer-ticket.js";
 
 /*
  * The internal routes the stage's tracer container calls (docs/tracer.md
@@ -50,9 +51,11 @@ export function effectiveTracerToken(
 }
 
 export interface TracerInternalRoutesOptions {
-  db: Pick<ConsoleDb, "findTokenIdentity" | "touchApiToken">;
+  db: Pick<ConsoleDb, "findTokenIdentity" | "touchApiToken" | "findMember">;
   team: Pick<TeamDb, "findTeamMember">;
   tracers: TracerDb;
+  /** `trr_` read tickets the SPA reads with (decisions #12). */
+  tickets: Pick<ReadTickets, "find" | "bindingLive">;
   /**
    * The shared secret tracer presents as a bearer (`TRACER_TOKEN`). Empty
    * disables every authenticated route (503) so a stage without a tracer does
@@ -73,6 +76,7 @@ export function createTracerInternalRoutes({
   db,
   team,
   tracers,
+  tickets,
   token,
   dailyBytes = () => Promise.resolve(TRACER_DAILY_BYTES_SOFT),
   clock,
@@ -169,20 +173,36 @@ export function createTracerInternalRoutes({
       body: tracerAuthzBody,
       handler: async (ctx) => {
         requireTracer(ctx.bearer);
-        // Same hashing and `last_used_at` throttle as console bearer auth.
-        const who = await resolveApiToken(db, clock, ctx.body.token);
+        const unknown = { allowed: false, reason: "unknown_token" };
+        const denied = { allowed: false, reason: "denied" };
+        let who: { subject: string; role: string } | undefined;
+        if (READ_TICKET_RE.test(ctx.body.token)) {
+          // A Redis failure throws `unavailable` (503), never `unknown_token`:
+          // tracer would cache that 401 for a ticket that may be fine.
+          const t = await tickets.find(ctx.body.token);
+          if (!t) return noStore(unknown);
+          if (t.tracerId !== ctx.body.resourceId) return noStore(denied);
+          // Sign-out or a revoked minting token ends the ticket.
+          if (!(await tickets.bindingLive(t))) return noStore(unknown);
+          // Never trusted from the ticket: the member is read again.
+          const m = await db.findMember(t.memberId);
+          if (!m) return noStore(unknown);
+          who = { subject: m.id, role: m.role };
+        } else {
+          // Same hashing and `last_used_at` throttle as console bearer auth.
+          who = await resolveApiToken(db, clock, ctx.body.token);
+        }
         // `unknown_token` lets tracer answer its caller 401 (re-login); every
         // other refusal is a 404 there (docs/tracer.md *Principals*).
-        if (!who) return noStore({ allowed: false, reason: "unknown_token" });
+        if (!who) return noStore(unknown);
         const row = await live(ctx.body.resourceId);
         // A platform role below `member` gets nothing anywhere in the console.
-        if (!row || who.role === "pending")
-          return noStore({ allowed: false, reason: "denied" });
+        if (!row || who.role === "pending") return noStore(denied);
         const seat = await team.findTeamMember(row.teamId, who.subject);
         // Active, non-pending seats only: a seatless platform admin is refused
         // like `secret: true` (decisions #8), as is a pending member.
         if (!seat || seat.state !== "active" || seat.role === "pending")
-          return noStore({ allowed: false, reason: "denied" });
+          return noStore(denied);
         return noStore({ allowed: true, memberId: who.subject });
       },
     }),

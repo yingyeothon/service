@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
 import { describe, expect, it, vi } from "vitest";
 import { TRACER_ID_RE } from "@yyt/console-db";
+import { sha256Hex } from "@yyt/core";
 import { parseTracerUrl, TRACERS_PER_PROJECT_SOFT } from "../src/tracer.js";
 import { ev, harness, parse, type Team } from "./helpers.js";
 
@@ -328,5 +329,96 @@ describe("tracer resources", () => {
       ev("DELETE", `/projects/${alice.prjId}`, { headers: alice.cookie }),
     );
     expect(ok.statusCode, ok.body).toBe(204);
+  });
+});
+
+describe("POST /tracers/{id}/read-ticket (decisions #12)", () => {
+  const ticket = (h: H, headers: Record<string, string>, id: string) =>
+    h.app(ev("POST", `/tracers/${id}/read-ticket`, { headers }));
+
+  it("mints a no-store ticket bound to the stage's read URL", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const r = await ticket(h, alice.cookie, t.id);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.headers?.["cache-control"]).toBe("no-store");
+    const body = parse(r);
+    expect(Object.keys(body).sort()).toEqual(["expiresAt", "readUrl", "token"]);
+    expect(body.token).toMatch(/^trr_[0-9a-f]{48}$/);
+    expect(body.readUrl).toBe("https://trace-dev.yyt.life");
+    expect(body.expiresAt).toBe(Math.floor(h.clock.now() / 1000) + 900);
+    // Only the hash is kept, never the ticket itself.
+    const stored = JSON.parse(
+      (await h.kv.get(`trr:${sha256Hex(body.token)}`))!,
+    );
+    expect(stored).toEqual({
+      memberId: alice.id,
+      tracerId: t.id,
+      via: { sessionSha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    expect(JSON.stringify(stored)).not.toContain(
+      (body.token as string).slice(4),
+    );
+  });
+
+  it("refuses a seatless admin (403), another team (404) and a cookie without Origin", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const bob = await h.team("bob");
+    const boss = await h.login("Boss", "admin");
+    const t = await mk(h, alice);
+    expect((await ticket(h, boss.cookie, t.id)).statusCode).toBe(403);
+    expect((await ticket(h, bob.cookie, t.id)).statusCode).toBe(404);
+    const { origin: _origin, ...noOrigin } = alice.cookie;
+    expect((await ticket(h, noOrigin, t.id)).statusCode).toBe(401);
+  });
+
+  it("answers 503 tracer_not_configured without a tracer URL", async () => {
+    const h = harness({ tracerUrl: "" });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const r = await ticket(h, alice.cookie, t.id);
+    expect(r.statusCode).toBe(503);
+    expect(parse(r).error.details).toEqual({
+      reason: "tracer_not_configured",
+    });
+  });
+
+  it("limits mints to 30 per member per minute", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    // Start at a minute boundary so the window does not turn mid-loop.
+    h.clock.tick(60 - (Math.floor(h.clock.now() / 1000) % 60));
+    for (let i = 0; i < 30; i++)
+      expect((await ticket(h, alice.cookie, t.id)).statusCode, `#${i}`).toBe(
+        200,
+      );
+    const r = await ticket(h, alice.cookie, t.id);
+    expect(r.statusCode).toBe(429);
+    expect(parse(r).error.code).toBe("rate_limited");
+    // Per member: a teammate is not limited by alice's minute.
+    const dave = await h.login("dave", "member");
+    await h.seat(alice, alice.teamId, "dave");
+    expect((await ticket(h, dave.cookie, t.id)).statusCode).toBe(200);
+    h.clock.tick(60);
+    expect((await ticket(h, alice.cookie, t.id)).statusCode).toBe(200);
+  });
+
+  it("refuses a member whose seat is still pending", async () => {
+    const h = harness({ tracerUrl: TRACER_URL });
+    const alice = await h.team("alice");
+    const t = await mk(h, alice);
+    const carol = await h.login("carol", "member");
+    slot(h);
+    await h.app(
+      ev("POST", "/teams/join", {
+        headers: carol.cookie,
+        body: { name: "alice-team" },
+      }),
+    );
+    // Like every resource route: a pending seat is not a seat.
+    expect((await ticket(h, carol.cookie, t.id)).statusCode).toBe(404);
   });
 });

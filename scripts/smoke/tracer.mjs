@@ -223,6 +223,37 @@ try {
     String(adminList.status),
   );
 
+  // Read tickets (decisions #12): the SPA's bearer for tracer's read API.
+  const readTicket = (headers) =>
+    con(`/tracers/${t.id}/read-ticket`, { method: "POST", headers });
+  const sessTicket = await readTicket(as(owner));
+  let ownerTicket = "";
+  if (t.readUrl === null)
+    check(
+      "read ticket: 503 tracer_not_configured without tracer-url",
+      sessTicket.status === 503 &&
+        sessTicket.body?.error?.details?.reason === "tracer_not_configured",
+      String(sessTicket.status),
+    );
+  else {
+    ownerTicket = sessTicket.body?.token ?? "";
+    check(
+      "read ticket: minted from a session (no-store, readUrl, 15 min)",
+      sessTicket.status === 200 &&
+        /^trr_[0-9a-f]{48}$/.test(ownerTicket) &&
+        sessTicket.body?.readUrl === t.readUrl &&
+        Math.abs(sessTicket.body?.expiresAt - Date.now() / 1000 - 900) < 120 &&
+        (sessTicket.cache ?? "").includes("no-store"),
+      String(sessTicket.status),
+    );
+  }
+  const adminTicket = await readTicket(as(admin));
+  check(
+    "read ticket: a seatless admin is refused",
+    adminTicket.status === 403,
+    String(adminTicket.status),
+  );
+
   const scope = `tracer:${t.id}`;
   const lim = await con(`/limits?scope=${encodeURIComponent(scope)}`, {
     headers: as(owner),
@@ -333,6 +364,57 @@ try {
         unknown.body?.reason === "unknown_token",
       String(unknown.status),
     );
+    const fake = await authz(`trr_${"0".repeat(48)}`);
+    check(
+      "authz: an unminted read ticket is unknown",
+      fake.status === 200 && fake.body?.reason === "unknown_token",
+      String(fake.status),
+    );
+    if (ownerTicket) {
+      const ok = await authz(ownerTicket);
+      check(
+        "authz: a session read ticket is allowed",
+        ok.status === 200 &&
+          ok.body?.allowed === true &&
+          ok.body?.memberId === owner.id,
+        String(ok.status),
+      );
+      const other = await tr("/tr/authz", {
+        method: "POST",
+        body: { token: ownerTicket, resourceId: `trc_${"0".repeat(26)}` },
+      });
+      check(
+        "authz: a read ticket for another resource is denied",
+        other.status === 200 && other.body?.reason === "denied",
+        String(other.status),
+      );
+      const byToken = await readTicket({
+        authorization: `Bearer ${ownerTok}`,
+      });
+      const tokTicket = byToken.body?.token ?? "";
+      check(
+        "read ticket: minted from an API token",
+        byToken.status === 200 && /^trr_[0-9a-f]{48}$/.test(tokTicket),
+        String(byToken.status),
+      );
+      const viaTok = await authz(tokTicket);
+      check(
+        "authz: an API-token read ticket is allowed",
+        viaTok.status === 200 && viaTok.body?.allowed === true,
+        String(viaTok.status),
+      );
+      // 30 per member per minute; the window may turn once mid-loop.
+      let refused;
+      for (let i = 0; i < 62 && !refused; i++) {
+        const r = await readTicket(as(owner));
+        if (r.status !== 200) refused = r;
+      }
+      check(
+        "read ticket: the 31st mint in a minute is 429",
+        refused?.status === 429 && refused.body?.error?.code === "rate_limited",
+        `${refused?.status} ${refused?.body?.error?.code ?? ""}`,
+      );
+    }
     minted.splice(minted.indexOf(adm.ref), 1);
     await revoke(adm.ref);
     const revoked = await authz(adm.token);
