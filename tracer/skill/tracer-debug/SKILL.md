@@ -48,6 +48,8 @@ rows.
   tracer routes; until a stage has them, use local mode.
 - Local mode (no deploy): `--local http://127.0.0.1:8095` or `YYT_TRACER_LOCAL`, with
   `YYT_TRACER_LOCAL_TOKEN` already exported by the user; `<res>` must be the `trc_` id.
+- People can read the same record in the console web UI (the resource page's Data tab); point
+  the user there for screenshots rather than downloading them into the session.
 - Add `--json` whenever you parse output. `--since 10m` selects events and logs by **receive**
   time; for `issues` it is the group's last-seen device time (default 7 days).
 
