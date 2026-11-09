@@ -566,19 +566,23 @@ type EventRow struct {
 	Device      string `json:"device,omitempty"`
 	OS          string `json:"os,omitempty"`
 	GroupKey    string `json:"groupKey,omitempty"`
-	Truncated   bool   `json:"truncated,omitempty"`
-	receivedMs  int64
+	// Attachments counts the stored attachments (screenshot, view
+	// hierarchy) of the event, so a list shows which rows have one.
+	AttachmentCount int64 `json:"attachments,omitempty"`
+	Truncated       bool  `json:"truncated,omitempty"`
+	receivedMs      int64
 }
 
 const eventCols = `e.event_id, e.type, e.ts_ms, e.received_ms, coalesce(e.level,''), coalesce(e.title,''),
 	coalesce(e.release,''), coalesce(e.dist,''), coalesce(e.environment,''), coalesce(e.trace_id,''),
-	coalesce(e.user_id,''), coalesce(e.device,''), coalesce(e.os,''), coalesce(e.group_key,'')`
+	coalesce(e.user_id,''), coalesce(e.device,''), coalesce(e.os,''), coalesce(e.group_key,''),
+	(SELECT count(*) FROM attachments a WHERE a.resource_id = e.resource_id AND a.event_id = e.event_id)`
 
 func scanEventWithID(s interface{ Scan(...any) error }, id *int64) (EventRow, error) {
 	var e EventRow
 	var ts int64
 	err := s.Scan(&e.EventID, &e.Type, &ts, &e.receivedMs, &e.Level, &e.Title, &e.Release, &e.Dist, &e.Environment,
-		&e.TraceID, &e.UserID, &e.Device, &e.OS, &e.GroupKey, id)
+		&e.TraceID, &e.UserID, &e.Device, &e.OS, &e.GroupKey, &e.AttachmentCount, id)
 	e.Timestamp, e.Received = rfc(ts), rfc(e.receivedMs)
 	e.Title, e.Truncated = clip(e.Title, MaxString)
 	return e, err
@@ -610,6 +614,16 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request, trc string) {
 	traceID := strings.ToLower(p.str("traceId", 64))
 	typ := p.str("type", 16)
 	group := p.str("group", 64)
+	withAttachments := false
+	switch v := p.str("attachments", 8); v {
+	case "", "0":
+	case "1":
+		withAttachments = true
+	default:
+		if p.err == nil {
+			p.err = badParam("attachments", "want 1 or 0")
+		}
+	}
 	tk, tv, hasTag := p.pair("tag")
 	cms, cid, hasCursor := p.cursor()
 	if p.err != nil {
@@ -642,6 +656,9 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request, trc string) {
 	if text != "" {
 		like := "%" + escapeLike(text) + "%"
 		add(`(e.title LIKE ? ESCAPE '\' OR e.message LIKE ? ESCAPE '\')`, like, like)
+	}
+	if withAttachments {
+		add("EXISTS (SELECT 1 FROM attachments a WHERE a.resource_id = e.resource_id AND a.event_id = e.event_id)")
 	}
 	if hasTag {
 		add("EXISTS (SELECT 1 FROM event_tags t WHERE t.event_row = e.id AND t.key = ? AND t.value = ?)", tk, tv)
@@ -760,7 +777,7 @@ func (h *Handler) event(w http.ResponseWriter, r *http.Request, trc string) {
 	var raw string
 	var ts, recv int64
 	err := row.Scan(&d.EventID, &d.Type, &ts, &recv, &d.Level, &d.Title, &d.Release, &d.Dist, &d.Environment,
-		&d.TraceID, &d.UserID, &d.Device, &d.OS, &d.GroupKey, &rowID, &d.Message, &d.Platform, &d.AssociatedEventID, &raw)
+		&d.TraceID, &d.UserID, &d.Device, &d.OS, &d.GroupKey, &d.AttachmentCount, &rowID, &d.Message, &d.Platform, &d.AssociatedEventID, &raw)
 	if err != nil {
 		h.fail(w, err)
 		return

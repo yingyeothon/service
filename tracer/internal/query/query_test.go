@@ -416,3 +416,26 @@ func TestIssuesReleaseFilter(t *testing.T) {
 		t.Fatalf("release filter: all %d", all)
 	}
 }
+
+func TestEventsWithAttachments(t *testing.T) {
+	e := newReadEnv(t)
+	var all, with struct{ Events []EventRow }
+	_, _, b := e.get(t, "/v1/"+resID+"/events", readToken)
+	json.Unmarshal(b, &all)
+	code, _, b := e.get(t, "/v1/"+resID+"/events?attachments=1", readToken)
+	json.Unmarshal(b, &with)
+	n := 0
+	for _, r := range all.Events {
+		if r.AttachmentCount > 0 {
+			n++
+		}
+	}
+	if code != 200 || n == 0 || len(with.Events) != n || len(with.Events) == len(all.Events) {
+		t.Fatalf("attachments=1: %d %d of %d (want %d)", code, len(with.Events), len(all.Events), n)
+	}
+	for _, r := range with.Events {
+		if r.AttachmentCount == 0 {
+			t.Fatalf("row without attachments: %+v", r)
+		}
+	}
+}

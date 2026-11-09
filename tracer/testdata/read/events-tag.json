@@ -1,6 +1,7 @@
 {
   "events": [
     {
+      "attachments": 2,
       "device": "sdk_gphone64_x86_64",
       "dist": "abc1234",
       "environment": "debug",
