@@ -440,6 +440,14 @@ describe("TracerEventPage: device data is untrusted", () => {
     const good = screen.getByRole("link", { name: "https://example.com/a" });
     expect(good).toHaveAttribute("rel", "noopener noreferrer");
     expect(mockApi.tracerTimeline).toHaveBeenCalledWith(ID, "e1", "2m");
+    // Teams › team › project › tracer › event.
+    const crumbs = (await screen.findByRole("link", { name: "game-debug" }))
+      .parentElement!;
+    expect(
+      within(crumbs)
+        .getAllByRole("link")
+        .map((a) => a.textContent),
+    ).toEqual(["Teams", "studio", "dungeon", "game-debug"]);
   });
 
   it("shows a screenshot only when its bytes are an image", async () => {
@@ -482,6 +490,9 @@ describe("TracerEventPage: device data is untrusted", () => {
     expect(
       await screen.findByText(/Not an image after all/),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Show screenshot-2.png" }),
+    ).toBeNull();
     expect(
       screen.queryByRole("img", { name: "Screenshot screenshot-2.png" }),
     ).toBeNull();

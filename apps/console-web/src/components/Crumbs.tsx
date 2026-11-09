@@ -13,12 +13,15 @@ export function Crumbs({
   current,
   fallback,
   trail,
+  parent,
 }: {
   crumbs?: Partial<ResourceCrumbs>;
   current?: string;
   fallback?: { label: string; to: string };
   /** Links before `current` for pages outside the team tree: `Shows › show`. */
   trail?: { label: string; to: string }[];
+  /** The resource a sub-page belongs to, after the project: `… › tracer › event`. */
+  parent?: { label: string; to: string };
 }) {
   const items: React.ReactNode[] = [];
   if (trail)
@@ -55,6 +58,12 @@ export function Crumbs({
       </Anchor>,
     );
   }
+  if (parent)
+    items.push(
+      <Anchor component={Link} to={parent.to} size="sm" key="parent">
+        {parent.label}
+      </Anchor>,
+    );
   if (current !== undefined)
     items.push(
       <Text size="sm" key="current" aria-current="page">

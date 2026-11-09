@@ -60,10 +60,10 @@ export function TracerEventPage() {
   const crumbs = (
     <Crumbs
       crumbs={t.data ?? {}}
-      trail={
+      parent={
         t.data
-          ? [{ label: t.data.name, to: `${tracerUrl(id)}?tab=events` }]
-          : []
+          ? { label: t.data.name, to: `${tracerUrl(id)}?tab=events` }
+          : undefined
       }
       current={e ? plain(e.title ?? e.eventId, 80) : undefined}
     />
@@ -434,7 +434,7 @@ function AttachmentRow({ id, a }: { id: string; a: TracerAttachment }) {
         </Text>
       </Group>
       <Group gap="xs">
-        {role === "screenshot" && !img && (
+        {role === "screenshot" && !img && !note && (
           <Button
             variant="default"
             size="xs"
