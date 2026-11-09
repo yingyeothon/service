@@ -197,8 +197,8 @@ func TestReadCORS(t *testing.T) {
 	if reads.Load() != before {
 		t.Error("a preflight reached the read handler")
 	}
-	// Every other route stays without CORS.
-	for _, path := range []string{"/api/trc_a/envelope/", "/livez", "/healthz", "/metrics", "/tr/usage", "/other"} {
+	// Every other route but ingest (TestIngestCORS) stays without CORS.
+	for _, path := range []string{"/livez", "/healthz", "/metrics", "/tr/usage", "/other"} {
 		for _, method := range []string{"GET", "OPTIONS"} {
 			res := corsReq(t, method, srv.URL+path, spa)
 			if res.Header.Get("Access-Control-Allow-Origin") != "" || res.Header.Get("Access-Control-Allow-Methods") != "" {
@@ -241,5 +241,42 @@ func TestReadCORSWrapsTheRealReadHandler(t *testing.T) {
 	if last.StatusCode != 503 || last.Header.Get("Retry-After") == "" || last.Header.Get("Access-Control-Allow-Origin") != spa ||
 		!strings.Contains(last.Header.Get("Access-Control-Expose-Headers"), "Retry-After") {
 		t.Fatalf("limiter: %d %v", last.StatusCode, last.Header)
+	}
+}
+
+func TestIngestCORS(t *testing.T) {
+	var posts atomic.Int64
+	ingest := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		if strings.Contains(r.URL.Path, "limited") {
+			w.Header().Set("Retry-After", "300")
+			w.WriteHeader(429)
+			return
+		}
+		w.WriteHeader(401)
+	})
+	reg := metrics.New()
+	srv := httptest.NewServer(New(Options{DB: probe{}, Metrics: reg, Detail: reg.Detailed, Ingest: ingest}))
+	defer srv.Close()
+	for path, code := range map[string]int{"/api/trc_a/envelope/": 401, "/api/trc_limited/envelope/": 429} {
+		for _, origin := range []string{"https://game.example.com", "null", ""} {
+			res := corsReq(t, "POST", srv.URL+path, origin)
+			h := res.Header
+			if res.StatusCode != code || h.Get("Access-Control-Allow-Origin") != "*" ||
+				h.Get("Access-Control-Expose-Headers") != "Retry-After" || h.Get("Access-Control-Allow-Credentials") != "" {
+				t.Errorf("%s from %q: %d %v", path, origin, res.StatusCode, h)
+			}
+		}
+	}
+	before := posts.Load()
+	res := corsReq(t, "OPTIONS", srv.URL+"/api/trc_a/envelope/", "https://game.example.com")
+	h := res.Header
+	if res.StatusCode != 204 || h.Get("Access-Control-Allow-Origin") != "*" || h.Get("Access-Control-Allow-Methods") != "POST" ||
+		h.Get("Access-Control-Allow-Headers") != "Content-Type, Content-Encoding, X-Sentry-Auth" ||
+		h.Get("Access-Control-Max-Age") != "600" || h.Get("Access-Control-Allow-Credentials") != "" {
+		t.Errorf("preflight: %d %v", res.StatusCode, h)
+	}
+	if posts.Load() != before {
+		t.Error("a preflight reached the ingest handler")
 	}
 }

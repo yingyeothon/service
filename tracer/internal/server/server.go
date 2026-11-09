@@ -102,7 +102,7 @@ func New(opt Options) *Server {
 		s.mux.HandleFunc("GET /tr/usage", s.usage)
 	}
 	if opt.Ingest != nil {
-		s.mux.Handle("/api/", opt.Ingest)
+		s.mux.Handle("/api/", ingestCORS(opt.Ingest))
 	}
 	if opt.Read != nil {
 		s.mux.Handle("/v1/", readCORS(opt.ReadOrigins, opt.Read))
@@ -268,6 +268,28 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// ingestCORS lets browser clients (tslib in a page, Unity WebGL) post from
+// any origin and read the answer (decisions _Debug collector_ #13). The write
+// key is public, so `*` exposes nothing; credentials are never allowed. Like
+// readCORS it wraps the whole handler, so every refusal — 401, 413, 429 with
+// its Retry-After, the limiter's 503 — carries the headers, and a preflight
+// is answered before the limiter and the key check.
+func ingestCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Access-Control-Expose-Headers", "Retry-After")
+		if r.Method == http.MethodOptions {
+			h.Set("Access-Control-Allow-Methods", "POST")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Sentry-Auth")
+			h.Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // readCORS lets the stage's console SPA read `/v1/` with a bearer

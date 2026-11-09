@@ -450,14 +450,21 @@ func (h *Handler) issues(w http.ResponseWriter, r *http.Request, trc string) {
 	limit := p.limit()
 	level := p.str("level", 32)
 	text := p.str("text", 200)
+	release := p.str("release", 200)
 	if p.err != nil {
 		h.fail(w, p.err)
 		return
 	}
 	q := `SELECT group_key, coalesce(title,''), coalesce(level,''), count,
 		first_seen_ms, last_seen_ms, coalesce(latest_event_id,''), status
-		FROM issues WHERE resource_id = ? AND last_seen_ms >= ?`
+		FROM issues i WHERE resource_id = ? AND last_seen_ms >= ?`
 	args := []any{trc, since.UnixMilli()}
+	if release != "" {
+		// Groups with at least one stored event of this release; count and
+		// first/last seen stay the group's (events_res_group serves the probe).
+		q += " AND EXISTS (SELECT 1 FROM events e WHERE e.resource_id = i.resource_id AND e.group_key = i.group_key AND e.release = ?)"
+		args = append(args, release)
+	}
 	if level != "" {
 		q += " AND level = ?"
 		args = append(args, level)

@@ -400,3 +400,19 @@ func TestReadTicketReachesAuthorizerAndIsCounted(t *testing.T) {
 		t.Fatalf("counters %d/%d/%d", c.ReadRequests.Load(), c.ReadTicketRequests.Load(), c.ReadTokenRequests.Load())
 	}
 }
+
+func TestIssuesReleaseFilter(t *testing.T) {
+	e := newReadEnv(t)
+	count := func(q string) int {
+		code, _, body := e.get(t, "/v1/"+resID+"/issues"+q, readToken)
+		var out struct{ Issues []Issue }
+		if code != 200 || json.Unmarshal(body, &out) != nil {
+			t.Fatalf("%s: %d %s", q, code, body)
+		}
+		return len(out.Issues)
+	}
+	all := count("")
+	if all == 0 || count("?release=capture%401.0.0%2B1") != all || count("?release=capture%401.0.0%2B2") != 0 {
+		t.Fatalf("release filter: all %d", all)
+	}
+}
