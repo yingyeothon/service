@@ -167,11 +167,16 @@ func (h *Handler) route(pattern string, fn func(http.ResponseWriter, *http.Reque
 			return
 		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || !config.ReadTokenPattern.MatchString(token) {
+		if !ok || !config.ServerReadTokenPattern.MatchString(token) {
 			h.opt.Fails.Fail(addr)
 			h.opt.Metrics.Counters.ReadRejected.Add(1)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Authorization: Bearer yyt_… is required")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Authorization: Bearer yyt_… or trr_… is required")
 			return
+		}
+		if strings.HasPrefix(token, config.ReadTicketPrefix) {
+			h.opt.Metrics.Counters.ReadTicketRequests.Add(1)
+		} else {
+			h.opt.Metrics.Counters.ReadTokenRequests.Add(1)
 		}
 		trc := r.PathValue("trc")
 		if !config.ResourceIDPattern.MatchString(trc) {

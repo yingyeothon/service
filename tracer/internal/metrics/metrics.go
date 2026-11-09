@@ -33,7 +33,11 @@ type Counters struct {
 	AuthzCacheHits atomic.Int64
 	ReadRequests   atomic.Int64
 	ReadRejected   atomic.Int64
-	StoreErrors    atomic.Int64
+	// Read requests past the token shape check, by credential: a `yyt_`
+	// API token or a `trr_` console read ticket (the SPA).
+	ReadTokenRequests  atomic.Int64
+	ReadTicketRequests atomic.Int64
+	StoreErrors        atomic.Int64
 	// Retention: rows removed by age or by the stage cap, and orphan files.
 	RetentionRows    atomic.Int64
 	RetentionCapRows atomic.Int64
@@ -142,29 +146,31 @@ func (r *Registry) snapshot(detail bool) snapshot {
 	c, g := &r.Counters, &r.Gauges
 	s := snapshot{
 		Counters: map[string]int64{
-			"envelopesAccepted": c.EnvelopesAccepted.Load(),
-			"envelopesRejected": c.EnvelopesRejected.Load(),
-			"rejected401":       c.Rejected401.Load(),
-			"rejected413":       c.Rejected413.Load(),
-			"rejected429":       c.Rejected429.Load(),
-			"rejected503":       c.Rejected503.Load(),
-			"rejectedOther":     c.RejectedOther.Load(),
-			"itemsStored":       c.ItemsStored.Load(),
-			"itemsDropped":      c.ItemsDropped.Load(),
-			"bytesIngested":     c.BytesIngested.Load(),
-			"duplicates":        c.Duplicates.Load(),
-			"configFetches":     c.ConfigFetches.Load(),
-			"configStale":       c.ConfigStale.Load(),
-			"authzCalls":        c.AuthzCalls.Load(),
-			"authzCacheHits":    c.AuthzCacheHits.Load(),
-			"readRequests":      c.ReadRequests.Load(),
-			"readRejected":      c.ReadRejected.Load(),
-			"storeErrors":       c.StoreErrors.Load(),
-			"retentionRows":     c.RetentionRows.Load(),
-			"retentionCapRows":  c.RetentionCapRows.Load(),
-			"orphanBlobs":       c.OrphanBlobs.Load(),
-			"retentionErrors":   c.RetentionErrors.Load(),
-			"purgedRows":        c.PurgedRows.Load(),
+			"envelopesAccepted":  c.EnvelopesAccepted.Load(),
+			"envelopesRejected":  c.EnvelopesRejected.Load(),
+			"rejected401":        c.Rejected401.Load(),
+			"rejected413":        c.Rejected413.Load(),
+			"rejected429":        c.Rejected429.Load(),
+			"rejected503":        c.Rejected503.Load(),
+			"rejectedOther":      c.RejectedOther.Load(),
+			"itemsStored":        c.ItemsStored.Load(),
+			"itemsDropped":       c.ItemsDropped.Load(),
+			"bytesIngested":      c.BytesIngested.Load(),
+			"duplicates":         c.Duplicates.Load(),
+			"configFetches":      c.ConfigFetches.Load(),
+			"configStale":        c.ConfigStale.Load(),
+			"authzCalls":         c.AuthzCalls.Load(),
+			"authzCacheHits":     c.AuthzCacheHits.Load(),
+			"readRequests":       c.ReadRequests.Load(),
+			"readRejected":       c.ReadRejected.Load(),
+			"readTokenRequests":  c.ReadTokenRequests.Load(),
+			"readTicketRequests": c.ReadTicketRequests.Load(),
+			"storeErrors":        c.StoreErrors.Load(),
+			"retentionRows":      c.RetentionRows.Load(),
+			"retentionCapRows":   c.RetentionCapRows.Load(),
+			"orphanBlobs":        c.OrphanBlobs.Load(),
+			"retentionErrors":    c.RetentionErrors.Load(),
+			"purgedRows":         c.PurgedRows.Load(),
 		},
 		Gauges: map[string]int64{
 			"inFlight":          g.InFlight.Load(),

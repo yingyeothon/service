@@ -158,3 +158,56 @@ func TestParseLocalRefusals(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOrigins(t *testing.T) {
+	env := serverEnv()
+	env["TRACER_READ_ORIGINS"] = " https://console-dev.example.com , http://127.0.0.1:5173,https://console.example.com:8443"
+	c, err := FromEnv(envOf(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://console-dev.example.com", "http://127.0.0.1:5173", "https://console.example.com:8443"}
+	if strings.Join(c.ReadOrigins, "|") != strings.Join(want, "|") {
+		t.Fatalf("origins %q", c.ReadOrigins)
+	}
+	if c, err := FromEnv(envOf(serverEnv())); err != nil || c.ReadOrigins != nil {
+		t.Fatalf("unset: %v %q", err, c.ReadOrigins)
+	}
+	// Allowed in local mode too (a local SPA against a local tracer).
+	p := localFile(t, goodLocal)
+	if _, err := FromEnv(envOf(map[string]string{"TRACER_LOCAL_CONFIG": p, "TRACER_READ_ORIGINS": "http://[::1]:5173,http://[::1]"})); err != nil {
+		t.Fatalf("local: %v", err)
+	}
+	for _, bad := range []string{
+		"*", "null", "https://*.example.com", "https://console.example.com/",
+		"https://console.example.com/path", "http://console.example.com",
+		"http://localhost:5173", "https://Console.example.com", "console.example.com",
+		"https://user@console.example.com", "https://console.example.com?x=1",
+		"https://console.example.com,", "ftp://console.example.com",
+		"https://console.example.com:443", "http://127.0.0.1:80", "https://console.example.com:0443",
+		"https://console.example.com:99999", "https://console.example.com:", "https://console.example.com.",
+		"https://bücher.example", "https://console.example.com,,https://x.example.com",
+	} {
+		env := serverEnv()
+		env["TRACER_READ_ORIGINS"] = bad
+		if _, err := FromEnv(envOf(env)); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}
+
+func TestServerReadTokenPattern(t *testing.T) {
+	hex48 := strings.Repeat("0123456789abcdef", 3)
+	for tok, want := range map[string]bool{
+		"yyt_" + hex48: true, "trr_" + hex48: true,
+		"trr_" + hex48[:47]: false, "TRR_" + hex48: false, "abc_" + hex48: false,
+		"trr_" + strings.ToUpper(hex48): false, "trr_" + hex48 + "0": false,
+	} {
+		if ServerReadTokenPattern.MatchString(tok) != want {
+			t.Errorf("%q: want %v", tok, want)
+		}
+	}
+	if ReadTokenPattern.MatchString("trr_" + hex48) {
+		t.Error("tracer.json readToken must stay yyt_ only")
+	}
+}

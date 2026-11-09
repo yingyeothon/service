@@ -382,7 +382,7 @@ type authzBody struct {
 
 // Authorize implements query.Authorizer.
 func (c *Client) Authorize(ctx context.Context, token, resourceID string) error {
-	if !config.ReadTokenPattern.MatchString(token) {
+	if !config.ServerReadTokenPattern.MatchString(token) {
 		return query.ErrUnauthenticated
 	}
 	if !config.ResourceIDPattern.MatchString(resourceID) {

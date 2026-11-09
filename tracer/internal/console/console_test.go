@@ -27,10 +27,12 @@ import (
 // shape change there edits this file in the same commit.
 
 const (
-	token    = "trt_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	resID    = "trc_01jc0000000000000000000000"
-	goneID   = "trc_01jc0000000000000000000001"
-	readTok  = "yyt_0123456789abcdef0123456789abcdef0123456789abcdef"
+	token   = "trt_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	resID   = "trc_01jc0000000000000000000000"
+	goneID  = "trc_01jc0000000000000000000001"
+	readTok = "yyt_0123456789abcdef0123456789abcdef0123456789abcdef"
+	// A console read ticket (decisions #12): same length, `trr_` prefix.
+	ticket   = "trr_0123456789abcdef0123456789abcdef0123456789abcdef"
 	badTok   = "yyt_ffffffffffffffffffffffffffffffffffffffffffffffff"
 	stranger = "yyt_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	writeKey = "wk_0123456789abcdef"
@@ -106,7 +108,7 @@ func newFake(t *testing.T) *fake {
 		switch {
 		case b.Token == badTok:
 			json.NewEncoder(w).Encode(map[string]any{"allowed": false, "reason": "unknown_token"})
-		case b.Token == readTok && b.ResourceID == resID:
+		case (b.Token == readTok || b.Token == ticket) && b.ResourceID == resID:
 			json.NewEncoder(w).Encode(map[string]any{"allowed": true, "memberId": "usr_1"})
 		default:
 			json.NewEncoder(w).Encode(map[string]any{"allowed": false, "reason": "denied"})
@@ -471,5 +473,25 @@ func TestMissingIDsDoNotEvictConfigs(t *testing.T) {
 	c.mu.Unlock()
 	if n > 2 {
 		t.Fatalf("missing set grew to %d", n)
+	}
+}
+
+func TestAuthorizeReadTicket(t *testing.T) {
+	f := newFake(t)
+	c, _, _ := newClient(t, f, Options{})
+	if err := c.Authorize(ctx, ticket, resID); err != nil {
+		t.Fatalf("allowed: %v", err)
+	}
+	if err := c.Authorize(ctx, ticket, goneID); !errors.Is(err, query.ErrForbidden) {
+		t.Fatalf("another resource: %v", err)
+	}
+	calls := f.calls.Load()
+	for _, bad := range []string{"trr_short", "TRR_" + ticket[4:], "trr_" + ticket[4:] + "0"} {
+		if err := c.Authorize(ctx, bad, resID); !errors.Is(err, query.ErrUnauthenticated) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	if f.calls.Load() != calls {
+		t.Fatal("a malformed ticket reached the console")
 	}
 }

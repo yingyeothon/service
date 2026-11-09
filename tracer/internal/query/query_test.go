@@ -20,6 +20,7 @@ import (
 	"github.com/yingyeothon/service/tracer/internal/addrlimit"
 	"github.com/yingyeothon/service/tracer/internal/config"
 	"github.com/yingyeothon/service/tracer/internal/ingest"
+	"github.com/yingyeothon/service/tracer/internal/metrics"
 	"github.com/yingyeothon/service/tracer/internal/resource"
 	"github.com/yingyeothon/service/tracer/internal/store"
 )
@@ -199,6 +200,8 @@ func TestAuthAndErrors(t *testing.T) {
 		{"no token", "/v1/" + resID + "/events", "", 401, "unauthorized"},
 		{"write key", "/v1/" + resID + "/events", "aaaaaaaaaaaaaaaaaaaa", 401, "unauthorized"},
 		{"wrong token", "/v1/" + resID + "/events", "yyt_" + strings.Repeat("f", 48), 401, "unauthorized"},
+		// Local mode compares with the static readToken: a ticket is a 401.
+		{"read ticket in local mode", "/v1/" + resID + "/events", "trr_" + strings.Repeat("0", 48), 401, "unauthorized"},
 		{"unknown resource", "/v1/trc_nope/events", readToken, 404, "not_found"},
 		{"bad id shape", "/v1/nope/events", readToken, 404, "not_found"},
 		{"unknown event", "/v1/" + resID + "/events/" + strings.Repeat("0", 32), readToken, 404, "not_found"},
@@ -368,5 +371,32 @@ func TestFailedReadsBackOff(t *testing.T) {
 	}
 	if rec := get(readToken, "198.51.100.8:1"); rec.Code != 401 {
 		t.Fatalf("other address: %d", rec.Code)
+	}
+}
+
+type recordingAuth struct{ got []string }
+
+func (a *recordingAuth) Authorize(_ context.Context, token, _ string) error {
+	a.got = append(a.got, token)
+	return ErrForbidden
+}
+
+func TestReadTicketReachesAuthorizerAndIsCounted(t *testing.T) {
+	auth := &recordingAuth{}
+	reg := metrics.New()
+	h := New(Options{Auth: auth, Metrics: reg})
+	ticket := "trr_" + strings.Repeat("0123456789abcdef", 3)
+	for _, tok := range []string{ticket, readToken, "trr_short"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/"+resID+"/events", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		h.ServeHTTP(rec, req)
+	}
+	if strings.Join(auth.got, ",") != ticket+","+readToken {
+		t.Fatalf("authorizer saw %q", auth.got)
+	}
+	c := &reg.Counters
+	if c.ReadRequests.Load() != 3 || c.ReadTicketRequests.Load() != 1 || c.ReadTokenRequests.Load() != 1 {
+		t.Fatalf("counters %d/%d/%d", c.ReadRequests.Load(), c.ReadTicketRequests.Load(), c.ReadTokenRequests.Load())
 	}
 }

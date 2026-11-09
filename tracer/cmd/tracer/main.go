@@ -190,6 +190,7 @@ func serve() error {
 		OperatorToken: cfg.Token,
 		Ready:         ready,
 		UsageDB:       usageDB,
+		ReadOrigins:   cfg.ReadOrigins,
 	})
 	srv := &http.Server{
 		Addr:              cfg.Listen,

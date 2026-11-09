@@ -49,6 +49,8 @@ type Options struct {
 	UsageDB *sql.DB
 	// Now defaults to time.Now (UTC days of `/tr/usage`).
 	Now func() time.Time
+	// ReadOrigins get CORS on `/v1/` only (TRACER_READ_ORIGINS).
+	ReadOrigins []string
 }
 
 // Server is the composed handler.
@@ -103,7 +105,7 @@ func New(opt Options) *Server {
 		s.mux.Handle("/api/", opt.Ingest)
 	}
 	if opt.Read != nil {
-		s.mux.Handle("/v1/", opt.Read)
+		s.mux.Handle("/v1/", readCORS(opt.ReadOrigins, opt.Read))
 	}
 	return s
 }
@@ -266,4 +268,39 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// readCORS lets the stage's console SPA read `/v1/` with a bearer
+// (decisions _Debug collector_ #12). It wraps the whole read handler, so the
+// headers are set before routing, the address limiter and authz run: a 401,
+// 404 or limiter 503 (with its `Retry-After`) is readable by the page too.
+// Exact origins only, no credentials (the bearer is not a cookie); every
+// other route of the server stays without CORS.
+func readCORS(origins []string, next http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(origins))
+	for _, o := range origins {
+		allowed[o] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Add("Vary", "Origin")
+		origin := r.Header.Get("Origin")
+		ok := origin != "" && allowed[origin]
+		if ok {
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Expose-Headers", "Retry-After, X-Tracer-Sha256")
+		}
+		// A preflight carries no credentials: answer it before any limiter
+		// or authz, so it neither spends nor needs a failure budget.
+		if r.Method == http.MethodOptions {
+			if ok {
+				h.Set("Access-Control-Allow-Methods", "GET")
+				h.Set("Access-Control-Allow-Headers", "Authorization")
+				h.Set("Access-Control-Max-Age", "600")
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -64,8 +64,18 @@ var DefaultStageBytes = map[string]int64{
 // `trc_` + a lowercase ULID (the `kv_` precedent), kept a little looser.
 var ResourceIDPattern = regexp.MustCompile(`^trc_[0-9a-z]{1,40}$`)
 
-// ReadTokenPattern is the console API token shape (`yyt_` + 48 hex).
+// ReadTokenPattern is the console API token shape (`yyt_` + 48 hex): the
+// static `readToken` of `tracer.json`.
 var ReadTokenPattern = regexp.MustCompile(`^yyt_[0-9a-f]{48}$`)
+
+// ServerReadTokenPattern is what the read API takes before asking the
+// console: an API token or a console-minted read ticket (`trr_` + 48 hex,
+// decisions _Debug collector_ #12). Local mode never accepts a ticket: its
+// authorizer compares with the static `readToken` only.
+var ServerReadTokenPattern = regexp.MustCompile(`^(?:yyt|trr)_[0-9a-f]{48}$`)
+
+// ReadTicketPrefix marks a console read ticket.
+const ReadTicketPrefix = "trr_"
 
 // Config is the process-level configuration.
 type Config struct {
@@ -92,6 +102,10 @@ type Config struct {
 	DumpDir string
 	// Local is the parsed `tracer.json` (local mode only).
 	Local *LocalFile
+	// ReadOrigins are the exact browser origins the read API (`/v1/`)
+	// answers with CORS headers (`TRACER_READ_ORIGINS`, comma-separated):
+	// the stage's console SPA, decisions #12. Empty: no CORS.
+	ReadOrigins []string
 }
 
 // DBPath is the SQLite file inside DataDir.
@@ -118,6 +132,11 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	var err error
 	if c.Token, err = secret(getenv, "TRACER_TOKEN"); err != nil {
 		return c, err
+	}
+	if v := strings.TrimSpace(getenv("TRACER_READ_ORIGINS")); v != "" {
+		for _, o := range strings.Split(v, ",") {
+			c.ReadOrigins = append(c.ReadOrigins, strings.TrimSpace(o))
+		}
 	}
 	if v := getenv("TRACER_STAGE_BYTES"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -199,6 +218,11 @@ func (c Config) validate(localPath string) error {
 			problems = append(problems, "TRACER_TOKEN needs TRACER_CONSOLE_URL")
 		}
 	}
+	for _, o := range c.ReadOrigins {
+		if err := checkReadOrigin(o); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
@@ -227,6 +251,42 @@ func checkConsoleURL(raw string) error {
 		}
 	}
 	return errors.New("TRACER_CONSOLE_URL must be https (http only to a loopback IP)")
+}
+
+// checkReadOrigin wants one exact browser origin, as a browser sends it:
+// `https://host[:port]`, or `http://` to a loopback IP (a local SPA dev
+// server) — the TRACER_CONSOLE_URL rule. No path, wildcard, `null`, user
+// info or upper case, since the comparison is a plain string match.
+func checkReadOrigin(raw string) error {
+	bad := fmt.Errorf("TRACER_READ_ORIGINS %q: want an exact origin like https://console.example.com", raw)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || strings.Contains(raw, "*") ||
+		raw != u.Scheme+"://"+u.Host || raw != strings.ToLower(raw) {
+		return bad
+	}
+	// A browser sends no default port, an IDN host as punycode and no
+	// trailing dot: any of those here could never match.
+	host := u.Hostname()
+	if strings.HasSuffix(host, ".") || strings.ContainsFunc(host, func(r rune) bool { return r > 0x7e }) {
+		return bad
+	}
+	if strings.Contains(u.Host, "]:") || (!strings.HasPrefix(u.Host, "[") && strings.Contains(u.Host, ":")) {
+		port := u.Port()
+		n, err := strconv.Atoi(port)
+		def := map[string]string{"https": "443", "http": "80"}[u.Scheme]
+		if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port || port == def {
+			return fmt.Errorf("TRACER_READ_ORIGINS %q: port must be 1..65535 and not the scheme's default (a browser omits it)", raw)
+		}
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+	}
+	return fmt.Errorf("TRACER_READ_ORIGINS %q: https only (http only to a loopback IP)", raw)
 }
 
 // checkListen requires a loopback IP literal in both modes: local mode
