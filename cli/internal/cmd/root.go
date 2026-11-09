@@ -163,7 +163,7 @@ func NewRoot(a *App) *cobra.Command {
 		newProfile(a),
 		newTeam(a), newProject(a),
 		newMembers(a), newTokens(a), newChannels(a), newEvents(a), newShows(a), newCatalog(a), newAssets(a), newSites(a), newKvStore(a), newLeaderboard(a), newTracer(a), newPush(a), newLimits(a), newAudit(a), newSmoke(a),
-		newSelf(a, a.Updater),
+		newSelf(a, a.Updater), newSkill(a),
 		newAgentsTopic(),
 	)
 	root.SetHelpCommand(newHelp(a, root))

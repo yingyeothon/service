@@ -222,3 +222,22 @@ func TestTracerOneLine(t *testing.T) {
 		t.Fatal("query accepted")
 	}
 }
+
+func TestTracerIssuesReleaseAndGroup(t *testing.T) {
+	ft := newFakeTracer(t, nil)
+	if _, _, err := runLocal(t, ft, "tracer", "issues", trcRes, "--release", "1.2.3+4", "--level", "error"); err != nil {
+		t.Fatal(err)
+	}
+	if last := ft.paths[len(ft.paths)-1]; !strings.Contains(last, "release=1.2.3%2B4") || !strings.Contains(last, "level=error") {
+		t.Fatalf("query %s", last)
+	}
+	// --group asks the group's tag route; list filters do not combine with it.
+	_, _, _ = runLocal(t, ft, "tracer", "issues", trcRes, "--group", "abc123")
+	if last := ft.paths[len(ft.paths)-1]; !strings.HasPrefix(last, "/v1/"+trcRes+"/issues/abc123/tags") {
+		t.Fatalf("group path %s", last)
+	}
+	if _, _, err := runLocal(t, ft, "tracer", "issues", trcRes, "--group", "abc123", "--release", "1"); err == nil ||
+		!strings.Contains(err.Error(), "--release does not apply with --group") {
+		t.Fatalf("group+release: %v", err)
+	}
+}

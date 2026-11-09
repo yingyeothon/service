@@ -66,7 +66,24 @@ func newTracer(a *App) *cobra.Command {
 			"delete, dsn. A debug build sends with the DSN (`yyt tracer dsn <res>`).\n" +
 			"These always use the console: they refuse --local and ignore YYT_TRACER_LOCAL.\n\n" +
 			"Times: --since/--until take RFC 3339 or a duration back from now (15m, 2h, 7d)\n" +
-			"and select by receive time; rows show the device time and the receive time.",
+			"and select by receive time; rows show the device time and the receive time.\n\n" +
+			"Which resource and stage: the build's DSN https://<key>@<host>/<trc_id> gives\n" +
+			"both — the host picks --profile (trace-dev… is dev, trace… is prod) and the\n" +
+			"trc_ id is <res> with no team/project context. A refused token or a stage\n" +
+			"without tracer exits 1 with a tracer-specific message.\n\n" +
+			"Debugging loop (add --json when parsing):\n" +
+			"  1. find: `issues <res> --since 24h`, `events <res> --since 2h --text …`\n" +
+			"     or --level error; \"my device\" = pick by userId (installation id),\n" +
+			"     not device (a model many people share)\n" +
+			"  2. `event <res> <id>`: exception, breadcrumbs, release/dist, attachments;\n" +
+			"     a feedback row's associatedEventId shows only here\n" +
+			"  3. `timeline <res> <id> --window 2m`: what happened around it\n" +
+			"  4. `attachment <res> <attachment_id> -o <file outside the repo>`: screenshot\n" +
+			"     (taken at report time) or view hierarchy\n" +
+			"  5. `drops <res> --days 2`: quota_* rows mean the record is incomplete\n" +
+			"Validate a device value (event id, trace id, commit sha) before it reaches a\n" +
+			"shell. The full agent loop is a skill: `yyt skill install tracer-debug`\n" +
+			"(Claude Code, Codex) or `yyt skill show tracer-debug`.",
 	}
 	c.PersistentFlags().StringVar(&local, "local", "", "read a local tracer at this URL instead of the console's (also YYT_TRACER_LOCAL)")
 	target := func(cmd *cobra.Command, res string) (*tracerTarget, error) {
@@ -240,31 +257,32 @@ type trcTagValue struct {
 }
 
 func newTracerIssues(a *App, target func(*cobra.Command, string) (*tracerTarget, error)) *cobra.Command {
-	var tags string
+	var group string
 	c := &cobra.Command{
 		Use:   "issues <res>",
 		Short: "Event groups (fingerprint, else exception type + top in-app frame, else message), newest first",
 		Example: "  yyt tracer issues chessrigado-debug --since 2h\n" +
 			"  yyt tracer issues trc_01abc --local http://127.0.0.1:8095 --level error\n" +
-			"  yyt tracer issues chessrigado-debug --tags 4fcac10451bf8368fa7410bb6af8cc6b",
-		Annotations: map[string]string{OutputAnnotation: "GROUP  LEVEL  COUNT  LAST_SEEN  LATEST_EVENT  TITLE; with --tags: TAG  VALUE  COUNT; --json: {issues:[{groupKey,title,level,count,firstSeen,lastSeen,latestEventId,status}]} or {groupKey,tags:{key:[{value,count}]}}"},
+			"  yyt tracer issues chessrigado-debug --release 1.0.27+27\n" +
+			"  yyt tracer issues chessrigado-debug --group 4fcac10451bf8368fa7410bb6af8cc6b",
+		Annotations: map[string]string{OutputAnnotation: "GROUP  LEVEL  COUNT  LAST_SEEN  LATEST_EVENT  TITLE; with --group: TAG  VALUE  COUNT; --json: {issues:[{groupKey,title,level,count,firstSeen,lastSeen,latestEventId,status}]} or {groupKey,tags:{key:[{value,count}]}}"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			t, err := target(cmd, args[0])
 			if err != nil {
 				return err
 			}
-			if tags != "" {
-				for _, f := range []string{"level", "text", "limit"} {
+			if group != "" {
+				for _, f := range []string{"level", "text", "release", "limit"} {
 					if cmd.Flags().Changed(f) {
-						return fmt.Errorf("--%s does not apply with --tags (it shows one group's tag values)", f)
+						return fmt.Errorf("--%s does not apply with --group (it shows one group's tag values)", f)
 					}
 				}
 				var res struct {
 					GroupKey string                   `json:"groupKey"`
 					Tags     map[string][]trcTagValue `json:"tags"`
 				}
-				if err := t.get(cmd.Context(), "/issues/"+api.PathID(tags)+"/tags", tracerQuery(cmd, map[string]string{"since": "since"}), &res); err != nil {
+				if err := t.get(cmd.Context(), "/issues/"+api.PathID(group)+"/tags", tracerQuery(cmd, map[string]string{"since": "since"}), &res); err != nil {
 					return err
 				}
 				if a.jsonOut {
@@ -282,7 +300,7 @@ func newTracerIssues(a *App, target func(*cobra.Command, string) (*tracerTarget,
 			var res struct {
 				Issues []trcIssue `json:"issues"`
 			}
-			q := tracerQuery(cmd, map[string]string{"since": "since", "level": "level", "text": "text", "limit": "limit"})
+			q := tracerQuery(cmd, map[string]string{"since": "since", "level": "level", "text": "text", "release": "release", "limit": "limit"})
 			if err := t.get(cmd.Context(), "/issues", q, &res); err != nil {
 				return err
 			}
@@ -299,7 +317,8 @@ func newTracerIssues(a *App, target func(*cobra.Command, string) (*tracerTarget,
 	addTimeFlags(c, false)
 	c.Flags().String("level", "", "only this level (error, warning, info, …)")
 	c.Flags().String("text", "", "substring of the title")
-	c.Flags().StringVar(&tags, "tags", "", "show the tag-value distribution of one group (its groupKey)")
+	c.Flags().String("release", "", "only groups with an event of this release (version+build); counts stay the group's")
+	c.Flags().StringVar(&group, "group", "", "show one group's tag-value distribution (releases, devices, features) instead of the list")
 	return c
 }
 

@@ -332,10 +332,11 @@ The root entry lists the global flags; every other entry its own. Every runnable
 
 ### Debug collector (tracer)
 
-Read what debug builds sent to tracer (`docs/tracer.md`). Reads go to the tracer host with your API token; the console only resolves `<res>` (a `trc_…` id or a name in the project context) and hands out the host — until a stage has its `tracer-url`, the command says "tracer is not configured on this stage".
+Read what debug builds sent to tracer (`docs/tracer.md`). Reads go to the tracer host with your API token; the console only resolves `<res>` (a `trc_…` id or a name in the project context) and hands out the host (dev and prod both run tracer; "tracer is not configured on this stage" means a wrong `--profile`/`--api`). Pick the profile from the build's DSN host: `trace-dev…` is dev. For a coding agent, install the debugging loop as a skill: `yyt skill install tracer-debug` (below).
 
 ```sh
-yyt tracer issues <res> [--since 2h] [--level error] [--text t] [--limit n] [--tags <groupKey>]
+yyt tracer issues <res> [--since 2h] [--level error] [--text t] [--release r] [--limit n]
+yyt tracer issues <res> --group <groupKey> [--since 7d]   # one group's tag-value spread (releases, devices, features)
 yyt tracer events <res> [--since 10m] [--until …] [--level l] [--release r] [--device d] [--trace-id t] [--type event|feedback] [--group g] [--tag k:v] [--text t] [--limit n] [--cursor c]
 yyt tracer event <res> <event_id>                      # exception + frames, breadcrumbs, tags, contexts, attachments
 yyt tracer timeline <res> <event_id> [--window 2m]     # breadcrumbs, logs, events, transactions around it (device time)
@@ -344,7 +345,7 @@ yyt tracer attachment <res> <attachment_id> -o file    # streamed, kept only if 
 yyt tracer drops|usage <res> [--days 7]
 
 yyt tracer list                                        # the project's resources (console)
-yyt tracer create <name> [--description d]             # prints the write key and, once the stage has a tracer, the DSN
+yyt tracer create <name> [--description d]             # prints the write key and the DSN
 yyt tracer get <res>
 yyt tracer update <res> [--name n] [--description d]   # or: yyt tracer rename <res> <new-name>
 yyt tracer rotate-key <res>                            # old DSNs stop being accepted
@@ -353,6 +354,20 @@ yyt tracer dsn <res>                                   # the DSN alone, for a bu
 ```
 
 `--local http://127.0.0.1:8095` (or `YYT_TRACER_LOCAL`) reads a local `tracer serve` with `YYT_TRACER_LOCAL_TOKEN` (its `tracer.json` readToken) and needs the `trc_` id; plain http is accepted only for a loopback host. A refused token exits 1 with a tracer-specific message (the console login is not at fault); a missing resource or event exits 5. Device text in tables is stripped of control characters; `--json` keeps it escaped. The management commands always go to the console (they refuse `--local` and ignore `YYT_TRACER_LOCAL`); `dsn` prints only a DSN of the minted shape (`https://<this key>@<host>/<this id>`) and fails, printing nothing, otherwise or before the stage has a tracer.
+
+### Agent skills
+
+`yyt` carries agent skills — instructions that teach a coding agent (Claude Code, Codex) a yyt workflow; today `tracer-debug`, the debug-build loop over `yyt tracer`. The copy is embedded in the binary, so it always matches the installed version.
+
+```sh
+yyt skill list                               # NAME DESCRIPTION
+yyt skill show tracer-debug                  # the SKILL.md, for an agent without a skill system
+yyt skill install tracer-debug               # ~/.claude/skills and/or ~/.codex/skills, whichever agent is set up
+yyt skill install tracer-debug --target all  # both, creating the directories; --target claude|codex for one
+yyt skill install tracer-debug --dir ./.claude/skills   # a project-local copy
+```
+
+Rerun `install` after `yyt self update` to refresh the copy (`unchanged`, `updated` or `installed` per target). `CLAUDE_CONFIG_DIR` and `CODEX_HOME` move the default directories. A symlink left by an earlier manual install is replaced only with `--force`. Restart the agent session to load a new skill.
 
 ### Push notifications
 
