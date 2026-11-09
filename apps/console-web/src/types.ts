@@ -1713,6 +1713,186 @@ export interface TracerUsageDay {
   quotaRefused: number;
 }
 
+/*
+ * The tracer read API (`GET {readUrl}/v1/{trc}/…`, docs/tracer.md _Read API
+ * and CLI_): one contract with `yyt tracer` and the `tracer-debug` skill.
+ * Empty fields are omitted by tracer, hence the optional members. Every
+ * string in these shapes was sent by a device and is untrusted (decisions
+ * tracer #12): render it as plain text.
+ */
+
+/** `POST /tracers/{id}/read-ticket`; `expiresAt` in Unix seconds. */
+export interface TracerReadTicket {
+  token: string;
+  readUrl: string;
+  expiresAt: number;
+}
+
+export interface TracerIssue {
+  groupKey: string;
+  title: string;
+  level: string;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  latestEventId: string;
+  status: string;
+}
+
+export interface TracerEventRow {
+  eventId: string;
+  type: string;
+  timestamp?: string;
+  received: string;
+  level?: string;
+  title?: string;
+  release?: string;
+  dist?: string;
+  environment?: string;
+  traceId?: string;
+  userId?: string;
+  device?: string;
+  os?: string;
+  groupKey?: string;
+}
+
+export interface TracerFrame {
+  function?: string;
+  module?: string;
+  filename?: string;
+  lineno?: number;
+  colno?: number;
+  inApp?: boolean;
+}
+
+export interface TracerException {
+  type?: string;
+  value?: string;
+  mechanism?: { type?: string; handled?: boolean };
+  frames?: TracerFrame[];
+}
+
+export interface TracerBreadcrumb {
+  timestamp?: string;
+  type?: string;
+  category?: string;
+  level?: string;
+  message?: string;
+  data?: unknown;
+  truncated?: boolean;
+}
+
+export interface TracerAttachment {
+  id: string;
+  filename?: string;
+  contentType?: string;
+  attachmentType?: string;
+  size: number;
+  sha256: string;
+}
+
+export interface TracerEventDetail extends TracerEventRow {
+  message?: string;
+  platform?: string;
+  associatedEventId?: string;
+  sdk?: { name?: string; version?: string };
+  fingerprint?: string[];
+  exception?: TracerException[];
+  tags?: Record<string, string>;
+  contexts?: Record<string, unknown>;
+  extra?: unknown;
+  breadcrumbs?: TracerBreadcrumb[];
+  attachments?: TracerAttachment[];
+  omitted?: string[];
+}
+
+export type TracerTimelineKind =
+  "breadcrumb" | "log" | "event" | "feedback" | "transaction";
+
+export interface TracerTimelineEntry {
+  timestamp: string;
+  /** A {@link TracerTimelineKind}; a newer tracer may add kinds. */
+  kind: string;
+  type?: string;
+  level?: string;
+  category?: string;
+  message?: string;
+  data?: unknown;
+  attributes?: unknown;
+  eventId?: string;
+  traceId?: string;
+  spanId?: string;
+  truncated?: boolean;
+}
+
+export interface TracerTimeline {
+  eventId: string;
+  from: string;
+  to: string;
+  entries: TracerTimelineEntry[];
+  truncated: boolean;
+}
+
+export interface TracerLog {
+  timestamp?: string;
+  received: string;
+  level?: string;
+  body?: string;
+  traceId?: string;
+  spanId?: string;
+  release?: string;
+  environment?: string;
+  userId?: string;
+  device?: string;
+  attributes?: unknown;
+  truncated?: boolean;
+}
+
+export interface TracerDrop {
+  day: string;
+  itemType: string;
+  reason: string;
+  count: number;
+  bytes: number;
+}
+
+export interface TracerUsageRow {
+  day: string;
+  bytes: number;
+  quotaHit: string | null;
+}
+
+/** A page of a cursor list; `next` is `null` on the last page. */
+export interface TracerPage<T> {
+  rows: T[];
+  next: string | null;
+}
+
+export interface TracerIssueQuery {
+  since?: string;
+  level?: string;
+  text?: string;
+}
+
+export interface TracerEventQuery {
+  since?: string;
+  release?: string;
+  device?: string;
+  group?: string;
+  type?: string;
+  cursor?: string;
+}
+
+export interface TracerLogQuery {
+  since?: string;
+  until?: string;
+  level?: string;
+  text?: string;
+  device?: string;
+  attr?: string;
+  cursor?: string;
+}
+
 export interface LimitsView {
   scope: { kind: LimitScopeKind; id: string };
   teamId: string;

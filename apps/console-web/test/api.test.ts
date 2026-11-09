@@ -637,3 +637,163 @@ describe("asset uploads over the single-PUT ceiling", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("tracer reads (decisions tracer #12)", () => {
+  const ID = "trc_01hf7yavygfgdxpjfmr5r0g6ca";
+  const READ = "https://trace.example";
+  const t0 = 1_800_000_000_000;
+  const ticketRes = (n: number, expiresAt = t0 / 1000 + 900) =>
+    jsonRes(200, {
+      token: `trr_${String(n).padStart(48, "0")}`,
+      readUrl: READ,
+      expiresAt,
+    });
+  /** fetch that answers console mints and tracer reads from two queues. */
+  function stub(tracer: (n: number) => Response) {
+    let mints = 0;
+    let reads = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>((input) => {
+      const url = urlOf(input);
+      if (url.endsWith("/read-ticket"))
+        return Promise.resolve(ticketRes(++mints));
+      return Promise.resolve(tracer(++reads));
+    });
+    return { fetch, mints: () => mints, reads: () => reads };
+  }
+  /** fetch is only ever called with a string URL here. */
+  const urlOf = (input: unknown) => input as string;
+  const bearerOf = (init: RequestInit | undefined) =>
+    (init?.headers as Record<string, string>).authorization;
+
+  it("mints once for parallel reads and sends the ticket as a bearer, no cookies", async () => {
+    const s = stub(() => jsonRes(200, { issues: [] }));
+    let now = t0;
+    const api = createApiClient({ fetch: s.fetch, now: () => now });
+    await Promise.all([api.tracerIssues(ID), api.tracerIssues(ID)]);
+    expect(s.mints()).toBe(1);
+    const read = s.fetch.mock.calls.find(([u]) => urlOf(u).startsWith(READ))!;
+    expect(read[0]).toBe(`${READ}/v1/${ID}/issues`);
+    expect(read[1]).toMatchObject({ method: "GET", credentials: "omit" });
+    expect(bearerOf(read[1])).toBe(`Bearer trr_${"1".padStart(48, "0")}`);
+    expect(Object.keys(read[1]!.headers as object).sort()).toEqual([
+      "accept",
+      "authorization",
+    ]);
+    // Reused until a minute before it expires, then renewed.
+    now = t0 + 839_000;
+    await api.tracerIssues(ID);
+    expect(s.mints()).toBe(1);
+    now = t0 + 841_000;
+    await api.tracerIssues(ID);
+    expect(s.mints()).toBe(2);
+  });
+
+  it("renews once on a tracer 401 and retries once, never the session handler", async () => {
+    const onUnauthorized = vi.fn();
+    const s = stub((n) =>
+      n === 1
+        ? jsonRes(401, { error: { code: "unauthorized", message: "no" } })
+        : jsonRes(200, { events: [{ eventId: "e1" }], next: "c2" }),
+    );
+    const api = createApiClient({
+      fetch: s.fetch,
+      now: () => t0,
+      onUnauthorized,
+    });
+    const page = await api.tracerEvents(ID, { since: "1h" });
+    expect(page).toEqual({ rows: [{ eventId: "e1" }], next: "c2" });
+    expect(s.mints()).toBe(2);
+    expect(s.reads()).toBe(2);
+    const reads = s.fetch.mock.calls.filter(([u]) => urlOf(u).startsWith(READ));
+    expect(bearerOf(reads[1]![1])).not.toBe(bearerOf(reads[0]![1]));
+    expect(onUnauthorized).not.toHaveBeenCalled();
+
+    // Two 401s in a row: one renewal, then the error.
+    const bad = stub(() =>
+      jsonRes(401, { error: { code: "unauthorized", message: "no" } }),
+    );
+    const api2 = createApiClient({ fetch: bad.fetch, now: () => t0 });
+    await expect(api2.tracerLogs(ID)).rejects.toMatchObject({ status: 401 });
+    expect(bad.mints()).toBe(2);
+    expect(bad.reads()).toBe(2);
+  });
+
+  it("keeps Retry-After from the address limiter and the console's mint refusal", async () => {
+    const s = stub(
+      () =>
+        new Response(
+          JSON.stringify({ error: { code: "unavailable", message: "later" } }),
+          { status: 503, headers: { "retry-after": "60" } },
+        ),
+    );
+    const api = createApiClient({ fetch: s.fetch, now: () => t0 });
+    await expect(api.tracerDrops(ID)).rejects.toMatchObject({
+      status: 503,
+      details: { retryAfter: 60 },
+    });
+    const off = vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(
+        jsonRes(503, {
+          error: {
+            code: "unavailable",
+            message: "x",
+            details: { reason: "tracer_not_configured" },
+          },
+        }),
+      ),
+    );
+    await expect(
+      createApiClient({ fetch: off }).tracerUsage(ID),
+    ).rejects.toMatchObject({ details: { reason: "tracer_not_configured" } });
+  });
+
+  it("shares one renewal between parallel 401s, never caches a failed mint, and forgets tickets on sign-out", async () => {
+    const s = stub((n) =>
+      n <= 2
+        ? jsonRes(401, { error: { code: "unauthorized", message: "no" } })
+        : jsonRes(200, { issues: [] }),
+    );
+    const api = createApiClient({ fetch: s.fetch, now: () => t0 });
+    await api.tracerReadTicket(ID);
+    await Promise.all([api.tracerIssues(ID), api.tracerIssues(ID)]);
+    // One initial mint, one shared renewal for both refused reads.
+    expect(s.mints()).toBe(2);
+    expect(s.reads()).toBe(4);
+
+    let fail = true;
+    const flaky = vi.fn<typeof globalThis.fetch>((input) =>
+      Promise.resolve(
+        urlOf(input).endsWith("/read-ticket")
+          ? fail
+            ? jsonRes(503, { error: { code: "unavailable", message: "x" } })
+            : ticketRes(1)
+          : urlOf(input).endsWith("/logout")
+            ? new Response(null, { status: 204 })
+            : jsonRes(200, { issues: [] }),
+      ),
+    );
+    const api2 = createApiClient({ fetch: flaky, now: () => t0 });
+    await expect(api2.tracerIssues(ID)).rejects.toMatchObject({ status: 503 });
+    fail = false;
+    await api2.tracerIssues(ID);
+    const mints = () =>
+      flaky.mock.calls.filter(([u]) => urlOf(u).endsWith("/read-ticket"))
+        .length;
+    expect(mints()).toBe(2);
+    await api2.tracerIssues(ID);
+    expect(mints()).toBe(2);
+    await api2.logout();
+    await api2.tracerIssues(ID);
+    expect(mints()).toBe(3);
+  });
+
+  it("returns attachment bytes untouched", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const s = stub(() => new Response(bytes, { status: 200 }));
+    const api = createApiClient({ fetch: s.fetch, now: () => t0 });
+    expect([...(await api.tracerAttachment(ID, "b1"))]).toEqual([...bytes]);
+    expect(urlOf(s.fetch.mock.calls[1]![0])).toBe(
+      `${READ}/v1/${ID}/attachments/b1`,
+    );
+  });
+});

@@ -72,6 +72,9 @@ custom:
     prod: g.yyt.life
   ssm: /yyt-service/${self:custom.stage}/console
   stageSsm: /yyt-service/${self:custom.stage}
+  # The SPA reads tracer directly with a read ticket (decisions tracer #12);
+  # empty adds nothing to connect-src.
+  tracerReadOrigin: ${ssm:${self:custom.stageSsm}/tracer-url, ""}
   # One SecureString per Firebase project of the push pool (the last name
   # segment is the slot label); docs/decisions.md *Push notifications* #2.
   pushSsmPath: /yyt-service/${self:custom.stage}/push/fcm/
@@ -825,7 +828,7 @@ resources:
           SecurityHeadersConfig:
             ContentSecurityPolicy:
               Override: true
-              ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://yyt-console-posters-${self:custom.stage}.s3.ap-northeast-2.amazonaws.com; font-src 'self' data:; connect-src 'self' https://*.amazonaws.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+              ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://yyt-console-posters-${self:custom.stage}.s3.ap-northeast-2.amazonaws.com; font-src 'self' data:; connect-src 'self' https://*.amazonaws.com ${self:custom.tracerReadOrigin}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
             ContentTypeOptions:
               Override: true
             FrameOptions:

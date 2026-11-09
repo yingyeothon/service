@@ -20,6 +20,18 @@ import type {
   AssetBundleKey,
   Tracer,
   TracerDetail,
+  TracerDrop,
+  TracerEventDetail,
+  TracerEventQuery,
+  TracerEventRow,
+  TracerIssue,
+  TracerIssueQuery,
+  TracerLog,
+  TracerLogQuery,
+  TracerPage,
+  TracerReadTicket,
+  TracerTimeline,
+  TracerUsageRow,
   AssetBundleMode,
   AssetDeleteProgress,
   AssetFileDeleteResult,
@@ -150,7 +162,12 @@ export interface ApiClientOptions {
   fetch?: typeof fetch;
   /** Called on any 401 outside `me()`: the session expired mid-use. */
   onUnauthorized?: () => void;
+  /** Milliseconds; the read-ticket clock (tests). */
+  now?: () => number;
 }
+
+/** A read ticket is renewed this long before it expires. */
+export const TRACER_TICKET_EARLY_MS = 60_000;
 
 async function parseError(res: Response): Promise<ApiError> {
   let code = "http_error";
@@ -175,6 +192,7 @@ export function createApiClient({
   baseUrl = "",
   fetch: fetchImpl = (...a) => fetch(...a),
   onUnauthorized,
+  now = () => Date.now(),
 }: ApiClientOptions = {}) {
   const base = baseUrl.replace(/\/+$/, "");
   let handler = onUnauthorized;
@@ -195,7 +213,11 @@ export function createApiClient({
     });
     if (!res.ok) {
       const err = await parseError(res);
-      if (err.status === 401 && path !== "/me") handler?.();
+      if (err.status === 401 && path !== "/me") {
+        // The session is gone, and every ticket it minted with it.
+        clearTickets();
+        handler?.();
+      }
       throw err;
     }
     if (res.status === 204) return undefined as T;
@@ -297,6 +319,89 @@ export function createApiClient({
     );
   }
 
+  /*
+   * tracer reads (decisions tracer #12, docs/tracer.md _Read tickets_): the
+   * SPA asks the console for a short-lived `trr_` ticket per resource and
+   * sends it straight to tracer as a bearer. Tickets live in memory only
+   * (never storage or a URL), are renewed ahead of expiry, and one mint per
+   * resource runs at a time. A tracer 401 renews once and retries once,
+   * serially: every refused bearer spends the address's failure budget at
+   * tracer, which other readers behind the same address share.
+   */
+  const tickets = new Map<string, TracerReadTicket>();
+  const minting = new Map<string, Promise<TracerReadTicket>>();
+  /** Bumped on sign-out: a mint still in flight then stores nothing. */
+  let ticketEra = 0;
+  function clearTickets() {
+    ticketEra++;
+    tickets.clear();
+    minting.clear();
+  }
+  function readTicket(id: string, stale?: string): Promise<TracerReadTicket> {
+    const have = tickets.get(id);
+    if (
+      have &&
+      have.token !== stale &&
+      have.expiresAt * 1000 - now() > TRACER_TICKET_EARLY_MS
+    )
+      return Promise.resolve(have);
+    const running = minting.get(id);
+    if (running) return running;
+    const era = ticketEra;
+    const p = post<TracerReadTicket>(`/tracers/${enc(id)}/read-ticket`)
+      .then((t) => {
+        if (era === ticketEra) tickets.set(id, t);
+        return t;
+      })
+      .finally(() => {
+        if (minting.get(id) === p) minting.delete(id);
+      });
+    minting.set(id, p);
+    return p;
+  }
+
+  async function tracerFetch(
+    id: string,
+    path: string,
+    accept: string,
+  ): Promise<Response> {
+    let t = await readTicket(id);
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetchImpl(
+        `${t.readUrl.replace(/\/+$/, "")}/v1/${enc(id)}${path}`,
+        {
+          method: "GET",
+          // A bearer, not a cookie: tracer's CORS allows no credentials, and
+          // only `Authorization` beside the safelisted headers.
+          credentials: "omit",
+          headers: { accept, authorization: `Bearer ${t.token}` },
+        },
+      );
+      if (res.ok) return res;
+      if (res.status === 401 && attempt === 0) {
+        t = await readTicket(id, t.token);
+        continue;
+      }
+      // Never `handler`: a tracer 401 is not the console session ending.
+      const err = await parseError(res);
+      const retryAfter = Number(res.headers.get("retry-after"));
+      if (!(retryAfter > 0)) throw err;
+      const details =
+        err.details &&
+        typeof err.details === "object" &&
+        !Array.isArray(err.details)
+          ? { ...err.details, retryAfter }
+          : { retryAfter };
+      throw new ApiError(err.status, err.code, err.message, details);
+    }
+  }
+  const tracerGet = async <T>(id: string, path: string): Promise<T> =>
+    (await (await tracerFetch(id, path, "application/json")).json()) as T;
+  const pageOf = <T>(rows: T[] | undefined, next?: string): TracerPage<T> => ({
+    rows: rows ?? [],
+    next: next ?? null,
+  });
+
   const teamPath = (team: string) => `/teams/${enc(team)}`;
   const projectPath = (prj: string) => `/projects/${enc(prj)}`;
   const issuePath = (prj: string, n: number) =>
@@ -318,7 +423,10 @@ export function createApiClient({
         throw e;
       }
     },
-    logout: () => post<void>("/logout"),
+    logout: () => {
+      clearTickets();
+      return post<void>("/logout");
+    },
     loginUrl: (next: string) => `${base}/auth/github/start?next=${enc(next)}`,
 
     members: (p: ListParams = {}) =>
@@ -1164,6 +1272,49 @@ export function createApiClient({
     rotateTracerKey: (id: string) =>
       post<TracerDetail>(`/tracers/${enc(id)}/rotate-key`),
     deleteTracer: (id: string) => del(`/tracers/${enc(id)}`),
+    /** The ticket itself; the read methods below fetch and renew it. */
+    tracerReadTicket: (id: string) => readTicket(id),
+    tracerIssues: (id: string, q: TracerIssueQuery = {}) =>
+      tracerGet<{ issues?: TracerIssue[] }>(id, `/issues${qs(q)}`).then(
+        (r) => r.issues ?? [],
+      ),
+    tracerEvents: (id: string, q: TracerEventQuery = {}) =>
+      tracerGet<{ events?: TracerEventRow[]; next?: string }>(
+        id,
+        `/events${qs(q)}`,
+      ).then((r) => pageOf(r.events, r.next)),
+    tracerEvent: (id: string, eventId: string) =>
+      tracerGet<TracerEventDetail>(id, `/events/${enc(eventId)}`),
+    /** `window` is a duration up to `30m`. */
+    tracerTimeline: (id: string, eventId: string, window = "2m") =>
+      tracerGet<TracerTimeline>(
+        id,
+        `/events/${enc(eventId)}/timeline${qs({ window })}`,
+      ),
+    tracerLogs: (id: string, q: TracerLogQuery = {}) =>
+      tracerGet<{ logs?: TracerLog[]; next?: string }>(
+        id,
+        `/logs${qs(q)}`,
+      ).then((r) => pageOf(r.logs, r.next)),
+    tracerDrops: (id: string, days = 7) =>
+      tracerGet<{ drops?: TracerDrop[] }>(id, `/drops${qs({ days })}`).then(
+        (r) => r.drops ?? [],
+      ),
+    tracerUsage: (id: string, days = 7) =>
+      tracerGet<{ usage?: TracerUsageRow[] }>(id, `/usage${qs({ days })}`).then(
+        (r) => r.usage ?? [],
+      ),
+    /** Raw bytes; the caller decides what they may become (`lib/tracer.ts`). */
+    tracerAttachment: async (id: string, attachmentId: string) =>
+      new Uint8Array(
+        await (
+          await tracerFetch(
+            id,
+            `/attachments/${enc(attachmentId)}`,
+            "application/octet-stream",
+          )
+        ).arrayBuffer(),
+      ),
     /** The game kit block; `?auth=`/`?lobby=`/`?match=`/`?push=` disambiguate. */
     kitConfig: (prj: string, p: Record<string, string> = {}) =>
       get<KitConfig>(`${projectPath(prj)}/kit-config${qs(p)}`),

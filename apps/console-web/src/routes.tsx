@@ -21,6 +21,7 @@ import { ProjectPage } from "./pages/Project";
 import { PushPoolPage } from "./pages/PushPool";
 import { SitePage } from "./pages/Site";
 import { TracerPage } from "./pages/Tracer";
+import { TracerEventPage } from "./pages/TracerEvent";
 import { TeamPage } from "./pages/Team";
 import { TeamsPage } from "./pages/Teams";
 import { TokensPage } from "./pages/Tokens";
@@ -153,6 +154,11 @@ export const ROUTES: AppRoute[] = [
     element: <Navigate to="/teams" replace />,
   },
   { path: "/tracers/:id", guard: "/tracers", element: <TracerPage /> },
+  {
+    path: "/tracers/:id/events/:eventId",
+    guard: "/tracers",
+    element: <TracerEventPage />,
+  },
   { path: "/installer", guard: "/installer", element: <InstallerPage /> },
   { path: "/tokens", guard: "/tokens", element: <TokensPage /> },
   { path: "/app-login", guard: "/app-login", element: <AppLoginPage /> },

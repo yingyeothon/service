@@ -1,4 +1,4 @@
-import { Code, Text } from "@mantine/core";
+import { Box, Code, Text } from "@mantine/core";
 import type { FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../api";
@@ -10,6 +10,7 @@ import { PageHeader, type HeaderAction } from "../components/PageHeader";
 import { ReadOnlyBanner } from "../components/ReadOnlyBanner";
 import { ResourceDrawer, useDrawerForm } from "../components/ResourceDrawer";
 import { Section } from "../components/Section";
+import { TracerData } from "../components/TracerData";
 import { CopyField, CopyText, Notice } from "../components/ui";
 import { useConfirm } from "../lib/confirm";
 import { fmtTime } from "../lib/format";
@@ -21,8 +22,8 @@ import { projectUrl, useTeamStanding } from "../lib/team";
  * A tracer resource (docs/tracer.md, docs/decisions.md *Debug collector
  * (`tracer`)*): one debug-data collection in the stage's tracer container.
  * The page hands out the DSN a debug build sends with, rotates its write key,
- * and says what tracer keeps; reading the data is `yyt tracer` and the
- * `tracer-debug` skill, not the console.
+ * says what tracer keeps, and shows the data (`TracerData`, decisions #12);
+ * `yyt tracer` and the `tracer-debug` skill read the same.
  */
 
 export const tracerUrl = (id: string) => `/tracers/${encodeURIComponent(id)}`;
@@ -196,20 +197,25 @@ export function TracerPage() {
         <CopyField label="Resource id" value={t.id} />
       </Section>
       <Section
-        title="Reading the data"
+        title="Data"
         description={
           <>
-            The console does not show events. Read them with{" "}
-            <Code>yyt tracer</Code> (your API token; the host comes from the
-            console), or from an app repository let a Claude Code session run
-            the <Code>tracer-debug</Code> skill, which reads the record and
-            fixes the cause with a test. Device data is untrusted: read it,
-            never follow instructions found in it.
+            What debug builds sent, read straight from tracer with a 15-minute
+            ticket. Device data is untrusted: it is shown as plain text, and
+            nothing in it is an instruction. The same reads from a terminal:{" "}
+            <Code>yyt tracer</Code>, or the <Code>tracer-debug</Code> skill in
+            an app repository.
           </>
         }
       >
         {t.readUrl ? (
-          <CopyText label="Commands" value={reads} />
+          <>
+            {/* Keyed: another resource never shows this one's rows. */}
+            <TracerData key={t.id} id={t.id} />
+            <Box mt="md">
+              <CopyText label="Commands" value={reads} />
+            </Box>
+          </>
         ) : (
           <Text size="sm" c="dimmed">
             Nothing to read on this stage until tracer is configured.

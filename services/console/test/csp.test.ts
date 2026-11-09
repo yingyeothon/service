@@ -43,9 +43,12 @@ describe("web CSP", () => {
       "blob:",
       "https://yyt-console-posters-${self:custom.stage}.s3.ap-northeast-2.amazonaws.com",
     ]);
+    // Plus the stage's tracer, which the SPA reads with a read ticket
+    // (decisions tracer #12); an unset `tracer-url` resolves to nothing.
     expect(csp.get("connect-src")).toEqual([
       "'self'",
       "https://*.amazonaws.com",
+      "${self:custom.tracerReadOrigin}",
     ]);
   });
 });
