@@ -334,14 +334,15 @@ export_options_plist() {
 
   if [[ "${IOS_SKIP_SIGNING_PREFLIGHT:-0}" == "1" || "$FOUND_PROFILE_XCODE_MANAGED" == "true" ]]; then
     # The checked-in plist carries no team id; add it to a temporary copy.
-    plist="$(mktemp "${TMPDIR:-/tmp}/flutter-ios-export-options.XXXXXX.plist")"
+    # BSD mktemp only expands a trailing XXXXXX; keep the .plist name in a temp dir.
+    plist="$(mktemp -d "${TMPDIR:-/tmp}/flutter-ios-export.XXXXXX")/ExportOptions.plist"
     cp "ios/ExportOptions.$method.plist" "$plist"
     /usr/libexec/PlistBuddy -c "Add :teamID string $IOS_TEAM_ID" "$plist" >/dev/null
     printf '%s\n' "$plist"
     return 0
   fi
 
-  plist="$(mktemp "${TMPDIR:-/tmp}/flutter-ios-export-options.XXXXXX.plist")"
+  plist="$(mktemp -d "${TMPDIR:-/tmp}/flutter-ios-export.XXXXXX")/ExportOptions.plist"
   create_manual_export_options "$method" "$FOUND_PROFILE_NAME" "$plist"
   printf '%s\n' "$plist"
 }

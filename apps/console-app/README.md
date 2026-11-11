@@ -267,7 +267,14 @@ This Linux host cannot build it; build on the Mac with Xcode and Flutter.
 
 3. Signed ad-hoc IPA (needs the App ID, the test devices and an ad-hoc
    profile on the Mac): `make ios-ipa` (= `tools/build_ios.sh ad-hoc`). The IPA
-   lands in `build/ios/ipa/`. Check it before any upload:
+   lands in `build/ios/ipa/`. The archive step signs automatically and needs
+   an Apple account in Xcode > Settings > Accounts; without one it picks the
+   wildcard team profile, which lacks Push and Associated Domains. A
+   `FLUTTER_XCODE_*` manual-signing override does not help (it reaches the
+   Pods/SPM targets too); a temporary manual-signing block in
+   `ios/Flutter/Release.xcconfig` (Runner only) does. A device added to the
+   ad-hoc profile needs a rebuild: the IPA embeds the profile's device list.
+   Check it before any upload:
 
    ```sh
    unzip -oq build/ios/ipa/*.ipa -d /tmp/ipa
