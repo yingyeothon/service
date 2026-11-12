@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yingyeothon/service/cli/internal/android"
 )
 
 // makeFlutterProject writes the minimal files deploy reads.
@@ -39,7 +41,16 @@ func fakeBuild(t *testing.T, fn func(dir string, args []string) error) *[][]stri
 		calls = append(calls, args)
 		return fn(dir, args)
 	}
-	t.Cleanup(func() { deployRunner = prev })
+	// Hermetic by default: no git repository, no aapt2. Tests that need
+	// either call fakeTools after this.
+	prevOut, prevFind, prevDotGit := deployOutput, findAAPT2, hasDotGit
+	deployOutput = func(_ context.Context, _, name string, _ ...string) ([]byte, error) {
+		return nil, fmt.Errorf("%s is not available in this test", name)
+	}
+	findAAPT2 = func(...string) (string, error) { return "", android.ErrNoAAPT2 }
+	// The temporary directory may sit inside a repository on this host.
+	hasDotGit = func(string) bool { return false }
+	t.Cleanup(func() { deployRunner, deployOutput, findAAPT2, hasDotGit = prev, prevOut, prevFind, prevDotGit })
 	return &calls
 }
 
@@ -288,6 +299,7 @@ func TestDeployWithTeamOnlyReusesProjectNamedLikeDirectory(t *testing.T) {
 // is reported by location instead of turning into a 409 on create.
 func TestDeployWithProjectPointsAtAppElsewhere(t *testing.T) {
 	proj := makeFlutterProject(t, "1.0.0+1")
+	fakeBuild(t, func(string, []string) error { return nil })
 	routes := ctxRoutes(map[string]func(recorded) (int, any){
 		"GET /projects/prj_1/catalog/apps": func(recorded) (int, any) { return 200, map[string]any{"apps": []any{}} },
 		"GET /teams/team_1/catalog/apps": func(recorded) (int, any) {
@@ -310,6 +322,7 @@ func TestDeployWithProjectPointsAtAppElsewhere(t *testing.T) {
 // Without any explicit context a write by name is refused before any request.
 func TestDeployWithoutTeamIsRefused(t *testing.T) {
 	proj := makeFlutterProject(t, "1.0.0+1")
+	fakeBuild(t, func(string, []string) error { return nil })
 	f := newFake(t, ctxRoutes(nil, nil, nil, nil))
 	if _, _, err := run(t, f, "catalog", "deploy", "--project-path", proj, "--no-verify"); err == nil || !strings.Contains(err.Error(), "no team context") {
 		t.Fatalf("err = %v, want a team-context error", err)

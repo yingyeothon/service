@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yingyeothon/service/cli/internal/android"
 	"github.com/yingyeothon/service/cli/internal/api"
 	"github.com/yingyeothon/service/cli/internal/flutter"
 )
@@ -66,6 +68,7 @@ func normalizeProfile(pr string) string {
 type buildOutput struct {
 	path string
 	abi  string // non-empty for --split-per-abi APKs
+	info artifactInfo
 }
 
 func outputsDir(projectPath string) string {
@@ -388,6 +391,7 @@ type builtFile struct {
 	BuildType     string `json:"buildType"`
 	ABI           string `json:"abi,omitempty"`
 	ApplicationID string `json:"applicationId,omitempty"`
+	VersionCode   int    `json:"versionCode,omitempty"`
 }
 
 func newCatalogDeploy(a *App) *cobra.Command {
@@ -415,6 +419,12 @@ func newCatalogDeploy(a *App) *cobra.Command {
 		defines        []string
 		defineFiles    []string
 		noUpload       bool
+		vcOffset       int
+		versionTag     string
+		noCreate       bool
+		noteSkips      []string
+		noDriftCheck   bool
+		requireClean   bool
 	)
 	c := &cobra.Command{
 		Use:   "deploy [flags] [-- <flutter build args>]",
@@ -435,9 +445,23 @@ A project whose ` + ContextFile + ` declares variants must be built with --varia
 After an APK build the applicationId Gradle packaged (output-metadata.json) is
 compared with the expected one: a release build must match it exactly, a debug
 build may also carry the .debug suffix; a mismatch stops before the upload,
-and so does a flavored APK without that metadata. The packaged id is what the
-application_id tag carries. Bundles (.aab) have no such metadata and are
-tagged with the expected id unchecked.
+and so does a flavored APK that neither that metadata nor aapt2 can describe. The packaged id is what the
+application_id tag carries. A bundle (.aab) has no such metadata: with aapt2
+installed (AAPT2, or the Android SDK build-tools) its id is checked the same
+way, otherwise it is tagged with the expected id unchecked.
+
+Checks on the built file: the packaged versionCode is the version_code tag and
+min_sdk/target_sdk are read from the file when aapt2 is installed.
+--version-code-offset <n> requires every output to carry n + the pubspec build
+number; a value nothing can read (a bundle without aapt2) fails the check.
+
+Git is read, never written: --commit auto, --note auto (the newest subject no
+--note-skip matches), --require-clean, and a drift guard that refuses the
+upload when HEAD or a tracked file other than pubspec.lock changed during the
+build, or when HEAD moved between the start of the run and the build
+(--no-drift-check to skip). A git that fails inside a checkout stops the
+deploy instead of switching the guard off. Pull, commit and push stay in your
+script. --tag application_id/version_code are refused: the file sets them.
 
 Defines: --dart-define KEY=VALUE, or --dart-define KEY to take the value from
 the environment (unset or empty is an error). --dart-define-from-file must
@@ -454,9 +478,10 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			"  yyt catalog deploy --do-bump --bump minor --split-per-abi --commit \"$(git rev-parse --short HEAD)\" --json\n" +
 			"  yyt catalog deploy --variant pro --build-profile debug --split-per-abi --target-platform android-arm64 --dart-define TRACER_DSN --stage debug\n" +
 			"  yyt catalog deploy --flavor pro --name sample-pro --application-id com.example.sample.pro --build-profile appbundle\n" +
-			"  yyt catalog deploy --variant lite --build-profile debug --no-upload --dart-define-from-file defines.json",
+			"  yyt catalog deploy --variant lite --build-profile debug --no-upload --dart-define-from-file defines.json\n" +
+			"  yyt catalog deploy --variant pro --no-create --version-code-offset 2000 --version-tag marketing --commit auto --note auto --note-skip \"^Bump version to \"",
 		Annotations: map[string]string{
-			OutputAnnotation: "one line per uploaded artifact \"<id> <build_type> [abi] <url>\", progress on stderr; --json: {app,version,artifacts:[{id,platform,url,tags,…}],verified}. --no-upload: one line per file \"<path> <build_type> [abi]\"; --json: {version,outputs:[{path,buildType,abi,applicationId}]}",
+			OutputAnnotation: "one line per uploaded artifact \"<id> <build_type> [abi] <url>\", progress on stderr; --json: {app,version,commit?,artifacts:[{id,platform,url,tags:{version,version_code,…},…}],verified}. --no-upload: one line per file \"<path> <build_type> [abi]\"; --json: {version,commit?,outputs:[{path,buildType,abi,applicationId,versionCode}]}",
 		},
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
@@ -485,6 +510,11 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			userTags, err := parseTags(extraTags)
 			if err != nil {
 				return err
+			}
+			for _, k := range []string{"application_id", "version_code"} {
+				if _, set := userTags[k]; set {
+					return fmt.Errorf("--tag %s: deploy sets this tag from the built file", k)
+				}
 			}
 
 			// Everything that decides which app and which id the build belongs
@@ -536,9 +566,107 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 					display = filepath.Base(abs)
 				}
 			}
+			if versionTag != "full" && versionTag != "marketing" {
+				return fmt.Errorf("invalid --version-tag %q (full|marketing)", versionTag)
+			}
+			skips := make([]*regexp.Regexp, 0, len(noteSkips))
+			for _, raw := range noteSkips {
+				re, err := regexp.Compile(raw)
+				if err != nil {
+					return fmt.Errorf("--note-skip: %w", err)
+				}
+				skips = append(skips, re)
+			}
+			checkOffset := cmd.Flags().Changed("version-code-offset")
+			if checkOffset && vcOffset < 0 {
+				return errors.New("--version-code-offset must not be negative")
+			}
 			version, err := flutter.Version(projectPath)
 			if err != nil {
 				return err
+			}
+			// The bump is computed here and written later, so everything
+			// below is checked against the version that will be built.
+			bumpFrom := version
+			if doBump {
+				b, err := flutter.ParseBump(bump)
+				if err != nil {
+					return err
+				}
+				if version, err = flutter.BumpVersion(version, b); err != nil {
+					return err
+				}
+			}
+			versionName, buildNumber, hasBuild := flutter.SplitVersion(version)
+			if checkOffset && !hasBuild {
+				return fmt.Errorf("--version-code-offset needs a build number in the pubspec version (x.y.z+n), found %s", version)
+			}
+			tagVersion := version
+			if versionTag == "marketing" {
+				tagVersion = versionName
+			}
+
+			// Git is only read (docs/decisions.md): the commit and note
+			// defaults, and the state the drift guard compares at the end.
+			autoNoteWanted := changelog == "auto" && !noUpload
+			guard := false
+			var start gitState
+			if !noDriftCheck || commit == "auto" || autoNoteWanted || requireClean {
+				repo, err := inGitRepo(ctx, projectPath)
+				if err != nil {
+					return fmt.Errorf("cannot read the git repository at %s: %w (the drift guard needs it; --no-drift-check builds without the guard)", projectPath, err)
+				}
+				if !repo {
+					for _, f := range []struct {
+						flag   string
+						wanted bool
+					}{{"--commit auto", commit == "auto"}, {"--note auto", autoNoteWanted}, {"--require-clean", requireClean}} {
+						if f.wanted {
+							return fmt.Errorf("%s needs a git repository at %s", f.flag, projectPath)
+						}
+					}
+				} else {
+					// One snapshot names the commit this run is about: the
+					// commit tag, the note and the drift baseline all hang
+					// on its HEAD.
+					if start, err = gitSnapshot(ctx, projectPath); err != nil {
+						return err
+					}
+					guard = !noDriftCheck
+				}
+			}
+			if requireClean && len(start.changed) > 0 {
+				return fmt.Errorf("--require-clean: tracked files are modified: %s", summarize(start.changed))
+			}
+			if (commit == "auto" || autoNoteWanted) && start.head == "" {
+				return errors.New("--commit auto and --note auto need a commit; this repository has none")
+			}
+			if commit == "auto" {
+				if commit, err = git(ctx, projectPath, "rev-parse", "--short", start.head); err != nil {
+					return err
+				}
+			}
+			if autoNoteWanted {
+				if changelog, err = autoNote(ctx, projectPath, start.head, skips); err != nil {
+					return err
+				}
+			}
+			// What can be known about the tools is settled before pubspec is
+			// bumped or a build is spent: a wrong AAPT2, or a bundle whose
+			// versionCode nothing here can read.
+			tools := aapt2Lookup{project: projectPath}
+			if _, err := tools.get(ctx); err != nil {
+				if !errors.Is(err, android.ErrNoAAPT2) {
+					return err
+				}
+				if tools.broken != nil {
+					fmt.Fprintf(a.Err, "note: %v; continuing without aapt2\n", tools.broken)
+				}
+				for _, pr := range profiles {
+					if checkOffset && profileSpecs[pr].kind != "apk" {
+						return fmt.Errorf("--version-code-offset on a bundle needs aapt2 to read the versionCode: %w", err)
+					}
+				}
 			}
 
 			// Resolve the context before touching pubspec so a missing context
@@ -555,7 +683,7 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			)
 			if noUpload {
 				var ignored []string
-				for _, n := range []string{"name", "description", "stage", "note", "build", "commit", "min-sdk", "target-sdk", "abi", "tag", "no-verify"} {
+				for _, n := range []string{"name", "description", "stage", "note", "build", "min-sdk", "target-sdk", "abi", "tag", "no-verify", "version-tag", "no-create", "note-skip"} {
 					if cmd.Flags().Changed(n) {
 						ignored = append(ignored, "--"+n)
 					}
@@ -576,36 +704,55 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				if appID, appMissing, err = findDeployApp(ctx, cc, team, name, &appRow); err != nil {
 					return err
 				}
+				if appMissing && noCreate {
+					// Before the build: a typo in the name must not cost one.
+					return &api.Error{Status: http.StatusNotFound, Code: "not_found",
+						Message: fmt.Sprintf("app %q does not exist in %s and --no-create is set", name, team)}
+				}
 				if flavor != "" && appRow.Path != "" && appRow.Path != expectedID {
 					fmt.Fprintf(a.Err, "warning: app %s is registered for %s, this build is %s\n", name, appRow.Path, expectedID)
 				}
 			}
 
 			if doBump {
-				b, err := flutter.ParseBump(bump)
+				if err := flutter.SetVersion(projectPath, version); err != nil {
+					return err
+				}
+				fmt.Fprintf(a.Err, "bumped version %s -> %s\n", bumpFrom, version)
+			}
+			// The baseline is taken after the bump, so the bumped pubspec is
+			// part of it and only a later change counts as drift. HEAD must
+			// still be the commit the tag and the note were read from.
+			var baseline gitState
+			if guard {
+				if baseline, err = gitSnapshot(ctx, projectPath); err != nil {
+					return err
+				}
+				if baseline.head != start.head {
+					return fmt.Errorf("HEAD moved from %s to %s before the build started: run again", short(start.head), short(baseline.head))
+				}
+			}
+			checkDrift := func() error {
+				if !guard {
+					return nil
+				}
+				now, err := gitSnapshot(ctx, projectPath)
 				if err != nil {
 					return err
 				}
-				next, err := flutter.BumpVersion(version, b)
-				if err != nil {
-					return err
+				if d := baseline.drift(now); d != "" {
+					return fmt.Errorf("the repository changed while building (%s): the build may not be the commit it would be tagged with, not uploading (--no-drift-check to skip)", d)
 				}
-				if err := flutter.SetVersion(projectPath, next); err != nil {
-					return err
-				}
-				fmt.Fprintf(a.Err, "bumped version %s -> %s\n", version, next)
-				version = next
+				return nil
 			}
 
 			// Build every profile and check what was packaged before the
 			// console is asked to create or receive anything.
 			type builtProfile struct {
-				pr      string
-				spec    profileSpec
-				outs    []buildOutput
-				id      string // the application_id tag
-				checked bool   // id read from Gradle's metadata
-				label   string
+				pr    string
+				spec  profileSpec
+				outs  []buildOutput
+				label string
 			}
 			builds := make([]builtProfile, 0, len(profiles))
 			for _, pr := range profiles {
@@ -649,46 +796,68 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 						return fmt.Errorf("expected build output is missing: %w", err)
 					}
 				}
-				bp := builtProfile{pr: pr, spec: spec, outs: outs, id: expectedID,
-					label: flutter.Label(projectPath, flavor, spec.mode)}
+				var meta *flutter.BuildMetadata
 				if spec.kind == "apk" {
-					id, err := flutter.BuiltApplicationID(projectPath, flavor, spec.mode)
+					if meta, err = flutter.BuiltMetadata(projectPath, flavor, spec.mode); err != nil {
+						return err
+					}
+				}
+				noted := false
+				note := func(msg string) {
+					if !noted {
+						fmt.Fprintln(a.Err, "note: "+msg)
+						noted = true
+					}
+				}
+				for i := range outs {
+					info, err := inspectArtifact(ctx, &tools, outs[i], spec.kind, meta)
 					if err != nil {
 						return err
 					}
 					switch {
-					case id == "" && flavor != "" && !noUpload:
+					case info.id == "" && spec.kind == "apk" && flavor != "" && !noUpload:
 						// With flavors the id is the only thing that tells
 						// the editions apart, so an unchecked upload is refused.
-						return fmt.Errorf("no Gradle output metadata (%s) for flavor %s: cannot confirm the application id, not uploading",
+						return fmt.Errorf("no Gradle output metadata (%s) for flavor %s and no aapt2: cannot confirm the application id, not uploading",
 							filepath.Join("build", "app", "outputs", "apk", flavor, spec.mode, "output-metadata.json"), flavor)
-					case id == "":
-						fmt.Fprintln(a.Err, "note: no Gradle output metadata for this build; the application id was not checked")
-					default:
-						if expectedID != "" {
-							if err := checkBuiltID(expectedID, id, spec.mode); err != nil {
-								return err
-							}
+					case info.id == "" && spec.kind == "apk":
+						note("no Gradle output metadata for this build; the application id was not checked")
+					case info.id == "":
+						note("aapt2 not found; the bundle's application id and versionCode were not checked (set AAPT2 or install Android build-tools)")
+					case expectedID != "":
+						if err := checkBuiltID(expectedID, info.id, spec.mode); err != nil {
+							return err
 						}
-						bp.id, bp.checked = id, true
 					}
+					if checkOffset {
+						if err := checkVersionCode(outs[i], info, vcOffset, buildNumber); err != nil {
+							return err
+						}
+					}
+					outs[i].info = info
 				}
+				bp := builtProfile{pr: pr, spec: spec, outs: outs,
+					label: flutter.Label(projectPath, flavor, spec.mode)}
 				builds = append(builds, bp)
+			}
+			if err := checkDrift(); err != nil {
+				return err
 			}
 			if noUpload {
 				var built []builtFile
 				for _, bp := range builds {
 					for _, out := range bp.outs {
-						b := builtFile{Path: out.path, BuildType: bp.pr, ABI: out.abi}
-						if bp.checked {
-							// Only an id that was read back; a bundle's is a guess.
-							b.ApplicationID = bp.id
-						}
-						built = append(built, b)
+						// Only what was read back from the file, never a guess.
+						built = append(built, builtFile{Path: out.path, BuildType: bp.pr, ABI: out.abi,
+							ApplicationID: out.info.id, VersionCode: out.info.versionCode})
 					}
 				}
 				if a.jsonOut {
-					return a.printer().JSONValue(map[string]any{"version": version, "outputs": built})
+					res := map[string]any{"version": version, "outputs": built}
+					if commit != "" {
+						res["commit"] = commit
+					}
+					return a.printer().JSONValue(res)
 				}
 				for _, b := range built {
 					fields := []string{b.Path, b.BuildType}
@@ -720,11 +889,21 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 					if err := copyFile(out.path, dst); err != nil {
 						return err
 					}
-					tags := map[string]string{
-						"version":        version,
-						"build_type":     bp.pr, // matches the server enum (debug|release|appbundle)
-						"application_id": bp.id,
+					id := out.info.id
+					if id == "" {
+						id = expectedID
 					}
+					tags := map[string]string{
+						"version":        tagVersion,
+						"build_type":     bp.pr, // matches the server enum (debug|release|appbundle)
+						"application_id": id,
+					}
+					if out.info.versionCode > 0 {
+						tags["version_code"] = strconv.Itoa(out.info.versionCode)
+					}
+					// What the file says, unless the caller said otherwise.
+					addTagIf(tags, "min_sdk", out.info.minSdk)
+					addTagIf(tags, "target_sdk", out.info.targetSdk)
 					addTagIf(tags, "stage", stage)
 					addTagIf(tags, "changelog", changelog)
 					addTagIf(tags, "title", bp.label)
@@ -758,12 +937,14 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(a.Err, "verified: %d artifact(s) visible for version %s\n", verified, version)
+				fmt.Fprintf(a.Err, "verified: %d artifact(s) visible for version %s\n", verified, tagVersion)
 			}
 			if a.jsonOut {
-				return a.printer().JSONValue(map[string]any{
-					"app": appRow, "version": version, "artifacts": uploaded, "verified": verified,
-				})
+				res := map[string]any{"app": appRow, "version": tagVersion, "artifacts": uploaded, "verified": verified}
+				if commit != "" {
+					res["commit"] = commit
+				}
+				return a.printer().JSONValue(res)
 			}
 			for _, art := range uploaded {
 				fields := []string{art.ID, art.Tags["build_type"]}
@@ -782,7 +963,13 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 	f.StringArrayVar(&profiles, "build-profile", nil, "debug|release|appbundle|aab|all (repeatable; default release)")
 	f.StringVar(&description, "description", "", "description when creating the app")
 	f.StringVar(&stage, "stage", "", "stage tag (e.g. alpha, beta, prod)")
-	f.StringVar(&changelog, "note", "", "changelog tag")
+	f.StringVar(&changelog, "note", "", "changelog tag; \"auto\" = the subject of the newest commit no --note-skip matches")
+	f.StringArrayVar(&noteSkips, "note-skip", nil, "with --note auto: regexp of commit subjects to walk past (repeatable)")
+	f.IntVar(&vcOffset, "version-code-offset", 0, "require the packaged versionCode to be <n> + the pubspec build number (APK: Gradle metadata or aapt2; bundle: aapt2)")
+	f.StringVar(&versionTag, "version-tag", "full", "version tag: full (pubspec x.y.z+n) or marketing (x.y.z)")
+	f.BoolVar(&noCreate, "no-create", false, "fail (exit 5) before building when the app does not exist, instead of creating it")
+	f.BoolVar(&noDriftCheck, "no-drift-check", false, "skip the guard that refuses the upload when HEAD or a tracked file (pubspec.lock aside) changed during the build")
+	f.BoolVar(&requireClean, "require-clean", false, "refuse to start when tracked files are modified (pubspec.lock aside)")
 	f.StringVar(&bump, "bump", "patch", "version bump when --do-bump: major|minor|patch")
 	f.BoolVar(&doBump, "do-bump", false, "bump pubspec version before building")
 	f.BoolVar(&splitPerAbi, "split-per-abi", false, "pass --split-per-abi to flutter build (APK profiles; uploads one artifact per ABI)")
@@ -794,9 +981,9 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 	f.StringArrayVar(&defineFiles, "dart-define-from-file", nil, "pass --dart-define-from-file to flutter build; the file must exist (repeatable)")
 	f.BoolVar(&noUpload, "no-upload", false, "build only: no login, no upload; print the output paths")
 	f.StringVar(&buildNo, "build", "", "build tag (build number)")
-	f.StringVar(&commit, "commit", "", "commit tag (e.g. from 'git rev-parse --short HEAD')")
-	f.StringVar(&minSdk, "min-sdk", "", "min_sdk tag")
-	f.StringVar(&targetSdk, "target-sdk", "", "target_sdk tag")
+	f.StringVar(&commit, "commit", "", "commit tag; \"auto\" = git rev-parse --short HEAD")
+	f.StringVar(&minSdk, "min-sdk", "", "min_sdk tag (default: read from the built file when aapt2 is installed)")
+	f.StringVar(&targetSdk, "target-sdk", "", "target_sdk tag (default: read from the built file when aapt2 is installed)")
 	f.StringVar(&abiTag, "abi", "", "abi tag (overridden per file when --split-per-abi)")
 	f.StringArrayVar(&extraTags, "tag", nil, "extra tag key=value (repeatable; server allowlist applies)")
 	f.BoolVar(&noVerify, "no-verify", false, "skip the post-upload artifact list verification")

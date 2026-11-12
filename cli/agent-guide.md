@@ -149,6 +149,12 @@ yyt --profile dev --team dooroo catalog artifact upload android my-game app-rele
 # Build and upload one edition of a flavored Flutter app (preset in .yyt.json "variants").
 # A bare --dart-define KEY takes its value from the environment; --no-upload only builds.
 yyt --profile dev catalog deploy --variant pro --build-profile debug --dart-define GIT_SHA --stage debug --json
+# Guards: fail before the build if the app is missing, require versionCode = 2000 + pubspec build,
+# tag the commit and the newest non-bump subject. Git is only read; pull/commit/push stay in your script.
+# Inside a git checkout a default deploy stops when git fails or the tree changed during the build
+# (--no-drift-check to build anyway); --no-upload --json carries applicationId and versionCode per file.
+yyt --profile dev catalog deploy --variant pro --no-create --version-code-offset 2000 \
+  --commit auto --note auto --note-skip '^Bump version to ' --json
 
 # An expiring install link for testers (the URL is printed once).
 yyt --profile dev catalog share create my-game --days 7 --kind android-release

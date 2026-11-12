@@ -82,6 +82,7 @@ const TAG_ORDER = [
   "arch",
   "min_sdk",
   "target_sdk",
+  "version_code",
   "minimum_os_version",
   "entrypoint",
   "filename",

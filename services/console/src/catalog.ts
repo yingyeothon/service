@@ -156,7 +156,14 @@ const COMMON_TAGS = new Set([
   "title",
 ]);
 const PLATFORM_TAGS: Record<CatalogPlatform, readonly string[]> = {
-  android: ["application_id", "build_type", "min_sdk", "target_sdk", "abi"],
+  android: [
+    "application_id",
+    "build_type",
+    "min_sdk",
+    "target_sdk",
+    "abi",
+    "version_code",
+  ],
   ios: [
     "bundle_id",
     "build_number",
@@ -226,6 +233,15 @@ export function validateUploadMetadata(
     !["debug", "release", "appbundle"].includes(tags.build_type)
   )
     throw bad('tag "build_type" must be one of: debug, release, appbundle');
+  // The packaged Android versionCode (1..2100000000), as a decimal string.
+  if (
+    tags.version_code !== undefined &&
+    !(
+      /^[1-9][0-9]{0,9}$/.test(tags.version_code) &&
+      Number(tags.version_code) <= 2_100_000_000
+    )
+  )
+    throw bad('tag "version_code" must be an integer from 1 to 2100000000');
   if (tags.url_scheme !== undefined) {
     if (!URL_SCHEME.test(tags.url_scheme))
       throw bad(

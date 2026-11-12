@@ -1455,6 +1455,24 @@ describe("upload metadata validation", () => {
       }),
     ).toThrow('tag "url_scheme" is not allowed for platform android');
   });
+
+  it("checks the Android version_code tag", () => {
+    const android = (version_code: string) => () =>
+      validateUploadMetadata("android", "app.apk", {
+        version: "1",
+        version_code,
+      });
+    for (const ok of ["1", "2004", "2100000000"])
+      expect(android(ok)).not.toThrow();
+    for (const bad of ["", "0", "012", "-1", "1.0", "2100000001", "1e3", " 7"])
+      expect(android(bad)).toThrow(/version_code" must be/);
+    expect(() =>
+      validateUploadMetadata("ios", "app.ipa", {
+        version: "1",
+        version_code: "7",
+      }),
+    ).toThrow('tag "version_code" is not allowed for platform ios');
+  });
 });
 
 describe("catalog apps: names are unique per team", () => {

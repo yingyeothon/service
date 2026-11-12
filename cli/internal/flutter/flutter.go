@@ -195,29 +195,81 @@ func OutputMetadataPath(projectPath, flavor, mode string) string {
 	return ""
 }
 
-// BuiltApplicationID reads the applicationId the last APK build of a variant
-// was packaged with (build-type suffix included, e.g. `com.example.app.debug`).
-// "" with a nil error means Gradle left no metadata to read.
-func BuiltApplicationID(projectPath, flavor, mode string) (string, error) {
+// BuildMetadata is what the Android Gradle plugin recorded about the APKs of
+// one variant.
+type BuildMetadata struct {
+	// ApplicationID is the packaged id, build-type suffix included
+	// (e.g. `com.example.app.debug`).
+	ApplicationID string
+	// versionCodes maps an ABI split to its versionCode; "" is the output
+	// without an ABI filter (the universal APK).
+	versionCodes map[string]int
+}
+
+// VersionCode is the packaged versionCode of the APK for abi ("" for the
+// unsplit APK); 0 when the metadata does not describe that output.
+func (m *BuildMetadata) VersionCode(abi string) int {
+	if m == nil {
+		return 0
+	}
+	return m.versionCodes[abi]
+}
+
+// BuiltMetadata reads the output metadata of the last APK build of a variant.
+// nil with a nil error means Gradle left no metadata to read.
+func BuiltMetadata(projectPath, flavor, mode string) (*BuildMetadata, error) {
 	p := OutputMetadataPath(projectPath, flavor, mode)
 	if p == "" {
-		return "", nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var meta struct {
 		ApplicationID string `json:"applicationId"`
+		Elements      []struct {
+			Filters []struct {
+				FilterType string `json:"filterType"`
+				Value      string `json:"value"`
+			} `json:"filters"`
+			VersionCode int `json:"versionCode"`
+		} `json:"elements"`
 	}
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return "", fmt.Errorf("parse %s: %w", p, err)
+		return nil, fmt.Errorf("parse %s: %w", p, err)
 	}
 	if meta.ApplicationID == "" {
-		return "", fmt.Errorf("%s has no applicationId", p)
+		return nil, fmt.Errorf("%s has no applicationId", p)
 	}
-	return meta.ApplicationID, nil
+	out := &BuildMetadata{ApplicationID: meta.ApplicationID, versionCodes: map[string]int{}}
+	for _, e := range meta.Elements {
+		abi := ""
+		for _, f := range e.Filters {
+			if f.FilterType == "ABI" {
+				abi = f.Value
+			}
+		}
+		if e.VersionCode > 0 {
+			out.versionCodes[abi] = e.VersionCode
+		}
+	}
+	return out, nil
+}
+
+// SplitVersion splits a pubspec version `x.y.z+n` into its name and build
+// number; hasBuild is false when there is no numeric `+n`.
+func SplitVersion(version string) (name string, build int, hasBuild bool) {
+	name, raw, found := strings.Cut(version, "+")
+	if !found {
+		return name, 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return name, 0, false
+	}
+	return name, n, true
 }

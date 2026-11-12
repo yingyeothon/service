@@ -897,6 +897,7 @@ func newUploadAndroid(a *App, appID appResolver) *cobra.Command {
 			{"min-sdk", "min_sdk", "minSdkVersion"},
 			{"target-sdk", "target_sdk", "targetSdkVersion"},
 			{"abi", "abi", "ABI (e.g. arm64-v8a)"},
+			{"version-code", "version_code", "packaged versionCode"},
 		}, []string{"application-id", "build-type"})
 }
 
