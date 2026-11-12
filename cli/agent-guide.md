@@ -151,6 +151,11 @@ yyt --profile dev --team dooroo catalog artifact upload android my-game app-rele
 yyt --profile dev catalog deploy --variant pro --build-profile debug --dart-define GIT_SHA --stage debug --json
 # Guards: fail before the build if the app is missing, require versionCode = 2000 + pubspec build,
 # tag the commit and the newest non-bump subject. Git is only read; pull/commit/push stay in your script.
+# Project defaults live in .yyt.json "build" (stage and define KEY names per profile, versionCodeOffset,
+# prebuild script, requireFlutter); flags override. See the merged result without building:
+yyt catalog deploy --variant pro --build-profile debug --build-profile release --print-config
+# deploy runs the project's prebuild script and Gradle with your environment (token included): on a
+# checkout you did not write, run only --print-config. A failing prebuild script is exit 1.
 # Inside a git checkout a default deploy stops when git fails or the tree changed during the build
 # (--no-drift-check to build anyway); --no-upload --json carries applicationId and versionCode per file.
 yyt --profile dev catalog deploy --variant pro --no-create --version-code-offset 2000 \

@@ -16,6 +16,9 @@ import (
 func makeFlutterProject(t *testing.T, version string) string {
 	t.Helper()
 	dir := t.TempDir()
+	// Under `umask 000` the temporary directory is world-writable, and the
+	// CLI does not read a .yyt.json from such a directory.
+	_ = os.Chmod(dir, 0o755)
 	if err := os.WriteFile(filepath.Join(dir, "pubspec.yaml"),
 		[]byte("name: demo\nversion: "+version+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -29,6 +32,9 @@ func makeFlutterProject(t *testing.T, version string) string {
 	return dir
 }
 
+// fakeHook, when set, receives the prebuild script deploy runs.
+var fakeHook func(dir, script string) error
+
 // fakeBuild swaps deployRunner with one that creates output files.
 func fakeBuild(t *testing.T, fn func(dir string, args []string) error) *[][]string {
 	t.Helper()
@@ -36,7 +42,10 @@ func fakeBuild(t *testing.T, fn func(dir string, args []string) error) *[][]stri
 	prev := deployRunner
 	deployRunner = func(_ context.Context, dir, name string, args ...string) error {
 		if name != "flutter" {
-			return fmt.Errorf("unexpected command %s", name)
+			if fakeHook == nil {
+				return fmt.Errorf("unexpected command %s", name)
+			}
+			return fakeHook(dir, name)
 		}
 		calls = append(calls, args)
 		return fn(dir, args)
@@ -50,7 +59,10 @@ func fakeBuild(t *testing.T, fn func(dir string, args []string) error) *[][]stri
 	findAAPT2 = func(...string) (string, error) { return "", android.ErrNoAAPT2 }
 	// The temporary directory may sit inside a repository on this host.
 	hasDotGit = func(string) bool { return false }
-	t.Cleanup(func() { deployRunner, deployOutput, findAAPT2, hasDotGit = prev, prevOut, prevFind, prevDotGit })
+	fakeHook = nil
+	t.Cleanup(func() {
+		deployRunner, deployOutput, findAAPT2, hasDotGit, fakeHook = prev, prevOut, prevFind, prevDotGit, nil
+	})
 	return &calls
 }
 

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/yingyeothon/service/cli/internal/android"
 	"github.com/yingyeothon/service/cli/internal/api"
 	"github.com/yingyeothon/service/cli/internal/flutter"
+	"github.com/yingyeothon/service/cli/internal/textsafe"
 )
 
 // commandRunner lets tests fake `flutter build`.
@@ -205,8 +207,9 @@ var defineKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // the environment and fails when it is unset or empty, because an empty define
 // builds an app that silently runs with the default. Files are checked here
 // for the same reason: flutter ignores a missing --dart-define-from-file.
-// keys is what may be printed; values never are.
-func dartDefineArgs(defines, files []string) (args, keys []string, err error) {
+// keys is what may be printed; values never are. lenient (--print-config)
+// accepts a key the environment does not have.
+func dartDefineArgs(defines, files []string, lenient bool) (args, keys []string, err error) {
 	for i, d := range defines {
 		key, val, hasVal := strings.Cut(d, "=")
 		// The argument is never echoed: a quoting slip puts the value where
@@ -219,6 +222,10 @@ func dartDefineArgs(defines, files []string) (args, keys []string, err error) {
 		}
 		if !hasVal {
 			val = os.Getenv(key)
+			if val == "" && lenient {
+				// --print-config shows the command line without the secrets.
+				val = unsetDefine
+			}
 			if val == "" {
 				return nil, nil, fmt.Errorf("--dart-define %s: %s is not set (or empty) in the environment", key, key)
 			}
@@ -425,6 +432,10 @@ func newCatalogDeploy(a *App) *cobra.Command {
 		noteSkips      []string
 		noDriftCheck   bool
 		requireClean   bool
+		prebuild       string
+		noPrebuild     bool
+		requireFlutter string
+		printConfig    bool
 	)
 	c := &cobra.Command{
 		Use:   "deploy [flags] [-- <flutter build args>]",
@@ -465,9 +476,23 @@ script. --tag application_id/version_code are refused: the file sets them.
 
 Defines: --dart-define KEY=VALUE, or --dart-define KEY to take the value from
 the environment (unset or empty is an error). --dart-define-from-file must
-exist. Defines apply to every --build-profile of the run; values are never
+exist. Flag defines apply to every --build-profile of the run (per-profile
+defines go in ` + ContextFile + ` "build", below); values are never
 printed, but a --dart-define value is visible in the process list while
 flutter runs, so prefer the file for anything sensitive.
+
+Project defaults: ` + ContextFile + ` "build" next to pubspec.yaml sets requireFlutter, prebuild (a
+script inside the project, run once before the first build), create, versionTag,
+commit/note ("auto"), noteSkip, and under "android" splitPerAbi, targetPlatform,
+versionCodeOffset and per build profile stage, dartDefines (key names only;
+values come from the environment) and dartDefineFiles. --prebuild/--no-prebuild
+and --require-flutter override the first two; a failing prebuild script stops
+the deploy with exit 1 (after a --do-bump has been written). A flag that is given
+wins; an unknown or repeated key is an error. --print-config shows the merged
+settings and the flutter command lines with define values masked, and exits
+without running anything. deploy runs project code (the prebuild script, then
+Gradle) with your environment: on a checkout you did not write, use only
+--print-config.
 
 --no-upload only builds: no login or team context is needed and the output
 paths are printed. Arguments after -- go to "flutter build" unchanged, except
@@ -479,9 +504,10 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			"  yyt catalog deploy --variant pro --build-profile debug --split-per-abi --target-platform android-arm64 --dart-define TRACER_DSN --stage debug\n" +
 			"  yyt catalog deploy --flavor pro --name sample-pro --application-id com.example.sample.pro --build-profile appbundle\n" +
 			"  yyt catalog deploy --variant lite --build-profile debug --no-upload --dart-define-from-file defines.json\n" +
+			"  yyt catalog deploy --variant pro --build-profile debug --build-profile release --print-config\n" +
 			"  yyt catalog deploy --variant pro --no-create --version-code-offset 2000 --version-tag marketing --commit auto --note auto --note-skip \"^Bump version to \"",
 		Annotations: map[string]string{
-			OutputAnnotation: "one line per uploaded artifact \"<id> <build_type> [abi] <url>\", progress on stderr; --json: {app,version,commit?,artifacts:[{id,platform,url,tags:{version,version_code,…},…}],verified}. --no-upload: one line per file \"<path> <build_type> [abi]\"; --json: {version,commit?,outputs:[{path,buildType,abi,applicationId,versionCode}]}",
+			OutputAnnotation: "one line per uploaded artifact \"<id> <build_type> [abi] <url>\", progress on stderr; --json: {app,version,commit?,artifacts:[{id,platform,url,tags:{version,version_code,…},…}],verified}. --no-upload: one line per file \"<path> <build_type> [abi]\"; --json: {version,commit?,outputs:[{path,buildType,abi,applicationId,versionCode}]}. --print-config: \"<key>: <value>\" lines, then one \"<profile> (stage \\\"<s>\\\"): flutter build …\" line per profile; --json: {config,platform,version,versionTag,versionCodeOffset?,variant,flavor,app,applicationId,create,commit,note,noteSkip,requireFlutter,prebuild,driftCheck,requireClean,upload,profiles:[{profile,stage,splitPerAbi,targetPlatform,dartDefines,dartDefineFiles,flutter:[argv, define values masked]}]}",
 		},
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
@@ -505,6 +531,65 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				}
 			}
 			if err := checkPassthrough(passthrough); err != nil {
+				return err
+			}
+
+			// Project build defaults (.yyt.json "build"); a flag that was
+			// given always wins.
+			cfg, cfgPath, err := findBuildConfig(projectPath)
+			if err != nil {
+				return err
+			}
+			changed := cmd.Flags().Changed
+			var droid platformBuild
+			if cfg.Android != nil {
+				droid = *cfg.Android
+			}
+			if !changed("version-tag") {
+				for _, v := range []string{cfg.VersionTag, droid.VersionTag} {
+					if v != "" {
+						versionTag = v
+					}
+				}
+			}
+			if !changed("no-create") && cfg.Create != nil {
+				noCreate = !*cfg.Create
+			}
+			if !changed("commit") {
+				commit = cfg.Commit
+			}
+			if !changed("note") {
+				changelog = cfg.Note
+			}
+			if !changed("note-skip") {
+				noteSkips = cfg.NoteSkip
+			}
+			// An empty pattern matches every subject; `--note-skip ""` is how
+			// a caller drops the configured list.
+			kept := noteSkips[:0:0]
+			for _, raw := range noteSkips {
+				if raw != "" {
+					kept = append(kept, raw)
+				}
+			}
+			noteSkips = kept
+			if !changed("require-flutter") {
+				requireFlutter = cfg.RequireFlutter
+			}
+			checkOffset := changed("version-code-offset")
+			if !checkOffset && droid.VersionCodeOffset != nil {
+				vcOffset, checkOffset = *droid.VersionCodeOffset, true
+			}
+			if noPrebuild && changed("prebuild") {
+				return errors.New("--prebuild and --no-prebuild cannot be combined")
+			}
+			if noPrebuild {
+				prebuild = ""
+			} else if !changed("prebuild") {
+				prebuild = cfg.Prebuild
+			}
+			hook, err := hookPath(projectPath, prebuild)
+			if err != nil {
 				return err
 			}
 			userTags, err := parseTags(extraTags)
@@ -535,9 +620,76 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			if err := checkIdentity(flavor, name, expectedID); err != nil {
 				return err
 			}
-			defineArgs, defineKeys, err := dartDefineArgs(defines, defineFiles)
+			// One plan per profile: its stage, its defines and the flutter
+			// command line. Every define of every profile is resolved here,
+			// before anything is bumped or built.
+			flagArgs, flagKeys, err := dartDefineArgs(defines, defineFiles, printConfig)
 			if err != nil {
 				return err
+			}
+			plans := make([]profilePlan, 0, len(profiles))
+			for _, pr := range profiles {
+				spec := profileSpecs[pr]
+				pb := droid.Profiles[pr]
+				plan := profilePlan{Profile: pr, spec: spec, Stage: pb.Stage, TargetPlatform: droid.TargetPlatform}
+				if changed("stage") {
+					plan.Stage = stage
+				}
+				split := false
+				for _, v := range []*bool{droid.SplitPerAbi, pb.SplitPerAbi} {
+					if v != nil {
+						split = *v
+					}
+				}
+				if changed("split-per-abi") {
+					split = splitPerAbi
+				}
+				plan.SplitPerAbi = split && spec.kind == "apk"
+				if pb.TargetPlatform != nil {
+					plan.TargetPlatform = *pb.TargetPlatform
+				}
+				if changed("target-platform") {
+					plan.TargetPlatform = targetPlatform
+				}
+				cfgFiles := make([]string, 0, len(pb.DartDefineFiles))
+				for _, f := range pb.DartDefineFiles {
+					// In the config a file is named relative to the project
+					// and stays inside it; it exists before the prebuild
+					// script runs. A flag may name any file.
+					abs, err := insideProject(projectPath, "dartDefineFiles", f)
+					if err != nil {
+						return fmt.Errorf("%s: build profile %s: %w", cfgPath, pr, err)
+					}
+					cfgFiles = append(cfgFiles, abs)
+				}
+				// A key given on the command line replaces the profile's.
+				cfgDefines := make([]string, 0, len(pb.DartDefines))
+				for _, k := range pb.DartDefines {
+					if !slices.Contains(flagKeys, k) {
+						cfgDefines = append(cfgDefines, k)
+					}
+				}
+				cfgArgs, cfgKeys, err := dartDefineArgs(cfgDefines, cfgFiles, printConfig)
+				if err != nil {
+					return fmt.Errorf("%s: build profile %s: %w", cfgPath, pr, err)
+				}
+				plan.DefineKeys = append(cfgKeys, flagKeys...)
+				plan.DefineFiles = append(cfgFiles, defineFiles...)
+				plan.args = []string{"build", spec.kind, "--" + spec.mode}
+				if plan.SplitPerAbi {
+					plan.args = append(plan.args, "--split-per-abi")
+				}
+				if plan.TargetPlatform != "" {
+					plan.args = append(plan.args, "--target-platform", plan.TargetPlatform)
+				}
+				if flavor != "" {
+					plan.args = append(plan.args, "--flavor", flavor)
+				}
+				plan.args = append(plan.args, cfgArgs...)
+				plan.args = append(plan.args, flagArgs...)
+				plan.args = append(plan.args, passthrough...)
+				plan.Flutter = append([]string{"flutter"}, maskDefines(plan.args)...)
+				plans = append(plans, plan)
 			}
 			if expectedID == "" {
 				if flavor == "" {
@@ -577,7 +729,6 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				}
 				skips = append(skips, re)
 			}
-			checkOffset := cmd.Flags().Changed("version-code-offset")
 			if checkOffset && vcOffset < 0 {
 				return errors.New("--version-code-offset must not be negative")
 			}
@@ -604,6 +755,52 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			tagVersion := version
 			if versionTag == "marketing" {
 				tagVersion = versionName
+			}
+
+			if printConfig {
+				// The merged result, for moving a script over: nothing is
+				// read from git or the console, built or written.
+				res := map[string]any{
+					"config": cfgPath, "platform": "android", "version": version, "versionTag": versionTag,
+					"variant": variant, "flavor": flavor, "app": name, "applicationId": expectedID,
+					"create": !noCreate, "commit": commit, "note": changelog, "noteSkip": noteSkips,
+					"requireFlutter": requireFlutter, "prebuild": prebuild,
+					"driftCheck": !noDriftCheck, "requireClean": requireClean, "upload": !noUpload,
+					"profiles": plans,
+				}
+				if checkOffset {
+					res["versionCodeOffset"] = vcOffset
+				}
+				if a.jsonOut {
+					return a.printer().JSONValue(res)
+				}
+				for _, k := range []string{"config", "version", "versionTag", "versionCodeOffset", "variant", "flavor", "app", "applicationId",
+					"create", "commit", "note", "noteSkip", "requireFlutter", "prebuild", "driftCheck", "requireClean", "upload"} {
+					if v, ok := res[k]; ok && fmt.Sprint(v) != "" && fmt.Sprint(v) != "[]" {
+						fmt.Fprintf(a.Out, "%s: %s\n", k, textsafe.Clean(fmt.Sprint(v)))
+					}
+				}
+				for _, plan := range plans {
+					quoted := make([]string, len(plan.Flutter))
+					for i, arg := range plan.Flutter {
+						quoted[i] = arg
+						// One argument stays one visible word.
+						if strings.ContainsAny(arg, " \t\r\n\"'") || textsafe.Clean(arg) != arg {
+							quoted[i] = strconv.Quote(arg)
+						}
+					}
+					fmt.Fprintf(a.Out, "%s (stage %q): %s\n", plan.Profile, plan.Stage, strings.Join(quoted, " "))
+				}
+				return nil
+			}
+			if requireFlutter != "" {
+				got, err := flutterVersion(ctx, projectPath)
+				if err != nil {
+					return err
+				}
+				if got != requireFlutter {
+					return fmt.Errorf("this project requires Flutter %s, the flutter on PATH is %s", requireFlutter, got)
+				}
 			}
 
 			// Git is only read (docs/decisions.md): the commit and note
@@ -720,6 +917,19 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				}
 				fmt.Fprintf(a.Err, "bumped version %s -> %s\n", bumpFrom, version)
 			}
+			if hook != "" {
+				// Once per run, after the bump and before the first build;
+				// what it generates is part of the drift baseline.
+				fmt.Fprintf(a.Err, "running prebuild %s…\n", prebuild)
+				if err := deployRunner(ctx, projectPath, hook); err != nil {
+					return fmt.Errorf("prebuild %s: %w", prebuild, err)
+				}
+				// Everything was planned and will be tagged with the version
+				// read before the script ran.
+				if now, err := flutter.Version(projectPath); err != nil || now != version {
+					return fmt.Errorf("prebuild %s changed the pubspec version (%s -> %s): bump before the deploy or with --do-bump", prebuild, version, now)
+				}
+			}
 			// The baseline is taken after the bump, so the bumped pubspec is
 			// part of it and only a later change counts as drift. HEAD must
 			// still be the commit the tag and the note were read from.
@@ -753,23 +963,11 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				spec  profileSpec
 				outs  []buildOutput
 				label string
+				stage string
 			}
 			builds := make([]builtProfile, 0, len(profiles))
-			for _, pr := range profiles {
-				spec := profileSpecs[pr]
-				split := splitPerAbi && spec.kind == "apk"
-				buildArgs := []string{"build", spec.kind, "--" + spec.mode}
-				if split {
-					buildArgs = append(buildArgs, "--split-per-abi")
-				}
-				if targetPlatform != "" {
-					buildArgs = append(buildArgs, "--target-platform", targetPlatform)
-				}
-				if flavor != "" {
-					buildArgs = append(buildArgs, "--flavor", flavor)
-				}
-				buildArgs = append(buildArgs, defineArgs...)
-				buildArgs = append(buildArgs, passthrough...)
+			for _, plan := range plans {
+				pr, spec, split, buildArgs := plan.Profile, plan.spec, plan.SplitPerAbi, plan.args
 				if err := cleanBuildOutputs(projectPath, pr, flavor); err != nil {
 					return err
 				}
@@ -777,11 +975,15 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				if flavor != "" {
 					what += ", flavor " + flavor
 				}
-				if len(defineKeys) > 0 {
-					what += ", defines " + strings.Join(defineKeys, " ")
+				if len(plan.DefineKeys) > 0 {
+					what += ", defines " + strings.Join(plan.DefineKeys, " ")
 				}
-				if len(defineFiles) > 0 {
-					what += fmt.Sprintf(", %d define file(s)", len(defineFiles))
+				if len(plan.DefineFiles) > 0 {
+					names := make([]string, 0, len(plan.DefineFiles))
+					for _, f := range plan.DefineFiles {
+						names = append(names, textsafe.Clean(filepath.Base(f)))
+					}
+					what += ", define files " + strings.Join(names, " ")
 				}
 				fmt.Fprintf(a.Err, "building %s (%s)…\n", display, what)
 				if err := deployRunner(ctx, projectPath, "flutter", buildArgs...); err != nil {
@@ -836,7 +1038,7 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 					}
 					outs[i].info = info
 				}
-				bp := builtProfile{pr: pr, spec: spec, outs: outs,
+				bp := builtProfile{pr: pr, spec: spec, outs: outs, stage: plan.Stage,
 					label: flutter.Label(projectPath, flavor, spec.mode)}
 				builds = append(builds, bp)
 			}
@@ -904,7 +1106,7 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 					// What the file says, unless the caller said otherwise.
 					addTagIf(tags, "min_sdk", out.info.minSdk)
 					addTagIf(tags, "target_sdk", out.info.targetSdk)
-					addTagIf(tags, "stage", stage)
+					addTagIf(tags, "stage", bp.stage)
 					addTagIf(tags, "changelog", changelog)
 					addTagIf(tags, "title", bp.label)
 					addTagIf(tags, "build", buildNo)
@@ -969,6 +1171,10 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 	f.StringVar(&versionTag, "version-tag", "full", "version tag: full (pubspec x.y.z+n) or marketing (x.y.z)")
 	f.BoolVar(&noCreate, "no-create", false, "fail (exit 5) before building when the app does not exist, instead of creating it")
 	f.BoolVar(&noDriftCheck, "no-drift-check", false, "skip the guard that refuses the upload when HEAD or a tracked file (pubspec.lock aside) changed during the build")
+	f.StringVar(&prebuild, "prebuild", "", "script inside the project to run once before the first build (default: "+ContextFile+" build.prebuild)")
+	f.BoolVar(&noPrebuild, "no-prebuild", false, "do not run the configured prebuild script")
+	f.StringVar(&requireFlutter, "require-flutter", "", "fail unless the flutter on PATH is exactly this version (default: "+ContextFile+" build.requireFlutter)")
+	f.BoolVar(&printConfig, "print-config", false, "print the merged build settings and the flutter command lines (define values masked), then exit")
 	f.BoolVar(&requireClean, "require-clean", false, "refuse to start when tracked files are modified (pubspec.lock aside)")
 	f.StringVar(&bump, "bump", "patch", "version bump when --do-bump: major|minor|patch")
 	f.BoolVar(&doBump, "do-bump", false, "bump pubspec version before building")

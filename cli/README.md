@@ -216,7 +216,7 @@ yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|
     [--no-upload] [--no-create] [--version-code-offset n] [--version-tag full|marketing] \
     [--split-per-abi] [--target-platform android-arm64] [--stage s] [--note changelog|auto [--note-skip regexp]…] \
     [--build n] [--commit h|auto] [--min-sdk n] [--target-sdk n] [--abi a] [--tag k=v]… \
-    [--require-clean] [--no-drift-check] \
+    [--require-clean] [--no-drift-check] [--prebuild script | --no-prebuild] [--require-flutter x.y.z] [--print-config] \
     [--do-bump [--bump patch]] [--no-verify] [-- <flutter build args>]
 yyt catalog installer                                   # newest installer build per platform; INSTALL = an iOS build's itms-services link
 yyt catalog publish <app> --title t --audience public|members [--summary s] [--tag t]…   # publish the newest artifact per platform; replaces the listing whole
@@ -265,9 +265,53 @@ yyt catalog deploy --variant lite --build-profile debug --no-upload --dart-defin
 - `--no-create` fails with exit 5 **before the build** when the app does not exist, instead of creating it.
 - **Git is read, never written.** `--commit auto` tags the short hash of `HEAD`; `--note auto` uses the subject of the newest commit that no `--note-skip <regexp>` matches (e.g. `--note-skip '^Bump version to '`), so a build made right after a bump commit is described by the change before it (control characters removed, cut to the 500-byte tag limit). Both need a git repository with a commit. Inside a repository, a **drift guard** records `HEAD` and the tracked changes of the whole repository (submodule content included) after a `--do-bump` and refuses the upload (and the `--no-upload` result) when either differs once the builds are done, or when `HEAD` moved between the start of the run and the build — `pubspec.lock`, which the build itself rewrites, and untracked files do not count, and files marked skip-worktree or assume-unchanged are invisible to git and so to the guard. A git that fails inside a checkout (not installed, "dubious ownership" on a CI mount) stops the deploy rather than switching the guard off; `--no-drift-check` turns the guard off on purpose. `--require-clean` refuses to start when a tracked file other than `pubspec.lock` is modified. `deploy` never pulls, commits or pushes, and its git calls do not refresh the index (`--no-optional-locks`): that stays in your script.
 - Every profile is built and checked before a missing app is created or anything is uploaded, so a mismatch leaves the console untouched. A `--do-bump` has already rewritten `pubspec.yaml` by then and is not rolled back.
-- `--dart-define KEY=VALUE` passes the pair; `--dart-define KEY` reads the value from the environment. An empty value is refused in both forms, and the key must be a plain name (`MY_KEY`). `--dart-define-from-file` (relative to the current directory) fails when the file is missing — flutter itself ignores that. Defines apply to **every** `--build-profile` of the run: run debug and release separately when a define must stay out of release. Only define keys are printed, but a `--dart-define` value is visible in the process list while flutter runs; use the file for anything sensitive.
+- `--dart-define KEY=VALUE` passes the pair; `--dart-define KEY` reads the value from the environment. An empty value is refused in both forms, and the key must be a plain name (`MY_KEY`). `--dart-define-from-file` (relative to the current directory) fails when the file is missing — flutter itself ignores that. Flag defines apply to **every** `--build-profile` of the run; a define that must stay out of release goes in `.yyt.json` `build.android.profiles.<p>.dartDefines` (below). Only define keys are printed, but a `--dart-define` value is visible in the process list while flutter runs; use the file for anything sensitive.
 - Arguments after `--` go to `flutter build` unchanged (`-- --target lib/main_dev.dart --obfuscate --split-debug-info=symbols`). As a guard against mistakes, `--flavor`, `--debug|--release|--profile`, `--[no-]split-per-abi`, `--target-platform`, `--dart-define*`, `--build-name`, `--build-number`, `-P…`/`--android-project-arg` and `-v`/`--verbose` (it prints the defines) are refused there.
 - `--no-upload` needs no login and no team; it prints `<path> <build_type> [abi]` per file (`--json`: `outputs[]`, with `applicationId` and `versionCode` only where they were read back from the file, and `commit` when one was given) and says which upload-only flags it ignored. `--do-bump`, `--version-code-offset` and the drift guard still apply. Use it when a check of your own must run on the built file before the upload: `deploy --no-upload`, your check, then `catalog artifact upload android`.
+- **Project build defaults: `.yyt.json` `build`.** What a deploy script used to carry lives next to `pubspec.yaml`, so the script shrinks to `git sync → yyt catalog deploy --variant <v> --build-profile <p> → git follow-up`:
+
+  ```json
+  {
+    "variants": { "pro": { "flavor": "pro", "app": "sample-pro", "applicationId": "com.example.sample.pro" } },
+    "build": {
+      "requireFlutter": "3.47.8",
+      "prebuild": "tool/prebuild.sh",
+      "create": false,
+      "versionTag": "marketing",
+      "commit": "auto",
+      "note": "auto",
+      "noteSkip": ["^Bump version to ", "^Update pubspec\\.lock"],
+      "android": {
+        "splitPerAbi": true,
+        "targetPlatform": "android-arm64",
+        "versionCodeOffset": 2000,
+        "profiles": {
+          "debug": { "stage": "debug", "dartDefines": ["TRACER_DSN", "GIT_SHA"] },
+          "release": { "stage": "prod", "dartDefines": ["SENTRY_DSN"] },
+          "appbundle": { "stage": "prod", "splitPerAbi": false }
+        }
+      }
+    }
+  }
+  ```
+
+  | Key | Flag that overrides it | Meaning |
+  | --- | --- | --- |
+  | `requireFlutter` | `--require-flutter` | `flutter --version` must be exactly this, checked before anything is bumped or built |
+  | `prebuild` | `--prebuild`, `--no-prebuild` | a script **inside the project** (no absolute path, no `..`, no symlink out of it; executable, and neither it nor its directory world-writable), run directly (no shell, no arguments) from the project root with your environment, **once per run** after a `--do-bump` and before the first build; a non-zero exit stops the deploy with exit 1 (the script's own code is in the message), and so does a script that changed the pubspec version — a `--do-bump` written before it is not rolled back. On Windows it must be something the OS can start itself (`.exe`, `.bat`), not a `#!` script. Never run by `catalog bump` |
+  | `create` | `--no-create[=false]` | `false` = a missing app is an error (exit 5) instead of being created |
+  | `versionTag` (also under `android`) | `--version-tag` | `full` or `marketing` |
+  | `commit`, `note` | `--commit`, `--note` (`--commit ""` clears it) | only `"auto"` is accepted in the file; it needs a git checkout, for `--no-upload` too |
+  | `noteSkip` | `--note-skip` (replaces the list; `--note-skip ""` empties it) | subjects `--note auto` walks past |
+  | `android.splitPerAbi`, `android.targetPlatform` (also per profile) | `--split-per-abi[=false]`, `--target-platform` | build shape; a profile's value beats the platform's, and a profile's `"targetPlatform": ""` clears it (a store bundle should not inherit the APK's `android-arm64`) |
+  | `android.versionCodeOffset` | `--version-code-offset` | turns the versionCode check on (a flag can change the offset, not switch the check off) |
+  | `android.profiles.<debug\|release\|appbundle>.stage` | `--stage` (all profiles) | the `stage` tag of that profile |
+  | `android.profiles.<p>.dartDefines` | `--dart-define` (added to every profile) | **key names only**; each value is read from the environment and a missing one fails before anything runs. A key also given as `--dart-define` takes the flag's value. `YYT_*` names are refused: a define is compiled into the uploaded artifact |
+  | `android.profiles.<p>.dartDefineFiles` | `--dart-define-from-file` (added) | files inside the project (same path rules as `prebuild`), which must exist before the prebuild script runs; a flag may name any file |
+
+  Order: built-in default < `build` < `build.android` < `profiles.<p>` < flag. The file is read from `--project-path` only (like `variants`), a `build` that cannot be read as written — an unknown key, a key in another letter case, a key given twice, a wrong type, a value where a key name belongs, a file that exists but cannot be read — is an error rather than "no config", and it is refused in a world-writable project directory (only that directory's bit, the script and the script's directory are checked). Because defines are per profile, one run of `--build-profile debug --build-profile release` keeps a debug-only define out of the release build. `yyt catalog deploy … --print-config` prints the merged settings and each `flutter` command line with the define values masked (`***`, or `<unset>` for a key the environment lacks; `--json` too) and exits without running git, flutter, the prebuild script or a console request — compare it with what your script runs before switching over. **Trust:** `catalog deploy` runs project code — the prebuild script, then Gradle — with your whole environment, token included; the path rules above guard against mistakes and are not a sandbox. On a checkout you did not write, run only `--print-config`. **What may be committed in this file:** define key names, flavors, app names and application ids; never define values, tokens or keys (`docs/secrets.md`).
+
+  Moving from a shell script with an `android/build.env`: the app name and release id go to `variants.<v>.app`/`applicationId` (or `--name`/`--application-id` for an app without flavors), the debug/release stage names to `profiles.<p>.stage`, a `2000 + build` rule to `versionCodeOffset`, define lists to `profiles.<p>.dartDefines` with the values exported by the caller (a define file written to a temporary path stays a `--dart-define-from-file` flag), and the changelog a CI job passes as a parameter to `--note "$CHANGELOG"`. What stays in the script is git: pull, submodules, and committing `pubspec.lock` or the bump.
 - The app label (`title` tag) is the `app_name` string of the source set Gradle would pick: `src/<flavor><Mode>`, `src/<mode>`, `src/<flavor>`, `src/main` (default `values/` only).
 - Coming from a script that called `catalog artifact upload` itself: `deploy` tags `version` with the full pubspec value (`1.2.3+45`, not `1.2.3` — retention and `artifact list --filter version=` treat them as different versions; the project version link strips `+build` either way), names the CDN file `<app>-<version>-<profile>[-<abi>]`, sets `build`/`commit`/`changelog` only from the flags you pass (`--note` is the changelog; `--commit auto` and `--note auto` read git), and **creates** a missing app unless `--no-create` is set — check the preset's `app` before the first prod run. `--version-tag marketing` keeps the `x.y.z` tag such a script used.
 

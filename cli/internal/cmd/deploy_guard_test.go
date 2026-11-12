@@ -28,6 +28,7 @@ type fakeGit struct {
 	afterHead  func() // runs after HEAD was read (a commit landing mid-run)
 	startHead  string // the HEAD the log must be read from ("" = head)
 	aaptBroken error  // `aapt2 version` fails with this
+	flutter    string // `flutter --version --machine` frameworkVersion
 }
 
 func (g *fakeGit) logFrom() string {
@@ -85,6 +86,10 @@ func fakeTools(t *testing.T, g *fakeGit, aapt func(kind, file string) (string, e
 			// Anything else would be a write, or a command the guard does not need.
 			t.Errorf("unexpected git %v", args)
 			return nil, errors.New("unexpected git command")
+		case "flutter":
+			if g.flutter != "" && strings.Join(args, " ") == "--version --machine" {
+				return []byte("Woah! A new Flutter is out.\n{\"frameworkVersion\":\"" + g.flutter + "\",\"channel\":\"stable\"}\n"), nil
+			}
 		case "fake-aapt2":
 			if aapt == nil {
 				break
