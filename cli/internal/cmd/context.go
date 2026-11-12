@@ -58,6 +58,46 @@ type contextFile struct {
 	Project string `json:"project"`
 }
 
+// variantPreset is one build variant of a Flutter app that ships several
+// editions from one source tree: the flavor to build, the catalog app that
+// receives it and the release applicationId the build must carry.
+type variantPreset struct {
+	Flavor        string `json:"flavor"`
+	App           string `json:"app"`
+	ApplicationID string `json:"applicationId"`
+}
+
+// findVariants reads the `catalog deploy --variant` presets from the
+// .yyt.json in the project directory itself. Unlike the team/project search
+// it does not walk up (a repository-level file must not force variants on a
+// sibling app) and it does not skip a broken file: the presets decide which
+// app receives an upload, so a file that cannot be read as written is an
+// error, never "no variants".
+func findVariants(projectPath string) (map[string]variantPreset, string, error) {
+	p := filepath.Join(projectPath, ContextFile)
+	if dirWorldWritable(projectPath) {
+		return nil, "", nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, "", nil
+	}
+	var doc struct {
+		Variants json.RawMessage `json:"variants"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, "", fmt.Errorf("%s: %w", p, err)
+	}
+	if len(doc.Variants) == 0 || string(doc.Variants) == "null" {
+		return nil, "", nil
+	}
+	var vars map[string]variantPreset
+	if err := json.Unmarshal(doc.Variants, &vars); err != nil {
+		return nil, "", fmt.Errorf("%s: \"variants\" must be {name: {flavor, app, applicationId}}: %w", p, err)
+	}
+	return vars, p, nil
+}
+
 // findContextFile walks up from start looking for .yyt.json; it checks $HOME
 // and a git root (a directory holding `.git`) but does not go above them.
 // Unreadable or malformed files are skipped, not fatal.

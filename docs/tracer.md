@@ -168,6 +168,8 @@ Common API shape (each library adapts it to its conventions): `init(dsn, {releas
 **Delivering the DSN at build time, never in source.** `yyt tracer dsn <res>` prints the DSN (`--profile dev` for a dev resource; the CLI's default profile may be prod). Every dooroo app's Android entry point is `tools/build_android.sh` in the Flutter project root (`app/` in portcall, `lamp_app/` in aladin-lamp), which passes the environment through to the shared `flutter_cata_deploy.sh`, whose `DEFINE_KEYS` become `--dart-define`s:
 `TRACER_DSN="$(yyt tracer dsn <res>)" GIT_SHA="$(git rev-parse --short HEAD)" DEFINE_KEYS="${DEFINE_KEYS:+$DEFINE_KEYS,}TRACER_DSN,GIT_SHA" tools/build_android.sh debug` — appending to any keys the app already passes and following the app's own build rules (version bump, clean tree). For `flutter run`, a gitignored `tracer.defines.json` with `--dart-define-from-file`. Unity and web games take the DSN from their own build configuration the same way (never committed).
 
+An app that deploys with `yyt catalog deploy` itself passes the same two values with `--dart-define TRACER_DSN --dart-define GIT_SHA` (a bare key is read from the environment and an empty one fails the build) on a **debug-only** run: defines apply to every `--build-profile` of one invocation.
+
 **Verify**: build debug, reproduce, then from the app repository `yyt tracer events <res> --since 10m` and the `tracer-debug` skill; for the dooroo apps also force a test crash and see it on sentry.io under `environment: debug`.
 
 Rotation: `yyt tracer rotate-key <res>` invalidates the old key within 60 s; builds made before it stop sending to tracer and are rebuilt with the new `yyt tracer dsn` output.

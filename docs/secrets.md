@@ -19,7 +19,7 @@ Allowed in git: public service domains (`*.yyt.life`), the bucket names this rep
 
 Identifiers are treated as secrets because the stateful host is reachable from the internet; a leaked name is a target.
 
-Not secrets, on purpose: team, project and resource **ids** (`team_…`, `prj_…`, `ca_…`) and the CLI context file `.yyt.json` (`{"team","project"}`) that carries them. They only mean something to a logged-in member of that team, so they may sit in a game repository next to `pubspec.yaml`. Prefer **ids** in a committed `.yyt.json`: a team's name is also its join key (there is no team listing), so publishing it invites join spam.
+Not secrets, on purpose: team, project and resource **ids** (`team_…`, `prj_…`, `ca_…`) and the CLI context file `.yyt.json` (`{"team","project"}`, plus the `catalog deploy` `variants` presets: flavor and Android applicationId, which ship inside every APK, and the catalog app name) that carries them. They only mean something to a logged-in member of that team, so they may sit in a game repository next to `pubspec.yaml`. Prefer **ids** in a committed `.yyt.json`: a team's name is also its join key (there is no team listing), so publishing it invites join spam.
 
 ## Where secrets live
 

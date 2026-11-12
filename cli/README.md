@@ -212,9 +212,11 @@ yyt catalog artifact upload ios <app> <file> --version v --bundle-id id --build-
 yyt catalog bump [--bump major|minor|patch] [--project-path .]          # pubspec only; git stays with your script
 yyt catalog deploy [--name n] [--project-path .] [--build-profile debug|release|appbundle|aab|all]… \   # explicit team required
     [--description d] \
+    [--variant v | --flavor f --name n --application-id id] [--dart-define KEY[=VALUE]]… [--dart-define-from-file path]… \
+    [--no-upload] \
     [--split-per-abi] [--target-platform android-arm64] [--stage s] [--note changelog] \
     [--build n] [--commit h] [--min-sdk n] [--target-sdk n] [--abi a] [--tag k=v]… \
-    [--do-bump [--bump patch]] [--no-verify]
+    [--do-bump [--bump patch]] [--no-verify] [-- <flutter build args>]
 yyt catalog installer                                   # newest installer build per platform; INSTALL = an iOS build's itms-services link
 yyt catalog publish <app> --title t --audience public|members [--summary s] [--tag t]…   # publish the newest artifact per platform; replaces the listing whole
 yyt catalog unpublish <app>
@@ -231,6 +233,37 @@ yyt catalog share public <app>                          # the permanent link of 
 ```
 
 `deploy` reads `pubspec.yaml` / `build.gradle(.kts)`, resolves the team (and project, if set) context (printing `deploying <app> to team …`), finds the app by name in the team or creates it (project: the context's, else the `--project-path` directory name, created when missing), removes stale outputs, builds with `flutter`, uploads each output as an `android` artifact (per-ABI files each get their `abi` tag with `--split-per-abi`), then verifies that every uploaded artifact id is visible in the artifact list (5 retries). The console links each committed artifact to the project version its `version` tag names (`+build` stripped), creating the version when missing: an upload whose tag names a version prints `linked to version <name> (<id>)` on stderr, preceded by `created version …` when the commit made it, and the commit's JSON carries it as `version` (`null` when the tag is not a version name). Note: because `upload android|ios` are subcommands, an app literally named `android` or `ios` cannot be targeted by the generic `upload` form.
+
+**Flavors, variants and defines.** An app that ships several editions from one source tree (Gradle product flavors, one catalog app and one applicationId each) declares them once in `.yyt.json` next to `pubspec.yaml`:
+
+```json
+{
+  "team": "team_…",
+  "variants": {
+    "lite": { "flavor": "lite", "app": "sample", "applicationId": "com.example.sample" },
+    "pro": { "flavor": "pro", "app": "sample-pro", "applicationId": "com.example.sample.pro" }
+  }
+}
+```
+
+```sh
+# debug APK of the pro edition; the DSN comes from the environment and is never printed
+TRACER_DSN="$(yyt tracer dsn sample-debug)" yyt catalog deploy --variant pro --build-profile debug \
+  --split-per-abi --target-platform android-arm64 --dart-define TRACER_DSN --dart-define GIT_SHA="$(git rev-parse --short HEAD)" --stage debug
+yyt catalog deploy --variant pro --build-profile appbundle --stage prod
+# build only (no login, nothing uploaded); prints the output paths
+yyt catalog deploy --variant lite --build-profile debug --no-upload --dart-define-from-file defines.json
+```
+
+- `--variant v` sets `--flavor`, `--name` and `--application-id` from the preset; a flag that disagrees with the preset is an error. `applicationId` is the **release** id of the flavor, `app` is a catalog app **name** (never an id), and two variants cannot share an app. Without presets, pass `--flavor`, `--name` and `--application-id` yourself: a flavored upload refuses to guess the app name or the id.
+- Presets are read from the `.yyt.json` **in `--project-path`** only (the team/project search walks up; this one does not, so a repository-level file never forces variants on a sibling app). A file whose `variants` cannot be read is an error. A project that declares variants refuses a build that names neither `--variant` nor `--flavor`, and a bare `--flavor` that one preset describes is treated as that variant.
+- After an APK build, `deploy` reads the applicationId Gradle packaged (`build/app/outputs/apk/[<flavor>/]<mode>/output-metadata.json`) and stops unless it equals the expected id; a debug build may also carry `.debug` (a project with another debug suffix passes its full debug id as `--application-id`). A flavored APK without that file is refused; a flavorless one is uploaded with a note. The packaged id is what the `application_id` tag carries, so a debug artifact is tagged `….debug` — for flavorless projects too, where it used to be the `build.gradle` id. A bundle (`.aab`) has no such metadata: it is tagged with the expected id **unchecked**.
+- Every profile is built and checked before a missing app is created or anything is uploaded, so a mismatch leaves the console untouched. A `--do-bump` has already rewritten `pubspec.yaml` by then and is not rolled back.
+- `--dart-define KEY=VALUE` passes the pair; `--dart-define KEY` reads the value from the environment. An empty value is refused in both forms, and the key must be a plain name (`MY_KEY`). `--dart-define-from-file` (relative to the current directory) fails when the file is missing — flutter itself ignores that. Defines apply to **every** `--build-profile` of the run: run debug and release separately when a define must stay out of release. Only define keys are printed, but a `--dart-define` value is visible in the process list while flutter runs; use the file for anything sensitive.
+- Arguments after `--` go to `flutter build` unchanged (`-- --target lib/main_dev.dart --obfuscate --split-debug-info=symbols`). As a guard against mistakes, `--flavor`, `--debug|--release|--profile`, `--[no-]split-per-abi`, `--target-platform`, `--dart-define*`, `--build-name`, `--build-number`, `-P…`/`--android-project-arg` and `-v`/`--verbose` (it prints the defines) are refused there.
+- `--no-upload` needs no login and no team; it prints `<path> <build_type> [abi]` per file (`--json`: `outputs[]`, with `applicationId` only where it was read back from Gradle) and says which upload-only flags it ignored. `--do-bump` still applies. Use it when your own check must run on the built file before the upload (a versionCode rule, a clean-worktree check): `deploy --no-upload`, your check, then `catalog artifact upload android`.
+- The app label (`title` tag) is the `app_name` string of the source set Gradle would pick: `src/<flavor><Mode>`, `src/<mode>`, `src/<flavor>`, `src/main` (default `values/` only).
+- Coming from a script that called `catalog artifact upload` itself: `deploy` tags `version` with the full pubspec value (`1.2.3+45`, not `1.2.3` — retention and `artifact list --filter version=` treat them as different versions; the project version link strips `+build` either way), names the CDN file `<app>-<version>-<profile>[-<abi>]`, sets `build`/`commit`/`min_sdk`/`target_sdk`/`changelog` only from the flags you pass (`--note` is the changelog), and **creates** a missing app instead of failing — check the preset's `app` before the first prod run.
 
 `yyt cata …` is accepted as an alias of `yyt catalog …`. Migrating from the legacy `cata` CLI: `cata login` → `yyt login --device`, `cata auth me` → `yyt whoami`, `cata app deploy --profile p` → `yyt catalog deploy --build-profile p` (`--profile` now selects the config profile; build profile `aab` still accepted), `cata app bump` → `yyt catalog bump` (commit/push moved to your script), `cata artifact upload android|ios` → `yyt catalog artifact upload android|ios`, `cata artifact list --filter` → `yyt catalog artifact list --filter`, `cata apikey` → `yyt tokens`, inline `--slack-*`/`--keep-recent-versions` deploy flags → `yyt catalog app settings`. `cata artifact upload-status` is gone (commits are synchronous). Since the team model (2026-08-26) `catalog group|permission`, `--group` and `--debug-only` are gone too — access is team membership — and every deploy script needs a team context: export `YYT_TEAM` (or add `.yyt.json` next to `pubspec.yaml`).
 

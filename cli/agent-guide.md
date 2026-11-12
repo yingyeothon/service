@@ -146,6 +146,10 @@ yyt --profile dev whoami
 yyt --profile dev --team dooroo catalog artifact upload android my-game app-release.apk \
   --version 1.2.3+45 --application-id life.yyt.mygame --build-type release --json
 
+# Build and upload one edition of a flavored Flutter app (preset in .yyt.json "variants").
+# A bare --dart-define KEY takes its value from the environment; --no-upload only builds.
+yyt --profile dev catalog deploy --variant pro --build-profile debug --dart-define GIT_SHA --stage debug --json
+
 # An expiring install link for testers (the URL is printed once).
 yyt --profile dev catalog share create my-game --days 7 --kind android-release
 

@@ -55,10 +55,58 @@ func TestApplicationIDAndLabel(t *testing.T) {
 	}
 	write(t, filepath.Join(dir, "android", "app", "src", "main", "res", "values", "strings.xml"),
 		`<resources><string name="app_name">YYT Catalog</string></resources>`)
-	if l := Label(dir); l != "YYT Catalog" {
+	if l := Label(dir, "", "release"); l != "YYT Catalog" {
 		t.Fatalf("Label = %q", l)
 	}
-	if l := Label(t.TempDir()); l != "" {
+	if l := Label(t.TempDir(), "", "release"); l != "" {
 		t.Fatalf("missing strings.xml should yield empty label, got %q", l)
+	}
+}
+
+func TestLabelPrefersTheMostSpecificSourceSet(t *testing.T) {
+	dir := t.TempDir()
+	set := func(name, label string) {
+		write(t, filepath.Join(dir, "android", "app", "src", name, "res", "values", "strings.xml"),
+			`<resources><string name="app_name">`+label+`</string></resources>`)
+	}
+	set("pro", "Pro")
+	set("proDebug", "[D] Pro")
+	set("debug", "Debug")
+	set("lite", "Lite")
+	for _, c := range []struct{ flavor, mode, want string }{
+		{"pro", "debug", "[D] Pro"},
+		{"pro", "release", "Pro"},
+		{"", "debug", "Debug"},
+		{"lite", "release", "Lite"},
+		{"lite", "debug", "Debug"}, // build type outranks flavor
+		{"max", "release", ""},
+	} {
+		if got := Label(dir, c.flavor, c.mode); got != c.want {
+			t.Errorf("Label(%q, %q) = %q, want %q", c.flavor, c.mode, got, c.want)
+		}
+	}
+}
+
+func TestBuiltApplicationID(t *testing.T) {
+	dir := t.TempDir()
+	if id, err := BuiltApplicationID(dir, "pro", "debug"); id != "" || err != nil {
+		t.Fatalf("no metadata: %q, %v", id, err)
+	}
+	// Gradle names the flavor directory in its own case.
+	meta := filepath.Join(dir, "build", "app", "outputs", "apk", "proPlus", "debug", "output-metadata.json")
+	write(t, meta, `{"applicationId":"com.example.sample.pro.debug"}`)
+	if id, err := BuiltApplicationID(dir, "proplus", "debug"); id != "com.example.sample.pro.debug" || err != nil {
+		t.Fatalf("flavored: %q, %v", id, err)
+	}
+	if id, err := BuiltApplicationID(dir, "proplus", "release"); id != "" || err != nil {
+		t.Fatalf("other mode: %q, %v", id, err)
+	}
+	write(t, filepath.Join(dir, "build", "app", "outputs", "apk", "release", "output-metadata.json"), `{oops`)
+	if _, err := BuiltApplicationID(dir, "", "release"); err == nil {
+		t.Fatal("malformed metadata must be an error, not an unchecked build")
+	}
+	write(t, filepath.Join(dir, "build", "app", "outputs", "apk", "debug", "output-metadata.json"), `{}`)
+	if _, err := BuiltApplicationID(dir, "", "debug"); err == nil {
+		t.Fatal("metadata without an id must be an error")
 	}
 }

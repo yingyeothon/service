@@ -4,7 +4,9 @@
 package flutter
 
 import (
+	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -129,10 +131,34 @@ type stringsXML struct {
 	} `xml:"string"`
 }
 
-// Label reads `app_name` from android strings.xml; "" when absent.
-func Label(projectPath string) string {
-	data, err := os.ReadFile(filepath.Join(projectPath,
-		"android", "app", "src", "main", "res", "values", "strings.xml"))
+// Label reads `app_name` from the Android string resources of the variant
+// being built; "" when absent. Gradle's source set priority is build variant,
+// build type, product flavor, main, so the lookup order is <flavor><Mode>,
+// <mode>, <flavor>, main. mode is debug or release.
+func Label(projectPath, flavor, mode string) string {
+	var sets []string
+	if flavor != "" {
+		if mode != "" {
+			sets = append(sets, flavor+strings.ToUpper(mode[:1])+mode[1:])
+		}
+	}
+	if mode != "" {
+		sets = append(sets, mode)
+	}
+	if flavor != "" {
+		sets = append(sets, flavor)
+	}
+	sets = append(sets, "main")
+	for _, set := range sets {
+		if l := labelIn(filepath.Join(projectPath, "android", "app", "src", set, "res", "values", "strings.xml")); l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+func labelIn(path string) string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -146,4 +172,52 @@ func Label(projectPath string) string {
 		}
 	}
 	return ""
+}
+
+// OutputMetadataPath is where the Android Gradle plugin describes the APKs of
+// one variant: build/app/outputs/apk/[<flavor>/]<mode>/output-metadata.json.
+// Gradle names the flavor directory in its own case, so it is matched
+// case-insensitively; "" when a flavor is given and has no directory yet.
+func OutputMetadataPath(projectPath, flavor, mode string) string {
+	base := filepath.Join(projectPath, "build", "app", "outputs", "apk")
+	if flavor == "" {
+		return filepath.Join(base, mode, "output-metadata.json")
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.EqualFold(e.Name(), flavor) {
+			return filepath.Join(base, e.Name(), mode, "output-metadata.json")
+		}
+	}
+	return ""
+}
+
+// BuiltApplicationID reads the applicationId the last APK build of a variant
+// was packaged with (build-type suffix included, e.g. `com.example.app.debug`).
+// "" with a nil error means Gradle left no metadata to read.
+func BuiltApplicationID(projectPath, flavor, mode string) (string, error) {
+	p := OutputMetadataPath(projectPath, flavor, mode)
+	if p == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var meta struct {
+		ApplicationID string `json:"applicationId"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", fmt.Errorf("parse %s: %w", p, err)
+	}
+	if meta.ApplicationID == "" {
+		return "", fmt.Errorf("%s has no applicationId", p)
+	}
+	return meta.ApplicationID, nil
 }
