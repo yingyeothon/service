@@ -89,7 +89,13 @@ func TestDeployBuildConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	relFile := filepath.Join(proj, "defines", "release.json")
+	// A config file is passed by its resolved path (the temporary directory
+	// is a symlink on macOS and a short name on Windows).
+	realProj, err := filepath.EvalSymlinks(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relFile := filepath.Join(realProj, "defines", "release.json")
 	want := []string{
 		"build apk --debug --split-per-abi --target-platform android-arm64 --dart-define=SAMPLE_DSN=s3cret-dsn --dart-define=GIT_SHA=abc1234 --dart-define=EXTRA=1",
 		"build apk --release --split-per-abi --target-platform android-arm64 --dart-define=SENTRY_KEY=s3cret-key --dart-define-from-file=" + relFile + " --dart-define=EXTRA=1",
