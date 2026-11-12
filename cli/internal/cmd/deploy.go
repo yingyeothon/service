@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +18,6 @@ import (
 	"github.com/yingyeothon/service/cli/internal/android"
 	"github.com/yingyeothon/service/cli/internal/api"
 	"github.com/yingyeothon/service/cli/internal/flutter"
-	"github.com/yingyeothon/service/cli/internal/textsafe"
 )
 
 // commandRunner lets tests fake `flutter build`.
@@ -347,6 +345,7 @@ func resolveVariant(projectPath, variant, flavor string, upload bool) (string, v
 	if IsID(p.App) {
 		return "", none, fmt.Errorf("%s: variant %s: \"app\" must be an app name, not an id", path, variant)
 	}
+	// (The iOS path passes upload=false and checks app and bundle id itself.)
 	if upload && (p.App == "" || p.ApplicationID == "") {
 		return "", none, fmt.Errorf("%s: variant %s needs \"app\" and \"applicationId\" for an upload", path, variant)
 	}
@@ -436,10 +435,16 @@ func newCatalogDeploy(a *App) *cobra.Command {
 		noPrebuild     bool
 		requireFlutter string
 		printConfig    bool
+		platform       string
+		bundleID       string
+		iosTeamID      string
+		skipPreflight  bool
+		checkSigning   bool
+		cocoapods      bool
 	)
 	c := &cobra.Command{
 		Use:   "deploy [flags] [-- <flutter build args>]",
-		Short: "Build a Flutter Android app and upload the artifacts",
+		Short: "Build a Flutter app (Android, or iOS on macOS) and upload the artifacts",
 		Long: `Reads pubspec.yaml / build.gradle from --project-path, finds the app by name in
 the team context (explicit: --team, YYT_TEAM, ` + ContextFile + ` next to the project, or
 ` + "`yyt team use`" + `), runs "flutter build" for each --build-profile, uploads the outputs
@@ -494,6 +499,26 @@ without running anything. deploy runs project code (the prebuild script, then
 Gradle) with your environment: on a checkout you did not write, use only
 --print-config.
 
+iOS: --platform ios --build-profile development|ad-hoc|app-store (macOS only;
+elsewhere it fails before anything is built). It needs the bundle id
+(--bundle-id, a variant's "bundleId" or build.ios.bundleId) and the Apple team
+id (--ios-team-id, IOS_TEAM_ID or build.ios.teamId in a private ` + ContextFile + `). Before
+the build a signing preflight unlocks the keychain when CI_KEYCHAIN_PASSWORD is
+set (CI_KEYCHAIN_PATH, default the login keychain), finds the identity of the
+right kind, signs a throwaway file with it, and picks the installed
+provisioning profile of the right kind for the bundle id (or automatic signing
+when the Xcode project signs automatically); --check-signing prints that and
+stops, --skip-signing-preflight exports with automatic signing unchecked. It
+then runs "flutter build ipa" with a generated ExportOptions.plist, reads
+bundle id, version, build number, minimum OS and the embedded profile from the
+IPA, refuses a mismatch, and uploads with the bundle_id, build_number,
+distribution_method and minimum_os_version tags. build.ios also takes
+minimumOsVersion (an expectation), useCocoapods, allowWildcardProfile,
+versionTag and profiles.<p>.stage/dartDefines/dartDefineFiles. After -- the
+iOS run also refuses --export-options-plist, --export-method and
+--[no-]codesign. The whole "build" object is validated on every run, so a
+mistake under "ios" stops an Android deploy too.
+
 --no-upload only builds: no login or team context is needed and the output
 paths are printed. Arguments after -- go to "flutter build" unchanged, except
 the ones deploy owns (flavor, build mode, split/target platform, defines,
@@ -505,9 +530,11 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			"  yyt catalog deploy --flavor pro --name sample-pro --application-id com.example.sample.pro --build-profile appbundle\n" +
 			"  yyt catalog deploy --variant lite --build-profile debug --no-upload --dart-define-from-file defines.json\n" +
 			"  yyt catalog deploy --variant pro --build-profile debug --build-profile release --print-config\n" +
+			"  yyt catalog deploy --platform ios --build-profile ad-hoc --bundle-id com.example.sample --ios-team-id ABCDE12345 --check-signing\n" +
+			"  yyt catalog deploy --platform ios --variant pro --build-profile ad-hoc --stage beta --commit auto --json\n" +
 			"  yyt catalog deploy --variant pro --no-create --version-code-offset 2000 --version-tag marketing --commit auto --note auto --note-skip \"^Bump version to \"",
 		Annotations: map[string]string{
-			OutputAnnotation: "one line per uploaded artifact \"<id> <build_type> [abi] <url>\", progress on stderr; --json: {app,version,commit?,artifacts:[{id,platform,url,tags:{version,version_code,…},…}],verified}. --no-upload: one line per file \"<path> <build_type> [abi]\"; --json: {version,commit?,outputs:[{path,buildType,abi,applicationId,versionCode}]}. --print-config: \"<key>: <value>\" lines, then one \"<profile> (stage \\\"<s>\\\"): flutter build …\" line per profile; --json: {config,platform,version,versionTag,versionCodeOffset?,variant,flavor,app,applicationId,create,commit,note,noteSkip,requireFlutter,prebuild,driftCheck,requireClean,upload,profiles:[{profile,stage,splitPerAbi,targetPlatform,dartDefines,dartDefineFiles,flutter:[argv, define values masked]}]}",
+			OutputAnnotation: "one line per uploaded artifact \"<id> <build_type> [abi] <url>\", progress on stderr; --json: {app,version,commit?,artifacts:[{id,platform,url,tags:{version,version_code,…},…}],verified}. --no-upload: one line per file \"<path> <build_type> [abi]\"; --json: {version,commit?,outputs:[{path,buildType,abi,applicationId,versionCode}]}. --platform ios: \"<id> <distribution_method> <url>\" per IPA; --no-upload --json outputs:[{path,buildType,bundleId,buildNumber,minimumOsVersion}]; --print-config --json for ios has bundleId, teamId (\"set\" or empty), minimumOsVersion, useCocoapods, allowWildcardProfile, signingPreflight instead of applicationId and versionCodeOffset, and profiles without splitPerAbi/targetPlatform; --check-signing: \"<profile>: <identity>; profile \\\"<name>\\\" expires <date>[, wildcard][, Xcode-managed (automatic export)]\" or \"<profile>: <identity>; automatic signing (…)\" per profile; --json: {bundleId,signing:[{profile,identity,automatic,provisioningProfile,expires,wildcard,xcodeManaged}]}. --print-config: \"<key>: <value>\" lines, then one \"<profile> (stage \\\"<s>\\\"): flutter build …\" line per profile; --json: {config,platform,version,versionTag,versionCodeOffset?,variant,flavor,app,applicationId,create,commit,note,noteSkip,requireFlutter,prebuild,driftCheck,requireClean,upload,profiles:[{profile,stage,splitPerAbi,targetPlatform,dartDefines,dartDefineFiles,flutter:[argv, define values masked]}]}",
 		},
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
@@ -518,6 +545,26 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 		},
 		RunE: func(cmd *cobra.Command, passthrough []string) error {
 			ctx := cmd.Context()
+			switch platform {
+			case "android":
+				for _, f := range []string{"bundle-id", "ios-team-id", "skip-signing-preflight", "check-signing", "cocoapods"} {
+					if cmd.Flags().Changed(f) {
+						return fmt.Errorf("--%s needs --platform ios", f)
+					}
+				}
+			case "ios":
+				return (&iosDeploy{
+					a: a, cmd: cmd, projectPath: projectPath, name: name, description: description,
+					profiles: profiles, stage: stage, changelog: changelog, commit: commit, buildNo: buildNo,
+					bump: bump, doBump: doBump, flavor: flavor, variant: variant, bundleID: bundleID, teamID: iosTeamID,
+					defines: defines, defineFiles: defineFiles, extraTags: extraTags, noteSkips: noteSkips, passthrough: passthrough,
+					noUpload: noUpload, noVerify: noVerify, noCreate: noCreate, noDriftCheck: noDriftCheck, requireClean: requireClean,
+					versionTag: versionTag, prebuild: prebuild, requireFlutter: requireFlutter, noPrebuild: noPrebuild, printConfig: printConfig,
+					skipPreflight: skipPreflight, checkSigning: checkSigning, cocoapods: cocoapods,
+				}).run(ctx)
+			default:
+				return fmt.Errorf("invalid --platform %q (android|ios)", platform)
+			}
 			if len(profiles) == 0 {
 				profiles = []string{"release"}
 			}
@@ -651,30 +698,11 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				if changed("target-platform") {
 					plan.TargetPlatform = targetPlatform
 				}
-				cfgFiles := make([]string, 0, len(pb.DartDefineFiles))
-				for _, f := range pb.DartDefineFiles {
-					// In the config a file is named relative to the project
-					// and stays inside it; it exists before the prebuild
-					// script runs. A flag may name any file.
-					abs, err := insideProject(projectPath, "dartDefineFiles", f)
-					if err != nil {
-						return fmt.Errorf("%s: build profile %s: %w", cfgPath, pr, err)
-					}
-					cfgFiles = append(cfgFiles, abs)
-				}
-				// A key given on the command line replaces the profile's.
-				cfgDefines := make([]string, 0, len(pb.DartDefines))
-				for _, k := range pb.DartDefines {
-					if !slices.Contains(flagKeys, k) {
-						cfgDefines = append(cfgDefines, k)
-					}
-				}
-				cfgArgs, cfgKeys, err := dartDefineArgs(cfgDefines, cfgFiles, printConfig)
+				defArgs, defKeys, defFiles, err := profileDefines(cfgPath, projectPath, pr, pb.DartDefines, pb.DartDefineFiles, flagArgs, flagKeys, defineFiles, printConfig)
 				if err != nil {
-					return fmt.Errorf("%s: build profile %s: %w", cfgPath, pr, err)
+					return err
 				}
-				plan.DefineKeys = append(cfgKeys, flagKeys...)
-				plan.DefineFiles = append(cfgFiles, defineFiles...)
+				plan.DefineKeys, plan.DefineFiles = defKeys, defFiles
 				plan.args = []string{"build", spec.kind, "--" + spec.mode}
 				if plan.SplitPerAbi {
 					plan.args = append(plan.args, "--split-per-abi")
@@ -685,8 +713,7 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				if flavor != "" {
 					plan.args = append(plan.args, "--flavor", flavor)
 				}
-				plan.args = append(plan.args, cfgArgs...)
-				plan.args = append(plan.args, flagArgs...)
+				plan.args = append(plan.args, defArgs...)
 				plan.args = append(plan.args, passthrough...)
 				plan.Flutter = append([]string{"flutter"}, maskDefines(plan.args)...)
 				plans = append(plans, plan)
@@ -771,27 +798,7 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				if checkOffset {
 					res["versionCodeOffset"] = vcOffset
 				}
-				if a.jsonOut {
-					return a.printer().JSONValue(res)
-				}
-				for _, k := range []string{"config", "version", "versionTag", "versionCodeOffset", "variant", "flavor", "app", "applicationId",
-					"create", "commit", "note", "noteSkip", "requireFlutter", "prebuild", "driftCheck", "requireClean", "upload"} {
-					if v, ok := res[k]; ok && fmt.Sprint(v) != "" && fmt.Sprint(v) != "[]" {
-						fmt.Fprintf(a.Out, "%s: %s\n", k, textsafe.Clean(fmt.Sprint(v)))
-					}
-				}
-				for _, plan := range plans {
-					quoted := make([]string, len(plan.Flutter))
-					for i, arg := range plan.Flutter {
-						quoted[i] = arg
-						// One argument stays one visible word.
-						if strings.ContainsAny(arg, " \t\r\n\"'") || textsafe.Clean(arg) != arg {
-							quoted[i] = strconv.Quote(arg)
-						}
-					}
-					fmt.Fprintf(a.Out, "%s (stage %q): %s\n", plan.Profile, plan.Stage, strings.Join(quoted, " "))
-				}
-				return nil
+				return printMergedConfig(a, res, plans)
 			}
 			if requireFlutter != "" {
 				got, err := flutterVersion(ctx, projectPath)
@@ -806,45 +813,18 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 			// Git is only read (docs/decisions.md): the commit and note
 			// defaults, and the state the drift guard compares at the end.
 			autoNoteWanted := changelog == "auto" && !noUpload
-			guard := false
-			var start gitState
-			if !noDriftCheck || commit == "auto" || autoNoteWanted || requireClean {
-				repo, err := inGitRepo(ctx, projectPath)
-				if err != nil {
-					return fmt.Errorf("cannot read the git repository at %s: %w (the drift guard needs it; --no-drift-check builds without the guard)", projectPath, err)
-				}
-				if !repo {
-					for _, f := range []struct {
-						flag   string
-						wanted bool
-					}{{"--commit auto", commit == "auto"}, {"--note auto", autoNoteWanted}, {"--require-clean", requireClean}} {
-						if f.wanted {
-							return fmt.Errorf("%s needs a git repository at %s", f.flag, projectPath)
-						}
-					}
-				} else {
-					// One snapshot names the commit this run is about: the
-					// commit tag, the note and the drift baseline all hang
-					// on its HEAD.
-					if start, err = gitSnapshot(ctx, projectPath); err != nil {
-						return err
-					}
-					guard = !noDriftCheck
-				}
-			}
-			if requireClean && len(start.changed) > 0 {
-				return fmt.Errorf("--require-clean: tracked files are modified: %s", summarize(start.changed))
-			}
-			if (commit == "auto" || autoNoteWanted) && start.head == "" {
-				return errors.New("--commit auto and --note auto need a commit; this repository has none")
+			repo, err := startRepoGuard(ctx, projectPath, repoWants{
+				noDriftCheck: noDriftCheck, commitAuto: commit == "auto", noteAuto: autoNoteWanted, requireClean: requireClean})
+			if err != nil {
+				return err
 			}
 			if commit == "auto" {
-				if commit, err = git(ctx, projectPath, "rev-parse", "--short", start.head); err != nil {
+				if commit, err = repo.commit(ctx); err != nil {
 					return err
 				}
 			}
 			if autoNoteWanted {
-				if changelog, err = autoNote(ctx, projectPath, start.head, skips); err != nil {
+				if changelog, err = repo.note(ctx, skips); err != nil {
 					return err
 				}
 			}
@@ -917,43 +897,13 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				}
 				fmt.Fprintf(a.Err, "bumped version %s -> %s\n", bumpFrom, version)
 			}
-			if hook != "" {
-				// Once per run, after the bump and before the first build;
-				// what it generates is part of the drift baseline.
-				fmt.Fprintf(a.Err, "running prebuild %s…\n", prebuild)
-				if err := deployRunner(ctx, projectPath, hook); err != nil {
-					return fmt.Errorf("prebuild %s: %w", prebuild, err)
-				}
-				// Everything was planned and will be tagged with the version
-				// read before the script ran.
-				if now, err := flutter.Version(projectPath); err != nil || now != version {
-					return fmt.Errorf("prebuild %s changed the pubspec version (%s -> %s): bump before the deploy or with --do-bump", prebuild, version, now)
-				}
+			// Once per run, after the bump and before the first build; what
+			// the script generates is part of the drift baseline.
+			if err := runHook(ctx, a, projectPath, prebuild, hook, version); err != nil {
+				return err
 			}
-			// The baseline is taken after the bump, so the bumped pubspec is
-			// part of it and only a later change counts as drift. HEAD must
-			// still be the commit the tag and the note were read from.
-			var baseline gitState
-			if guard {
-				if baseline, err = gitSnapshot(ctx, projectPath); err != nil {
-					return err
-				}
-				if baseline.head != start.head {
-					return fmt.Errorf("HEAD moved from %s to %s before the build started: run again", short(start.head), short(baseline.head))
-				}
-			}
-			checkDrift := func() error {
-				if !guard {
-					return nil
-				}
-				now, err := gitSnapshot(ctx, projectPath)
-				if err != nil {
-					return err
-				}
-				if d := baseline.drift(now); d != "" {
-					return fmt.Errorf("the repository changed while building (%s): the build may not be the commit it would be tagged with, not uploading (--no-drift-check to skip)", d)
-				}
-				return nil
+			if err := repo.setBaseline(ctx); err != nil {
+				return err
 			}
 
 			// Build every profile and check what was packaged before the
@@ -971,20 +921,7 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 				if err := cleanBuildOutputs(projectPath, pr, flavor); err != nil {
 					return err
 				}
-				what := pr
-				if flavor != "" {
-					what += ", flavor " + flavor
-				}
-				if len(plan.DefineKeys) > 0 {
-					what += ", defines " + strings.Join(plan.DefineKeys, " ")
-				}
-				if len(plan.DefineFiles) > 0 {
-					names := make([]string, 0, len(plan.DefineFiles))
-					for _, f := range plan.DefineFiles {
-						names = append(names, textsafe.Clean(filepath.Base(f)))
-					}
-					what += ", define files " + strings.Join(names, " ")
-				}
+				what := describeBuild(pr, flavor, plan.DefineKeys, plan.DefineFiles)
 				fmt.Fprintf(a.Err, "building %s (%s)…\n", display, what)
 				if err := deployRunner(ctx, projectPath, "flutter", buildArgs...); err != nil {
 					return fmt.Errorf("flutter build %s: %w", pr, err)
@@ -1042,7 +979,7 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 					label: flutter.Label(projectPath, flavor, spec.mode)}
 				builds = append(builds, bp)
 			}
-			if err := checkDrift(); err != nil {
+			if err := repo.check(ctx); err != nil {
 				return err
 			}
 			if noUpload {
@@ -1160,9 +1097,15 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 		},
 	}
 	f := c.Flags()
-	f.StringVar(&name, "name", "", "app name (default: last segment of the applicationId; required with --flavor; pass one when that segment looks like an id, e.g. q_game)")
+	f.StringVar(&name, "name", "", "app name (default: last segment of the applicationId, or of the iOS bundle id; required with --flavor; pass one when that segment looks like an id, e.g. q_game)")
 	f.StringVar(&projectPath, "project-path", ".", "Flutter project directory (also where the "+ContextFile+" search starts)")
-	f.StringArrayVar(&profiles, "build-profile", nil, "debug|release|appbundle|aab|all (repeatable; default release)")
+	f.StringArrayVar(&profiles, "build-profile", nil, "android: debug|release|appbundle|aab|all (default release); ios: development|ad-hoc|app-store (repeatable)")
+	f.StringVar(&platform, "platform", "android", "android|ios (ios builds on macOS only)")
+	f.StringVar(&bundleID, "bundle-id", "", "ios: the bundle identifier the IPA must carry (default: the variant's bundleId, else "+ContextFile+" build.ios.bundleId)")
+	f.StringVar(&iosTeamID, "ios-team-id", "", "ios: Apple team id (default: IOS_TEAM_ID, else "+ContextFile+" build.ios.teamId)")
+	f.BoolVar(&skipPreflight, "skip-signing-preflight", false, "ios: do not check identity and provisioning profile first; export with automatic signing")
+	f.BoolVar(&checkSigning, "check-signing", false, "ios: run only the signing preflight and print what each profile would sign with")
+	f.BoolVar(&cocoapods, "cocoapods", false, "ios: the project uses CocoaPods; run pod install before the build (default: "+ContextFile+" build.ios.useCocoapods)")
 	f.StringVar(&description, "description", "", "description when creating the app")
 	f.StringVar(&stage, "stage", "", "stage tag (e.g. alpha, beta, prod)")
 	f.StringVar(&changelog, "note", "", "changelog tag; \"auto\" = the subject of the newest commit no --note-skip matches")
@@ -1180,8 +1123,8 @@ build name/number, Gradle properties) and --verbose, which prints defines.`,
 	f.BoolVar(&doBump, "do-bump", false, "bump pubspec version before building")
 	f.BoolVar(&splitPerAbi, "split-per-abi", false, "pass --split-per-abi to flutter build (APK profiles; uploads one artifact per ABI)")
 	f.StringVar(&targetPlatform, "target-platform", "", "pass --target-platform to flutter build (e.g. android-arm64)")
-	f.StringVar(&flavor, "flavor", "", "pass --flavor to flutter build (Gradle product flavor)")
-	f.StringVar(&variant, "variant", "", "variant preset from "+ContextFile+" \"variants\": sets --flavor, --name and --application-id")
+	f.StringVar(&flavor, "flavor", "", "pass --flavor to flutter build (Gradle product flavor; on iOS the Xcode scheme of that name)")
+	f.StringVar(&variant, "variant", "", "variant preset from "+ContextFile+" \"variants\": sets --flavor, --name and --application-id (ios: --bundle-id)")
 	f.StringVar(&expectedID, "application-id", "", "expected release applicationId (default: read from build.gradle; required with --flavor)")
 	f.StringArrayVar(&defines, "dart-define", nil, "KEY=VALUE, or KEY to read the value from the environment (repeatable)")
 	f.StringArrayVar(&defineFiles, "dart-define-from-file", nil, "pass --dart-define-from-file to flutter build; the file must exist (repeatable)")

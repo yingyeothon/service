@@ -65,6 +65,8 @@ type variantPreset struct {
 	Flavor        string `json:"flavor"`
 	App           string `json:"app"`
 	ApplicationID string `json:"applicationId"`
+	// BundleID is the iOS bundle identifier of the edition.
+	BundleID string `json:"bundleId"`
 }
 
 // findVariants reads the `catalog deploy --variant` presets from the

@@ -12,8 +12,10 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
+	"github.com/yingyeothon/service/cli/internal/ios"
 	"github.com/yingyeothon/service/cli/internal/textsafe"
 )
 
@@ -30,8 +32,7 @@ type buildConfig struct {
 	NoteSkip       []string `json:"noteSkip"`
 
 	Android *platformBuild `json:"android"`
-	// IOS is read by `--platform ios`.
-	IOS json.RawMessage `json:"ios"`
+	IOS     *iosBuild      `json:"ios"`
 }
 
 // platformBuild holds the per-platform defaults and the per-profile values.
@@ -141,36 +142,50 @@ func (c buildConfig) validate() error {
 			if _, ok := profileSpecs[name]; !ok {
 				return fmt.Errorf("android.profiles: unknown profile %q (debug|release|appbundle)", name)
 			}
-			seen := map[string]bool{}
-			for _, k := range p.DartDefines {
-				// A value here would be a secret in a committed file.
-				if !defineKey.MatchString(k) {
-					return fmt.Errorf("android.profiles.%s.dartDefines: entries are key names like MY_KEY; values come from the environment", name)
-				}
-				// A define is compiled into the artifact that gets uploaded:
-				// a data-only change must not ship the CLI's own credentials.
-				if strings.HasPrefix(k, "YYT_") {
-					return fmt.Errorf("android.profiles.%s.dartDefines: %s is the CLI's own environment and cannot be a define", name, k)
-				}
-				if seen[k] {
-					return fmt.Errorf("android.profiles.%s.dartDefines: %s is listed twice", name, k)
-				}
-				seen[k] = true
+			if err := checkProfileValues("android.profiles."+name, p.Stage, p.DartDefines); err != nil {
+				return err
 			}
 			if p.TargetPlatform != nil && *p.TargetPlatform != "" {
 				if err := checkTargetPlatform("android.profiles."+name+".targetPlatform", *p.TargetPlatform); err != nil {
 					return err
 				}
 			}
-			if textsafe.Clean(p.Stage) != p.Stage || strings.ContainsAny(p.Stage, "\r\n") {
-				return fmt.Errorf("android.profiles.%s.stage has control characters", name)
-			}
+		}
+	}
+	if c.IOS != nil {
+		if err := c.IOS.validate(); err != nil {
+			return err
 		}
 	}
 	for _, t := range tags {
 		if t != "" && t != "full" && t != "marketing" {
 			return fmt.Errorf("versionTag %q (full|marketing)", t)
 		}
+	}
+	return nil
+}
+
+// checkProfileValues validates what a build profile of either platform may
+// carry.
+func checkProfileValues(where, stage string, defines []string) error {
+	seen := map[string]bool{}
+	for _, k := range defines {
+		// A value here would be a secret in a committed file.
+		if !defineKey.MatchString(k) {
+			return fmt.Errorf("%s.dartDefines: entries are key names like MY_KEY; values come from the environment", where)
+		}
+		// A define is compiled into the artifact that gets uploaded: a
+		// data-only change must not ship the CLI's own credentials.
+		if strings.HasPrefix(k, "YYT_") {
+			return fmt.Errorf("%s.dartDefines: %s is the CLI's own environment and cannot be a define", where, k)
+		}
+		if seen[k] {
+			return fmt.Errorf("%s.dartDefines: %s is listed twice", where, k)
+		}
+		seen[k] = true
+	}
+	if textsafe.Clean(stage) != stage || strings.ContainsAny(stage, "\r\n") {
+		return fmt.Errorf("%s.stage has control characters", where)
 	}
 	return nil
 }
@@ -233,7 +248,7 @@ func duplicateKey(raw []byte, depth int, only string) error {
 // accepted.
 var buildKeys = func() map[string]string {
 	out := map[string]string{}
-	for _, v := range []any{buildConfig{}, platformBuild{}, profileBuild{}} {
+	for _, v := range []any{buildConfig{}, platformBuild{}, profileBuild{}, iosBuild{}, iosProfileBuild{}} {
 		t := reflect.TypeOf(v)
 		for i := 0; i < t.NumField(); i++ {
 			name := t.Field(i).Tag.Get("json")
@@ -241,6 +256,9 @@ var buildKeys = func() map[string]string {
 		}
 	}
 	for name := range profileSpecs {
+		out[strings.ToLower(name)] = name
+	}
+	for _, name := range ios.Methods {
 		out[strings.ToLower(name)] = name
 	}
 	return out
@@ -266,11 +284,9 @@ func misspelledKey(raw []byte) error {
 					return err
 				}
 				key, _ := kt.(string)
-				if want, known := buildKeys[strings.ToLower(key)]; !skip && known && want != key {
+				if want, known := buildKeys[strings.ToLower(key)]; known && want != key {
 					return fmt.Errorf("the key %q must be spelled %q", key, want)
 				}
-				// The ios subtree belongs to `--platform ios`.
-				inner = skip || key == "ios"
 			}
 			if err := walk(inner); err != nil {
 				return err
@@ -407,4 +423,31 @@ func flutterVersion(ctx context.Context, projectPath string) (string, error) {
 		return "", errors.New("flutter --version --machine did not report a frameworkVersion")
 	}
 	return v.FrameworkVersion, nil
+}
+
+// printMergedConfig is --print-config: the merged settings and one command
+// line per profile.
+func printMergedConfig(a *App, res map[string]any, plans []profilePlan) error {
+	if a.jsonOut {
+		return a.printer().JSONValue(res)
+	}
+	for _, k := range []string{"config", "platform", "version", "versionTag", "versionCodeOffset", "variant", "flavor", "app", "applicationId",
+		"bundleId", "teamId", "minimumOsVersion", "useCocoapods", "allowWildcardProfile", "signingPreflight",
+		"create", "commit", "note", "noteSkip", "requireFlutter", "prebuild", "driftCheck", "requireClean", "upload"} {
+		if v, ok := res[k]; ok && fmt.Sprint(v) != "" && fmt.Sprint(v) != "[]" {
+			fmt.Fprintf(a.Out, "%s: %s\n", k, textsafe.Clean(fmt.Sprint(v)))
+		}
+	}
+	for _, plan := range plans {
+		quoted := make([]string, len(plan.Flutter))
+		for i, arg := range plan.Flutter {
+			quoted[i] = arg
+			// One argument stays one visible word.
+			if strings.ContainsAny(arg, " \t\r\n\"'") || textsafe.Clean(arg) != arg {
+				quoted[i] = strconv.Quote(arg)
+			}
+		}
+		fmt.Fprintf(a.Out, "%s (stage %q): %s\n", plan.Profile, plan.Stage, strings.Join(quoted, " "))
+	}
+	return nil
 }

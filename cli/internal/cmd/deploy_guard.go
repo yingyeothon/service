@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -370,4 +371,163 @@ func checkVersionCode(out buildOutput, info artifactInfo, offset, build int) err
 		hint = "; with --split-per-abi Flutter adds an ABI offset unless android/gradle.properties sets force-version-code-ignoring-abi=true"
 	}
 	return fmt.Errorf("%s has versionCode %d, expected %d (offset %d + pubspec build %d)%s", out.path, info.versionCode, want, offset, build, hint)
+}
+
+// repoGuard is deploy's read-only view of the git repository: the commit and
+// note defaults and the drift guard, all tied to the HEAD seen at the start.
+// Both platforms use it.
+type repoGuard struct {
+	dir      string
+	on       bool // the drift guard is active
+	start    gitState
+	baseline gitState
+}
+
+// repoWants is what a run asks of git.
+type repoWants struct {
+	noDriftCheck bool
+	commitAuto   bool
+	noteAuto     bool
+	requireClean bool
+}
+
+// startRepoGuard looks at the repository once, before any side effect.
+// Outside a repository the guard is off and the options that need one fail.
+func startRepoGuard(ctx context.Context, dir string, w repoWants) (*repoGuard, error) {
+	g := &repoGuard{dir: dir}
+	if w.noDriftCheck && !w.commitAuto && !w.noteAuto && !w.requireClean {
+		return g, nil
+	}
+	repo, err := inGitRepo(ctx, dir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the git repository at %s: %w (the drift guard needs it; --no-drift-check builds without the guard)", dir, err)
+	}
+	if !repo {
+		for _, f := range []struct {
+			flag   string
+			wanted bool
+		}{{"--commit auto", w.commitAuto}, {"--note auto", w.noteAuto}, {"--require-clean", w.requireClean}} {
+			if f.wanted {
+				return nil, fmt.Errorf("%s needs a git repository at %s", f.flag, dir)
+			}
+		}
+		return g, nil
+	}
+	// One snapshot names the commit this run is about: the commit tag, the
+	// note and the drift baseline all hang on its HEAD.
+	if g.start, err = gitSnapshot(ctx, dir); err != nil {
+		return nil, err
+	}
+	g.on = !w.noDriftCheck
+	if w.requireClean && len(g.start.changed) > 0 {
+		return nil, fmt.Errorf("--require-clean: tracked files are modified: %s", summarize(g.start.changed))
+	}
+	if (w.commitAuto || w.noteAuto) && g.start.head == "" {
+		return nil, errors.New("--commit auto and --note auto need a commit; this repository has none")
+	}
+	return g, nil
+}
+
+// commit is the short hash of the starting HEAD.
+func (g *repoGuard) commit(ctx context.Context) (string, error) {
+	return git(ctx, g.dir, "rev-parse", "--short", g.start.head)
+}
+
+func (g *repoGuard) note(ctx context.Context, skips []*regexp.Regexp) (string, error) {
+	return autoNote(ctx, g.dir, g.start.head, skips)
+}
+
+// setBaseline records the state the upload is compared with. It is taken
+// after the bump and the prebuild script, so what those changed is part of
+// it; HEAD must still be the commit the tag and the note were read from.
+func (g *repoGuard) setBaseline(ctx context.Context) error {
+	if !g.on {
+		return nil
+	}
+	var err error
+	if g.baseline, err = gitSnapshot(ctx, g.dir); err != nil {
+		return err
+	}
+	if g.baseline.head != g.start.head {
+		return fmt.Errorf("HEAD moved from %s to %s before the build started: run again", short(g.start.head), short(g.baseline.head))
+	}
+	return nil
+}
+
+// check refuses when the repository is no longer what was built.
+func (g *repoGuard) check(ctx context.Context) error {
+	if !g.on {
+		return nil
+	}
+	now, err := gitSnapshot(ctx, g.dir)
+	if err != nil {
+		return err
+	}
+	if d := g.baseline.drift(now); d != "" {
+		return fmt.Errorf("the repository changed while building (%s): the build may not be the commit it would be tagged with, not uploading (--no-drift-check to skip)", d)
+	}
+	return nil
+}
+
+// runHook runs the prebuild script once and refuses a changed pubspec
+// version: everything was planned, and will be tagged, with the version read
+// before the script ran.
+func runHook(ctx context.Context, a *App, projectPath, prebuild, hook, version string) error {
+	if hook == "" {
+		return nil
+	}
+	fmt.Fprintf(a.Err, "running prebuild %s…\n", textsafe.Clean(prebuild))
+	if err := deployRunner(ctx, projectPath, hook); err != nil {
+		return fmt.Errorf("prebuild %s: %w", prebuild, err)
+	}
+	if now, err := flutter.Version(projectPath); err != nil || now != version {
+		return fmt.Errorf("prebuild %s changed the pubspec version (%s -> %s): bump before the deploy or with --do-bump", prebuild, version, now)
+	}
+	return nil
+}
+
+// profileDefines resolves the defines of one build profile: the config's keys
+// (values from the environment) and files (inside the project), then the
+// command line's, whose keys replace the profile's.
+func profileDefines(cfgPath, projectPath, profile string, cfgKeys, cfgFiles, flagArgs, flagKeys, flagFiles []string, lenient bool) (args, keys, files []string, err error) {
+	for _, f := range cfgFiles {
+		// In the config a file is named relative to the project and stays
+		// inside it; it exists before the prebuild script runs. A flag may
+		// name any file.
+		abs, err := insideProject(projectPath, "dartDefineFiles", f)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("%s: build profile %s: %w", cfgPath, profile, err)
+		}
+		files = append(files, abs)
+	}
+	var own []string
+	for _, k := range cfgKeys {
+		if !slices.Contains(flagKeys, k) {
+			own = append(own, k)
+		}
+	}
+	args, keys, err = dartDefineArgs(own, files, lenient)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%s: build profile %s: %w", cfgPath, profile, err)
+	}
+	return append(args, flagArgs...), append(keys, flagKeys...), append(files, flagFiles...), nil
+}
+
+// describeBuild is the "building …" detail: keys and file names, never values.
+func describeBuild(profile, flavor string, keys, files []string) string {
+	what := profile
+	if flavor != "" {
+		what += ", flavor " + flavor
+	}
+	if len(keys) > 0 {
+		what += ", defines " + strings.Join(keys, " ")
+	}
+	if len(files) > 0 {
+		names := make([]string, 0, len(files))
+		for _, f := range files {
+			names = append(names, textsafe.Clean(filepath.Base(f)))
+		}
+		what += ", define files " + strings.Join(names, " ")
+	}
+	return what
 }

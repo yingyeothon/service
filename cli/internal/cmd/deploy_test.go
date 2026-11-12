@@ -32,6 +32,10 @@ func makeFlutterProject(t *testing.T, version string) string {
 	return dir
 }
 
+// otherRuns records every non-flutter command the build runner was asked for:
+// "<name> <args> in <dir base>".
+var otherRuns []string
+
 // fakeHook, when set, receives the prebuild script deploy runs.
 var fakeHook func(dir, script string) error
 
@@ -42,6 +46,7 @@ func fakeBuild(t *testing.T, fn func(dir string, args []string) error) *[][]stri
 	prev := deployRunner
 	deployRunner = func(_ context.Context, dir, name string, args ...string) error {
 		if name != "flutter" {
+			otherRuns = append(otherRuns, strings.TrimSpace(filepath.Base(name)+" "+strings.Join(args, " "))+" in "+filepath.Base(dir))
 			if fakeHook == nil {
 				return fmt.Errorf("unexpected command %s", name)
 			}
@@ -59,7 +64,7 @@ func fakeBuild(t *testing.T, fn func(dir string, args []string) error) *[][]stri
 	findAAPT2 = func(...string) (string, error) { return "", android.ErrNoAAPT2 }
 	// The temporary directory may sit inside a repository on this host.
 	hasDotGit = func(string) bool { return false }
-	fakeHook = nil
+	fakeHook, otherRuns = nil, nil
 	t.Cleanup(func() {
 		deployRunner, deployOutput, findAAPT2, hasDotGit, fakeHook = prev, prevOut, prevFind, prevDotGit, nil
 	})

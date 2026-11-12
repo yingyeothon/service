@@ -154,7 +154,10 @@ yyt --profile dev catalog deploy --variant pro --build-profile debug --dart-defi
 # Project defaults live in .yyt.json "build" (stage and define KEY names per profile, versionCodeOffset,
 # prebuild script, requireFlutter); flags override. See the merged result without building:
 yyt catalog deploy --variant pro --build-profile debug --build-profile release --print-config
-# deploy runs the project's prebuild script and Gradle with your environment (token included): on a
+# iOS (macOS only; elsewhere exit 1 before anything is built): check signing first, then build + verify the IPA + upload.
+# Environment: IOS_TEAM_ID (team id), CI_KEYCHAIN_PASSWORD / CI_KEYCHAIN_PATH (unlock the keychain over ssh; never printed).
+yyt catalog deploy --platform ios --build-profile ad-hoc --bundle-id com.example.sample --ios-team-id ABCDE12345 --check-signing
+# deploy runs the project's prebuild script and Gradle (iOS: Podfile, Xcode build phases) with your environment (token included): on a
 # checkout you did not write, run only --print-config. A failing prebuild script is exit 1.
 # Inside a git checkout a default deploy stops when git fails or the tree changed during the build
 # (--no-drift-check to build anyway); --no-upload --json carries applicationId and versionCode per file.
